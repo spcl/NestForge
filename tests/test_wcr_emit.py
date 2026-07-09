@@ -1,0 +1,71 @@
+"""Emit WCR (reduction) tasklet out-edges as augmented assignments and check they accumulate.
+
+A ``out[0] += a[i]`` reduction or a ``hist[bin] += w`` scatter is a tasklet whose output edge carries
+a WCR. Sequential numpy emission turns it into ``target = target + tmp`` (Sum; ``np.maximum`` for Max,
+...), correct even when many iterations hit the same element.
+"""
+import inspect
+
+import numpy as np
+import pytest
+
+pytest.importorskip("dace")
+
+import dace as dc
+
+from nestforge.emit_numpy import sdfg_to_numpy
+
+N = dc.symbol("N", dtype=dc.int64)
+M = dc.symbol("M", dtype=dc.int64)
+
+
+@dc.program
+def reduce_sum(a: dc.float64[N], out: dc.float64[1]):
+    out[0] = 0.0
+    for i in dc.map[0:N]:
+        out[0] += a[i]
+
+
+@dc.program
+def hist_scatter(idx: dc.int64[N], w: dc.float64[N], hist: dc.float64[M]):
+    for i in dc.map[0:N]:
+        hist[idx[i]] += w[i]
+
+
+def _run(program, fn_name, sizes, inputs):
+    src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
+    ns = {"np": np}
+    exec(src, ns)
+    call = dict(inputs)
+    for p in inspect.signature(ns[fn_name]).parameters:
+        if p not in call:
+            call[p] = sizes.get(p)
+    ns[fn_name](**call)
+    return call, src
+
+
+def test_wcr_sum_reduction():
+    rng = np.random.default_rng(0)
+    a = rng.random(32)
+    call, src = _run(reduce_sum, "reduce_sum", dict(N=32), dict(a=a.copy(), out=np.zeros(1)))
+    assert "+ __wcr_" in src  # augmented assignment, not a plain overwrite
+    np.testing.assert_allclose(call["out"][0], a.sum())
+
+
+def test_wcr_scatter_data_dependent_index():
+    """A scatter ``hist[idx[i]] += w[i]`` -- the histogram pattern -- accumulates into a data-dependent
+    element; on DaCe branches where the indirect write lowers to a nested SDFG it needs the widen pass."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    from nestforge.emit_numpy import UnsupportedNest
+    rng = np.random.default_rng(1)
+    Nv, Mv = 50, 6
+    idx = rng.integers(0, Mv, Nv).astype(np.int64)
+    w = rng.random(Nv)
+    try:
+        call, src = _run(hist_scatter, "hist_scatter", dict(N=Nv, M=Mv),
+                         dict(idx=idx.copy(), w=w.copy(), hist=np.zeros(Mv)))
+    except UnsupportedNest:
+        pytest.skip("indirect-write nesting unavailable in this DaCe")
+    ref = np.zeros(Mv)
+    np.add.at(ref, idx, w)
+    np.testing.assert_allclose(call["hist"], ref)

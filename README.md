@@ -54,18 +54,20 @@ place — a masked `np.where` becomes `if I[j,k]: Z[j,k] = ...`); access-node da
 edges), `dace.<cast>` → `np.<cast>` and bare math intrinsic (`sqrt` → `np.sqrt`) normalization;
 `skip-taskloops` (default) & `innermost` strategies; **C-style emission** — the kernel allocates
 nothing, every array (inputs, outputs, `__return`, scratch transients) is a pre-allocated buffer
-parameter written in place; BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses
-**and** every scratch buffer is sizable from the kernel's own symbols): 32 emit / 20 unsupported / 3
-frontend build-fail. Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral
-& scattering_self_energies (fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact); Cholesky &
-TensorTranspose library nodes (bit-exact, minimal programs). The 20 unsupported are: **17 with a
-loop-shaped scratch transient** (e.g. `A_0` shaped `[j]`) that a caller cannot pre-allocate under the
-C-style contract (cholesky, lu, correlation, covariance, mlp, resnet, stockham_fft, …); 1 nested
-map-in-map (cholesky2); 2 WCR-reduction tasklets (azimint_hist, azimint_naive). Emission is read-only
+parameter written in place; **WCR-reduction tasklet** emission (`hist[bin] += w` → an augmented
+assignment); BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses **and** every
+scratch buffer is sizable from the kernel's own symbols): 34 emit / 18 unsupported / 3 frontend
+build-fail. Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
+scattering_self_energies (fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact); WCR azimint_naive
+(bit-exact); Cholesky & TensorTranspose library nodes (bit-exact, minimal programs). The 18 unsupported
+are **17 with a loop-shaped scratch transient** (e.g. `A_0` shaped `[j]`) that a caller cannot
+pre-allocate under the C-style contract (cholesky, lu, correlation, covariance, mlp, resnet,
+stockham_fft, …) and 1 nested map-in-map (cholesky2). One eligible kernel still fails at runtime:
+azimint_hist parses but its 3-level nested scalar return is not yet reconciled. Emission is read-only
 (nested-SDFG widening runs on a copy); guards refuse a nested-SDFG whose inter-state condition
 under-indexes a multi-dim array and any scratch whose shape depends on a non-argument (loop) symbol.
 
 Next: decide the loop-shaped-transient policy (emit a loop-local `np.empty`, allocate at max size, or
-keep unsupported) to unlock the 17; WCR-reduction tasklet emission (histogram accumulation) for
-azimint; nested map-in-map for cholesky2; then wire BLAS/spack into the sweep, cost-model flag axis,
+keep unsupported) to unlock the 17; reconcile deep multi-level nested scalar returns (azimint_hist);
+nested map-in-map for cholesky2; then wire BLAS/spack into the sweep, cost-model flag axis,
 SQLite tracking, DaCe-backend competitor.

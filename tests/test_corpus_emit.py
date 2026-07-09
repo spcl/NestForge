@@ -238,6 +238,36 @@ def test_nbody_nested_where_emits_and_computes():
         assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
 
 
+def test_azimint_naive_wcr_reduction_emits_and_computes():
+    """azimint_naive is a masked mean per radial bin: ``if r1<=radius<r2: tmp += data[j]`` -- a WCR
+    accumulation inside a nested SDFG. Exercises WCR augmented-assignment plus the inner/outer size-1
+    descriptor reconciliation (a nested scalar accumulator read back as a size-1 array)."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    from nestforge.emit_numpy import UnsupportedNest
+    N, npt = 150, 8
+    rng = np.random.default_rng(0)
+    data, radius = rng.random(N), rng.random(N)
+    try:
+        call, _ = _alloc_run("hpc/map_reduce/azimint_naive/azimint_naive", "azimint_naive",
+                             dict(N=N, npt=npt), dict(data=data, radius=radius))
+    except UnsupportedNest:
+        pytest.skip("nested-SDFG emission unavailable in this DaCe")
+
+    rmax = radius.max()
+    res = np.zeros(npt)
+    for i in range(npt):
+        r1, r2 = rmax * i / npt, rmax * (i + 1) / npt
+        mask = np.logical_and(r1 <= radius, radius < r2)
+        tmp, on = 0.0, 0
+        for j in range(N):
+            if mask[j]:
+                tmp += data[j]
+                on += 1
+        res[i] = tmp / on
+    got = call[[k for k in call if k.startswith("__return")][0]]
+    np.testing.assert_allclose(got, res, equal_nan=True)
+
+
 def test_jacobi_1d_loopregion_emits_and_computes():
     rng = np.random.default_rng(2)
     N, T = 32, 20

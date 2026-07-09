@@ -24,6 +24,7 @@ from typing import Dict, List
 
 import dace
 from dace import symbolic
+from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 from dace.sdfg.utils import dfs_topological_sort
@@ -102,20 +103,46 @@ def _normalize_casts(code: str) -> str:
     return _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], code)
 
 
+#: reduction type -> ``(accumulator, term) -> combined expression`` for a WCR (augmented) write.
+_WCR_BINOP = {
+    dace.dtypes.ReductionType.Sum: lambda acc, t: f"{acc} + {t}",
+    dace.dtypes.ReductionType.Product: lambda acc, t: f"{acc} * {t}",
+    dace.dtypes.ReductionType.Max: lambda acc, t: f"np.maximum({acc}, {t})",
+    dace.dtypes.ReductionType.Min: lambda acc, t: f"np.minimum({acc}, {t})",
+}
+
+
 def _tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> List[str]:
-    """The tasklet's Python code with connectors substituted by the array element they name."""
+    """The tasklet's Python code with connectors substituted by the array element they name.
+
+    A plain output connector is substituted by the target element it writes. A **WCR** (reduction)
+    output -- a scatter-accumulate like ``hist[bin] += w`` -- is emitted as an augmented assignment:
+    the body writes a fresh temporary, then the target is combined with it (``target = target + tmp``
+    for Sum, ``np.maximum`` for Max, ...). Sequential emission makes this correct even when several
+    iterations hit the same target element (the whole point of the WCR).
+    """
     if tasklet.code.language != dace.dtypes.Language.Python:
         raise UnsupportedNest(f"tasklet {tasklet.label} is not Python ({tasklet.code.language})")
     conn_expr: Dict[str, str] = {}
     for e in state.in_edges(tasklet):
         if e.dst_conn is not None:
             conn_expr[e.dst_conn] = _access(sdfg, e.data.data, e.data.subset)
+    wcr_updates: List[str] = []
     for e in state.out_edges(tasklet):
-        if e.src_conn is not None:
-            if e.data.wcr is not None:
-                raise UnsupportedNest(f"tasklet {tasklet.label} has a WCR (reduction) edge")
-            conn_expr[e.src_conn] = _access(sdfg, e.data.data, e.data.subset)
-    return [_normalize_casts(_sub_connectors(line, conn_expr)) for line in tasklet.code.as_string.splitlines()]
+        if e.src_conn is None:
+            continue
+        target = _access(sdfg, e.data.data, e.data.subset)
+        if e.data.wcr is None:
+            conn_expr[e.src_conn] = target
+            continue
+        combine = _WCR_BINOP.get(detect_reduction_type(e.data.wcr))
+        if combine is None:
+            raise UnsupportedNest(f"tasklet {tasklet.label} has an unsupported WCR {e.data.wcr!r}")
+        temp = f"__wcr_{e.src_conn}"
+        conn_expr[e.src_conn] = temp  # the body writes the temporary, then we accumulate into target
+        wcr_updates.append(f"{target} = {combine(target, temp)}")
+    lines = [_normalize_casts(_sub_connectors(line, conn_expr)) for line in tasklet.code.as_string.splitlines()]
+    return lines + wcr_updates
 
 
 def _copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -> List[str]:
@@ -197,6 +224,11 @@ def _emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.Nested
     for conn, outer in conns.items():
         if conn != outer:
             inner.replace(conn, outer)
+        # Make the inner descriptor agree with the outer buffer it aliases: a connector may be a
+        # scalar inside but a size-1 *array* outside (a nested return), and the two must index the
+        # element the same way (bare ``x`` vs ``x[0]``) or the inner write and outer read disagree.
+        if outer in sdfg.arrays:
+            inner.arrays[outer] = copy.deepcopy(sdfg.arrays[outer])
     _reject_underranked_codeblock_index(inner)
     # A private (non-connector) inner transient becomes a plain python local. That only works for a
     # scalar; a private *array* transient would be emitted as ``name[:] = ...`` yet appears in no
