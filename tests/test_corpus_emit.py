@@ -242,6 +242,34 @@ def test_nbody_nested_where_emits_and_computes():
         assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
 
 
+def test_azimint_hist_three_level_nested_return_and_computes():
+    """azimint_hist nests get_bin_edges / compute_bin / histogram three deep; the innermost returns a
+    size-1 array read as ``compute_bin_ret_0[0]`` in an inter-state assignment but written as a scalar
+    local -- the emitter reconciles the two by stripping the scalar-local ``[0]``. Returns histw/histu."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    from nestforge.emit_numpy import UnsupportedNest
+    N, npt = 200, 8
+    rng = np.random.default_rng(0)
+    data, radius = rng.random(N), rng.random(N)
+    try:
+        call, _ = _alloc_run("hpc/map_reduce/azimint_hist/azimint_hist", "azimint_hist",
+                             dict(N=N, npt=npt, bins=npt), dict(data=data, radius=radius))
+    except UnsupportedNest:
+        pytest.skip("nested-SDFG emission unavailable in this DaCe")
+
+    def hist(a, weights=None):
+        edges = np.array([a.min() + i * (a.max() - a.min()) / npt for i in range(npt)] + [a.max()])
+        out = np.zeros(npt, np.float64 if weights is not None else np.int64)
+        for i in range(N):
+            b = min(int(npt * (a[i] - edges[0]) / (edges[npt] - edges[0])), npt - 1)
+            out[b] += weights[i] if weights is not None else 1
+        return out
+
+    ref = hist(radius, data) / hist(radius)
+    got = call[[k for k in call if k.startswith("__return")][0]]
+    np.testing.assert_allclose(got, ref, equal_nan=True)
+
+
 def test_azimint_naive_wcr_reduction_emits_and_computes():
     """azimint_naive is a masked mean per radial bin: ``if r1<=radius<r2: tmp += data[j]`` -- a WCR
     accumulation inside a nested SDFG. Exercises WCR augmented-assignment plus the inner/outer size-1

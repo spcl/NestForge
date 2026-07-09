@@ -362,7 +362,21 @@ def _emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str
     return lines
 
 
-def _interstate_lines(region, block) -> List[str]:
+def _strip_scalar_local_subscript(code: str, sdfg: dace.SDFG) -> str:
+    """Drop the ``[0]`` index off a scalar-transient array in a raw DaCe code string.
+
+    DaCe refers to a size-1 array as ``A[0]``, but the emitter treats a scalar transient as a bare
+    python local (``A``); a raw inter-state assignment string (``bin = min(ret[0], ...)``) must be
+    reconciled to that convention or the bare write and the indexed read disagree (an IndexError on a
+    scalar). Only genuinely scalar-transient names are stripped; real arrays keep their indices.
+    """
+    for name, desc in sdfg.arrays.items():
+        if scalar_local(sdfg, name):
+            code = re.sub(rf"\b{re.escape(name)}\s*\[[^][]*\]", name, code)
+    return code
+
+
+def _interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
     """Assignments carried on the edge(s) entering ``block`` (e.g. an indirect index ``s = A[i]``).
 
     DaCe hoists a data-dependent index or loop-carried scalar onto the inter-state edge that reaches
@@ -377,7 +391,7 @@ def _interstate_lines(region, block) -> List[str]:
         if not e.data.is_unconditional():
             raise UnsupportedNest(f"conditional inter-state edge into {block.label} is not yet emitted")
         for lhs, rhs in e.data.assignments.items():
-            lines.append(f"{lhs} = {_normalize_casts(rhs)}")
+            lines.append(f"{lhs} = {_strip_scalar_local_subscript(_normalize_casts(rhs), sdfg)}")
     return lines
 
 
@@ -385,7 +399,7 @@ def _emit_region(region, sdfg: dace.SDFG) -> List[str]:
     """Numpy statements for every block of a control-flow region, in execution order."""
     lines: List[str] = []
     for block in _ordered_blocks(region):
-        lines.extend(_interstate_lines(region, block))
+        lines.extend(_interstate_lines(region, sdfg, block))
         if isinstance(block, dace.SDFGState):
             lines.extend(_state_body(sdfg, block))
         elif isinstance(block, LoopRegion):

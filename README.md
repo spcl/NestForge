@@ -64,15 +64,17 @@ sign) is left alone; BLAS discovery. Corpus census (extended DaCe, *runnable-eli
 every scratch buffer is sizable from the kernel's own symbols): 45 emit / 7 unsupported / 3 frontend
 build-fail. Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
 scattering_self_energies (fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact); WCR azimint_naive
-(bit-exact); loop-scratch trisolv, lu, covariance & syrk (bit-exact / fp roundoff); Cholesky &
-TensorTranspose library nodes (bit-exact). The 7 unsupported: 1 nested map-in-map (cholesky2); 3 with a
-scratch extent that is not a function of the kernel symbols — a data-dependent CSR span (spmv), a
-dynamic length (mandelbrot2), an FFT power `R**i` (stockham_fft); 3 with a hidden layer-config symbol
-not in the signature (mlp, resnet, lenet). One eligible kernel still fails at runtime: azimint_hist
-parses but its 3-level nested scalar return is not yet reconciled. Emission is read-only (nested-SDFG
-widening and scratch resizing both run on a copy); guards refuse a nested-SDFG whose inter-state
-condition under-indexes a multi-dim array and any scratch still unsizable after widening.
+& azimint_hist (bit-exact — the latter nests three deep: get_bin_edges / compute_bin / histogram);
+loop-scratch trisolv, lu, covariance & syrk (bit-exact / fp roundoff); Cholesky & TensorTranspose
+library nodes (bit-exact). The 7 unsupported: 1 nested map-in-map (cholesky2); 3 with a scratch extent
+that is not a function of the kernel symbols — a data-dependent CSR span (spmv), a dynamic length
+(mandelbrot2), an FFT power `R**i` (stockham_fft); 3 with a hidden layer-config symbol not in the
+signature (mlp, resnet, lenet). A size-1 array that DaCe refers to as `A[0]` but the emitter keeps as a
+scalar local is reconciled in inter-state assignment strings (the `[0]` is stripped) — no emitting
+kernel has a bare-write / indexed-read mismatch. Emission is read-only (nested-SDFG widening and scratch
+resizing both run on a copy); guards refuse a nested-SDFG whose inter-state condition under-indexes a
+multi-dim array and any scratch still unsizable after widening.
 
-Next: reconcile deep multi-level nested scalar returns (azimint_hist); nested map-in-map for cholesky2;
-then wire BLAS/spack into the sweep, cost-model flag axis,
+Next: nested map-in-map for cholesky2; expose hidden layer-config symbols for the ML kernels (mlp,
+resnet, lenet); then wire BLAS/spack into the sweep, cost-model flag axis,
 SQLite tracking, DaCe-backend competitor.
