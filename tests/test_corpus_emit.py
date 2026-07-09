@@ -67,6 +67,63 @@ def test_atax_return_value_is_inplace_buffer():
     np.testing.assert_allclose(call["__return"], (A @ x) @ A)
 
 
+def test_nussinov_conditionalblock_emits_and_computes():
+    """nussinov exercises the full control-flow path at once: ``ConditionalBlock`` (if/elif/else),
+    access-node scalar copies, an inter-state indirect index, and ``dace.<cast>`` normalization."""
+    N = 20
+    rng = np.random.default_rng(0)
+    seq = rng.integers(0, 4, size=N).astype(np.int32)
+    call, src = _alloc_run("hpc/dynamic_programming/nussinov/nussinov", "nussinov", dict(N=N), dict(seq=seq))
+    assert "if " in src and "else:" in src  # the guards lower through ConditionalBlock
+
+    def match(b1, b2):
+        return 1 if b1 + b2 == 3 else 0
+
+    t = np.zeros((N, N), np.int32)
+    for i in range(N - 1, -1, -1):
+        for j in range(i + 1, N):
+            if j - 1 >= 0:
+                t[i, j] = np.maximum(t[i, j], t[i, j - 1])
+            if i + 1 < N:
+                t[i, j] = np.maximum(t[i, j], t[i + 1, j])
+            if j - 1 >= 0 and i + 1 < N:
+                if i < j - 1:
+                    t[i, j] = np.maximum(t[i, j], t[i + 1, j - 1] + match(seq[i], seq[j]))
+                else:
+                    t[i, j] = np.maximum(t[i, j], t[i + 1, j - 1])
+            for k in range(i + 1, j):
+                t[i, j] = np.maximum(t[i, j], t[i, k] + t[k + 1, j])
+    np.testing.assert_array_equal(call["__return"], t)  # integer DP -> bit-exact
+
+
+def test_contour_integral_two_returns_solve_and_indirect_negate():
+    """contour_integral returns two buffers and mixes ``np.linalg.solve``, a conditional negate, and
+    a ``dace.complex128`` power cast -- a good end-to-end check of the complex + multi-output path."""
+    NR, NM, slab = 5, 3, 2
+    rng = np.random.default_rng(1)
+    crand = lambda shape: (rng.random(shape) + 1j * rng.random(shape)).astype(np.complex128)
+    Ham, int_pts, Y = crand((slab + 1, NR, NR)), crand((32, )), crand((NR, NM))
+    call, src = _alloc_run("hpc/dense_linear_algebra/contour_integral/contour_integral", "contour_integral",
+                           dict(NR=NR, NM=NM, slab_per_bc=slab), dict(Ham=Ham, int_pts=int_pts, Y=Y))
+    assert "np.complex128(" in src and "dace." not in src  # casts normalized to numpy
+
+    P0 = np.zeros((NR, NM), np.complex128)
+    P1 = np.zeros((NR, NM), np.complex128)
+    for idx in range(32):
+        z = int_pts[idx]
+        Tz = np.zeros((NR, NR), np.complex128)
+        for n in range(slab + 1):
+            Tz += np.power(z, slab / 2 - n) * Ham[n]
+        X = np.linalg.solve(Tz, Y)
+        if np.absolute(z) < 1.0:
+            X = -X
+        P0 += X
+        P1 += z * X
+    got = [call[k] for k in sorted(k for k in call if k.startswith("__return"))]
+    np.testing.assert_allclose(got[0], P0)
+    np.testing.assert_allclose(got[1], P1)
+
+
 def test_jacobi_1d_loopregion_emits_and_computes():
     rng = np.random.default_rng(2)
     N, T = 32, 20

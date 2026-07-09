@@ -26,7 +26,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 from dace.sdfg.utils import dfs_topological_sort
 
-from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, scalar_local
+from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
+                                    scalar_local, write_lhs)
 from nestforge.extract import Boundary
 
 
@@ -57,6 +58,19 @@ def _sub_connectors(code: str, conn_expr: Dict[str, str]) -> str:
     return pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
+_DACE_CAST = re.compile(r"\bdace\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _normalize_casts(code: str) -> str:
+    """Rewrite DaCe dtype casts to numpy so the emitted kernel has no ``dace`` runtime dependency.
+
+    Codegen inserts type-promotion casts such as ``dace.int64(x)`` / ``dace.complex128(x)``; numpy
+    exposes the same dtype names as scalar constructors (``np.int64(x)``), so the rewrite is value
+    preserving and drops the ``import dace`` the standalone kernel would otherwise need.
+    """
+    return _DACE_CAST.sub(r"np.\1", code)
+
+
 def _tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> List[str]:
     """The tasklet's Python code with connectors substituted by the array element they name."""
     if tasklet.code.language != dace.dtypes.Language.Python:
@@ -70,7 +84,29 @@ def _tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Taskle
             if e.data.wcr is not None:
                 raise UnsupportedNest(f"tasklet {tasklet.label} has a WCR (reduction) edge")
             conn_expr[e.src_conn] = _access(sdfg, e.data.data, e.data.subset)
-    return [_sub_connectors(line, conn_expr) for line in tasklet.code.as_string.splitlines()]
+    return [_normalize_casts(_sub_connectors(line, conn_expr)) for line in tasklet.code.as_string.splitlines()]
+
+
+def _copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -> List[str]:
+    """Emit ``dst[..] = src[..]`` for each memlet copy feeding ``dst`` from another access node.
+
+    Simplified SDFGs stage tasklet operands through scratch access nodes (a scalar ``s = A[i]`` or a
+    sub-array ``B[:] = A[k, :, :]``), a plain data copy with no tasklet. The memlet names one side in
+    ``memlet.data``/``subset`` and the other in ``other_subset``; we resolve which is the source.
+    """
+    lines: List[str] = []
+    for e in state.in_edges(dst):
+        if not isinstance(e.src, nodes.AccessNode):
+            continue
+        m = e.data
+        if m.wcr is not None:
+            raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} is not yet emitted")
+        if m.data == e.dst.data:
+            dst_sub, src_sub = m.subset, m.other_subset
+        else:  # memlet names the source side (the common case), or an unrelated array
+            src_sub, dst_sub = m.subset, m.other_subset
+        lines.append(f"{write_lhs(sdfg, e.dst.data, dst_sub)} = {read_expr(sdfg, e.src.data, src_sub)}")
+    return lines
 
 
 def _map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
@@ -85,6 +121,8 @@ def _map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) ->
     for node in dfs_topological_sort(scope):
         if isinstance(node, nodes.Tasklet):
             body.extend(_tasklet_lines(state, sdfg, node))
+        elif isinstance(node, nodes.AccessNode):
+            body.extend(_copy_lines(state, sdfg, node))
         elif isinstance(node, (nodes.MapEntry, nodes.NestedSDFG, nodes.LibraryNode)):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
 
@@ -108,6 +146,8 @@ def _state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> List[str]:
                 raise UnsupportedNest(str(exc)) from exc
         elif isinstance(node, nodes.Tasklet):
             lines.extend(_tasklet_lines(state, sdfg, node))
+        elif isinstance(node, nodes.AccessNode):
+            lines.extend(_copy_lines(state, sdfg, node))
         elif isinstance(node, nodes.NestedSDFG):
             raise UnsupportedNest("top-level nested SDFG is not yet emitted")
     return lines
@@ -170,10 +210,30 @@ def _emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str
     return lines
 
 
+def _interstate_lines(region, block) -> List[str]:
+    """Assignments carried on the edge(s) entering ``block`` (e.g. an indirect index ``s = A[i]``).
+
+    DaCe hoists a data-dependent index or loop-carried scalar onto the inter-state edge that reaches
+    a block; those assignments must run before the block body or the symbols they define are unbound.
+    A conditional (branching) edge is old-style control flow the numpy emitter does not model, so it
+    is refused rather than silently dropped.
+    """
+    lines: List[str] = []
+    for e in region.in_edges(block):
+        if not e.data.assignments:
+            continue
+        if not e.data.is_unconditional():
+            raise UnsupportedNest(f"conditional inter-state edge into {block.label} is not yet emitted")
+        for lhs, rhs in e.data.assignments.items():
+            lines.append(f"{lhs} = {_normalize_casts(rhs)}")
+    return lines
+
+
 def _emit_region(region, sdfg: dace.SDFG) -> List[str]:
     """Numpy statements for every block of a control-flow region, in execution order."""
     lines: List[str] = []
     for block in _ordered_blocks(region):
+        lines.extend(_interstate_lines(region, block))
         if isinstance(block, dace.SDFGState):
             lines.extend(_state_body(sdfg, block))
         elif isinstance(block, LoopRegion):

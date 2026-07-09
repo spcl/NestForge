@@ -47,14 +47,15 @@ Try it: `python examples/demo_fma.py` (shows ieee-strict bit-exact vs fast-math 
 
 **M1 in progress:** real npbench/polybench corpus (`corpus.py`, 55 dace kernels); library-node
 emission (MatMul/Dot/Reduce/Transpose/Solve → numpy); `LoopRegion` + `ConditionalBlock`
-(`if`/`elif`/`else`) control-flow emission; `skip-taskloops` (default) & `innermost` strategies;
+(`if`/`elif`/`else`) control-flow emission; access-node data copies (scalar `s = A[i]` and sub-array
+`B[:] = A[k]`), inter-state assignments (indirect indices `s = A[i]` hoisted onto edges), and
+`dace.<cast>` → `np.<cast>` normalization; `skip-taskloops` (default) & `innermost` strategies;
 **C-style emission** — the kernel allocates nothing, every array (inputs, outputs, `__return`,
 scratch transients) is a pre-allocated buffer parameter written in place; BLAS discovery. Corpus
 census: 47 emit / 5 unsupported (Cholesky/TensorTranspose libnodes, nested-SDFG-in-map) / 3 frontend
-build-fail. Census counts *emittable-and-parseable*; the three now-parseable `ConditionalBlock`
-kernels (nussinov, contour_integral, scattering_self_energies) still leave undefined names from
-access-node scalar copies, nested-SDFG helper calls, and `dace.<cast>` codegen, so they are not yet
-*runnable* — the next emitter gaps, tracked below.
+build-fail. The three `ConditionalBlock` kernels (nussinov, contour_integral,
+scattering_self_energies) are validated against numpy (nussinov bit-exact; the complex ones to
+solve/matmul roundoff).
 
-Next: emit access-node → access-node scalar copies (`s = A[i]`) and nested-SDFG helper calls; wire
-BLAS/spack into the sweep, cost-model flag axis, SQLite tracking, DaCe-backend competitor.
+Next: emit nested-SDFG-in-map (nbody, mandelbrot1, azimint_hist) + Cholesky/TensorTranspose library
+nodes; wire BLAS/spack into the sweep, cost-model flag axis, SQLite tracking, DaCe-backend competitor.

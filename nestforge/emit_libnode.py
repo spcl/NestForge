@@ -61,30 +61,41 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     return desc.transient and is_scalar(desc)
 
 
-def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
-    """Read expression for a memlet's data: a scalar-transient variable, a whole array, or a slice.
+def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> str:
+    """Read expression for ``name[subset]``: a scalar-transient variable, a whole array, or a slice.
 
     Each array's data name doubles as the python variable, so no connector renaming is needed:
-    inputs/outputs/scratch are pre-allocated buffer parameters, scalar transients are locals.
+    inputs/outputs/scratch are pre-allocated buffer parameters, scalar transients are locals. A
+    ``None`` subset means the whole array.
     """
-    if scalar_local(sdfg, memlet.data):
-        return memlet.data
-    desc = sdfg.arrays[memlet.data]
-    if covers_whole(memlet.subset, desc):
-        return memlet.data
-    return f"{memlet.data}[{index_str(memlet.subset)}]"
+    if scalar_local(sdfg, name):
+        return name
+    desc = sdfg.arrays[name]
+    if subset is None or covers_whole(subset, desc):
+        return name
+    return f"{name}[{index_str(subset)}]"
+
+
+def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> str:
+    """Write target for ``name[subset]``. Arrays are written *in place* (``name[:]`` / ``name[slice]``)
+    so a pre-allocated buffer parameter is filled rather than rebound to a fresh array; a scalar
+    transient is a plain assignment. A ``None`` subset means the whole array."""
+    if scalar_local(sdfg, name):
+        return name
+    desc = sdfg.arrays[name]
+    if subset is None or covers_whole(subset, desc):
+        return f"{name}[:]"
+    return f"{name}[{index_str(subset)}]"
+
+
+def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
+    """Read expression for a memlet's data (see :func:`read_expr`)."""
+    return read_expr(sdfg, memlet.data, memlet.subset)
 
 
 def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
-    """Write target for a memlet's data. Arrays are written *in place* (``name[:]`` / ``name[slice]``)
-    so a pre-allocated buffer parameter is filled rather than rebound to a fresh array; a scalar
-    transient is a plain assignment."""
-    if scalar_local(sdfg, memlet.data):
-        return memlet.data
-    desc = sdfg.arrays[memlet.data]
-    if covers_whole(memlet.subset, desc):
-        return f"{memlet.data}[:]"
-    return f"{memlet.data}[{index_str(memlet.subset)}]"
+    """Write target for a memlet's data (see :func:`write_lhs`)."""
+    return write_lhs(sdfg, memlet.data, memlet.subset)
 
 
 def _in_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
