@@ -368,6 +368,23 @@ def _scratch_arrays(sdfg: dace.SDFG) -> List[str]:
     return sorted(name for name, desc in sdfg.arrays.items() if desc.transient and not is_scalar(desc))
 
 
+def _reject_unsizable_scratch(sdfg: dace.SDFG, scratch: List[str], symbols: List[str]) -> None:
+    """Refuse a scratch buffer whose shape depends on a symbol the caller cannot know at allocation.
+
+    C-style emission makes every transient array a caller-allocated parameter, so its shape must be
+    fixed from the kernel's own symbols (the size arguments). A transient whose shape references a
+    *loop* variable (e.g. a per-stage FFT buffer shaped ``R**i``) has no fixed size at call time and
+    cannot be pre-allocated -- refuse rather than emit a kernel whose signature can't be satisfied.
+    """
+    known = set(symbols)
+    for name in scratch:
+        loop_syms = {str(s) for s in sdfg.arrays[name].free_symbols} - known
+        if loop_syms:
+            raise UnsupportedNest(
+                f"scratch buffer {name!r} has shape depending on {sorted(loop_syms)} (not kernel symbols); "
+                "cannot be pre-allocated C-style")
+
+
 def _render(fn_name: str, args: List[str], body: List[str]) -> str:
     lines = [f"def {fn_name}({', '.join(args)}):"]
     lines += ["    " + bl for bl in body]
@@ -403,9 +420,11 @@ def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     size symbols. Everything is written in place; there is no return.
     """
     standalone = _expand_nested_sdfg_inputs(boundary.standalone_sdfg)
+    scratch = _scratch_arrays(standalone)
+    _reject_unsizable_scratch(standalone, scratch, boundary.symbols)
     args = list(boundary.inputs)
     args += [o for o in boundary.outputs if o not in boundary.inputs]
-    args += [s for s in _scratch_arrays(standalone) if s not in args]
+    args += [s for s in scratch if s not in args]
     args += [s for s in boundary.symbols if s not in args]
     return _render(fn_name, args, _emit_region(standalone, standalone))
 
@@ -419,5 +438,7 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     sdfg = _expand_nested_sdfg_inputs(sdfg)
     data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
-    args = data_args + _scratch_arrays(sdfg) + symbols
+    scratch = _scratch_arrays(sdfg)
+    _reject_unsizable_scratch(sdfg, scratch, symbols)
+    args = data_args + scratch + symbols
     return _render(fn_name, args, _emit_region(sdfg, sdfg))

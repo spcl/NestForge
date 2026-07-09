@@ -151,6 +151,25 @@ def _emit_solve(node, state, sdfg) -> str:
     return f"{_out_lhs(state, node, '_bout', sdfg)} = np.linalg.solve({ain}, {bin_})"
 
 
+def _emit_cholesky(node, state, sdfg) -> str:
+    a = _in_expr(state, node, "_a", sdfg)
+    # numpy returns the lower factor L (A = L @ L.conj().T); the upper factor is L.conj().T.
+    expr = f"np.linalg.cholesky({a})"
+    if not node.lower:
+        expr = f"({expr}).conj().T"
+    return f"{_out_lhs(state, node, '_b', sdfg)} = {expr}"
+
+
+def _emit_tensortranspose(node, state, sdfg) -> str:
+    inp = _in_expr(state, node, "_inp_tensor", sdfg)
+    if str(node.beta) not in ("0", "0.0"):
+        raise UnsupportedLibraryNode(f"TensorTranspose with beta={node.beta} (accumulate) is not emitted")
+    expr = f"np.transpose({inp}, axes={list(node.axes)})"
+    if str(node.alpha) != "1":
+        expr = f"{node.alpha} * ({expr})"
+    return f"{_out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
+
+
 def _emit_reduce(node, state, sdfg) -> str:
     red = detect_reduction_type(node.wcr)
     func = _REDUCTION_FUNC.get(red)
@@ -166,7 +185,9 @@ LIBNODE_EMITTERS: Dict[str, Callable] = {
     "MatMul": _emit_matmul,
     "Dot": _emit_dot,
     "Transpose": _emit_transpose,
+    "TensorTranspose": _emit_tensortranspose,
     "Solve": _emit_solve,
+    "Cholesky": _emit_cholesky,
     "Reduce": _emit_reduce,
 }
 
