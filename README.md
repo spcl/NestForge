@@ -55,19 +55,23 @@ edges), `dace.<cast>` → `np.<cast>` and bare math intrinsic (`sqrt` → `np.sq
 `skip-taskloops` (default) & `innermost` strategies; **C-style emission** — the kernel allocates
 nothing, every array (inputs, outputs, `__return`, scratch transients) is a pre-allocated buffer
 parameter written in place; **WCR-reduction tasklet** emission (`hist[bin] += w` → an augmented
-assignment); BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses **and** every
-scratch buffer is sizable from the kernel's own symbols): 34 emit / 18 unsupported / 3 frontend
-build-fail. Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
+assignment); **max-size loop scratch** — a transient sized by a loop variable (`A_0` shaped `[j]`) is
+widened to that loop's bound (`[N]`) so it stays a caller-allocated parameter, and the original
+`0:j` slices address it (sound only for a bare-loop-var dimension; a non-monotone `R**(K-i-1)` is left
+alone); BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses **and** every scratch
+buffer is sizable from the kernel's own symbols): 39 emit / 13 unsupported / 3 frontend build-fail.
+Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
 scattering_self_energies (fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact); WCR azimint_naive
-(bit-exact); Cholesky & TensorTranspose library nodes (bit-exact, minimal programs). The 18 unsupported
-are **17 with a loop-shaped scratch transient** (e.g. `A_0` shaped `[j]`) that a caller cannot
-pre-allocate under the C-style contract (cholesky, lu, correlation, covariance, mlp, resnet,
-stockham_fft, …) and 1 nested map-in-map (cholesky2). One eligible kernel still fails at runtime:
-azimint_hist parses but its 3-level nested scalar return is not yet reconciled. Emission is read-only
-(nested-SDFG widening runs on a copy); guards refuse a nested-SDFG whose inter-state condition
-under-indexes a multi-dim array and any scratch whose shape depends on a non-argument (loop) symbol.
+(bit-exact); max-size-scratch trisolv & lu (fp roundoff); Cholesky & TensorTranspose library nodes
+(bit-exact). The 13 unsupported are 12 with a **compound loop-shaped scratch** (a shape expression, not
+a bare loop var — correlation, covariance, syrk, syr2k, trmm, ludcmp, mlp, resnet, lenet, spmv,
+mandelbrot2, stockham_fft) plus 1 nested map-in-map (cholesky2). One eligible kernel still fails at
+runtime: azimint_hist parses but its 3-level nested scalar return is not yet reconciled. Emission is
+read-only (nested-SDFG widening and scratch resizing both run on a copy); guards refuse a nested-SDFG
+whose inter-state condition under-indexes a multi-dim array and any scratch still unsizable after
+widening.
 
-Next: decide the loop-shaped-transient policy (emit a loop-local `np.empty`, allocate at max size, or
-keep unsupported) to unlock the 17; reconcile deep multi-level nested scalar returns (azimint_hist);
-nested map-in-map for cholesky2; then wire BLAS/spack into the sweep, cost-model flag axis,
+Next: extend max-size to compound loop-shaped shapes (per-dimension monotonicity) for the remaining 12;
+reconcile deep multi-level nested scalar returns (azimint_hist); nested map-in-map for cholesky2; then
+wire BLAS/spack into the sweep, cost-model flag axis,
 SQLite tracking, DaCe-backend competitor.

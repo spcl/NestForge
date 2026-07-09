@@ -22,6 +22,8 @@ import copy
 import re
 from typing import Dict, List
 
+import sympy
+
 import dace
 from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
@@ -400,6 +402,70 @@ def _scratch_arrays(sdfg: dace.SDFG) -> List[str]:
     return sorted(name for name, desc in sdfg.arrays.items() if desc.transient and not is_scalar(desc))
 
 
+def _loop_symbol_max(sdfg: dace.SDFG) -> Dict[str, sympy.Expr]:
+    """Each loop variable -> an upper bound on its value, resolved to kernel symbols.
+
+    A buffer sized by a loop variable (``A_0`` shaped ``[j]``) can be pre-allocated at the loop's
+    bound instead (``[N]``) and addressed with an explicit ``0:j`` slice. The bound comes from the
+    loop condition (``j < N`` -> ``N``, ``j <= N`` -> ``N + 1``); a bound that itself names another
+    loop variable is resolved recursively (``j < i`` with ``i < N`` -> ``N``).
+    """
+    raw: Dict[str, list] = {}
+    for cfg in sdfg.all_control_flow_regions():
+        if not isinstance(cfg, LoopRegion) or cfg.loop_condition is None:
+            continue
+        rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
+        if not isinstance(rel, sympy.core.relational.Relational):
+            continue
+        if str(rel.lhs) == cfg.loop_variable and isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)):
+            bound = rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0)
+        elif str(rel.rhs) == cfg.loop_variable and isinstance(rel, (sympy.StrictGreaterThan, sympy.GreaterThan)):
+            bound = rel.lhs + (1 if isinstance(rel, sympy.GreaterThan) else 0)
+        else:
+            continue
+        raw.setdefault(cfg.loop_variable, []).append(bound)
+
+    def resolve(expr, seen):
+        for sym in list(expr.free_symbols):
+            name = str(sym)
+            if name in raw and name not in seen:
+                parts = [resolve(b, seen | {name}) for b in raw[name]]
+                expr = expr.subs(sym, sympy.Max(*parts) if len(parts) > 1 else parts[0])
+        return expr
+
+    return {v: resolve(sympy.Max(*bs) if len(bs) > 1 else bs[0], {v}) for v, bs in raw.items()}
+
+
+def _maxsize_loop_scratch(sdfg: dace.SDFG, symbols: List[str]) -> dace.SDFG:
+    """Return an SDFG where a scratch transient sized by a loop variable is widened to that loop's
+    bound, so it can be pre-allocated C-style and addressed with the original ``0:extent`` slices.
+
+    Only a shape dimension that is *exactly* a loop-variable symbol is widened -- substituting the
+    loop's max value there is a sound upper bound (the size grows monotonically with the variable). A
+    non-monotone dimension (an FFT ``R**(K-i-1)``, which shrinks as ``i`` grows) is left untouched and
+    caught later by :func:`_reject_unsizable_scratch`. Runs on a copy so the caller is not mutated.
+    """
+    known = set(symbols)
+    lmax = _loop_symbol_max(sdfg)
+    resize: Dict[str, tuple] = {}
+    for name, desc in sdfg.arrays.items():
+        if not desc.transient or is_scalar(desc):
+            continue
+        if not {str(s) for s in desc.free_symbols} - known:
+            continue  # already sizable from kernel symbols
+        new_shape = [lmax[str(dim)] if isinstance(dim, sympy.Symbol) and str(dim) in lmax else dim
+                     for dim in desc.shape]
+        if new_shape != list(desc.shape):
+            resize[name] = tuple(new_shape)
+    if not resize:
+        return sdfg
+    out = copy.deepcopy(sdfg)
+    for name, shape in resize.items():
+        old = out.arrays[name]
+        out.arrays[name] = dace.data.Array(old.dtype, shape, transient=True, storage=old.storage)
+    return out
+
+
 def _reject_unsizable_scratch(sdfg: dace.SDFG, scratch: List[str], symbols: List[str]) -> None:
     """Refuse a scratch buffer whose shape depends on a symbol the caller cannot know at allocation.
 
@@ -452,6 +518,7 @@ def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     size symbols. Everything is written in place; there is no return.
     """
     standalone = _expand_nested_sdfg_inputs(boundary.standalone_sdfg)
+    standalone = _maxsize_loop_scratch(standalone, boundary.symbols)
     scratch = _scratch_arrays(standalone)
     _reject_unsizable_scratch(standalone, scratch, boundary.symbols)
     args = list(boundary.inputs)
@@ -468,8 +535,9 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     scratch transient buffers and size symbols -- all caller-allocated, all written in place.
     """
     sdfg = _expand_nested_sdfg_inputs(sdfg)
-    data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
+    sdfg = _maxsize_loop_scratch(sdfg, symbols)
+    data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
     scratch = _scratch_arrays(sdfg)
     _reject_unsizable_scratch(sdfg, scratch, symbols)
     args = data_args + scratch + symbols

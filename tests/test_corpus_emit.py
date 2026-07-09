@@ -34,7 +34,13 @@ def _alloc_run(short, fn_name, sizes, inputs, seed=0):
             call[name] = sizes[name]
             continue
         desc = sdfg.arrays[name]
-        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
+        # loop-shaped scratch is widened to its loop bound by the emitter; size any unresolved (loop)
+        # symbol at the largest kernel size so the caller-allocated buffer is at least that big.
+        full_env = dict(env)
+        for d in desc.shape:
+            for s in symbolic.pystr_to_symbolic(str(d)).free_symbols:
+                full_env.setdefault(s, max(sizes.values()))
+        shape = tuple(int(symbolic.evaluate(d, full_env)) for d in desc.shape)
         dt = np.dtype(desc.dtype.type)
         call[name] = inputs[name].astype(dt) if name in inputs else np.zeros(shape, dt)
     ns[fn_name](**call)
@@ -266,6 +272,39 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
         res[i] = tmp / on
     got = call[[k for k in call if k.startswith("__return")][0]]
     np.testing.assert_allclose(got, res, equal_nan=True)
+
+
+def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
+    """trisolv (lower-triangular solve) stages a growing slice into a scratch buffer shaped ``[i]``.
+    The emitter widens that buffer to its loop bound ``N`` and addresses it with ``0:i`` slices, so it
+    can be pre-allocated C-style. Validates the max-size loop-scratch path."""
+    N = 12
+    rng = np.random.default_rng(0)
+    L = np.tril(rng.random((N, N))) + N * np.eye(N)
+    b = rng.random(N)
+    call, src = _alloc_run("hpc/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N),
+                           dict(L=L, b=b))
+    assert "np.empty" not in src  # still C-style: no in-kernel allocation
+    x = call.get("x", call.get("__return"))
+    np.testing.assert_allclose(x, np.linalg.solve(L, b))
+
+
+def test_lu_loop_shaped_scratch_maxsized_and_computes():
+    """lu decomposition stages ``A[i,:j]`` / ``A[:i,j]`` dot-product operands into ``[j]``/``[i]``
+    scratch buffers; the emitter max-sizes them to ``N``. Validates against an in-place Doolittle LU."""
+    N = 10
+    rng = np.random.default_rng(1)
+    A0 = rng.random((N, N)) + N * np.eye(N)
+    call, src = _alloc_run("hpc/dense_linear_algebra/lu/lu", "lu", dict(N=N), dict(A=A0.copy()))
+    A = call.get("A", call.get("__return"))
+
+    ref = A0.copy()
+    for i in range(N):
+        for j in range(i):
+            ref[i, j] = (ref[i, j] - ref[i, :j] @ ref[:j, j]) / ref[j, j]
+        for j in range(i, N):
+            ref[i, j] = ref[i, j] - ref[i, :i] @ ref[:i, j]
+    np.testing.assert_allclose(A, ref)
 
 
 def test_jacobi_1d_loopregion_emits_and_computes():
