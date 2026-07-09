@@ -14,18 +14,28 @@ itself stays unmodified.
 nestforge/
   extract.py      extract_nest_to_sdfg(parent_sdfg, node) -> (standalone_sdfg, Boundary)
   strategies.py   Strategy = (SDFG) -> [(parent_sdfg, node)]; `outer` default + registry
-  emit_numpy.py   nest_to_numpy(standalone_sdfg) -> python/numpy kernel source
+  emit_numpy.py   sdfg_to_numpy / nest_to_numpy -> C-style python/numpy kernel (no allocation)
+  emit_libnode.py library-node -> numpy op (MatMul/Dot/Reduce/...), in-place writes
   emit_yaml.py    OptArena BenchSpec manifest (symbols, array shapes/dtypes)
+  translator.py   NATIVE: numpy -> C/C++/Fortran translator (over the optarena submodule)
+  corpus.py       NATIVE: npbench/polybench kernel corpus (over the optarena submodule)
   libnode.py      ExternalCall LibraryNode + ExpandDaceReference / ExpandExternCall
-  pass_lower.py   LowerNestsToExternalCall(strategy=outer)
+  pass_lower.py   LowerNestsToExternalCall(strategy=skip-taskloops)
   arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner + report
 ```
 
 ## Deps
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
-- OptArena — installed package (translator + data-gen + compile/time harness). Install editable
-  from its repo (`github.com/spcl/OptArena`); already installed editable at
-  `/home/primrose/Work/optarena`. No submodule — nest-forge imports the installed `optarena`.
+- OptArena — vendored as the `external/optarena` git submodule (`github.com/spcl/OptArena`). Resolve
+  and install it with:
+  ```
+  git submodule update --init --recursive
+  pip install -e external/optarena
+  ```
+  nest-forge surfaces exactly two of its pieces as native, first-class APIs and reaches no other
+  optarena internals:
+  - `nestforge.translator` — the numpy -> C/C++/Fortran translator (`translate`, `BenchSpec`);
+  - `nestforge.corpus` — the npbench/polybench kernel corpus (`iter_dace_kernels`, `CorpusKernel`).
 
 ## Status
 **M0 done** (CPU, C, single MapEntry nest): extract → outer strategy → numpy + OptArena manifest
@@ -35,5 +45,12 @@ vs numpy oracle → time → winner per FP mode → `ExternalCall` libnode (`Dac
 
 Try it: `python examples/demo_fma.py` (shows ieee-strict bit-exact vs fast-math FMA rounding).
 
-Next (M1): `LoopRegion` extraction, spack compiler discovery, cost-model flag axis, SQLite
-tracking, DaCe-backend competitor, reductions/WCR in the emitter.
+**M1 in progress:** real npbench/polybench corpus (`corpus.py`, 55 dace kernels); library-node
+emission (MatMul/Dot/Reduce/Transpose/Solve → numpy); `LoopRegion` extraction + `skip-taskloops`
+(default) & `innermost` strategies; **C-style emission** — the kernel allocates nothing, every
+array (inputs, outputs, `__return`, scratch transients) is a pre-allocated buffer parameter written
+in place; BLAS discovery. Corpus census: 43 emit / 9 unsupported (Cholesky/TensorTranspose libnodes,
+`ConditionalBlock`, nested-SDFG-in-map) / 3 frontend build-fail.
+
+Next: wire BLAS/spack into the sweep, cost-model flag axis, SQLite tracking, DaCe-backend
+competitor, `ConditionalBlock` + nested-SDFG emission.

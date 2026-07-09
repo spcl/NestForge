@@ -113,11 +113,11 @@ def skip_taskloops(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
     return refs
 
 
-def _region_has_map(region) -> bool:
-    """True if any state anywhere in a control-flow region holds a map."""
+def _region_has(region, node_types) -> bool:
+    """True if any state anywhere in a control-flow region holds a node of the given types."""
     return any(
-        isinstance(n, nodes.MapEntry) for block in region.all_control_flow_blocks()
-        if isinstance(block, dace.SDFGState) for n in block.nodes())
+        isinstance(n, node_types) for block in region.all_control_flow_blocks() if isinstance(block, dace.SDFGState)
+        for n in block.nodes())
 
 
 def innermost(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
@@ -129,17 +129,19 @@ def innermost(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
     * an **innermost loop** (``LoopRegion``) has no nested loop *and* no map inside -- if it held
       maps, those maps would be the innermost units, so the loop is a wrapper, not a leaf.
 
-    The two never overlap, so a kernel's compute leaves are returned exactly once each.
+    A map or loop that wraps a ``NestedSDFG`` is *not* a leaf: the nested SDFG holds the real compute
+    and is walked separately by ``all_sdfgs_recursive``, so selecting the wrapper too would offload
+    the same compute twice. The two never overlap, so each compute leaf is returned exactly once.
     """
     refs: List[Tuple[dace.SDFG, NestNode]] = []
     for sub in sdfg.all_sdfgs_recursive():
         for state in sub.states():
             for entry in [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]:
-                inner_maps = [
+                deeper = [
                     n for n in state.scope_subgraph(entry, include_entry=False).nodes()
-                    if isinstance(n, nodes.MapEntry)
+                    if isinstance(n, (nodes.MapEntry, nodes.NestedSDFG))
                 ]
-                if not inner_maps:
+                if not deeper:
                     refs.append((sub, entry))
         for region in sub.all_control_flow_regions():
             if not isinstance(region, LoopRegion):
@@ -147,7 +149,7 @@ def innermost(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
             nested_loops = [
                 r for r in region.all_control_flow_regions() if isinstance(r, LoopRegion) and r is not region
             ]
-            if not nested_loops and not _region_has_map(region):
+            if not nested_loops and not _region_has(region, (nodes.MapEntry, nodes.NestedSDFG)):
                 refs.append((sub, region))
     return refs
 

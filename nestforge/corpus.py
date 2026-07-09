@@ -11,8 +11,10 @@ to fp64 before importing any kernel module (kernels bind it at import time via `
 """
 from __future__ import annotations
 
-import importlib
+import importlib.util
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, List, Optional
 
 import dace
@@ -31,35 +33,51 @@ def _set_precision_fp64() -> None:
 class CorpusKernel:
     """One optarena kernel that ships a ``@dace.program`` dace impl."""
     short_name: str  # registry key, e.g. "hpc/dense_linear_algebra/gemm/gemm"
-    module_path: str  # importable module, e.g. "optarena.benchmarks...gemm.gemm_dace"
+    module_path: str  # canonical dotted name, used only as the sys.modules cache key
+    dace_file: Path  # the kernel's ``_dace.py`` on disk (source of truth)
     spec: BenchSpec
 
+    def _module(self):
+        """Import the kernel's ``_dace.py`` by file path.
+
+        Loading by path (not ``import_module``) sidesteps ``optarena.benchmarks`` namespace-package
+        resolution, which can non-deterministically bind to a stray/duplicate ``benchmarks/`` root
+        that lacks the kernel's subpackage. The kernel's own ``from optarena.infrastructure ...``
+        imports are unambiguous and still resolve normally.
+        """
+        if self.module_path in sys.modules:
+            return sys.modules[self.module_path]
+        spec = importlib.util.spec_from_file_location(self.module_path, self.dace_file)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[self.module_path] = module
+        spec.loader.exec_module(module)
+        return module
+
     def program(self):
-        """The kernel's ``@dace.program`` object."""
+        """The kernel's *entry* ``@dace.program`` object.
+
+        A dace module often defines helper programs (``relu``, ``conv2d``, ...) before the kernel,
+        and sometimes a ``*_gpu`` variant after it, so the entry is selected by the manifest's
+        ``func_name`` (mirrors optarena's own ``_import_kernel``) rather than "the first/last one".
+        """
         _set_precision_fp64()
-        module = importlib.import_module(self.module_path)
-        for value in vars(module).values():
-            if isinstance(value, dace.frontend.python.parser.DaceProgram):
-                return value
-        raise LookupError(f"no @dace.program found in {self.module_path}")
+        module = self._module()
+        entry = vars(module).get(self.spec.func_name)
+        if isinstance(entry, dace.frontend.python.parser.DaceProgram):
+            return entry
+        programs = [v for v in vars(module).values() if isinstance(v, dace.frontend.python.parser.DaceProgram)]
+        if not programs:
+            raise LookupError(f"no @dace.program found in {self.dace_file}")
+        return programs[-1]  # entry is defined after its helpers
 
     def to_sdfg(self, simplify: bool = True) -> dace.SDFG:
         return self.program().to_sdfg(simplify=simplify)
 
 
 def _module_path(short_name: str) -> str:
-    """Dotted import path of a kernel's ``_dace.py`` from its registry short name."""
-    ypath = KERNELS[short_name]
-    rel = ypath.parent.relative_to(_benchmarks_root())
-    module_name = short_name.rsplit("/", 1)[-1]
-    dotted = ".".join(rel.parts)
-    return f"optarena.benchmarks.{dotted}.{module_name}_dace"
-
-
-def _benchmarks_root():
-    import optarena.benchmarks as b
-    import pathlib
-    return pathlib.Path(next(iter(b.__path__)))
+    """Canonical dotted name for a kernel's ``_dace.py`` (a stable sys.modules cache key)."""
+    *dirs, module_name = short_name.split("/")
+    return f"optarena.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
 
 
 def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
@@ -70,11 +88,14 @@ def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
     for short_name in KERNELS:
         if track is not None and not short_name.startswith(f"{track}/"):
             continue
-        ypath = KERNELS[short_name]
         module_name = short_name.rsplit("/", 1)[-1]
-        if not (ypath.parent / f"{module_name}_dace.py").exists():
+        dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
+        if not dace_file.exists():
             continue
-        yield CorpusKernel(short_name=short_name, module_path=_module_path(short_name), spec=BenchSpec.load(short_name))
+        yield CorpusKernel(short_name=short_name,
+                           module_path=_module_path(short_name),
+                           dace_file=dace_file,
+                           spec=BenchSpec.load(short_name))
 
 
 def dace_kernel_names(track: Optional[str] = None) -> List[str]:

@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+import dace
 from dace import symbolic
 
 from nestforge.extract import Boundary
@@ -57,7 +58,9 @@ _BLAS_SONAMES = {
     "blis": ["blis"],
     "atlas": ["tatlas", "satlas"],
     "mkl": ["mkl_rt"],
-    "netlib": ["blas"],  # reference/netlib -- keep last (a generic fallback name)
+    # A generic ``libblas.so`` -- could be reference/netlib OR an alternatives symlink to another
+    # provider (OpenBLAS/ATLAS), so it is labelled by the soname, not assumed to be reference.
+    "blas": ["blas"],
 }
 
 
@@ -90,9 +93,11 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
                 break
     mklroot = os.environ.get("MKLROOT")
     if "mkl" not in found and mklroot:
-        libdir = Path(mklroot) / "lib" / "intel64"
-        if libdir.is_dir():
-            found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", "-lmkl_rt"])
+        # oneAPI 2024+ put the libraries directly under lib/; older layouts use lib/intel64.
+        for libdir in (Path(mklroot) / "lib", Path(mklroot) / "lib" / "intel64"):
+            if (libdir / "libmkl_rt.so").exists():
+                found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", "-lmkl_rt"])
+                break
     return found
 
 
@@ -102,23 +107,35 @@ def _resolve_shape(shape, sizes: Dict[str, int]):
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
 
 
+def _scratch_names(boundary: Boundary) -> List[str]:
+    """Transient array buffers the C-style kernel expects the caller to pre-allocate."""
+    sdfg = boundary.standalone_sdfg
+    return sorted(name for name, desc in sdfg.arrays.items()
+                  if desc.transient and not (isinstance(desc, dace.data.Scalar) or desc.total_size == 1))
+
+
 def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dict[str, np.ndarray]:
-    """Random arrays for inputs, zeros for outputs, keyed by array name."""
+    """Random arrays for inputs; zeros for outputs and scratch buffers (all caller-pre-allocated)."""
     sdfg = boundary.standalone_sdfg
     rng = np.random.default_rng(seed)
     arrays: Dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]
-    for name in list(boundary.inputs) + out_only:
+    zero_filled = out_only + [s for s in _scratch_names(boundary) if s not in boundary.inputs]
+    for name in list(boundary.inputs) + zero_filled:
         desc = sdfg.arrays[name]
         shape = _resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
-        arrays[name] = (np.zeros(shape, dt) if name in out_only else rng.random(shape).astype(dt))
+        arrays[name] = (np.zeros(shape, dt) if name in zero_filled else rng.random(shape).astype(dt))
     return arrays
 
 
 def run_oracle(prep: Prepared, boundary: Boundary, inputs: Dict[str, np.ndarray],
                sizes: Dict[str, int]) -> Dict[str, np.ndarray]:
     """Run the emitted numpy kernel to get reference outputs."""
+    missing = [s for s in boundary.symbols if s not in sizes]
+    if missing:
+        raise KeyError(f"no value for boundary symbol(s) {missing} (e.g. a loop index carried into an "
+                       f"extracted nest); pass them in `sizes`")
     ns: Dict[str, object] = {}
     exec(prep.numpy_source, ns)
     args = {k: v.copy() for k, v in inputs.items()}

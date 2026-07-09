@@ -50,15 +50,40 @@ def covers_whole(subset: dace.subsets.Range, desc) -> bool:
     return True
 
 
-def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
-    """The numpy expression for a memlet's data: ``name`` when whole, else ``name[slice]``.
+def is_scalar(desc) -> bool:
+    """A single-element data container (a DaCe ``Scalar`` or a size-1 array)."""
+    return isinstance(desc, dace.data.Scalar) or desc.total_size == 1
 
-    The array's own data name doubles as the python variable (inputs are args, transients are
-    assigned once, outputs are args written in place), so no connector renaming is needed.
+
+def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
+    """A *scalar transient* -- emitted as a plain python variable (a C local ``double``), not a buffer."""
+    desc = sdfg.arrays[name]
+    return desc.transient and is_scalar(desc)
+
+
+def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
+    """Read expression for a memlet's data: a scalar-transient variable, a whole array, or a slice.
+
+    Each array's data name doubles as the python variable, so no connector renaming is needed:
+    inputs/outputs/scratch are pre-allocated buffer parameters, scalar transients are locals.
     """
+    if scalar_local(sdfg, memlet.data):
+        return memlet.data
     desc = sdfg.arrays[memlet.data]
     if covers_whole(memlet.subset, desc):
         return memlet.data
+    return f"{memlet.data}[{index_str(memlet.subset)}]"
+
+
+def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
+    """Write target for a memlet's data. Arrays are written *in place* (``name[:]`` / ``name[slice]``)
+    so a pre-allocated buffer parameter is filled rather than rebound to a fresh array; a scalar
+    transient is a plain assignment."""
+    if scalar_local(sdfg, memlet.data):
+        return memlet.data
+    desc = sdfg.arrays[memlet.data]
+    if covers_whole(memlet.subset, desc):
+        return f"{memlet.data}[:]"
     return f"{memlet.data}[{index_str(memlet.subset)}]"
 
 
@@ -68,10 +93,10 @@ def _in_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg:
     return memlet_expr(edge.data, sdfg)
 
 
-def _out_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
+def _out_lhs(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
     edges = list(state.out_edges(node))
     edge = edges[0] if conn is None else next(e for e in edges if e.src_conn == conn)
-    return memlet_expr(edge.data, sdfg)
+    return memlet_lhs(edge.data, sdfg)
 
 
 # ----- per-library-node numpy statements ----------------------------------------------------------
@@ -89,33 +114,30 @@ _REDUCTION_FUNC = {
 def _emit_matmul(node, state, sdfg) -> str:
     a = _in_expr(state, node, "_a", sdfg)
     b = _in_expr(state, node, "_b", sdfg)
-    c = _out_expr(state, node, "_c", sdfg)
+    c_read = _in_expr(state, node, "_c", sdfg) if str(node.beta) not in ("0", "0.0") else None
     expr = f"{a} @ {b}"
     if str(node.alpha) != "1":
         expr = f"{node.alpha} * ({expr})"
-    if str(node.beta) not in ("0", "0.0"):
-        expr = f"{expr} + {node.beta} * {c}"
-    return f"{c} = {expr}"
+    if c_read is not None:
+        expr = f"{expr} + {node.beta} * {c_read}"
+    return f"{_out_lhs(state, node, '_c', sdfg)} = {expr}"
 
 
 def _emit_dot(node, state, sdfg) -> str:
     x = _in_expr(state, node, "_x", sdfg)
     y = _in_expr(state, node, "_y", sdfg)
-    r = _out_expr(state, node, "_result", sdfg)
-    return f"{r} = np.dot({x}, {y})"
+    return f"{_out_lhs(state, node, '_result', sdfg)} = np.dot({x}, {y})"
 
 
 def _emit_transpose(node, state, sdfg) -> str:
     inp = _in_expr(state, node, "_inp", sdfg)
-    out = _out_expr(state, node, "_out", sdfg)
-    return f"{out} = np.transpose({inp})"
+    return f"{_out_lhs(state, node, '_out', sdfg)} = np.transpose({inp})"
 
 
 def _emit_solve(node, state, sdfg) -> str:
     ain = _in_expr(state, node, "_ain", sdfg)
     bin_ = _in_expr(state, node, "_bin", sdfg)
-    bout = _out_expr(state, node, "_bout", sdfg)
-    return f"{bout} = np.linalg.solve({ain}, {bin_})"
+    return f"{_out_lhs(state, node, '_bout', sdfg)} = np.linalg.solve({ain}, {bin_})"
 
 
 def _emit_reduce(node, state, sdfg) -> str:
@@ -124,9 +146,8 @@ def _emit_reduce(node, state, sdfg) -> str:
     if func is None:
         raise UnsupportedLibraryNode(f"Reduce with unsupported wcr {node.wcr!r} ({red})")
     inp = _in_expr(state, node, None, sdfg)
-    out = _out_expr(state, node, None, sdfg)
     axis = None if node.axes is None else tuple(node.axes)
-    return f"{out} = {func}.reduce({inp}, axis={axis})"
+    return f"{_out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis})"
 
 
 #: class name -> ``(node, state, sdfg) -> "lhs = rhs"``. Extend with new library nodes here.
