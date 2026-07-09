@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nest-forge"
+version = "0.0.1"
+description = "Extract DaCe loop-/map-nests and offload them to external compilers via an arena."
+requires-python = ">=3.10"
+dependencies = ["dace", "numpy", "pyyaml"]
+
+[tool.setuptools.packages.find]
+include = ["nestforge*"]
+
+[tool.yapf]
+column_limit = 120

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.dacecache/
+*.egg-info/
+build/
+dist/
+*.so
+*.o
+*.a
+.nestforge_cache/
