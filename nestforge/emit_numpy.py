@@ -17,6 +17,8 @@ Unsupported constructs raise :class:`UnsupportedNest`, so nothing is silently mi
 """
 from __future__ import annotations
 
+import ast
+import copy
 import re
 from typing import Dict, List
 
@@ -29,6 +31,11 @@ from dace.sdfg.utils import dfs_topological_sort
 from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
                                     scalar_local, write_lhs)
 from nestforge.extract import Boundary
+
+try:
+    from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
+except ImportError:  # the pass ships only on the DaCe `extended` branch nest-forge targets
+    ExpandNestedSDFGInputs = None
 
 
 class UnsupportedNest(Exception):
@@ -60,15 +67,27 @@ def _sub_connectors(code: str, conn_expr: Dict[str, str]) -> str:
 
 _DACE_CAST = re.compile(r"\bdace\.([A-Za-z_][A-Za-z0-9_]*)")
 
+#: bare math intrinsic (as DaCe exposes it in tasklet code) -> the numpy function that computes it.
+_MATH_INTRINSICS = {
+    "sqrt": "np.sqrt", "cbrt": "np.cbrt", "exp": "np.exp", "exp2": "np.exp2", "expm1": "np.expm1",
+    "log": "np.log", "log2": "np.log2", "log10": "np.log10", "log1p": "np.log1p", "sin": "np.sin",
+    "cos": "np.cos", "tan": "np.tan", "asin": "np.arcsin", "acos": "np.arccos", "atan": "np.arctan",
+    "atan2": "np.arctan2", "sinh": "np.sinh", "cosh": "np.cosh", "tanh": "np.tanh", "floor": "np.floor",
+    "ceil": "np.ceil", "fabs": "np.abs", "sign": "np.sign",
+}
+_INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?=\s*\()")
+
 
 def _normalize_casts(code: str) -> str:
-    """Rewrite DaCe dtype casts to numpy so the emitted kernel has no ``dace`` runtime dependency.
+    """Rewrite DaCe dtype casts and bare math intrinsics to numpy so the kernel needs no ``dace``/
+    ``math`` runtime import.
 
-    Codegen inserts type-promotion casts such as ``dace.int64(x)`` / ``dace.complex128(x)``; numpy
-    exposes the same dtype names as scalar constructors (``np.int64(x)``), so the rewrite is value
-    preserving and drops the ``import dace`` the standalone kernel would otherwise need.
+    Codegen inserts type-promotion casts such as ``dace.int64(x)`` / ``dace.complex128(x)`` and emits
+    math intrinsics unqualified (``sqrt(x)``, as a tasklet runs with ``math`` in scope). Numpy exposes
+    the same dtype names as scalar constructors and the same functions, so both rewrites are value
+    preserving; the intrinsic rewrite skips already-qualified names (``np.sqrt``) via a lookbehind.
     """
-    return _DACE_CAST.sub(r"np.\1", code)
+    return _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], _DACE_CAST.sub(r"np.\1", code))
 
 
 def _tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> List[str]:
@@ -109,6 +128,68 @@ def _copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -
     return lines
 
 
+def _reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
+    """Refuse a nested SDFG whose inter-state code indexes a multi-dim array with too few indices.
+
+    ``ExpandNestedSDFGInputs`` widens a collapsed size-1 inner array to the full outer array and
+    offsets references by the map index -- but for a reference inside an inter-state *condition* or
+    *assignment* (``I_0 = I[0]``) it adds only the first map dimension, leaving ``getAcc_I_0[__i0]``
+    on an ``(N, N)`` array (a numpy row, not the element). That is a DaCe-pass gap; emitting it would
+    produce ``if <array>:``, so we reject with a precise reason instead of a broken kernel.
+    """
+    for region in inner.all_control_flow_regions():
+        for e in region.edges():
+            codes = list(e.data.assignments.values())
+            if not e.data.is_unconditional():
+                codes.append(e.data.condition.as_string)
+            for code in codes:
+                for sub in ast.walk(ast.parse(code)):
+                    if not (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)):
+                        continue
+                    desc = inner.arrays.get(sub.value.id)
+                    if desc is None or len(desc.shape) <= 1:
+                        continue
+                    ndims = len(sub.slice.elts) if isinstance(sub.slice, ast.Tuple) else 1
+                    if ndims < len(desc.shape):
+                        raise UnsupportedNest(
+                            f"nested SDFG under-indexes {sub.value.id!r} ({ndims} of {len(desc.shape)} dims) "
+                            "in inter-state code -- ExpandNestedSDFGInputs offsets multi-dim conditions incompletely")
+
+
+def _emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedSDFG) -> List[str]:
+    """Inline a nested SDFG (e.g. one map iteration's sub-kernel) as flat statements, in place.
+
+    :func:`_expand_nested_sdfg_inputs` has already widened every in/out connector to the *full* outer
+    array, and DaCe offsets the inner memlets by the enclosing map index, so the inner body reads and
+    writes the outer buffers directly (``Z[j, k]``) using the map symbols already in scope. Emitting
+    it is then just: bind the symbol mapping, alias each connector array to the outer array it binds,
+    prefix any private transient that would shadow an outer buffer, and emit the inner body -- inner
+    control flow (a masked ``np.where`` writing ``Z[j, k]`` only under a condition) stays correct
+    because the write lands on the outer array in place, leaving the other elements untouched.
+    """
+    if ExpandNestedSDFGInputs is None:
+        raise UnsupportedNest("nested SDFG emission needs ExpandNestedSDFGInputs (DaCe extended branch)")
+    inner = copy.deepcopy(node.sdfg)
+    conns = {e.dst_conn: e.data.data for e in state.in_edges(node) if e.data.data is not None}
+    conns.update({e.src_conn: e.data.data for e in state.out_edges(node) if e.data.data is not None})
+    for conn, outer in conns.items():
+        if conn != outer:
+            inner.replace(conn, outer)
+    _reject_underranked_codeblock_index(inner)
+    # A private (non-connector) inner name that collides with an outer buffer would shadow it; the
+    # connector arrays are meant to alias their outer array and are left as-is.
+    for name in list(inner.arrays):
+        if name not in conns.values() and name in sdfg.arrays:
+            inner.replace(name, f"_ns{state.node_id(node)}_{name}")
+
+    lines: List[str] = []
+    for sym, expr in node.symbol_mapping.items():
+        if str(sym) != str(expr):
+            lines.append(f"{sym} = {_normalize_casts(str(expr))}")
+    lines += _emit_region(inner, inner)
+    return lines
+
+
 def _map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
     """Emit a map scope as ``for`` loops over pre-allocated buffers (no allocation of its own)."""
     headers: List[str] = []
@@ -123,7 +204,9 @@ def _map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) ->
             body.extend(_tasklet_lines(state, sdfg, node))
         elif isinstance(node, nodes.AccessNode):
             body.extend(_copy_lines(state, sdfg, node))
-        elif isinstance(node, (nodes.MapEntry, nodes.NestedSDFG, nodes.LibraryNode)):
+        elif isinstance(node, nodes.NestedSDFG):
+            body.extend(_emit_nested_sdfg(state, sdfg, node))
+        elif isinstance(node, (nodes.MapEntry, nodes.LibraryNode)):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
 
     lines = ["    " * depth + h for depth, h in enumerate(headers)]
@@ -149,7 +232,7 @@ def _state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> List[str]:
         elif isinstance(node, nodes.AccessNode):
             lines.extend(_copy_lines(state, sdfg, node))
         elif isinstance(node, nodes.NestedSDFG):
-            raise UnsupportedNest("top-level nested SDFG is not yet emitted")
+            lines.extend(_emit_nested_sdfg(state, sdfg, node))
     return lines
 
 
@@ -256,12 +339,26 @@ def _render(fn_name: str, args: List[str], body: List[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _expand_nested_sdfg_inputs(sdfg: dace.SDFG) -> None:
+    """Widen every nested-SDFG in/out connector to the full outer array, in place.
+
+    A nested SDFG inside a map is handed per-iteration *slices*; DaCe's ``ExpandNestedSDFGInputs``
+    rewrites its descriptors and memlets to reference the whole outer array offset by the map index,
+    which is exactly the form :func:`_emit_nested_sdfg` inlines (the outer buffers, indexed by the map
+    symbols). It is a semantics-preserving DaCe transformation, so the emitted numerics are unchanged.
+    No-op when the pass is unavailable; :func:`_emit_nested_sdfg` then refuses any nested SDFG.
+    """
+    if ExpandNestedSDFGInputs is not None:
+        sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs)
+
+
 def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     """Standalone python source ``def <fn_name>(<args>): ...`` for an extracted nest's boundary.
 
     Signature (all pre-allocated buffers): inputs, then extra outputs, then scratch transients, then
     size symbols. Everything is written in place; there is no return.
     """
+    _expand_nested_sdfg_inputs(boundary.standalone_sdfg)
     args = list(boundary.inputs)
     args += [o for o in boundary.outputs if o not in boundary.inputs]
     args += [s for s in _scratch_arrays(boundary.standalone_sdfg) if s not in args]
@@ -275,6 +372,7 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     Signature is the SDFG's own arguments (non-transient arrays + ``__return`` + scalars) followed by
     scratch transient buffers and size symbols -- all caller-allocated, all written in place.
     """
+    _expand_nested_sdfg_inputs(sdfg)
     data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     args = data_args + _scratch_arrays(sdfg) + symbols

@@ -124,6 +124,48 @@ def test_contour_integral_two_returns_solve_and_indirect_negate():
     np.testing.assert_allclose(got[1], P1)
 
 
+def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
+    """mandelbrot's per-pixel escape is a ``np.where`` -> a nested SDFG with inner control flow inside
+    a 2-D map. It emits only after ``ExpandNestedSDFGInputs`` widens the nest to full arrays, so the
+    masked ``if I[j,k]: Z[j,k] = Z[j,k]**2 + C[j,k]`` writes the outer buffer in place."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    XN, YN = 20, 16
+    scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
+    sdfg = _kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+    src = sdfg_to_numpy(sdfg, "mandelbrot")
+    ns = {"np": np}
+    exec(src, ns)
+    env = {symbolic.symbol("XN"): XN, symbolic.symbol("YN"): YN}
+    call = {}
+    for name in inspect.signature(ns["mandelbrot"]).parameters:
+        if name in ("XN", "YN"):
+            call[name] = {"XN": XN, "YN": YN}[name]
+        elif name in scal:
+            d = sdfg.arrays.get(name)
+            call[name] = np.array([scal[name]], np.dtype(d.dtype.type)) if d is not None else scal[name]
+        else:
+            d = sdfg.arrays[name]
+            shape = tuple(int(symbolic.evaluate(x, env)) for x in d.shape)
+            call[name] = np.zeros(shape, np.dtype(d.dtype.type))
+    ns["mandelbrot"](**call)
+
+    X = scal["xmin"] + np.arange(XN) * ((scal["xmax"] - scal["xmin"]) / (XN - 1))
+    Y = scal["ymin"] + np.arange(YN) * ((scal["ymax"] - scal["ymin"]) / (YN - 1))
+    C = X[None, :] + Y[:, None] * 1j
+    Nc = np.zeros(C.shape, np.int64)
+    Z = np.zeros(C.shape, np.complex128)
+    for n in range(scal["maxiter"]):
+        I = np.less(np.absolute(Z), scal["horizon"])
+        Nc[I] = n
+        for j in range(YN):
+            for k in range(XN):
+                if I[j, k]:
+                    Z[j, k] = Z[j, k]**2 + C[j, k]
+    Nc[Nc == scal["maxiter"] - 1] = 0
+    np.testing.assert_array_equal(call["N_out"], Nc)
+    np.testing.assert_array_equal(call["Z_out"], Z)  # bit-exact
+
+
 def test_jacobi_1d_loopregion_emits_and_computes():
     rng = np.random.default_rng(2)
     N, T = 32, 20

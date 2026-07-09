@@ -47,15 +47,18 @@ Try it: `python examples/demo_fma.py` (shows ieee-strict bit-exact vs fast-math 
 
 **M1 in progress:** real npbench/polybench corpus (`corpus.py`, 55 dace kernels); library-node
 emission (MatMul/Dot/Reduce/Transpose/Solve → numpy); `LoopRegion` + `ConditionalBlock`
-(`if`/`elif`/`else`) control-flow emission; access-node data copies (scalar `s = A[i]` and sub-array
-`B[:] = A[k]`), inter-state assignments (indirect indices `s = A[i]` hoisted onto edges), and
-`dace.<cast>` → `np.<cast>` normalization; `skip-taskloops` (default) & `innermost` strategies;
-**C-style emission** — the kernel allocates nothing, every array (inputs, outputs, `__return`,
-scratch transients) is a pre-allocated buffer parameter written in place; BLAS discovery. Corpus
-census: 47 emit / 5 unsupported (Cholesky/TensorTranspose libnodes, nested-SDFG-in-map) / 3 frontend
-build-fail. The three `ConditionalBlock` kernels (nussinov, contour_integral,
-scattering_self_energies) are validated against numpy (nussinov bit-exact; the complex ones to
-solve/matmul roundoff).
+(`if`/`elif`/`else`) control-flow emission; **nested-SDFG-in-map** inlining (via DaCe's
+`ExpandNestedSDFGInputs` to widen the nest to full arrays, then emit its body in place — a masked
+`np.where` becomes `if I[j,k]: Z[j,k] = ...`); access-node data copies (scalar `s = A[i]` and
+sub-array `B[:] = A[k]`), inter-state assignments (indirect indices hoisted onto edges), `dace.<cast>`
+→ `np.<cast>` and bare math intrinsic (`sqrt` → `np.sqrt`) normalization; `skip-taskloops` (default)
+& `innermost` strategies; **C-style emission** — the kernel allocates nothing, every array (inputs,
+outputs, `__return`, scratch transients) is a pre-allocated buffer parameter written in place; BLAS
+discovery. Corpus census (extended DaCe): 47 emit / 5 unsupported / 3 frontend build-fail. Validated
+against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral & scattering_self_energies
+(fp roundoff); nested-SDFG mandelbrot1 (bit-exact). Remaining 5 unsupported: Cholesky /
+TensorTranspose library nodes; WCR-reduction tasklets (azimint_hist, azimint_naive); nbody (a
+`ExpandNestedSDFGInputs` gap — it offsets a multi-dim inner *condition* index incompletely).
 
-Next: emit nested-SDFG-in-map (nbody, mandelbrot1, azimint_hist) + Cholesky/TensorTranspose library
+Next: WCR-reduction tasklet emission (histogram accumulation) + Cholesky/TensorTranspose library
 nodes; wire BLAS/spack into the sweep, cost-model flag axis, SQLite tracking, DaCe-backend competitor.
