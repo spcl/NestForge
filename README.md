@@ -19,15 +19,13 @@ nestforge/
   libnode.py      ExternalCall LibraryNode + ExpandDaceReference / ExpandExternCall
   pass_lower.py   LowerNestsToExternalCall(strategy=outer)
   arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner + report
-external/optarena git submodule (translator + data-gen + compile/time harness)
 ```
 
 ## Deps
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
-- OptArena — `external/optarena` submodule. Its URL is currently a local-path placeholder
-  (`/home/primrose/Work/optarena`) because the upstream remote is not yet reachable; re-point
-  `.gitmodules` to the real remote when available. The code presently imports the installed
-  `optarena` package, not the submodule checkout.
+- OptArena — installed package (translator + data-gen + compile/time harness). Install editable
+  from its repo (`github.com/spcl/OptArena`); already installed editable at
+  `/home/primrose/Work/optarena`. No submodule — nest-forge imports the installed `optarena`.
 
 ## Status
 **M0 done** (CPU, C, single MapEntry nest): extract → outer strategy → numpy + OptArena manifest
