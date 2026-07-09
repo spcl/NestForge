@@ -7,6 +7,7 @@ external wall-clock over repeats; OptArena's self-timed harness is an M1 upgrade
 from __future__ import annotations
 
 import ctypes
+import os
 import shutil
 import subprocess
 import time
@@ -34,13 +35,65 @@ FP_MODES: Dict[str, List[str]] = {
 _MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
-_CTYPE = {"float64": ctypes.c_double, "float32": ctypes.c_float,
-          "int64": ctypes.c_int64, "int32": ctypes.c_int32}
+_CTYPE = {"float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32}
 
 
 def discover_compilers() -> Dict[str, str]:
     """M0: probe PATH for gcc/clang. (Spack discovery is M1.)"""
     return {name: shutil.which(exe) for name, exe in _CANDIDATE_COMPILERS.items() if shutil.which(exe)}
+
+
+# --- BLAS backends (a link axis for matmul-heavy kernels) -------------------------------------
+@dataclass
+class BlasBackend:
+    """An installed BLAS implementation and the link flags that select it."""
+    name: str
+    link_flags: List[str]
+
+
+#: BLAS backend -> candidate ``lib<soname>.so`` names, most specific first.
+_BLAS_SONAMES = {
+    "openblas": ["openblas"],
+    "blis": ["blis"],
+    "atlas": ["tatlas", "satlas"],
+    "mkl": ["mkl_rt"],
+    "netlib": ["blas"],  # reference/netlib -- keep last (a generic fallback name)
+}
+
+
+def _ldconfig_sonames() -> set:
+    """Base library names (``openblas`` from ``libopenblas.so.0``) known to the dynamic linker."""
+    try:
+        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    names = set()
+    for line in out.splitlines():
+        token = line.strip().split(" ", 1)[0]
+        if token.startswith("lib") and ".so" in token:
+            names.add(token[3:token.index(".so")])
+    return names
+
+
+def discover_blas_libraries() -> Dict[str, BlasBackend]:
+    """Discover installed BLAS backends (OpenBLAS / MKL / BLIS / ATLAS / netlib) + their link flags.
+
+    Backends become an extra link axis for kernels whose emitted numpy uses ``@``/``np.dot`` (a
+    ``cblas``-calling variant links against each). Probes the dynamic linker cache plus ``MKLROOT``.
+    """
+    sonames = _ldconfig_sonames()
+    found: Dict[str, BlasBackend] = {}
+    for name, candidates in _BLAS_SONAMES.items():
+        for so in candidates:
+            if so in sonames:
+                found[name] = BlasBackend(name, [f"-l{so}"])
+                break
+    mklroot = os.environ.get("MKLROOT")
+    if "mkl" not in found and mklroot:
+        libdir = Path(mklroot) / "lib" / "intel64"
+        if libdir.is_dir():
+            found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", "-lmkl_rt"])
+    return found
 
 
 # --- data generation from the manifest --------------------------------------------------------
@@ -116,9 +169,9 @@ def _call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary
                 out.append(ctypes.c_int64(int(sizes[arg])))
         return out
 
-    fn(*build_args())                                   # correctness run
+    fn(*build_args())  # correctness run
     outputs = {o: work[o].copy() for o in boundary.outputs}
-    t0 = time.perf_counter()                            # timing runs
+    t0 = time.perf_counter()  # timing runs
     for _ in range(reps):
         fn(*build_args())
     elapsed_us = (time.perf_counter() - t0) / reps * 1e6
@@ -133,11 +186,16 @@ def _maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
 class ArenaResult:
     name: str
     cells: List[Cell] = field(default_factory=list)
-    winners: Dict[str, Cell] = field(default_factory=dict)   # fp_mode -> best correct cell
+    winners: Dict[str, Cell] = field(default_factory=dict)  # fp_mode -> best correct cell
 
 
-def run_arena(prep: Prepared, boundary: Boundary, c_source: Path, out_dir: Path,
-              sizes: Dict[str, int], reps: int = 100, seed: int = 0) -> ArenaResult:
+def run_arena(prep: Prepared,
+              boundary: Boundary,
+              c_source: Path,
+              out_dir: Path,
+              sizes: Dict[str, int],
+              reps: int = 100,
+              seed: int = 0) -> ArenaResult:
     """Sweep discovered compilers x FP modes; validate + time each; pick a winner per FP mode."""
     out_dir.mkdir(parents=True, exist_ok=True)
     compilers = discover_compilers()
@@ -153,8 +211,7 @@ def run_arena(prep: Prepared, boundary: Boundary, c_source: Path, out_dir: Path,
             cmd = [cpath, *flags, str(c_source), "-o", str(so)]
             comp = subprocess.run(cmd, capture_output=True, text=True)
             if comp.returncode != 0:
-                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"),
-                                         error=comp.stderr[-400:]))
+                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"), error=comp.stderr[-400:]))
                 continue
             try:
                 outs, us = _call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)

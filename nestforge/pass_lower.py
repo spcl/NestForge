@@ -34,8 +34,10 @@ def _replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     nsdfg = boundary.nsdfg_node
     # Connectors are prefixed so they never collide with array/symbol names (a LibraryNode rule).
     ext = ExternalCall(name,
-                       inputs={in_conn(i) for i in boundary.inputs},
-                       outputs={out_conn(o) for o in boundary.outputs},
+                       inputs={in_conn(i)
+                               for i in boundary.inputs},
+                       outputs={out_conn(o)
+                                for o in boundary.outputs},
                        numpy_source=nest_to_numpy(boundary, fn_name=name),
                        config=manifest_dict(boundary, name),
                        standalone_sdfg=_reference_sdfg(boundary))
@@ -49,9 +51,13 @@ def _replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     return ext
 
 
-def lower_nests_to_external_call(sdfg: dace.SDFG, strategy: Union[str, Strategy] = "outer",
+def lower_nests_to_external_call(sdfg: dace.SDFG,
+                                 strategy: Union[str, Strategy] = "skip-taskloops",
                                  name_prefix: str = "extcall") -> List[Tuple[ExternalCall, Boundary]]:
     """Lower every nest the strategy selects into an ``ExternalCall`` node.
+
+    Defaults to ``skip-taskloops``: offload the compute-bearing nests, not the pure map/loop
+    scheduling wrappers around them.
 
     :returns: ``[(external_call_node, boundary), ...]`` in extraction order.
     """

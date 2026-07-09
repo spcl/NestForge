@@ -24,12 +24,12 @@ NestNode = Union[nodes.MapEntry, LoopRegion]
 @dataclass
 class Boundary:
     """The interface of an extracted nest, in the order the arena/libnode will use."""
-    inputs: List[str]                      # data read by the nest (NestedSDFG in-connectors)
-    outputs: List[str]                     # data written by the nest (NestedSDFG out-connectors)
-    symbols: List[str]                     # free symbols (sizes) the nest depends on
-    nsdfg_node: nodes.NestedSDFG           # the NestedSDFG placed in the parent (replacement anchor)
-    state: SDFGState                       # parent state holding ``nsdfg_node``
-    standalone_sdfg: dace.SDFG             # detached, independently compilable copy of the nest
+    inputs: List[str]  # data read by the nest (NestedSDFG in-connectors)
+    outputs: List[str]  # data written by the nest (NestedSDFG out-connectors)
+    symbols: List[str]  # free symbols (sizes) the nest depends on
+    nsdfg_node: nodes.NestedSDFG  # the NestedSDFG placed in the parent (replacement anchor)
+    state: SDFGState  # parent state holding ``nsdfg_node``
+    standalone_sdfg: dace.SDFG  # detached, independently compilable copy of the nest
     parent_sdfg: dace.SDFG = field(repr=False, default=None)
 
 
@@ -55,16 +55,26 @@ def _boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_
     inputs = sorted(nsdfg_node.in_connectors.keys())
     outputs = sorted(nsdfg_node.out_connectors.keys())
     symbols = sorted(str(s) for s in nsdfg_node.symbol_mapping.keys())
-    return Boundary(inputs=inputs, outputs=outputs, symbols=symbols,
-                    nsdfg_node=nsdfg_node, state=state,
-                    standalone_sdfg=_detach(nsdfg_node.sdfg), parent_sdfg=parent_sdfg)
+    return Boundary(inputs=inputs,
+                    outputs=outputs,
+                    symbols=symbols,
+                    nsdfg_node=nsdfg_node,
+                    state=state,
+                    standalone_sdfg=_detach(nsdfg_node.sdfg),
+                    parent_sdfg=parent_sdfg)
 
 
 def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: Optional[str] = None) -> Boundary:
-    """Outline a whole map scope (entry..exit + body) into a standalone SDFG."""
+    """Outline a whole map scope (entry..exit + body) into a standalone SDFG.
+
+    ``full_data=True`` nests the *entire* boundary arrays (not just the accessed sub-range), so the
+    external call receives full arrays and the kernel keeps the original global indices -- otherwise
+    DaCe shrinks + rebases each connector to its accessed slice (e.g. a ``[1:N-1]`` stencil would
+    pass a size-``N-2`` buffer and index ``B[i-1]``), which would break the generated C signature.
+    """
     state = _find_state_of_node(parent_sdfg, map_entry)
     subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
-    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest")
+    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
     return _boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
 
 
