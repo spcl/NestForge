@@ -23,7 +23,7 @@ from typing import Dict, List
 import dace
 from dace import symbolic
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.state import ConditionalBlock, LoopRegion
 from dace.sdfg.utils import dfs_topological_sort
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, scalar_local
@@ -151,6 +151,25 @@ def _emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
     return lines
 
 
+def _emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str]:
+    """Emit a ``ConditionalBlock`` as ``if``/``elif``/``else`` over its branches.
+
+    Each branch is ``(condition, region)``; the first keyed branch is ``if``, later keyed branches
+    ``elif``, and the lone unconditional branch (``condition is None``, always last) is ``else``.
+    """
+    ind = "    "
+    lines: List[str] = []
+    for i, (condition, region) in enumerate(cond_block.branches):
+        body = _emit_region(region, sdfg) or ["pass"]
+        if condition is None:
+            lines.append("else:")
+        else:
+            keyword = "if" if i == 0 else "elif"
+            lines.append(f"{keyword} {condition.as_string.strip()}:")
+        lines += [ind + b for b in body]
+    return lines
+
+
 def _emit_region(region, sdfg: dace.SDFG) -> List[str]:
     """Numpy statements for every block of a control-flow region, in execution order."""
     lines: List[str] = []
@@ -159,6 +178,8 @@ def _emit_region(region, sdfg: dace.SDFG) -> List[str]:
             lines.extend(_state_body(sdfg, block))
         elif isinstance(block, LoopRegion):
             lines.extend(_emit_loop(block, sdfg))
+        elif isinstance(block, ConditionalBlock):
+            lines.extend(_emit_conditional(block, sdfg))
         else:
             raise UnsupportedNest(f"control-flow block not yet emitted: {type(block).__name__}")
     return lines

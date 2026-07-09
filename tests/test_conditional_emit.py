@@ -1,0 +1,93 @@
+"""Emit ``ConditionalBlock`` control flow (if / elif / else) to numpy and check it runs correctly.
+
+A DaCe scalar-level ``if/elif/else`` at control-flow altitude lowers to a ``ConditionalBlock`` whose
+branches are separate regions. The emitter turns that block back into a python ``if/elif/else`` with
+one branch body per region; these tests build such SDFGs directly and validate both the structure
+(the emitted keywords) and the numerics (the taken branch matches numpy).
+"""
+import inspect
+
+import numpy as np
+import pytest
+
+pytest.importorskip("dace")
+
+import dace as dc
+
+from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
+
+from nestforge.emit_numpy import sdfg_to_numpy
+
+N = dc.symbol("N", dtype=dc.int64)
+
+
+@dc.program
+def if_else(flag: dc.int64, a: dc.float64[N], out: dc.float64[N]):
+    if flag > 0:
+        for i in dc.map[0:N]:
+            out[i] = a[i] + 1.0
+    else:
+        for i in dc.map[0:N]:
+            out[i] = a[i] - 1.0
+
+
+def _build_three_branch():
+    """A 3-branch ``ConditionalBlock`` (``if``/``elif``/``else``) built directly via the SDFG API.
+
+    The python frontend lowers ``if/elif/else`` into *nested* 2-branch blocks, so a genuine
+    multi-branch ``ConditionalBlock`` -- the case that exercises the emitter's ``elif`` -- has to be
+    assembled by hand. Each branch is ``out[i] = a[i] + delta`` for a distinct delta.
+    """
+    sdfg = dc.SDFG("switch3")
+    sdfg.add_array("a", [N], dc.float64)
+    sdfg.add_array("out", [N], dc.float64)
+    sdfg.add_symbol("sel", dc.int64)
+    cond = ConditionalBlock("cond", sdfg=sdfg)
+    sdfg.add_node(cond, is_start_block=True)
+    for label, guard, delta in (("b0", "sel == 0", 10.0), ("b1", "sel == 1", 20.0), ("belse", None, 30.0)):
+        region = ControlFlowRegion(label, sdfg=sdfg)
+        st = region.add_state(label + "_s", is_start_block=True)
+        st.add_mapped_tasklet(label + "_m", dict(i="0:N"),
+                              dict(inp=dc.Memlet("a[i]")),
+                              f"o = inp + {delta}",
+                              dict(o=dc.Memlet("out[i]")),
+                              input_nodes={"a": st.add_read("a")},
+                              output_nodes={"out": st.add_write("out")},
+                              external_edges=True)
+        cond.add_branch(guard, region)
+    sdfg.validate()
+    return sdfg
+
+
+def _emit(sdfg, fn_name):
+    assert any(isinstance(b, ConditionalBlock) for b in sdfg.all_control_flow_blocks())
+    src = sdfg_to_numpy(sdfg, fn_name)
+    ns = {"np": np}
+    exec(src, ns)
+    return ns[fn_name], src
+
+
+def test_if_else_both_branches():
+    fn, src = _emit(if_else.to_sdfg(simplify=True), "if_else")
+    assert "if " in src and "else:" in src
+    a = np.arange(6, dtype=np.float64)
+    for flag in (1, -1):
+        out = np.zeros(6)
+        fn(flag=flag, a=a.copy(), out=out, N=6)
+        np.testing.assert_array_equal(out, a + 1.0 if flag > 0 else a - 1.0)
+
+
+def test_if_elif_else_selects_right_branch():
+    fn, src = _emit(_build_three_branch(), "switch3")
+    assert "elif " in src  # a genuine multi-branch block -> the middle branch is an elif
+    a = np.arange(5, dtype=np.float64)
+    for sel, delta in ((0, 10.0), (1, 20.0), (2, 30.0)):
+        out = np.zeros(5)
+        fn(a=a.copy(), out=out, sel=sel, N=5)
+        np.testing.assert_array_equal(out, a + delta)
+
+
+def test_signature_is_c_style_no_return():
+    fn, src = _emit(if_else.to_sdfg(simplify=True), "if_else")
+    assert "return " not in src  # C-style: outputs are in-place buffer params
+    assert set(inspect.signature(fn).parameters) == {"a", "out", "flag", "N"}
