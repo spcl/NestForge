@@ -166,6 +166,78 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     np.testing.assert_array_equal(call["Z_out"], Z)  # bit-exact
 
 
+def test_emission_does_not_mutate_caller_sdfg():
+    """``sdfg_to_numpy`` must be read-only: widening nested SDFGs runs on a copy, so a caller that
+    inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    from dace.sdfg import nodes
+    sdfg = _kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+
+    def nsdfg_in_subsets(g):
+        return {e.dst_conn: str(e.data.subset)
+                for st in g.all_states() for n in st.nodes() if isinstance(n, nodes.NestedSDFG)
+                for e in st.in_edges(n)}
+
+    before = nsdfg_in_subsets(sdfg)
+    sdfg_to_numpy(sdfg, "mandelbrot")
+    assert nsdfg_in_subsets(sdfg) == before  # connectors/subsets unchanged -> no in-place widening
+
+
+def test_nbody_nested_where_emits_and_computes():
+    """nbody's ``np.power(inv_r3, -1.5, out=inv_r3, where=I)`` is a masked nested SDFG in a 2-D map;
+    it emits correctly once ExpandNestedSDFGInputs offsets the multi-dim mask condition fully."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
+    from nestforge.emit_numpy import UnsupportedNest
+    N, Nt = 6, 4
+    rng = np.random.default_rng(0)
+    mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
+    dt, G, soft = 0.01, 1.0, 0.1
+    try:
+        call, _ = _alloc_run("hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt),
+                             dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]),
+                                  softening=np.array([soft])))
+    except UnsupportedNest:
+        pytest.skip("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
+
+    def getAcc(pos, mass, G, softening):
+        x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
+        dx = np.add.outer(-x, x).reshape(N, N)
+        dy = np.add.outer(-y, y).reshape(N, N)
+        dz = np.add.outer(-z, z).reshape(N, N)
+        inv_r3 = dx**2 + dy**2 + dz**2 + softening**2
+        np.power(inv_r3, -1.5, out=inv_r3, where=inv_r3 > 0)
+        a = np.zeros((N, 3))
+        a[:, 0], a[:, 1], a[:, 2] = G * (dx * inv_r3) @ mass, G * (dy * inv_r3) @ mass, G * (dz * inv_r3) @ mass
+        return a
+
+    def getEnergy(pos, vel, mass, G):
+        KE = 0.5 * np.sum(np.reshape(mass, (N, 1)) * vel**2)
+        x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
+        dx = np.add.outer(-x, x).reshape(N, N)
+        dy = np.add.outer(-y, y).reshape(N, N)
+        dz = np.add.outer(-z, z).reshape(N, N)
+        inv_r = np.sqrt(dx**2 + dy**2 + dz**2)
+        np.divide(1.0, inv_r, out=inv_r, where=inv_r > 0)
+        tmp = -np.multiply.outer(mass, mass) * inv_r
+        PE = sum(tmp[j, k] for j in range(N) for k in range(j + 1, N)) * G
+        return KE, PE
+
+    vel = vel - np.mean(np.reshape(mass, (N, 1)) * vel, axis=0) / np.mean(mass)
+    acc = getAcc(pos, mass, G, soft)
+    KE = np.zeros(Nt + 1)
+    PE = np.zeros(Nt + 1)
+    KE[0], PE[0] = getEnergy(pos, vel, mass, G)
+    for i in range(Nt):
+        vel += acc * dt / 2.0
+        pos += vel * dt
+        acc = getAcc(pos, mass, G, soft)
+        vel += acc * dt / 2.0
+        KE[i + 1], PE[i + 1] = getEnergy(pos, vel, mass, G)
+    got = [call[k] for k in sorted(k for k in call if k.startswith("__return"))]
+    for ref in (KE, PE):  # KE and PE are the two returns (order-independent match)
+        assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
+
+
 def test_jacobi_1d_loopregion_emits_and_computes():
     rng = np.random.default_rng(2)
     N, T = 32, 20

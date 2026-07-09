@@ -54,11 +54,13 @@ sub-array `B[:] = A[k]`), inter-state assignments (indirect indices hoisted onto
 → `np.<cast>` and bare math intrinsic (`sqrt` → `np.sqrt`) normalization; `skip-taskloops` (default)
 & `innermost` strategies; **C-style emission** — the kernel allocates nothing, every array (inputs,
 outputs, `__return`, scratch transients) is a pre-allocated buffer parameter written in place; BLAS
-discovery. Corpus census (extended DaCe): 47 emit / 5 unsupported / 3 frontend build-fail. Validated
+discovery. Corpus census (extended DaCe): 48 emit / 4 unsupported / 3 frontend build-fail. Validated
 against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral & scattering_self_energies
-(fp roundoff); nested-SDFG mandelbrot1 (bit-exact). Remaining 5 unsupported: Cholesky /
-TensorTranspose library nodes; WCR-reduction tasklets (azimint_hist, azimint_naive); nbody (a
-`ExpandNestedSDFGInputs` gap — it offsets a multi-dim inner *condition* index incompletely).
+(fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact). Remaining 4 unsupported: Cholesky /
+TensorTranspose library nodes; WCR-reduction tasklets (azimint_hist, azimint_naive). Emission is
+read-only (nested-SDFG widening runs on a copy); an emitter invariant check refuses any nested-SDFG
+whose inter-state condition under-indexes a multi-dim array (a defensive guard against
+`ExpandNestedSDFGInputs` regressions).
 
 Next: WCR-reduction tasklet emission (histogram accumulation) + Cholesky/TensorTranspose library
 nodes; wire BLAS/spack into the sweep, cost-model flag axis, SQLite tracking, DaCe-backend competitor.

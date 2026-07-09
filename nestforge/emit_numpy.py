@@ -65,7 +65,17 @@ def _sub_connectors(code: str, conn_expr: Dict[str, str]) -> str:
     return pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
-_DACE_CAST = re.compile(r"\bdace\.([A-Za-z_][A-Za-z0-9_]*)")
+#: DaCe dtype cast (``dace.<name>(x)``) -> the numpy scalar constructor that spells it. Restricted to
+#: the fixed-width dtypes so a non-dtype ``dace.<attr>`` (``dace.math.sqrt``, ``dace.define_local``) is
+#: never blindly rewritten to a nonexistent ``np.<attr>``; ``bool`` maps to ``np.bool_`` (``np.bool``
+#: was removed in NumPy 2).
+_DACE_DTYPES = {
+    "bool": "np.bool_", "int8": "np.int8", "int16": "np.int16", "int32": "np.int32", "int64": "np.int64",
+    "uint8": "np.uint8", "uint16": "np.uint16", "uint32": "np.uint32", "uint64": "np.uint64",
+    "float16": "np.float16", "float32": "np.float32", "float64": "np.float64", "complex64": "np.complex64",
+    "complex128": "np.complex128",
+}
+_DACE_CAST = re.compile(r"\bdace\.(" + "|".join(_DACE_DTYPES) + r")\b")
 
 #: bare math intrinsic (as DaCe exposes it in tasklet code) -> the numpy function that computes it.
 _MATH_INTRINSICS = {
@@ -85,9 +95,11 @@ def _normalize_casts(code: str) -> str:
     Codegen inserts type-promotion casts such as ``dace.int64(x)`` / ``dace.complex128(x)`` and emits
     math intrinsics unqualified (``sqrt(x)``, as a tasklet runs with ``math`` in scope). Numpy exposes
     the same dtype names as scalar constructors and the same functions, so both rewrites are value
-    preserving; the intrinsic rewrite skips already-qualified names (``np.sqrt``) via a lookbehind.
+    preserving; the intrinsic rewrite skips already-qualified names (``np.sqrt``) via a lookbehind, and
+    only recognised dtype names are rewritten (an unknown ``dace.<attr>`` is left for the caller to hit).
     """
-    return _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], _DACE_CAST.sub(r"np.\1", code))
+    code = _DACE_CAST.sub(lambda m: _DACE_DTYPES[m.group(1)], code)
+    return _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], code)
 
 
 def _tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> List[str]:
@@ -122,8 +134,14 @@ def _copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -
             raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} is not yet emitted")
         if m.data == e.dst.data:
             dst_sub, src_sub = m.subset, m.other_subset
-        else:  # memlet names the source side (the common case), or an unrelated array
+        elif m.data == e.src.data:
             src_sub, dst_sub = m.subset, m.other_subset
+        else:  # the memlet must name one of the two endpoints; a third array is unexpected
+            raise UnsupportedNest(f"copy memlet {m.data!r} names neither {e.src.data!r} nor {e.dst.data!r}")
+        # A ``None`` other-side subset means "the same range as the named side"; mirror it so a
+        # partial copy is not silently widened to the whole array by read_expr/write_lhs.
+        src_sub = src_sub if src_sub is not None else dst_sub
+        dst_sub = dst_sub if dst_sub is not None else src_sub
         lines.append(f"{write_lhs(sdfg, e.dst.data, dst_sub)} = {read_expr(sdfg, e.src.data, src_sub)}")
     return lines
 
@@ -143,7 +161,11 @@ def _reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
             if not e.data.is_unconditional():
                 codes.append(e.data.condition.as_string)
             for code in codes:
-                for sub in ast.walk(ast.parse(code)):
+                try:
+                    tree = ast.parse(code)
+                except SyntaxError as exc:
+                    raise UnsupportedNest(f"inter-state code {code!r} is not parseable Python") from exc
+                for sub in ast.walk(tree):
                     if not (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)):
                         continue
                     desc = inner.arrays.get(sub.value.id)
@@ -176,11 +198,20 @@ def _emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.Nested
         if conn != outer:
             inner.replace(conn, outer)
     _reject_underranked_codeblock_index(inner)
-    # A private (non-connector) inner name that collides with an outer buffer would shadow it; the
-    # connector arrays are meant to alias their outer array and are left as-is.
-    for name in list(inner.arrays):
-        if name not in conns.values() and name in sdfg.arrays:
-            inner.replace(name, f"_ns{state.node_id(node)}_{name}")
+    # A private (non-connector) inner transient becomes a plain python local. That only works for a
+    # scalar; a private *array* transient would be emitted as ``name[:] = ...`` yet appears in no
+    # signature (``_scratch_arrays`` scans the outer SDFG only), so it is refused rather than left
+    # undefined. Connector arrays alias an outer buffer parameter and are exempt.
+    outer_names = set(sdfg.arrays)
+    node_id = state.node_id(node)
+    for name, desc in list(inner.arrays.items()):
+        if name in conns.values():
+            continue
+        if not is_scalar(desc):
+            raise UnsupportedNest(f"nested SDFG private transient {name!r} is a non-scalar array; not allocated")
+        # A private inner name that collides with an outer buffer would shadow it -- rename it.
+        if name in outer_names:
+            inner.replace(name, f"_ns{node_id}_{name}")
 
     lines: List[str] = []
     for sym, expr in node.symbol_mapping.items():
@@ -277,19 +308,23 @@ def _emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
 def _emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str]:
     """Emit a ``ConditionalBlock`` as ``if``/``elif``/``else`` over its branches.
 
-    Each branch is ``(condition, region)``; the first keyed branch is ``if``, later keyed branches
-    ``elif``, and the lone unconditional branch (``condition is None``, always last) is ``else``.
+    Each branch is ``(condition, region)``; keyed branches emit ``if`` then ``elif`` in their given
+    order, and the unconditional branch (``condition is None``) always emits ``else`` last -- so a
+    block whose unconditional branch is not stored last still produces valid Python. The condition is
+    run through :func:`_normalize_casts` like every other emitted expression (a guard may hold a
+    ``dace.<cast>`` or a bare math intrinsic).
     """
     ind = "    "
+    keyed = [(c, r) for c, r in cond_block.branches if c is not None]
+    unconditional = [r for c, r in cond_block.branches if c is None]
     lines: List[str] = []
-    for i, (condition, region) in enumerate(cond_block.branches):
-        body = _emit_region(region, sdfg) or ["pass"]
-        if condition is None:
-            lines.append("else:")
-        else:
-            keyword = "if" if i == 0 else "elif"
-            lines.append(f"{keyword} {condition.as_string.strip()}:")
-        lines += [ind + b for b in body]
+    for i, (condition, region) in enumerate(keyed):
+        keyword = "if" if i == 0 else "elif"
+        lines.append(f"{keyword} {_normalize_casts(condition.as_string.strip())}:")
+        lines += [ind + b for b in (_emit_region(region, sdfg) or ["pass"])]
+    for region in unconditional:
+        lines.append("else:")
+        lines += [ind + b for b in (_emit_region(region, sdfg) or ["pass"])]
     return lines
 
 
@@ -339,17 +374,26 @@ def _render(fn_name: str, args: List[str], body: List[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _expand_nested_sdfg_inputs(sdfg: dace.SDFG) -> None:
-    """Widen every nested-SDFG in/out connector to the full outer array, in place.
+def _expand_nested_sdfg_inputs(sdfg: dace.SDFG) -> dace.SDFG:
+    """Return an SDFG whose nested-SDFG in/out connectors are widened to the full outer arrays.
 
     A nested SDFG inside a map is handed per-iteration *slices*; DaCe's ``ExpandNestedSDFGInputs``
     rewrites its descriptors and memlets to reference the whole outer array offset by the map index,
     which is exactly the form :func:`_emit_nested_sdfg` inlines (the outer buffers, indexed by the map
     symbols). It is a semantics-preserving DaCe transformation, so the emitted numerics are unchanged.
-    No-op when the pass is unavailable; :func:`_emit_nested_sdfg` then refuses any nested SDFG.
+
+    The transformation runs on a **copy** so the caller's SDFG is never mutated (emission is
+    read-only); the copy is taken only when there is a nested SDFG to widen -- otherwise the caller's
+    SDFG is returned unchanged. When the pass is unavailable, this is a no-op and
+    :func:`_emit_nested_sdfg` refuses any nested SDFG.
     """
-    if ExpandNestedSDFGInputs is not None:
-        sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs)
+    if ExpandNestedSDFGInputs is None:
+        return sdfg
+    if not any(isinstance(n, nodes.NestedSDFG) for state in sdfg.all_states() for n in state.nodes()):
+        return sdfg
+    widened = copy.deepcopy(sdfg)
+    widened.apply_transformations_repeated(ExpandNestedSDFGInputs)
+    return widened
 
 
 def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
@@ -358,12 +402,12 @@ def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     Signature (all pre-allocated buffers): inputs, then extra outputs, then scratch transients, then
     size symbols. Everything is written in place; there is no return.
     """
-    _expand_nested_sdfg_inputs(boundary.standalone_sdfg)
+    standalone = _expand_nested_sdfg_inputs(boundary.standalone_sdfg)
     args = list(boundary.inputs)
     args += [o for o in boundary.outputs if o not in boundary.inputs]
-    args += [s for s in _scratch_arrays(boundary.standalone_sdfg) if s not in args]
+    args += [s for s in _scratch_arrays(standalone) if s not in args]
     args += [s for s in boundary.symbols if s not in args]
-    return _render(fn_name, args, _emit_region(boundary.standalone_sdfg, boundary.standalone_sdfg))
+    return _render(fn_name, args, _emit_region(standalone, standalone))
 
 
 def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
@@ -372,7 +416,7 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     Signature is the SDFG's own arguments (non-transient arrays + ``__return`` + scalars) followed by
     scratch transient buffers and size symbols -- all caller-allocated, all written in place.
     """
-    _expand_nested_sdfg_inputs(sdfg)
+    sdfg = _expand_nested_sdfg_inputs(sdfg)
     data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     args = data_args + _scratch_arrays(sdfg) + symbols

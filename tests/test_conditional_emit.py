@@ -59,6 +59,33 @@ def _build_three_branch():
     return sdfg
 
 
+def _build_switch(name, branches):
+    """A ``ConditionalBlock`` with the given ``(guard, delta)`` branches in the given order.
+
+    ``guard is None`` marks the unconditional (else) branch; each branch is ``out[i] = a[i] + delta``.
+    Lets a test control branch ordering (e.g. the unconditional branch stored first).
+    """
+    sdfg = dc.SDFG(name)
+    sdfg.add_array("a", [N], dc.float64)
+    sdfg.add_array("out", [N], dc.float64)
+    sdfg.add_symbol("sel", dc.int64)
+    cond = ConditionalBlock("cond", sdfg=sdfg)
+    sdfg.add_node(cond, is_start_block=True)
+    for i, (guard, delta) in enumerate(branches):
+        region = ControlFlowRegion(f"b{i}", sdfg=sdfg)
+        st = region.add_state(f"b{i}_s", is_start_block=True)
+        st.add_mapped_tasklet(f"b{i}_m", dict(i="0:N"),
+                              dict(inp=dc.Memlet("a[i]")),
+                              f"o = inp + {delta}",
+                              dict(o=dc.Memlet("out[i]")),
+                              input_nodes={"a": st.add_read("a")},
+                              output_nodes={"out": st.add_write("out")},
+                              external_edges=True)
+        cond.add_branch(guard, region)
+    sdfg.validate()
+    return sdfg
+
+
 def _emit(sdfg, fn_name):
     assert any(isinstance(b, ConditionalBlock) for b in sdfg.all_control_flow_blocks())
     src = sdfg_to_numpy(sdfg, fn_name)
@@ -91,3 +118,27 @@ def test_signature_is_c_style_no_return():
     fn, src = _emit(if_else.to_sdfg(simplify=True), "if_else")
     assert "return " not in src  # C-style: outputs are in-place buffer params
     assert set(inspect.signature(fn).parameters) == {"a", "out", "flag", "N"}
+
+
+def test_branch_condition_is_normalized():
+    """A guard that uses a bare math intrinsic must be normalized like every other emitted expression,
+    else the kernel references an unqualified ``sqrt`` and raises NameError at exec."""
+    fn, src = _emit(_build_switch("cond_norm", [("sqrt(sel) > 1.0", 10.0), (None, 20.0)]), "cond_norm")
+    assert "np.sqrt(sel)" in src and "sqrt(sel)" not in src.replace("np.sqrt(sel)", "")  # normalized
+    a = np.arange(4, dtype=np.float64)
+    for sel, delta in ((4, 10.0), (0, 20.0)):  # sqrt(4)=2>1 -> if; sqrt(0)=0 -> else
+        out = np.zeros(4)
+        fn(a=a.copy(), out=out, sel=sel, N=4)
+        np.testing.assert_array_equal(out, a + delta)
+
+
+def test_unconditional_branch_reordered_last():
+    """The unconditional (else) branch may be stored before a keyed branch; the emitter must still put
+    ``else`` last so the generated python is valid (`else:` before `if:` is a SyntaxError)."""
+    fn, src = _emit(_build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)]), "else_first")
+    assert src.index("if ") < src.index("else:")  # if emitted before else despite storage order
+    a = np.arange(4, dtype=np.float64)
+    for sel, delta in ((0, 10.0), (5, 20.0)):
+        out = np.zeros(4)
+        fn(a=a.copy(), out=out, sel=sel, N=4)
+        np.testing.assert_array_equal(out, a + delta)
