@@ -24,7 +24,10 @@ external/optarena git submodule (translator + data-gen + compile/time harness)
 
 ## Deps
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
-- OptArena (`external/optarena` submodule; currently the installed package is used).
+- OptArena — `external/optarena` submodule. Its URL is currently a local-path placeholder
+  (`/home/primrose/Work/optarena`) because the upstream remote is not yet reachable; re-point
+  `.gitmodules` to the real remote when available. The code presently imports the installed
+  `optarena` package, not the submodule checkout.
 
 ## Status
 **M0 done** (CPU, C, single MapEntry nest): extract → outer strategy → numpy + OptArena manifest
