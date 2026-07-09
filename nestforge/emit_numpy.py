@@ -402,59 +402,88 @@ def _scratch_arrays(sdfg: dace.SDFG) -> List[str]:
     return sorted(name for name, desc in sdfg.arrays.items() if desc.transient and not is_scalar(desc))
 
 
-def _loop_symbol_max(sdfg: dace.SDFG) -> Dict[str, sympy.Expr]:
-    """Each loop variable -> an upper bound on its value, resolved to kernel symbols.
+def _loop_symbol_ranges(sdfg: dace.SDFG) -> tuple:
+    """``(lo_of, hi_of)``: each *increasing* loop variable -> its min / max value in kernel symbols.
 
-    A buffer sized by a loop variable (``A_0`` shaped ``[j]``) can be pre-allocated at the loop's
-    bound instead (``[N]``) and addressed with an explicit ``0:j`` slice. The bound comes from the
-    loop condition (``j < N`` -> ``N``, ``j <= N`` -> ``N + 1``); a bound that itself names another
-    loop variable is resolved recursively (``j < i`` with ``i < N`` -> ``N``).
+    Per loop, ``lo`` is the initial value (``i = 0`` -> ``0``; ``j = i`` -> ``i``) and ``hi`` the
+    condition bound (``i < N`` -> ``N``; ``i <= N`` -> ``N + 1``). A variable driven by several loops
+    takes ``Min`` of its los / ``Max`` of its his. Endpoints are then resolved to kernel symbols by
+    substituting any nested loop variable with its own resolved bound (``j < i`` with ``i < N`` -> for
+    ``j``: ``hi`` ``Max(i, N)`` -> ``Max(N, N)`` -> ``N``), so the result contains no loop variables.
     """
-    raw: Dict[str, list] = {}
+    los: Dict[str, list] = {}
+    his: Dict[str, list] = {}
     for cfg in sdfg.all_control_flow_regions():
         if not isinstance(cfg, LoopRegion) or cfg.loop_condition is None:
             continue
         rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
-        if not isinstance(rel, sympy.core.relational.Relational):
-            continue
-        if str(rel.lhs) == cfg.loop_variable and isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)):
-            bound = rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0)
-        elif str(rel.rhs) == cfg.loop_variable and isinstance(rel, (sympy.StrictGreaterThan, sympy.GreaterThan)):
-            bound = rel.lhs + (1 if isinstance(rel, sympy.GreaterThan) else 0)
-        else:
-            continue
-        raw.setdefault(cfg.loop_variable, []).append(bound)
+        var = cfg.loop_variable
+        if not (isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)) and str(rel.lhs) == var):
+            continue  # only forward ``var < bound`` loops
+        his.setdefault(var, []).append(rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0))
+        los.setdefault(var, []).append(
+            symbolic.pystr_to_symbolic(cfg.init_statement.as_string.split("=", 1)[1])
+            if cfg.init_statement is not None else sympy.Integer(0))
 
-    def resolve(expr, seen):
-        for sym in list(expr.free_symbols):
-            name = str(sym)
-            if name in raw and name not in seen:
-                parts = [resolve(b, seen | {name}) for b in raw[name]]
-                expr = expr.subs(sym, sympy.Max(*parts) if len(parts) > 1 else parts[0])
-        return expr
+    def resolve(bounds, combine):
+        def r(expr, seen):
+            for sym in list(expr.free_symbols):
+                name = str(sym)
+                if name in bounds and name not in seen:
+                    parts = [r(b, seen | {name}) for b in bounds[name]]
+                    expr = expr.subs(sym, combine(*parts) if len(parts) > 1 else parts[0])
+            return expr
+        return {v: r(combine(*bs) if len(bs) > 1 else bs[0], {v}) for v, bs in bounds.items()}
 
-    return {v: resolve(sympy.Max(*bs) if len(bs) > 1 else bs[0], {v}) for v, bs in raw.items()}
+    return resolve(los, sympy.Min), resolve(his, sympy.Max)
+
+
+def _max_over_loops(dim: sympy.Expr, lo_of: Dict[str, sympy.Expr], hi_of: Dict[str, sympy.Expr],
+                    known: set):
+    """Largest value a shape dimension takes over the loop variables' ranges, or ``None``.
+
+    Each loop variable is substituted by the endpoint that maximises the dimension: its resolved upper
+    bound where the dimension increases in it (``i + 1``), its resolved lower bound where it decreases
+    (``M - i - 1``). Monotonicity is the sign of the (constant) derivative; a variable whose slope
+    still holds free symbols (a power ``R**i``, slope ``R**i*log(R)`` of unknown sign) leaves the
+    dimension unresolved (``None``), as does any residual non-kernel symbol.
+    """
+    result = dim
+    for s in list(dim.free_symbols):
+        if str(s) not in hi_of:
+            continue
+        slope = sympy.diff(dim, s)
+        if slope.free_symbols:
+            return None  # non-constant slope -> monotonicity undetermined
+        result = result.subs(s, hi_of[str(s)] if slope.is_nonnegative else lo_of[str(s)])
+    return result if not {str(s) for s in result.free_symbols} - known else None
 
 
 def _maxsize_loop_scratch(sdfg: dace.SDFG, symbols: List[str]) -> dace.SDFG:
-    """Return an SDFG where a scratch transient sized by a loop variable is widened to that loop's
-    bound, so it can be pre-allocated C-style and addressed with the original ``0:extent`` slices.
+    """Return an SDFG where a scratch transient sized by loop variables is widened to a caller-sizable
+    bound, so it stays a pre-allocated parameter and is addressed with the original ``0:extent`` slices.
 
-    Only a shape dimension that is *exactly* a loop-variable symbol is widened -- substituting the
-    loop's max value there is a sound upper bound (the size grows monotonically with the variable). A
-    non-monotone dimension (an FFT ``R**(K-i-1)``, which shrinks as ``i`` grows) is left untouched and
-    caught later by :func:`_reject_unsizable_scratch`. Runs on a copy so the caller is not mutated.
+    Each shape dimension is replaced by its maximum over the loop ranges (:func:`_max_over_loops`); a
+    dimension whose extent is not a sound function of the kernel symbols (an FFT ``R**(K-i-1)``, a
+    data-dependent CSR span) is left untouched and caught later by :func:`_reject_unsizable_scratch`.
+    Runs on a copy so the caller is not mutated.
     """
     known = set(symbols)
-    lmax = _loop_symbol_max(sdfg)
+    lo_of, hi_of = _loop_symbol_ranges(sdfg)
     resize: Dict[str, tuple] = {}
     for name, desc in sdfg.arrays.items():
         if not desc.transient or is_scalar(desc):
             continue
         if not {str(s) for s in desc.free_symbols} - known:
             continue  # already sizable from kernel symbols
-        new_shape = [lmax[str(dim)] if isinstance(dim, sympy.Symbol) and str(dim) in lmax else dim
-                     for dim in desc.shape]
+        new_shape = []
+        for dim in desc.shape:
+            sdim = sympy.sympify(dim)  # a literal-int dimension has no free symbols to widen
+            if {str(s) for s in sdim.free_symbols} - known:
+                widened = _max_over_loops(sdim, lo_of, hi_of, known)
+                new_shape.append(widened if widened is not None else dim)
+            else:
+                new_shape.append(dim)
         if new_shape != list(desc.shape):
             resize[name] = tuple(new_shape)
     if not resize:

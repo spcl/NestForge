@@ -55,23 +55,24 @@ edges), `dace.<cast>` → `np.<cast>` and bare math intrinsic (`sqrt` → `np.sq
 `skip-taskloops` (default) & `innermost` strategies; **C-style emission** — the kernel allocates
 nothing, every array (inputs, outputs, `__return`, scratch transients) is a pre-allocated buffer
 parameter written in place; **WCR-reduction tasklet** emission (`hist[bin] += w` → an augmented
-assignment); **max-size loop scratch** — a transient sized by a loop variable (`A_0` shaped `[j]`) is
-widened to that loop's bound (`[N]`) so it stays a caller-allocated parameter, and the original
-`0:j` slices address it (sound only for a bare-loop-var dimension; a non-monotone `R**(K-i-1)` is left
-alone); BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses **and** every scratch
-buffer is sizable from the kernel's own symbols): 39 emit / 13 unsupported / 3 frontend build-fail.
-Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
+assignment); **max-size loop scratch** — a transient sized by loop variables (`A_0` shaped `[j]`, a
+shrinking `[M-i-1]`, a growing `[i+1]`) is widened per dimension to the extent's maximum over the loop
+range (upper bound where the dimension increases in the variable, lower bound where it decreases —
+monotonicity from the sign of the constant derivative) so it stays a caller-allocated parameter
+addressed by the original `0:extent` slice; a non-monotone `R**(K-i-1)` (slope `R**i·log R`, unknown
+sign) is left alone; BLAS discovery. Corpus census (extended DaCe, *runnable-eligible* — parses **and**
+every scratch buffer is sizable from the kernel's own symbols): 45 emit / 7 unsupported / 3 frontend
+build-fail. Validated against numpy: `ConditionalBlock` nussinov (bit-exact), contour_integral &
 scattering_self_energies (fp roundoff); nested-SDFG mandelbrot1 & nbody (bit-exact); WCR azimint_naive
-(bit-exact); max-size-scratch trisolv & lu (fp roundoff); Cholesky & TensorTranspose library nodes
-(bit-exact). The 13 unsupported are 12 with a **compound loop-shaped scratch** (a shape expression, not
-a bare loop var — correlation, covariance, syrk, syr2k, trmm, ludcmp, mlp, resnet, lenet, spmv,
-mandelbrot2, stockham_fft) plus 1 nested map-in-map (cholesky2). One eligible kernel still fails at
-runtime: azimint_hist parses but its 3-level nested scalar return is not yet reconciled. Emission is
-read-only (nested-SDFG widening and scratch resizing both run on a copy); guards refuse a nested-SDFG
-whose inter-state condition under-indexes a multi-dim array and any scratch still unsizable after
-widening.
+(bit-exact); loop-scratch trisolv, lu, covariance & syrk (bit-exact / fp roundoff); Cholesky &
+TensorTranspose library nodes (bit-exact). The 7 unsupported: 1 nested map-in-map (cholesky2); 3 with a
+scratch extent that is not a function of the kernel symbols — a data-dependent CSR span (spmv), a
+dynamic length (mandelbrot2), an FFT power `R**i` (stockham_fft); 3 with a hidden layer-config symbol
+not in the signature (mlp, resnet, lenet). One eligible kernel still fails at runtime: azimint_hist
+parses but its 3-level nested scalar return is not yet reconciled. Emission is read-only (nested-SDFG
+widening and scratch resizing both run on a copy); guards refuse a nested-SDFG whose inter-state
+condition under-indexes a multi-dim array and any scratch still unsizable after widening.
 
-Next: extend max-size to compound loop-shaped shapes (per-dimension monotonicity) for the remaining 12;
-reconcile deep multi-level nested scalar returns (azimint_hist); nested map-in-map for cholesky2; then
-wire BLAS/spack into the sweep, cost-model flag axis,
+Next: reconcile deep multi-level nested scalar returns (azimint_hist); nested map-in-map for cholesky2;
+then wire BLAS/spack into the sweep, cost-model flag axis,
 SQLite tracking, DaCe-backend competitor.

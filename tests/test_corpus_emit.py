@@ -14,7 +14,7 @@ pytest.importorskip("optarena")
 from dace import symbolic
 
 from nestforge.corpus import dace_kernel_names, iter_dace_kernels
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import _maxsize_loop_scratch, sdfg_to_numpy
 
 
 def _kernels():
@@ -27,20 +27,18 @@ def _alloc_run(short, fn_name, sizes, inputs, seed=0):
     src = sdfg_to_numpy(sdfg, fn_name)
     ns = {"np": np}
     exec(src, ns)
+    # size loop-shaped scratch exactly as the emitter widened it (a decreasing extent like M-i-1
+    # widens to its i=0 value, not to a naive max) so buffers match the emitted signature.
+    symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
+    sized = _maxsize_loop_scratch(sdfg, symbols)
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     call = {}
     for name in inspect.signature(ns[fn_name]).parameters:
         if name in sizes:
             call[name] = sizes[name]
             continue
-        desc = sdfg.arrays[name]
-        # loop-shaped scratch is widened to its loop bound by the emitter; size any unresolved (loop)
-        # symbol at the largest kernel size so the caller-allocated buffer is at least that big.
-        full_env = dict(env)
-        for d in desc.shape:
-            for s in symbolic.pystr_to_symbolic(str(d)).free_symbols:
-                full_env.setdefault(s, max(sizes.values()))
-        shape = tuple(int(symbolic.evaluate(d, full_env)) for d in desc.shape)
+        desc = sized.arrays[name]
+        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
         dt = np.dtype(desc.dtype.type)
         call[name] = inputs[name].astype(dt) if name in inputs else np.zeros(shape, dt)
     ns[fn_name](**call)
@@ -305,6 +303,41 @@ def test_lu_loop_shaped_scratch_maxsized_and_computes():
         for j in range(i, N):
             ref[i, j] = ref[i, j] - ref[i, :i] @ ref[:i, j]
     np.testing.assert_allclose(A, ref)
+
+
+def test_covariance_decreasing_loop_scratch_and_computes():
+    """covariance stages a *shrinking* slice into a ``[M-i]`` scratch; the emitter max-sizes that
+    decreasing extent at its i=0 value (``M``) -- the compound (non-bare-var) monotonicity path."""
+    M, Nrows = 8, 20
+    rng = np.random.default_rng(0)
+    data = rng.random((Nrows, M))
+    fn = 8.0
+    call, _ = _alloc_run("hpc/dense_linear_algebra/covariance/covariance", "covariance", dict(M=M, N=Nrows),
+                         dict(data=data.copy(), float_n=np.array([fn])))
+    cov = call.get("cov", call.get("__return"))
+    d2 = data - data.mean(axis=0)
+    ref = np.zeros((M, M))
+    for i in range(M):
+        ref[i:M, i] = ref[i, i:M] = d2[:, i] @ d2[:, i:M] / (fn - 1.0)
+    np.testing.assert_allclose(cov, ref)
+
+
+def test_syrk_increasing_loop_scratch_and_computes():
+    """syrk stages a *growing* ``[i+1]`` slice; the emitter max-sizes that increasing extent at its
+    loop bound. C = alpha*A@A.T + beta*C on the lower triangle."""
+    N, Mk = 9, 6
+    rng = np.random.default_rng(1)
+    A, C = rng.random((N, Mk)), rng.random((N, N))
+    alpha, beta = 1.5, 1.2
+    call, _ = _alloc_run("hpc/dense_linear_algebra/syrk/syrk", "syrk", dict(N=N, M=Mk),
+                         dict(A=A.copy(), C=C.copy(), alpha=np.array([alpha]), beta=np.array([beta])))
+    Cout = call.get("C", call.get("__return"))
+    ref = C.copy()
+    for i in range(N):
+        ref[i, :i + 1] *= beta
+        for k in range(Mk):
+            ref[i, :i + 1] += alpha * A[i, k] * A[:i + 1, k]
+    np.testing.assert_allclose(np.tril(Cout), np.tril(ref))
 
 
 def test_jacobi_1d_loopregion_emits_and_computes():
