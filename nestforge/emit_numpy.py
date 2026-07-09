@@ -167,12 +167,30 @@ def _copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -
             src_sub, dst_sub = m.subset, m.other_subset
         else:  # the memlet must name one of the two endpoints; a third array is unexpected
             raise UnsupportedNest(f"copy memlet {m.data!r} names neither {e.src.data!r} nor {e.dst.data!r}")
-        # A ``None`` other-side subset means "the same range as the named side"; mirror it so a
-        # partial copy is not silently widened to the whole array by read_expr/write_lhs.
-        src_sub = src_sub if src_sub is not None else dst_sub
-        dst_sub = dst_sub if dst_sub is not None else src_sub
-        lines.append(f"{write_lhs(sdfg, e.dst.data, dst_sub)} = {read_expr(sdfg, e.src.data, src_sub)}")
+        if len(sdfg.arrays[e.src.data].shape) == len(sdfg.arrays[e.dst.data].shape):
+            # Same-rank copy: a ``None`` other-side subset means "the same range as the named side";
+            # mirror it so a partial copy is not silently widened to the whole array.
+            src_sub = src_sub if src_sub is not None else dst_sub
+            dst_sub = dst_sub if dst_sub is not None else src_sub
+            lhs, rhs = write_lhs(sdfg, e.dst.data, dst_sub), read_expr(sdfg, e.src.data, src_sub)
+        else:
+            # Reshape copy (e.g. ``(N,) <-> (N, 1)``): a scalar-local side stays bare; otherwise the
+            # reshaping side keeps its subset explicit so a point index collapses the rank to match,
+            # and a ``None`` side is the whole array.
+            lhs = _reshape_side(sdfg, e.dst.data, dst_sub, write=True)
+            rhs = _reshape_side(sdfg, e.src.data, src_sub, write=False)
+        lines.append(f"{lhs} = {rhs}")
     return lines
+
+
+def _reshape_side(sdfg: dace.SDFG, name: str, subset, write: bool) -> str:
+    """One side of a rank-changing copy: bare for a scalar local, explicit ``name[idx]`` for the
+    reshaping (rank-collapsing) side, else the whole array via the access oracle."""
+    if scalar_local(sdfg, name):
+        return name
+    if subset is None:
+        return write_lhs(sdfg, name, None) if write else read_expr(sdfg, name, None)
+    return f"{name}[{index_str(subset)}]"
 
 
 def _reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
@@ -416,28 +434,39 @@ def _scratch_arrays(sdfg: dace.SDFG) -> List[str]:
     return sorted(name for name, desc in sdfg.arrays.items() if desc.transient and not is_scalar(desc))
 
 
-def _loop_symbol_ranges(sdfg: dace.SDFG) -> tuple:
-    """``(lo_of, hi_of)``: each *increasing* loop variable -> its min / max value in kernel symbols.
+def _symbol_ranges(sdfg: dace.SDFG) -> tuple:
+    """``(lo_of, hi_of)``: each non-argument symbol -> its min / max value in kernel symbols.
 
-    Per loop, ``lo`` is the initial value (``i = 0`` -> ``0``; ``j = i`` -> ``i``) and ``hi`` the
-    condition bound (``i < N`` -> ``N``; ``i <= N`` -> ``N + 1``). A variable driven by several loops
-    takes ``Min`` of its los / ``Max`` of its his. Endpoints are then resolved to kernel symbols by
-    substituting any nested loop variable with its own resolved bound (``j < i`` with ``i < N`` -> for
-    ``j``: ``hi`` ``Max(i, N)`` -> ``Max(N, N)`` -> ``N``), so the result contains no loop variables.
+    Two sources feed the range of a symbol used in a buffer shape:
+
+    * an *increasing loop variable* takes ``[init, condition-bound]`` (``i = 0`` / ``i < N`` -> ``[0,
+      N]``; ``i <= N`` -> ``N + 1``);
+    * an *inter-state-assigned* config symbol takes each value it is assigned (a layer size reused
+      across a network -- ``N2 = S0``/``S1``/``S2``, ``S1 = H``/``H-4``/``120``), so its range spans
+      all of them.
+
+    A symbol driven by several of these takes ``Min`` of its los / ``Max`` of its his; endpoints that
+    still name another such symbol are resolved recursively, so the result is in kernel symbols only.
     """
     los: Dict[str, list] = {}
     his: Dict[str, list] = {}
     for cfg in sdfg.all_control_flow_regions():
-        if not isinstance(cfg, LoopRegion) or cfg.loop_condition is None:
-            continue
-        rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
-        var = cfg.loop_variable
-        if not (isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)) and str(rel.lhs) == var):
-            continue  # only forward ``var < bound`` loops
-        his.setdefault(var, []).append(rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0))
-        los.setdefault(var, []).append(
-            symbolic.pystr_to_symbolic(cfg.init_statement.as_string.split("=", 1)[1])
-            if cfg.init_statement is not None else sympy.Integer(0))
+        if isinstance(cfg, LoopRegion) and cfg.loop_condition is not None:
+            rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
+            var = cfg.loop_variable
+            if isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)) and str(rel.lhs) == var:
+                his.setdefault(var, []).append(rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0))
+                los.setdefault(var, []).append(
+                    symbolic.pystr_to_symbolic(cfg.init_statement.as_string.split("=", 1)[1])
+                    if cfg.init_statement is not None else sympy.Integer(0))
+        for e in cfg.edges():
+            for var, rhs in e.data.assignments.items():
+                try:
+                    value = symbolic.pystr_to_symbolic(rhs)  # the config symbol takes exactly this value
+                except Exception:
+                    continue  # a data-dependent / non-symbolic assignment is not a usable size bound
+                los.setdefault(var, []).append(value)
+                his.setdefault(var, []).append(value)
 
     def resolve(bounds, combine):
         def r(expr, seen):
@@ -483,7 +512,7 @@ def _maxsize_loop_scratch(sdfg: dace.SDFG, symbols: List[str]) -> dace.SDFG:
     Runs on a copy so the caller is not mutated.
     """
     known = set(symbols)
-    lo_of, hi_of = _loop_symbol_ranges(sdfg)
+    lo_of, hi_of = _symbol_ranges(sdfg)
     resize: Dict[str, tuple] = {}
     for name, desc in sdfg.arrays.items():
         if not desc.transient or is_scalar(desc):

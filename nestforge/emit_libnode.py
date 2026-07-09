@@ -177,7 +177,13 @@ def _emit_reduce(node, state, sdfg) -> str:
         raise UnsupportedLibraryNode(f"Reduce with unsupported wcr {node.wcr!r} ({red})")
     inp = _in_expr(state, node, None, sdfg)
     axis = None if node.axes is None else tuple(node.axes)
-    return f"{_out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis})"
+    # keepdims when the output keeps the reduced axis as a size-1 dimension (a numpy ``keepdims=True``
+    # reduction, e.g. softmax's ``np.max(x, axis=-1, keepdims=True)``); detected by equal rank.
+    in_desc = sdfg.arrays[next(iter(state.in_edges(node))).data.data]
+    out_desc = sdfg.arrays[next(iter(state.out_edges(node))).data.data]
+    keepdims = axis is not None and len(out_desc.shape) == len(in_desc.shape)
+    kd = ", keepdims=True" if keepdims else ""
+    return f"{_out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis}{kd})"
 
 
 #: class name -> ``(node, state, sdfg) -> "lhs = rhs"``. Extend with new library nodes here.
