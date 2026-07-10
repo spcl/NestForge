@@ -24,6 +24,17 @@ nestforge/
   arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner + report
 ```
 
+## Design docs
+- `DESIGN.md` — emitter audit (contract, cross-cutting concerns, overfit verdict, refinement plan).
+- `PREDICTIVE.md` — profile-based + offline-predictive modes (compiler ranking; FP-safety).
+- `PARALLEL.md` — parallel-region handling: compile intent (parent-parallel → single-thread; outer →
+  OpenMP), the single-mandated-runtime + driver-owned-init link contract, and stability under parallelism.
+- `docs/FP_RISK.md` — static classifier for when fast-math / a parallel reduction is numerically
+  dangerous: 7-sub-flag taxonomy, condition-number theory, static-vs-dynamic tool survey, the R1–R16
+  rule table, and cross-language operator semantics (numpy-default + fortran-to-sdfg).
+- `docs/OPT_RECORDS.md` — emitting + parsing optimization records for GCC / LLVM / Intel / NVIDIA, and
+  the normalized schema + trip-count-weighted ranking the predictive mode uses.
+
 ## Deps
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
 - OptArena — vendored as the `external/optarena` git submodule (`github.com/spcl/OptArena`). Resolve

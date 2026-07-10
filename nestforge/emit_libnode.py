@@ -83,6 +83,11 @@ def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) 
     if scalar_local(sdfg, name):
         return name
     desc = sdfg.arrays[name]
+    if is_scalar(desc):
+        # A size-1 buffer (non-transient, so not a plain local): write its sole element. ``name[:] =
+        # scalar`` is valid numpy but the C translator mis-lowers it to ``name = scalar`` (double ->
+        # double*); ``name[0] =`` matches how the element is read back and translates correctly.
+        return f"{name}[0]"
     if subset is None or covers_whole(subset, desc):
         return f"{name}[:]"
     return f"{name}[{index_str(subset)}]"
