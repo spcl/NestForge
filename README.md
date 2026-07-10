@@ -51,7 +51,14 @@ nestforge/
   (`.clang-format`, 160 cols). `scripts/format.sh` rewrites in place; `--check` is the CI gate.
 - CI: `.github/workflows/ci.yml` — format gate → toolchain via `setup_apt.sh` → DaCe(`extended`)+OptArena
   editable → pytest (needs a `NESTFORGE_CI_TOKEN` secret for the private spcl repos).
-- DaCe (`/home/primrose/Work/dace`, branch `extended`).
+- DaCe — the **`extended`** branch, installed **editable** from the sibling checkout (`../dace`). The PyPI
+  `dace` wheel lacks the extended-only passes nest-forge uses (e.g.
+  `dace.transformation.interstate.expand_nested_sdfg_inputs`); without them the nested-SDFG / WCR corpus
+  tests self-skip. `requirements-dev.txt` pins this (`-e ../dace`); set it up with:
+  ```
+  git -C ../dace switch extended
+  pip install -r requirements-dev.txt   # editable dace + optarena + test/format deps
+  ```
 - OptArena — vendored as the `external/optarena` git submodule (`github.com/spcl/OptArena`). Resolve
   and install it with:
   ```

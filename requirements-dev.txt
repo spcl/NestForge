@@ -1,0 +1,24 @@
+# nest-forge dev/test dependencies.
+#
+# DaCe MUST be the `extended` branch, installed EDITABLE from the sibling checkout (the PyPI `dace` wheel
+# lacks the extended-only passes nest-forge relies on, e.g. dace.transformation.interstate.
+# expand_nested_sdfg_inputs -- without it the nested-SDFG / WCR corpus tests self-skip). The relative path
+# assumes the documented sibling layout (../dace next to ./nest-forge); adjust if yours differs.
+#
+#   git -C ../dace switch extended          # track the extended branch
+#   pip install -r requirements-dev.txt      # installs the editable dace below + the rest
+-e ../dace
+
+# OptArena is not on PyPI -- vendored as the external/optarena submodule (see pyproject.toml):
+#   git submodule update --init --recursive
+-e external/optarena
+
+numpy
+pyyaml
+pytest
+pytest-timeout
+pytest-xdist
+sympy
+# formatters (also the CI format gate): yapf (python, 120) + clang-format (C/C++, 160)
+yapf
+clang-format
