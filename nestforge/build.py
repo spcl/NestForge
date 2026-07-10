@@ -16,8 +16,11 @@ treats it as a size-1 buffer).
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 import re
+import shutil
 import subprocess
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -130,6 +133,111 @@ LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")   # NVIDIA HPC (nvc/nv
 
 #: name -> runtime, for a config/CLI knob.
 OPENMP_RUNTIMES = {"libomp": LIBOMP, "libgomp": LIBGOMP, "libiomp5": LIBIOMP5, "libnvomp": LIBNVOMP}
+
+
+def resolve_runtime(name: str) -> OpenMPRuntime:
+    """A named runtime as an :class:`OpenMPRuntime`. Known names hit the registry; an unknown name is
+    taken as ``lib<soname>`` and assumed kmpc+gomp (the portable default) so a custom runtime still has
+    a compat model."""
+    rt = OPENMP_RUNTIMES.get(name)
+    if rt is not None:
+        return rt
+    soname = name[3:] if name.startswith("lib") else name
+    return OpenMPRuntime(name=name, soname=soname)
+
+
+def runtime_installed(rt: OpenMPRuntime) -> bool:
+    """True if the runtime's shared object can be found -- on its ``lib_dir`` (if pinned) or the system
+    loader search path (ldconfig cache / ``LD_LIBRARY_PATH``). NVIDIA's libnvomp lives off the default
+    path, so without a ``lib_dir`` it reads as not-installed here -- which is why a config that names it
+    for a non-nvhpc link gets pruned with a warning."""
+    if rt.lib_dir:
+        d = Path(rt.lib_dir)
+        if any((d / f"lib{rt.soname}{ext}").exists() for ext in (".so", ".a", ".dylib")):
+            return True
+    return ctypes.util.find_library(rt.soname) is not None
+
+
+@dataclass
+class ArenaConfig:
+    """The DESIRED sweep: which compilers and which OpenMP runtimes to try. It is a wish list -- some
+    entries may be uninstalled or ABI-incompatible with each other. :func:`prune_to_valid_combinations`
+    turns it into the set of (compiler, runtime) pairs that actually work on this machine.
+
+    Runtimes default to just ``libomp`` (PARALLEL.md mandates ONE runtime for the whole program, and
+    libomp is the portable one -- kmpc for clang/flang/icx/nvc++, gomp-compat for gcc). List more only to
+    sweep runtime choices."""
+    compilers: List[str] = field(default_factory=lambda: ["g++", "clang++", "nvc++", "icpx"])
+    runtimes: List[str] = field(default_factory=lambda: ["libomp"])
+
+
+@dataclass
+class PrunedConfig:
+    """The result of :func:`prune_to_valid_combinations`: the surviving compilers and runtimes, and the
+    concrete ABI-valid, installed ``(compiler, runtime_name)`` pairs to actually build."""
+    compilers: List[str]
+    runtimes: List[str]
+    combos: List[Tuple[str, str]]
+
+
+def prune_to_valid_combinations(config: ArenaConfig, *, probe_compilers: bool = True,
+                                probe_runtimes: bool = True) -> PrunedConfig:
+    """Reduce a desired :class:`ArenaConfig` to the combinations that can actually be built here.
+
+    Removal happens for three reasons, and EVERY removal raises a ``warnings.warn`` so a silently
+    shrinking matrix is visible:
+
+    1. a compiler not on ``PATH`` is dropped;
+    2. a runtime whose library is not found on the system is dropped (see :func:`runtime_installed`);
+    3. ABI pruning to a fixpoint -- a runtime compatible with none of the remaining compilers is dropped
+       (this is the "remove runtimes by default" step), then a compiler with no compatible remaining
+       runtime is dropped. Removing one can orphan the other, so it iterates until stable. Concretely:
+       select ``libgomp`` (gomp-only) and every kmpc compiler (clang++/flang/icx/**nvc++**) is discarded;
+       keep ``nvc++`` and it forces a kmpc runtime (libomp/libiomp5/libnvomp), never libgomp.
+
+    :param probe_compilers: check ``PATH`` (off for a pure-logic test on a machine missing the toolchains).
+    :param probe_runtimes: check the filesystem for each runtime's ``.so`` (off to test ABI logic alone).
+    """
+    compilers = list(dict.fromkeys(config.compilers))  # de-dup, keep order
+    runtimes = list(dict.fromkeys(config.runtimes))
+
+    if probe_compilers:
+        present = []
+        for c in compilers:
+            if shutil.which(c):
+                present.append(c)
+            else:
+                warnings.warn(f"compiler {c!r} is not on PATH; removing it from the arena candidates")
+        compilers = present
+
+    if probe_runtimes:
+        found = []
+        for r in runtimes:
+            rt = resolve_runtime(r)
+            if runtime_installed(rt):
+                found.append(r)
+            else:
+                warnings.warn(f"OpenMP runtime {r!r} (lib{rt.soname}) is not installed on this system; "
+                              f"removing it from the arena candidates")
+        runtimes = found
+
+    while True:  # fixpoint: drops shrink both lists monotonically, so this terminates
+        keep_rt = [r for r in runtimes if any(resolve_runtime(r).compatible(c) for c in compilers)]
+        for r in runtimes:
+            if r not in keep_rt:
+                warnings.warn(f"OpenMP runtime {r!r} is ABI-incompatible with every remaining compiler "
+                              f"({compilers}); removing it")
+        keep_cc = [c for c in compilers if any(resolve_runtime(r).compatible(c) for r in keep_rt)]
+        for c in compilers:
+            if c not in keep_cc:
+                warnings.warn(f"compiler {c!r} has no compatible OpenMP runtime among {keep_rt}; "
+                              f"removing it from the arena candidates")
+        if keep_rt == runtimes and keep_cc == compilers:
+            break
+        runtimes, compilers = keep_rt, keep_cc
+
+    combos = [(c, r) for c in compilers for r in runtimes if resolve_runtime(r).compatible(c)]
+    return PrunedConfig(compilers=compilers, runtimes=runtimes, combos=combos)
 
 
 def dace_runtime_include() -> Path:

@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import dace
+
 pytest.importorskip("optarena")
 pytestmark = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not on PATH")
 
@@ -22,7 +24,8 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
-from nestforge.build import build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family
+from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP,
+                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime)
 
 
 def _kernels():
@@ -132,6 +135,108 @@ def test_gcc_compiled_kernel_links_against_libomp():
     built.run(buf, sizes)
     for o in oracle:
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
+
+
+def _parallel_axpy_sdfg(name="paxpy"):
+    """A minimal SDFG with ONE genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel
+    for``): ``Z[i] = X[i] + Y[i]``. Hermetic (no corpus dependency) so the cross-compiler OpenMP link
+    matrix is tested on a guaranteed-parallel loop, not on whatever schedule a corpus kernel happens to
+    carry."""
+    N = dace.symbol("N", dace.int64)
+    sdfg = dace.SDFG(name)
+    for a in ("X", "Y", "Z"):
+        sdfg.add_array(a, [N], dace.float64)
+    st = sdfg.add_state()
+    me, mx = st.add_map("m", {"i": "0:N"}, schedule=dace.ScheduleType.CPU_Multicore)
+    t = st.add_tasklet("t", {"x", "y"}, {"z"}, "z = x + y")
+    st.add_memlet_path(st.add_read("X"), me, t, dst_conn="x", memlet=dace.Memlet("X[i]"))
+    st.add_memlet_path(st.add_read("Y"), me, t, dst_conn="y", memlet=dace.Memlet("Y[i]"))
+    st.add_memlet_path(t, mx, st.add_write("Z"), src_conn="z", memlet=dace.Memlet("Z[i]"))
+    return sdfg
+
+
+def test_parallel_map_emits_omp_pragma():
+    """The sanity nest is actually parallel: DaCe lowers the ``CPU_Multicore`` map to an OpenMP pragma in
+    the generated C++ (so the cross-compiler tests below really do exercise the OpenMP runtime link)."""
+    from nestforge.build import generate_program_folder
+    frame, _ = generate_program_folder(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
+    assert "#pragma omp parallel for" in frame.read_text()
+
+
+# gcc is the driver; each of these compilers builds the SAME parallel nest as a node library, and every
+# node library links against the one mandated OpenMP runtime (libomp / its ABI-equal native kmpc runtime
+# for nvc++). This is the mixed-compiler / single-runtime sanity matrix: prove each compiler emits a
+# correct parallel loop that links + runs on libomp. Missing toolchains skip (icpx needs oneapi setvars).
+@pytest.mark.parametrize("compiler", ["g++", "clang++", "nvc++", "icpx"])
+def test_parallel_loop_links_on_libomp_across_compilers(compiler):
+    if shutil.which(compiler) is None:
+        pytest.skip(f"{compiler} not on PATH")
+    assert LIBOMP.compatible(compiler), f"{compiler} must be able to link libomp (kmpc/gomp)"
+    n = 256
+    x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
+    buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
+    # Compiler-neutral flags only (no -march=native: nvc++ spells it -tp); OpenMP is the separate axis.
+    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")), compiler=compiler,
+                       flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=LIBOMP)
+    built.run(buf, {"N": n})
+    np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
+
+
+def test_prune_selecting_libgomp_discards_kmpc_compilers():
+    """User rule: select libgomp (GOMP-only) and every kmpc compiler is discarded -- clang++ AND nvc++
+    both emit ``__kmpc_*`` which libgomp lacks; only gcc (which emits ``GOMP_*``) survives. Each drop
+    warns. (probe off: pure ABI logic, independent of what is installed.)"""
+    cfg = ArenaConfig(compilers=["g++", "clang++", "nvc++"], runtimes=["libgomp"])
+    with pytest.warns(UserWarning, match="nvc"):
+        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=False)
+    assert pruned.compilers == ["g++"]
+    assert pruned.runtimes == ["libgomp"]
+    assert pruned.combos == [("g++", "libgomp")]
+
+
+def test_prune_removes_runtime_with_no_compatible_compiler():
+    """The "remove runtimes by default" step: with only nvc++ (kmpc) as a compiler, a libgomp in the
+    runtime list is compatible with no remaining compiler and is dropped with a warning; the kmpc libomp
+    stays. So nvc++ is forced onto libomp -- the "nvc++ -> must use libomp" rule."""
+    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libomp", "libgomp"])
+    with pytest.warns(UserWarning, match="incompatible"):
+        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=False)
+    assert pruned.runtimes == ["libomp"]
+    assert pruned.combos == [("nvc++", "libomp")]
+    # invariant: every surviving combo is ABI-valid.
+    assert all(resolve_runtime(r).compatible(c) for c, r in pruned.combos)
+
+
+def test_prune_removes_uninstalled_compiler_with_warning():
+    """A compiler not on PATH is dropped with a warning (real probe: the bogus name cannot exist)."""
+    cfg = ArenaConfig(compilers=["g++", "nf-not-a-real-compiler"], runtimes=["libomp"])
+    with pytest.warns(UserWarning, match="not on PATH"):
+        pruned = prune_to_valid_combinations(cfg, probe_compilers=True, probe_runtimes=False)
+    assert pruned.compilers == ["g++"]
+
+
+def test_prune_removes_uninstalled_runtime_with_warning(monkeypatch):
+    """A runtime whose library is not found is dropped with a warning. libnvomp is marked absent to make
+    the test host-independent."""
+    import nestforge.build as B
+    real = B.runtime_installed
+    monkeypatch.setattr(B, "runtime_installed", lambda rt: rt.soname != "nvomp" and real(rt))
+    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libomp", "libnvomp"])
+    with pytest.warns(UserWarning, match="not installed"):
+        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=True)
+    assert "libnvomp" not in pruned.runtimes and "libomp" in pruned.runtimes
+
+
+def test_prune_default_config_yields_gcc_on_libomp():
+    """The default arena (g++/clang++/nvc++/icpx x libomp) pruned on this machine keeps at least the
+    gcc-on-libomp combo; uninstalled toolchains (e.g. icpx without setvars) just warn and drop out (not
+    asserted here since which toolchains are present is host-dependent)."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pruned = prune_to_valid_combinations(ArenaConfig())
+    assert ("g++", "libomp") in pruned.combos
+    assert all(resolve_runtime(r).compatible(c) for c, r in pruned.combos)
 
 
 def test_owned_build_reusable_handle_program():
