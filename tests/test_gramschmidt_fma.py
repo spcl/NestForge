@@ -36,8 +36,8 @@ _CT = {"float64": ctypes.c_double, "int64": ctypes.c_int64}
 _BASE = ["-O3", "-march=native", "-fPIC", "-shared"]
 _MODES = {
     "ieee-strict-seq": ["-ffp-contract=off", "-fno-tree-vectorize"],  # the stability baseline
-    "contract-fast": ["-ffp-contract=fast"],                          # FMA only, no reassociation
-    "fast-math": ["-ffast-math"],                                     # adds reduction reassociation
+    "contract-fast": ["-ffp-contract=fast"],  # FMA only, no reassociation
+    "fast-math": ["-ffast-math"],  # adds reduction reassociation
 }
 
 
@@ -61,8 +61,7 @@ def _prepare_compute_nest():
 
 def _emit(boundary, tmp_path):
     prep = prepare(boundary, "gs_compute", tmp_path / "kern")
-    csrc = next(p for p in emit_sources(prep, tmp_path / "gen")
-                if p.suffix == ".c" and "pluto" not in p.name)
+    csrc = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c" and "pluto" not in p.name)
     ctext = csrc.read_text()
     # ABI order is whatever the translator emits (it reorders vs the manifest), so read it back.
     sig = re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", ctext, re.S).group(1)
@@ -79,15 +78,16 @@ def _run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
             d = bsdfg.arrays[a]
             shape = tuple(int(symbolic.evaluate(x, env)) for x in d.shape)
             buffers[a] = A.copy() if a == "A" else np.zeros(shape, np.dtype(d.dtype.type))
-    argt = [ctypes.POINTER(_CT[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays
-            else ctypes.c_int64 for a in order]
+    argt = [
+        ctypes.POINTER(_CT[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays else ctypes.c_int64
+        for a in order
+    ]
     so = tmp_path / f"lib_{tag}.so"
     subprocess.run([gcc, *_BASE, *flags, str(csrc), "-o", str(so)], check=True, capture_output=True)
     fn = ctypes.CDLL(str(so)).gs_compute_fp64
     fn.argtypes = argt
     fn.restype = None
-    fn(*[buffers[a].ctypes.data_as(t) if a in buffers else ctypes.c_int64(sizes[a])
-         for a, t in zip(order, argt)])
+    fn(*[buffers[a].ctypes.data_as(t) if a in buffers else ctypes.c_int64(sizes[a]) for a, t in zip(order, argt)])
     return {o: buffers[o].copy() for o in ("__return_0", "__return_1")}
 
 
@@ -104,8 +104,10 @@ def _sweep(conditioning, tmp_path):
     M, N = 128, 40
     sizes = {"M": M, "N": N, "j": 0, "k": 0}
     A = _make_A(M, N, conditioning)
-    outs = {m: _run(csrc, order, boundary, flags, A, sizes, tmp_path, f"{conditioning}_{m}")
-            for m, flags in _MODES.items()}
+    outs = {
+        m: _run(csrc, order, boundary, flags, A, sizes, tmp_path, f"{conditioning}_{m}")
+        for m, flags in _MODES.items()
+    }
     ref = outs["ieee-strict-seq"]
     return {m: _relerr(outs[m], ref) for m in _MODES}
 

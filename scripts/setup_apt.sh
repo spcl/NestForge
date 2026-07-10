@@ -63,7 +63,12 @@ phase_oneapi() {
   fi
   apt_install intel-oneapi-compiler-dpcpp-cpp intel-oneapi-compiler-fortran \
               intel-oneapi-openmp intel-oneapi-mkl intel-oneapi-mkl-devel
-  warn "oneAPI needs env: 'source /opt/intel/oneapi/setvars.sh' -> icx/icpx/ifx on PATH (+ libiomp5, SVML)."
+  if [ -f /opt/intel/oneapi/setvars.sh ]; then
+    log "sourcing oneAPI setvars.sh (puts icx/icpx/ifx + libiomp5/SVML on PATH for the rest of this run)"
+    set +u; # shellcheck disable=SC1091
+    . /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || warn "setvars.sh returned nonzero"; set -u
+  fi
+  warn "oneAPI env does NOT persist past this script -- add 'source /opt/intel/oneapi/setvars.sh' to your shell rc."
 }
 
 phase_nvhpc() {

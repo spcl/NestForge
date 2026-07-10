@@ -73,20 +73,48 @@ def _sub_connectors(code: str, conn_expr: Dict[str, str]) -> str:
 #: never blindly rewritten to a nonexistent ``np.<attr>``; ``bool`` maps to ``np.bool_`` (``np.bool``
 #: was removed in NumPy 2).
 _DACE_DTYPES = {
-    "bool": "np.bool_", "int8": "np.int8", "int16": "np.int16", "int32": "np.int32", "int64": "np.int64",
-    "uint8": "np.uint8", "uint16": "np.uint16", "uint32": "np.uint32", "uint64": "np.uint64",
-    "float16": "np.float16", "float32": "np.float32", "float64": "np.float64", "complex64": "np.complex64",
+    "bool": "np.bool_",
+    "int8": "np.int8",
+    "int16": "np.int16",
+    "int32": "np.int32",
+    "int64": "np.int64",
+    "uint8": "np.uint8",
+    "uint16": "np.uint16",
+    "uint32": "np.uint32",
+    "uint64": "np.uint64",
+    "float16": "np.float16",
+    "float32": "np.float32",
+    "float64": "np.float64",
+    "complex64": "np.complex64",
     "complex128": "np.complex128",
 }
 _DACE_CAST = re.compile(r"\bdace\.(" + "|".join(_DACE_DTYPES) + r")\b")
 
 #: bare math intrinsic (as DaCe exposes it in tasklet code) -> the numpy function that computes it.
 _MATH_INTRINSICS = {
-    "sqrt": "np.sqrt", "cbrt": "np.cbrt", "exp": "np.exp", "exp2": "np.exp2", "expm1": "np.expm1",
-    "log": "np.log", "log2": "np.log2", "log10": "np.log10", "log1p": "np.log1p", "sin": "np.sin",
-    "cos": "np.cos", "tan": "np.tan", "asin": "np.arcsin", "acos": "np.arccos", "atan": "np.arctan",
-    "atan2": "np.arctan2", "sinh": "np.sinh", "cosh": "np.cosh", "tanh": "np.tanh", "floor": "np.floor",
-    "ceil": "np.ceil", "fabs": "np.abs", "sign": "np.sign",
+    "sqrt": "np.sqrt",
+    "cbrt": "np.cbrt",
+    "exp": "np.exp",
+    "exp2": "np.exp2",
+    "expm1": "np.expm1",
+    "log": "np.log",
+    "log2": "np.log2",
+    "log10": "np.log10",
+    "log1p": "np.log1p",
+    "sin": "np.sin",
+    "cos": "np.cos",
+    "tan": "np.tan",
+    "asin": "np.arcsin",
+    "acos": "np.arccos",
+    "atan": "np.arctan",
+    "atan2": "np.arctan2",
+    "sinh": "np.sinh",
+    "cosh": "np.cosh",
+    "tanh": "np.tanh",
+    "floor": "np.floor",
+    "ceil": "np.ceil",
+    "fabs": "np.abs",
+    "sign": "np.sign",
 }
 _INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?=\s*\()")
 
@@ -457,8 +485,8 @@ def _symbol_ranges(sdfg: dace.SDFG) -> tuple:
             if isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)) and str(rel.lhs) == var:
                 his.setdefault(var, []).append(rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0))
                 los.setdefault(var, []).append(
-                    symbolic.pystr_to_symbolic(cfg.init_statement.as_string.split("=", 1)[1])
-                    if cfg.init_statement is not None else sympy.Integer(0))
+                    symbolic.pystr_to_symbolic(cfg.init_statement.as_string.split("=", 1)[1]) if cfg.
+                    init_statement is not None else sympy.Integer(0))
         for e in cfg.edges():
             for var, rhs in e.data.assignments.items():
                 try:
@@ -469,6 +497,7 @@ def _symbol_ranges(sdfg: dace.SDFG) -> tuple:
                 his.setdefault(var, []).append(value)
 
     def resolve(bounds, combine):
+
         def r(expr, seen):
             for sym in list(expr.free_symbols):
                 name = str(sym)
@@ -476,13 +505,13 @@ def _symbol_ranges(sdfg: dace.SDFG) -> tuple:
                     parts = [r(b, seen | {name}) for b in bounds[name]]
                     expr = expr.subs(sym, combine(*parts) if len(parts) > 1 else parts[0])
             return expr
+
         return {v: r(combine(*bs) if len(bs) > 1 else bs[0], {v}) for v, bs in bounds.items()}
 
     return resolve(los, sympy.Min), resolve(his, sympy.Max)
 
 
-def _max_over_loops(dim: sympy.Expr, lo_of: Dict[str, sympy.Expr], hi_of: Dict[str, sympy.Expr],
-                    known: set):
+def _max_over_loops(dim: sympy.Expr, lo_of: Dict[str, sympy.Expr], hi_of: Dict[str, sympy.Expr], known: set):
     """Largest value a shape dimension takes over the loop variables' ranges, or ``None``.
 
     Each loop variable is substituted by the endpoint that maximises the dimension: its resolved upper

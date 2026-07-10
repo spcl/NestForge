@@ -136,15 +136,16 @@ class ExternalCall(nodes.LibraryNode):
     default_implementation = "DaceReference"
 
     numpy_source = dace.properties.Property(dtype=str, default="", desc="numpy reference of the nest")
-    config = dace.properties.DictProperty(key_type=str, value_type=object, default=None,
+    config = dace.properties.DictProperty(key_type=str,
+                                          value_type=object,
+                                          default=None,
                                           desc="OptArena manifest (symbols, shapes, dtypes)")
     symbol = dace.properties.Property(dtype=str, default="", desc="extern-C symbol to call")
     lib_path = dace.properties.Property(dtype=str, default="", desc="compiled static/shared lib")
     fp_mode = dace.properties.Property(dtype=str, default="", desc="winning FP mode")
 
-    def __init__(self, name, inputs=None, outputs=None, numpy_source="", config=None,
-                 standalone_sdfg=None, **kwargs):
+    def __init__(self, name, inputs=None, outputs=None, numpy_source="", config=None, standalone_sdfg=None, **kwargs):
         super().__init__(name, inputs=inputs or set(), outputs=outputs or set(), **kwargs)
         self.numpy_source = numpy_source
         self.config = config
-        self._standalone_sdfg = standalone_sdfg   # in-memory only (not serialized in M0)
+        self._standalone_sdfg = standalone_sdfg  # in-memory only (not serialized in M0)

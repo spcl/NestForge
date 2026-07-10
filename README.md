@@ -45,7 +45,12 @@ nestforge/
     vendor apt repos + gpg keys (icx/ifx + libiomp5 + SVML; nvc/nvc++ + libnvomp). Assumes sudo.
   - `scripts/setup_spack.sh` — the **spack** compiler×library matrix (register compilers, optional
     `--spack-compilers` to build extra ones, then `SPACK_MATRIX_LIBS` × `SPACK_MATRIX_COMPILERS`).
-    Userspace, no sudo; run after the apt script.
+    Userspace, no sudo; run after the apt script. Sources `oneapi/setvars.sh` + adds nvhpc to PATH so
+    those compilers register.
+- Formatting: **yapf** for Python (`pyproject [tool.yapf]`, 120 cols) + **clang-format** for C/C++
+  (`.clang-format`, 160 cols). `scripts/format.sh` rewrites in place; `--check` is the CI gate.
+- CI: `.github/workflows/ci.yml` — format gate → toolchain via `setup_apt.sh` → DaCe(`extended`)+OptArena
+  editable → pytest (needs a `NESTFORGE_CI_TOKEN` secret for the private spcl repos).
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
 - OptArena — vendored as the `external/optarena` git submodule (`github.com/spcl/OptArena`). Resolve
   and install it with:

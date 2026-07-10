@@ -46,19 +46,25 @@ def main():
     if gcc is None:
         raise SystemExit("gcc not on PATH")
     work = Path(tempfile.mkdtemp(prefix="nf_gs_demo_"))
-    sdfg = {k.short_name: k for k in iter_dace_kernels()}[
-        "hpc/dense_linear_algebra/gramschmidt/gramschmidt"].to_sdfg(simplify=True)
+    sdfg = {
+        k.short_name: k
+        for k in iter_dace_kernels()
+    }["hpc/dense_linear_algebra/gramschmidt/gramschmidt"].to_sdfg(simplify=True)
     _, boundary = lower_nests_to_external_call(sdfg, strategy="outer")[2]
     prep = prepare(boundary, "gs_compute", work / "kern")
     csrc = next(p for p in emit_sources(prep, work / "gen") if p.suffix == ".c" and "pluto" not in p.name)
-    order = [p.strip().split()[-1].lstrip("*") for p in
-             re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", csrc.read_text(), re.S).group(1).split(",")]
+    order = [
+        p.strip().split()[-1].lstrip("*")
+        for p in re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", csrc.read_text(), re.S).group(1).split(",")
+    ]
     bsdfg = boundary.standalone_sdfg
     M, N = 256, 48
     sizes = {"M": M, "N": N, "j": 0, "k": 0}
     env = {symbolic.symbol("M"): M, symbolic.symbol("N"): N}
-    argt = [ctypes.POINTER(_CT[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays
-            else ctypes.c_int64 for a in order]
+    argt = [
+        ctypes.POINTER(_CT[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays else ctypes.c_int64
+        for a in order
+    ]
 
     print("gramschmidt compute nest -- rel-err vs ieee-strict-seq baseline")
     print(f"{'mode':22s} | {'well-conditioned':>18s} | {'ill-conditioned (1e14)':>22s}")
@@ -66,18 +72,18 @@ def main():
     results = {}
     for conditioning in ("well", "ill"):
         A = _A(M, N, conditioning)
-        base = {a: (A.copy() if a == "A" else
-                    np.zeros(tuple(int(symbolic.evaluate(x, env)) for x in bsdfg.arrays[a].shape),
-                             np.dtype(bsdfg.arrays[a].dtype.type)))
-                for a in order if a in bsdfg.arrays}
+        base = {
+            a: (A.copy() if a == "A" else np.zeros(tuple(
+                int(symbolic.evaluate(x, env)) for x in bsdfg.arrays[a].shape), np.dtype(bsdfg.arrays[a].dtype.type)))
+            for a in order if a in bsdfg.arrays
+        }
         for mode, flags in _MODES.items():
             so = work / f"lib_{conditioning}_{mode.split()[0]}.so"
             subprocess.run([gcc, *_BASE, *flags, str(csrc), "-o", str(so)], check=True, capture_output=True)
             fn = ctypes.CDLL(str(so)).gs_compute_fp64
             fn.argtypes, fn.restype = argt, None
             buf = {a: v.copy() for a, v in base.items()}
-            fn(*[buf[a].ctypes.data_as(t) if a in buf else ctypes.c_int64(sizes[a])
-                 for a, t in zip(order, argt)])
+            fn(*[buf[a].ctypes.data_as(t) if a in buf else ctypes.c_int64(sizes[a]) for a, t in zip(order, argt)])
             results[(conditioning, mode)] = {o: buf[o].copy() for o in ("__return_0", "__return_1")}
 
     for mode in _MODES:

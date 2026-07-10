@@ -49,7 +49,24 @@ fi
 # shellcheck disable=SC1091
 . "$SPACK_ROOT/share/spack/setup-env.sh"
 
-log "registering compilers on PATH (load vendor env first for icx/ifx or nvc to be seen)"
+# Put vendor compilers on PATH so `spack compiler find` registers them too: oneAPI needs its setvars,
+# nvhpc just needs its compilers/bin on PATH.
+source_vendor_env() {
+  if [ -f /opt/intel/oneapi/setvars.sh ]; then
+    log "sourcing Intel oneAPI setvars.sh (so icx/icpx/ifx get registered)"
+    set +u; # shellcheck disable=SC1091
+    . /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || warn "oneAPI setvars.sh returned nonzero"; set -u
+  fi
+  local nv
+  nv=$(ls -d /opt/nvidia/hpc_sdk/Linux_*/*/compilers/bin 2>/dev/null | sort -V | tail -1 || true)
+  if [ -n "${nv:-}" ] && [ -d "$nv" ]; then
+    log "adding nvhpc to PATH: $nv"
+    export PATH="$nv:$PATH"
+  fi
+}
+source_vendor_env
+
+log "registering compilers on PATH (gcc/clang/gfortran + any vendor ones just sourced)"
 spack compiler find || warn "spack compiler find found nothing new"
 
 if [ "$DO_SPACK_COMPILERS" -eq 1 ]; then

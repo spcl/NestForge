@@ -50,7 +50,12 @@ def _sizes(boundary) -> dict:
     """A size for each boundary symbol: a size symbol (appears in an array shape) -> DEFAULT_SIZE;
     a loop-carried index (appears in no array shape) -> 0 (the nest resets it before use)."""
     sdfg = boundary.standalone_sdfg
-    shape_syms = {str(s) for d in sdfg.arrays.values() for dim in d.shape for s in symbolic.pystr_to_symbolic(dim).free_symbols}
+    shape_syms = {
+        str(s)
+        for d in sdfg.arrays.values()
+        for dim in d.shape
+        for s in symbolic.pystr_to_symbolic(dim).free_symbols
+    }
     return {s: (DEFAULT_SIZE if s in shape_syms else 0) for s in boundary.symbols}
 
 
@@ -69,14 +74,15 @@ def _time_offload(prep, boundary, sizes, inputs, reps):
     gcc = discover_compilers()["gcc"]
     so = work / f"lib_{prep.name}.so"
     subprocess.run([gcc, *FLAGS, str(csrc), "-o", str(so)], check=True, capture_output=True)
-    argt = [ctypes.POINTER(_CTYPE[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays
-            else ctypes.c_int64 for a in order]
+    argt = [
+        ctypes.POINTER(_CTYPE[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays else ctypes.c_int64
+        for a in order
+    ]
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argt, None
 
     def args_for(buf):
-        return [buf[a].ctypes.data_as(t) if a in buf else ctypes.c_int64(int(sizes[a]))
-                for a, t in zip(order, argt)]
+        return [buf[a].ctypes.data_as(t) if a in buf else ctypes.c_int64(int(sizes[a])) for a, t in zip(order, argt)]
 
     fresh = {k: v.copy() for k, v in inputs.items()}  # correctness on a fresh buffer
     fn(*args_for(fresh))

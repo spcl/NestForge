@@ -1,0 +1,15 @@
+# nest-forge C/C++ style: LLVM base at 160 columns (matches the wide generated-code lines DaCe emits and
+# the fprettify/yapf 120 python sits alongside). Applies to any C/C++ nest-forge owns or emits into the
+# tree; the transient generated .cpp under a build dir is not tracked and not formatted.
+BasedOnStyle: LLVM
+ColumnLimit: 160
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: true
+BinPackParameters: true
+SortIncludes: true

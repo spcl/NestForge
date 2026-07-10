@@ -24,10 +24,10 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
-from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP,
-                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime,
-                             compare_link_modes, LinkTimings, available_linkers, _fastest_linker,
-                             VectorMathLib, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed)
+from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, ArenaConfig,
+                             PrunedConfig, prune_to_valid_combinations, resolve_runtime, compare_link_modes,
+                             LinkTimings, available_linkers, _fastest_linker, VectorMathLib, VECTOR_LIBS, SLEEF,
+                             LIBMVEC, SVML, vectorlib_installed, BuildOptions)
 
 
 def _kernels():
@@ -40,16 +40,18 @@ def _first_nest(short):
     return extract_nest_to_sdfg(parent, node, name="nest")
 
 
-def _owned_build_matches_oracle(short, size=48, **build_kw):
+def _owned_build_matches_oracle(short, size=48, opts=None):
     boundary = _first_nest(short)
-    shape_syms = {s for s in boundary.symbols
-                  if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())}
+    shape_syms = {
+        s
+        for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
+    }
     sizes = {s: (size if s in shape_syms else 0) for s in boundary.symbols}
     inputs = make_inputs(boundary, sizes, seed=0)
     prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
-    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")), **build_kw)
+    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")), opts)
     buf = {k: v.copy() for k, v in inputs.items()}
     built.run(buf, sizes)  # init -> program -> exit
     for o in oracle:
@@ -126,14 +128,16 @@ def test_gcc_compiled_kernel_links_against_libomp():
     share the same libomp a clang/flang node library uses. Builds gemm with openmp=OpenMPRuntime() on
     g++ and checks it still matches the oracle."""
     boundary = _first_nest("hpc/dense_linear_algebra/gemm/gemm")
-    shape_syms = {s for s in boundary.symbols
-                  if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())}
+    shape_syms = {
+        s
+        for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
+    }
     sizes = {s: (32 if s in shape_syms else 0) for s in boundary.symbols}
     inputs = make_inputs(boundary, sizes, seed=0)
     prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
     oracle = run_oracle(prep, boundary, inputs, sizes)
     built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_omp_")),
-                       compiler="g++", openmp=OpenMPRuntime())  # gcc object on libomp
+                       BuildOptions(compiler="g++", openmp=OpenMPRuntime()))  # gcc object on libomp
     buf = {k: v.copy() for k, v in inputs.items()}
     built.run(buf, sizes)
     for o in oracle:
@@ -179,8 +183,8 @@ def test_parallel_loop_links_on_libomp_across_compilers(compiler):
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     # Compiler-neutral flags only (no -march=native: nvc++ spells it -tp); OpenMP is the separate axis.
-    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")), compiler=compiler,
-                       flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=LIBOMP)
+    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")),
+                       BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=LIBOMP))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
@@ -196,7 +200,7 @@ def test_build_tracks_optimization_and_compile_time():
 def test_external_linking_build_is_correct():
     """The nest built as a SEPARATE static ``.a`` (link_external) and linked into the ``.so`` runs
     identically to the monolithic build -- the external-linking path is correct, not merely timeable."""
-    built = _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", link_external=True)
+    built = _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True))
     assert built.compile_seconds > 0.0
     assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
 
@@ -217,7 +221,7 @@ def test_external_linking_with_lto_is_correct():
     knob meant to recover the cross-TU inlining that external linking otherwise costs."""
     if shutil.which("gcc-ar") is None:
         pytest.skip("gcc-ar (LTO-aware archiver) not on PATH")
-    _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", link_external=True, lto=True)
+    _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True, lto=True))
 
 
 def test_available_linkers_and_fastest_pick():
@@ -258,8 +262,8 @@ def test_veclib_libmvec_build_is_correct():
     n = 128
     x, y = np.random.default_rng(2).random(n), np.random.default_rng(3).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
-    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_vec_")), compiler="g++",
-                       flags=["-O3", "-march=native", "-fPIC", "-shared"], veclib=LIBMVEC)
+    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_vec_")),
+                       BuildOptions(compiler="g++", flags=["-O3", "-march=native", "-fPIC", "-shared"], veclib=LIBMVEC))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
@@ -324,8 +328,10 @@ def test_prune_default_config_yields_gcc_on_libomp():
 def test_owned_build_reusable_handle_program():
     """After one init, __program can be called repeatedly in place (the timing path) on one handle."""
     boundary = _first_nest("hpc/dense_linear_algebra/gemm/gemm")
-    shape_syms = {s for s in boundary.symbols
-                  if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())}
+    shape_syms = {
+        s
+        for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
+    }
     sizes = {s: (32 if s in shape_syms else 0) for s in boundary.symbols}
     inputs = make_inputs(boundary, sizes, seed=1)
     built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")))

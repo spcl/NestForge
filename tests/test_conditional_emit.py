@@ -47,7 +47,8 @@ def _build_three_branch():
     for label, guard, delta in (("b0", "sel == 0", 10.0), ("b1", "sel == 1", 20.0), ("belse", None, 30.0)):
         region = ControlFlowRegion(label, sdfg=sdfg)
         st = region.add_state(label + "_s", is_start_block=True)
-        st.add_mapped_tasklet(label + "_m", dict(i="0:N"),
+        st.add_mapped_tasklet(label + "_m",
+                              dict(i="0:N"),
                               dict(inp=dc.Memlet("a[i]")),
                               f"o = inp + {delta}",
                               dict(o=dc.Memlet("out[i]")),
@@ -74,7 +75,8 @@ def _build_switch(name, branches):
     for i, (guard, delta) in enumerate(branches):
         region = ControlFlowRegion(f"b{i}", sdfg=sdfg)
         st = region.add_state(f"b{i}_s", is_start_block=True)
-        st.add_mapped_tasklet(f"b{i}_m", dict(i="0:N"),
+        st.add_mapped_tasklet(f"b{i}_m",
+                              dict(i="0:N"),
                               dict(inp=dc.Memlet("a[i]")),
                               f"o = inp + {delta}",
                               dict(o=dc.Memlet("out[i]")),

@@ -1,0 +1,71 @@
+name: CI
+
+# One CPU runner (the nest-forge suite is ~30s): a format gate, then the toolchain via the repo's own
+# scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable,
+# then pytest. nvc++/icpx/oneAPI are absent on the runner, so those sanity tests self-skip (skipif);
+# g++/clang++ + libomp cover the cross-compiler OpenMP + external-link matrix.
+#
+# DaCe and OptArena are private (github.com/spcl); the checkout steps use ${{ secrets.NESTFORGE_CI_TOKEN }}
+# -- a PAT with read access to both. Make them public, or vendor OptArena as a submodule, to drop it.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: format + toolchain + pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Phase 0 -- format gate BEFORE the heavy setup, so a style slip fails in seconds. yapf +
+      # clang-format ship as pip wheels (the clang-format wheel bundles the binary).
+      - name: Phase 0 -- format (yapf 120 + clang-format 160)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install yapf clang-format
+          bash scripts/format.sh --check
+
+      # DaCe + OptArena checked out as sibling dirs (private repos need the PAT secret).
+      - uses: actions/checkout@v4
+        with:
+          repository: spcl/dace
+          ref: extended
+          path: dace
+          submodules: recursive
+          token: ${{ secrets.NESTFORGE_CI_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: spcl/OptArena
+          path: optarena
+          token: ${{ secrets.NESTFORGE_CI_TOKEN }}
+
+      # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).
+      - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
+        run: sudo bash scripts/setup_apt.sh
+
+      - name: Phase 2 -- DaCe (extended) + OptArena + test deps, editable
+        run: |
+          pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
+          pip_retry -e ./dace
+          pip_retry -e ./optarena
+          pip_retry numpy pytest pytest-timeout pytest-xdist sympy
+
+      - name: Phase 3 -- pytest
+        run: |
+          python -m pytest -q -p no:cacheprovider --timeout=900 -n auto

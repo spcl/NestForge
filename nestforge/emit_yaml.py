@@ -46,13 +46,15 @@ def _dtype_str(desc) -> str:
     return np.dtype(desc.dtype.type).name
 
 
-def manifest_dict(boundary: Boundary, name: str, sizes: Optional[Dict[str, int]] = None,
-                  preset: str = "S", track: str = "foundation") -> Dict:
+def manifest_dict(boundary: Boundary,
+                  name: str,
+                  sizes: Optional[Dict[str, int]] = None,
+                  preset: str = "S",
+                  track: str = "foundation") -> Dict:
     """Build the OptArena manifest dict for ``boundary``'s standalone SDFG."""
     sdfg = boundary.standalone_sdfg
     arrays = _array_names(boundary)
-    init_arrays = {a: {"shape": _shape_str(sdfg.arrays[a].shape), "dtype": _dtype_str(sdfg.arrays[a])}
-                   for a in arrays}
+    init_arrays = {a: {"shape": _shape_str(sdfg.arrays[a].shape), "dtype": _dtype_str(sdfg.arrays[a])} for a in arrays}
     sizes = sizes or {s: DEFAULT_SIZE for s in boundary.symbols}
     return {
         "name": name,
@@ -61,12 +63,21 @@ def manifest_dict(boundary: Boundary, name: str, sizes: Optional[Dict[str, int]]
         "relative_path": "extended",
         "kind": "microkernel",
         "level": 1,
-        "parameters": {preset: {s: int(sizes.get(s, DEFAULT_SIZE)) for s in boundary.symbols}},
+        "parameters": {
+            preset: {
+                s: int(sizes.get(s, DEFAULT_SIZE))
+                for s in boundary.symbols
+            }
+        },
         "input_args": _arg_order(boundary),
         "array_args": arrays,
         "output_args": list(boundary.outputs),
-        "init": {"arrays": init_arrays},
-        "taxonomy": {"track": track},
+        "init": {
+            "arrays": init_arrays
+        },
+        "taxonomy": {
+            "track": track
+        },
     }
 
 

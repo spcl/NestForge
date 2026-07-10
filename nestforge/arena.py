@@ -173,7 +173,7 @@ def _argtypes(prep: Prepared, boundary: Boundary) -> list:
 def _call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary: Boundary,
                  inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int):
     lib = ctypes.CDLL(str(so))
-    fn = getattr(lib, symbol)
+    fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
     fn.argtypes = argtypes
     fn.restype = None
     work = {k: v.copy() for k, v in inputs.items()}
@@ -235,18 +235,24 @@ def run_arena(prep: Prepared,
             comp = subprocess.run(cmd, capture_output=True, text=True)
             compile_us = (time.perf_counter() - t_c) * 1e6
             if comp.returncode != 0:
-                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"),
-                                         compile_us=compile_us, error=comp.stderr[-400:]))
+                result.cells.append(
+                    Cell(cname,
+                         mode,
+                         False,
+                         float("inf"),
+                         float("inf"),
+                         compile_us=compile_us,
+                         error=comp.stderr[-400:]))
                 continue
             try:
                 outs, us = _call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)
                 md = _maxdiff(oracle, outs)
                 ok = md <= _MODE_ATOL[mode]
-                result.cells.append(Cell(cname, mode, ok, md, us, compile_us=compile_us,
-                                         so_path=str(so), symbol=symbol))
+                result.cells.append(Cell(cname, mode, ok, md, us, compile_us=compile_us, so_path=str(so),
+                                         symbol=symbol))
             except Exception as e:  # pragma: no cover - defensive
-                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"),
-                                         compile_us=compile_us, error=str(e)))
+                result.cells.append(
+                    Cell(cname, mode, False, float("inf"), float("inf"), compile_us=compile_us, error=str(e)))
 
     result.optimization_seconds = time.perf_counter() - t_sweep
     for mode in FP_MODES:

@@ -178,9 +178,11 @@ def test_emission_does_not_mutate_caller_sdfg():
     sdfg = _kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
 
     def nsdfg_in_subsets(g):
-        return {e.dst_conn: str(e.data.subset)
-                for st in g.all_states() for n in st.nodes() if isinstance(n, nodes.NestedSDFG)
-                for e in st.in_edges(n)}
+        return {
+            e.dst_conn: str(e.data.subset)
+            for st in g.all_states()
+            for n in st.nodes() if isinstance(n, nodes.NestedSDFG) for e in st.in_edges(n)
+        }
 
     before = nsdfg_in_subsets(sdfg)
     sdfg_to_numpy(sdfg, "mandelbrot")
@@ -197,9 +199,9 @@ def test_nbody_nested_where_emits_and_computes():
     mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
     dt, G, soft = 0.01, 1.0, 0.1
     try:
-        call, _ = _alloc_run("hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt),
-                             dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]),
-                                  softening=np.array([soft])))
+        call, _ = _alloc_run(
+            "hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt),
+            dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft])))
     except UnsupportedNest:
         pytest.skip("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
 
@@ -252,8 +254,8 @@ def test_azimint_hist_three_level_nested_return_and_computes():
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
     try:
-        call, _ = _alloc_run("hpc/map_reduce/azimint_hist/azimint_hist", "azimint_hist",
-                             dict(N=N, npt=npt, bins=npt), dict(data=data, radius=radius))
+        call, _ = _alloc_run("hpc/map_reduce/azimint_hist/azimint_hist", "azimint_hist", dict(N=N, npt=npt, bins=npt),
+                             dict(data=data, radius=radius))
     except UnsupportedNest:
         pytest.skip("nested-SDFG emission unavailable in this DaCe")
 
@@ -280,8 +282,8 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
     try:
-        call, _ = _alloc_run("hpc/map_reduce/azimint_naive/azimint_naive", "azimint_naive",
-                             dict(N=N, npt=npt), dict(data=data, radius=radius))
+        call, _ = _alloc_run("hpc/map_reduce/azimint_naive/azimint_naive", "azimint_naive", dict(N=N, npt=npt),
+                             dict(data=data, radius=radius))
     except UnsupportedNest:
         pytest.skip("nested-SDFG emission unavailable in this DaCe")
 
@@ -308,8 +310,7 @@ def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
     rng = np.random.default_rng(0)
     L = np.tril(rng.random((N, N))) + N * np.eye(N)
     b = rng.random(N)
-    call, src = _alloc_run("hpc/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N),
-                           dict(L=L, b=b))
+    call, src = _alloc_run("hpc/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N), dict(L=L, b=b))
     assert "np.empty" not in src  # still C-style: no in-kernel allocation
     x = call.get("x", call.get("__return"))
     np.testing.assert_allclose(x, np.linalg.solve(L, b))

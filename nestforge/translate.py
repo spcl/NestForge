@@ -30,7 +30,10 @@ class Prepared:
     spec: BenchSpec
 
 
-def prepare(boundary: Boundary, name: str, out_dir: os.PathLike, sizes: Dict[str, int] = None,
+def prepare(boundary: Boundary,
+            name: str,
+            out_dir: os.PathLike,
+            sizes: Dict[str, int] = None,
             preset: str = "S") -> Prepared:
     """Write ``<name>_numpy.py`` + ``<name>.yaml`` and build the OptArena ``BenchSpec``."""
     out = Path(out_dir)
@@ -44,11 +47,14 @@ def prepare(boundary: Boundary, name: str, out_dir: os.PathLike, sizes: Dict[str
     yaml_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
 
     spec = BenchSpec.from_yaml(dict(manifest), source=str(yaml_path))
-    return Prepared(name=name, numpy_path=numpy_path, yaml_path=yaml_path,
-                    numpy_source=numpy_source, manifest=manifest, spec=spec)
+    return Prepared(name=name,
+                    numpy_path=numpy_path,
+                    yaml_path=yaml_path,
+                    numpy_source=numpy_source,
+                    manifest=manifest,
+                    spec=spec)
 
 
-def emit_sources(prep: Prepared, out_dir: os.PathLike, target: str = "c",
-                 precision: str = "float64") -> List[Path]:
+def emit_sources(prep: Prepared, out_dir: os.PathLike, target: str = "c", precision: str = "float64") -> List[Path]:
     """Run the numpy translator; return the generated source files."""
     return translate(prep.spec, prep.numpy_path, prep.name, out_dir, target=target, precision=precision)
