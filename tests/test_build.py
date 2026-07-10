@@ -86,13 +86,31 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
 
 def test_openmp_runtime_registry_covers_the_popular_runtimes():
     """The four popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel; ABI-
-    compatible with libomp), libnvomp (NVIDIA HPC, via nvc -mp only). LLVM compilers can target any of
-    the first three by name."""
+    compatible with libomp), libnvomp (NVIDIA HPC, via nvc -mp only)."""
     from nestforge.build import OPENMP_RUNTIMES, LIBGOMP, LIBIOMP5
     assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5", "libnvomp"}
-    assert LIBGOMP.compile_flags("clang++") == ["-fopenmp=libgomp"]  # clang can emit GOMP-targeted code
-    assert LIBIOMP5.link_flags("g++") == ["-liomp5"]                 # gcc object on Intel's runtime
+    assert LIBIOMP5.link_flags("g++") == ["-liomp5"]  # gcc object on Intel's runtime (has GOMP compat)
     assert LIBGOMP.link_flags("g++") == ["-lgomp"]
+
+
+def test_openmp_abi_compatibility_is_enforced():
+    """A runtime is usable with a compiler only if it implements the ABI the compiler emits. The kmpc
+    compilers (clang/flang/icx AND nvc++) emit ``__kmpc_*`` -> they can use libomp/libiomp5/libnvomp but
+    NOT libgomp (GOMP-only); gcc emits ``GOMP_*`` -> it can use all four. Mismatches raise, not silently
+    mis-link."""
+    from nestforge.build import LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP
+    # nvc++ (and clang) can use the kmpc runtimes...
+    assert LIBOMP.compatible("nvc++") and LIBIOMP5.compatible("nvc++") and LIBNVOMP.compatible("nvc++")
+    assert LIBOMP.compatible("clang++")
+    # ...but NOT libgomp (it lacks __kmpc_*).
+    assert not LIBGOMP.compatible("nvc++") and not LIBGOMP.compatible("clang++")
+    with pytest.raises(ValueError, match="kmpc"):
+        LIBGOMP.compile_flags("nvc++")
+    with pytest.raises(ValueError, match="kmpc"):
+        LIBGOMP.link_flags("clang++")
+    # gcc (GOMP) works against every runtime, since libomp/libiomp5/libnvomp carry a GOMP-compat layer.
+    for rt in (LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP):
+        assert rt.compatible("g++")
 
 
 @pytest.mark.skipif(ctypes.util.find_library("omp") is None, reason="libomp not installed")

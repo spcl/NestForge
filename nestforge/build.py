@@ -51,6 +51,12 @@ def compiler_family(compiler: str) -> str:
     return "gnu"
 
 
+#: The OpenMP ABI a compiler family *emits* -- ``gomp`` (GCC's ``GOMP_*`` entry points) or ``kmpc`` (the
+#: LLVM/Intel ``__kmpc_*`` entry points, which clang/flang/icx/icc AND nvc/nvc++ all emit). A runtime is
+#: link-compatible with a compiler only if it implements the ABI the compiler emits.
+_COMPILER_ABI = {"gnu": "gomp", "llvm": "kmpc", "intel-classic": "kmpc", "nvidia": "kmpc"}
+
+
 @dataclass
 class OpenMPRuntime:
     """The single OpenMP runtime the whole program links against -- a SEPARATE, configurable flag axis,
@@ -63,21 +69,40 @@ class OpenMPRuntime:
     name: str = "libomp"                     # runtime selected by name on LLVM (``-fopenmp=<name>``)
     soname: str = "omp"                       # ``-l<soname>`` for explicit linking (omp/gomp/iomp5)
     lib_dir: Optional[str] = None             # ``-L`` if the runtime is not on the default search path
+    #: the OpenMP ABIs this runtime implements. libomp/libiomp5/libnvomp expose BOTH ``__kmpc_*`` and a
+    #: ``GOMP_*`` compat layer; libgomp exposes only ``GOMP_*`` -- so a kmpc compiler (clang/flang/icx/
+    #: nvc++) cannot use libgomp.
+    provides: frozenset = frozenset({"kmpc", "gomp"})
+
+    def compatible(self, compiler: str) -> bool:
+        """True if this runtime implements the ABI ``compiler`` emits (else linking would leave the
+        OpenMP entry points unresolved -- e.g. nvc++/clang emit ``__kmpc_*`` which libgomp lacks)."""
+        return _COMPILER_ABI[compiler_family(compiler)] in self.provides
+
+    def _check(self, compiler: str) -> None:
+        if not self.compatible(compiler):
+            abi = _COMPILER_ABI[compiler_family(compiler)]
+            raise ValueError(
+                f"{Path(compiler).name} emits the {abi!r} OpenMP ABI, which {self.name} does not "
+                f"implement (it provides {sorted(self.provides)}). Use a {abi}-capable runtime "
+                f"(libomp/libiomp5/libnvomp are kmpc+gomp; libgomp is gomp-only).")
 
     def compile_flags(self, compiler: str) -> List[str]:
         """Flags to compile a translation unit with OpenMP against this runtime."""
+        self._check(compiler)
         fam = compiler_family(compiler)
         if fam == "llvm":                     # clang / clang++ / flang / icx: pick the runtime by name
             return [f"-fopenmp={self.name}"]
         if fam == "intel-classic":
             return ["-qopenmp"]
-        if fam == "nvidia":
-            return ["-mp"]
+        if fam == "nvidia":                   # nvc/nvc++/nvfortran: -mp links libnvomp (its native kmpc
+            return ["-mp"]                    # runtime); no -fopenmp=<lib> switch to force another one
         return ["-fopenmp"]                   # gnu: emit GOMP calls; the runtime is fixed at link
 
     def link_flags(self, compiler: str) -> List[str]:
         """Flags to link a program against THIS runtime (and no other -- avoids the dual-runtime abort /
         oversubscription of mixing libgomp + libomp)."""
+        self._check(compiler)
         fam = compiler_family(compiler)
         libdir = [f"-L{self.lib_dir}"] if self.lib_dir else []
         if fam == "llvm":
@@ -97,10 +122,11 @@ class OpenMPRuntime:
 #: flang / icx can target any of the three -- LLVM compilers select by name (``-fopenmp=<name>``), gcc
 #: emits GOMP calls and links the runtime explicitly. NVIDIA's HPC SDK ships its OWN runtime (libnvomp),
 #: reachable only via nvc/nvfortran ``-mp`` and NOT interchangeable with the other three.
-LIBOMP = OpenMPRuntime(name="libomp", soname="omp")         # LLVM (clang / flang) -- the default
-LIBGOMP = OpenMPRuntime(name="libgomp", soname="gomp")      # GNU (gcc / gfortran)
-LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")   # Intel (icx / icc); ABI-compatible with libomp
-LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")   # NVIDIA HPC; only via nvc/nvfortran ``-mp``
+LIBOMP = OpenMPRuntime(name="libomp", soname="omp")         # LLVM (clang / flang) -- the default; kmpc+gomp
+LIBGOMP = OpenMPRuntime(name="libgomp", soname="gomp",      # GNU (gcc / gfortran); GOMP-only -> a kmpc
+                        provides=frozenset({"gomp"}))       #   compiler (clang/flang/icx/nvc++) cannot use it
+LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")   # Intel (icx / icc); kmpc+gomp, ABI-compat with libomp
+LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")   # NVIDIA HPC (nvc/nvc++ -mp); kmpc+gomp
 
 #: name -> runtime, for a config/CLI knob.
 OPENMP_RUNTIMES = {"libomp": LIBOMP, "libgomp": LIBGOMP, "libiomp5": LIBIOMP5, "libnvomp": LIBNVOMP}
