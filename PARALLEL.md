@@ -93,6 +93,16 @@ at link time.
   cores → oversubscription and cache thrash. nest-forge prevents this by construction (single mandated
   runtime), not by hoping the libraries agree.
 
+This runtime knob is implemented as `nestforge.build.OpenMPRuntime` (a SEPARATE flag axis, not folded
+into the base flags): it maps the one configured runtime to the right per-compiler flags, so a set of
+node libraries built with different compilers all target it. LLVM compilers select by name
+(`-fopenmp=libomp` — clang/clang++/flang/icx), gcc emits `GOMP_*` calls and links the runtime
+explicitly (`-fopenmp` compile, `-lomp` link — libomp's GOMP-compat ABI resolves them). Ready presets
+cover the four popular runtimes: `LIBOMP` (LLVM, default), `LIBGOMP` (GNU), `LIBIOMP5` (Intel;
+ABI-compatible with libomp), and `LIBNVOMP` (NVIDIA HPC, only via nvc/nvfortran `-mp`, not
+interchangeable with the other three). A gcc-compiled kernel linking + running against libomp is tested
+end-to-end (`tests/test_build.py`).
+
 **One global thread count.** A single `OMP_NUM_THREADS` (or, equivalently, one `omp_set_num_threads`
 call in the driver, §3.4) is passed program-wide and governs every node library. There is no per-library
 thread count through the environment (§3.3), so the whole program runs at one, recorded degree of

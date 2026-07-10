@@ -6,6 +6,7 @@ matches the numpy oracle, exercising: the ``generate_program_folder`` source-tre
 compile, the ``__dace_init``/``__program``/``__dace_exit`` call sequence, and per-parameter ctype
 marshaling (a size symbol is ``int`` or ``int64_t`` per its DaCe dtype; a Scalar passes by value).
 """
+import ctypes.util
 import shutil
 import tempfile
 from pathlib import Path
@@ -21,7 +22,7 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
-from nestforge.build import build_sdfg, dace_runtime_include
+from nestforge.build import build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family
 
 
 def _kernels():
@@ -62,6 +63,57 @@ def test_owned_build_gemm_matches_oracle():
 def test_owned_build_jacobi_matches_oracle():
     """jacobi_1d: an ``int`` (not int64_t) size symbol -- guards the per-parameter ctype marshaling."""
     _owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d")
+
+
+def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
+    """The OpenMP runtime is one configurable knob that maps to the right flag PER COMPILER, so a set of
+    node libraries built with different compilers all target the SAME runtime -- the mixed-compiler
+    single-runtime contract from PARALLEL.md."""
+    rt = OpenMPRuntime()  # default libomp
+    assert compiler_family("gfortran") == "gnu" and compiler_family("flang") == "llvm"
+    assert compiler_family("icx") == "llvm" and compiler_family("icc") == "intel-classic"
+    # LLVM family selects the runtime BY NAME (the user's example: flang -fopenmp=libomp).
+    assert rt.compile_flags("flang") == ["-fopenmp=libomp"]
+    assert rt.compile_flags("clang++") == ["-fopenmp=libomp"]
+    assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
+    # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
+    assert rt.compile_flags("g++") == ["-fopenmp"] and rt.link_flags("g++") == ["-lomp"]
+    # intel-classic / nvidia use their own spellings.
+    assert rt.compile_flags("icc") == ["-qopenmp"] and rt.compile_flags("nvc") == ["-mp"]
+    # a lib_dir threads onto the link line.
+    assert "-L/opt/omp/lib" in OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
+
+
+def test_openmp_runtime_registry_covers_the_popular_runtimes():
+    """The four popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel; ABI-
+    compatible with libomp), libnvomp (NVIDIA HPC, via nvc -mp only). LLVM compilers can target any of
+    the first three by name."""
+    from nestforge.build import OPENMP_RUNTIMES, LIBGOMP, LIBIOMP5
+    assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5", "libnvomp"}
+    assert LIBGOMP.compile_flags("clang++") == ["-fopenmp=libgomp"]  # clang can emit GOMP-targeted code
+    assert LIBIOMP5.link_flags("g++") == ["-liomp5"]                 # gcc object on Intel's runtime
+    assert LIBGOMP.link_flags("g++") == ["-lgomp"]
+
+
+@pytest.mark.skipif(ctypes.util.find_library("omp") is None, reason="libomp not installed")
+def test_gcc_compiled_kernel_links_against_libomp():
+    """A g++-compiled kernel (which emits GOMP_* calls under -fopenmp) links + runs against libomp via
+    libomp's GOMP-compat ABI -- the concrete mixed-compiler / one-runtime case: a GCC node library can
+    share the same libomp a clang/flang node library uses. Builds gemm with openmp=OpenMPRuntime() on
+    g++ and checks it still matches the oracle."""
+    boundary = _first_nest("hpc/dense_linear_algebra/gemm/gemm")
+    shape_syms = {s for s in boundary.symbols
+                  if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())}
+    sizes = {s: (32 if s in shape_syms else 0) for s in boundary.symbols}
+    inputs = make_inputs(boundary, sizes, seed=0)
+    prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
+    oracle = run_oracle(prep, boundary, inputs, sizes)
+    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_omp_")),
+                       compiler="g++", openmp=OpenMPRuntime())  # gcc object on libomp
+    buf = {k: v.copy() for k, v in inputs.items()}
+    built.run(buf, sizes)
+    for o in oracle:
+        np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
 
 
 def test_owned_build_reusable_handle_program():

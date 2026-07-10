@@ -36,6 +36,76 @@ DEFAULT_COMPILER = "g++"
 DEFAULT_FLAGS = ["-O3", "-march=native", "-std=c++14", "-fPIC", "-shared"]
 
 
+def compiler_family(compiler: str) -> str:
+    """The OpenMP-relevant family of a compiler executable: ``llvm`` (clang/clang++/flang/flang-new and
+    the LLVM-based Intel icx/icpx/ifx -- all select the runtime by name), ``intel-classic`` (icc/icpc/
+    ifort -> ``-qopenmp``, libiomp5), ``nvidia`` (nvc/nvc++/nvfortran -> ``-mp``), or ``gnu`` (gcc/g++/
+    gfortran -> ``-fopenmp``, emits GOMP calls with the runtime chosen at link)."""
+    b = Path(compiler).name.lower()
+    if "clang" in b or "flang" in b or b.startswith(("icx", "icpx", "ifx")):
+        return "llvm"
+    if b.startswith(("icc", "icpc", "ifort")):
+        return "intel-classic"
+    if b.startswith(("nvc", "nvfortran", "pgcc", "pgfortran")):
+        return "nvidia"
+    return "gnu"
+
+
+@dataclass
+class OpenMPRuntime:
+    """The single OpenMP runtime the whole program links against -- a SEPARATE, configurable flag axis,
+    not folded into the base flags (PARALLEL.md mandates one runtime for every node library and the
+    driver). ``libomp`` is the default because it is the most portable: LLVM/Clang/flang select it by
+    name (``-fopenmp=libomp`` -- the user's example), it is ABI-compatible with Intel's libiomp5, AND it
+    implements the ``GOMP_*`` ABI, so a GCC-compiled object (which emits ``GOMP_*`` calls) resolves
+    against it too. That is what lets a set of node libraries built with DIFFERENT compilers all share
+    ONE runtime and one thread pool."""
+    name: str = "libomp"                     # runtime selected by name on LLVM (``-fopenmp=<name>``)
+    soname: str = "omp"                       # ``-l<soname>`` for explicit linking (omp/gomp/iomp5)
+    lib_dir: Optional[str] = None             # ``-L`` if the runtime is not on the default search path
+
+    def compile_flags(self, compiler: str) -> List[str]:
+        """Flags to compile a translation unit with OpenMP against this runtime."""
+        fam = compiler_family(compiler)
+        if fam == "llvm":                     # clang / clang++ / flang / icx: pick the runtime by name
+            return [f"-fopenmp={self.name}"]
+        if fam == "intel-classic":
+            return ["-qopenmp"]
+        if fam == "nvidia":
+            return ["-mp"]
+        return ["-fopenmp"]                   # gnu: emit GOMP calls; the runtime is fixed at link
+
+    def link_flags(self, compiler: str) -> List[str]:
+        """Flags to link a program against THIS runtime (and no other -- avoids the dual-runtime abort /
+        oversubscription of mixing libgomp + libomp)."""
+        fam = compiler_family(compiler)
+        libdir = [f"-L{self.lib_dir}"] if self.lib_dir else []
+        if fam == "llvm":
+            return [f"-fopenmp={self.name}", *libdir]
+        if fam == "intel-classic":
+            return ["-qopenmp", *libdir]
+        if fam == "nvidia":
+            return ["-mp", *libdir]
+        # gnu: link the mandated runtime EXPLICITLY rather than ``-fopenmp`` (which would pull libgomp).
+        # libomp's GOMP-compat layer resolves the object's GOMP_* symbols, so a gcc lib joins the same
+        # single runtime as the clang/flang libs.
+        return [*libdir, f"-l{self.soname}"]
+
+
+#: The popular OpenMP runtimes as ready knobs. libomp / libgomp / libiomp5 are mutually GOMP-ABI
+#: compatible (libomp and libiomp5 both implement the ``GOMP_*`` entry points), so any of gcc / clang /
+#: flang / icx can target any of the three -- LLVM compilers select by name (``-fopenmp=<name>``), gcc
+#: emits GOMP calls and links the runtime explicitly. NVIDIA's HPC SDK ships its OWN runtime (libnvomp),
+#: reachable only via nvc/nvfortran ``-mp`` and NOT interchangeable with the other three.
+LIBOMP = OpenMPRuntime(name="libomp", soname="omp")         # LLVM (clang / flang) -- the default
+LIBGOMP = OpenMPRuntime(name="libgomp", soname="gomp")      # GNU (gcc / gfortran)
+LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")   # Intel (icx / icc); ABI-compatible with libomp
+LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")   # NVIDIA HPC; only via nvc/nvfortran ``-mp``
+
+#: name -> runtime, for a config/CLI knob.
+OPENMP_RUNTIMES = {"libomp": LIBOMP, "libgomp": LIBGOMP, "libiomp5": LIBIOMP5, "libnvomp": LIBNVOMP}
+
+
 def dace_runtime_include() -> Path:
     """The ``-I`` directory holding DaCe's runtime headers (``dace/runtime/include``)."""
     inc = Path(dace.__file__).parent / "runtime" / "include"
@@ -169,16 +239,21 @@ def _include_flags(folder: Path) -> List[str]:
 
 
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
-               flags: Optional[List[str]] = None, expand_libnodes: bool = False) -> BuiltSDFG:
+               flags: Optional[List[str]] = None, expand_libnodes: bool = False,
+               openmp: Optional[OpenMPRuntime] = None) -> BuiltSDFG:
     """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call.
 
     :param expand_libnodes: expand library nodes to loops first (the "without libnodes" timing variant).
+    :param openmp: when set, add this runtime's per-compiler OpenMP compile+link flags (a SEPARATE axis
+        from ``flags``) so a parallel kernel links against the one mandated runtime -- and a set built
+        with different compilers still shares it (e.g. flang ``-fopenmp=libomp``).
     """
     import copy
     sdfg = copy.deepcopy(sdfg)
     if expand_libnodes:
         sdfg.expand_library_nodes()
     flags = list(flags if flags is not None else DEFAULT_FLAGS)
+    omp = (openmp.compile_flags(compiler) + openmp.link_flags(compiler)) if openmp else []
     frame, name = generate_program_folder(sdfg, out_dir)
     folder = frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
     code = frame.read_text()
@@ -187,7 +262,7 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
     scalar_names = {a for a, d in sdfg.arrays.items() if isinstance(d, dace.data.Scalar)}
 
     so = out_dir / f"lib{name}.so"
-    cmd = [compiler, *flags, *_include_flags(folder), str(frame), "-o", str(so)]
+    cmd = [compiler, *flags, *omp, *_include_flags(folder), str(frame), "-o", str(so)]
     comp = subprocess.run(cmd, capture_output=True, text=True)
     if comp.returncode != 0:
         raise RuntimeError(f"build failed for {name}:\n{comp.stderr[-2000:]}")
