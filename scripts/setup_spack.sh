@@ -29,7 +29,8 @@ DO_SPACK_COMPILERS=0
 
 log()  { printf '\033[1;32m[spack]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[spack:warn]\033[0m %s\n' "$*" >&2; }
-usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Print the leading comment block (everything after the shebang up to the first non-comment line) as help.
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$0"; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -9,7 +9,8 @@ set -euo pipefail
 MODE=fix
 case "${1:-}" in
   --check) MODE=check ;;
-  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  # print the leading comment block (after the shebang, up to the first non-comment line) as help
+  -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$0"; exit 0 ;;
   "") ;;
   *) echo "unknown arg: $1" >&2; exit 1 ;;
 esac

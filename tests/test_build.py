@@ -24,10 +24,10 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
-from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, ArenaConfig,
-                             PrunedConfig, prune_to_valid_combinations, resolve_runtime, compare_link_modes,
-                             LinkTimings, available_linkers, _fastest_linker, VectorMathLib, VECTOR_LIBS, SLEEF,
-                             LIBMVEC, SVML, vectorlib_installed, BuildOptions)
+from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
+                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime,
+                             compare_link_modes, LinkTimings, available_linkers, _fastest_linker, _linker_supported,
+                             VectorMathLib, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions)
 
 
 def _kernels():
@@ -86,8 +86,11 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
     assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
     # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
     assert rt.compile_flags("g++") == ["-fopenmp"] and rt.link_flags("g++") == ["-lomp"]
-    # intel-classic / nvidia use their own spellings.
-    assert rt.compile_flags("icc") == ["-qopenmp"] and rt.compile_flags("nvc") == ["-mp"]
+    # intel-classic and nvidia link ONLY their native runtimes (icc -qopenmp -> libiomp5, nvc -mp ->
+    # libnvomp), so libomp is not compatible with either -- their spellings are checked on those runtimes.
+    from nestforge.build import LIBIOMP5
+    assert LIBIOMP5.compile_flags("icc") == ["-qopenmp"] and LIBIOMP5.link_flags("icc") == ["-qopenmp"]
+    assert LIBNVOMP.compile_flags("nvc") == ["-mp"] and LIBNVOMP.link_flags("nvc") == ["-mp"]
     # a lib_dir threads onto the link line.
     assert "-L/opt/omp/lib" in OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
 
@@ -102,20 +105,24 @@ def test_openmp_runtime_registry_covers_the_popular_runtimes():
 
 
 def test_openmp_abi_compatibility_is_enforced():
-    """A runtime is usable with a compiler only if it implements the ABI the compiler emits. The kmpc
-    compilers (clang/flang/icx AND nvc++) emit ``__kmpc_*`` -> they can use libomp/libiomp5/libnvomp but
-    NOT libgomp (GOMP-only); gcc emits ``GOMP_*`` -> it can use all four. Mismatches raise, not silently
-    mis-link."""
+    """A runtime is usable with a compiler only if the compiler can actually LINK it -- which depends on
+    HOW the family selects a runtime, not ABI alone. gcc links any gomp-capable runtime via -l<soname>.
+    LLVM (clang/flang/icx) name-selects only libomp/libgomp/libiomp5, restricted to its kmpc ABI -> libomp/
+    libiomp5, NOT libgomp (no __kmpc_*) and NOT libnvomp (not name-selectable). Classic icc (-qopenmp) and
+    nvc++ (-mp) hard-link their native libiomp5 / libnvomp ALONE. Mismatches raise, not silently mis-link."""
     from nestforge.build import LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP
-    # nvc++ (and clang) can use the kmpc runtimes...
-    assert LIBOMP.compatible("nvc++") and LIBIOMP5.compatible("nvc++") and LIBNVOMP.compatible("nvc++")
-    assert LIBOMP.compatible("clang++")
-    # ...but NOT libgomp (it lacks __kmpc_*).
-    assert not LIBGOMP.compatible("nvc++") and not LIBGOMP.compatible("clang++")
-    with pytest.raises(ValueError, match="kmpc"):
+    # nvc++ / icc link ONLY their native runtimes.
+    assert LIBNVOMP.compatible("nvc++") and not LIBOMP.compatible("nvc++") and not LIBIOMP5.compatible("nvc++")
+    assert LIBIOMP5.compatible("icc") and not LIBOMP.compatible("icc") and not LIBGOMP.compatible("icc")
+    # clang name-selects libomp/libiomp5 but NOT libgomp (no __kmpc_*) and NOT libnvomp (unreachable by name).
+    assert LIBOMP.compatible("clang++") and LIBIOMP5.compatible("clang++")
+    assert not LIBGOMP.compatible("clang++") and not LIBNVOMP.compatible("clang++")
+    with pytest.raises(ValueError, match="libnvomp"):  # nvidia gets the -mp / libnvomp-only message
         LIBGOMP.compile_flags("nvc++")
-    with pytest.raises(ValueError, match="kmpc"):
+    with pytest.raises(ValueError, match="kmpc"):  # clang + libgomp: wrong ABI
         LIBGOMP.link_flags("clang++")
+    with pytest.raises(ValueError, match="name-selectable"):  # clang + libnvomp: right ABI, not name-selectable
+        LIBNVOMP.compile_flags("clang++")
     # gcc (GOMP) works against every runtime, since libomp/libiomp5/libnvomp carry a GOMP-compat layer.
     for rt in (LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP):
         assert rt.compatible("g++")
@@ -170,21 +177,23 @@ def test_parallel_map_emits_omp_pragma():
     assert "#pragma omp parallel for" in frame.read_text()
 
 
-# gcc is the driver; each of these compilers builds the SAME parallel nest as a node library, and every
-# node library links against the one mandated OpenMP runtime (libomp / its ABI-equal native kmpc runtime
-# for nvc++). This is the mixed-compiler / single-runtime sanity matrix: prove each compiler emits a
-# correct parallel loop that links + runs on libomp. Missing toolchains skip (icpx needs oneapi setvars).
+# gcc is the driver; each of these compilers builds the SAME parallel nest as a node library, each
+# linking the ONE runtime it can: libomp for gcc/clang/icx (kmpc+gomp), libnvomp for nvc++ (which links
+# only its native runtime via -mp -- see the C2 fix). This is the mixed-compiler / single-runtime sanity
+# matrix: prove each compiler emits a correct parallel loop that links + runs. Missing toolchains skip.
 @pytest.mark.parametrize("compiler", ["g++", "clang++", "nvc++", "icpx"])
-def test_parallel_loop_links_on_libomp_across_compilers(compiler):
+def test_parallel_loop_links_openmp_across_compilers(compiler):
     if shutil.which(compiler) is None:
         pytest.skip(f"{compiler} not on PATH")
-    assert LIBOMP.compatible(compiler), f"{compiler} must be able to link libomp (kmpc/gomp)"
+    # nvc++ links only libnvomp (its -mp native runtime); everyone else uses the mandated libomp.
+    rt = LIBNVOMP if compiler_family(compiler) == "nvidia" else LIBOMP
+    assert rt.compatible(compiler), f"{compiler} must be able to link {rt.name}"
     n = 256
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     # Compiler-neutral flags only (no -march=native: nvc++ spells it -tp); OpenMP is the separate axis.
     built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")),
-                       BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=LIBOMP))
+                       BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=rt))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
@@ -225,16 +234,34 @@ def test_external_linking_with_lto_is_correct():
 
 
 def test_available_linkers_and_fastest_pick():
-    """Linker discovery reports the installed fast linkers (fastest first); the picker chooses the first
-    of them, and never touches nvc/nvc++ (no -fuse-ld)."""
+    """Linker discovery reports the installed fast linkers (fastest first); the picker chooses the fastest
+    one the compiler is NEW ENOUGH to accept (version-gated), and never touches nvc/nvc++ (no -fuse-ld)."""
     av = available_linkers()
     assert all(Path(p).exists() for p in av.values())  # every reported linker really is on disk
     assert set(av) <= {"mold", "lld", "gold"}
-    if av:
-        assert _fastest_linker("g++") == [f"-fuse-ld={next(iter(av))}"]  # dict is fastest-first
+    picked = _fastest_linker("g++")
+    if picked:
+        # the pick is the fastest INSTALLED linker g++ actually supports (may skip mold on an old gcc).
+        ld = picked[0].split("=", 1)[1]
+        assert ld in av and _linker_supported("g++", ld)
+        supported = [x for x in av if _linker_supported("g++", x)]
+        assert ld == supported[0]  # fastest-first among the supported ones
     else:
-        assert _fastest_linker("g++") == []
+        assert not any(_linker_supported("g++", x) for x in av)  # nothing installed is supported
     assert _fastest_linker("nvc++") == []  # NVIDIA keeps its default linker
+
+
+def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
+    """The pick is VERSION-gated: an old compiler that predates -fuse-ld=mold must not be handed mold even
+    when mold is installed. Force the compiler version below mold's floor and assert mold is skipped (this
+    fails if the version gate is dropped, unlike the host-dependent check above)."""
+    import nestforge.build as B
+    monkeypatch.setattr(B, "_compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
+    assert not B._linker_supported("g++", "mold")
+    picked = B._fastest_linker("g++")
+    if picked:  # whatever it fell back to (lld/gold), g++ at v9 must actually support it, and it isn't mold
+        assert picked != ["-fuse-ld=mold"]
+        assert B._linker_supported("g++", picked[0].split("=", 1)[1])
 
 
 def test_veclib_flag_mapping_and_compatibility():
@@ -281,14 +308,14 @@ def test_prune_selecting_libgomp_discards_kmpc_compilers():
 
 
 def test_prune_removes_runtime_with_no_compatible_compiler():
-    """The "remove runtimes by default" step: with only nvc++ (kmpc) as a compiler, a libgomp in the
-    runtime list is compatible with no remaining compiler and is dropped with a warning; the kmpc libomp
-    stays. So nvc++ is forced onto libomp -- the "nvc++ -> must use libomp" rule."""
-    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libomp", "libgomp"])
+    """The "remove runtimes by default" step: with only nvc++ as a compiler, both libomp AND libgomp are
+    compatible with no remaining compiler (nvc++ links only its native libnvomp via -mp) and are dropped
+    with a warning; libnvomp stays. So nvc++ is forced onto libnvomp -- the "nvc++ -> libnvomp" rule."""
+    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libnvomp", "libomp", "libgomp"])
     with pytest.warns(UserWarning, match="incompatible"):
         pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=False)
-    assert pruned.runtimes == ["libomp"]
-    assert pruned.combos == [("nvc++", "libomp")]
+    assert pruned.runtimes == ["libnvomp"]
+    assert pruned.combos == [("nvc++", "libnvomp")]
     # invariant: every surviving combo is ABI-valid.
     assert all(resolve_runtime(r).compatible(c) for c, r in pruned.combos)
 
@@ -302,12 +329,12 @@ def test_prune_removes_uninstalled_compiler_with_warning():
 
 
 def test_prune_removes_uninstalled_runtime_with_warning(monkeypatch):
-    """A runtime whose library is not found is dropped with a warning. libnvomp is marked absent to make
-    the test host-independent."""
+    """A runtime whose library is not found is dropped with a warning. Only libnvomp is forced absent (via
+    monkeypatch); g++ keeps libomp, which is installed on any toolchain host (libomp-dev is in setup_apt)."""
     import nestforge.build as B
     real = B.runtime_installed
     monkeypatch.setattr(B, "runtime_installed", lambda rt: rt.soname != "nvomp" and real(rt))
-    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libomp", "libnvomp"])
+    cfg = ArenaConfig(compilers=["g++"], runtimes=["libomp", "libnvomp"])
     with pytest.warns(UserWarning, match="not installed"):
         pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=True)
     assert "libnvomp" not in pruned.runtimes and "libomp" in pruned.runtimes

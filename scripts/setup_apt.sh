@@ -21,7 +21,8 @@ DO_ONEAPI=0 DO_NVHPC=0
 
 log()  { printf '\033[1;32m[apt]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[apt:warn]\033[0m %s\n' "$*" >&2; }
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Print the leading comment block (everything after the shebang up to the first non-comment line) as help.
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$0"; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,15 +49,31 @@ apt_install() {
     if apt-cache show "$p" >/dev/null 2>&1; then ok+=("$p"); else miss+=("$p"); fi
   done
   [ "${#miss[@]}" -eq 0 ] || warn "not in apt on this release, skipping: ${miss[*]}"
-  [ "${#ok[@]}" -eq 0 ] || DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "${ok[@]}"
+  # DEBIAN_FRONTEND must be set on apt-get's OWN environment: sudo's default env_reset would strip a
+  # var exported before it, so pass it THROUGH sudo (via env) -- else debconf can prompt and hang.
+  [ "${#ok[@]}" -eq 0 ] || $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${ok[@]}"
+}
+
+# Fetch a repo signing key ATOMICALLY: dearmor into a temp file we own, verify it is non-empty, and only
+# then install it into place. Guards against a mid-download failure leaving a truncated key that the
+# `[ ! -f "$key" ]` guards would treat as "already done" forever. Returns nonzero on failure.
+install_gpg_key() {  # <url> <dest-keyring>
+  local url="$1" dest="$2" tmp
+  tmp=$(mktemp)
+  # The $SUDO install is part of the && chain, so ITS failure (read-only /usr, denied sudo) also drops to
+  # the failure branch -- the key is only reported installed if it truly landed in $dest.
+  if curl -fsSL "$url" | gpg --dearmor >"$tmp" 2>/dev/null && [ -s "$tmp" ] && $SUDO install -m 0644 "$tmp" "$dest"; then
+    rm -f "$tmp"; return 0
+  fi
+  rm -f "$tmp"; warn "failed to fetch/dearmor/install signing key from $url"; return 1
 }
 
 phase_oneapi() {
   log "Intel oneAPI: apt repo + gpg key"
   local key=/usr/share/keyrings/oneapi-archive-keyring.gpg
   if [ ! -f "$key" ]; then
-    wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-      | gpg --dearmor | $SUDO tee "$key" >/dev/null
+    install_gpg_key https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB "$key" \
+      || { warn "skipping oneAPI repo (no key)"; return 1; }
     echo "deb [signed-by=$key] https://apt.repos.intel.com/oneapi all main" \
       | $SUDO tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
     APT_UPDATED=0
@@ -75,8 +92,8 @@ phase_nvhpc() {
   log "NVIDIA HPC SDK: apt repo + gpg key"
   local key=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg
   if [ ! -f "$key" ]; then
-    curl -fsSL https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK \
-      | $SUDO gpg --dearmor -o "$key"
+    install_gpg_key https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK "$key" \
+      || { warn "skipping nvhpc repo (no key)"; return 1; }
     echo "deb [signed-by=$key] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" \
       | $SUDO tee /etc/apt/sources.list.d/nvhpc.list >/dev/null
     APT_UPDATED=0
@@ -108,7 +125,7 @@ apt_install libsleef-dev
 log "BLAS/LAPACK (arena BLAS axis is a TODO; install the libs now)"
 apt_install libopenblas-dev liblapack-dev libblis-dev libfftw3-dev
 
-[ "$DO_ONEAPI" -eq 1 ] && phase_oneapi
-[ "$DO_NVHPC" -eq 1 ] && phase_nvhpc
+[ "$DO_ONEAPI" -eq 1 ] && { phase_oneapi || warn "oneAPI setup incomplete"; }
+[ "$DO_NVHPC" -eq 1 ] && { phase_nvhpc || warn "nvhpc setup incomplete"; }
 
 log "done. gcc/g++/clang/gfortran on PATH; libomp/libgomp/libsleef + linkers installed."
