@@ -35,6 +35,9 @@ def test_arena_vadd(tmp_path):
     assert res.winners["ieee-strict"].maxdiff == 0.0
     # all vadd cells are correct (a pure add reassociates trivially)
     assert all(c.ok for c in res.cells), [(c.compiler, c.fp_mode, c.maxdiff, c.error) for c in res.cells if not c.ok]
+    # total optimization time (the sweep) and per-candidate compile time are tracked
+    assert res.optimization_seconds > 0.0
+    assert all(c.compile_us > 0.0 for c in res.cells)
 
 
 if __name__ == "__main__":

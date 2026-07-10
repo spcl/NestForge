@@ -20,6 +20,7 @@ import ctypes.util
 import re
 import shutil
 import subprocess
+import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -307,6 +308,12 @@ class BuiltSDFG:
     _init_params: List[_Param]
     _prog_params: List[_Param]
     _scalar_names: set
+    #: wall time of the OPTIMIZATION phase (DaCe codegen: the optimizing passes + C++ emission +
+    #: source-tree layout) -- distinct from the toolchain compile below.
+    codegen_seconds: float = 0.0
+    #: wall time of the post-optimization COMPILE (the compiler/linker subprocess turning the generated
+    #: C++ into the ``.so``); reflects whether external linking was used (see ``link_external``).
+    compile_seconds: float = 0.0
     _handle: Optional[ctypes.c_void_p] = field(default=None, repr=False)
 
     def _init(self, sizes: Dict[str, int]) -> None:
@@ -372,33 +379,114 @@ def _include_flags(folder: Path) -> List[str]:
     return [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"]
 
 
+def _ar_for(compiler: str) -> str:
+    """The ``ar`` that understands this compiler's object files -- the LTO-plugin-aware wrapper
+    (``gcc-ar`` / ``llvm-ar``) when present, so archiving ``-flto`` objects keeps them linkable; plain
+    ``ar`` otherwise."""
+    fam = compiler_family(compiler)
+    cand = "gcc-ar" if fam == "gnu" else "llvm-ar" if fam in ("llvm", "intel-classic") else "ar"
+    return cand if shutil.which(cand) else "ar"
+
+
+def _run(cmd: List[str]) -> None:
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
+
+
+def _compile(frame: Path, folder: Path, name: str, compiler: str, flags: List[str],
+             openmp: Optional[OpenMPRuntime], link_external: bool, lto: bool) -> Tuple[Path, float]:
+    """Compile the generated frame into ``lib<name>.so`` and return (path, wall_seconds).
+
+    Two link modes -- the axis behind "compile time WITH vs WITHOUT external linking":
+
+    * ``link_external=False`` (monolithic): one compiler invocation compiles + links the ``.so`` from a
+      single translation unit. The compiler sees everything and inlines freely.
+    * ``link_external=True``: compile the frame to an object, archive it into a static ``lib<name>_nest.a``,
+      then link the ``.so`` from that archive (``--whole-archive`` keeps every symbol). This is the
+      static-node-library assembly path (BUILD.md's per-nest vs monolithic modes) and is what LTO has to
+      claw back the lost cross-TU inlining for -- hence timing it separately.
+    """
+    inc = _include_flags(folder)
+    lto_f = ["-flto"] if lto else []
+    omp_c = openmp.compile_flags(compiler) if openmp else []
+    omp_l = openmp.link_flags(compiler) if openmp else []
+    so = folder / f"lib{name}.so"
+    t0 = time.perf_counter()
+    if not link_external:
+        _run([compiler, *flags, *lto_f, *omp_c, *omp_l, *inc, str(frame), "-o", str(so)])
+    else:
+        obj = folder / f"{name}.o"
+        cflags = [f for f in flags if f != "-shared"]  # cannot pair -shared with -c
+        _run([compiler, *cflags, *lto_f, "-c", *omp_c, *inc, str(frame), "-o", str(obj)])
+        archive = folder / f"lib{name}_nest.a"
+        if archive.exists():
+            archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
+        _run([_ar_for(compiler), "rcs", str(archive), str(obj)])
+        _run([compiler, "-shared", "-fPIC", *lto_f, "-Wl,--whole-archive", str(archive),
+              "-Wl,--no-whole-archive", *omp_l, "-o", str(so)])
+    return so, time.perf_counter() - t0
+
+
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
                flags: Optional[List[str]] = None, expand_libnodes: bool = False,
-               openmp: Optional[OpenMPRuntime] = None) -> BuiltSDFG:
-    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call.
+               openmp: Optional[OpenMPRuntime] = None, link_external: bool = False,
+               lto: bool = False) -> BuiltSDFG:
+    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call, carrying
+    the ``codegen_seconds`` (optimization) and ``compile_seconds`` (post-optimization toolchain) times.
 
     :param expand_libnodes: expand library nodes to loops first (the "without libnodes" timing variant).
     :param openmp: when set, add this runtime's per-compiler OpenMP compile+link flags (a SEPARATE axis
         from ``flags``) so a parallel kernel links against the one mandated runtime -- and a set built
         with different compilers still shares it (e.g. flang ``-fopenmp=libomp``).
+    :param link_external: link the nest as a separate static ``.a`` rather than a monolithic TU (see
+        :func:`_compile`); the ``compile_seconds`` then reflects the external-linking path.
+    :param lto: add ``-flto`` (and use the LTO-aware ``ar``) to recover cross-TU inlining under external
+        linking.
     """
     import copy
+    t_opt = time.perf_counter()
     sdfg = copy.deepcopy(sdfg)
     if expand_libnodes:
         sdfg.expand_library_nodes()
-    flags = list(flags if flags is not None else DEFAULT_FLAGS)
-    omp = (openmp.compile_flags(compiler) + openmp.link_flags(compiler)) if openmp else []
     frame, name = generate_program_folder(sdfg, out_dir)
     folder = frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
+    codegen_seconds = time.perf_counter() - t_opt
+
+    flags = list(flags if flags is not None else DEFAULT_FLAGS)
     code = frame.read_text()
     init_params = _parse_params(_signature(code, f"__dace_init_{name}"))
     prog_params = _parse_params(_signature(code, f"__program_{name}"))
     scalar_names = {a for a, d in sdfg.arrays.items() if isinstance(d, dace.data.Scalar)}
 
-    so = out_dir / f"lib{name}.so"
-    cmd = [compiler, *flags, *omp, *_include_flags(folder), str(frame), "-o", str(so)]
-    comp = subprocess.run(cmd, capture_output=True, text=True)
-    if comp.returncode != 0:
-        raise RuntimeError(f"build failed for {name}:\n{comp.stderr[-2000:]}")
+    so, compile_seconds = _compile(frame, folder, name, compiler, flags, openmp, link_external, lto)
     return BuiltSDFG(name=name, so_path=so, _lib=ctypes.CDLL(str(so)),
-                     _init_params=init_params, _prog_params=prog_params, _scalar_names=scalar_names)
+                     _init_params=init_params, _prog_params=prog_params, _scalar_names=scalar_names,
+                     codegen_seconds=codegen_seconds, compile_seconds=compile_seconds)
+
+
+@dataclass
+class LinkTimings:
+    """Optimization time and the two post-optimization compile times isolated on ONE codegen."""
+    codegen_seconds: float                 # the optimization (DaCe codegen) phase, run once
+    compile_seconds_monolithic: float      # WITHOUT external linking (single TU)
+    compile_seconds_external: float        # WITH external linking (static .a -> .so)
+
+
+def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
+                       flags: Optional[List[str]] = None, openmp: Optional[OpenMPRuntime] = None,
+                       lto: bool = False) -> LinkTimings:
+    """Generate the code ONCE (one optimization pass), then compile that same frame both monolithically
+    and via an external static library, so ``compile_seconds`` is the only thing that differs. Returns
+    the optimization time plus both post-optimization compile times."""
+    import copy
+    t_opt = time.perf_counter()
+    sdfg = copy.deepcopy(sdfg)
+    frame, name = generate_program_folder(sdfg, out_dir)
+    folder = frame.parent.parent.parent
+    codegen_seconds = time.perf_counter() - t_opt
+    flags = list(flags if flags is not None else DEFAULT_FLAGS)
+    _, mono = _compile(frame, folder, name, compiler, flags, openmp, link_external=False, lto=lto)
+    _, ext = _compile(frame, folder, name, compiler, flags, openmp, link_external=True, lto=lto)
+    return LinkTimings(codegen_seconds=codegen_seconds, compile_seconds_monolithic=mono,
+                       compile_seconds_external=ext)

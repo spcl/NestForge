@@ -25,7 +25,8 @@ from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP,
-                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime)
+                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime,
+                             compare_link_modes, LinkTimings)
 
 
 def _kernels():
@@ -38,7 +39,7 @@ def _first_nest(short):
     return extract_nest_to_sdfg(parent, node, name="nest")
 
 
-def _owned_build_matches_oracle(short, size=48):
+def _owned_build_matches_oracle(short, size=48, **build_kw):
     boundary = _first_nest(short)
     shape_syms = {s for s in boundary.symbols
                   if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())}
@@ -47,11 +48,12 @@ def _owned_build_matches_oracle(short, size=48):
     prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
-    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")))
+    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")), **build_kw)
     buf = {k: v.copy() for k, v in inputs.items()}
     built.run(buf, sizes)  # init -> program -> exit
     for o in oracle:
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
+    return built
 
 
 def test_dace_runtime_include_exists():
@@ -180,6 +182,41 @@ def test_parallel_loop_links_on_libomp_across_compilers(compiler):
                        flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=LIBOMP)
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
+
+
+def test_build_tracks_optimization_and_compile_time():
+    """Every owned build records the optimization time (DaCe codegen) and the post-optimization compile
+    time (the toolchain subprocess), so both are trackable per build."""
+    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_time_")))
+    assert built.codegen_seconds > 0.0
+    assert built.compile_seconds > 0.0
+
+
+def test_external_linking_build_is_correct():
+    """The nest built as a SEPARATE static ``.a`` (link_external) and linked into the ``.so`` runs
+    identically to the monolithic build -- the external-linking path is correct, not merely timeable."""
+    built = _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", link_external=True)
+    assert built.compile_seconds > 0.0
+    assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
+
+
+def test_compare_link_modes_tracks_compile_time_with_and_without_external_linking():
+    """One optimization (codegen) pass, then the same frame compiled two ways: WITHOUT external linking
+    (monolithic single TU) and WITH external linking (static ``.a`` -> ``.so``). All three times are
+    tracked and positive -- this is the with/without-external-linking compile-time comparison."""
+    t = compare_link_modes(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_linkmodes_")))
+    assert isinstance(t, LinkTimings)
+    assert t.codegen_seconds > 0.0
+    assert t.compile_seconds_monolithic > 0.0
+    assert t.compile_seconds_external > 0.0
+
+
+def test_external_linking_with_lto_is_correct():
+    """External linking + ``-flto`` (via the LTO-aware ``ar``) still matches the oracle -- LTO is the
+    knob meant to recover the cross-TU inlining that external linking otherwise costs."""
+    if shutil.which("gcc-ar") is None:
+        pytest.skip("gcc-ar (LTO-aware archiver) not on PATH")
+    _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", link_external=True, lto=True)
 
 
 def test_prune_selecting_libgomp_discards_kmpc_compilers():

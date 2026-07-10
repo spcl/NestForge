@@ -152,6 +152,7 @@ class Cell:
     ok: bool
     maxdiff: float
     time_us: float
+    compile_us: float = 0.0  # wall time of THIS candidate's compile (the post-optimization toolchain cost)
     so_path: Optional[str] = None
     symbol: Optional[str] = None
     error: Optional[str] = None
@@ -204,6 +205,9 @@ class ArenaResult:
     name: str
     cells: List[Cell] = field(default_factory=list)
     winners: Dict[str, Cell] = field(default_factory=dict)  # fp_mode -> best correct cell
+    #: total wall time of the optimization sweep (all compiler x FP-mode candidates: compile + validate +
+    #: time). This is the "total optimization time" -- the cost of searching for the winners.
+    optimization_seconds: float = 0.0
 
 
 def run_arena(prep: Prepared,
@@ -222,22 +226,29 @@ def run_arena(prep: Prepared,
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
     result = ArenaResult(name=prep.name)
+    t_sweep = time.perf_counter()
     for cname, cpath in compilers.items():
         for mode, flags in FP_MODES.items():
             so = out_dir / f"lib{prep.name}_{cname}_{mode}.so"
             cmd = [cpath, *flags, str(c_source), "-o", str(so)]
+            t_c = time.perf_counter()
             comp = subprocess.run(cmd, capture_output=True, text=True)
+            compile_us = (time.perf_counter() - t_c) * 1e6
             if comp.returncode != 0:
-                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"), error=comp.stderr[-400:]))
+                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"),
+                                         compile_us=compile_us, error=comp.stderr[-400:]))
                 continue
             try:
                 outs, us = _call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)
                 md = _maxdiff(oracle, outs)
                 ok = md <= _MODE_ATOL[mode]
-                result.cells.append(Cell(cname, mode, ok, md, us, so_path=str(so), symbol=symbol))
+                result.cells.append(Cell(cname, mode, ok, md, us, compile_us=compile_us,
+                                         so_path=str(so), symbol=symbol))
             except Exception as e:  # pragma: no cover - defensive
-                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"), error=str(e)))
+                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"),
+                                         compile_us=compile_us, error=str(e)))
 
+    result.optimization_seconds = time.perf_counter() - t_sweep
     for mode in FP_MODES:
         correct = [c for c in result.cells if c.fp_mode == mode and c.ok]
         if correct:
