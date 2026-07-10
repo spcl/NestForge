@@ -34,6 +34,9 @@ nestforge/
   rule table, and cross-language operator semantics (numpy-default + fortran-to-sdfg).
 - `docs/OPT_RECORDS.md` — emitting + parsing optimization records for GCC / LLVM / Intel / NVIDIA, and
   the normalized schema + trip-count-weighted ranking the predictive mode uses.
+- `BUILD.md` — nest-forge owning its build: generate code + compile + link ourselves (not
+  `dace.compile`), manual init/finalize, a C++ `<chrono>` timing-transformation (with/without libnodes),
+  and maximal-LTO static-lib inlining. `scripts/overhead_baseline.py` is the correctness+timing first cut.
 
 ## Deps
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
