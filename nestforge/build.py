@@ -241,6 +241,87 @@ def prune_to_valid_combinations(config: ArenaConfig, *, probe_compilers: bool = 
     return PrunedConfig(compilers=compilers, runtimes=runtimes, combos=combos)
 
 
+#: -fveclib token (clang / flang / icx / icpx) per vector-math-library name.
+_CLANG_VECLIB = {"sleef": "SLEEF", "libmvec": "libmvec", "svml": "SVML"}
+
+
+@dataclass
+class VectorMathLib:
+    """A vectorized math library supplying SIMD implementations of elementary functions (exp/log/sin/pow/
+    ...), so an autovectorized loop calls a packed routine instead of scalarizing the transcendental. A
+    SEPARATE axis from the OpenMP runtime and the base flags. Support is per-compiler-family:
+
+    * ``sleef``   (SLEEF, portable): clang/flang/icx via ``-fveclib=SLEEF`` (+ ``-lsleef``). gcc has no
+      ``-fveclib`` and no ``-mveclibabi`` for SLEEF -> unsupported on gcc.
+    * ``libmvec`` (glibc's vector math): clang via ``-fveclib=libmvec``; gcc uses it AUTOMATICALLY under
+      ``-O3``/fast-math with an AVX ``-march`` (no compile flag), linking ``-lmvec``.
+    * ``svml``    (Intel Short Vector Math Library): icx/clang via ``-fveclib=SVML``; gcc via
+      ``-mveclibabi=svml``; classic icc emits SVML calls natively. Links ``-lsvml`` (Intel runtime).
+
+    Note: the vectorizer only SUBSTITUTES these calls when the FP mode relaxes math semantics (errno /
+    precision) -- that is the fast-math FP-mode axis, kept separate from this library selection.
+    """
+    name: str                          # sleef | libmvec | svml
+    soname: Optional[str]              # -l<soname> for the vector symbols (None: toolchain/glibc provides)
+    lib_dir: Optional[str] = None      # -L if the library is not on the default search path
+
+    def compatible(self, compiler: str) -> bool:
+        fam = compiler_family(compiler)
+        if fam == "llvm":
+            return self.name in _CLANG_VECLIB
+        if fam == "gnu":
+            return self.name in ("libmvec", "svml")  # glibc libmvec (auto) or -mveclibabi=svml
+        if fam == "intel-classic":
+            return self.name == "svml"               # classic icc emits SVML natively
+        return False                                 # nvidia: use its own -Mvect, not these
+
+    def _check(self, compiler: str) -> None:
+        if not self.compatible(compiler):
+            raise ValueError(f"{Path(compiler).name} ({compiler_family(compiler)}) cannot use the {self.name} "
+                             f"vector math library; try a compatible compiler or a different veclib.")
+
+    def compile_flags(self, compiler: str) -> List[str]:
+        self._check(compiler)
+        fam = compiler_family(compiler)
+        if fam == "llvm":
+            return [f"-fveclib={_CLANG_VECLIB[self.name]}"]
+        if fam == "gnu":
+            return ["-mveclibabi=svml"] if self.name == "svml" else []  # libmvec is automatic on gcc
+        return []  # intel-classic svml: native
+
+    def link_flags(self, compiler: str) -> List[str]:
+        self._check(compiler)
+        if not self.soname:
+            return []
+        libdir = [f"-L{self.lib_dir}"] if self.lib_dir else []
+        return [*libdir, f"-l{self.soname}"]
+
+
+SLEEF = VectorMathLib(name="sleef", soname="sleef")
+LIBMVEC = VectorMathLib(name="libmvec", soname="mvec")   # glibc's libmvec
+SVML = VectorMathLib(name="svml", soname="svml")         # Intel SVML runtime
+
+#: name -> vector-math library, for a config/CLI knob.
+VECTOR_LIBS = {"sleef": SLEEF, "libmvec": LIBMVEC, "svml": SVML}
+
+
+def vectorlib_installed(vl: VectorMathLib) -> bool:
+    """True if the vector library's shared object is findable (mirrors :func:`runtime_installed`). A
+    ``soname``-less entry (toolchain-provided) is always considered present."""
+    if not vl.soname:
+        return True
+    if vl.lib_dir and any((Path(vl.lib_dir) / f"lib{vl.soname}{e}").exists() for e in (".so", ".a")):
+        return True
+    return ctypes.util.find_library(vl.soname) is not None
+
+
+# TODO(blas): add a BLAS/LAPACK library axis (openblas / mkl / blis / nvpl / accelerate) the same way --
+# a linkable-library knob with per-library link flags + an installed-probe, feeding the same prune model.
+# Discovery already exists (nestforge.arena.discover_blas_libraries); what's missing is threading a chosen
+# BLAS into the owned build's link line (for library-node expansions that lower to gemm/gemv) and a
+# compat/prune step. Kept as a TODO here so the vector-math axis lands first.
+
+
 def dace_runtime_include() -> Path:
     """The ``-I`` directory holding DaCe's runtime headers (``dace/runtime/include``)."""
     inc = Path(dace.__file__).parent / "runtime" / "include"
@@ -394,44 +475,88 @@ def _run(cmd: List[str]) -> None:
         raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
 
 
+#: Fast alternative linkers, FASTEST FIRST. The default ``bfd`` ``ld`` is always present and is the
+#: fallback, so it is not listed here. Install more with e.g. ``apt install mold`` (fastest) or
+#: ``apt install binutils-gold``.
+_FAST_LINKERS = ("mold", "lld", "gold")
+
+
+def available_linkers() -> Dict[str, str]:
+    """The fast alternative linkers installed on this system, fastest first: name (the ``-fuse-ld=<name>``
+    token) -> backing binary path. The default ``bfd`` ld is not listed (it is always the fallback). Use
+    it to report what is available and what could be installed for a faster link."""
+    found: Dict[str, str] = {}
+    for ld in _FAST_LINKERS:
+        p = shutil.which(ld) or shutil.which(f"ld.{ld}")
+        if p:
+            found[ld] = p
+    return found
+
+
+def _fastest_linker(compiler: str) -> List[str]:
+    """``-fuse-ld=<linker>`` for the fastest installed linker (mold > lld > gold), or ``[]`` if only the
+    default ``ld`` is present. NVIDIA's nvc/nvc++ has no ``-fuse-ld`` switch, so it keeps its default."""
+    if compiler_family(compiler) == "nvidia":
+        return []
+    for ld in available_linkers():  # dict preserves the fastest-first order of _FAST_LINKERS
+        return [f"-fuse-ld={ld}"]
+    return []
+
+
 def _compile(frame: Path, folder: Path, name: str, compiler: str, flags: List[str],
-             openmp: Optional[OpenMPRuntime], link_external: bool, lto: bool) -> Tuple[Path, float]:
+             openmp: Optional[OpenMPRuntime], link_external: bool, lto: bool,
+             veclib: Optional[VectorMathLib] = None) -> Tuple[Path, float]:
     """Compile the generated frame into ``lib<name>.so`` and return (path, wall_seconds).
 
     Two link modes -- the axis behind "compile time WITH vs WITHOUT external linking":
 
     * ``link_external=False`` (monolithic): one compiler invocation compiles + links the ``.so`` from a
-      single translation unit. The compiler sees everything and inlines freely.
-    * ``link_external=True``: compile the frame to an object, archive it into a static ``lib<name>_nest.a``,
-      then link the ``.so`` from that archive (``--whole-archive`` keeps every symbol). This is the
-      static-node-library assembly path (BUILD.md's per-nest vs monolithic modes) and is what LTO has to
-      claw back the lost cross-TU inlining for -- hence timing it separately.
+      single translation unit. The compiler sees everything and inlines freely. ``lto`` optionally adds
+      ``-flto`` here too.
+    * ``link_external=True``: the static-node-library path -- compile the frame to an object, archive it
+      into ``lib<name>_nest.a``, then link the ``.so`` from that archive (``--whole-archive`` keeps every
+      symbol). Built to be as fast + as optimized as the toolchain allows: EVERY optimization flag is
+      propagated, the object is compiled with FAT LTO (``-flto -ffat-lto-objects`` -- LTO bitcode AND real
+      machine code) so the ``.a`` is LTO-ready for a future driver link that spans node boundaries, and
+      the loadable ``.so`` links via the fastest available linker. The ``.so`` is linked from the object's
+      REAL code (no ``-flto`` at this link) with ``--export-dynamic``: a single-object LTO link would DCE
+      the unreferenced extern-C entry points (``__dace_init_*`` etc.) and leave them undefined -- the
+      cross-TU LTO win belongs to the eventual driver link, not to this wrapper ``.so``.
     """
     inc = _include_flags(folder)
-    lto_f = ["-flto"] if lto else []
     omp_c = openmp.compile_flags(compiler) if openmp else []
     omp_l = openmp.link_flags(compiler) if openmp else []
+    vec_c = veclib.compile_flags(compiler) if veclib else []
+    vec_l = veclib.link_flags(compiler) if veclib else []
     so = folder / f"lib{name}.so"
     t0 = time.perf_counter()
     if not link_external:
-        _run([compiler, *flags, *lto_f, *omp_c, *omp_l, *inc, str(frame), "-o", str(so)])
+        lto_f = ["-flto"] if lto else []
+        _run([compiler, *flags, *lto_f, *omp_c, *omp_l, *vec_c, *vec_l, *inc, str(frame), "-o", str(so)])
     else:
+        opt = [f for f in flags if f != "-shared"]  # every opt flag (-O3/-march/-std/-fPIC); no -shared with -c
+        fam = compiler_family(compiler)
+        if fam in ("gnu", "llvm", "intel-classic"):
+            lto_c = ["-flto", "-ffat-lto-objects"]  # bitcode (for the driver link) + real code (for our .so)
+        else:
+            lto_c = []  # nvc/nvc++ has no -ffat-lto-objects; archive the node lib without LTO
+            warnings.warn(f"{Path(compiler).name} has no fat-LTO support; archiving the node lib without LTO")
         obj = folder / f"{name}.o"
-        cflags = [f for f in flags if f != "-shared"]  # cannot pair -shared with -c
-        _run([compiler, *cflags, *lto_f, "-c", *omp_c, *inc, str(frame), "-o", str(obj)])
+        _run([compiler, *opt, *lto_c, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)])
         archive = folder / f"lib{name}_nest.a"
         if archive.exists():
             archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
         _run([_ar_for(compiler), "rcs", str(archive), str(obj)])
-        _run([compiler, "-shared", "-fPIC", *lto_f, "-Wl,--whole-archive", str(archive),
-              "-Wl,--no-whole-archive", *omp_l, "-o", str(so)])
+        # Link the .so from the fat object's real code (NOT -flto) so the entry points survive + export.
+        _run([compiler, "-shared", *opt, *_fastest_linker(compiler), "-Wl,--export-dynamic",
+              "-Wl,--whole-archive", str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, "-o", str(so)])
     return so, time.perf_counter() - t0
 
 
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
                flags: Optional[List[str]] = None, expand_libnodes: bool = False,
                openmp: Optional[OpenMPRuntime] = None, link_external: bool = False,
-               lto: bool = False) -> BuiltSDFG:
+               lto: bool = False, veclib: Optional[VectorMathLib] = None) -> BuiltSDFG:
     """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call, carrying
     the ``codegen_seconds`` (optimization) and ``compile_seconds`` (post-optimization toolchain) times.
 
@@ -440,9 +565,11 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
         from ``flags``) so a parallel kernel links against the one mandated runtime -- and a set built
         with different compilers still shares it (e.g. flang ``-fopenmp=libomp``).
     :param link_external: link the nest as a separate static ``.a`` rather than a monolithic TU (see
-        :func:`_compile`); the ``compile_seconds`` then reflects the external-linking path.
-    :param lto: add ``-flto`` (and use the LTO-aware ``ar``) to recover cross-TU inlining under external
-        linking.
+        :func:`_compile`); this path is ALWAYS built maximally (LTO + fastest linker + all opt flags), so
+        ``compile_seconds`` reflects the fully-optimized external link.
+    :param lto: add ``-flto`` to the MONOLITHIC build too (external linking always uses LTO regardless).
+    :param veclib: a vector-math library (SLEEF / libmvec / SVML) to compile + link against, so
+        autovectorized transcendentals use packed routines -- a SEPARATE axis from ``flags``/``openmp``.
     """
     import copy
     t_opt = time.perf_counter()
@@ -459,7 +586,7 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
     prog_params = _parse_params(_signature(code, f"__program_{name}"))
     scalar_names = {a for a, d in sdfg.arrays.items() if isinstance(d, dace.data.Scalar)}
 
-    so, compile_seconds = _compile(frame, folder, name, compiler, flags, openmp, link_external, lto)
+    so, compile_seconds = _compile(frame, folder, name, compiler, flags, openmp, link_external, lto, veclib)
     return BuiltSDFG(name=name, so_path=so, _lib=ctypes.CDLL(str(so)),
                      _init_params=init_params, _prog_params=prog_params, _scalar_names=scalar_names,
                      codegen_seconds=codegen_seconds, compile_seconds=compile_seconds)
@@ -475,7 +602,7 @@ class LinkTimings:
 
 def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_COMPILER,
                        flags: Optional[List[str]] = None, openmp: Optional[OpenMPRuntime] = None,
-                       lto: bool = False) -> LinkTimings:
+                       lto: bool = False, veclib: Optional[VectorMathLib] = None) -> LinkTimings:
     """Generate the code ONCE (one optimization pass), then compile that same frame both monolithically
     and via an external static library, so ``compile_seconds`` is the only thing that differs. Returns
     the optimization time plus both post-optimization compile times."""
@@ -486,7 +613,7 @@ def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, compiler: str = DEFAULT_C
     folder = frame.parent.parent.parent
     codegen_seconds = time.perf_counter() - t_opt
     flags = list(flags if flags is not None else DEFAULT_FLAGS)
-    _, mono = _compile(frame, folder, name, compiler, flags, openmp, link_external=False, lto=lto)
-    _, ext = _compile(frame, folder, name, compiler, flags, openmp, link_external=True, lto=lto)
+    _, mono = _compile(frame, folder, name, compiler, flags, openmp, link_external=False, lto=lto, veclib=veclib)
+    _, ext = _compile(frame, folder, name, compiler, flags, openmp, link_external=True, lto=lto, veclib=veclib)
     return LinkTimings(codegen_seconds=codegen_seconds, compile_seconds_monolithic=mono,
                        compile_seconds_external=ext)
