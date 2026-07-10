@@ -39,10 +39,13 @@ nestforge/
   and maximal-LTO static-lib inlining. `scripts/overhead_baseline.py` is the correctness+timing first cut.
 
 ## Deps
-- One-shot machine setup: `scripts/setup_env.sh` (`--help`) installs the toolchain via **apt**
-  (gcc/clang/gfortran, libomp/libgomp, lld/gold/mold + gcc-ar/llvm-ar, SLEEF/libmvec, BLAS,
-  python/build), optional vendor toolchains (`--oneapi`, `--nvhpc`), then a **spack** compiler×library
-  matrix (`--spack`). Idempotent; apt needs sudo, spack is userspace.
+- Machine setup (two idempotent scripts, `--help` each):
+  - `scripts/setup_apt.sh` — the **apt** system toolchain (gcc/clang/gfortran, libomp/libgomp,
+    lld/gold/mold + gcc-ar/llvm-ar, SLEEF/libmvec, BLAS, python/build); `--oneapi` / `--nvhpc` add the
+    vendor apt repos + gpg keys (icx/ifx + libiomp5 + SVML; nvc/nvc++ + libnvomp). Assumes sudo.
+  - `scripts/setup_spack.sh` — the **spack** compiler×library matrix (register compilers, optional
+    `--spack-compilers` to build extra ones, then `SPACK_MATRIX_LIBS` × `SPACK_MATRIX_COMPILERS`).
+    Userspace, no sudo; run after the apt script.
 - DaCe (`/home/primrose/Work/dace`, branch `extended`).
 - OptArena — vendored as the `external/optarena` git submodule (`github.com/spcl/OptArena`). Resolve
   and install it with:
