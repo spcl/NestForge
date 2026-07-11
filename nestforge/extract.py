@@ -33,7 +33,7 @@ class Boundary:
     parent_sdfg: dace.SDFG = field(repr=False, default=None)
 
 
-def _detach(sdfg: dace.SDFG) -> dace.SDFG:
+def detach(sdfg: dace.SDFG) -> dace.SDFG:
     """Deep-copy an outlined nested SDFG and cut its parent links so it stands alone."""
     det = copy.deepcopy(sdfg)
     det.parent = None
@@ -43,7 +43,7 @@ def _detach(sdfg: dace.SDFG) -> dace.SDFG:
     return det
 
 
-def _find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
+def find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
     """Return the ``SDFGState`` in ``sdfg`` that contains ``node``."""
     for state in sdfg.states():
         if node in state.nodes():
@@ -51,7 +51,7 @@ def _find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
     raise ValueError(f"node {node} not found in any state of SDFG {sdfg.label}")
 
 
-def _boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_sdfg: dace.SDFG) -> Boundary:
+def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_sdfg: dace.SDFG) -> Boundary:
     inputs = sorted(nsdfg_node.in_connectors.keys())
     outputs = sorted(nsdfg_node.out_connectors.keys())
     symbols = sorted(str(s) for s in nsdfg_node.symbol_mapping.keys())
@@ -60,7 +60,7 @@ def _boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_
                     symbols=symbols,
                     nsdfg_node=nsdfg_node,
                     state=state,
-                    standalone_sdfg=_detach(nsdfg_node.sdfg),
+                    standalone_sdfg=detach(nsdfg_node.sdfg),
                     parent_sdfg=parent_sdfg)
 
 
@@ -72,10 +72,10 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: Op
     DaCe shrinks + rebases each connector to its accessed slice (e.g. a ``[1:N-1]`` stencil would
     pass a size-``N-2`` buffer and index ``B[i-1]``), which would break the generated C signature.
     """
-    state = _find_state_of_node(parent_sdfg, map_entry)
+    state = find_state_of_node(parent_sdfg, map_entry)
     subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
-    return _boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
+    return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
 
 
 def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
@@ -85,7 +85,7 @@ def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[s
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     # nest_sdfg_subgraph returns the state that now holds the NestedSDFG; find that node.
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
-    return _boundary_from_nsdfg(nsdfg_node, inner_state, parent_sdfg)
+    return boundary_from_nsdfg(nsdfg_node, inner_state, parent_sdfg)
 
 
 def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: Optional[str] = None) -> Boundary:

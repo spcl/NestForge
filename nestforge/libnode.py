@@ -10,9 +10,7 @@ properties. Two expansions:
 from __future__ import annotations
 
 import copy
-from typing import Dict, List, Optional
-
-import numpy as np
+from typing import List
 
 import dace
 import dace.library
@@ -34,11 +32,11 @@ def out_conn(name: str) -> str:
     return f"_out_{name}"
 
 
-def _connector_for(arg: str, outputs: set) -> str:
+def connector_for(arg: str, outputs: set) -> str:
     return out_conn(arg) if arg in outputs else in_conn(arg)
 
 
-def _proto_and_call(node: "ExternalCall") -> (str, str):
+def proto_and_call(node: "ExternalCall") -> (str, str):
     """Build the ``extern "C"`` prototype and the call expression from the manifest.
 
     Array args are passed by their connector variable (``_in_X`` / ``_out_Y``); size symbols are
@@ -55,7 +53,7 @@ def _proto_and_call(node: "ExternalCall") -> (str, str):
             c = _CPP_SCALAR[dtypes_map[arg]]
             const = "" if arg in outputs else "const "
             params.append(f"{const}{c}* {arg}")
-            call_args.append(_connector_for(arg, outputs))
+            call_args.append(connector_for(arg, outputs))
         else:
             params.append(f"int64_t {arg}")
             call_args.append(arg)
@@ -115,7 +113,7 @@ class ExpandExternCall(ExpandTransformation):
     def expansion(node, parent_state, parent_sdfg):
         if not node.lib_path or not node.symbol:
             raise ValueError(f"ExternalCall {node.name} needs lib_path + symbol for ExpandExternCall")
-        proto, call = _proto_and_call(node)
+        proto, call = proto_and_call(node)
         ExternLibEnv.configure(node.lib_path)
         ExpandExternCall.environments = [ExternLibEnv]
         tasklet = nodes.Tasklet(node.name,

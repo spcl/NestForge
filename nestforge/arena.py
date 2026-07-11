@@ -1,8 +1,8 @@
 """The arena: compile an extracted nest across a compiler x FP-mode matrix, validate each
 against the numpy oracle, time it, and pick the winner per FP mode.
 
-M0 scope: CPU, C target, compilers discovered from PATH (gcc/clang), three FP modes. Timing is
-external wall-clock over repeats; OptArena's self-timed harness is an M1 upgrade.
+Scope: CPU, C target, compilers discovered from PATH (gcc/clang), three FP modes. Timing is
+external wall-clock over repeats.
 """
 from __future__ import annotations
 
@@ -21,9 +21,10 @@ import dace
 from dace import symbolic
 
 from nestforge.extract import Boundary
-from nestforge.translate import Prepared, emit_sources
+from nestforge.isolation import run_isolated
+from nestforge.translate import Prepared
 
-# --- FP modes (the flag axis; see the plan's gramschmidt evidence) ----------------------------
+# --- FP modes (the flag axis) -----------------------------------------------------------------
 _BASE = ["-O3", "-march=native", "-fPIC", "-shared"]
 FP_MODES: Dict[str, List[str]] = {
     # bit-exact vs numpy: no fast-math, no FMA contraction.
@@ -33,14 +34,14 @@ FP_MODES: Dict[str, List[str]] = {
     # everything goes.
     "fast-math": _BASE + ["-ffast-math"],
 }
-_MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
+MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
-_CTYPE = {"float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32}
+CTYPE = {"float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32}
 
 
 def discover_compilers() -> Dict[str, str]:
-    """M0: probe PATH for gcc/clang. (Spack discovery is M1.)"""
+    """Probe PATH for gcc/clang."""
     return {name: shutil.which(exe) for name, exe in _CANDIDATE_COMPILERS.items() if shutil.which(exe)}
 
 
@@ -64,7 +65,7 @@ _BLAS_SONAMES = {
 }
 
 
-def _ldconfig_sonames() -> set:
+def ldconfig_sonames() -> set:
     """Base library names (``openblas`` from ``libopenblas.so.0``) known to the dynamic linker."""
     try:
         out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
@@ -84,7 +85,7 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
     Backends become an extra link axis for kernels whose emitted numpy uses ``@``/``np.dot`` (a
     ``cblas``-calling variant links against each). Probes the dynamic linker cache plus ``MKLROOT``.
     """
-    sonames = _ldconfig_sonames()
+    sonames = ldconfig_sonames()
     found: Dict[str, BlasBackend] = {}
     for name, candidates in _BLAS_SONAMES.items():
         for so in candidates:
@@ -102,12 +103,12 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
 
 
 # --- data generation from the manifest --------------------------------------------------------
-def _resolve_shape(shape, sizes: Dict[str, int]):
+def resolve_shape(shape, sizes: Dict[str, int]):
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
 
 
-def _scratch_names(boundary: Boundary) -> List[str]:
+def scratch_names(boundary: Boundary) -> List[str]:
     """Transient array buffers the C-style kernel expects the caller to pre-allocate."""
     sdfg = boundary.standalone_sdfg
     return sorted(name for name, desc in sdfg.arrays.items()
@@ -120,10 +121,10 @@ def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dic
     rng = np.random.default_rng(seed)
     arrays: Dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]
-    zero_filled = out_only + [s for s in _scratch_names(boundary) if s not in boundary.inputs]
+    zero_filled = out_only + [s for s in scratch_names(boundary) if s not in boundary.inputs]
     for name in list(boundary.inputs) + zero_filled:
         desc = sdfg.arrays[name]
-        shape = _resolve_shape(desc.shape, sizes)
+        shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
         arrays[name] = (np.zeros(shape, dt) if name in zero_filled else rng.random(shape).astype(dt))
     return arrays
@@ -136,7 +137,7 @@ def run_oracle(prep: Prepared, boundary: Boundary, inputs: Dict[str, np.ndarray]
     if missing:
         raise KeyError(f"no value for boundary symbol(s) {missing} (e.g. a loop index carried into an "
                        f"extracted nest); pass them in `sizes`")
-    ns: Dict[str, object] = {}
+    ns: Dict[str, object] = {"np": np}  # the emitter spells casts/intrinsics as ``np.*``; the exec scope must carry it
     exec(prep.numpy_source, ns)
     args = {k: v.copy() for k, v in inputs.items()}
     call = {**args, **{s: int(sizes[s]) for s in boundary.symbols}}
@@ -158,20 +159,20 @@ class Cell:
     error: Optional[str] = None
 
 
-def _argtypes(prep: Prepared, boundary: Boundary) -> list:
+def resolve_argtypes(prep: Prepared, boundary: Boundary) -> list:
     sdfg = boundary.standalone_sdfg
     types = []
     for arg in prep.manifest["input_args"]:
         if arg in sdfg.arrays:
             dt = np.dtype(sdfg.arrays[arg].dtype.type).name
-            types.append(ctypes.POINTER(_CTYPE[dt]))
+            types.append(ctypes.POINTER(CTYPE[dt]))
         else:
             types.append(ctypes.c_int64)  # size symbol
     return types
 
 
-def _call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary: Boundary,
-                 inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int):
+def call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary: Boundary,
+                inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int):
     lib = ctypes.CDLL(str(so))
     fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
     fn.argtypes = argtypes
@@ -196,7 +197,7 @@ def _call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary
     return outputs, elapsed_us
 
 
-def _maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
+def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     return max((float(np.max(np.abs(a[k] - b[k]))) if a[k].size else 0.0) for k in a)
 
 
@@ -205,8 +206,7 @@ class ArenaResult:
     name: str
     cells: List[Cell] = field(default_factory=list)
     winners: Dict[str, Cell] = field(default_factory=dict)  # fp_mode -> best correct cell
-    #: total wall time of the optimization sweep (all compiler x FP-mode candidates: compile + validate +
-    #: time). This is the "total optimization time" -- the cost of searching for the winners.
+    #: wall time of the whole sweep (all candidates: compile + validate + time) -- the search cost.
     optimization_seconds: float = 0.0
 
 
@@ -221,7 +221,7 @@ def run_arena(prep: Prepared,
     out_dir.mkdir(parents=True, exist_ok=True)
     compilers = discover_compilers()
     symbol = f"{prep.name}_fp64"
-    argtypes = _argtypes(prep, boundary)
+    argtypes = resolve_argtypes(prep, boundary)
     inputs = make_inputs(boundary, sizes, seed=seed)
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
@@ -244,15 +244,29 @@ def run_arena(prep: Prepared,
                          compile_us=compile_us,
                          error=comp.stderr[-400:]))
                 continue
-            try:
-                outs, us = _call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)
-                md = _maxdiff(oracle, outs)
-                ok = md <= _MODE_ATOL[mode]
-                result.cells.append(Cell(cname, mode, ok, md, us, compile_us=compile_us, so_path=str(so),
-                                         symbol=symbol))
-            except Exception as e:  # pragma: no cover - defensive
+
+            # Validate + time in a forked child so a segfault/runaway in the fresh kernel kills only
+            # the child. maxdiff is computed child-side (only the summary crosses the pipe). ``so``/
+            # ``mode`` are default args to dodge late-binding-closure capture of the loop variables.
+            def work(so=so, mode=mode):
+                outs, us = call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)
+                md = float(maxdiff(oracle, outs))
+                return {"ok": bool(md <= MODE_ATOL[mode]), "maxdiff": md, "time_us": float(us)}
+
+            res = run_isolated(work)
+            if "error" in res:
                 result.cells.append(
-                    Cell(cname, mode, False, float("inf"), float("inf"), compile_us=compile_us, error=str(e)))
+                    Cell(cname, mode, False, float("inf"), float("inf"), compile_us=compile_us, error=res["error"]))
+            else:
+                result.cells.append(
+                    Cell(cname,
+                         mode,
+                         res["ok"],
+                         res["maxdiff"],
+                         res["time_us"],
+                         compile_us=compile_us,
+                         so_path=str(so),
+                         symbol=symbol))
 
     result.optimization_seconds = time.perf_counter() - t_sweep
     for mode in FP_MODES:

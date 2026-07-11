@@ -15,14 +15,14 @@ def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
         C[i] = A[i] + B[i]
 
 
-def _boundary():
+def boundary():
     sdfg = vadd.to_sdfg(simplify=True)
     psdfg, node = outer(sdfg)[0]
     return extract_nest_to_sdfg(psdfg, node, name="vadd_nest")
 
 
 def test_numpy_emit_runs():
-    b = _boundary()
+    b = boundary()
     src = nest_to_numpy(b, fn_name="vadd")
     ns = {}
     exec(src, ns)
@@ -34,7 +34,7 @@ def test_numpy_emit_runs():
 
 
 def test_translate_to_c(tmp_path):
-    b = _boundary()
+    b = boundary()
     prep = prepare(b, "vadd", tmp_path / "kern")
     assert prep.numpy_path.exists() and prep.yaml_path.exists()
     srcs = emit_sources(prep, tmp_path / "gen", target="c")
@@ -51,6 +51,7 @@ def test_translate_to_c(tmp_path):
 
 if __name__ == "__main__":
     test_numpy_emit_runs()
-    import tempfile, pathlib
+    import tempfile
+    import pathlib
     test_translate_to_c(pathlib.Path(tempfile.mkdtemp()))
     print("translate OK")

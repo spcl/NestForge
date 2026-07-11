@@ -1,18 +1,25 @@
 name: CI
 
-# One CPU runner (the nest-forge suite is ~30s): a format gate, then the toolchain via the repo's own
-# scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable,
-# then pytest. nvc++/icpx/oneAPI are absent on the runner, so those sanity tests self-skip (skipif);
-# g++/clang++ + libomp cover the cross-compiler OpenMP + external-link matrix.
+# One CPU runner (the nest-forge unit suite is ~30s): a format gate, then the toolchain via the repo's
+# own scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable,
+# then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler + heavy-launcher tests
+# are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the cross-compiler OpenMP matrix.
 #
-# DaCe and OptArena are private (github.com/spcl); the checkout steps use ${{ secrets.NESTFORGE_CI_TOKEN }}
-# -- a PAT with read access to both. Make them public, or vendor OptArena as a submodule, to drop it.
+# OptArena is a PRIVATE submodule (external/optarena, git@github.com:spcl/OptArena.git). It is pulled with
+# an SSH deploy key in the `secrets.OPTARENA_DEPLOY_KEY` secret (a key with read access to spcl/OptArena);
+# switch it to a tokenless checkout once OptArena is public. DaCe may still be private, so its sibling
+# checkout keeps `secrets.NESTFORGE_CI_TOKEN` (a read PAT); drop that token once spcl/dace is public.
+#
+# The pytest phase runs the UNIT set (-m "not integration") and enforces ZERO skips via
+# NESTFORGE_CI_NO_SKIP (repo-root conftest.py fails the session if any remaining test skips).
 
+# DISABLED for now: CI needs the private OptArena submodule, pulled with the OPTARENA_DEPLOY_KEY secret,
+# which is not configured yet -- so it only runs on manual dispatch and never blocks a push/PR. No key is
+# ever stored in the repo (the workflow only references `secrets.OPTARENA_DEPLOY_KEY`, a GitHub secret).
+# To re-enable: add the OPTARENA_DEPLOY_KEY secret (read access to spcl/OptArena) and restore the
+# `push`/`pull_request` triggers below.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # NestForge itself is public -> the default token checkout is fine; the private OptArena submodule
+      # is pulled separately below with its own SSH key, so do NOT pull submodules here.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -40,7 +49,20 @@ jobs:
           python -m pip install yapf clang-format
           bash scripts/format.sh --check
 
-      # DaCe + OptArena checked out as sibling dirs (private repos need the PAT secret).
+      # OptArena submodule (private) via its SSH deploy key. Once OptArena is public, replace this whole
+      # step with `submodules: recursive` on the checkout above.
+      - name: Phase 1a -- OptArena submodule (SSH deploy key)
+        env:
+          OPTARENA_DEPLOY_KEY: ${{ secrets.OPTARENA_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$OPTARENA_DEPLOY_KEY" > ~/.ssh/id_optarena
+          chmod 600 ~/.ssh/id_optarena
+          ssh-keyscan -t rsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_optarena -o IdentitiesOnly=yes"
+          git submodule update --init --recursive external/optarena
+
+      # DaCe checked out as a sibling dir (branch extended). Keeps the PAT secret while spcl/dace is private.
       - uses: actions/checkout@v4
         with:
           repository: spcl/dace
@@ -49,23 +71,22 @@ jobs:
           submodules: recursive
           token: ${{ secrets.NESTFORGE_CI_TOKEN }}
 
-      - uses: actions/checkout@v4
-        with:
-          repository: spcl/OptArena
-          path: optarena
-          token: ${{ secrets.NESTFORGE_CI_TOKEN }}
-
       # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).
-      - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
+      - name: Phase 1b -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
-      - name: Phase 2 -- DaCe (extended) + OptArena + test deps, editable
+      - name: Phase 2 -- DaCe (extended) + OptArena (submodule) + test deps, editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
           pip_retry -e ./dace
-          pip_retry -e ./optarena
+          pip_retry -e ./external/optarena
           pip_retry numpy pytest pytest-timeout pytest-xdist sympy
 
-      - name: Phase 3 -- pytest
+      # Unit set only (-m "not integration"): vendor-compiler + heavy-launcher tests are marked
+      # @pytest.mark.integration and excluded here. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the
+      # session if any of the remaining tests skip -- the unit set must run with zero skips.
+      - name: Phase 3 -- pytest (unit set, 0-skip enforced)
+        env:
+          NESTFORGE_CI_NO_SKIP: '1'
         run: |
-          python -m pytest -q -p no:cacheprovider --timeout=900 -n auto
+          python -m pytest -q -p no:cacheprovider -m "not integration" -n auto --timeout=900

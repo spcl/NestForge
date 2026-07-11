@@ -31,7 +31,7 @@ def if_else(flag: dc.int64, a: dc.float64[N], out: dc.float64[N]):
             out[i] = a[i] - 1.0
 
 
-def _build_three_branch():
+def build_three_branch():
     """A 3-branch ``ConditionalBlock`` (``if``/``elif``/``else``) built directly via the SDFG API.
 
     The python frontend lowers ``if/elif/else`` into *nested* 2-branch blocks, so a genuine
@@ -60,7 +60,7 @@ def _build_three_branch():
     return sdfg
 
 
-def _build_switch(name, branches):
+def build_switch(name, branches):
     """A ``ConditionalBlock`` with the given ``(guard, delta)`` branches in the given order.
 
     ``guard is None`` marks the unconditional (else) branch; each branch is ``out[i] = a[i] + delta``.
@@ -88,7 +88,7 @@ def _build_switch(name, branches):
     return sdfg
 
 
-def _emit(sdfg, fn_name):
+def emit(sdfg, fn_name):
     assert any(isinstance(b, ConditionalBlock) for b in sdfg.all_control_flow_blocks())
     src = sdfg_to_numpy(sdfg, fn_name)
     ns = {"np": np}
@@ -97,7 +97,7 @@ def _emit(sdfg, fn_name):
 
 
 def test_if_else_both_branches():
-    fn, src = _emit(if_else.to_sdfg(simplify=True), "if_else")
+    fn, src = emit(if_else.to_sdfg(simplify=True), "if_else")
     assert "if " in src and "else:" in src
     a = np.arange(6, dtype=np.float64)
     for flag in (1, -1):
@@ -107,7 +107,7 @@ def test_if_else_both_branches():
 
 
 def test_if_elif_else_selects_right_branch():
-    fn, src = _emit(_build_three_branch(), "switch3")
+    fn, src = emit(build_three_branch(), "switch3")
     assert "elif " in src  # a genuine multi-branch block -> the middle branch is an elif
     a = np.arange(5, dtype=np.float64)
     for sel, delta in ((0, 10.0), (1, 20.0), (2, 30.0)):
@@ -117,7 +117,7 @@ def test_if_elif_else_selects_right_branch():
 
 
 def test_signature_is_c_style_no_return():
-    fn, src = _emit(if_else.to_sdfg(simplify=True), "if_else")
+    fn, src = emit(if_else.to_sdfg(simplify=True), "if_else")
     assert "return " not in src  # C-style: outputs are in-place buffer params
     assert set(inspect.signature(fn).parameters) == {"a", "out", "flag", "N"}
 
@@ -125,7 +125,7 @@ def test_signature_is_c_style_no_return():
 def test_branch_condition_is_normalized():
     """A guard that uses a bare math intrinsic must be normalized like every other emitted expression,
     else the kernel references an unqualified ``sqrt`` and raises NameError at exec."""
-    fn, src = _emit(_build_switch("cond_norm", [("sqrt(sel) > 1.0", 10.0), (None, 20.0)]), "cond_norm")
+    fn, src = emit(build_switch("cond_norm", [("sqrt(sel) > 1.0", 10.0), (None, 20.0)]), "cond_norm")
     assert "np.sqrt(sel)" in src and "sqrt(sel)" not in src.replace("np.sqrt(sel)", "")  # normalized
     a = np.arange(4, dtype=np.float64)
     for sel, delta in ((4, 10.0), (0, 20.0)):  # sqrt(4)=2>1 -> if; sqrt(0)=0 -> else
@@ -137,7 +137,7 @@ def test_branch_condition_is_normalized():
 def test_unconditional_branch_reordered_last():
     """The unconditional (else) branch may be stored before a keyed branch; the emitter must still put
     ``else`` last so the generated python is valid (`else:` before `if:` is a SyntaxError)."""
-    fn, src = _emit(_build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)]), "else_first")
+    fn, src = emit(build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)]), "else_first")
     assert src.index("if ") < src.index("else:")  # if emitted before else despite storage order
     a = np.arange(4, dtype=np.float64)
     for sel, delta in ((0, 10.0), (5, 20.0)):

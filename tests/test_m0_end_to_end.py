@@ -18,7 +18,7 @@ def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
         C[i] = A[i] + B[i]
 
 
-def _ref(n):
+def reference_outputs(n):
     A = np.random.default_rng(0).random(n)
     B = np.random.default_rng(1).random(n)
     return A, B, A + B
@@ -41,7 +41,7 @@ def test_dace_reference_runs_correctly():
     sdfg.expand_library_nodes()
     sdfg.validate()
     n = 1 << 12
-    A, B, ref = _ref(n)
+    A, B, ref = reference_outputs(n)
     C = np.zeros(n)
     sdfg(A=A, B=B, C=C, N=n)
     np.testing.assert_allclose(C, ref)
@@ -69,14 +69,15 @@ def test_extern_call_links_winner_and_runs(tmp_path):
     sdfg.validate()
 
     n = 1 << 14
-    A, B, ref = _ref(n)
+    A, B, ref = reference_outputs(n)
     C = np.zeros(n)
     sdfg(A=A, B=B, C=C, N=n)
     np.testing.assert_allclose(C, ref)
 
 
 if __name__ == "__main__":
-    import tempfile, pathlib
+    import tempfile
+    import pathlib
     test_lower_inserts_external_call()
     test_dace_reference_runs_correctly()
     test_extern_call_links_winner_and_runs(pathlib.Path(tempfile.mkdtemp()))

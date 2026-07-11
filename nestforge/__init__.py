@@ -5,6 +5,13 @@ Two pieces of the vendored optarena submodule are surfaced natively: :mod:`nestf
 corpus). Everything else is nest-forge's own.
 """
 
+# Pre-warm dace's ``passes`` package before any nest-forge submodule pulls ``dace.transformation.
+# interstate``: on the extended branch ``passes.canonicalize -> vectorization -> interstate`` forms an
+# import cycle that only resolves when ``passes`` starts loading first -- importing ``interstate`` first
+# dies on a partially initialized module (``cannot import name 'InlineMultistateSDFG'``). Fixing the
+# order here once covers every entry point (bare ``import nestforge.tsvc``, the perf drivers, tests).
+import dace.transformation.passes  # noqa: F401
+
 from nestforge.corpus import CorpusKernel, dace_kernel_names, iter_dace_kernels
 from nestforge.extract import Boundary, extract_nest_to_sdfg
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy

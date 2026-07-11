@@ -20,14 +20,14 @@ def test_corpus_program_is_the_entry_not_a_helper():
 
 def test_corpus_module_path_independent_of_namespace_path():
     pytest.importorskip("optarena")
-    from nestforge.corpus import _module_path
+    from nestforge.corpus import module_path
     # Derived from the registry key, not optarena.benchmarks.__path__ (which can be stale/multi-root).
-    assert _module_path("hpc/dense_linear_algebra/gemm/gemm") == \
+    assert module_path("hpc/dense_linear_algebra/gemm/gemm") == \
         "optarena.benchmarks.hpc.dense_linear_algebra.gemm.gemm_dace"
 
 
 # ----- C-style emission: pre-allocated buffers, no internal allocation ----------------------------
-def _run(src, fn, **buffers):
+def run(src, fn, **buffers):
     ns = {"np": np}
     exec(src, ns)
     ns[fn](**buffers)
@@ -46,7 +46,7 @@ def test_scalar_transient_consistent_between_libnode_and_tasklet():
     n = 6
     rng = np.random.default_rng(0)
     x, y, z, out = rng.random(n), rng.random(n), rng.random(n), np.zeros(n)
-    _run(src, "k", x=x, y=y, z=z, out=out, N=n)
+    run(src, "k", x=x, y=y, z=z, out=out, N=n)
     np.testing.assert_allclose(out, z * (x @ y))
 
 
@@ -67,12 +67,12 @@ def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
     rng = np.random.default_rng(1)
     A, v = rng.random((n, n)), rng.random(n)
     ret = np.zeros(n)
-    _run(src, "k", A=A, v=v, __return=ret, N=n)
+    run(src, "k", A=A, v=v, __return=ret, N=n)
     np.testing.assert_allclose(ret, A @ v)
 
 
 # ----- emit guards: nested constructs must raise, not silently mis-emit (Finder A#6 / C#7) --------
-def _nested_map_sdfg():
+def nested_map_sdfg():
     sdfg = dace.SDFG("nested")
     sdfg.add_array("A", [N, N], dace.float64)
     sdfg.add_array("B", [N, N], dace.float64)
@@ -88,7 +88,29 @@ def _nested_map_sdfg():
 
 def test_nested_map_in_map_raises_instead_of_dropping_inner_loop():
     with pytest.raises(UnsupportedNest):
-        sdfg_to_numpy(_nested_map_sdfg(), "k")
+        sdfg_to_numpy(nested_map_sdfg(), "k")
+
+
+# ----- emit staging: a map-entry-sourced scalar read (`b_index = b[i]`) must be emitted -----------
+@dace.program
+def gather(a: dace.float64[N], b: dace.int64[N], out: dace.float64[N]):
+    for i in dace.map[0:N]:
+        out[i] = a[b[i]]
+
+
+def test_indirect_gather_stages_map_entry_read():
+    """DaCe requires every array access to be symbolic, so an indirect read ``a[b[i]]`` is staged as a
+    scalar access node fed by the map entry (``<sym> = b[i]``) before the gather ``a[<sym>]``. The
+    ``copy_lines`` map-entry branch emits that load; without it the gather names an undefined symbol and
+    the kernel raises ``NameError`` at exec. Guards the map-entry-staging fix (baseline opt mode)."""
+    sdfg = gather.to_sdfg(simplify=True)
+    src = sdfg_to_numpy(sdfg, "k")
+    assert "= b[i]" in src, f"map-entry-sourced staging load not emitted:\n{src}"
+    n = 8
+    rng = np.random.default_rng(0)
+    a, b, out = rng.random(n), rng.integers(0, n, size=n).astype(np.int64), np.zeros(n)
+    run(src, "k", a=a, b=b, out=out, N=n)  # NameError here if the staged read is dropped
+    np.testing.assert_allclose(out, a[b])
 
 
 # ----- arena regression: a value-returning kernel no longer crashes run_oracle (Finder C#1) -------

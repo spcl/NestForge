@@ -26,7 +26,7 @@ def ttrans(X: dc.float64[2, 3, 4], Y: dc.float64[3, 2, 4]):
     Y[:] = np.transpose(X, axes=[1, 0, 2])
 
 
-def _emit(program, fn_name):
+def emit(program, fn_name):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
     ns = {"np": np}
     exec(src, ns)
@@ -34,7 +34,7 @@ def _emit(program, fn_name):
 
 
 def test_cholesky_libnode_emits_np_linalg_cholesky():
-    fn, src = _emit(chol, "chol")
+    fn, src = emit(chol, "chol")
     assert "np.linalg.cholesky" in src
     rng = np.random.default_rng(0)
     M = rng.random((5, 5))
@@ -45,7 +45,7 @@ def test_cholesky_libnode_emits_np_linalg_cholesky():
 
 
 def test_tensortranspose_libnode_emits_np_transpose():
-    fn, src = _emit(ttrans, "ttrans")
+    fn, src = emit(ttrans, "ttrans")
     assert "np.transpose" in src
     rng = np.random.default_rng(1)
     X = rng.random((2, 3, 4))

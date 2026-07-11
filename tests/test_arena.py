@@ -1,4 +1,3 @@
-import numpy as np
 import dace
 
 from nestforge.strategies import outer
@@ -41,6 +40,7 @@ def test_arena_vadd(tmp_path):
 
 
 if __name__ == "__main__":
-    import tempfile, pathlib
+    import tempfile
+    import pathlib
     test_arena_vadd(pathlib.Path(tempfile.mkdtemp()))
     print("arena OK")

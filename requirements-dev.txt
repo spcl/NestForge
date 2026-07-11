@@ -19,6 +19,8 @@ pytest
 pytest-timeout
 pytest-xdist
 sympy
+# perf/plot_*.py render the driver JSON to PNG/CSV (Agg backend, headless)
+matplotlib
 # formatters (also the CI format gate): yapf (python, 120) + clang-format (C/C++, 160)
 yapf
 clang-format

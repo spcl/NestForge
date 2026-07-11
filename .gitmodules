@@ -1,0 +1,3 @@
+[submodule "external/optarena"]
+	path = external/optarena
+	url = git@github.com:spcl/OptArena.git

@@ -30,7 +30,7 @@ def get_strategy(name: str) -> Strategy:
     return _REGISTRY[name]
 
 
-def _top_level_map_entries(state: dace.SDFGState) -> List[nodes.MapEntry]:
+def top_level_map_entries(state: dace.SDFGState) -> List[nodes.MapEntry]:
     """MapEntry nodes at the top of a state's scope tree (not nested inside another map)."""
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
 
@@ -45,7 +45,7 @@ def outer(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
         if isinstance(block, LoopRegion):
             refs.append((sdfg, block))
         elif isinstance(block, dace.SDFGState):
-            for me in _top_level_map_entries(block):
+            for me in top_level_map_entries(block):
                 refs.append((sdfg, me))
     return refs
 
@@ -53,11 +53,11 @@ def outer(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
 _COMPUTE = (nodes.Tasklet, nodes.LibraryNode, nodes.NestedSDFG)
 
 
-def _direct_child_maps(state: dace.SDFGState, entry: nodes.MapEntry) -> List[nodes.MapEntry]:
+def direct_child_maps(state: dace.SDFGState, entry: nodes.MapEntry) -> List[nodes.MapEntry]:
     return [n for n in state.scope_children()[entry] if isinstance(n, nodes.MapEntry)]
 
 
-def _is_taskloop_map(state: dace.SDFGState, entry: nodes.MapEntry) -> bool:
+def is_taskloop_map(state: dace.SDFGState, entry: nodes.MapEntry) -> bool:
     """A map whose body is *only* maps (no tasklet/library/nested compute) -- a scheduling wrapper."""
     kids = state.scope_children()[entry]
     has_map = any(isinstance(n, nodes.MapEntry) for n in kids)
@@ -65,7 +65,7 @@ def _is_taskloop_map(state: dace.SDFGState, entry: nodes.MapEntry) -> bool:
     return has_map and not has_compute
 
 
-def _is_taskloop_loop(loop: LoopRegion) -> bool:
+def is_taskloop_loop(loop: LoopRegion) -> bool:
     """A loop whose body is *only* maps: states with no free compute and no nested control flow."""
     if any(not isinstance(b, dace.SDFGState) for b in loop.nodes()):
         return False
@@ -79,19 +79,19 @@ def _is_taskloop_loop(loop: LoopRegion) -> bool:
     return has_map
 
 
-def _collect_skip_map(sdfg: dace.SDFG, state: dace.SDFGState, entry: nodes.MapEntry, refs: list) -> None:
-    if _is_taskloop_map(state, entry):
-        for child in _direct_child_maps(state, entry):
-            _collect_skip_map(sdfg, state, child, refs)
+def collect_skip_map(sdfg: dace.SDFG, state: dace.SDFGState, entry: nodes.MapEntry, refs: list) -> None:
+    if is_taskloop_map(state, entry):
+        for child in direct_child_maps(state, entry):
+            collect_skip_map(sdfg, state, child, refs)
     else:
         refs.append((sdfg, entry))
 
 
-def _collect_skip_loop(sdfg: dace.SDFG, loop: LoopRegion, refs: list) -> None:
-    if _is_taskloop_loop(loop):
+def collect_skip_loop(sdfg: dace.SDFG, loop: LoopRegion, refs: list) -> None:
+    if is_taskloop_loop(loop):
         for state in loop.nodes():
-            for me in _top_level_map_entries(state):
-                _collect_skip_map(sdfg, state, me, refs)
+            for me in top_level_map_entries(state):
+                collect_skip_map(sdfg, state, me, refs)
     else:
         refs.append((sdfg, loop))
 
@@ -106,14 +106,14 @@ def skip_taskloops(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
     refs: List[Tuple[dace.SDFG, NestNode]] = []
     for block in sdfg.nodes():
         if isinstance(block, LoopRegion):
-            _collect_skip_loop(sdfg, block, refs)
+            collect_skip_loop(sdfg, block, refs)
         elif isinstance(block, dace.SDFGState):
-            for me in _top_level_map_entries(block):
-                _collect_skip_map(sdfg, block, me, refs)
+            for me in top_level_map_entries(block):
+                collect_skip_map(sdfg, block, me, refs)
     return refs
 
 
-def _region_has(region, node_types) -> bool:
+def region_has(region, node_types) -> bool:
     """True if any state anywhere in a control-flow region holds a node of the given types."""
     return any(
         isinstance(n, node_types) for block in region.all_control_flow_blocks() if isinstance(block, dace.SDFGState)
@@ -149,7 +149,7 @@ def innermost(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
             nested_loops = [
                 r for r in region.all_control_flow_regions() if isinstance(r, LoopRegion) and r is not region
             ]
-            if not nested_loops and not _region_has(region, (nodes.MapEntry, nodes.NestedSDFG)):
+            if not nested_loops and not region_has(region, (nodes.MapEntry, nodes.NestedSDFG)):
                 refs.append((sub, region))
     return refs
 

@@ -24,24 +24,25 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
+from dace.sdfg import nodes
 from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
-                             ArenaConfig, PrunedConfig, prune_to_valid_combinations, resolve_runtime,
-                             compare_link_modes, LinkTimings, available_linkers, _fastest_linker, _linker_supported,
-                             VectorMathLib, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions)
+                             ArenaConfig, prune_to_valid_combinations, resolve_runtime, compare_link_modes, LinkTimings,
+                             available_linkers, fastest_linker, linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML,
+                             vectorlib_installed, BuildOptions, set_fast_libnodes)
 
 
-def _kernels():
+def kernels():
     return {k.short_name: k for k in iter_dace_kernels()}
 
 
-def _first_nest(short):
-    sdfg = _kernels()[short].to_sdfg(simplify=True)
+def first_nest(short):
+    sdfg = kernels()[short].to_sdfg(simplify=True)
     parent, node = get_strategy("skip-taskloops")(sdfg)[0]
     return extract_nest_to_sdfg(parent, node, name="nest")
 
 
-def _owned_build_matches_oracle(short, size=48, opts=None):
-    boundary = _first_nest(short)
+def owned_build_matches_oracle(short, size=48, opts=None):
+    boundary = first_nest(short)
     shape_syms = {
         s
         for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
@@ -65,12 +66,12 @@ def test_dace_runtime_include_exists():
 
 def test_owned_build_gemm_matches_oracle():
     """gemm: int64_t size symbols + a Scalar (alpha/beta) passed by value through the owned build."""
-    _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm")
+    owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm")
 
 
 def test_owned_build_jacobi_matches_oracle():
     """jacobi_1d: an ``int`` (not int64_t) size symbol -- guards the per-parameter ctype marshaling."""
-    _owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d")
+    owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d")
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
@@ -134,7 +135,7 @@ def test_gcc_compiled_kernel_links_against_libomp():
     libomp's GOMP-compat ABI -- the concrete mixed-compiler / one-runtime case: a GCC node library can
     share the same libomp a clang/flang node library uses. Builds gemm with openmp=OpenMPRuntime() on
     g++ and checks it still matches the oracle."""
-    boundary = _first_nest("hpc/dense_linear_algebra/gemm/gemm")
+    boundary = first_nest("hpc/dense_linear_algebra/gemm/gemm")
     shape_syms = {
         s
         for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
@@ -151,7 +152,7 @@ def test_gcc_compiled_kernel_links_against_libomp():
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
 
 
-def _parallel_axpy_sdfg(name="paxpy"):
+def parallel_axpy_sdfg(name="paxpy"):
     """A minimal SDFG with ONE genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel
     for``): ``Z[i] = X[i] + Y[i]``. Hermetic (no corpus dependency) so the cross-compiler OpenMP link
     matrix is tested on a guaranteed-parallel loop, not on whatever schedule a corpus kernel happens to
@@ -173,7 +174,7 @@ def test_parallel_map_emits_omp_pragma():
     """The sanity nest is actually parallel: DaCe lowers the ``CPU_Multicore`` map to an OpenMP pragma in
     the generated C++ (so the cross-compiler tests below really do exercise the OpenMP runtime link)."""
     from nestforge.build import generate_program_folder
-    frame, _ = generate_program_folder(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
+    frame, _ = generate_program_folder(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
     assert "#pragma omp parallel for" in frame.read_text()
 
 
@@ -181,7 +182,14 @@ def test_parallel_map_emits_omp_pragma():
 # linking the ONE runtime it can: libomp for gcc/clang/icx (kmpc+gomp), libnvomp for nvc++ (which links
 # only its native runtime via -mp -- see the C2 fix). This is the mixed-compiler / single-runtime sanity
 # matrix: prove each compiler emits a correct parallel loop that links + runs. Missing toolchains skip.
-@pytest.mark.parametrize("compiler", ["g++", "clang++", "nvc++", "icpx"])
+@pytest.mark.parametrize(
+    "compiler",
+    [
+        "g++",
+        "clang++",
+        pytest.param("nvc++", marks=pytest.mark.integration),  # vendor compiler: absent on the CI runner
+        pytest.param("icpx", marks=pytest.mark.integration),  # vendor compiler: absent on the CI runner
+    ])
 def test_parallel_loop_links_openmp_across_compilers(compiler):
     if shutil.which(compiler) is None:
         pytest.skip(f"{compiler} not on PATH")
@@ -192,7 +200,7 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     # Compiler-neutral flags only (no -march=native: nvc++ spells it -tp); OpenMP is the separate axis.
-    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")),
+    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")),
                        BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=rt))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
@@ -201,7 +209,7 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
 def test_build_tracks_optimization_and_compile_time():
     """Every owned build records the optimization time (DaCe codegen) and the post-optimization compile
     time (the toolchain subprocess), so both are trackable per build."""
-    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_time_")))
+    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_time_")))
     assert built.codegen_seconds > 0.0
     assert built.compile_seconds > 0.0
 
@@ -209,7 +217,7 @@ def test_build_tracks_optimization_and_compile_time():
 def test_external_linking_build_is_correct():
     """The nest built as a SEPARATE static ``.a`` (link_external) and linked into the ``.so`` runs
     identically to the monolithic build -- the external-linking path is correct, not merely timeable."""
-    built = _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True))
+    built = owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True))
     assert built.compile_seconds > 0.0
     assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
 
@@ -218,7 +226,7 @@ def test_compare_link_modes_tracks_compile_time_with_and_without_external_linkin
     """One optimization (codegen) pass, then the same frame compiled two ways: WITHOUT external linking
     (monolithic single TU) and WITH external linking (static ``.a`` -> ``.so``). All three times are
     tracked and positive -- this is the with/without-external-linking compile-time comparison."""
-    t = compare_link_modes(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_linkmodes_")))
+    t = compare_link_modes(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_linkmodes_")))
     assert isinstance(t, LinkTimings)
     assert t.codegen_seconds > 0.0
     assert t.compile_seconds_monolithic > 0.0
@@ -230,7 +238,7 @@ def test_external_linking_with_lto_is_correct():
     knob meant to recover the cross-TU inlining that external linking otherwise costs."""
     if shutil.which("gcc-ar") is None:
         pytest.skip("gcc-ar (LTO-aware archiver) not on PATH")
-    _owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True, lto=True))
+    owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True, lto=True))
 
 
 def test_available_linkers_and_fastest_pick():
@@ -239,16 +247,16 @@ def test_available_linkers_and_fastest_pick():
     av = available_linkers()
     assert all(Path(p).exists() for p in av.values())  # every reported linker really is on disk
     assert set(av) <= {"mold", "lld", "gold"}
-    picked = _fastest_linker("g++")
+    picked = fastest_linker("g++")
     if picked:
         # the pick is the fastest INSTALLED linker g++ actually supports (may skip mold on an old gcc).
         ld = picked[0].split("=", 1)[1]
-        assert ld in av and _linker_supported("g++", ld)
-        supported = [x for x in av if _linker_supported("g++", x)]
+        assert ld in av and linker_supported("g++", ld)
+        supported = [x for x in av if linker_supported("g++", x)]
         assert ld == supported[0]  # fastest-first among the supported ones
     else:
-        assert not any(_linker_supported("g++", x) for x in av)  # nothing installed is supported
-    assert _fastest_linker("nvc++") == []  # NVIDIA keeps its default linker
+        assert not any(linker_supported("g++", x) for x in av)  # nothing installed is supported
+    assert fastest_linker("nvc++") == []  # NVIDIA keeps its default linker
 
 
 def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
@@ -256,12 +264,12 @@ def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
     when mold is installed. Force the compiler version below mold's floor and assert mold is skipped (this
     fails if the version gate is dropped, unlike the host-dependent check above)."""
     import nestforge.build as B
-    monkeypatch.setattr(B, "_compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
-    assert not B._linker_supported("g++", "mold")
-    picked = B._fastest_linker("g++")
+    monkeypatch.setattr(B, "compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
+    assert not B.linker_supported("g++", "mold")
+    picked = B.fastest_linker("g++")
     if picked:  # whatever it fell back to (lld/gold), g++ at v9 must actually support it, and it isn't mold
         assert picked != ["-fuse-ld=mold"]
-        assert B._linker_supported("g++", picked[0].split("=", 1)[1])
+        assert B.linker_supported("g++", picked[0].split("=", 1)[1])
 
 
 def test_veclib_flag_mapping_and_compatibility():
@@ -289,7 +297,7 @@ def test_veclib_libmvec_build_is_correct():
     n = 128
     x, y = np.random.default_rng(2).random(n), np.random.default_rng(3).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
-    built = build_sdfg(_parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_vec_")),
+    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_vec_")),
                        BuildOptions(compiler="g++", flags=["-O3", "-march=native", "-fPIC", "-shared"], veclib=LIBMVEC))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
@@ -354,7 +362,7 @@ def test_prune_default_config_yields_gcc_on_libomp():
 
 def test_owned_build_reusable_handle_program():
     """After one init, __program can be called repeatedly in place (the timing path) on one handle."""
-    boundary = _first_nest("hpc/dense_linear_algebra/gemm/gemm")
+    boundary = first_nest("hpc/dense_linear_algebra/gemm/gemm")
     shape_syms = {
         s
         for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
@@ -363,9 +371,27 @@ def test_owned_build_reusable_handle_program():
     inputs = make_inputs(boundary, sizes, seed=1)
     built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")))
     buf = {k: v.copy() for k, v in inputs.items()}
-    built._init(sizes)
+    built.init(sizes)
     try:
         for _ in range(5):
             built.program(buf, sizes)  # repeated in-place calls on the same state handle
     finally:
         built.close()
+
+
+def test_set_fast_libnodes_selects_implementation():
+    """set_fast_libnodes picks a concrete library-node implementation (OpenBLAS/MKL when a BLAS env is
+    available on the extended branch, else the pure fallback) instead of expanding to naive loops -- the
+    node keeps its library form with an implementation set, which is what fast_libnodes relies on."""
+    N = dace.symbol("N")
+
+    @dace.program
+    def mm(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+        C[:] = A @ B
+
+    sdfg = mm.to_sdfg(simplify=True)
+    libnodes = [n for s in sdfg.all_states() for n in s.nodes() if isinstance(n, nodes.LibraryNode)]
+    assert libnodes, "gemm should lower to a library node before expansion"
+    set_fast_libnodes(sdfg)  # must not raise, and must not expand the node away
+    still = [n for s in sdfg.all_states() for n in s.nodes() if isinstance(n, nodes.LibraryNode)]
+    assert still and all(n.implementation for n in still)  # every node carries a chosen implementation

@@ -1,12 +1,8 @@
-"""Native surface for optarena's **numpy translator** -- one of the two pieces of optarena that
-nest-forge exposes as first-class (the other is :mod:`nestforge.corpus`, the kernel corpus).
+"""Native surface for optarena's **numpy translator**: turn a ``*_numpy.py`` kernel plus its
+``BenchSpec`` manifest into C / C++ / Fortran source via optarena's ``numpyto`` driver.
 
-optarena itself is vendored as a git submodule (``external/optarena``); nest-forge reaches into it
-for exactly two things -- this translator and the corpus -- and wraps them here so the rest of the
-codebase depends on ``nestforge.translator`` / ``nestforge.corpus`` rather than optarena internals.
-
-The translator turns a ``*_numpy.py`` kernel plus its ``BenchSpec`` manifest into C / C++ / Fortran
-source, via optarena's ``numpyto`` driver.
+Wrapping it here (alongside :mod:`nestforge.corpus`) keeps the rest of nest-forge depending on
+``nestforge.*`` rather than reaching into the vendored optarena submodule directly.
 """
 from __future__ import annotations
 

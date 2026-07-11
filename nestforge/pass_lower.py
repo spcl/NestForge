@@ -18,7 +18,7 @@ from nestforge.libnode import ExternalCall, in_conn, out_conn
 from nestforge.strategies import Strategy, get_strategy
 
 
-def _reference_sdfg(boundary: Boundary) -> "dace.SDFG":
+def reference_sdfg(boundary: Boundary) -> "dace.SDFG":
     """A copy of the standalone SDFG whose boundary arrays are renamed to the node's connectors,
     so the ``DaceReference`` nested-SDFG expansion lines up with the ``ExternalCall`` connectors."""
     ref = copy.deepcopy(boundary.standalone_sdfg)
@@ -29,7 +29,7 @@ def _reference_sdfg(boundary: Boundary) -> "dace.SDFG":
     return ref
 
 
-def _replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
+def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     state = boundary.state
     nsdfg = boundary.nsdfg_node
     # Connectors are prefixed so they never collide with array/symbol names (a LibraryNode rule).
@@ -40,7 +40,7 @@ def _replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
                                 for o in boundary.outputs},
                        numpy_source=nest_to_numpy(boundary, fn_name=name),
                        config=manifest_dict(boundary, name),
-                       standalone_sdfg=_reference_sdfg(boundary))
+                       standalone_sdfg=reference_sdfg(boundary))
     state.add_node(ext)
     # Fresh memlets per edge (never reuse subsets/memlets); remap connector names.
     for e in state.in_edges(nsdfg):
@@ -67,6 +67,6 @@ def lower_nests_to_external_call(sdfg: dace.SDFG,
     for idx, (parent, node) in enumerate(refs):
         name = f"{name_prefix}_{idx}"
         boundary = extract_nest_to_sdfg(parent, node, name=name)
-        ext = _replace_nsdfg_with_external(boundary, name)
+        ext = replace_nsdfg_with_external(boundary, name)
         out.append((ext, boundary))
     return out

@@ -2,7 +2,7 @@
 
 Emission is C-style: the kernel allocates nothing, so the caller pre-allocates every buffer -- inputs,
 outputs, the DaCe ``__return`` value, and scratch transients -- and reads the results back out of the
-in-place buffers. ``_alloc_run`` does exactly that, driven by the emitted function's own signature.
+in-place buffers. ``alloc_run`` does exactly that, driven by the emitted function's own signature.
 """
 import inspect
 
@@ -14,23 +14,23 @@ pytest.importorskip("optarena")
 from dace import symbolic
 
 from nestforge.corpus import dace_kernel_names, iter_dace_kernels
-from nestforge.emit_numpy import _maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.emit_numpy import maxsize_loop_scratch, sdfg_to_numpy
 
 
-def _kernels():
+def kernels():
     return {k.short_name: k for k in iter_dace_kernels()}
 
 
-def _alloc_run(short, fn_name, sizes, inputs, seed=0):
+def alloc_run(short, fn_name, sizes, inputs, seed=0):
     """Emit ``short``, allocate every buffer parameter C-style, run it, return the buffer dict."""
-    sdfg = _kernels()[short].to_sdfg(simplify=True)
+    sdfg = kernels()[short].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, fn_name)
     ns = {"np": np}
     exec(src, ns)
     # size loop-shaped scratch exactly as the emitter widened it (a decreasing extent like M-i-1
     # widens to its i=0 value, not to a naive max) so buffers match the emitted signature.
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
-    sized = _maxsize_loop_scratch(sdfg, symbols)
+    sized = maxsize_loop_scratch(sdfg, symbols)
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     call = {}
     for name in inspect.signature(ns[fn_name]).parameters:
@@ -56,8 +56,8 @@ def test_gemm_matmul_emits_and_computes():
     A, B, C = rng.random((NI, NK)), rng.random((NK, NJ)), rng.random((NI, NJ))
     alpha, beta = np.array([1.5]), np.array([2.0])
     ref = alpha[0] * A @ B + beta[0] * C
-    call, src = _alloc_run("hpc/dense_linear_algebra/gemm/gemm", "gemm", dict(NI=NI, NJ=NJ, NK=NK),
-                           dict(A=A, B=B, C=C.copy(), alpha=alpha, beta=beta))
+    call, src = alloc_run("hpc/dense_linear_algebra/gemm/gemm", "gemm", dict(NI=NI, NJ=NJ, NK=NK),
+                          dict(A=A, B=B, C=C.copy(), alpha=alpha, beta=beta))
     assert "@" in src and "np.empty" not in src  # MatMul -> numpy matmul, no internal allocation
     np.testing.assert_allclose(call["C"], ref)
 
@@ -66,7 +66,7 @@ def test_atax_return_value_is_inplace_buffer():
     rng = np.random.default_rng(1)
     M, N = 7, 9
     A, x = rng.random((M, N)), rng.random(N)
-    call, src = _alloc_run("hpc/dense_linear_algebra/atax/atax", "atax", dict(M=M, N=N), dict(A=A, x=x))
+    call, src = alloc_run("hpc/dense_linear_algebra/atax/atax", "atax", dict(M=M, N=N), dict(A=A, x=x))
     assert "return " not in src and "__return" in src.splitlines()[0]  # C-style: __return is a param
     np.testing.assert_allclose(call["__return"], (A @ x) @ A)
 
@@ -77,7 +77,7 @@ def test_nussinov_conditionalblock_emits_and_computes():
     N = 20
     rng = np.random.default_rng(0)
     seq = rng.integers(0, 4, size=N).astype(np.int32)
-    call, src = _alloc_run("hpc/dynamic_programming/nussinov/nussinov", "nussinov", dict(N=N), dict(seq=seq))
+    call, src = alloc_run("hpc/dynamic_programming/nussinov/nussinov", "nussinov", dict(N=N), dict(seq=seq))
     assert "if " in src and "else:" in src  # the guards lower through ConditionalBlock
 
     def match(b1, b2):
@@ -107,8 +107,8 @@ def test_contour_integral_two_returns_solve_and_indirect_negate():
     rng = np.random.default_rng(1)
     crand = lambda shape: (rng.random(shape) + 1j * rng.random(shape)).astype(np.complex128)
     Ham, int_pts, Y = crand((slab + 1, NR, NR)), crand((32, )), crand((NR, NM))
-    call, src = _alloc_run("hpc/dense_linear_algebra/contour_integral/contour_integral", "contour_integral",
-                           dict(NR=NR, NM=NM, slab_per_bc=slab), dict(Ham=Ham, int_pts=int_pts, Y=Y))
+    call, src = alloc_run("hpc/dense_linear_algebra/contour_integral/contour_integral", "contour_integral",
+                          dict(NR=NR, NM=NM, slab_per_bc=slab), dict(Ham=Ham, int_pts=int_pts, Y=Y))
     assert "np.complex128(" in src and "dace." not in src  # casts normalized to numpy
 
     P0 = np.zeros((NR, NM), np.complex128)
@@ -135,7 +135,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
     XN, YN = 20, 16
     scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
-    sdfg = _kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+    sdfg = kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, "mandelbrot")
     ns = {"np": np}
     exec(src, ns)
@@ -175,7 +175,7 @@ def test_emission_does_not_mutate_caller_sdfg():
     inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
     pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")
     from dace.sdfg import nodes
-    sdfg = _kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+    sdfg = kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
 
     def nsdfg_in_subsets(g):
         return {
@@ -199,7 +199,7 @@ def test_nbody_nested_where_emits_and_computes():
     mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
     dt, G, soft = 0.01, 1.0, 0.1
     try:
-        call, _ = _alloc_run(
+        call, _ = alloc_run(
             "hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt),
             dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft])))
     except UnsupportedNest:
@@ -254,8 +254,8 @@ def test_azimint_hist_three_level_nested_return_and_computes():
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
     try:
-        call, _ = _alloc_run("hpc/map_reduce/azimint_hist/azimint_hist", "azimint_hist", dict(N=N, npt=npt, bins=npt),
-                             dict(data=data, radius=radius))
+        call, _ = alloc_run("hpc/map_reduce/azimint_hist/azimint_hist", "azimint_hist", dict(N=N, npt=npt, bins=npt),
+                            dict(data=data, radius=radius))
     except UnsupportedNest:
         pytest.skip("nested-SDFG emission unavailable in this DaCe")
 
@@ -282,8 +282,8 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
     try:
-        call, _ = _alloc_run("hpc/map_reduce/azimint_naive/azimint_naive", "azimint_naive", dict(N=N, npt=npt),
-                             dict(data=data, radius=radius))
+        call, _ = alloc_run("hpc/map_reduce/azimint_naive/azimint_naive", "azimint_naive", dict(N=N, npt=npt),
+                            dict(data=data, radius=radius))
     except UnsupportedNest:
         pytest.skip("nested-SDFG emission unavailable in this DaCe")
 
@@ -310,7 +310,7 @@ def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
     rng = np.random.default_rng(0)
     L = np.tril(rng.random((N, N))) + N * np.eye(N)
     b = rng.random(N)
-    call, src = _alloc_run("hpc/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N), dict(L=L, b=b))
+    call, src = alloc_run("hpc/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N), dict(L=L, b=b))
     assert "np.empty" not in src  # still C-style: no in-kernel allocation
     x = call.get("x", call.get("__return"))
     np.testing.assert_allclose(x, np.linalg.solve(L, b))
@@ -322,7 +322,7 @@ def test_lu_loop_shaped_scratch_maxsized_and_computes():
     N = 10
     rng = np.random.default_rng(1)
     A0 = rng.random((N, N)) + N * np.eye(N)
-    call, src = _alloc_run("hpc/dense_linear_algebra/lu/lu", "lu", dict(N=N), dict(A=A0.copy()))
+    call, src = alloc_run("hpc/dense_linear_algebra/lu/lu", "lu", dict(N=N), dict(A=A0.copy()))
     A = call.get("A", call.get("__return"))
 
     ref = A0.copy()
@@ -341,8 +341,8 @@ def test_covariance_decreasing_loop_scratch_and_computes():
     rng = np.random.default_rng(0)
     data = rng.random((Nrows, M))
     fn = 8.0
-    call, _ = _alloc_run("hpc/dense_linear_algebra/covariance/covariance", "covariance", dict(M=M, N=Nrows),
-                         dict(data=data.copy(), float_n=np.array([fn])))
+    call, _ = alloc_run("hpc/dense_linear_algebra/covariance/covariance", "covariance", dict(M=M, N=Nrows),
+                        dict(data=data.copy(), float_n=np.array([fn])))
     cov = call.get("cov", call.get("__return"))
     d2 = data - data.mean(axis=0)
     ref = np.zeros((M, M))
@@ -358,8 +358,8 @@ def test_syrk_increasing_loop_scratch_and_computes():
     rng = np.random.default_rng(1)
     A, C = rng.random((N, Mk)), rng.random((N, N))
     alpha, beta = 1.5, 1.2
-    call, _ = _alloc_run("hpc/dense_linear_algebra/syrk/syrk", "syrk", dict(N=N, M=Mk),
-                         dict(A=A.copy(), C=C.copy(), alpha=np.array([alpha]), beta=np.array([beta])))
+    call, _ = alloc_run("hpc/dense_linear_algebra/syrk/syrk", "syrk", dict(N=N, M=Mk),
+                        dict(A=A.copy(), C=C.copy(), alpha=np.array([alpha]), beta=np.array([beta])))
     Cout = call.get("C", call.get("__return"))
     ref = C.copy()
     for i in range(N):
@@ -374,8 +374,8 @@ def test_jacobi_1d_loopregion_emits_and_computes():
     N, T = 32, 20
     A, B = rng.random(N), rng.random(N)
     Ar, Br = A.copy(), B.copy()
-    call, src = _alloc_run("hpc/structured_grids/jacobi_1d/jacobi_1d", "jacobi_1d", dict(N=N, TSTEPS=T),
-                           dict(A=A.copy(), B=B.copy()))
+    call, src = alloc_run("hpc/structured_grids/jacobi_1d/jacobi_1d", "jacobi_1d", dict(N=N, TSTEPS=T),
+                          dict(A=A.copy(), B=B.copy()))
     assert "while" in src  # the TSTEPS time loop (a LoopRegion)
     for _ in range(1, T):
         Br[1:-1] = 0.33333 * (Ar[:-2] + Ar[1:-1] + Ar[2:])

@@ -39,7 +39,7 @@ from nestforge.corpus import iter_dace_kernels
 from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare, emit_sources
-from nestforge.arena import make_inputs, run_oracle, discover_compilers, _CTYPE
+from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE
 
 # one compiler, one flag set -- the fixed operating point for the overhead comparison.
 FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
@@ -75,7 +75,7 @@ def _time_offload(prep, boundary, sizes, inputs, reps):
     so = work / f"lib_{prep.name}.so"
     subprocess.run([gcc, *FLAGS, str(csrc), "-o", str(so)], check=True, capture_output=True)
     argt = [
-        ctypes.POINTER(_CTYPE[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays else ctypes.c_int64
+        ctypes.POINTER(CTYPE[np.dtype(bsdfg.arrays[a].dtype.type).name]) if a in bsdfg.arrays else ctypes.c_int64
         for a in order
     ]
     fn = ctypes.CDLL(str(so))[symbol]

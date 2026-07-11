@@ -32,7 +32,7 @@ def hist_scatter(idx: dc.int64[N], w: dc.float64[N], hist: dc.float64[M]):
         hist[idx[i]] += w[i]
 
 
-def _run(program, fn_name, sizes, inputs):
+def run(program, fn_name, sizes, inputs):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
     ns = {"np": np}
     exec(src, ns)
@@ -47,7 +47,7 @@ def _run(program, fn_name, sizes, inputs):
 def test_wcr_sum_reduction():
     rng = np.random.default_rng(0)
     a = rng.random(32)
-    call, src = _run(reduce_sum, "reduce_sum", dict(N=32), dict(a=a.copy(), out=np.zeros(1)))
+    call, src = run(reduce_sum, "reduce_sum", dict(N=32), dict(a=a.copy(), out=np.zeros(1)))
     assert "+ __wcr_" in src  # augmented assignment, not a plain overwrite
     np.testing.assert_allclose(call["out"][0], a.sum())
 
@@ -62,8 +62,8 @@ def test_wcr_scatter_data_dependent_index():
     idx = rng.integers(0, Mv, Nv).astype(np.int64)
     w = rng.random(Nv)
     try:
-        call, src = _run(hist_scatter, "hist_scatter", dict(N=Nv, M=Mv),
-                         dict(idx=idx.copy(), w=w.copy(), hist=np.zeros(Mv)))
+        call, src = run(hist_scatter, "hist_scatter", dict(N=Nv, M=Mv),
+                        dict(idx=idx.copy(), w=w.copy(), hist=np.zeros(Mv)))
     except UnsupportedNest:
         pytest.skip("indirect-write nesting unavailable in this DaCe")
     ref = np.zeros(Mv)

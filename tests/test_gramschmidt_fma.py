@@ -41,7 +41,7 @@ _MODES = {
 }
 
 
-def _make_A(M, N, conditioning, seed=0):
+def make_A(M, N, conditioning, seed=0):
     rng = np.random.default_rng(seed)
     if conditioning == "well":
         return rng.standard_normal((M, N))
@@ -51,7 +51,7 @@ def _make_A(M, N, conditioning, seed=0):
     return U @ np.diag(np.logspace(0, -14, N)) @ V
 
 
-def _prepare_compute_nest():
+def prepare_compute_nest():
     kernels = {k.short_name: k for k in iter_dace_kernels()}
     sdfg = kernels["hpc/dense_linear_algebra/gramschmidt/gramschmidt"].to_sdfg(simplify=True)
     # outer strategy -> [zero-init Q, zero-init R, compute]; index 2 holds the two np.dot reductions.
@@ -59,7 +59,7 @@ def _prepare_compute_nest():
     return boundary
 
 
-def _emit(boundary, tmp_path):
+def emit(boundary, tmp_path):
     prep = prepare(boundary, "gs_compute", tmp_path / "kern")
     csrc = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c" and "pluto" not in p.name)
     ctext = csrc.read_text()
@@ -69,7 +69,7 @@ def _emit(boundary, tmp_path):
     return prep, csrc, order
 
 
-def _run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
+def run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
     bsdfg = boundary.standalone_sdfg
     env = {symbolic.symbol("M"): sizes["M"], symbolic.symbol("N"): sizes["N"]}
     buffers = {}
@@ -91,38 +91,38 @@ def _run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
     return {o: buffers[o].copy() for o in ("__return_0", "__return_1")}
 
 
-def _relerr(got, ref):
+def relerr(got, ref):
     num = max(float(np.max(np.abs(got[k] - ref[k]))) for k in got)
     den = max(float(np.max(np.abs(ref[k]))) for k in got) or 1.0
     return num / den
 
 
-def _sweep(conditioning, tmp_path):
-    boundary = _prepare_compute_nest()
-    prep, csrc, order = _emit(boundary, tmp_path)
+def sweep(conditioning, tmp_path):
+    boundary = prepare_compute_nest()
+    prep, csrc, order = emit(boundary, tmp_path)
     assert "nrm[0] = np.dot" in prep.numpy_source  # size-1 buffer written by element, not nrm[:] =
     M, N = 128, 40
     sizes = {"M": M, "N": N, "j": 0, "k": 0}
-    A = _make_A(M, N, conditioning)
+    A = make_A(M, N, conditioning)
     outs = {
-        m: _run(csrc, order, boundary, flags, A, sizes, tmp_path, f"{conditioning}_{m}")
+        m: run(csrc, order, boundary, flags, A, sizes, tmp_path, f"{conditioning}_{m}")
         for m, flags in _MODES.items()
     }
     ref = outs["ieee-strict-seq"]
-    return {m: _relerr(outs[m], ref) for m in _MODES}
+    return {m: relerr(outs[m], ref) for m in _MODES}
 
 
 def test_fma_contraction_alone_is_bit_exact(tmp_path):
     """FMA contraction (``-ffp-contract=fast``, no reassociation) matches ieee-strict bit-for-bit here
     -- so the divergence below is due to reassociation, not FMA. Refines "FMA is the danger" to
     "reassociation is the danger" (docs/FP_RISK.md rule R15 vs R2)."""
-    err = _sweep("well", tmp_path)
+    err = sweep("well", tmp_path)
     assert err["contract-fast"] == 0.0
 
 
 def test_fastmath_is_stable_when_well_conditioned(tmp_path):
     """Well-conditioned: reassociation only shuffles O(n*eps) benign noise (kappa~1) -- stable."""
-    err = _sweep("well", tmp_path)
+    err = sweep("well", tmp_path)
     assert err["fast-math"] < 1e-12  # ~machine epsilon, not exploding
 
 
@@ -130,8 +130,8 @@ def test_fastmath_diverges_when_ill_conditioned(tmp_path):
     """Ill-conditioned (cond~1e14): the near-zero pivot amplifies the reassociated-dot difference.
     Same kernel, same flag -- the danger appears only because the input is ill-conditioned. This is
     the empirical evidence for weighting reduction-reassociation risk by condition number."""
-    well = _sweep("well", tmp_path / "well")
-    ill = _sweep("ill", tmp_path / "ill")
+    well = sweep("well", tmp_path / "well")
+    ill = sweep("ill", tmp_path / "ill")
     # ieee-strict-seq is the baseline (0 by construction); fast-math must blow up only when ill.
     assert ill["fast-math"] > 1e-6
     assert ill["fast-math"] > well["fast-math"] * 1e6  # many orders worse than the well-conditioned run

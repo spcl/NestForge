@@ -1,13 +1,11 @@
 """Load real npbench/polybench kernels from the installed ``optarena`` package as SDFGs.
 
 optarena ships each kernel as ``<name>_numpy.py`` (oracle) + ``<name>.yaml`` (BenchSpec) and, for
-the HPC/ML tracks, a ready ``<name>_dace.py`` holding a ``@dace.program``. Those dace impls are the
-zero-friction corpus for nest-forge: import the program, ``to_sdfg`` it, and feed it to the lowering
-pass. The numpy oracle + yaml already match what nest-forge itself emits, so the same kernel doubles
-as a correctness reference.
+the HPC/ML tracks, a ``<name>_dace.py`` holding a ``@dace.program`` -- import it, ``to_sdfg`` it, feed
+it to the lowering pass. The numpy oracle + yaml double as a correctness reference.
 
-``dc_float`` in optarena's dace kernels is a module global fixed at a chosen precision; we stamp it
-to fp64 before importing any kernel module (kernels bind it at import time via ``from ... import``).
+Kernels bind optarena's ``dc_float`` precision global at import time (``from ... import``), so it must
+be stamped to fp64 before any kernel module imports.
 """
 from __future__ import annotations
 
@@ -22,7 +20,7 @@ import dace
 from optarena.spec import KERNELS, BenchSpec
 
 
-def _set_precision_fp64() -> None:
+def set_precision_fp64() -> None:
     """Fix optarena's kernel dtype global to float64 before kernel modules import it."""
     import optarena.infrastructure.dace_framework as dfw
     dfw.dc_float = dace.float64
@@ -37,13 +35,12 @@ class CorpusKernel:
     dace_file: Path  # the kernel's ``_dace.py`` on disk (source of truth)
     spec: BenchSpec
 
-    def _module(self):
+    def module(self):
         """Import the kernel's ``_dace.py`` by file path.
 
         Loading by path (not ``import_module``) sidesteps ``optarena.benchmarks`` namespace-package
         resolution, which can non-deterministically bind to a stray/duplicate ``benchmarks/`` root
-        that lacks the kernel's subpackage. The kernel's own ``from optarena.infrastructure ...``
-        imports are unambiguous and still resolve normally.
+        lacking the kernel's subpackage.
         """
         if self.module_path in sys.modules:
             return sys.modules[self.module_path]
@@ -54,14 +51,13 @@ class CorpusKernel:
         return module
 
     def program(self):
-        """The kernel's *entry* ``@dace.program`` object.
+        """The kernel's *entry* ``@dace.program``, selected by the manifest's ``func_name``.
 
-        A dace module often defines helper programs (``relu``, ``conv2d``, ...) before the kernel,
-        and sometimes a ``*_gpu`` variant after it, so the entry is selected by the manifest's
-        ``func_name`` (mirrors optarena's own ``_import_kernel``) rather than "the first/last one".
+        A module often defines helper programs before the kernel and a ``*_gpu`` variant after it, so
+        neither "first" nor "last" is reliable; ``func_name`` mirrors optarena's own ``_import_kernel``.
         """
-        _set_precision_fp64()
-        module = self._module()
+        set_precision_fp64()
+        module = self.module()
         entry = vars(module).get(self.spec.func_name)
         if isinstance(entry, dace.frontend.python.parser.DaceProgram):
             return entry
@@ -74,7 +70,7 @@ class CorpusKernel:
         return self.program().to_sdfg(simplify=simplify)
 
 
-def _module_path(short_name: str) -> str:
+def module_path(short_name: str) -> str:
     """Canonical dotted name for a kernel's ``_dace.py`` (a stable sys.modules cache key)."""
     *dirs, module_name = short_name.split("/")
     return f"optarena.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
@@ -93,7 +89,7 @@ def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
         if not dace_file.exists():
             continue
         yield CorpusKernel(short_name=short_name,
-                           module_path=_module_path(short_name),
+                           module_path=module_path(short_name),
                            dace_file=dace_file,
                            spec=BenchSpec.load(short_name))
 

@@ -5,15 +5,64 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nest-forge"
 version = "0.0.1"
-description = "Extract DaCe loop-/map-nests and offload them to external compilers via an arena."
+description = "Extract DaCe loop-/map-nests and offload them to external compilers via a compile-and-race arena."
+readme = "README.md"
 requires-python = ">=3.10"
-# optarena is vendored as the ./external/optarena git submodule (it is not on PyPI). Resolve it with
-#   git submodule update --init --recursive && pip install -e external/optarena
-# nest-forge surfaces two of its pieces natively: nestforge.translator and nestforge.corpus.
+authors = [{ name = "Yakup Budanaz", email = "budanaz.yakup@gmail.com" }]
+keywords = ["dace", "sdfg", "loop-nest", "code-generation", "compilers", "autotuning", "benchmarking", "hpc"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Software Development :: Compilers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# DaCe must be the `extended` branch and OptArena is the ./external/optarena git submodule -- neither is
+# on PyPI, so both are installed editable from a checkout (see requirements-dev.txt / the CI workflow):
+#   git submodule update --init --recursive && pip install -e external/optarena && pip install -e ../dace
+# nest-forge surfaces two OptArena pieces natively: nestforge.translator and nestforge.corpus.
 dependencies = ["dace", "numpy", "pyyaml", "optarena"]
+
+[project.optional-dependencies]
+# The pip-installable dev/test/format tools. The editable `dace`/`optarena` checkouts are NOT here
+# (they are paths, not PyPI deps) -- install them from requirements-dev.txt.
+dev = [
+    "pytest",
+    "pytest-timeout",
+    "pytest-xdist",
+    "sympy",
+    "matplotlib",
+    "yapf",
+    "ruff",
+    "clang-format",
+]
+
+[project.urls]
+Homepage = "https://github.com/spcl/NestForge"
+Repository = "https://github.com/spcl/NestForge"
 
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
 
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider"
+testpaths = ["tests"]
+markers = [
+    "integration: needs a vendor compiler (nvc/icx/icpx) or a heavy launcher not present on the CI runner",
+]
+
 [tool.yapf]
 column_limit = 120
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately: guard the module with a skipif/pytestmark before imports (E402), use lambda
+# helpers (E731), and single-letter math names matching the reference (E741).
+"tests/*" = ["E402", "E731", "E741"]
