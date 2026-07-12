@@ -184,7 +184,13 @@ _REDUCED_FP: Dict[str, Dict[str, List[str]]] = {
 REDUCED_FP_ATOL: Dict[str, float] = {"default-fp": 1e-6, "no-fast-errno": 1e-12}
 
 #: The parallelization axis of the full-matrix job.
-PARALLEL_MODES: Tuple[str, ...] = ("sequential", "auto-par")
+#:  * ``sequential`` -- the sequential emit, no parallel flags.
+#:  * ``auto-par``   -- the sequential emit + the compiler's OWN plain-loop auto-parallelizer
+#:    (gcc ``-ftree-parallelize-loops``, nvc ``-Mconcur``, icx ``-parallel``; clang/flang have none).
+#:  * ``omp-emit``   -- OUR ``#pragma omp parallel for`` source (numpyto ``c_omp``/``fortran_omp``) + a
+#:    bare ``-fopenmp``. Works for EVERY family (clang/flang included, which auto-par cannot reach) and
+#:    only for the nests the DaCe schedule marks parallel AND numpyto can soundly parallelize.
+PARALLEL_MODES: Tuple[str, ...] = ("sequential", "auto-par", "omp-emit")
 
 #: Default C++ standard for the C++ lane (numpyto emits no C++ target; the C source is recompiled as
 #: C++). Overridable per call; the daint job passes ``DACE_PERF_CXX_STD``.
@@ -225,6 +231,14 @@ def autopar_flags(family: str, nthreads: int) -> Tuple[Optional[List[str]], Opti
         return ["-qopenmp", "-parallel"], None
     return None, ("clang/flang has no plain-loop auto-parallelizer (the emitted source has no OpenMP "
                   "pragmas for -fopenmp to act on; Polly is not guaranteed present)")
+
+
+def omp_emit_flags(family: str) -> List[str]:
+    """The switch that turns ON the OpenMP pragmas WE emit (``omp-emit`` parallel mode): a bare
+    ``-fopenmp`` on gcc/clang/icx, ``-mp`` on nvc. Unlike :func:`autopar_flags` this needs no
+    middle-end auto-parallelizer -- the parallelism is already in the source -- so it is supported by
+    EVERY family (clang/flang included). The runtime thread count comes from ``OMP_NUM_THREADS``."""
+    return {"nvidia": ["-mp"]}.get(family, ["-fopenmp"])
 
 
 def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
@@ -269,4 +283,7 @@ def lane_flags(family: str,
         if ap is None:
             return None, reason
         out = out + ap
+    elif parallel == "omp-emit":
+        # OUR pragmas are already in the source (numpyto c_omp/fortran_omp); just enable OpenMP.
+        out = out + omp_emit_flags(family)
     return out, None

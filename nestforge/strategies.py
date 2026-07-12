@@ -169,6 +169,21 @@ def innermost(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
     return refs
 
 
+def empty_strategy_reason(sdfg: dace.SDFG) -> str:
+    """Why a strategy found no nest to externalise -- distinguishing an honestly EMPTY kernel from one
+    whose only compute is a **library node**. We deliberately do NOT offload library nodes: DaCe expands
+    each to its fastest available library (BLAS/LAPACK/argreduce/...), so externalising it to a naive
+    numpy->C loop would only lose performance. Such a kernel is legitimately skipped -- but with a reason
+    that says so, instead of the misleading 'no compute nest'.
+    """
+    has_libnode = any(
+        isinstance(n, nodes.LibraryNode) for sub in sdfg.all_sdfgs_recursive() for st in sub.states()
+        for n in st.nodes())
+    if has_libnode:
+        return "only library-node compute (DaCe offloads it to its fastest library; no loop-nest to externalise)"
+    return "no compute nest (strategy returned nothing)"
+
+
 register_strategy("outer", outer)
 register_strategy("skip-taskloops", skip_taskloops)
 register_strategy("innermost", innermost)

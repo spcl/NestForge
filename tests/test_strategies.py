@@ -6,12 +6,26 @@ pytest.importorskip("optarena")
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
+import dace
+
 from nestforge.corpus import iter_dace_kernels
-from nestforge.strategies import get_strategy
+from nestforge.strategies import empty_strategy_reason, get_strategy
 
 
 def sdfg_for(short):
     return {k.short_name: k for k in iter_dace_kernels()}[short].to_sdfg(simplify=True)
+
+
+def test_empty_strategy_reason_distinguishes_libnode_only_from_empty():
+    # A kernel whose only compute is a library node is NOT "no compute nest": DaCe offloads the library
+    # node to its fastest implementation, so there is legitimately no loop-nest to externalise.
+    sdfg = dace.SDFG("lib_only")
+    st = sdfg.add_state()
+    from dace.libraries.standard.nodes.reduce import Reduce
+    st.add_node(Reduce("Reduce", wcr="lambda a, b: a + b", axes=None))  # a library node with no map/loop
+    assert "library-node" in empty_strategy_reason(sdfg)
+    # An honestly empty SDFG (no compute at all) keeps the plain message.
+    assert "no compute nest" in empty_strategy_reason(dace.SDFG("empty"))
 
 
 def test_skip_taskloops_descends_through_a_map_only_time_loop():

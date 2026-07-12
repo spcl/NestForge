@@ -93,7 +93,7 @@ from nestforge.perf import flags
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers, signature_order
 from nestforge.perf.tsvc_arena import (Toolchain, c_argtypes, call_c, discover_toolchains, my_slice, native_symbol,
                                        rank_and_size, run_compile)
-from nestforge.strategies import get_strategy, is_parallel_nest
+from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
 #: numpyto emit target + source suffix per language. C and C++ share the C target (numpyto has no C++
@@ -415,7 +415,7 @@ def compiler_for(lang: str, tc: Toolchain, fortran_by_family: Dict[str, str]) ->
 
 
 def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str], validate_sizes: Dict[str, int],
-                      name: str) -> Dict[str, Tuple[Path, List[str], list]]:
+                      name: str, parallel: bool = False) -> Dict[str, Tuple[Path, List[str], list]]:
     """Emit the numpyto sources for the requested languages and parse each signature.
 
     Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the PER-NEST base name
@@ -423,14 +423,22 @@ def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str], valid
     entry point. C and C++ share one emitted ``.c`` (numpyto has no C++ target); the C++ lane compiles a
     tiny generated wrapper ``.cpp`` that ``#include``s the ``.c`` inside ``extern "C" {}`` -- without it the
     C++ frontend name-mangles ``<name>_fp64`` and ctypes cannot bind it. A language whose emit/parse fails
-    is omitted (its cells are skipped, not compiled)."""
+    is omitted (its cells are skipped, not compiled).
+
+    ``parallel=True`` requests the OpenMP variant (numpyto ``c_omp`` / ``fortran_omp`` -- a drop-in
+    ``<base>_omp.{c,f90}`` with the SAME symbol/signature, ``#pragma omp parallel for``). numpyto RAISES
+    (nonzero exit -> :class:`RuntimeError`) for a nest with no sound parallel form, so the caller emits into
+    a distinct ``omp`` subdir and treats a raise as "no OpenMP lane for this nest"."""
     symbol = f"{name}_fp64"
     names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
+    c_target = "c_omp" if parallel else "c"
+    f_target = "fortran_omp" if parallel else "fortran"
     out: Dict[str, Tuple[Path, List[str], list]] = {}
     want_c = any(lg in ("c", "c++") for lg in languages)
     c_info: Optional[Tuple[Path, List[str], list]] = None
     if want_c:
-        src = next(s for s in emit_sources(prep, workdir, target="c") if s.suffix == ".c" and "pluto" not in s.name)
+        src = next(s for s in emit_sources(prep, workdir, target=c_target)
+                   if s.suffix == ".c" and "pluto" not in s.name)
         order = signature_order(src.read_text(), symbol, "c")
         c_info = (src, order, c_argtypes(order, boundary))
     for lang in languages:
@@ -444,7 +452,7 @@ def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str], valid
                 wrapper.write_text('extern "C" {\n#include "%s"\n}\n' % c_src.resolve())
                 out[lang] = (wrapper, order, argtypes)
         else:  # fortran
-            fsrc = next(s for s in emit_sources(prep, workdir, target="fortran")
+            fsrc = next(s for s in emit_sources(prep, workdir, target=f_target)
                         if s.suffix == ".f90" and "pluto" not in s.name)
             forder = fortran_unmunge(signature_order(fsrc.read_text(), symbol, "fortran"), names)
             out[lang] = (fsrc, forder, c_argtypes(forder, boundary))
@@ -465,7 +473,7 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     refs = get_strategy(strategy)(sdfg)
     if not refs:
-        raise RuntimeError("no compute nest")
+        raise RuntimeError(empty_strategy_reason(sdfg))
     ctxs: List[Dict] = []
     for idx in range(len(refs)):
         sdfg_i = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
@@ -480,6 +488,17 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
         prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
         oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
         lang_src = emit_lang_sources(prep, boundary, nest_dir, languages, validate_sizes, name)
+        # A DaCe-parallel nest ALSO gets the OpenMP ``omp-emit`` sources (numpyto c_omp/fortran_omp). numpyto
+        # refuses a nest it cannot soundly parallelize (colliding scatter) -> RuntimeError; that nest simply
+        # runs no omp-emit lane (never fatal). Emitted into an ``omp`` subdir so its ``_omp.c`` never shadows
+        # the sequential ``.c`` glob.
+        omp_src: Dict[str, Tuple[Path, List[str], list]] = {}
+        if parallel:
+            try:
+                omp_src = emit_lang_sources(prep, boundary, nest_dir / "omp", languages, validate_sizes, name,
+                                            parallel=True)
+            except (RuntimeError, StopIteration) as e:
+                print(f"[tsvc-full] {name}: no OpenMP variant ({type(e).__name__}: {str(e)[:120]})")
         ctxs.append({
             "nest_idx": idx,
             "name": name,
@@ -491,6 +510,7 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             "validate_sizes": validate_sizes,
             "oracle": oracle,
             "lang_src": lang_src,
+            "omp_src": omp_src,
             "parallel": parallel,
         })
     return ctxs
@@ -541,6 +561,14 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                 continue
             # timing cells: parallel x cost x reduced-FP
             for parallel in axes["parallelism"]:
+                # omp-emit uses OUR ``#pragma omp`` source (numpyto c_omp/fortran_omp); it exists only for
+                # a nest the DaCe schedule marked parallel AND numpyto could soundly parallelize.
+                psrc = src
+                if parallel == "omp-emit":
+                    omp = opt_ctx.get("omp_src", {}).get(lang)
+                    if omp is None:
+                        continue
+                    psrc = omp[0]
                 for cost in axes["cost_models"]:
                     for fp in axes["fp_modes"]:
                         cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std)
@@ -549,7 +577,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                             cell.error = f"unsupported: {reason}"
                             pendings.append(Pending(cell=cell))
                             continue
-                        add(cell, exe, cflags, src, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
+                        add(cell, exe, cflags, psrc, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
             # correctness GATE cell: strict-ieee, sequential, default cost (bit-exact vs the oracle)
             if axes["gate"]:
                 cflags, _ = flags.lane_flags(fam, "strict-ieee", "default", "sequential", lang, nthreads, cxx_std)
@@ -851,7 +879,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     default=list(tsvc.OPT_MODES),
                     choices=list(tsvc.OPT_MODES),
                     dest="opt_modes")
-    ap.add_argument("--parallelism", default="both", choices=["sequential", "auto-par", "both"])
+    ap.add_argument("--parallelism", default="both", choices=["sequential", "auto-par", "omp-emit", "both"],
+                    help="'both' = all of sequential/auto-par/omp-emit; omp-emit uses OUR "
+                         "``#pragma omp`` source (only for DaCe-parallel nests).")
     ap.add_argument("--cost-models",
                     nargs="*",
                     default=list(flags.COST_MODELS),

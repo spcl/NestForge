@@ -84,6 +84,16 @@ def test_lane_flags_gate_reduced_cxx_and_unsupported():
     assert "-ftree-parallelize-loops=16" in par
 
 
+def test_lane_flags_omp_emit_enables_openmp_every_family():
+    # omp-emit is supported for EVERY family (the pragmas are in OUR source) -- a bare -fopenmp / -mp,
+    # NOT an auto-parallelizer, so clang (which auto-par cannot reach) DOES get an omp-emit lane.
+    assert "omp-emit" in flags.PARALLEL_MODES
+    for fam, sw in (("gnu", "-fopenmp"), ("llvm", "-fopenmp"), ("intel", "-fopenmp"), ("nvidia", "-mp")):
+        omp, reason = flags.lane_flags(fam, "default-fp", "default", "omp-emit", "c", 8)
+        assert reason is None and sw in omp
+        assert "-ftree-parallelize-loops" not in " ".join(omp)  # NOT the auto-parallelizer path
+
+
 # --- PROF sizing (must exceed the GH200 Grace L3) -----------------------------------------------------
 def test_prof_preset_exceeds_l3():
     l3_bytes = 114 * 2**20  # ~114 MB Grace L3/socket
@@ -277,6 +287,52 @@ def test_run_kernel_all_lanes_s000(tmp_path):
     ]
     assert seq and all(c["median_us"] != float("inf") for c in seq)
     assert par and all(c["median_us"] != float("inf") for c in par)
+
+
+def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
+    """s000 (elementwise ``a[i]=b[i]+1``) is a DaCe-parallel nest, so it MUST get the omp-emit lane: OUR
+    ``#pragma omp parallel for`` source (numpyto c_omp) compiled with -fopenmp, validated bit-exact and
+    timed -- across C, C++ AND Fortran, and for clang too (which auto-par cannot parallelize)."""
+    tcs = discover_toolchains("auto")
+    if not tcs:
+        pytest.skip("no toolchain")
+    ftn = lang_compilers(["fortran"], tcs).get("fortran", {})
+    k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
+    axes = {
+        "opt_modes": ["baseline"],
+        "languages": ["c", "c++", "fortran"],
+        "parallelism": ["sequential", "omp-emit"],
+        "cost_models": ["default"],
+        "fp_modes": ["default-fp"],
+        "gate": False,
+        "opt_mode": None,
+    }
+    res = tsvc_full.run_kernel(k, tcs, ftn, "skip-taskloops", axes, reps=2, profile_preset="S", nthreads=2,
+                               cxx_std=flags.CXX_STD, compile_jobs=4, workdir=tmp_path)
+    assert "skipped" not in res, res.get("skipped")
+    omp = [c for c in res["cells"] if c["parallel"] == "omp-emit" and c["role"] == "timing"]
+    assert omp, "s000 is parallel -> the omp-emit lane must produce cells"
+    ok = [c for c in omp if c["ok"]]
+    assert ok and all(c["maxdiff"] == 0.0 for c in ok)  # OpenMP source is bit-exact vs the oracle
+    assert all(c["median_us"] != float("inf") for c in ok)  # and timed
+    assert {"c", "c++", "fortran"} <= {c["language"] for c in ok}  # every language got a working omp lane
+
+
+def test_omp_emit_sources_carry_the_pragma(tmp_path):
+    """The omp-emit source numpyto produces for a parallel nest actually contains the OpenMP pragma with the
+    SAME symbol as the sequential emit (a drop-in). A sequential nest produces no omp source."""
+    tcs = discover_toolchains("gcc")
+    if not tcs:
+        pytest.skip("no gcc")
+    k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
+    ctxs = tsvc_full.build_opt_context(k, "baseline", "skip-taskloops", "S", ["c", "fortran"], tmp_path)
+    nc = ctxs[0]
+    assert nc["parallel"], "s000 nest should be classified parallel"
+    assert nc["omp_src"], "a parallel nest must have omp sources"
+    csrc = nc["omp_src"]["c"][0].read_text()
+    assert "#pragma omp parallel for" in csrc and nc["symbol"] in csrc
+    fsrc = nc["omp_src"]["fortran"][0].read_text()
+    assert "!$omp parallel do" in fsrc
 
 
 def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
