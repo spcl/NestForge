@@ -66,6 +66,12 @@ def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) 
     if scalar_local(sdfg, name):
         return name
     desc = sdfg.arrays[name]
+    if is_scalar(desc):
+        # A size-1 buffer (non-transient) is a scalar value: read its sole element, mirroring write_lhs.
+        # Reading the bare name yields the whole (1,) array, so ``s[0] = out`` assigns a length-1 array
+        # into a scalar slot -- a NumPy 2 "setting an array element with a sequence" error (and the C
+        # translator would see a double* where a double is meant).
+        return f"{name}[0]"
     if subset is None or covers_whole(subset, desc):
         return name
     return f"{name}[{index_str(subset)}]"

@@ -78,9 +78,28 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: Op
     return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
 
 
+def nest_defined_symbols(loop: LoopRegion) -> set:
+    """Symbols DEFINED inside the loop nest: every loop variable (the region itself and any nested
+    LoopRegion) plus every inter-state-edge assignment target. Mirrors the ``ndefined_symbols`` set
+    ``helpers.nest_sdfg_subgraph`` builds for its symbolic-output plumbing."""
+    syms = set()
+    for b in [loop, *loop.all_control_flow_blocks()]:
+        if isinstance(b, LoopRegion) and b.loop_variable and b.init_statement:
+            syms.add(b.loop_variable)
+    for e in loop.all_interstate_edges():
+        syms.update(e.data.assignments.keys())
+    return syms
+
+
 def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
     """Outline a CFG loop region into a standalone SDFG (M1)."""
     from dace.sdfg.graph import SubgraphView
+    # nest_sdfg_subgraph emits a "symbolic output" for each symbol defined in the nest and looks up its
+    # dtype in the nested-or-PARENT sdfg.symbols. A loop index DaCe never registered as a symbol (it need
+    # not be) would KeyError there; pre-declare each nest-defined symbol on the parent as int64.
+    for s in nest_defined_symbols(loop):
+        if s not in parent_sdfg.symbols:
+            parent_sdfg.add_symbol(s, dace.int64)
     subgraph = SubgraphView(parent_sdfg, [loop])
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     # nest_sdfg_subgraph returns the state that now holds the NestedSDFG; find that node.

@@ -23,7 +23,7 @@ import dace
 from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.state import ConditionalBlock, LoopRegion
+from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion
 from dace.sdfg.utils import dfs_topological_sort
 
 from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
@@ -277,20 +277,28 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             src_name, src_sub, dst_sub = m.data, m.subset, m.other_subset
         else:
             continue  # a tasklet / library-node source already wrote dst via its own out-edge (incl. its WCR)
-        if m.wcr is not None:  # a reduction *copy* (only on the branches we emit; tasklet WCR is its own path)
-            raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} is not yet emitted")
         if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst.data].shape):
             # Same-rank copy: a ``None`` other-side subset means "the same range as the named side";
             # mirror it so a partial copy is not silently widened to the whole array.
             src_sub = src_sub if src_sub is not None else dst_sub
             dst_sub = dst_sub if dst_sub is not None else src_sub
             lhs, rhs = write_lhs(sdfg, dst.data, dst_sub), read_expr(sdfg, src_name, src_sub)
+            dst_read = read_expr(sdfg, dst.data, dst_sub)
         else:
             # Reshape/rank-changing copy (``(N,) <-> (N, 1)``, or an array element -> scalar staging): a
             # scalar-local side stays bare; the reshaping side keeps its subset explicit so a point
             # index collapses the rank to match, and a ``None`` side is the whole array.
             lhs = reshape_side(sdfg, dst.data, dst_sub, write=True)
             rhs = reshape_side(sdfg, src_name, src_sub, write=False)
+            dst_read = reshape_side(sdfg, dst.data, dst_sub, write=False)
+        if m.wcr is not None:
+            # A reduction *copy* (AccessNode -> AccessNode carrying a WCR, e.g. a privatized accumulator
+            # copied back): accumulate rather than overwrite -- ``dst = combine(dst, src)``. Tasklet WCRs
+            # go through their own path in tasklet_lines; this is the copy-edge analogue.
+            combine = _WCR_BINOP.get(detect_reduction_type(m.wcr))
+            if combine is None:
+                raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} has an unsupported WCR {m.wcr!r}")
+            rhs = combine(dst_read, rhs)
         lines.append(normalize_casts(f"{lhs} = {rhs}"))  # a strided subset may render an int_floor/int_ceil index
     return lines
 
@@ -535,6 +543,10 @@ def emit_region(region, sdfg: dace.SDFG) -> List[str]:
             lines.extend(emit_loop(block, sdfg))
         elif isinstance(block, ConditionalBlock):
             lines.extend(emit_conditional(block, sdfg))
+        elif isinstance(block, BreakBlock):
+            lines.append("break")  # exits the enclosing while (emit_loop); its region-DFS successor is the loop exit
+        elif isinstance(block, ContinueBlock):
+            lines.append("continue")
         else:
             raise UnsupportedNest(f"control-flow block not yet emitted: {type(block).__name__}")
     return lines
