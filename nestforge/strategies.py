@@ -65,6 +65,21 @@ def is_taskloop_map(state: dace.SDFGState, entry: nodes.MapEntry) -> bool:
     return has_map and not has_compute
 
 
+def is_parallel_nest(node: NestNode) -> bool:
+    """Whether an extracted nest is PARALLEL within the DaCe scope (its iterations are independent, so
+    the emitted kernel may carry an OpenMP parallel scope) or SEQUENTIAL.
+
+    A ``MapEntry`` is parallel unless its schedule is explicitly ``Sequential`` -- DaCe's ``LoopToMap``
+    (run in the ``baseline``/``canonicalize`` build) only turns a *provably parallel* loop into a Map, so
+    a Map is the parallel signal. A ``LoopRegion`` is a loop that stayed a loop (a loop-carried
+    recurrence LoopToMap refused), hence sequential. A WCR reduction inside a parallel map is still
+    parallel -- the OpenMP emitter carries it as a ``reduction(...)`` clause, not a serialization.
+    """
+    if isinstance(node, nodes.MapEntry):
+        return node.map.schedule != dace.ScheduleType.Sequential
+    return False  # LoopRegion (or anything non-Map): sequential
+
+
 def is_taskloop_loop(loop: LoopRegion) -> bool:
     """A loop whose body is *only* maps: states with no free compute and no nested control flow."""
     if any(not isinstance(b, dace.SDFGState) for b in loop.nodes()):
