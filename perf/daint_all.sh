@@ -9,9 +9,10 @@
 #SBATCH --account=g34
 #SBATCH --output=nf_all_%j.out
 #SBATCH --error=nf_all_%j.err
-# NOTE: no hardcoded --chdir. The repo root is resolved at run time (below) from where `sbatch` was
-# invoked (SLURM_SUBMIT_DIR) or this script's own location, so results land in <this-repo>/perf_results/
-# whatever the clone is named (NestForge / nest-forge / ...). Override with NF_REPO=/path.
+# NOTE: no hardcoded --chdir (SLURM copies this script to its spool dir, so the script's own path is NOT
+# the clone). The repo root is resolved at run time (resolve_repo, below): NF_REPO, then SLURM_SUBMIT_DIR,
+# then the script dir, then the standard daint clone (/capstor/scratch/cscs/$USER/aarch64/NestForge) --
+# first one that IS a clone wins. Results land in <that-repo>/perf_results/. Override with NF_REPO=/path.
 #
 # ONE phased nest-forge perf job on CSCS Alps/daint (GH200, aarch64). Supersedes the
 # former per-job scripts (daint_tsvc_full / daint_crosslang_xl / daint_staticlib_overhead /
@@ -51,10 +52,27 @@
 #   PROFILE_PRESET=XL LANGUAGES="c fortran" sbatch perf/daint_all.sh     # big confirmation run
 
 set -euo pipefail
-# Repo root defaults to THIS script's location (<repo>/perf/daint_all.sh -> <repo>); override with NF_REPO.
-# Results (perf_results/, relative) then always land inside the actual clone, whatever it is named.
-REPO="${NF_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Resolve the repo root robustly. SLURM COPIES this batch script into its spool dir before running, so
+# ${BASH_SOURCE[0]} is NOT the clone under sbatch (it is /var/spool/slurmd/...). Try NF_REPO, then the
+# submit dir, then the script dir, and pick the first that actually IS the clone (has nestforge/ + perf/).
+# submit_all.sh sets NF_REPO explicitly from the login node (where BASH_SOURCE is valid), so that path is
+# always correct; a bare `sbatch perf/daint_all.sh` from the repo root is covered by SLURM_SUBMIT_DIR.
+resolve_repo () {
+  local c
+  for c in "${NF_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
+           "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" \
+           "/capstor/scratch/cscs/$USER/aarch64/NestForge"; do
+    [ -n "$c" ] && [ -f "$c/nestforge/__init__.py" ] && [ -d "$c/perf" ] && { echo "$c"; return 0; }
+  done
+  return 1
+}
+REPO="$(resolve_repo)" || {
+  echo "[all] ERROR: cannot find the NestForge clone (tried NF_REPO='${NF_REPO:-}', SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-}', script dir). Resubmit with NF_REPO=/path/to/clone." >&2
+  exit 1
+}
 cd "$REPO"
+# Results (perf_results/, relative) then always land inside the actual clone, whatever it is named. `-m`
+# also puts the clone first on sys.path, so nestforge imports from here (not a stale site-packages copy).
 echo "[all] repo root: $REPO (results under $REPO/perf_results/)"
 
 export OMP_NUM_THREADS="72"

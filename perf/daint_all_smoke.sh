@@ -8,8 +8,9 @@
 #SBATCH --account=g34
 #SBATCH --output=nf_all_smoke_%j.out
 #SBATCH --error=nf_all_smoke_%j.err
-# No hardcoded --chdir: the repo root is resolved at run time (below) from this script's location, so
-# results land in <this-repo>/perf_results/ whatever the clone is named. Override with NF_REPO=/path.
+# No hardcoded --chdir (SLURM copies this script to its spool dir, so the script's own path is NOT the
+# clone). The repo root is resolved at run time (resolve_repo, below): NF_REPO, then SLURM_SUBMIT_DIR,
+# then the script dir, then the standard daint clone -- first one that IS a clone wins. Override NF_REPO.
 #
 # Fast pre-flight for daint_all.sh: one node, one rank, a handful of kernels, ONE compiler
 # (gcc), the SMALL `S` preset, tiny reps. It walks all four phases end-to-end so a submitter
@@ -30,8 +31,22 @@
 #   RUN_OVERHEAD=0 RUN_PLOTS=0 sbatch perf/daint_all_smoke.sh    # just phases 1-2
 
 set -euo pipefail
-# Repo root defaults to THIS script's location (<repo>/perf/daint_all_smoke.sh -> <repo>); override NF_REPO.
-REPO="${NF_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Resolve the repo root robustly (SLURM copies this script to its spool dir, so ${BASH_SOURCE[0]} is NOT
+# the clone under sbatch). Try NF_REPO, the submit dir, the script dir, then the standard daint clone; pick
+# the first that IS a clone (has nestforge/ + perf/). submit_all.sh sets NF_REPO from the login node.
+resolve_repo () {
+  local c
+  for c in "${NF_REPO:-}" "${SLURM_SUBMIT_DIR:-}" \
+           "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" \
+           "/capstor/scratch/cscs/$USER/aarch64/NestForge"; do
+    [ -n "$c" ] && [ -f "$c/nestforge/__init__.py" ] && [ -d "$c/perf" ] && { echo "$c"; return 0; }
+  done
+  return 1
+}
+REPO="$(resolve_repo)" || {
+  echo "[smoke] ERROR: cannot find the NestForge clone (tried NF_REPO='${NF_REPO:-}', SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-}', script dir). Resubmit with NF_REPO=/path/to/clone." >&2
+  exit 1
+}
 cd "$REPO"
 echo "[smoke] repo root: $REPO (results under $REPO/perf_results/)"
 

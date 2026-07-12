@@ -13,13 +13,16 @@
 #   RUN_OVERHEAD=1 RUN_CALLOVERHEAD=1 bash perf/submit_all.sh   # the two overhead phases (already default)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/.." && pwd)"   # the clone root, resolved on the LOGIN node where $0 is valid; SLURM
+                                 # copies the batch script to its spool dir, so the job cannot re-derive
+                                 # this from its own path -- pass it in via NF_REPO so results land here.
 
 if [ "${SMOKE:-1}" = "1" ]; then
-  smoke_id="$(sbatch --parsable "$here/daint_all_smoke.sh")"
+  smoke_id="$(sbatch --parsable --export="ALL,NF_REPO=$repo" "$here/daint_all_smoke.sh")"
   echo "[submit_all] smoke job: $smoke_id (40 min)"
-  full_id="$(sbatch --parsable --dependency="afterok:$smoke_id" "$here/daint_all.sh")"
+  full_id="$(sbatch --parsable --export="ALL,NF_REPO=$repo" --dependency="afterok:$smoke_id" "$here/daint_all.sh")"
   echo "[submit_all] full job:  $full_id (starts only if the smoke succeeds)"
 else
-  full_id="$(sbatch --parsable "$here/daint_all.sh")"
+  full_id="$(sbatch --parsable --export="ALL,NF_REPO=$repo" "$here/daint_all.sh")"
   echo "[submit_all] full job:  $full_id"
 fi
