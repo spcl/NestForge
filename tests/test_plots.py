@@ -17,6 +17,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLOT_OVERHEAD = REPO_ROOT / "perf" / "plot_overhead.py"
 PLOT_WINNERS = REPO_ROOT / "perf" / "plot_winners.py"
+PLOT_SPEEDUP_MATRIX = REPO_ROOT / "perf" / "plot_speedup_matrix.py"
 
 
 def run_script(script: Path, results_dir: Path) -> subprocess.CompletedProcess:
@@ -142,3 +143,44 @@ def test_plot_winners_smoke(tmp_path):
     assert rows["sC"]["compiler"] == "—" and rows["sC"]["median_us"] == ""  # no valid cell -> no winner
     # C* single-compiler winner: geomean(gcc)=sqrt(2*5)=3.16 > geomean(clang)=sqrt(4*2)=2.83.
     assert "C* = gcc" in proc.stdout
+
+
+def test_plot_speedup_matrix_smoke(tmp_path):
+    """The deliverable report: matrix vs gcc + vs llvm (two tabs) + per-kernel scatter over each."""
+
+    def cell(comp, lang, par, cost, fp, med, nest=0, ok=True):
+        return {
+            "opt_mode": "baseline", "language": lang, "compiler": comp, "parallel": par, "cost_model": cost,
+            "fp_mode": fp, "role": "timing", "nest": nest, "ok": ok, "maxdiff": 0.0, "median_us": med, "error": None
+        }
+
+    # kernel A: gcc default 10 (baseline); gcc omp-emit 4 -> 2.5x; clang default 12 (llvm baseline); clang omp 5.
+    (tmp_path / "tsvc2_sA.json").write_text(
+        json.dumps({
+            "key": "sA", "corpus": "tsvc2",
+            "cells": [
+                cell("gcc", "c", "sequential", "default", "default-fp", 10.0),
+                cell("gcc", "c", "omp-emit", "default", "default-fp", 4.0),
+                cell("clang", "c", "sequential", "default", "default-fp", 12.0),
+                cell("clang", "c", "omp-emit", "default", "default-fp", 5.0),
+            ]
+        }))
+    # kernel B: gcc default 20; clang default 18 -> nest-forge best vs gcc = 20/18 = 1.11.
+    (tmp_path / "tsvc2_sB.json").write_text(
+        json.dumps({
+            "key": "sB", "corpus": "tsvc2",
+            "cells": [
+                cell("gcc", "c", "sequential", "default", "default-fp", 20.0),
+                cell("clang", "c", "sequential", "default", "default-fp", 18.0),
+            ]
+        }))
+    (tmp_path / "tsvc2_sC.json").write_text(json.dumps({"key": "sC", "corpus": "tsvc2", "skipped": "libnode-only"}))
+
+    proc = run_script(PLOT_SPEEDUP_MATRIX, tmp_path)
+    assert (tmp_path / "speedup_matrix.md").exists()
+    assert (tmp_path / "scatter_vs_gcc.png").exists() and (tmp_path / "scatter_vs_llvm.png").exists()
+    md = (tmp_path / "speedup_matrix.md").read_text()
+    assert "## Speedup vs gcc default" in md and "## Speedup vs llvm default" in md
+    assert "2.50x" in md  # gcc omp-emit vs gcc default on kernel A
+    # per-kernel best vs gcc: kA 10/4=2.5, kB 20/18=1.11 -> geomean sqrt(2.5*1.111)=1.67x
+    assert "vs gcc default: geomean 1.67x" in proc.stdout

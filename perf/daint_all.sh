@@ -213,6 +213,10 @@ run_plots () {
     || echo "[all] phase 5 plot_calloverhead failed"
   python3 "$REPO/perf/plot_winners.py" --results-dir "$OUT_FULL" \
     || echo "[all] phase 5 plot_winners failed"
+  # The deliverable: cross-language x compiler x flag speedup matrix vs the gcc and llvm vendor defaults
+  # (two tabs) + per-kernel speedup scatter over each.
+  python3 "$REPO/perf/plot_speedup_matrix.py" --results-dir "$OUT_FULL" \
+    || echo "[all] phase 5 plot_speedup_matrix failed"
 }
 
 # --- run the enabled phases in sequence ----------------------------------------
