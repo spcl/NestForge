@@ -404,13 +404,23 @@ def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> 
     body: List[str] = []
     scope = state.scope_subgraph(entry, include_entry=False, include_exit=False)
     for node in dfs_topological_sort(scope):
+        # ``scope_subgraph`` returns the whole subtree, including a nested map's own descendants; emit only
+        # the DIRECT children of THIS map here and let the recursion below handle a nested map's body, so a
+        # grandchild is not also emitted flat at the wrong depth (mirrors the guard in ``state_body``).
+        if state.entry_node(node) is not entry:
+            continue
         if isinstance(node, nodes.Tasklet):
             body.extend(tasklet_lines(state, sdfg, node))
         elif isinstance(node, nodes.AccessNode):
             body.extend(copy_lines(state, sdfg, node))
         elif isinstance(node, nodes.NestedSDFG):
             body.extend(emit_nested_sdfg(state, sdfg, node))
-        elif isinstance(node, (nodes.MapEntry, nodes.LibraryNode)):
+        elif isinstance(node, nodes.MapEntry):
+            # A map nested in a map -> emit it as deeper ``for`` loops. ``map_lines`` returns a
+            # self-contained header+body block; splicing it into this body and applying the uniform
+            # per-level indent below preserves the relative nesting.
+            body.extend(map_lines(state, sdfg, node))
+        elif isinstance(node, nodes.LibraryNode):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
 
     lines = ["    " * depth + h for depth, h in enumerate(headers)]

@@ -37,7 +37,13 @@ FP_MODES: Dict[str, List[str]] = {
 MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
-CTYPE = {"float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32}
+# numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is here because a comparison
+# in the kernel (e.g. s13110's ``aa[i, j] > maxv``) materialises a boolean buffer/transient, and DaCe
+# lowers ``dace.bool`` to a 1-byte C ``bool`` (== ctypes.c_bool).
+CTYPE = {
+    "float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32,
+    "bool": ctypes.c_bool
+}
 
 
 def discover_compilers() -> Dict[str, str]:
