@@ -121,8 +121,20 @@ def scratch_names(boundary: Boundary) -> List[str]:
                   if desc.transient and not (isinstance(desc, dace.data.Scalar) or desc.total_size == 1))
 
 
+#: Upper bound of the random-input range ``[0, INPUT_HIGH)``. Kept BELOW ``1/4`` so a squaring recurrence
+#: ``x = x*x + b`` (TSVC s232, a triangular in-place nest) stays bounded: ``b < 1/4`` guarantees the map has
+#: an attracting fixed point, so the chain converges instead of overflowing to ``inf`` (which then poisons
+#: the maxdiff with a ``nan`` and spuriously fails validation). Magnitude is otherwise irrelevant to what the
+#: arena measures -- validation is bit-exact at any scale and timing is magnitude-invariant -- and staying
+#: non-negative keeps ``sqrt``/``log`` kernels real (a symmetric range would NaN them).
+INPUT_HIGH = 0.25
+
+
 def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dict[str, np.ndarray]:
-    """Random arrays for inputs; zeros for outputs and scratch buffers (all caller-pre-allocated)."""
+    """Random arrays for inputs; zeros for outputs and scratch buffers (all caller-pre-allocated).
+
+    Inputs are drawn from ``[0, INPUT_HIGH)`` -- see :data:`INPUT_HIGH` for why the range is conditioned.
+    """
     sdfg = boundary.standalone_sdfg
     rng = np.random.default_rng(seed)
     arrays: Dict[str, np.ndarray] = {}
@@ -132,7 +144,7 @@ def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dic
         desc = sdfg.arrays[name]
         shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
-        arrays[name] = (np.zeros(shape, dt) if name in zero_filled else rng.random(shape).astype(dt))
+        arrays[name] = (np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt))
     return arrays
 
 
