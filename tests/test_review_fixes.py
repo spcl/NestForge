@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import dace
 
-from nestforge.emit_numpy import sdfg_to_numpy, UnsupportedNest
+from nestforge.emit_numpy import sdfg_to_numpy
 
 N = dace.symbol('N')
 
@@ -71,7 +71,7 @@ def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
     np.testing.assert_allclose(ret, A @ v)
 
 
-# ----- emit guards: nested constructs must raise, not silently mis-emit (Finder A#6 / C#7) --------
+# ----- emit: a map nested in a map is emitted as NESTED for-loops (not dropped, not raised) --------
 def nested_map_sdfg():
     sdfg = dace.SDFG("nested")
     sdfg.add_array("A", [N, N], dace.float64)
@@ -86,9 +86,21 @@ def nested_map_sdfg():
     return sdfg
 
 
-def test_nested_map_in_map_raises_instead_of_dropping_inner_loop():
-    with pytest.raises(UnsupportedNest):
-        sdfg_to_numpy(nested_map_sdfg(), "k")
+def test_nested_map_in_map_emits_nested_for_loops():
+    """A map nested inside a map (the multi-nest kernels s2275 / s152 need this) is emitted as NESTED
+    ``for`` loops with the inner body at the deeper indent -- NOT dropped, and no longer refused. Guards the
+    ``map_lines`` recursion that un-skipped the nested-map corpus kernels."""
+    src = sdfg_to_numpy(nested_map_sdfg(), "k")
+    assert "for i in range(0, N, 1):" in src and "for j in range(0, N, 1):" in src
+    assert "B[i, j] = (A[i, j] * 2.0)" in src
+    # numerically correct: exec the emitted kernel and compare to B = A * 2.
+    n = 6
+    rng = np.random.default_rng(0)
+    A, B = rng.random((n, n)), np.zeros((n, n))
+    ns = {"np": np}
+    exec(src, ns)
+    ns["k"](A, B, n)
+    assert np.allclose(B, A * 2.0)
 
 
 # ----- emit staging: a map-entry-sourced scalar read (`b_index = b[i]`) must be emitted -----------
