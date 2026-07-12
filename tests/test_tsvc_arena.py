@@ -150,8 +150,9 @@ def test_crosslang_run_kernel_c_and_fortran(tmp_path):
     # the run sweeps the FP-precision-level x cost-model matrix; the strict-ieee rung of BOTH languages
     # must be bit-exact vs the same oracle (no FMA, no reassociation -> C and Fortran reproduce it exactly).
     for lang in ("c", "fortran"):
-        strict = [c for c in res["cells"]
-                  if c["language"] == lang and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"]
+        strict = [
+            c for c in res["cells"] if c["language"] == lang and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"
+        ]
         assert strict, f"no strict-ieee cell for {lang}"
         assert all(c["ok"] and c["maxdiff"] == 0.0 for c in strict), strict
     # every FP level was actually swept for C
@@ -171,11 +172,14 @@ def test_crosslang_2d_fortran_multiline_signature(tmp_path):
     k = tsvc.iter_tsvc_kernels(only=["s1115"])[0]  # 2D, long (multi-line &-continued) Fortran signature
     res = crosslang_xl.run_kernel(k, ["c", "fortran"], compilers, "skip-taskloops", "S", reps=2, workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
-    ftn_strict = [c for c in res["cells"]
-                  if c["language"] == "fortran" and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"]
+    ftn_strict = [
+        c for c in res["cells"]
+        if c["language"] == "fortran" and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"
+    ]
     assert ftn_strict and all(c["ok"] and c["maxdiff"] == 0.0 for c in ftn_strict), ftn_strict  # 2D col-major handled
-    c_strict = [c for c in res["cells"]
-                if c["language"] == "c" and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"]
+    c_strict = [
+        c for c in res["cells"] if c["language"] == "c" and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"
+    ]
     assert c_strict and all(c["ok"] for c in c_strict)
 
 

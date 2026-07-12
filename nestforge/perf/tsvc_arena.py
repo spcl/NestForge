@@ -124,6 +124,42 @@ def spack_bin_dirs() -> List[Path]:
     return dirs
 
 
+def spack_compiler_bin_dirs() -> List[Path]:
+    """``bin`` dirs of every compiler spack has REGISTERED (``spack compiler list`` + ``spack compiler
+    info``) -- distinct from :func:`spack_bin_dirs`, which enumerates spack-INSTALLED packages. On a
+    spack-default host (e.g. daint) a usable compiler is often registered but not ``spack load``ed onto
+    PATH; its ``cc``/``cxx`` path from ``spack compiler info`` recovers its bin dir. Best-effort, never
+    fatal, bounded (spack start-up is slow): capped specs + short per-call timeout."""
+    if not shutil.which("spack"):
+        return []
+    try:
+        listing = subprocess.run(["spack", "compiler", "list"], capture_output=True, text=True, timeout=25).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    specs = []
+    for line in listing.splitlines():
+        line = line.strip()
+        if not line or line.startswith("==>") or line.startswith("--"):
+            continue  # skip the banner and the per-family header rules
+        specs += [tok for tok in line.split() if "@" in tok]
+    dirs: List[Path] = []
+    for spec in specs[:12]:
+        try:
+            info = subprocess.run(["spack", "compiler", "info", spec], capture_output=True, text=True,
+                                  timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in info.splitlines():
+            if "=" not in line:
+                continue  # lines like "\t\tcc = /opt/.../bin/gcc"
+            path = line.split("=", 1)[1].strip()
+            if path and os.path.isabs(path):
+                d = Path(path).parent
+                if d.is_dir() and d not in dirs:
+                    dirs.append(d)
+    return dirs
+
+
 def which_on_path(exe: str, extra_dirs: List[Path]) -> Optional[str]:
     """``exe`` on PATH, else under one of ``extra_dirs`` (the spack install bins)."""
     found = shutil.which(exe)
@@ -149,7 +185,12 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
             warnings.warn(f"unknown compiler token {t!r}; known: {sorted(_ALIASES)}")
         elif fam not in families:
             families.append(fam)
+    # PATH first (via which_on_path), then spack: installed packages AND registered compilers. On a
+    # spack-default host the compiler may be in neither PATH nor a `spack find` prefix, only registered.
     spack_dirs = spack_bin_dirs()
+    for d in spack_compiler_bin_dirs():
+        if d not in spack_dirs:
+            spack_dirs.append(d)
     out: List[Toolchain] = []
     for fam in families:
         cc_exe, cxx_exe = _FAMILY_EXES[fam]

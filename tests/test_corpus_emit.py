@@ -46,7 +46,18 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0):
 
 
 def test_corpus_exposes_dace_kernels():
-    assert len(dace_kernel_names("hpc")) == 50
+    # optarena ships each _dace.py as a gitignored, regenerated-on-demand artifact
+    # (nestforge.corpus.materialize_dace_corpus); the corpus exposes every hpc/ml kernel whose numpy
+    # reference numpyto can lower to dace. That emittable set grows as the translator improves, so assert a
+    # floor plus the specific kernels this suite exercises -- not a brittle exact count tied to one machine's
+    # partial generation.
+    hpc = set(dace_kernel_names("hpc"))
+    assert len(hpc) >= 50, len(hpc)
+    assert {
+        "hpc/dense_linear_algebra/gemm/gemm",
+        "hpc/structured_grids/jacobi_1d/jacobi_1d",
+        "hpc/dense_linear_algebra/lu/lu",
+    } <= hpc
     assert len(dace_kernel_names("ml")) == 5
 
 

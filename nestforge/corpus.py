@@ -17,7 +17,13 @@ from typing import Iterator, List, Optional
 
 import dace
 
+from optarena import autogen
 from optarena.spec import KERNELS, BenchSpec
+
+#: Tracks whose ``_dace.py`` optarena generates ON DEMAND (gitignored, never committed -- see
+#: optarena.autogen). foundation (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it
+#: is never dace-materialized here (and materialising its 213 kernels would be wasted work).
+DACE_TRACKS = ("hpc", "ml")
 
 
 def set_precision_fp64() -> None:
@@ -86,12 +92,27 @@ def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
             continue
         module_name = short_name.rsplit("/", 1)[-1]
         dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
+        if not dace_file.exists() and short_name.split("/", 1)[0] in DACE_TRACKS:
+            autogen.ensure(short_name, ("dace", ))  # regenerate optarena's gitignored _dace.py on demand
         if not dace_file.exists():
             continue
         yield CorpusKernel(short_name=short_name,
                            module_path=module_path(short_name),
                            dace_file=dace_file,
                            spec=BenchSpec.load(short_name))
+
+
+def materialize_dace_corpus(track: Optional[str] = None) -> None:
+    """Generate every missing ``_dace.py`` for the dace-bearing tracks up front. optarena ships these as
+    gitignored, regenerated-on-demand artifacts, so a fresh checkout has none. Safe to call repeatedly (a
+    present file is a no-op). Call ONCE, serially, before a parallel test run: :func:`autogen.ensure`
+    writes the file non-atomically, so concurrent xdist workers must not both materialise the same kernel."""
+    for short_name in KERNELS:
+        if short_name.split("/", 1)[0] not in DACE_TRACKS:
+            continue
+        if track is not None and not short_name.startswith(f"{track}/"):
+            continue
+        autogen.ensure(short_name, ("dace", ))
 
 
 def dace_kernel_names(track: Optional[str] = None) -> List[str]:

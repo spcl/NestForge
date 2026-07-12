@@ -18,6 +18,18 @@ import time
 from typing import Callable, Dict
 
 
+def quiet_fatal_signals() -> None:
+    """In the forked child, drop the inherited faulthandler. pytest installs faulthandler, which the child
+    inherits across ``os.fork``; when freshly-compiled code then segfaults, that dumps a Python traceback
+    (misleadingly showing the PARENT's call stack up to the fork) into the captured output. The parent
+    already reports the crash via the child's exit signal, so let the child die quietly instead."""
+    try:
+        import faulthandler
+        faulthandler.disable()
+    except Exception:
+        pass
+
+
 def run_isolated(work_fn: Callable[[], Dict], timeout: float = 900.0) -> Dict:
     """Run ``work_fn`` in a forked child and return its dict, or an ``{"error": ...}`` sentinel on
     crash / timeout / malformed output. The parent always survives.
@@ -29,6 +41,7 @@ def run_isolated(work_fn: Callable[[], Dict], timeout: float = 900.0) -> Dict:
     pid = os.fork()
     if pid == 0:  # child
         os.close(r)
+        quiet_fatal_signals()
         try:
             payload = json.dumps(work_fn())
         except BaseException as e:  # any Python-level failure comes back as an error (a segfault does not)

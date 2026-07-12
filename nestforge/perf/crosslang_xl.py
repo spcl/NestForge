@@ -152,8 +152,14 @@ class Cell:
     error: Optional[str] = None
 
 
-def run_kernel(kernel: "tsvc.TsvcKernel", languages: List[str], compilers: Dict[str, Dict[str, str]], strategy: str,
-               preset: str, reps: int, workdir: Path, opt_mode: str = "baseline") -> Dict:
+def run_kernel(kernel: "tsvc.TsvcKernel",
+               languages: List[str],
+               compilers: Dict[str, Dict[str, str]],
+               strategy: str,
+               preset: str,
+               reps: int,
+               workdir: Path,
+               opt_mode: str = "baseline") -> Dict:
     """Emit + compile + run + time one kernel across every requested language x compiler."""
     result = {"key": kernel.key, "corpus": kernel.corpus, "preset": preset, "host": socket.gethostname()}
     try:
@@ -190,7 +196,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel", languages: List[str], compilers: Dict[
             argtypes = c_argtypes(order, boundary)
         except Exception as e:
             rows.append(
-                asdict(Cell(lang, "-", "-", "-", False, float("inf"), float("inf"), 0.0, error=f"emit: {str(e)[:150]}")))
+                asdict(Cell(lang, "-", "-", "-", False, float("inf"), float("inf"), 0.0,
+                            error=f"emit: {str(e)[:150]}")))
             continue
         for fam_label, cc in compilers.get(lang, {}).items():
             fam = family_of(fam_label)
@@ -201,24 +208,40 @@ def run_kernel(kernel: "tsvc.TsvcKernel", languages: List[str], compilers: Dict[
                 ok, compile_us, err = run_compile([cc, *cflags, str(src), "-o", str(so)])
                 if not ok:
                     rows.append(
-                        asdict(Cell(lang, fam_label, fp_level, cost_model, False, float("inf"), float("inf"),
-                                    compile_us, error=err)))
+                        asdict(
+                            Cell(lang,
+                                 fam_label,
+                                 fp_level,
+                                 cost_model,
+                                 False,
+                                 float("inf"),
+                                 float("inf"),
+                                 compile_us,
+                                 error=err)))
                     continue
                 # Generous timeout: an XL timing run (268M elements x reps) is legitimately long; the fork
                 # makes an OOM/segfault kill only the child, and the timeout only catches a genuine runaway.
                 atol = flags.FP_ATOL[fp_level]
-                res = run_isolated(
-                    lambda so=so, atol=atol: cell_work(so, symbol, order, argtypes, boundary, validate_sizes,
-                                                       time_inputs, time_sizes, oracle, reps, atol),
-                    timeout=3600.0)
+                res = run_isolated(lambda so=so, atol=atol: cell_work(
+                    so, symbol, order, argtypes, boundary, validate_sizes, time_inputs, time_sizes, oracle, reps, atol),
+                                   timeout=3600.0)
                 if "error" in res:
                     rows.append(
-                        asdict(Cell(lang, fam_label, fp_level, cost_model, False, float("inf"), float("inf"),
-                                    compile_us, error=res["error"])))
+                        asdict(
+                            Cell(lang,
+                                 fam_label,
+                                 fp_level,
+                                 cost_model,
+                                 False,
+                                 float("inf"),
+                                 float("inf"),
+                                 compile_us,
+                                 error=res["error"])))
                 else:
                     rows.append(
-                        asdict(Cell(lang, fam_label, fp_level, cost_model, res["ok"], res["maxdiff"], res["time_us"],
-                                    compile_us)))
+                        asdict(
+                            Cell(lang, fam_label, fp_level, cost_model, res["ok"], res["maxdiff"], res["time_us"],
+                                 compile_us)))
     result["cells"] = rows
     result["sizes"] = {
         "validate": {
@@ -296,7 +319,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--preset", default="XL", choices=["S", "M", "L", "XL"])
     ap.add_argument("--compilers", default="auto")
     ap.add_argument("--strategy", default="skip-taskloops")
-    ap.add_argument("--opt-mode", default="baseline", choices=list(tsvc.OPT_MODES),
+    ap.add_argument("--opt-mode",
+                    default="baseline",
+                    choices=list(tsvc.OPT_MODES),
                     help="pre-split optimization mode (baseline / canonicalize)")
     ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--only", nargs="*", default=None)
@@ -330,7 +355,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     for i, kernel in enumerate(mine):
         workdir = Path(tempfile.mkdtemp(prefix=f"nf_xl_{kernel.corpus}_{kernel.key}_"))
         try:
-            res = run_kernel(kernel, args.languages, compilers, args.strategy, args.preset, args.reps, workdir,
+            res = run_kernel(kernel,
+                             args.languages,
+                             compilers,
+                             args.strategy,
+                             args.preset,
+                             args.reps,
+                             workdir,
                              opt_mode=args.opt_mode)
         except Exception as e:  # pragma: no cover
             res = {"key": kernel.key, "corpus": kernel.corpus, "skipped": f"crash: {type(e).__name__}: {str(e)[:160]}"}

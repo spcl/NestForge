@@ -15,6 +15,7 @@ import copy
 import ctypes
 import ctypes.util
 import functools
+import os
 from _ctypes import dlclose  # POSIX dlclose, to release a built .so mapping (BuiltSDFG.unload)
 import re
 import shutil
@@ -187,13 +188,27 @@ def resolve_runtime(name: str) -> OpenMPRuntime:
     return OpenMPRuntime(name=name, soname=soname)
 
 
+def env_library_dirs() -> List[str]:
+    """Directories the loader searches via environment variables -- where a spack-loaded (module) runtime
+    lives when it is NOT in the ldconfig cache. On Linux ``ctypes.util.find_library`` consults ldconfig
+    and the compiler, NOT ``LD_LIBRARY_PATH``, so a spack/module runtime reads as absent unless we probe
+    these explicitly. Covers the linker (``LIBRARY_PATH``) and the runtime loader (``LD_LIBRARY_PATH`` /
+    ``DYLD_*`` on macOS)."""
+    dirs: List[str] = []
+    for var in ("LD_LIBRARY_PATH", "LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
+        dirs += [d for d in os.environ.get(var, "").split(os.pathsep) if d]
+    return dirs
+
+
 def lib_findable(soname: str, lib_dir: Optional[str]) -> bool:
-    """True if ``lib<soname>`` can be found -- in a pinned ``lib_dir`` (any of ``.so`` / ``.a`` / ``.dylib``)
-    or on the system loader search path (ldconfig cache / ``LD_LIBRARY_PATH`` / ``DYLD_*``). Shared by the
-    OpenMP-runtime and vector-math-library installed-probes so the two never drift."""
-    if lib_dir:
-        d = Path(lib_dir)
-        if any((d / f"lib{soname}{ext}").exists() for ext in (".so", ".a", ".dylib")):
+    """True if ``lib<soname>`` can be found -- in a pinned ``lib_dir``, on an environment loader path
+    (``LD_LIBRARY_PATH`` / ``LIBRARY_PATH``, where spack modules put their runtimes off the ldconfig
+    cache), or on the system loader search path (ldconfig cache / compiler default). Matches a versioned
+    ``.so.N`` as well as a bare ``.so`` / ``.a`` / ``.dylib``. Shared by the OpenMP-runtime and
+    vector-math-library installed-probes so the two never drift."""
+    for d in ([lib_dir] if lib_dir else []) + env_library_dirs():
+        p = Path(d)
+        if (p / f"lib{soname}.a").exists() or (p / f"lib{soname}.dylib").exists() or any(p.glob(f"lib{soname}.so*")):
             return True
     return ctypes.util.find_library(soname) is not None
 

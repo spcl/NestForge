@@ -28,7 +28,7 @@ from dace.sdfg import nodes
 from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
                              ArenaConfig, prune_to_valid_combinations, resolve_runtime, compare_link_modes, LinkTimings,
                              available_linkers, fastest_linker, linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML,
-                             vectorlib_installed, BuildOptions, set_fast_libnodes)
+                             vectorlib_installed, BuildOptions, set_fast_libnodes, runtime_installed)
 
 
 def kernels():
@@ -195,6 +195,8 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
         pytest.skip(f"{compiler} not on PATH")
     # nvc++ links only libnvomp (its -mp native runtime); everyone else uses the mandated libomp.
     rt = LIBNVOMP if compiler_family(compiler) == "nvidia" else LIBOMP
+    if not runtime_installed(rt):
+        pytest.skip(f"{rt.name} not installed here (no OpenMP runtime on PATH/LD_LIBRARY_PATH/ldconfig)")
     assert rt.compatible(compiler), f"{compiler} must be able to link {rt.name}"
     n = 256
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
@@ -339,6 +341,8 @@ def test_prune_removes_uninstalled_compiler_with_warning():
 def test_prune_removes_uninstalled_runtime_with_warning(monkeypatch):
     """A runtime whose library is not found is dropped with a warning. Only libnvomp is forced absent (via
     monkeypatch); g++ keeps libomp, which is installed on any toolchain host (libomp-dev is in setup_apt)."""
+    if not runtime_installed(LIBOMP):
+        pytest.skip("libomp not installed here; this test needs it present so g++ keeps it after pruning")
     import nestforge.build as B
     real = B.runtime_installed
     monkeypatch.setattr(B, "runtime_installed", lambda rt: rt.soname != "nvomp" and real(rt))
@@ -352,6 +356,8 @@ def test_prune_default_config_yields_gcc_on_libomp():
     """The default arena (g++/clang++/nvc++/icpx x libomp) pruned on this machine keeps at least the
     gcc-on-libomp combo; uninstalled toolchains (e.g. icpx without setvars) just warn and drop out (not
     asserted here since which toolchains are present is host-dependent)."""
+    if shutil.which("g++") is None or not runtime_installed(LIBOMP):
+        pytest.skip("needs g++ + an installed libomp (absent on a bare login node without the toolchain module)")
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

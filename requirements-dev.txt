@@ -21,6 +21,8 @@ pytest-xdist
 sympy
 # perf/plot_*.py render the driver JSON to PNG/CSV (Agg backend, headless)
 matplotlib
-# formatters (also the CI format gate): yapf (python, 120) + clang-format (C/C++, 160)
-yapf
+# formatters (also the CI format gate): yapf (python, 120) + clang-format (C/C++, 160). yapf is PINNED:
+# its wrapping heuristics change between releases, so an unpinned yapf makes the format gate fail on a
+# machine whose yapf differs from the one the tree was formatted with.
+yapf==0.43.0
 clang-format
