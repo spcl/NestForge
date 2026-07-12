@@ -46,9 +46,8 @@ from nestforge import tsvc
 from nestforge.arena import CTYPE, maxdiff, make_inputs, run_oracle
 from nestforge.build import compiler_family, compiler_version, resolve_runtime
 from nestforge.perf import flags
-from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
-from nestforge.strategies import get_strategy
+from nestforge.multinest import extract_all_nests
 from nestforge.translate import emit_sources, prepare
 
 
@@ -245,6 +244,25 @@ class Cell:
     error: Optional[str] = None
 
 
+@dataclass
+class NestUnit:
+    """One extracted nest of a kernel, with everything a cell needs to compile + validate + time it.
+
+    A single-nest kernel has one :class:`NestUnit` whose ``name``/``symbol`` are the plain ``<key>`` /
+    ``<key>_fp64`` (unchanged from the old path); a multi-nest kernel has one per nest with distinct
+    ``<key>_n<idx>`` names, so each binds its own entry point."""
+    idx: int
+    name: str
+    symbol: str
+    boundary: object
+    sizes: Dict[str, int]
+    inputs: Dict[str, np.ndarray]
+    oracle: Dict[str, np.ndarray]
+    csrc: Path
+    order: List[str]
+    argtypes: list
+
+
 def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
     t0 = time.perf_counter()
     p = subprocess.run(cmd, capture_output=True, text=True)
@@ -319,6 +337,22 @@ def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List
     if "error" in res:
         return Cell(family, label, flags, False, float("inf"), float("inf"), compile_us, error=res["error"])
     return Cell(family, label, flags, res["ok"], res["maxdiff"], res["time_us"], compile_us)
+
+
+def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: int, atol: float, family: str,
+                       label: str, workdir: Path) -> Cell:
+    """One (compiler, flags) cell SUMMED over every nest of the kernel: compile + time each nest's own
+    source at ``cflags`` (each nest a distinct symbol), then aggregate into a single :class:`Cell` whose
+    ``time_us`` / ``compile_us`` are the sums, ``ok`` iff every nest validated, and ``maxdiff`` the max
+    over nests. A single-nest kernel returns exactly the old single measurement (a sum of one), so the
+    148 single-nest kernels' cells are byte-identical to before."""
+    per = [
+        measure_nest(cc, u.csrc, cflags, u.symbol, u.order, u.argtypes, u.boundary, u.inputs, u.sizes, u.oracle, reps,
+                     atol, family, label, workdir) for u in units
+    ]
+    return Cell(family, label, cflags, all(c.ok for c in per), max(c.maxdiff for c in per),
+                sum(c.time_us for c in per), sum(c.compile_us for c in per),
+                error=next((c.error for c in per if c.error), None))
 
 
 # --- native baseline (item e) -----------------------------------------------------------------------
@@ -408,43 +442,51 @@ def select_c_source(sources: List[Path]) -> Path:
 
 def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy: str, opt_mode: str, seed: int,
                reps: int, random_sizes: bool, workdir: Path) -> Dict:
-    """Run one kernel through all three columns for every toolchain; return the JSON-able result dict."""
+    """Run one kernel through all three columns for every toolchain; return the JSON-able result dict.
+
+    A kernel may split into several compute nests (its work is the SUM of its nests): every ``default`` /
+    flag-matrix cell compiles + times its (source, flags) for EACH nest and sums the per-nest times, so a
+    cell just aggregates its nests and the result/row schema is unchanged. The whole-kernel native
+    ``.cpp`` baseline stays a single measurement (it already covers all the kernel's work); it borrows the
+    first nest's buffers for sizing, mirroring ``tsvc_full.build_opt_context``."""
     result: Dict = {"key": kernel.key, "regime": kernel.regime, "seed": seed, "host": socket.gethostname()}
     try:
-        sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
-        refs = get_strategy(strategy)(sdfg)
-        if not refs:
+        nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
+        if not nests:
             return {**result, "skipped": "no compute nest (strategy returned nothing)"}
-        if len(refs) > 1:
-            # The native baseline is the whole-kernel .cpp, so it is only comparable to a SINGLE
-            # extracted nest. Rather than silently measure refs[0] and mislabel it as the kernel,
-            # skip multi-nest kernels explicitly (a per-nest arena is a separate feature).
-            return {**result, "skipped": f"{len(refs)} compute nests; multi-nest arena not supported"}
-        parent, node = refs[0]
-        boundary = extract_nest_to_sdfg(parent, node, name=kernel.key)
-        sizes = tsvc.sample_sizes(kernel, boundary, seed=seed, random_sizes=random_sizes)
-        prep = prepare(boundary, kernel.key, workdir, sizes=sizes)
-        inputs = make_inputs(boundary, sizes, seed=seed)
-        oracle = run_oracle(prep, boundary, inputs, sizes)
-        csrc = select_c_source(emit_sources(prep, workdir))
-        symbol = f"{kernel.key}_fp64"
-        order = abi_order(csrc.read_text(), symbol)
-        argtypes = c_argtypes(order, boundary)
+        units: List[NestUnit] = []
+        for idx, name, symbol, boundary in nests:
+            sizes = tsvc.sample_sizes(kernel, boundary, seed=seed, random_sizes=random_sizes)
+            nest_dir = workdir / f"n{idx}"
+            prep = prepare(boundary, name, nest_dir, sizes=sizes)
+            inputs = make_inputs(boundary, sizes, seed=seed)
+            oracle = run_oracle(prep, boundary, inputs, sizes)
+            csrc = select_c_source(emit_sources(prep, nest_dir))
+            order = abi_order(csrc.read_text(), symbol)
+            units.append(
+                NestUnit(idx, name, symbol, boundary, sizes, inputs, oracle, csrc, order, c_argtypes(order, boundary)))
     except Exception as e:
         return {**result, "skipped": f"{type(e).__name__}: {str(e)[:160]}"}
 
-    result["sizes"] = {k: int(v) for k, v in sizes.items()}
+    # union of per-nest sizes (a shared shape symbol resolves to the same value in every nest; leaked
+    # indices are 0). For a single-nest kernel this is exactly that nest's sizes (schema unchanged).
+    merged: Dict[str, int] = {}
+    for u in units:
+        merged.update(u.sizes)
+    result["sizes"] = {k: int(v) for k, v in merged.items()}
+    # per-kernel nest roster (name/symbol), so the whole-program link can verify each nest's symbol.
+    result["nests"] = [{"idx": u.idx, "name": u.name, "symbol": u.symbol} for u in units]
     rows: List[Dict] = []
     for tc in toolchains:
-        cells: List[Cell] = []
         fam = tc.fp_family  # flag-matrix / FP family (intel != llvm); also the cell's compiler label
-        default = measure_nest(tc.cc, csrc, default_flags(fam), symbol, order, argtypes, boundary, inputs, sizes,
-                               oracle, reps, 1e-6, fam, "default", workdir)
-        for level, model, cflags in flags.flag_matrix(fam):
-            cells.append(
-                measure_nest(tc.cc, csrc, cflags, symbol, order, argtypes, boundary, inputs, sizes, oracle, reps,
-                             flags.FP_ATOL[level], fam, f"{level}/{model}", workdir))
-        native = measure_native(tc.cxx, kernel, boundary, inputs, sizes, oracle, reps, fam, workdir)
+        default = measure_over_nests(tc.cc, units, default_flags(fam), reps, 1e-6, fam, "default", workdir)
+        cells = [
+            measure_over_nests(tc.cc, units, cflags, reps, flags.FP_ATOL[level], fam, f"{level}/{model}", workdir)
+            for level, model, cflags in flags.flag_matrix(fam)
+        ]
+        # native is the whole-kernel .cpp -> one measurement on the first nest's buffers (see docstring).
+        native = measure_native(tc.cxx, kernel, units[0].boundary, units[0].inputs, units[0].sizes, units[0].oracle,
+                                reps, fam, workdir)
         correct = [c for c in cells if c.ok]
         winner = min(correct, key=lambda c: c.time_us) if correct else None
         rows.append({
@@ -573,7 +615,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
     link_dir = seed_dir / "link"
     link_dir.mkdir(exist_ok=True)
 
-    archives: List[Path] = []
+    archives: List[Tuple[Path, List[str]]] = []  # (archive, [nest symbol, ...]) -- multi-nest kernels list all
     verified, failed = 0, 0
     sum_win = sum_nat = sum_dfl = 0.0
     notes: List[str] = []
@@ -583,27 +625,46 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
             notes.append(f"`{k['key']}` — no correct winner cell; excluded from the linked program")
             continue
         tc = by_name.get(win["compiler"]) or next(iter(toolchains), None)
+        # A kernel may split into several nests; the winning flags apply to all of them (the winner cell
+        # is one flag set summed over nests). Compile EACH nest's winning-flags object and archive them all
+        # into one lib<key>.a; the whole-program verify then checks every nest symbol.
         try:
             kernel = tsvc.iter_tsvc_kernels(only=[k["key"]])[0]
-            sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
-            parent, node = get_strategy(strategy)(sdfg)[0]
-            boundary = extract_nest_to_sdfg(parent, node, name=kernel.key)
-            sizes = {s: k["sizes"][s] for s in boundary.symbols}
-            prep = prepare(boundary, kernel.key, link_dir, sizes=sizes)
-            csrc = select_c_source(emit_sources(prep, link_dir))
-            obj = link_dir / f"{kernel.key}.o"
+            nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
+        except Exception as e:
+            notes.append(f"`{k['key']}` — extract failed: {type(e).__name__}: {str(e)[:120]}")
+            continue
+        cflags = [f for f in win["flags"] if f != "-shared"]
+        objs: List[Path] = []
+        symbols: List[str] = []
+        compile_note: Optional[str] = None
+        for idx, name, symbol, boundary in nests:
+            try:
+                sizes = {s: k["sizes"][s] for s in boundary.symbols}
+                prep = prepare(boundary, name, link_dir, sizes=sizes)
+                csrc = select_c_source(emit_sources(prep, link_dir))
+                obj = link_dir / f"{name}.o"
+                if obj.exists():
+                    obj.unlink()  # never let a stale object from an earlier --link run be archived silently
+                cok, _, cerr = run_compile([tc.cc, *cflags, "-c", str(csrc), "-o", str(obj)])
+                if not cok:
+                    compile_note = f"nest {name}: {cerr}"
+                    break
+                objs.append(obj)
+                symbols.append(symbol)
+            except Exception as e:
+                compile_note = f"nest {name}: {type(e).__name__}: {str(e)[:120]}"
+                break
+        if compile_note is not None:
+            notes.append(f"`{k['key']}` — winner compile failed: {compile_note}")
+            continue
+        try:
             archive = link_dir / f"lib{kernel.key}.a"
-            cflags = [f for f in win["flags"] if f != "-shared"]
-            if obj.exists():
-                obj.unlink()  # never let a stale object from an earlier --link run be archived silently
-            cok, _, cerr = run_compile([tc.cc, *cflags, "-c", str(csrc), "-o", str(obj)])
-            if not cok:
-                notes.append(f"`{k['key']}` — winner compile failed: {cerr}")
-                continue
             if archive.exists():
                 archive.unlink()
-            subprocess.run([shutil.which("ar") or "ar", "rcs", str(archive), str(obj)], check=True, capture_output=True)
-            archives.append(archive)
+            subprocess.run([shutil.which("ar") or "ar", "rcs", str(archive), *[str(o) for o in objs]], check=True,
+                           capture_output=True)
+            archives.append((archive, symbols))
         except Exception as e:
             notes.append(f"`{k['key']}` — assemble failed: {type(e).__name__}: {str(e)[:120]}")
             continue
@@ -620,18 +681,18 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
     if archives:
         cmd = [
             linker, "-shared", "-fPIC", "-o",
-            str(whole), "-Wl,--whole-archive", *[str(a) for a in archives], "-Wl,--no-whole-archive"
+            str(whole), "-Wl,--whole-archive", *[str(a) for a, _ in archives], "-Wl,--no-whole-archive"
         ]
         ok, _, err = run_compile(cmd)
         if ok:
             lib = ctypes.CDLL(str(whole))
-            for a in archives:
-                key = a.stem[3:]  # "libSNNN.a" -> "SNNN"
-                try:
-                    _ = lib[f"{key}_fp64"]
-                    verified += 1
-                except (AttributeError, ValueError):
-                    failed += 1
+            for _, symbols in archives:
+                for symbol in symbols:  # every nest of the kernel must resolve in the whole-program .so
+                    try:
+                        _ = lib[symbol]
+                        verified += 1
+                    except (AttributeError, ValueError):
+                        failed += 1
         else:
             notes.append(f"whole-program link failed: {err}")
 

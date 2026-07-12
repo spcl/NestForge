@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from nestforge import tsvc
 from nestforge.perf import calloverhead as co
+from nestforge.perf.tsvc_arena import discover_toolchains
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLOT_CALLOVERHEAD = REPO_ROOT / "perf" / "plot_calloverhead.py"
@@ -88,3 +90,20 @@ def test_plot_calloverhead_smoke(tmp_path):
     assert "s000" in keys and "s112" in keys and "bad" not in keys
     s112 = next(r for r in rows if r["key"] == "s112")
     assert s112["external_us"] == "" and s112["call_overhead"] == ""  # non-finite -> empty, not a crash
+
+
+def test_calloverhead_multinest_s152_sums_over_nests(tmp_path):
+    """The full build+time path on a MULTI-nest kernel (s152 = 2 compute nests): it is measured (not
+    skipped) and each variant's per-call time is the SUM over both nests, so the schema is unchanged and
+    the overhead ratios are finite. Gated on a C compiler being present (mirrors the driver tests)."""
+    tcs = discover_toolchains("gcc")
+    if not tcs:
+        pytest.skip("no gcc")
+    cc, family = co.resolve_cc("gcc")
+    k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
+    res = co.run_kernel(k, cc, family, "baseline", "S", inner=200, reps=3, workdir=tmp_path)
+    assert "skipped" not in res, res.get("skipped")
+    # inline is the sum over both nests' per-call cost -> a real positive time; the ratios divide finite by finite.
+    assert res["inline_us"] and res["inline_us"] > 0.0
+    assert res["external_us"] and res["external_us"] > 0.0
+    assert res["call_overhead"] and res["call_overhead"] > 0.0

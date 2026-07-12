@@ -35,6 +35,7 @@ import statistics
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -42,13 +43,12 @@ import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a c
 
 from nestforge import tsvc
 from nestforge.arena import make_inputs
-from nestforge.build import ar_for, compiler_family, fat_lto_flags
-from nestforge.extract import extract_nest_to_sdfg
+from nestforge.build import ar_for, fat_lto_flags
 from nestforge.isolation import run_isolated
+from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import (abi_order, c_argtypes, discover_toolchains, my_slice, rank_and_size)
 from nestforge.perf.tsvc_full import c_call_args
-from nestforge.strategies import get_strategy
 from nestforge.translate import emit_sources, prepare
 
 
@@ -155,31 +155,68 @@ def build_and_time(cc: str, family: str, kernel_c: Path, symbol: str, params: st
     return out
 
 
+@dataclass
+class CoNest:
+    """One extracted nest of a kernel plus its emitted C source and parsed C signature. A single-nest
+    kernel has one (named ``<key>`` / symbol ``<key>_fp64``); a multi-nest kernel one per ``<key>_n<idx>``."""
+    idx: int
+    name: str
+    symbol: str
+    boundary: object
+    sizes: Dict[str, int]
+    src: Path
+    order: List[str]
+    argtypes: list
+    params: str
+    nest_dir: Path
+
+
 def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, preset: str, inner: int, reps: int,
                workdir: Path) -> Dict:
-    """Emit + build + time one kernel; return per-variant per-call times and the overhead ratios."""
+    """Emit + build + time one kernel; return per-variant per-call times and the overhead ratios.
+
+    A kernel may split into several compute nests; the call cost of the kernel is the SUM of its nests'
+    calls, so each variant's per-call time (inline / external / external-lto) is summed over nests before
+    the overhead ratios are taken. A single-nest kernel is exactly the old single measurement."""
     result = {"key": kernel.key, "corpus": kernel.corpus, "compiler": family, "host": socket.gethostname()}
     try:
-        sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
-        refs = get_strategy("skip-taskloops")(sdfg)
-        if len(refs) != 1:
-            return {**result, "skipped": f"{len(refs)} compute nests (need 1)"}
-        boundary = extract_nest_to_sdfg(refs[0][0], refs[0][1], name=kernel.key)
-        sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
-        prep = prepare(boundary, kernel.key, workdir, sizes=sizes)
-        symbol = f"{kernel.key}_fp64"
-        src = next(s for s in emit_sources(prep, workdir, target="c") if s.suffix == ".c" and "pluto" not in s.name)
-        text = src.read_text()
-        order = abi_order(text, symbol)
-        argtypes = c_argtypes(order, boundary)
-        params = signature_params(text, symbol)
+        nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), "skip-taskloops", kernel.key)
+        if not nests:
+            return {**result, "skipped": "no compute nest"}
+        units: List[CoNest] = []
+        for idx, name, symbol, boundary in nests:
+            sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
+            nest_dir = workdir / f"n{idx}"
+            prep = prepare(boundary, name, nest_dir, sizes=sizes)
+            src = next(
+                s for s in emit_sources(prep, nest_dir, target="c") if s.suffix == ".c" and "pluto" not in s.name)
+            text = src.read_text()
+            order = abi_order(text, symbol)
+            units.append(
+                CoNest(idx, name, symbol, boundary, sizes, src, order, c_argtypes(order, boundary),
+                       signature_params(text, symbol), nest_dir))
     except Exception as e:  # noqa: BLE001
         return {**result, "skipped": f"emit: {type(e).__name__}: {str(e)[:150]}"}
 
-    # the trampoline forwards the kernel's parameters by name; abi_order gives exactly those names.
-    times = build_and_time(cc, family, src, symbol, params, order, order, argtypes, boundary, sizes, inner, reps,
-                           workdir)
-    inline, ext, extlto = times.get("inline"), times.get("external"), times.get("external_lto")
+    # Time each variant per nest; the kernel's per-variant call cost is the SUM over its nests. A variant
+    # is None for the kernel if ANY nest could not build/time it (a missing part cannot be summed).
+    per_variant: Dict[str, List[Optional[float]]] = {"inline": [], "external": [], "external_lto": []}
+    multi = len(units) > 1
+    for u in units:
+        # the trampoline forwards the kernel's parameters by name; abi_order gives exactly those names.
+        times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.order, u.argtypes, u.boundary, u.sizes,
+                               inner, reps, u.nest_dir)
+        for v in per_variant:
+            per_variant[v].append(times.get(v))
+        for k in ("inline_error", "external_error", "external_lto_error"):
+            if k in times:
+                result[f"n{u.idx}_{k}" if multi else k] = times[k]
+
+    def total(variant: str) -> Optional[float]:
+        vals = per_variant[variant]
+        return sum(vals) if vals and all(x is not None for x in vals) else None
+
+    inline, ext, extlto = total("inline"), total("external"), total("external_lto")
     result.update({
         "inline_us": inline,
         "external_us": ext,
@@ -187,9 +224,6 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
         "call_overhead": (ext / inline if inline and ext else None),  # external / inline (>1 = real cost)
         "lto_overhead": (extlto / inline if inline and extlto else None),  # external-lto / inline (~1 = recovered)
     })
-    for k in ("inline_error", "external_error", "external_lto_error"):
-        if k in times:
-            result[k] = times[k]
     return result
 
 
@@ -231,7 +265,8 @@ def render_tables(out: Path) -> str:
         lines += [f"**Geomean LTO overhead (external-lto / inline):** {glo:.4f}x over {len(lto_ratios)} kernels "
                   "(closer to 1.0 = LTO recovers more of the inlining)."]
     if skipped:
-        lines += ["", "## skipped", ""] + [f"- `{r['key']}` — {r['skipped']}" for r in sorted(skipped, key=lambda x: x['key'])]
+        lines += ["", "## skipped", ""
+                  ] + [f"- `{r['key']}` — {r['skipped']}" for r in sorted(skipped, key=lambda x: x['key'])]
     report = "\n".join(lines) + "\n"
     (out / "tables.md").write_text(report)
     return report

@@ -32,12 +32,11 @@ import dace  # noqa: F401 -- ensure the real DaCe package is importable
 
 from nestforge import tsvc
 from nestforge.arena import maxdiff, make_inputs, run_oracle
-from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
+from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import (Toolchain, c_argtypes, call_c, discover_toolchains, rank_and_size, my_slice,
                                        run_compile)
-from nestforge.strategies import get_strategy
 from nestforge.translate import emit_sources, prepare
 
 #: language -> (numpyto target, source suffix, per-family compiler-exe candidates). numpyto has no
@@ -152,6 +151,55 @@ class Cell:
     error: Optional[str] = None
 
 
+@dataclass
+class XlNest:
+    """One extracted nest of a kernel plus its per-nest oracle / sizes / timing buffers. The per-language
+    emitted source (which differs per nest) is parsed lazily in :func:`run_kernel`."""
+    idx: int
+    name: str
+    symbol: str
+    boundary: object
+    prep: object
+    nest_dir: Path
+    time_sizes: Dict[str, int]
+    validate_sizes: Dict[str, int]
+    oracle: Dict[str, object]
+    time_inputs: Dict[str, object]
+    names: List[str]  # SDFG array + size names, for the Fortran leading-underscore un-munge
+
+
+def measure_xl_cell(cc: str, lang: str, fam_label: str, fp_level: str, cost_model: str, cflags: List[str],
+                    units: List[XlNest], per_nest_src: List, reps: int, workdir: Path) -> Cell:
+    """One (language, compiler, FP-level, cost-model) cell SUMMED over every nest of the kernel: compile +
+    validate + time each nest's own source at ``cflags`` and aggregate -- ``time_us`` / ``compile_us`` are
+    the sums, ``ok`` iff every nest validated, ``maxdiff`` the max over nests. A compile/run failure on any
+    nest makes the cell not-ok with an infinite time (the same shape the old single-nest failure cell had).
+    A single-nest kernel returns exactly the old single measurement (a sum of one)."""
+    atol = flags.FP_ATOL[fp_level]
+    tag = f"{fam_label}_{fp_level}_{cost_model}"
+    ok_all, md_max, time_sum, compile_sum, err = True, 0.0, 0.0, 0.0, None
+    for u, (src, order, argtypes) in zip(units, per_nest_src):
+        so = workdir / f"{u.name}_{lang}_{tag}.so"
+        cok, compile_us, cerr = run_compile([cc, *cflags, str(src), "-o", str(so)])
+        compile_sum += compile_us
+        if not cok:
+            ok_all, md_max, time_sum, err = False, float("inf"), float("inf"), cerr
+            break
+        # Generous timeout: an XL timing run (268M elements x reps) is legitimately long; the fork makes an
+        # OOM/segfault kill only the child, and the timeout only catches a genuine runaway.
+        res = run_isolated(lambda u=u, order=order, argtypes=argtypes, so=so: cell_work(
+            so, u.symbol, order, argtypes, u.boundary, u.validate_sizes, u.time_inputs, u.time_sizes, u.oracle, reps,
+            atol),
+                           timeout=3600.0)
+        if "error" in res:
+            ok_all, md_max, time_sum, err = False, float("inf"), float("inf"), res["error"]
+            break
+        ok_all = ok_all and res["ok"]
+        md_max = max(md_max, res["maxdiff"])
+        time_sum += res["time_us"]
+    return Cell(lang, fam_label, fp_level, cost_model, ok_all, md_max, time_sum, compile_sum, error=err)
+
+
 def run_kernel(kernel: "tsvc.TsvcKernel",
                languages: List[str],
                compilers: Dict[str, Dict[str, str]],
@@ -160,40 +208,48 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
                reps: int,
                workdir: Path,
                opt_mode: str = "baseline") -> Dict:
-    """Emit + compile + run + time one kernel across every requested language x compiler."""
+    """Emit + compile + run + time one kernel across every requested language x compiler.
+
+    A kernel may split into several compute nests (its work is the SUM of its nests): every
+    (language, compiler, FP-level, cost-model) cell compiles + times each nest and sums the per-nest
+    times, so a cell just aggregates its nests and the result/cell schema is unchanged."""
     result = {"key": kernel.key, "corpus": kernel.corpus, "preset": preset, "host": socket.gethostname()}
     try:
-        sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
-        refs = get_strategy(strategy)(sdfg)
-        if not refs:
+        nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
+        if not nests:
             return {**result, "skipped": "no compute nest"}
-        if len(refs) > 1:
-            return {**result, "skipped": f"{len(refs)} compute nests; multi-nest not supported"}
-        parent, node = refs[0]
-        boundary = extract_nest_to_sdfg(parent, node, name=kernel.key)
-        # Validate correctness at a SMALL preset (fast pure-Python oracle in the parent); time at the
-        # requested preset. The compiled .so is size-agnostic (LEN is a runtime arg), so both use it.
-        time_sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
-        validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_preset(preset))
-        prep = prepare(boundary, kernel.key, workdir, sizes=validate_sizes)
-        oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
-        # Build the large XL timing buffers ONCE per kernel; every cell's fork COW-inherits them (timing
-        # does not validate output, so the same buffers are reused across cells -- no per-cell re-fill).
-        time_inputs = make_inputs(boundary, time_sizes, seed=0)
+        units: List[XlNest] = []
+        for idx, name, symbol, boundary in nests:
+            # Validate correctness at a SMALL preset (fast pure-Python oracle in the parent); time at the
+            # requested preset. The compiled .so is size-agnostic (LEN is a runtime arg), so both use it.
+            time_sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
+            validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_preset(preset))
+            nest_dir = workdir / f"n{idx}"
+            prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
+            oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
+            # Build the large timing buffers ONCE per nest; every cell's fork COW-inherits them (timing does
+            # not validate output, so the same buffers are reused across cells -- no per-cell re-fill).
+            time_inputs = make_inputs(boundary, time_sizes, seed=0)
+            names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
+            units.append(
+                XlNest(idx, name, symbol, boundary, prep, nest_dir, time_sizes, validate_sizes, oracle, time_inputs,
+                       names))
     except Exception as e:
         return {**result, "skipped": f"{type(e).__name__}: {str(e)[:160]}"}
 
-    symbol = f"{kernel.key}_fp64"
-    names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
     rows: List[Dict] = []
     for lang in languages:
         spec = _LANGS[lang]
+        # Emit + parse each nest's source for this language up front; any nest failing drops the whole
+        # language (one error cell), mirroring the old single-nest emit-failure path.
         try:
-            src = next(s for s in emit_sources(prep, workdir, target=spec["target"])
-                       if s.suffix == spec["suffix"] and "pluto" not in s.name)
-            order = signature_order(src.read_text(), symbol, lang)
-            order = fortran_unmunge(order, names) if lang == "fortran" else order
-            argtypes = c_argtypes(order, boundary)
+            per_nest_src = []
+            for u in units:
+                src = next(s for s in emit_sources(u.prep, u.nest_dir, target=spec["target"])
+                           if s.suffix == spec["suffix"] and "pluto" not in s.name)
+                order = signature_order(src.read_text(), u.symbol, lang)
+                order = fortran_unmunge(order, u.names) if lang == "fortran" else order
+                per_nest_src.append((src, order, c_argtypes(order, u.boundary)))
         except Exception as e:
             rows.append(
                 asdict(Cell(lang, "-", "-", "-", False, float("inf"), float("inf"), 0.0,
@@ -203,54 +259,25 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
             fam = family_of(fam_label)
             # Sweep the FP-precision level x vectorizer cost-model matrix for this compiler+language.
             for fp_level, cost_model, cflags in flags.flag_matrix(fam, lang):
-                tag = f"{fam_label}_{fp_level}_{cost_model}"
-                so = workdir / f"{kernel.key}_{lang}_{tag}.so"
-                ok, compile_us, err = run_compile([cc, *cflags, str(src), "-o", str(so)])
-                if not ok:
-                    rows.append(
-                        asdict(
-                            Cell(lang,
-                                 fam_label,
-                                 fp_level,
-                                 cost_model,
-                                 False,
-                                 float("inf"),
-                                 float("inf"),
-                                 compile_us,
-                                 error=err)))
-                    continue
-                # Generous timeout: an XL timing run (268M elements x reps) is legitimately long; the fork
-                # makes an OOM/segfault kill only the child, and the timeout only catches a genuine runaway.
-                atol = flags.FP_ATOL[fp_level]
-                res = run_isolated(lambda so=so, atol=atol: cell_work(
-                    so, symbol, order, argtypes, boundary, validate_sizes, time_inputs, time_sizes, oracle, reps, atol),
-                                   timeout=3600.0)
-                if "error" in res:
-                    rows.append(
-                        asdict(
-                            Cell(lang,
-                                 fam_label,
-                                 fp_level,
-                                 cost_model,
-                                 False,
-                                 float("inf"),
-                                 float("inf"),
-                                 compile_us,
-                                 error=res["error"])))
-                else:
-                    rows.append(
-                        asdict(
-                            Cell(lang, fam_label, fp_level, cost_model, res["ok"], res["maxdiff"], res["time_us"],
-                                 compile_us)))
+                rows.append(
+                    asdict(
+                        measure_xl_cell(cc, lang, fam_label, fp_level, cost_model, cflags, units, per_nest_src, reps,
+                                        workdir)))
     result["cells"] = rows
+    # union of per-nest sizes (a shared shape symbol resolves to the same value in every nest).
+    merged_validate: Dict[str, int] = {}
+    merged_time: Dict[str, int] = {}
+    for u in units:
+        merged_validate.update(u.validate_sizes)
+        merged_time.update(u.time_sizes)
     result["sizes"] = {
         "validate": {
             k: int(v)
-            for k, v in validate_sizes.items()
+            for k, v in merged_validate.items()
         },
         "time": {
             k: int(v)
-            for k, v in time_sizes.items()
+            for k, v in merged_time.items()
         }
     }
     return result
@@ -277,7 +304,8 @@ def render_tables(out: Path) -> str:
         f"{len(done)} kernels measured, {len(skipped)} skipped. Each cell is a compiler x language x "
         "FP-precision-level x vectorizer-cost-model point; the winner is the fastest cell that validates at "
         "its level's tolerance. `fp speedup` = strict-ieee time / winner time.", "",
-        "| kernel | corpus | preset | language | compiler | winner fp/cost | strict maxdiff | winner (us) | fp speedup |",
+        "| kernel | corpus | preset | language | compiler | winner fp/cost | strict maxdiff | winner (us) "
+        "| fp speedup |",
         "|" + "---|" * 9
     ]
     ok_by_lang: Dict[str, int] = {}

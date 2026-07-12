@@ -12,6 +12,7 @@ from nestforge import tsvc
 from nestforge.emit_numpy import normalize_casts
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
+from nestforge.multinest import extract_all_nests
 from nestforge.perf import crosslang_xl, flags, staticlib_overhead, tsvc_arena
 from nestforge.strategies import get_strategy
 
@@ -374,3 +375,71 @@ def test_tables_and_link_roundtrip(tmp_path):
     link_report = tsvc_arena.link_whole_program(out, 0, tcs, "baseline", "skip-taskloops")
     assert "symbols verified present" in link_report
     assert (seed_dir / "link" / "libtsvc_all.so").exists()
+
+
+# --- multi-nest kernels (s152 splits into 2 compute nests) --------------------------------------------
+def test_extract_all_nests_single_and_multi():
+    """The shared helper preserves the single-nest name/symbol (``<key>`` / ``<key>_fp64`` -- so the 148
+    single-nest kernels are unchanged) and gives each nest of a multi-nest kernel a distinct ``_n<idx>``
+    entry point, each extracted from its own FRESH SDFG (mutation-safe)."""
+    single = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s000"])[0], "baseline"),
+                               "skip-taskloops", "s000")
+    assert [(i, n, s) for i, n, s, _ in single] == [(0, "s000", "s000_fp64")]
+    multi = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s152"])[0], "baseline"),
+                              "skip-taskloops", "s152")
+    assert [(i, n, s) for i, n, s, _ in multi] == [(0, "s152_n0", "s152_n0_fp64"), (1, "s152_n1", "s152_n1_fp64")]
+
+
+def test_arena_multinest_s152_aggregates_and_validates(tmp_path):
+    """A multi-nest kernel is measured (not skipped): every cell aggregates the SUM over its nests, the
+    schema is unchanged, and the default + winner cells validate (both nests bit-exact at strict flags)."""
+    tcs = tsvc_arena.discover_toolchains("gcc")
+    if not tcs:
+        pytest.skip("no gcc")
+    k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
+    res = tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", seed=0, reps=3, random_sizes=False,
+                                workdir=tmp_path)
+    assert "skipped" not in res, res.get("skipped")
+    # the roster records both nests with distinct entry points.
+    assert [(n["name"], n["symbol"]) for n in res["nests"]] == [("s152_n0", "s152_n0_fp64"),
+                                                                ("s152_n1", "s152_n1_fp64")]
+    row = res["rows"][0]
+    assert len(row["cells"]) == len(flags.flag_matrix("gnu"))  # one aggregated cell per flag combo, still 12
+    assert row["default"]["ok"]  # both nests validate at the default flags
+    assert row["winner"] and row["winner"]["ok"] and row["winner"]["time_us"] > 0.0  # a summed-over-nests winner
+
+
+def test_crosslang_multinest_s152_aggregates_and_validates(tmp_path):
+    """crosslang measures the multi-nest kernel (not skipped); each (lang, compiler, fp, cost) cell sums
+    over both nests and the strict-ieee rung is bit-exact (both nests reproduce the oracle exactly)."""
+    tcs = tsvc_arena.discover_toolchains("gcc")
+    compilers = crosslang_xl.lang_compilers(["c"], tcs)
+    if not compilers.get("c"):
+        pytest.skip("no gcc C compiler")
+    k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
+    res = crosslang_xl.run_kernel(k, ["c"], compilers, "skip-taskloops", "S", reps=2, workdir=tmp_path)
+    assert "skipped" not in res, res.get("skipped")
+    strict = [
+        c for c in res["cells"] if c["language"] == "c" and c["fp_level"] == "strict-ieee" and c["compiler"] != "-"
+    ]
+    assert strict and all(c["ok"] and c["maxdiff"] == 0.0 for c in strict), strict
+
+
+def test_link_multinest_s152_verifies_every_nest_symbol(tmp_path):
+    """The whole-program link archives EVERY nest object of a multi-nest kernel into one ``lib<key>.a`` and
+    verifies each nest symbol resolves in the linked ``.so`` (both ``s152_n0_fp64`` and ``s152_n1_fp64``)."""
+    tcs = tsvc_arena.discover_toolchains("gcc")
+    if not tcs:
+        pytest.skip("no gcc")
+    out = tmp_path / "results"
+    seed_dir = tsvc_arena.ensure_seed_dir(out, 0)
+    k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
+    wd = tmp_path / "wd_s152"
+    wd.mkdir()
+    (seed_dir / "s152.json").write_text(json.dumps(tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", 0, 3,
+                                                                         False, wd)))
+    report = tsvc_arena.link_whole_program(out, 0, tcs, "baseline", "skip-taskloops")
+    assert "2 symbols verified present, 0 missing" in report, report
+    lib = ctypes.CDLL(str(seed_dir / "link" / "libtsvc_all.so"))
+    for sym in ("s152_n0_fp64", "s152_n1_fp64"):
+        assert lib[sym]  # each nest's distinct entry point is present in the whole-program library
