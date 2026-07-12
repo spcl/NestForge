@@ -48,7 +48,20 @@ REPO="$(resolve_repo)" || {
   exit 1
 }
 cd "$REPO"
-echo "[smoke] repo root: $REPO (results under $REPO/perf_results/)"
+# Do NOT rely on cwd: under sbatch the ranks (and even the batch shell, depending on the site's launch
+# config) may run from the spool dir, not this post-`cd` cwd -- so a relative `perf_results/` hits an
+# unwritable dir and a bare `python -m nestforge` picks a STALE site-packages copy. Guards: ABSOLUTE
+# $REPO-rooted --out/plot paths below + PYTHONPATH pinning THIS clone ahead of site-packages (fixes
+# `No module named nestforge.perf.calloverhead` on a box whose installed nestforge predates it). srun
+# forwards the exported env to the ranks.
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+# Create the results root up front (absolute) and, if that fails, report exactly what resolve_repo picked
+# and where we are -- so a bad REPO is diagnosed loudly instead of surfacing as a cryptic per-driver mkdir.
+mkdir -p "$REPO/perf_results" || {
+  echo "[smoke] ERROR: cannot create '$REPO/perf_results' (REPO='$REPO', pwd='$(pwd)', whoami='$(whoami)'). Check NF_REPO points at a writable clone." >&2
+  exit 1
+}
+echo "[smoke] repo root: $REPO (results under $REPO/perf_results/); PYTHONPATH pinned to the clone"
 
 export OMP_NUM_THREADS="72"
 export PYTHONUNBUFFERED=1
@@ -101,10 +114,11 @@ RUN_OVERHEAD="${RUN_OVERHEAD:-1}"
 RUN_CALLOVERHEAD="${RUN_CALLOVERHEAD:-1}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
-OUT_FULL="${OUT_FULL:-perf_results/all_smoke/tsvc_full}"
-OUT_XL="${OUT_XL:-perf_results/all_smoke/crosslang_xl}"
-OUT_OVERHEAD="${OUT_OVERHEAD:-perf_results/all_smoke/staticlib_overhead}"
-OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-perf_results/all_smoke/calloverhead}"
+# ABSOLUTE ($REPO-rooted) so results are independent of the process cwd (see the PYTHONPATH note above).
+OUT_FULL="${OUT_FULL:-$REPO/perf_results/all_smoke/tsvc_full}"
+OUT_XL="${OUT_XL:-$REPO/perf_results/all_smoke/crosslang_xl}"
+OUT_OVERHEAD="${OUT_OVERHEAD:-$REPO/perf_results/all_smoke/staticlib_overhead}"
+OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-$REPO/perf_results/all_smoke/calloverhead}"
 
 # --- PHASE 1: full axis matrix (nestforge.perf.tsvc_full) ----------------------
 run_full () {
@@ -157,11 +171,11 @@ run_calloverhead () {
 
 # --- PHASE 5: plots (rank 0) ---------------------------------------------------
 run_plots () {
-  python3 perf/plot_overhead.py --results-dir "$OUT_OVERHEAD" \
+  python3 "$REPO/perf/plot_overhead.py" --results-dir "$OUT_OVERHEAD" \
     || echo "[all-smoke] phase 5 plot_overhead failed"
-  python3 perf/plot_calloverhead.py --results-dir "$OUT_CALLOVERHEAD" \
+  python3 "$REPO/perf/plot_calloverhead.py" --results-dir "$OUT_CALLOVERHEAD" \
     || echo "[all-smoke] phase 5 plot_calloverhead failed"
-  python3 perf/plot_winners.py --results-dir "$OUT_FULL" \
+  python3 "$REPO/perf/plot_winners.py" --results-dir "$OUT_FULL" \
     || echo "[all-smoke] phase 5 plot_winners failed"
 }
 

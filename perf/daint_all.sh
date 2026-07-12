@@ -71,9 +71,22 @@ REPO="$(resolve_repo)" || {
   exit 1
 }
 cd "$REPO"
-# Results (perf_results/, relative) then always land inside the actual clone, whatever it is named. `-m`
-# also puts the clone first on sys.path, so nestforge imports from here (not a stale site-packages copy).
-echo "[all] repo root: $REPO (results under $REPO/perf_results/)"
+# Do NOT rely on cwd. Under sbatch, srun launches the ranks with their OWN working directory (the spool
+# dir, not this post-`cd` cwd), so a relative `perf_results/` lands in an unwritable place and a bare
+# `python -m nestforge` picks a STALE site-packages copy instead of this clone. Two cwd-proof guards:
+#   * every --out and every plot path below is ABSOLUTE ($REPO/...), so results land in the clone no
+#     matter which directory the process actually runs in;
+#   * PYTHONPATH pins THIS clone ahead of site-packages, so `python -m nestforge.*` always imports the
+#     freshly pulled code (this is what fixes `No module named nestforge.perf.calloverhead` on a box whose
+#     installed nestforge predates that module). srun forwards the exported env to every rank.
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+# Create the results root up front (absolute) and, if that fails, report exactly what resolve_repo picked
+# and where we are -- so a bad REPO is diagnosed loudly instead of surfacing as a cryptic per-driver mkdir.
+mkdir -p "$REPO/perf_results" || {
+  echo "[all] ERROR: cannot create '$REPO/perf_results' (REPO='$REPO', pwd='$(pwd)', whoami='$(whoami)'). Check NF_REPO points at a writable clone." >&2
+  exit 1
+}
+echo "[all] repo root: $REPO (results under $REPO/perf_results/); PYTHONPATH pinned to the clone"
 
 export OMP_NUM_THREADS="72"
 export PYTHONUNBUFFERED=1
@@ -130,10 +143,13 @@ RUN_OVERHEAD="${RUN_OVERHEAD:-1}"
 RUN_CALLOVERHEAD="${RUN_CALLOVERHEAD:-1}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
-OUT_FULL="${OUT_FULL:-perf_results/tsvc_full}"
-OUT_XL="${OUT_XL:-perf_results/crosslang_xl}"
-OUT_OVERHEAD="${OUT_OVERHEAD:-perf_results/staticlib_overhead}"
-OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-perf_results/calloverhead}"
+# ABSOLUTE ($REPO-rooted) so the result dirs are independent of the process cwd (see the PYTHONPATH note
+# above). A caller may still override with an absolute OUT_*; a relative override would reintroduce the cwd
+# bug, so keep these absolute.
+OUT_FULL="${OUT_FULL:-$REPO/perf_results/tsvc_full}"
+OUT_XL="${OUT_XL:-$REPO/perf_results/crosslang_xl}"
+OUT_OVERHEAD="${OUT_OVERHEAD:-$REPO/perf_results/staticlib_overhead}"
+OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-$REPO/perf_results/calloverhead}"
 
 # --- PHASE 1: full axis matrix (nestforge.perf.tsvc_full) ----------------------
 # srun gives each rank a UNIQUE dace build folder (SLURM_PROCID). `|| echo` keeps a rank/compiler
@@ -191,11 +207,11 @@ run_calloverhead () {
 
 # --- PHASE 5: plots (rank 0, after the sweeps) ---------------------------------
 run_plots () {
-  python3 perf/plot_overhead.py --results-dir "$OUT_OVERHEAD" \
+  python3 "$REPO/perf/plot_overhead.py" --results-dir "$OUT_OVERHEAD" \
     || echo "[all] phase 5 plot_overhead failed"
-  python3 perf/plot_calloverhead.py --results-dir "$OUT_CALLOVERHEAD" \
+  python3 "$REPO/perf/plot_calloverhead.py" --results-dir "$OUT_CALLOVERHEAD" \
     || echo "[all] phase 5 plot_calloverhead failed"
-  python3 perf/plot_winners.py --results-dir "$OUT_FULL" \
+  python3 "$REPO/perf/plot_winners.py" --results-dir "$OUT_FULL" \
     || echo "[all] phase 5 plot_winners failed"
 }
 
