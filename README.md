@@ -23,6 +23,20 @@ pip install -r requirements-dev.txt               # -e ../dace, -e external/opta
 pytest -m "not integration"
 ```
 
+## Plot the results
+
+The plotters are **readers** — they never recompile, just render the per-kernel JSON a benchmark run
+left under `perf_results/`. After a run (or `--tables-only` merge), from the repo root:
+
+```bash
+python perf/plot_winners.py      --results-dir perf_results/tsvc_full          # single-compiler vs nest-forge best (+ per-kernel winner)
+python perf/plot_overhead.py     --results-dir perf_results/staticlib_overhead # static-lib COMPILE overhead (external .a / monolithic)
+python perf/plot_calloverhead.py --results-dir perf_results/calloverhead       # runtime CALL overhead (external .a vs LTO-.a vs inline)
+```
+
+Each writes a `.png` next to the results plus a machine-readable `.csv`. The daint job (below) renders all
+three automatically in its last phase.
+
 ## Submit the benchmark jobs (CSCS Alps / daint)
 
 The whole benchmark is **one phased SLURM job** (`perf/daint_all.sh`). `submit_all.sh` gates the full run
@@ -42,15 +56,21 @@ REPS=5 COMPILERS=gcc bash perf/submit_all.sh   # any daint_all.sh knob passes st
    strict-ieee correctness gate. Median-of-5 timing at the `PROF` size (working set > L3 → memory-bound);
    compared against the native `.cpp` baseline and the DaCe-cpp lane.
 2. **cross-language XL** (`nestforge.perf.crosslang_xl`) — the same kernels at the XL problem size.
-3. **static-lib overhead** (`nestforge.perf.staticlib_overhead`) — monolithic vs external `.a` compile time.
-4. **plots** (rank 0) — `perf/plot_overhead.py` (single-SDFG vs static-lib) and `perf/plot_winners.py`
-   (single-compiler geomean winner vs nest-forge per-kernel best, plus a per-kernel winner table).
+3. **static-lib compile overhead** (`nestforge.perf.staticlib_overhead`) — monolithic vs external `.a` compile time.
+4. **runtime call overhead** (`nestforge.perf.calloverhead`) — the stateless emitted kernel built + timed
+   three ways: inlined (`#include`), external fat-LTO `.a` (the linker inlines it back from the archive),
+   and external plain `.a` (an out-of-line call). Reports `external / inline` (the call cost) and
+   `external-lto / inline` (~1.0 = LTO recovered it).
+5. **plots** (rank 0) — `perf/plot_winners.py`, `perf/plot_overhead.py`, `perf/plot_calloverhead.py`.
 
 Knobs (all `${VAR:-default}`): `COMPILERS` (auto), `REPS` (5), `PROFILE_PRESET` (PROF), `LANGUAGES`,
-`CROSSLANG_LANGUAGES`, `COST_MODELS`, `FP_MODES`, `RUN_FULL`/`RUN_CROSSLANG`/`RUN_OVERHEAD`/`RUN_PLOTS`.
-Results land under `perf_results/`; merge the per-rank tables with `--tables-only`, e.g.
-`python -m nestforge.perf.tsvc_full --tables-only --out perf_results/tsvc_full`. Full matrix, sizing
-rationale, multi-rank partitioning, and the cmake-hang mitigation are in `perf/README_tsvc_full.md`.
+`CROSSLANG_LANGUAGES`, `COST_MODELS`, `FP_MODES`, `CALLOVERHEAD_INNER`/`CALLOVERHEAD_REPS`, and the phase
+toggles `RUN_FULL`/`RUN_CROSSLANG`/`RUN_OVERHEAD`/`RUN_CALLOVERHEAD`/`RUN_PLOTS`. Results land under
+`<repo>/perf_results/` — the job resolves the repo root from its own location (override with `NF_REPO`),
+so the clone name (`NestForge`, `nest-forge`, …) does not matter. Merge the per-rank tables with
+`--tables-only`, e.g. `python -m nestforge.perf.tsvc_full --tables-only --out perf_results/tsvc_full`. Full
+matrix, sizing rationale, multi-rank partitioning, and the cmake-hang mitigation are in
+`perf/README_tsvc_full.md`.
 
 ## Layout
 ```
@@ -73,7 +93,8 @@ nestforge/
     tsvc_full.py        the full-matrix job (3 lanes + the axis sweep, median-of-N, multi-rank)
     crosslang_xl.py     cross-compiler × cross-language job at a fixed preset
     tsvc_arena.py       per-kernel three-column arena (native / default / flag-matrix winner)
-    staticlib_overhead.py   monolithic vs external static-lib compile-time overhead
+    staticlib_overhead.py   monolithic vs external static-lib COMPILE-time overhead
+    calloverhead.py         runtime CALL overhead: inline vs external-LTO-.a vs external-.a (timed)
 perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*.py + README
 ```
 

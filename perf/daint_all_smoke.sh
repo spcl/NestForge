@@ -8,7 +8,8 @@
 #SBATCH --account=g34
 #SBATCH --output=nf_all_smoke_%j.out
 #SBATCH --error=nf_all_smoke_%j.err
-#SBATCH --chdir=/capstor/scratch/cscs/ybudanaz/aarch64/nest-forge
+# No hardcoded --chdir: the repo root is resolved at run time (below) from this script's location, so
+# results land in <this-repo>/perf_results/ whatever the clone is named. Override with NF_REPO=/path.
 #
 # Fast pre-flight for daint_all.sh: one node, one rank, a handful of kernels, ONE compiler
 # (gcc), the SMALL `S` preset, tiny reps. It walks all four phases end-to-end so a submitter
@@ -29,7 +30,10 @@
 #   RUN_OVERHEAD=0 RUN_PLOTS=0 sbatch perf/daint_all_smoke.sh    # just phases 1-2
 
 set -euo pipefail
-cd /capstor/scratch/cscs/ybudanaz/aarch64/nest-forge
+# Repo root defaults to THIS script's location (<repo>/perf/daint_all_smoke.sh -> <repo>); override NF_REPO.
+REPO="${NF_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$REPO"
+echo "[smoke] repo root: $REPO (results under $REPO/perf_results/)"
 
 export OMP_NUM_THREADS="72"
 export PYTHONUNBUFFERED=1
@@ -70,16 +74,22 @@ REPS="${REPS:-3}"
 XL_REPS="${XL_REPS:-3}"
 OVERHEAD_CXX="${OVERHEAD_CXX:-g++}"
 OVERHEAD_REPS="${OVERHEAD_REPS:-2}"
+CALLOVERHEAD_CC="${CALLOVERHEAD_CC:-gcc}"
+CALLOVERHEAD_INNER="${CALLOVERHEAD_INNER:-500}"
+CALLOVERHEAD_REPS="${CALLOVERHEAD_REPS:-3}"
+CALLOVERHEAD_PRESET="${CALLOVERHEAD_PRESET:-S}"
 COMPILE_JOBS="${COMPILE_JOBS:-8}"
 
 RUN_FULL="${RUN_FULL:-1}"
 RUN_CROSSLANG="${RUN_CROSSLANG:-1}"
 RUN_OVERHEAD="${RUN_OVERHEAD:-1}"
+RUN_CALLOVERHEAD="${RUN_CALLOVERHEAD:-1}"
 RUN_PLOTS="${RUN_PLOTS:-1}"
 
 OUT_FULL="${OUT_FULL:-perf_results/all_smoke/tsvc_full}"
 OUT_XL="${OUT_XL:-perf_results/all_smoke/crosslang_xl}"
 OUT_OVERHEAD="${OUT_OVERHEAD:-perf_results/all_smoke/staticlib_overhead}"
+OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-perf_results/all_smoke/calloverhead}"
 
 # --- PHASE 1: full axis matrix (nestforge.perf.tsvc_full) ----------------------
 run_full () {
@@ -118,12 +128,26 @@ run_overhead () {
     || echo "[all-smoke] phase 3 (staticlib_overhead) tables failed"
 }
 
-# --- PHASE 4: plots (rank 0) ---------------------------------------------------
+# --- PHASE 4: runtime call overhead (nestforge.perf.calloverhead) --------------
+run_calloverhead () {
+  srun --cpu-bind=cores bash -c '
+    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    python3 -m nestforge.perf.calloverhead \
+      --only '"$ONLY"' --compiler "'"$CALLOVERHEAD_CC"'" --preset "'"$CALLOVERHEAD_PRESET"'" \
+      --inner "'"$CALLOVERHEAD_INNER"'" --reps "'"$CALLOVERHEAD_REPS"'" --out "'"$OUT_CALLOVERHEAD"'"
+  ' || echo "[all-smoke] phase 4 (calloverhead) sweep failed (partial results kept)"
+  python3 -m nestforge.perf.calloverhead --tables-only --out "$OUT_CALLOVERHEAD" \
+    || echo "[all-smoke] phase 4 (calloverhead) tables failed"
+}
+
+# --- PHASE 5: plots (rank 0) ---------------------------------------------------
 run_plots () {
   python3 perf/plot_overhead.py --results-dir "$OUT_OVERHEAD" \
-    || echo "[all-smoke] phase 4 plot_overhead failed"
+    || echo "[all-smoke] phase 5 plot_overhead failed"
+  python3 perf/plot_calloverhead.py --results-dir "$OUT_CALLOVERHEAD" \
+    || echo "[all-smoke] phase 5 plot_calloverhead failed"
   python3 perf/plot_winners.py --results-dir "$OUT_FULL" \
-    || echo "[all-smoke] phase 4 plot_winners failed"
+    || echo "[all-smoke] phase 5 plot_winners failed"
 }
 
 # --- run the enabled phases in sequence ----------------------------------------
@@ -139,8 +163,12 @@ if [ "$RUN_OVERHEAD" = "1" ]; then
   echo "[all-smoke] === PHASE 3: static-lib overhead (staticlib_overhead) -> $OUT_OVERHEAD ==="
   run_overhead
 fi
+if [ "$RUN_CALLOVERHEAD" = "1" ]; then
+  echo "[all-smoke] === PHASE 4: runtime call overhead (calloverhead) -> $OUT_CALLOVERHEAD ==="
+  run_calloverhead
+fi
 if [ "$RUN_PLOTS" = "1" ]; then
-  echo "[all-smoke] === PHASE 4: plots (rank 0) ==="
+  echo "[all-smoke] === PHASE 5: plots (rank 0) ==="
   run_plots
 fi
 echo "[all-smoke] done."
