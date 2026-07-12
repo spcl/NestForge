@@ -78,13 +78,21 @@ def load_results(results_dir: Path) -> List[dict]:
 
 
 def baseline_us(kernel: dict) -> Optional[float]:
-    """The speedup denominator: ``dace_cpp.median_us`` if finite, else ``native.median_us`` if finite,
-    else ``None`` (kernel cannot be scored)."""
-    for lane in ("dace_cpp", "native"):
-        info = kernel.get(lane) or {}
-        med = info.get("median_us")
-        if finite(med):
-            return float(med)
+    """The speedup denominator: the whole-kernel DaCe-cpp time, then native, else ``None``.
+
+    ``dace_cpp`` is a per-nest list (one cell per offloaded nest), so the whole-kernel DaCe baseline is the
+    SUM of the per-nest medians -- finite only if EVERY nest produced one. A legacy single-dict shape is
+    still accepted. ``native`` stays a single whole-kernel measurement."""
+    dace = kernel.get("dace_cpp")
+    if isinstance(dace, list):
+        meds = [c.get("median_us") for c in dace]
+        if dace and all(finite(m) for m in meds):
+            return float(sum(meds))
+    elif isinstance(dace, dict) and finite(dace.get("median_us")):  # legacy single-nest shape
+        return float(dace["median_us"])
+    native = kernel.get("native") or {}
+    if finite(native.get("median_us")):
+        return float(native["median_us"])
     return None
 
 

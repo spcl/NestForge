@@ -93,7 +93,7 @@ from nestforge.perf import flags
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers, signature_order
 from nestforge.perf.tsvc_arena import (Toolchain, c_argtypes, call_c, discover_toolchains, my_slice, native_symbol,
                                        rank_and_size, run_compile)
-from nestforge.strategies import get_strategy
+from nestforge.strategies import get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
 #: numpyto emit target + source suffix per language. C and C++ share the C target (numpyto has no C++
@@ -380,6 +380,7 @@ class Cell:
     cost_model: str
     fp_mode: str
     role: str  # "timing" | "gate"
+    nest: int = 0  # which extracted nest this cell belongs to (0-based); -1 = whole-kernel (native lane)
     ok: bool = False
     maxdiff: float = float("inf")
     median_us: float = float("inf")
@@ -400,7 +401,7 @@ class Pending:
     symbol: str = ""
     order: List[str] = field(default_factory=list)
     argtypes: list = field(default_factory=list)
-    opt_ctx_key: Tuple = ()  # (opt_mode, lang) -> the shared boundary/oracle/sizes
+    opt_ctx_key: Tuple = ()  # (opt_mode, nest_idx, lang) -> the shared per-nest boundary/oracle/sizes
 
 
 def compiler_for(lang: str, tc: Toolchain, fortran_by_family: Dict[str, str]) -> Optional[str]:
@@ -413,15 +414,17 @@ def compiler_for(lang: str, tc: Toolchain, fortran_by_family: Dict[str, str]) ->
     return fortran_by_family.get(tc.name)
 
 
-def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str],
-                      validate_sizes: Dict[str, int]) -> Dict[str, Tuple[Path, List[str], list]]:
+def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str], validate_sizes: Dict[str, int],
+                      name: str) -> Dict[str, Tuple[Path, List[str], list]]:
     """Emit the numpyto sources for the requested languages and parse each signature.
 
-    Returns ``{lang: (src_path, arg_order, argtypes)}``. C and C++ share one emitted ``.c`` (numpyto has
-    no C++ target); the C++ lane compiles a tiny generated wrapper ``.cpp`` that ``#include``s the ``.c``
-    inside ``extern "C" {}`` -- without it the C++ frontend name-mangles ``<key>_fp64`` and ctypes cannot
-    bind it. A language whose emit/parse fails is omitted (its cells are skipped, not compiled)."""
-    symbol = f"{prep.name}_fp64"
+    Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the PER-NEST base name
+    (``<key>_n<idx>``); the emitted symbol is ``<name>_fp64`` so every nest of a kernel binds a distinct
+    entry point. C and C++ share one emitted ``.c`` (numpyto has no C++ target); the C++ lane compiles a
+    tiny generated wrapper ``.cpp`` that ``#include``s the ``.c`` inside ``extern "C" {}`` -- without it the
+    C++ frontend name-mangles ``<name>_fp64`` and ctypes cannot bind it. A language whose emit/parse fails
+    is omitted (its cells are skipped, not compiled)."""
+    symbol = f"{name}_fp64"
     names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
     out: Dict[str, Tuple[Path, List[str], list]] = {}
     want_c = any(lg in ("c", "c++") for lg in languages)
@@ -437,7 +440,7 @@ def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str],
         elif lang == "c++":
             if c_info is not None:
                 c_src, order, argtypes = c_info
-                wrapper = workdir / f"{prep.name}_cxxwrap.cpp"
+                wrapper = workdir / f"{name}_cxxwrap.cpp"
                 wrapper.write_text('extern "C" {\n#include "%s"\n}\n' % c_src.resolve())
                 out[lang] = (wrapper, order, argtypes)
         else:  # fortran
@@ -450,32 +453,47 @@ def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str],
 
 # --- per-kernel run ----------------------------------------------------------------------------------
 def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str, languages: List[str],
-                      workdir: Path) -> Dict:
-    """Everything a lane-3 sweep needs for ONE opt-mode: the extracted nest, its sizes, the numpy oracle,
-    and the per-language emitted sources. Raises on a skip condition (no/multiple nests, emit failure)."""
+                      workdir: Path) -> List[Dict]:
+    """Everything a lane-3 sweep needs for ONE opt-mode: EVERY extracted nest, each with its own sizes,
+    numpy oracle, and per-language emitted sources. Returns a LIST of per-nest context dicts (one per
+    compute nest the strategy found). Raises on a skip condition (no nest, emit failure).
+
+    MUTATION HAZARD: :func:`extract_nest_to_sdfg` mutates the parent SDFG in place, so a ``(parent, node)``
+    ref captured up front goes stale after the first extraction. Rebuild a fresh SDFG + strategy refs per
+    nest (both are deterministic, so ``refs_i`` aligns positionally with the initial ``refs``) and extract
+    the idx-th nest from its own untouched copy."""
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     refs = get_strategy(strategy)(sdfg)
     if not refs:
         raise RuntimeError("no compute nest")
-    if len(refs) > 1:
-        raise RuntimeError(f"{len(refs)} compute nests; multi-nest not supported")
-    parent, node = refs[0]
-    boundary = extract_nest_to_sdfg(parent, node, name=kernel.key)
-    time_sizes = tsvc.sample_sizes(kernel, boundary, preset=profile_preset)
-    validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_cap(profile_preset))
-    prep = prepare(boundary, kernel.key, workdir, sizes=validate_sizes)
-    oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
-    lang_src = emit_lang_sources(prep, boundary, workdir, languages, validate_sizes)
-    return {
-        "boundary": boundary,
-        "time_sizes": time_sizes,
-        # allocated ONCE per opt-mode; every timing cell reuses it via COW-fork isolation (see nest_timing_work).
-        "time_inputs": make_inputs(boundary, time_sizes, seed=0),
-        "validate_sizes": validate_sizes,
-        "oracle": oracle,
-        "lang_src": lang_src,
-        "symbol": f"{kernel.key}_fp64"
-    }
+    ctxs: List[Dict] = []
+    for idx in range(len(refs)):
+        sdfg_i = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
+        refs_i = get_strategy(strategy)(sdfg_i)
+        parent, node = refs_i[idx]
+        parallel = is_parallel_nest(node)  # read the schedule BEFORE extraction mutates the graph
+        name = f"{kernel.key}_n{idx}"
+        boundary = extract_nest_to_sdfg(parent, node, name=name)
+        nest_dir = workdir / f"n{idx}"
+        time_sizes = tsvc.sample_sizes(kernel, boundary, preset=profile_preset)
+        validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_cap(profile_preset))
+        prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
+        oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
+        lang_src = emit_lang_sources(prep, boundary, nest_dir, languages, validate_sizes, name)
+        ctxs.append({
+            "nest_idx": idx,
+            "name": name,
+            "symbol": f"{name}_fp64",
+            "boundary": boundary,
+            "time_sizes": time_sizes,
+            # allocated ONCE per nest; every timing cell reuses it via COW-fork isolation (see nest_timing_work).
+            "time_inputs": make_inputs(boundary, time_sizes, seed=0),
+            "validate_sizes": validate_sizes,
+            "oracle": oracle,
+            "lang_src": lang_src,
+            "parallel": parallel,
+        })
+    return ctxs
 
 
 def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_family: Dict[str, str], axes: Dict,
@@ -487,9 +505,10 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     pendings: List[Pending] = []
     jobs: Dict[Tuple, Dict] = {}
     opt_mode = axes["opt_mode"]
+    nest_idx = opt_ctx.get("nest_idx", 0)  # dict.get (not getattr): a synthetic ctx may omit it -> nest 0
 
     def add(cell: Cell, exe: str, cflags: List[str], src: Path, atol: float, symbol, order, argtypes, ctx_key):
-        so = workdir / (f"{opt_mode}_{cell.language.replace('+', 'x')}_{cell.compiler}_{cell.parallel}_"
+        so = workdir / (f"{opt_mode}_n{cell.nest}_{cell.language.replace('+', 'x')}_{cell.compiler}_{cell.parallel}_"
                         f"{cell.cost_model}_{cell.fp_mode}_{len(jobs)}.so")
         key = (exe, tuple(cflags), str(src))
         jobs.setdefault(key, {"exe": exe, "flags": cflags, "src": src, "so": so})
@@ -504,7 +523,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
 
     for lang, (src, order, argtypes) in opt_ctx["lang_src"].items():
         symbol = opt_ctx["symbol"]
-        ctx_key = (opt_mode, lang)
+        ctx_key = (opt_mode, nest_idx, lang)
         for tc in toolchains:
             exe = compiler_for(lang, tc, fortran_by_family)
             fam = tc.fp_family
@@ -517,6 +536,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                                       "default",
                                       "-",
                                       "timing",
+                                      nest=nest_idx,
                                       error=f"no {lang} compiler for family {tc.name}")))
                 continue
             # timing cells: parallel x cost x reduced-FP
@@ -524,7 +544,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                 for cost in axes["cost_models"]:
                     for fp in axes["fp_modes"]:
                         cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std)
-                        cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing")
+                        cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing", nest=nest_idx)
                         if cflags is None:
                             cell.error = f"unsupported: {reason}"
                             pendings.append(Pending(cell=cell))
@@ -533,7 +553,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
             # correctness GATE cell: strict-ieee, sequential, default cost (bit-exact vs the oracle)
             if axes["gate"]:
                 cflags, _ = flags.lane_flags(fam, "strict-ieee", "default", "sequential", lang, nthreads, cxx_std)
-                gate = Cell(opt_mode, lang, tc.name, "sequential", "default", "strict-ieee", "gate")
+                gate = Cell(opt_mode, lang, tc.name, "sequential", "default", "strict-ieee", "gate", nest=nest_idx)
                 add(gate, exe, cflags, src, flags.FP_ATOL["strict-ieee"], symbol, order, argtypes, ctx_key)
     return pendings, jobs
 
@@ -549,8 +569,9 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         "profile_preset": profile_preset
     }
 
-    # per-opt-mode context (nest extraction + emit + oracle). A failing opt-mode is noted, not fatal.
-    contexts: Dict[str, Dict] = {}
+    # per-opt-mode context: EVERY extracted nest, as a LIST of per-nest ctxs. A failing opt-mode is noted,
+    # not fatal.
+    contexts: Dict[str, List[Dict]] = {}
     opt_notes: Dict[str, str] = {}
     for opt_mode in axes["opt_modes"]:
         try:
@@ -562,30 +583,43 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         return {**result, "skipped": "; ".join(f"{m}: {n}" for m, n in opt_notes.items()) or "no opt-mode built"}
 
     base_key = "baseline" if "baseline" in contexts else next(iter(contexts))
-    base_ctx = contexts[base_key]
-    result["baseline_opt"] = base_key  # which opt-mode's nest lanes 1/2 actually used (may not be 'baseline')
-    # lane 1 (native) + lane 2 (DaCe-cpp) use the baseline opt-mode's nest, or the first available; a single
-    # C++ toolchain (first with cxx).
+    base_ctxs = contexts[base_key]  # the base opt-mode's per-nest ctxs (what lanes 1/2 measure against)
+    result["baseline_opt"] = base_key  # which opt-mode's nests lanes 1/2 actually used (may not be 'baseline')
+    # lane 1 (native): ONE whole-kernel measurement stamped nest=-1 -- it is compared against the SUM over
+    # nests, not any single nest, so it borrows the base opt-mode's FIRST nest only for buffer sizing / the
+    # oracle cross-check. lane 2 (DaCe-cpp): runs PER NEST (each cell carries its nest idx); the speedup
+    # denominator is the SUM over nests. A single C++ toolchain (first with cxx) drives both.
     cxx_tc = next((tc for tc in toolchains if tc.cxx is not None), toolchains[0] if toolchains else None)
     if cxx_tc is not None:
-        result["native"] = measure_native_lane(cxx_tc.cxx, cxx_tc.fp_family, kernel, base_ctx["boundary"],
-                                               base_ctx["validate_sizes"], base_ctx["time_inputs"],
-                                               base_ctx["time_sizes"], base_ctx["oracle"], reps, cxx_std, workdir)
-        result["dace_cpp"] = measure_dace_cpp_lane(cxx_tc, base_ctx["boundary"], base_ctx["validate_sizes"],
-                                                   base_ctx["time_inputs"], base_ctx["time_sizes"], base_ctx["oracle"],
-                                                   reps, cxx_std, workdir / "dace_cpp")
+        nat0 = base_ctxs[0]
+        native = measure_native_lane(cxx_tc.cxx, cxx_tc.fp_family, kernel, nat0["boundary"], nat0["validate_sizes"],
+                                     nat0["time_inputs"], nat0["time_sizes"], nat0["oracle"], reps, cxx_std, workdir)
+        if native is not None:
+            native["nest"] = -1  # whole-kernel sentinel: not a single-nest measurement
+        result["native"] = native
+        dace_cpp_cells: List[Dict] = []
+        for nc in base_ctxs:
+            dcell = measure_dace_cpp_lane(cxx_tc, nc["boundary"], nc["validate_sizes"], nc["time_inputs"],
+                                          nc["time_sizes"], nc["oracle"], reps, cxx_std,
+                                          workdir / "dace_cpp" / f"n{nc['nest_idx']}")
+            dcell["nest"] = nc["nest_idx"]
+            dace_cpp_cells.append(dcell)
+        result["dace_cpp"] = dace_cpp_cells
 
-    # lane 3: enumerate + dedup-compile + validate + time.
+    # lane 3: enumerate + dedup-compile + validate + time. Each opt-mode holds a LIST of per-nest ctxs; every
+    # nest is enumerated independently (its own emitted sources + boundary/oracle/sizes + symbol).
     all_pending: List[Pending] = []
     all_jobs: Dict[Tuple, Dict] = {}
     ctx_by_key: Dict[Tuple, Dict] = {}
-    for opt_mode, ctx in contexts.items():
+    for opt_mode, nest_ctxs in contexts.items():
         axes_om = {**axes, "opt_mode": opt_mode}
-        pend, jobs = enumerate_cells(ctx, toolchains, fortran_by_family, axes_om, nthreads, cxx_std, workdir / opt_mode)
-        all_pending.extend(pend)
-        all_jobs.update(jobs)
-        for lang in ctx["lang_src"]:
-            ctx_by_key[(opt_mode, lang)] = ctx
+        for nc in nest_ctxs:
+            pend, jobs = enumerate_cells(nc, toolchains, fortran_by_family, axes_om, nthreads, cxx_std,
+                                         workdir / opt_mode)
+            all_pending.extend(pend)
+            all_jobs.update(jobs)
+            for lang in nc["lang_src"]:
+                ctx_by_key[(opt_mode, nc["nest_idx"], lang)] = nc
 
     # (a) parallel compile of the unique flag sets (compilation is the bottleneck; the timed runs are not).
     def do_compile(job: Dict) -> Tuple[bool, float, Optional[str]]:
@@ -631,15 +665,19 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         cells_out.append(asdict(cell))
 
     result["cells"] = cells_out
+    # per-nest sizes of the base opt-mode, keyed by nest idx (as a str for JSON object keys).
     result["sizes"] = {
-        "validate": {
-            k: int(v)
-            for k, v in base_ctx["validate_sizes"].items()
-        },
-        "time": {
-            k: int(v)
-            for k, v in base_ctx["time_sizes"].items()
+        str(nc["nest_idx"]): {
+            "validate": {
+                k: int(v)
+                for k, v in nc["validate_sizes"].items()
+            },
+            "time": {
+                k: int(v)
+                for k, v in nc["time_sizes"].items()
+            },
         }
+        for nc in base_ctxs
     }
     if opt_notes:
         result["opt_notes"] = opt_notes
@@ -651,11 +689,20 @@ def fmt(x) -> str:
     return "—" if x is None or x == float("inf") else f"{x:.2f}"
 
 
-def kernel_winner(cells: List[Dict], opt_mode: str, lang: str, compiler: str) -> Optional[Dict]:
-    """Fastest VALIDATED timing cell (min median) for one (opt, lang, compiler) group, or None."""
+def kernel_winner(cells: List[Dict],
+                  opt_mode: str,
+                  lang: str,
+                  compiler: str,
+                  nest: Optional[int] = None) -> Optional[Dict]:
+    """Fastest VALIDATED timing cell (min median) for one (opt, lang, compiler[, nest]) group, or None.
+
+    ``nest`` restricts the search to one extracted nest; ``None`` (the default) matches any nest. A kernel's
+    offloaded time is the SUM over nests of the per-nest winner, so :func:`render_tables` passes an explicit
+    nest per call and sums the results. ``c.get("nest", 0)`` (dict.get, not getattr) tolerates a legacy or
+    synthetic cell that predates the ``nest`` field -> treated as the single nest 0."""
     grp = [
         c for c in cells if c["role"] == "timing" and c["ok"] and c["opt_mode"] == opt_mode and c["language"] == lang
-        and c["compiler"] == compiler and finite(c["median_us"])
+        and c["compiler"] == compiler and (nest is None or c.get("nest", 0) == nest) and finite(c["median_us"])
     ]
     return min(grp, key=lambda c: c["median_us"]) if grp else None
 
@@ -695,31 +742,43 @@ def render_tables(out: Path) -> str:
         lines.append("")
 
     lines += [
-        "## per (kernel, opt-mode, language, compiler): best nest cell vs the DaCe-cpp baseline", "",
-        "The DaCe-cpp time is the baseline whether or not it bit-matched the oracle (same iteration space "
-        "= a fair timing baseline); a `†` marks a baseline that did not bit-match (loop-carried-state "
-        "kernel -- DaCe vs numpyto boundary-semantics divergence).", "",
-        "| kernel | corpus | opt | lang | compiler | native (us) | DaCe-cpp (us) | best nest (us) | best config "
+        "## per (kernel, opt-mode, language, compiler): best offloaded nests vs the DaCe-cpp baseline", "",
+        "A kernel may split into several loop-nests; the offloaded time is the SUM over nests of each nest's "
+        "own best (min validated median) cell, and the DaCe-cpp baseline is the SUM over nests of the "
+        "per-nest DaCe-cpp lane -- an apples-to-apples denominator. The offloaded sum is blank unless EVERY "
+        "nest has a validated cell for that (lang, compiler). A `†` marks a baseline where some nest did not "
+        "bit-match the oracle (loop-carried-state kernel -- DaCe vs numpyto boundary-semantics divergence). "
+        "``native`` is the single whole-kernel measurement (not per-nest).", "",
+        "| kernel | corpus | opt | lang | compiler | native (us) | DaCe-cpp (us) | best nests (us) | best config "
         "| maxdiff | nest/DaCe |", "|" + "---|" * 11
     ]
     speedups: List[float] = []
     novalidate = 0
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
-        dcpp = k.get("dace_cpp") or {}
-        nat = k.get("native") or {}
-        dace_med = dcpp.get("median_us")
-        dace_us = dace_med if finite(dace_med) else None
-        dace_flag = "" if (dace_us is None or dcpp.get("ok")) else "†"
+        # dace_cpp is a LIST of per-nest cells (legacy single-dict / empty-dict tolerated): the baseline is
+        # the SUM over nests, defined only when every nest timed a finite median.
+        dcpp_raw = k.get("dace_cpp")
+        dcpp_list = dcpp_raw if isinstance(dcpp_raw, list) else ([dcpp_raw] if dcpp_raw else [])
+        dace_meds = [d.get("median_us") for d in dcpp_list]
+        dace_us = sum(dace_meds) if (dace_meds and all(finite(m) for m in dace_meds)) else None
+        dace_flag = "" if (dace_us is None or all(d.get("ok") for d in dcpp_list)) else "†"
         if dace_flag:
             novalidate += 1
+        nat = k.get("native") or {}
         nat_med = nat.get("median_us")
         nat_us = nat_med if (nat.get("ok") and finite(nat_med)) else None
         groups = sorted({(c["opt_mode"], c["language"], c["compiler"]) for c in k["cells"] if c["role"] == "timing"})
         for opt_mode, lang, comp in groups:
-            win = kernel_winner(k["cells"], opt_mode, lang, comp)
-            win_us = win["median_us"] if win else None
-            cfg = f"{win['parallel']}/{win['cost_model']}/{win['fp_mode']}" if win else "—"
-            md = f"{win['maxdiff']:g}" if win else "—"
+            nests = sorted(
+                {c.get("nest", 0)
+                 for c in k["cells"] if c["role"] == "timing" and c["opt_mode"] == opt_mode})
+            wins = [kernel_winner(k["cells"], opt_mode, lang, comp, n) for n in nests]
+            if wins and all(w is not None for w in wins):
+                win_us = sum(w["median_us"] for w in wins)
+                cfg = "+".join(f"{w['parallel']}/{w['cost_model']}/{w['fp_mode']}" for w in wins)
+                md = f"{max(w['maxdiff'] for w in wins):g}"
+            else:
+                win_us, cfg, md = None, "—", "—"
             sp = (dace_us / win_us) if (dace_us is not None and win_us) else None
             if sp is not None and math.isfinite(sp):
                 speedups.append(sp)

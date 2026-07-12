@@ -261,8 +261,9 @@ def test_run_kernel_all_lanes_s000(tmp_path):
     assert "skipped" not in res, res.get("skipped")
     # lane 1 native + lane 2 DaCe-cpp both validate bit-exact.
     assert res["native"]["ok"] and res["native"]["maxdiff"] == 0.0
-    assert res["dace_cpp"]["ok"] and res["dace_cpp"]["maxdiff"] == 0.0
-    assert res["dace_cpp"]["median_us"] != float("inf")
+    # dace_cpp is now a per-nest list (one cell per offloaded nest); every nest must bit-match + time.
+    assert res["dace_cpp"] and all(c["ok"] and c["maxdiff"] == 0.0 for c in res["dace_cpp"])
+    assert all(c["median_us"] != float("inf") for c in res["dace_cpp"])
     # the strict-ieee gate is bit-exact for EVERY language (incl. C++, whose entry keeps C linkage).
     gates = [c for c in res["cells"] if c["role"] == "gate" and c["error"] is None]
     langs = {c["language"] for c in gates}
@@ -285,16 +286,19 @@ def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
     if not tcs or shutil.which("nm") is None:
         pytest.skip("no gcc / nm")
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    ctx = tsvc_full.build_opt_context(k, "baseline", "skip-taskloops", "S", ["c", "c++"], tmp_path)
-    wrapper, order, argtypes = ctx["lang_src"]["c++"]
+    # build_opt_context now returns a per-nest list; s000 is single-nest -> nest 0. Its symbol carries the
+    # per-nest suffix ``_n0_fp64`` (each nest is an independently-linked external call).
+    ctxs = tsvc_full.build_opt_context(k, "baseline", "skip-taskloops", "S", ["c", "c++"], tmp_path)
+    wrapper, order, argtypes = ctxs[0]["lang_src"]["c++"]
+    symbol = ctxs[0]["symbol"]  # s000_n0_fp64
     cflags, _ = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c++", 2)
     so = tmp_path / "s000_cxx.so"
     subprocess.run(["g++", *cflags, str(wrapper), "-o", str(so)], check=True, capture_output=True)
     nm = subprocess.run(["nm", "-D", str(so)], capture_output=True, text=True).stdout
-    sym_lines = [ln for ln in nm.splitlines() if "s000_fp64" in ln]
-    assert any(ln.strip().endswith(" s000_fp64") and " T " in ln for ln in sym_lines), sym_lines  # unmangled, defined
-    assert not any("_Z" in ln and "s000_fp64" in ln for ln in sym_lines)  # NOT C++-mangled
-    assert ctypes.CDLL(str(so))["s000_fp64"]  # ctypes binds it
+    sym_lines = [ln for ln in nm.splitlines() if symbol in ln]
+    assert any(ln.strip().endswith(f" {symbol}") and " T " in ln for ln in sym_lines), sym_lines  # unmangled, defined
+    assert not any("_Z" in ln and symbol in ln for ln in sym_lines)  # NOT C++-mangled
+    assert ctypes.CDLL(str(so))[symbol]  # ctypes binds it
 
 
 def _one_lang_axes():
@@ -331,8 +335,9 @@ def test_dace_baseline_timing_always_produced_recurrence(tmp_path):
                                compile_jobs=2,
                                workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
-    assert res["dace_cpp"]["median_us"] != float("inf")  # timing baseline produced regardless of bit-match
-    assert res["dace_cpp"].get("error") is None  # it ran; ok may be False (recorded, not a crash)
+    # per-nest list: every nest's DaCe-cpp timing baseline is produced regardless of bit-match.
+    assert res["dace_cpp"] and all(c["median_us"] != float("inf") for c in res["dace_cpp"])
+    assert all(c.get("error") is None for c in res["dace_cpp"])  # ran; ok may be False (recorded, not a crash)
 
 
 def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
@@ -356,4 +361,4 @@ def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
                                compile_jobs=2,
                                workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
-    assert res["dace_cpp"]["ok"] and res["dace_cpp"]["maxdiff"] == 0.0
+    assert res["dace_cpp"] and all(c["ok"] and c["maxdiff"] == 0.0 for c in res["dace_cpp"])
