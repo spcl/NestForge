@@ -2,7 +2,7 @@
 ``BenchSpec`` manifest into C / C++ / Fortran source via optarena's ``numpyto`` driver.
 
 Wrapping it here (alongside :mod:`nestforge.corpus`) keeps the rest of nest-forge depending on
-``nestforge.*`` rather than reaching into the vendored optarena submodule directly.
+``nestforge.*`` rather than reaching into the optarena dependency directly.
 """
 from __future__ import annotations
 

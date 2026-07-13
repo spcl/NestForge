@@ -1,6 +1,6 @@
 """nest-forge: extract DaCe loop-/map-nests and offload them to external compilers via an arena.
 
-Two pieces of the vendored optarena submodule are surfaced natively: :mod:`nestforge.translator`
+Two pieces of the optarena dependency are surfaced natively: :mod:`nestforge.translator`
 (the numpy -> C/C++/Fortran translator) and :mod:`nestforge.corpus` (the npbench/polybench kernel
 corpus). Everything else is nest-forge's own.
 """

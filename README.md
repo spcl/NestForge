@@ -11,13 +11,13 @@ stays unmodified.
 ## Quick start
 
 ```bash
-# 1. clone with the OptArena submodule (SSH; needs read access to spcl/OptArena)
+# 1. clone nest-forge and OptArena as siblings (SSH; needs read access to spcl/OptArena)
 git clone git@github.com:spcl/NestForge.git && cd NestForge
-git submodule update --init --recursive           # pulls external/optarena over SSH
+git clone git@github.com:spcl/OptArena.git ../optarena   # sibling checkout next to ./nest-forge
 
 # 2. DaCe `extended` as a sibling checkout, then the editable deps + test/format tools
 git clone -b extended git@github.com:spcl/dace.git ../dace   # or: git -C ../dace switch extended
-pip install -r requirements-dev.txt               # -e ../dace, -e external/optarena, pytest, yapf, ...
+pip install -r requirements-dev.txt               # -e ../dace, -e ../optarena, pytest, yapf, ...
 
 # 3. run the unit suite (must pass with zero skips)
 pytest -m "not integration"
@@ -80,8 +80,8 @@ nestforge/
   emit_numpy.py   sdfg_to_numpy / nest_to_numpy -> C-style python/numpy kernel (no allocation)
   emit_libnode.py library-node -> numpy op (MatMul/Dot/Reduce/...), in-place writes
   emit_yaml.py    OptArena BenchSpec manifest (symbols, array shapes/dtypes)
-  translator.py   NATIVE: numpy -> C/C++/Fortran translator (over the optarena submodule)
-  corpus.py       NATIVE: npbench/polybench kernel corpus (over the optarena submodule)
+  translator.py   NATIVE: numpy -> C/C++/Fortran translator (over the optarena dependency)
+  corpus.py       NATIVE: npbench/polybench kernel corpus (over the optarena dependency)
   libnode.py      ExternalCall LibraryNode + ExpandDaceReference / ExpandExternCall
   pass_lower.py   LowerNestsToExternalCall(strategy=skip-taskloops)
   build.py        owned DaCe build (generate + compile + link ourselves; bind_program timing)
@@ -102,8 +102,8 @@ perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*
 - **DaCe — the `extended` branch, installed editable** from a sibling checkout (`../dace`). The PyPI
   `dace` wheel lacks the extended-only passes nest-forge uses (e.g.
   `dace.transformation.interstate.expand_nested_sdfg_inputs`). `requirements-dev.txt` pins `-e ../dace`.
-- **OptArena — the `external/optarena` git submodule** (`git@github.com:spcl/OptArena.git`, currently
-  private, pulled over SSH). `git submodule update --init --recursive` then `pip install -e external/optarena`.
+- **OptArena — the sibling `../optarena` checkout** (`git@github.com:spcl/OptArena.git`, currently
+  private, cloned over SSH). `git clone git@github.com:spcl/OptArena.git ../optarena` then `pip install -e ../optarena`.
   nest-forge surfaces exactly two of its pieces as native APIs: `nestforge.translator` (numpy → C/C++/Fortran)
   and `nestforge.corpus` (the npbench/polybench kernel corpus).
 - **Toolchain** — two idempotent setup scripts (`--help` each): `scripts/setup_apt.sh` (apt system
@@ -113,7 +113,7 @@ perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*
   rewrites in place, `--check` is the gate.
 - **CI** (`.github/workflows/ci.yml`) — format gate → toolchain → editable DaCe + OptArena → the unit set
   (`-m "not integration"`) with zero-skip enforcement. **Currently disabled** (manual dispatch only): it
-  needs the private OptArena submodule via an `OPTARENA_DEPLOY_KEY` secret. Re-enable by adding that secret
+  needs the private OptArena checkout via an `OPTARENA_DEPLOY_KEY` secret. Re-enable by adding that secret
   and restoring the `push`/`pull_request` triggers. No key is ever stored in the repo.
 
 ## Design docs

@@ -9,9 +9,9 @@
 #   pip install -r requirements-dev.txt      # installs the editable dace below + the rest
 -e ../dace
 
-# OptArena is not on PyPI -- vendored as the external/optarena submodule (see pyproject.toml):
-#   git submodule update --init --recursive
--e external/optarena
+# OptArena is not on PyPI -- installed EDITABLE from the sibling checkout (../optarena next to
+# ./nest-forge, the documented layout; adjust if yours differs). See pyproject.toml.
+-e ../optarena
 
 numpy
 pyyaml

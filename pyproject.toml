@@ -21,9 +21,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-# DaCe must be the `extended` branch and OptArena is the ./external/optarena git submodule -- neither is
+# DaCe must be the `extended` branch and OptArena is the sibling ../optarena checkout -- neither is
 # on PyPI, so both are installed editable from a checkout (see requirements-dev.txt / the CI workflow):
-#   git submodule update --init --recursive && pip install -e external/optarena && pip install -e ../dace
+#   pip install -e ../optarena && pip install -e ../dace
 # nest-forge surfaces two OptArena pieces natively: nestforge.translator and nestforge.corpus.
 dependencies = ["dace", "numpy", "pyyaml", "optarena"]
 
