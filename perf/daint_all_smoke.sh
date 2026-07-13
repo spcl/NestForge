@@ -128,7 +128,7 @@ run_full () {
       --corpora '"$CORPORA"' --only '"$ONLY"' --languages '"$LANGUAGES"' --opt-modes '"$OPT_MODES"' \
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
       --profile-preset "'"$PROFILE_PRESET"'" --compilers "'"$COMPILERS"'" --reps "'"$REPS"'" \
-      --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
+      --matrix-preset "'"${MATRIX_PRESET:-lean}"'" --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
   ' || echo "[all-smoke] phase 1 (tsvc_full) sweep failed (partial results kept)"
   python3 -m nestforge.perf.tsvc_full --tables-only --out "$OUT_FULL" \
     || echo "[all-smoke] phase 1 (tsvc_full) tables failed"
@@ -177,6 +177,8 @@ run_plots () {
     || echo "[all-smoke] phase 5 plot_calloverhead failed"
   python3 "$REPO/perf/plot_winners.py" --results-dir "$OUT_FULL" \
     || echo "[all-smoke] phase 5 plot_winners failed"
+  python3 "$REPO/perf/plot_vectorization.py" --results-dir "$OUT_FULL" \
+    || echo "[all-smoke] phase 5 plot_vectorization failed"
 }
 
 # --- run the enabled phases in sequence ----------------------------------------

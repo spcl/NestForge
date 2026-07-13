@@ -138,6 +138,12 @@ CALLOVERHEAD_INNER="${CALLOVERHEAD_INNER:-4000}"   # phase 4 kernel calls per ti
 CALLOVERHEAD_REPS="${CALLOVERHEAD_REPS:-9}"        # phase 4 timed invocations (median)
 CALLOVERHEAD_PRESET="${CALLOVERHEAD_PRESET:-M}"    # phase 4 size (small enough that call cost is visible)
 COMPILE_JOBS="${COMPILE_JOBS:-16}"         # phase 1 bounded compile pool
+# Phase 1 matrix size. 'lean' (default) sweeps the vectorizer cost axis (default/cheap/no-vec) only on the
+# sequential single-core lane -- exactly what plot_vectorization reads -- and collapses auto-par/omp-emit to
+# the compiler default, ~halving the timing cells with NO loss of single-core vectorization data. Identical-
+# flag cost cells (clang/icx/nvc 'cheap'=='default') are always deduped regardless. Set 'full' for the
+# exhaustive cost x parallel cross-product.
+MATRIX_PRESET="${MATRIX_PRESET:-lean}"     # phase 1 matrix preset: lean | full
 
 RUN_FULL="${RUN_FULL:-1}"
 RUN_CROSSLANG="${RUN_CROSSLANG:-1}"
@@ -163,7 +169,7 @@ run_full () {
       --corpora '"$CORPORA"' --languages '"$LANGUAGES"' --opt-modes '"$OPT_MODES"' \
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
       --profile-preset "'"$PROFILE_PRESET"'" --compilers "'"$COMPILERS"'" --reps "'"$REPS"'" \
-      --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
+      --matrix-preset "'"$MATRIX_PRESET"'" --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
   ' || echo "[all] phase 1 (tsvc_full) sweep failed (partial results kept)"
   python3 -m nestforge.perf.tsvc_full --tables-only --out "$OUT_FULL" \
     || echo "[all] phase 1 (tsvc_full) tables failed"
@@ -174,6 +180,10 @@ run_full () {
       || echo "[all] phase 1 plot_winners failed"
     python3 "$REPO/perf/plot_speedup_matrix.py" --results-dir "$OUT_FULL" \
       || echo "[all] phase 1 plot_speedup_matrix failed"
+    # Single-core vectorization: where one compiler's vectorizer beats another's by a lot (the sequential
+    # scalar-vs-vector story the averaged winners/matrix plots hide).
+    python3 "$REPO/perf/plot_vectorization.py" --results-dir "$OUT_FULL" \
+      || echo "[all] phase 1 plot_vectorization failed"
   fi
 }
 
@@ -235,6 +245,8 @@ run_plots () {
   # (two tabs) + per-kernel speedup scatter over each.
   python3 "$REPO/perf/plot_speedup_matrix.py" --results-dir "$OUT_FULL" \
     || echo "[all] phase 5 plot_speedup_matrix failed"
+  python3 "$REPO/perf/plot_vectorization.py" --results-dir "$OUT_FULL" \
+    || echo "[all] phase 5 plot_vectorization failed"
 }
 
 # --- run the enabled phases in sequence ----------------------------------------

@@ -37,9 +37,9 @@ which is bit-exact for every language.)
 |------|--------|-------|
 | opt-mode | `baseline`, `canonicalize` | pre-split SDFG optimization; **emit-time** axis (changes the source) |
 | language | `c`, `c++`, `fortran` | numpyto has no C++ target → **C++ = the emitted C recompiled by a C++ frontend** |
-| parallelization | `sequential`, `auto-par` | compiler auto-parallelizer of plain loops |
+| parallelization | `sequential`, `auto-par`, `omp-emit` | single-core; compiler auto-parallelizer of plain loops; OUR `#pragma omp` source |
 | compiler | `gcc`, `clang`, `nvhpc`, `intel` | whatever `discover_toolchains` finds on PATH/spack |
-| cost-model | `default`, `cheap`, `no-vec` | the shared vectorizer cost axis |
+| cost-model | `default`, `cheap`, `no-vec` | the shared vectorizer cost axis (single-core scalar-vs-vector) |
 | FP mode | `default-fp`, `no-fast-errno` | **reduced 2-rung** timing axis (not the 4-level ladder) |
 
 Plus a **strict-ieee correctness GATE** cell per `(opt-mode, language, compiler)` — sequential, default
@@ -47,10 +47,17 @@ cost — that must be **bit-exact** (`maxdiff == 0`) vs the numpy fp64 oracle. (
 reductions, so bit-exactness is only asserted for the sequential gate.)
 
 **Cell count per kernel** (before dedup), per compiler family:
-`2 opt × 3 lang × (2 par × 3 cost × 2 fp  +  1 gate)` = **2 × 3 × 13 = 78 cells/compiler**
-(timing = `2×3×2×3×2 = 72`, gate = `2×3 = 6`). Across 4 families ≈ **312 cells/kernel**, minus:
-- **dedup** of identical flag sets (clang `cheap` ≡ `default`, nvidia `assume-finite` ≡ `contract-fma`, …);
-- **clang/flang auto-par** is unsupported (36 cells/kernel recorded as `unsupported`, not compiled);
+`2 opt × 3 lang × (3 par × 3 cost × 2 fp  +  1 gate)` = timing `2×3×3×3×2 = 108`, gate `2×3 = 6`,
+minus:
+- **cell dedup** (always on): identical flag sets are the SAME measurement, so they are timed **once**,
+  not once per label — clang/icx/nvc `cheap` ≡ `default`, nvidia `assume-finite` ≡ `contract-fma`, … So a
+  family with no `cheap` knob contributes one cost cell on the vectorized lane, not two;
+- **`--matrix-preset`** (`lean` = the daint default, `full` = exhaustive). `lean` sweeps the vectorizer
+  **cost axis only on the `sequential` single-core lane** — precisely what `plot_vectorization` reads —
+  and collapses `auto-par`/`omp-emit` to the compiler default. Measured on the daint toolset this is
+  **~50% fewer timing runs** (24% from dedup alone) with **no loss of single-core vectorization data**.
+  Override with `MATRIX_PRESET=full sbatch perf/daint_all.sh` (or `--matrix-preset full`);
+- **clang/flang auto-par** is unsupported (recorded as `unsupported`, not compiled);
 - families with no compiler for a language (recorded, not compiled).
 
 ### The three per-family design decisions
@@ -120,7 +127,7 @@ never aborts the rest, and each is toggleable via a `RUN_<PHASE>` env var (all d
 | **1** | `RUN_FULL` | `nestforge.perf.tsvc_full` | the full axis matrix documented above (**the primary job**) → `OUT_FULL` |
 | **2** | `RUN_CROSSLANG` | `nestforge.perf.crosslang_xl` | cross-language XL: both corpora at the XL size, every language × compiler → `OUT_XL` |
 | **3** | `RUN_OVERHEAD` | `nestforge.perf.staticlib_overhead` | static-lib compile overhead (external `.a` / monolithic) → `OUT_OVERHEAD` |
-| **4** | `RUN_PLOTS` | `plot_overhead.py`, `plot_winners.py` | render the overhead + winners plots (rank 0, after the sweeps) |
+| **4** | `RUN_PLOTS` | `plot_winners.py`, `plot_speedup_matrix.py`, `plot_vectorization.py`, `plot_overhead.py`, `plot_calloverhead.py` | winners + speedup matrix + **single-core vectorization** + overhead plots (rank 0; also rendered per-phase so a later hang never costs earlier plots) |
 
 Phases 1–3 run under `srun --cpu-bind=cores` (kernels self-partition across ranks) with a rank-unique
 `DACE_default_build_folder`; each sweep is followed by its cross-rank `--tables-only` merge (plain

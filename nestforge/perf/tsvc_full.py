@@ -516,6 +516,25 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
     return ctxs
 
 
+def cost_models_for(parallel: str, cost_models: List[str], matrix_preset: str) -> List[str]:
+    """The vectorizer cost models to sweep for a given ``parallel`` mode under a ``matrix_preset``.
+
+    The ``cost`` axis (``default`` / ``cheap`` / ``no-vec``) is a **single-core vectorization** question:
+    scalar floor vs the compiler's vectorizer. Once a lane is threaded (``auto-par`` / ``omp-emit``) the
+    story is threading, not the scalar/vector floor, so the extra cost points there are low value and
+    multiply the matrix. Presets:
+
+      * ``full`` -- sweep every requested cost model on every parallel mode (the exhaustive matrix).
+      * ``lean`` -- sweep the full cost axis ONLY on the ``sequential`` (single-core) lane -- exactly the
+        data :mod:`perf.plot_vectorization` reads -- and collapse ``auto-par`` / ``omp-emit`` to the
+        compiler default. This roughly halves the timing cells while losing NO single-core vec data.
+
+    An unknown preset behaves like ``full`` (fail open -- never silently drop cells)."""
+    if matrix_preset == "lean" and parallel != "sequential":
+        return ["default"] if "default" in cost_models else list(cost_models[:1])
+    return list(cost_models)
+
+
 def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_family: Dict[str, str], axes: Dict,
                     nthreads: int, cxx_std: str, workdir: Path) -> Tuple[List[Pending], Dict[Tuple, Dict]]:
     """Build every lane-3 :class:`Pending` cell for one opt-mode + the deduped compile jobs.
@@ -526,11 +545,22 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     jobs: Dict[Tuple, Dict] = {}
     opt_mode = axes["opt_mode"]
     nest_idx = opt_ctx.get("nest_idx", 0)  # dict.get (not getattr): a synthetic ctx may omit it -> nest 0
+    # Dedup identical TIMING cells: two axis points whose (exe, flags, src) collapse to the same compile
+    # (e.g. clang/icx/nvc `cheap` == `default`, nvc `assume-finite` == `contract-fma`) are the SAME
+    # measurement -- previously they were timed once PER label (same .so, run N times) and produced N
+    # duplicate rows. Keep the FIRST (canonical `default`-cost label wins, iteration order) and skip the
+    # rest, so the family that has no such knob contributes one cell, not three. Gate cells are exempt
+    # (different FP flags; never collide with a timing cell) so the bit-exact gate always runs.
+    seen_timing: set = set()
 
     def add(cell: Cell, exe: str, cflags: List[str], src: Path, atol: float, symbol, order, argtypes, ctx_key):
+        key = (exe, tuple(cflags), str(src))
+        if cell.role == "timing":
+            if key in seen_timing:
+                return
+            seen_timing.add(key)
         so = workdir / (f"{opt_mode}_n{cell.nest}_{cell.language.replace('+', 'x')}_{cell.compiler}_{cell.parallel}_"
                         f"{cell.cost_model}_{cell.fp_mode}_{len(jobs)}.so")
-        key = (exe, tuple(cflags), str(src))
         jobs.setdefault(key, {"exe": exe, "flags": cflags, "src": src, "so": so})
         pendings.append(
             Pending(cell=cell,
@@ -569,7 +599,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     if omp is None:
                         continue
                     psrc = omp[0]
-                for cost in axes["cost_models"]:
+                for cost in cost_models_for(parallel, axes["cost_models"], axes.get("matrix_preset", "full")):
                     for fp in axes["fp_modes"]:
                         cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std)
                         cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing", nest=nest_idx)
@@ -866,7 +896,8 @@ def resolved_axes(args) -> Dict:
         "parallelism": parallelism,
         "cost_models": args.cost_models,
         "fp_modes": args.fp_modes,
-        "gate": not args.no_gate
+        "gate": not args.no_gate,
+        "matrix_preset": args.matrix_preset,
     }
 
 
@@ -892,6 +923,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     default=list(flags.REDUCED_FP_MODES),
                     choices=list(flags.REDUCED_FP_MODES),
                     dest="fp_modes")
+    ap.add_argument("--matrix-preset",
+                    default="full",
+                    choices=["full", "lean"],
+                    dest="matrix_preset",
+                    help="'full' = sweep every cost model on every parallel mode; 'lean' = sweep the cost "
+                         "(vectorizer) axis only on the sequential single-core lane and collapse auto-par/"
+                         "omp-emit to the compiler default (roughly halves the timing cells, keeps all "
+                         "single-core vectorization data). Identical-flag cost cells are always deduped.")
     ap.add_argument("--no-gate", action="store_true", help="skip the strict-ieee bit-exact correctness gate cells")
     ap.add_argument("--profile-preset",
                     default="PROF",
@@ -934,7 +973,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f"ftn={Path(fortran_by_family[t.name]).name if t.name in fortran_by_family else '-'})"
                     for t in toolchains))
     print(f"[tsvc-full] axes: opt={axes['opt_modes']} lang={axes['languages']} par={axes['parallelism']} "
-          f"cost={axes['cost_models']} fp={axes['fp_modes']} gate={axes['gate']} profile={args.profile_preset}")
+          f"cost={axes['cost_models']} fp={axes['fp_modes']} gate={axes['gate']} preset={axes['matrix_preset']} "
+          f"profile={args.profile_preset}")
 
     kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
     procid, ntasks = rank_and_size()
