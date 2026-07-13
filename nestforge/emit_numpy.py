@@ -23,7 +23,7 @@ import dace
 from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion
+from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion, ReturnBlock
 from dace.sdfg.utils import dfs_topological_sort
 
 from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
@@ -438,7 +438,7 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> List[str]:
             lines.extend(map_lines(state, sdfg, node))
         elif isinstance(node, nodes.LibraryNode):
             try:
-                lines.append(emit_library_node(node, state, sdfg))
+                lines.extend(emit_library_node(node, state, sdfg))
             except UnsupportedLibraryNode as exc:
                 raise UnsupportedNest(str(exc)) from exc
         elif isinstance(node, nodes.Tasklet):
@@ -528,15 +528,16 @@ def interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
 
     DaCe hoists a data-dependent index or loop-carried scalar onto the inter-state edge that reaches
     a block; those assignments must run before the block body or the symbols they define are unbound.
-    A conditional (branching) edge is old-style control flow the numpy emitter does not model, so it
-    is refused rather than silently dropped.
+    A conditional (branching) edge is an unstructured goto -- old-style state-machine control flow the
+    straight-line topological emission does not model (structured branches are ``ConditionalBlock`` s,
+    structured loops ``LoopRegion`` s) -- so ANY conditional edge is refused, whether or not it carries
+    assignments, rather than silently emitting the successor blocks as if the branch were always taken.
     """
     lines: List[str] = []
     for e in region.in_edges(block):
-        if not e.data.assignments:
-            continue
         if not e.data.is_unconditional():
-            raise UnsupportedNest(f"conditional inter-state edge into {block.label} is not yet emitted")
+            raise UnsupportedNest(
+                f"conditional inter-state edge into {block.label} (unstructured goto/branch) is not emitted")
         for lhs, rhs in e.data.assignments.items():
             lines.append(f"{lhs} = {strip_scalar_local_subscript(normalize_casts(rhs), sdfg)}")
     return lines
@@ -557,6 +558,11 @@ def emit_region(region, sdfg: dace.SDFG) -> List[str]:
             lines.append("break")  # exits the enclosing while (emit_loop); its region-DFS successor is the loop exit
         elif isinstance(block, ContinueBlock):
             lines.append("continue")
+        elif isinstance(block, ReturnBlock):
+            # Early return out of the SDFG. A whole-kernel python ``return`` matches this exactly (it exits
+            # the function == exits the SDFG). Externalizing a *sub-nest* that carries one is refused up
+            # front by ``reject_early_return`` (the return would only exit the nest, not the enclosing SDFG).
+            lines.append("return")
         else:
             raise UnsupportedNest(f"control-flow block not yet emitted: {type(block).__name__}")
     return lines
@@ -688,6 +694,44 @@ def reject_unsizable_scratch(sdfg: dace.SDFG, scratch: List[str], symbols: List[
                 "cannot be pre-allocated C-style")
 
 
+def has_enclosing_loop(block) -> bool:
+    """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG -- the loop a ``break`` /
+    ``continue`` inside it would target (walks ``parent_graph`` up to the SDFG root)."""
+    region = block.parent_graph
+    while region is not None:
+        if isinstance(region, LoopRegion):
+            return True
+        region = region.parent_graph
+    return False
+
+
+def reject_nonexternalizable(sdfg: dace.SDFG) -> None:
+    """Refuse a nest whose control flow cannot be carried into a standalone kernel unchanged.
+
+    Both cases arise when extraction cuts a control-flow *target* out of the nest:
+
+    * a ``ReturnBlock`` returns out of the *enclosing* SDFG. A python ``return`` in the extracted kernel
+      would exit only that kernel and let the caller resume the rest of the original program -- the
+      original return instead skipped everything after the nest. (A return is still emittable for a
+      *whole*-SDFG kernel via :func:`sdfg_to_numpy`, where ``return`` == exit the kernel == exit the
+      SDFG.)
+    * a ``BreakBlock`` / ``ContinueBlock`` targets its innermost enclosing loop. If that loop was not
+      pulled into the nest, the emitted ``break`` / ``continue`` lands outside any loop -- a wrong
+      target (or a python ``SyntaxError``). Externalizing must take the whole loop the break exits, not
+      an inner sub-nest; a break/continue with no enclosing ``LoopRegion`` in the nest is an illegal cut.
+
+    Refuse rather than silently mis-emit.
+    """
+    for block in sdfg.all_control_flow_blocks():
+        if isinstance(block, ReturnBlock):
+            raise UnsupportedNest(f"nest contains an early return ({block.label}); a return out of the enclosing SDFG "
+                                  "cannot be externalized into a standalone kernel")
+        if isinstance(block, (BreakBlock, ContinueBlock)) and not has_enclosing_loop(block):
+            raise UnsupportedNest(
+                f"nest contains a {type(block).__name__} ({block.label}) whose target loop is outside the "
+                "extracted scope; externalize the loop it breaks out of, not an inner nest")
+
+
 def render(fn_name: str, args: List[str], body: List[str]) -> str:
     lines = [f"def {fn_name}({', '.join(args)}):"]
     lines += ["    " + bl for bl in body]
@@ -719,6 +763,7 @@ def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     Signature (all pre-allocated buffers): inputs, then extra outputs, then scratch transients, then
     size symbols. Everything is written in place; there is no return.
     """
+    reject_nonexternalizable(boundary.standalone_sdfg)  # early return / orphan break cannot be externalized
     standalone = expand_nested_sdfg_inputs(boundary.standalone_sdfg)
     standalone = maxsize_loop_scratch(standalone, boundary.symbols)
     scratch = scratch_arrays(standalone)

@@ -8,7 +8,7 @@ class-name -> statement-builder table.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import dace
 from dace import symbolic
@@ -128,16 +128,191 @@ _REDUCTION_FUNC = {
 }
 
 
+def is_one(v) -> bool:
+    """Value-aware ``v == 1`` (a ``sympy.Float(1.0)`` from a SymbolicProperty compares unequal to the
+    int ``1`` under sympy's structural ``__eq__``, so a plain ``== 1`` misfires)."""
+    return symbolic.equal_valued(1, v)
+
+
+def is_zero(v) -> bool:
+    """Value-aware ``v == 0`` (see :func:`is_one`); ``str(beta) not in ('0','0.0')`` misses e.g. ``0.00``."""
+    return symbolic.equal_valued(0, v)
+
+
+def scaled(expr: str, coeff) -> str:
+    """``expr`` multiplied by ``coeff``, or ``expr`` unchanged when ``coeff`` is 1."""
+    return expr if is_one(coeff) else f"{coeff} * ({expr})"
+
+
+def transposed(expr: str, trans: bool) -> str:
+    """``(expr).T`` when ``trans`` (a BLAS ``transA``/``transB`` flag), else ``expr``. Parenthesized so a
+    slice/expression operand transposes as a whole (``(A[0:N, 0:K]).T``)."""
+    return f"({expr}).T" if trans else expr
+
+
 def emit_matmul(node, state, sdfg) -> str:
     a = in_expr(state, node, "_a", sdfg)
     b = in_expr(state, node, "_b", sdfg)
-    c_read = in_expr(state, node, "_c", sdfg) if str(node.beta) not in ("0", "0.0") else None
-    expr = f"{a} @ {b}"
-    if str(node.alpha) != "1":
-        expr = f"{node.alpha} * ({expr})"
+    c_read = in_expr(state, node, "_c", sdfg) if not is_zero(node.beta) else None
+    expr = scaled(f"{a} @ {b}", node.alpha)
     if c_read is not None:
         expr = f"{expr} + {node.beta} * {c_read}"
     return f"{out_lhs(state, node, '_c', sdfg)} = {expr}"
+
+
+def emit_gemm(node, state, sdfg) -> str:
+    """``alpha * (opA(A) @ opB(B)) + beta * C`` -- the BLAS GEMM ``MatMul`` expands to, connectors
+    ``_a``/``_b``/``_c`` with ``transA``/``transB`` operand transposes and scalar ``alpha``/``beta``."""
+    a = transposed(in_expr(state, node, "_a", sdfg), node.transA)
+    b = transposed(in_expr(state, node, "_b", sdfg), node.transB)
+    expr = scaled(f"{a} @ {b}", node.alpha)
+    if not is_zero(node.beta):
+        expr = f"{expr} + {node.beta} * {in_expr(state, node, '_c', sdfg)}"
+    return f"{out_lhs(state, node, '_c', sdfg)} = {expr}"
+
+
+def emit_gemv(node, state, sdfg) -> str:
+    """``alpha * (opA(A) @ x) + beta * y`` -- BLAS GEMV (matrix-vector), connectors ``_A``/``_x``/``_y``."""
+    a = transposed(in_expr(state, node, "_A", sdfg), node.transA)
+    x = in_expr(state, node, "_x", sdfg)
+    expr = scaled(f"{a} @ {x}", node.alpha)
+    if not is_zero(node.beta):
+        expr = f"{expr} + {node.beta} * {in_expr(state, node, '_y', sdfg)}"
+    return f"{out_lhs(state, node, '_y', sdfg)} = {expr}"
+
+
+def emit_ger(node, state, sdfg) -> str:
+    """``alpha * outer(x, y) + A`` -- BLAS GER rank-1 update; connectors ``_x``/``_y``/``_A`` -> ``_res``."""
+    x = in_expr(state, node, "_x", sdfg)
+    y = in_expr(state, node, "_y", sdfg)
+    a = in_expr(state, node, "_A", sdfg)
+    return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(f'np.outer({x}, {y})', node.alpha)} + {a}"
+
+
+def emit_axpy(node, state, sdfg) -> str:
+    """``a * x + y`` -- BLAS AXPY; connectors ``_x``/``_y`` -> ``_res``."""
+    x = in_expr(state, node, "_x", sdfg)
+    y = in_expr(state, node, "_y", sdfg)
+    return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(x, node.a)} + {y}"
+
+
+def emit_batched_matmul(node, state, sdfg) -> str:
+    """Batched ``A @ B`` (numpy ``@`` contracts the trailing two dims, broadcasting the batch); connectors
+    ``_a``/``_b`` -> ``_c``, with ``transA``/``transB`` swapping the last two axes. The pure DaCe expansion
+    ignores ``beta`` and there is no ``_c`` input connector to accumulate into, so a non-zero ``beta`` is
+    refused rather than silently dropped."""
+    if not is_zero(node.beta):
+        raise UnsupportedLibraryNode(f"BatchedMatMul with beta={node.beta} has no _c input to accumulate")
+    a = in_expr(state, node, "_a", sdfg)
+    b = in_expr(state, node, "_b", sdfg)
+    if node.transA:
+        a = f"np.swapaxes({a}, -1, -2)"
+    if node.transB:
+        b = f"np.swapaxes({b}, -1, -2)"
+    return f"{out_lhs(state, node, '_c', sdfg)} = {scaled(f'{a} @ {b}', node.alpha)}"
+
+
+def emit_einsum(node, state, sdfg) -> str:
+    """``np.einsum(einsum_str, *operands)`` -- operands ordered by connector name (the specialize
+    expansion contracts ``*sorted(inputs)``, and ``LiftEinsum`` builds ``einsum_str`` from the same
+    sorted order, so operand ``i`` of the string is the ``i``-th sorted connector). ``alpha``/``beta`` are
+    the node properties multiplied by any ``_alpha``/``_beta`` runtime-scalar connectors (they compose)."""
+    coeff = {"_alpha": str(node.alpha), "_beta": str(node.beta)}
+    operands = []
+    for e in state.in_edges(node):
+        if e.dst_conn in coeff:
+            coeff[e.dst_conn] = f"({coeff[e.dst_conn]}) * ({memlet_expr(e.data, sdfg)})"
+        else:
+            operands.append((e.dst_conn, memlet_expr(e.data, sdfg)))
+    ordered = [expr for _, expr in sorted(operands)]
+    expr = f"np.einsum('{node.einsum_str}', {', '.join(ordered)})"
+    has_alpha = any(e.dst_conn == "_alpha" for e in state.in_edges(node))
+    has_beta = any(e.dst_conn == "_beta" for e in state.in_edges(node))
+    if has_alpha or not is_one(node.alpha):
+        expr = f"({coeff['_alpha']}) * ({expr})"
+    if has_beta or not is_zero(node.beta):
+        out_edge = next(iter(state.out_edges(node)))
+        expr = f"{expr} + ({coeff['_beta']}) * ({memlet_expr(out_edge.data, sdfg)})"
+    return f"{out_lhs(state, node, None, sdfg)} = {expr}"
+
+
+def emit_tensordot(node, state, sdfg) -> str:
+    """``np.tensordot(L, R, axes=(left_axes, right_axes))`` with an optional output-mode ``permutation``
+    (``np.transpose`` of the contraction result); connectors ``_left_tensor``/``_right_tensor`` ->
+    ``_out_tensor``."""
+    left = in_expr(state, node, "_left_tensor", sdfg)
+    right = in_expr(state, node, "_right_tensor", sdfg)
+    expr = f"np.tensordot({left}, {right}, axes=({list(node.left_axes)}, {list(node.right_axes)}))"
+    if node.permutation is not None and list(node.permutation) != list(range(len(node.permutation))):
+        expr = f"np.transpose({expr}, axes={list(node.permutation)})"
+    return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
+
+
+def emit_inv(node, state, sdfg) -> str:
+    """``np.linalg.inv(A)`` -- matrix inverse; connectors ``_ain`` -> ``_aout``."""
+    return f"{out_lhs(state, node, '_aout', sdfg)} = np.linalg.inv({in_expr(state, node, '_ain', sdfg)})"
+
+
+def emit_fft(node, state, sdfg) -> str:
+    """``factor * np.fft.fft(x)`` -- DaCe's forward DFT is unnormalized (numpy's default ``norm``), scaled
+    by the ``factor`` normalization coefficient; connectors ``_inp`` -> ``_out``."""
+    inp = in_expr(state, node, "_inp", sdfg)
+    return f"{out_lhs(state, node, '_out', sdfg)} = {scaled(f'np.fft.fft({inp})', node.factor)}"
+
+
+def emit_ifft(node, state, sdfg) -> str:
+    """``factor * np.fft.ifft(x, norm='forward')`` -- DaCe's inverse DFT omits the ``1/N`` (``norm='forward'``
+    puts no scale on the inverse), scaled by ``factor``; connectors ``_inp`` -> ``_out``."""
+    inp = in_expr(state, node, "_inp", sdfg)
+    call = "np.fft.ifft(%s, norm='forward')" % inp
+    return f"{out_lhs(state, node, '_out', sdfg)} = {scaled(call, node.factor)}"
+
+
+_ARGREDUCE_FUNC = {"max": ("np.argmax", "np.max"), "min": ("np.argmin", "np.min")}
+
+
+def emit_argreduce(node, state, sdfg):
+    """``np.argmax``/``np.argmin`` over the (contiguous) input slice -> a slice-local index plus its value;
+    connector ``_in`` -> ``_out_idx`` (position) and ``_out_val`` (extreme). Two statements."""
+    argfn, valfn = _ARGREDUCE_FUNC[node.op]
+    inp = in_expr(state, node, "_in", sdfg)
+    return [
+        f"{out_lhs(state, node, '_out_idx', sdfg)} = {argfn}({inp})",
+        f"{out_lhs(state, node, '_out_val', sdfg)} = {valfn}({inp})",
+    ]
+
+
+_SCAN_FUNC = {
+    dace.dtypes.ReductionType.Sum: "np.cumsum",
+    dace.dtypes.ReductionType.Product: "np.cumprod",
+    dace.dtypes.ReductionType.Max: "np.maximum.accumulate",
+    dace.dtypes.ReductionType.Min: "np.minimum.accumulate",
+}
+
+
+def emit_scan(node, state, sdfg) -> str:
+    """Inclusive prefix scan -> ``np.cumsum``/``np.cumprod``/``np.maximum.accumulate``/``.minimum.``;
+    connector ``_scan_in`` -> ``_scan_out``. Exclusive / seeded / strided scans have no direct numpy
+    form and are refused."""
+    from dace.libraries.standard.nodes.scan import ScanOp
+    red = {
+        ScanOp.SUM: dace.dtypes.ReductionType.Sum,
+        ScanOp.PRODUCT: dace.dtypes.ReductionType.Product,
+        ScanOp.MIN: dace.dtypes.ReductionType.Min,
+        ScanOp.MAX: dace.dtypes.ReductionType.Max
+    }.get(node.op)
+    func = _SCAN_FUNC.get(red)
+    if func is None:
+        raise UnsupportedLibraryNode(f"Scan with unsupported op {node.op}")
+    if node.exclusive or str(node.stride) != "1" or "_scan_init" in node.in_connectors:
+        raise UnsupportedLibraryNode("only an inclusive unit-stride unseeded Scan maps to a numpy accumulate")
+    return f"{out_lhs(state, node, '_scan_out', sdfg)} = {func}({in_expr(state, node, '_scan_in', sdfg)})"
+
+
+def emit_integer_sort(node, state, sdfg) -> str:
+    """Ascending 1-D sort -> ``np.sort`` (numpy sorts ascending by default); connectors ``_keys_in`` ->
+    ``_keys_out``."""
+    return f"{out_lhs(state, node, '_keys_out', sdfg)} = np.sort({in_expr(state, node, '_keys_in', sdfg)})"
 
 
 def emit_dot(node, state, sdfg) -> str:
@@ -192,21 +367,36 @@ def emit_reduce(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis}{kd})"
 
 
-#: class name -> ``(node, state, sdfg) -> "lhs = rhs"``. Extend with new library nodes here.
+#: class name -> ``(node, state, sdfg) -> "lhs = rhs"`` (or a list of statements). Extend here.
 LIBNODE_EMITTERS: Dict[str, Callable] = {
     "MatMul": emit_matmul,
+    "Gemm": emit_gemm,
+    "Gemv": emit_gemv,
+    "Ger": emit_ger,
+    "Axpy": emit_axpy,
+    "BatchedMatMul": emit_batched_matmul,
     "Dot": emit_dot,
+    "Einsum": emit_einsum,
+    "TensorDot": emit_tensordot,
     "Transpose": emit_transpose,
     "TensorTranspose": emit_tensortranspose,
     "Solve": emit_solve,
     "Cholesky": emit_cholesky,
+    "Inv": emit_inv,
+    "FFT": emit_fft,
+    "IFFT": emit_ifft,
     "Reduce": emit_reduce,
+    "ArgReduce": emit_argreduce,
+    "Scan": emit_scan,
+    "IntegerSort": emit_integer_sort,
 }
 
 
-def emit_library_node(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
-    """Return the numpy statement for a library node, or raise if none is registered."""
+def emit_library_node(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
+    """Numpy statement(s) for a library node, or raise if none is registered. A single-statement emitter
+    returns a ``str`` (wrapped here); a multi-output node (``ArgReduce``) returns a list of statements."""
     emitter = LIBNODE_EMITTERS.get(type(node).__name__)
     if emitter is None:
         raise UnsupportedLibraryNode(f"no numpy emission for library node {type(node).__name__}")
-    return emitter(node, state, sdfg)
+    result = emitter(node, state, sdfg)
+    return result if isinstance(result, list) else [result]
