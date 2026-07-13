@@ -315,6 +315,35 @@ def emit_integer_sort(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_keys_out', sdfg)} = np.sort({in_expr(state, node, '_keys_in', sdfg)})"
 
 
+def emit_scatter_conflict_check(node, state, sdfg) -> List[str]:
+    """Count duplicate values in a 1-D integer index array (scatter no-conflict proof); connector
+    ``_idx_in`` -> ``_count_out`` (a host int64 scalar, ``0`` iff the index is a permutation).
+
+    Emits the **TAGCOUNT** form -- last-writer-wins ownership then a mismatch count -- rather than the
+    libnode's sort + adjacent-equal scan; both yield ``count = N - #distinct``. The owner buffer is
+    runtime-sized (``max(idx) + 1``) and initialised to ``-1`` so a zero index value cannot be mistaken
+    for an already-claimed owner slot. Temp names are suffixed by the output array so two
+    ScatterConflictCheck nodes in one state don't share the owner / accumulator locals. The internal max
+    / count stay plain scalars; the size-1 ``_count_out`` buffer is written through :func:`out_lhs` like
+    the other scalar outputs. The index is non-empty by construction (a ScatterConflictCheck exists only
+    to guard a real scatter), so ``np.max`` always has an element."""
+    idx = in_expr(state, node, "_idx_in", sdfg)
+    count = out_lhs(state, node, "_count_out", sdfg)
+    tag = next(e for e in state.out_edges(node) if e.src_conn == "_count_out").data.data
+    mx, owner, i, acc = f"__scc_{tag}_max", f"__scc_{tag}_owner", f"__scc_{tag}_i", f"__scc_{tag}_count"
+    return [
+        f"{mx} = int(np.max({idx}))",
+        f"{owner} = np.full({mx} + 1, -1, np.int64)",
+        f"for {i} in range({idx}.shape[0]):",
+        f"    {owner}[{idx}[{i}]] = {i}",
+        f"{acc} = 0",
+        f"for {i} in range({idx}.shape[0]):",
+        f"    if {owner}[{idx}[{i}]] != {i}:",
+        f"        {acc} += 1",
+        f"{count} = {acc}",
+    ]
+
+
 def emit_dot(node, state, sdfg) -> str:
     x = in_expr(state, node, "_x", sdfg)
     y = in_expr(state, node, "_y", sdfg)
@@ -389,6 +418,7 @@ LIBNODE_EMITTERS: Dict[str, Callable] = {
     "ArgReduce": emit_argreduce,
     "Scan": emit_scan,
     "IntegerSort": emit_integer_sort,
+    "ScatterConflictCheck": emit_scatter_conflict_check,
 }
 
 

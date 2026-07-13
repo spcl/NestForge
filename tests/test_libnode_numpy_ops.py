@@ -374,3 +374,33 @@ def test_integer_sort():
     buffers, src = run(sdfg, "srt", {"ki": ki.copy(), "ko": np.zeros(9, np.int64)}, {"N": 9})
     assert "np.sort" in src
     np.testing.assert_array_equal(buffers["ko"], np.sort(ki))
+
+
+# --- ScatterConflictCheck: TAGCOUNT duplicate count (0 iff a permutation) ------------------------ #
+
+
+def build_scatter_conflict_check(name):
+    from dace.libraries.sort.nodes.scatter_conflict_check import ScatterConflictCheck
+    return build(name, ScatterConflictCheck(name), {
+        "idx": ((N, ), dc.int64),
+        "cnt": ((1, ), dc.int64)
+    }, [("_idx_in", "idx")], [("_count_out", "cnt")])
+
+
+def test_scatter_conflict_check_permutation():
+    """A permutation has no duplicate values, so ``count == 0`` (the scatter is conflict-free)."""
+    sdfg = build_scatter_conflict_check("sccp")
+    idx = rng.permutation(9).astype(np.int64)
+    buffers, src = run(sdfg, "sccp", {"idx": idx.copy(), "cnt": np.zeros(1, np.int64)}, {"N": 9})
+    assert "np.full" in src  # TAGCOUNT ownership buffer, not a sort
+    assert buffers["cnt"][0] == 0
+    assert buffers["cnt"][0] == idx.shape[0] - len(np.unique(idx))
+
+
+def test_scatter_conflict_check_duplicates():
+    """With duplicates, ``count == N - #distinct`` -- matching the libnode's sort + adjacent-equal scan."""
+    sdfg = build_scatter_conflict_check("sccd")
+    idx = np.array([0, 2, 2, 5, 5, 5, 1, 9, 9], dtype=np.int64)  # 9 elems, 5 distinct -> 4 duplicates
+    buffers, _ = run(sdfg, "sccd", {"idx": idx.copy(), "cnt": np.zeros(1, np.int64)}, {"N": 9})
+    assert buffers["cnt"][0] == 4
+    assert buffers["cnt"][0] == idx.shape[0] - len(np.unique(idx))
