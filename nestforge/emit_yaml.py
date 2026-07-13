@@ -22,6 +22,18 @@ from nestforge.extract import Boundary
 
 DEFAULT_SIZE = 1 << 16
 
+#: dtypes a boundary symbol can carry that make it a VALUE scalar (not an integer sizing symbol).
+FLOAT_DTYPES = frozenset({"float64", "float32", "float16", "float128"})
+
+
+def symbol_dtype_name(sdfg, s: str) -> str:
+    """numpy dtype name of a boundary symbol from the SDFG symbol table (``"float64"`` for a staged
+    ``a_index = a[i]`` value read leaked into the boundary, ``"int64"`` for a size / index symbol).
+    Falls back to ``int64`` for a symbol the SDFG does not type."""
+    if s in sdfg.symbols:
+        return np.dtype(sdfg.symbols[s].type).name
+    return "int64"
+
 
 def arg_order(boundary: Boundary) -> List[str]:
     """Arrays (inputs, then extra outputs), then symbols -- identical to the numpy signature."""
@@ -56,6 +68,20 @@ def manifest_dict(boundary: Boundary,
     arrays = array_names(boundary)
     init_arrays = {a: {"shape": shape_str(sdfg.arrays[a].shape), "dtype": dtype_str(sdfg.arrays[a])} for a in arrays}
     sizes = sizes or {s: DEFAULT_SIZE for s in boundary.symbols}
+    # A boundary symbol carries its dtype from the SDFG. An integer symbol is a size / index -> the
+    # ``parameters`` preset table. A FLOAT symbol is a value scalar (a staged ``a_index = a[i]`` read that
+    # the nest extractor carried into the boundary) -> ``init.scalars`` with a float default, so the
+    # translator declares it ``double`` and does NOT truncate the value to ``int64``.
+    int_params: Dict[str, int] = {}
+    float_scalars: Dict[str, float] = {}
+    for s in boundary.symbols:
+        if symbol_dtype_name(sdfg, s) in FLOAT_DTYPES:
+            float_scalars[s] = 0.0
+        else:
+            int_params[s] = int(sizes.get(s, DEFAULT_SIZE))
+    init: Dict = {"arrays": init_arrays}
+    if float_scalars:
+        init["scalars"] = float_scalars
     return {
         "name": name,
         "short_name": name,
@@ -64,17 +90,12 @@ def manifest_dict(boundary: Boundary,
         "kind": "microkernel",
         "level": 1,
         "parameters": {
-            preset: {
-                s: int(sizes.get(s, DEFAULT_SIZE))
-                for s in boundary.symbols
-            }
+            preset: int_params
         },
         "input_args": arg_order(boundary),
         "array_args": arrays,
         "output_args": list(boundary.outputs),
-        "init": {
-            "arrays": init_arrays
-        },
+        "init": init,
         "taxonomy": {
             "track": track
         },

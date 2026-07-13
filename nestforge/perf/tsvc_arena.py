@@ -43,7 +43,7 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the DaCe package (not a cwd-shadowing stub) is importable
 
 from nestforge import tsvc
-from nestforge.arena import CTYPE, maxdiff, make_inputs, run_oracle
+from nestforge.arena import CTYPE, maxdiff, make_inputs, run_oracle, scalar_ctype
 from nestforge.build import compiler_family, compiler_version, resolve_runtime
 from nestforge.perf import flags
 from nestforge.isolation import run_isolated
@@ -298,10 +298,12 @@ def abi_order(csrc_text: str, symbol: str) -> List[str]:
 
 
 def c_argtypes(order: List[str], boundary) -> list:
-    """ctypes type per C parameter: an array name -> pointer-to-its-dtype, a size symbol -> int64."""
+    """ctypes type per C parameter: an array name -> pointer-to-its-dtype, a size / index symbol -> int64,
+    a value scalar (a staged ``a_index = a[i]`` read) -> its SDFG dtype (``c_double``), matching the
+    translator's ``double`` signature so the value is neither truncated nor mis-passed."""
     sdfg = boundary.standalone_sdfg
     return [
-        ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else ctypes.c_int64
+        ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
         for a in order
     ]
 
@@ -317,7 +319,7 @@ def call_c(so: Path, symbol: str, order: List[str], argtypes: list, boundary, in
 
     def build_args():
         return [
-            inputs[a].ctypes.data_as(t) if a in inputs else ctypes.c_int64(int(sizes[a]))
+            inputs[a].ctypes.data_as(t) if a in inputs else t(sizes[a])  # t: c_int64 size / c_double value scalar
             for a, t in zip(order, argtypes)
         ]
 

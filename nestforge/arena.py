@@ -177,6 +177,19 @@ class Cell:
     error: Optional[str] = None
 
 
+def scalar_ctype(sdfg, name: str):
+    """ctypes type of a by-value (non-array) kernel arg, matching the translator's signature.
+
+    A FLOAT value scalar (a staged ``a_index = a[i]`` read that leaked into the boundary) is declared
+    ``double`` by the translator (from ``init.scalars``) -> ``c_double``. EVERY integer sizing / index
+    symbol is emitted ``int64_t`` by the translator regardless of the SDFG's own int width (a 32-bit dace
+    ``int`` still crosses the ABI as ``int64_t``), so it must be ``c_int64`` here -- passing it as a 32-bit
+    ``c_int`` would leave the upper half of the register garbage and blow the loop bound out of range."""
+    if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
+        return ctypes.c_double
+    return ctypes.c_int64
+
+
 def resolve_argtypes(prep: Prepared, boundary: Boundary) -> list:
     sdfg = boundary.standalone_sdfg
     types = []
@@ -185,7 +198,7 @@ def resolve_argtypes(prep: Prepared, boundary: Boundary) -> list:
             dt = np.dtype(sdfg.arrays[arg].dtype.type).name
             types.append(ctypes.POINTER(CTYPE[dt]))
         else:
-            types.append(ctypes.c_int64)  # size symbol
+            types.append(scalar_ctype(sdfg, arg))
     return types
 
 
@@ -203,7 +216,7 @@ def call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary:
             if arg in work:
                 out.append(work[arg].ctypes.data_as(at))
             else:
-                out.append(ctypes.c_int64(int(sizes[arg])))
+                out.append(at(sizes[arg]))  # at is the by-value ctype (c_int64 size / c_double value scalar)
         return out
 
     fn(*build_args())  # correctness run
