@@ -601,7 +601,8 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     psrc = omp[0]
                 for cost in cost_models_for(parallel, axes["cost_models"], axes.get("matrix_preset", "full")):
                     for fp in axes["fp_modes"]:
-                        cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std)
+                        cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std,
+                                                          compiler=exe)
                         cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing", nest=nest_idx)
                         if cflags is None:
                             cell.error = f"unsupported: {reason}"
@@ -610,7 +611,8 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                         add(cell, exe, cflags, psrc, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
             # correctness GATE cell: strict-ieee, sequential, default cost (bit-exact vs the oracle)
             if axes["gate"]:
-                cflags, _ = flags.lane_flags(fam, "strict-ieee", "default", "sequential", lang, nthreads, cxx_std)
+                cflags, _ = flags.lane_flags(fam, "strict-ieee", "default", "sequential", lang, nthreads, cxx_std,
+                                             compiler=exe)
                 gate = Cell(opt_mode, lang, tc.name, "sequential", "default", "strict-ieee", "gate", nest=nest_idx)
                 add(gate, exe, cflags, src, flags.FP_ATOL["strict-ieee"], symbol, order, argtypes, ctx_key)
     return pendings, jobs

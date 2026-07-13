@@ -14,6 +14,10 @@ only an explicit ``-fp-model`` resets Intel to IEEE. The FP flags therefore diff
 """
 from __future__ import annotations
 
+import functools
+import os
+import subprocess
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 #: FP-precision levels, strictest first; the index is the ladder rung.
@@ -241,6 +245,50 @@ def omp_emit_flags(family: str) -> List[str]:
     return {"nvidia": ["-mp"]}.get(family, ["-fopenmp"])
 
 
+#: The soname of the OpenMP runtime a bare ``-fopenmp`` / ``-mp`` links per family: gcc pulls libgomp,
+#: clang pulls LLVM's libomp, icx pulls Intel's libiomp5, nvc (``-mp``) its native libnvomp. Used to
+#: LOCATE that runtime via the compiler driver so it can be rpath-baked into the linked node library.
+_OMP_DEFAULT_SONAME: Dict[str, str] = {"gnu": "gomp", "llvm": "omp", "intel": "iomp5", "nvidia": "nvomp"}
+
+
+@functools.lru_cache(maxsize=None)
+def _driver_lib_dir(compiler: str, soname: str) -> Optional[str]:
+    """The directory holding ``lib<soname>.so``, as reported by the COMPILER DRIVER itself
+    (``<compiler> -print-file-name=lib<soname>.so``). Absolute directory, or ``None`` if the driver
+    only echoes the bare name (does not know the file).
+
+    This is how a spack/module OpenMP runtime that sits OFF the loader's default path is found -- e.g.
+    LLVM's ``libomp.so`` lives in the clang install tree, on neither the ldconfig cache nor
+    ``LD_LIBRARY_PATH``, so the loader / ``ctypes.util.find_library`` cannot see it, but the driver
+    that will link it can. Cached: the answer is fixed per (compiler, soname) for the whole sweep."""
+    for cand in (f"lib{soname}.so", f"lib{soname}.dylib"):
+        try:
+            out = subprocess.run([compiler, f"-print-file-name={cand}"],
+                                 capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out and os.path.isabs(out) and os.path.exists(out):
+            return str(Path(out).resolve().parent)
+    return None
+
+
+def openmp_rpath_flags(compiler: Optional[str], family: str) -> List[str]:
+    """Link flags so an OpenMP-enabled node library LOADS its runtime WITHOUT ``LD_LIBRARY_PATH``:
+    ``-L`` (link search) plus ``-Wl,-rpath`` (bake the dir into the ``.so`` for the runtime loader).
+
+    The runtime directory is detected from the compiler driver (:func:`_driver_lib_dir`) for the
+    soname a bare ``-fopenmp`` / ``-mp`` links on this ``family`` (:data:`_OMP_DEFAULT_SONAME`).
+    Returns ``[]`` when the compiler is unknown or the runtime cannot be located (then the default
+    loader path must already carry it -- as gcc's libgomp does). This is what lets clang ``omp-emit``
+    cells load at all: without it they die at dlopen with ``libomp.so: cannot open shared object
+    file`` because LLVM's libomp is off the default loader path. Mirrors the rpath baking libnode.py
+    already does for its own node-library dependency."""
+    if not compiler:
+        return []
+    d = _driver_lib_dir(compiler, _OMP_DEFAULT_SONAME.get(family, "omp"))
+    return ["-L%s" % d, "-Wl,-rpath,%s" % d] if d else []
+
+
 def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
     """Flags to compile the numpyto-emitted **C** source as C++ (numpyto has no distinct C++ target).
 
@@ -261,7 +309,8 @@ def lane_flags(family: str,
                parallel: str,
                lang: str,
                nthreads: int,
-               cxx_std: str = CXX_STD) -> Tuple[Optional[List[str]], Optional[str]]:
+               cxx_std: str = CXX_STD,
+               compiler: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
     """Compose the full compile flags for ONE full-matrix (tsvc_full) sweep cell, or ``(None, reason)``
     when the axis combination is unsupported (e.g. clang auto-par).
 
@@ -282,8 +331,11 @@ def lane_flags(family: str,
         ap, reason = autopar_flags(family, nthreads)
         if ap is None:
             return None, reason
-        out = out + ap
+        # -fopenmp/-qopenmp here also pulls an OpenMP runtime -> rpath it so the .so loads standalone.
+        out = out + ap + openmp_rpath_flags(compiler, family)
     elif parallel == "omp-emit":
-        # OUR pragmas are already in the source (numpyto c_omp/fortran_omp); just enable OpenMP.
-        out = out + omp_emit_flags(family)
+        # OUR pragmas are already in the source (numpyto c_omp/fortran_omp); just enable OpenMP. Bake an
+        # rpath to the OpenMP runtime so the linked .so loads it without LD_LIBRARY_PATH (fixes clang
+        # 'libomp.so: cannot open shared object file': LLVM's libomp is off the default loader path).
+        out = out + omp_emit_flags(family) + openmp_rpath_flags(compiler, family)
     return out, None
