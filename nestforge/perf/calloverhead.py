@@ -28,6 +28,7 @@ import argparse
 import ctypes
 import json
 import math
+import os
 import re
 import shutil
 import socket
@@ -77,7 +78,14 @@ def runner_source(symbol: str, params: str, argnames: List[str], kernel_c: Optio
 
 
 def run_compile(cmd: List[str]) -> None:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    # Bound each compile so a pathological build can't hang the rank forever (see build.run /
+    # NF_COMPILE_TIMEOUT); a timeout surfaces as a normal build failure for this cell.
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"command timed out ({float(os.environ.get('NF_COMPILE_TIMEOUT', '900')):.0f}s): "
+                           f"{' '.join(cmd[:2])} ... (ceiling is NF_COMPILE_TIMEOUT)")
     if r.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd)}\n{r.stderr[-800:]}")
 

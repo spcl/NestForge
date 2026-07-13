@@ -3,8 +3,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4      # 4 ranks/node -- one per GH200 Grace socket. `nproc --all` on a
 #SBATCH --cpus-per-task=72       # daint compute node to confirm (GH200 node = 4x72-core Grace).
-#SBATCH --time=24:00:00          # phase 1 (the full axis matrix) dominates; trim it with LANGUAGES /
+#SBATCH --time=12:00:00          # phase 1 (the full axis matrix) dominates; trim it with LANGUAGES /
                                  # PARALLELISM / COST_MODELS / FP_MODES, or turn phases off (RUN_*=0).
+                                 # Lowered from 24h: per-compile NF_COMPILE_TIMEOUT now bounds a runaway
+                                 # kernel, so a stuck build no longer needs the full wall clock to die.
 #SBATCH --partition=normal
 #SBATCH --account=g34
 #SBATCH --output=nf_all_%j.out
@@ -165,6 +167,14 @@ run_full () {
   ' || echo "[all] phase 1 (tsvc_full) sweep failed (partial results kept)"
   python3 -m nestforge.perf.tsvc_full --tables-only --out "$OUT_FULL" \
     || echo "[all] phase 1 (tsvc_full) tables failed"
+  # Plot NOW, right after this phase's data exists -- so a later phase hanging never costs us the
+  # phase-1 plots (rank 0, plain python3, never under srun).
+  if [ "$RUN_PLOTS" = "1" ]; then
+    python3 "$REPO/perf/plot_winners.py" --results-dir "$OUT_FULL" \
+      || echo "[all] phase 1 plot_winners failed"
+    python3 "$REPO/perf/plot_speedup_matrix.py" --results-dir "$OUT_FULL" \
+      || echo "[all] phase 1 plot_speedup_matrix failed"
+  fi
 }
 
 # --- PHASE 2: cross-language XL (nestforge.perf.crosslang_xl) -------------------
@@ -188,6 +198,10 @@ run_overhead () {
   ' || echo "[all] phase 3 (staticlib_overhead) sweep failed (partial results kept)"
   python3 -m nestforge.perf.staticlib_overhead --tables-only --out "$OUT_OVERHEAD" \
     || echo "[all] phase 3 (staticlib_overhead) tables failed"
+  if [ "$RUN_PLOTS" = "1" ]; then
+    python3 "$REPO/perf/plot_overhead.py" --results-dir "$OUT_OVERHEAD" \
+      || echo "[all] phase 3 plot_overhead failed"
+  fi
 }
 
 # --- PHASE 4: runtime call overhead (nestforge.perf.calloverhead) --------------
@@ -203,6 +217,10 @@ run_calloverhead () {
   ' || echo "[all] phase 4 (calloverhead) sweep failed (partial results kept)"
   python3 -m nestforge.perf.calloverhead --tables-only --out "$OUT_CALLOVERHEAD" \
     || echo "[all] phase 4 (calloverhead) tables failed"
+  if [ "$RUN_PLOTS" = "1" ]; then
+    python3 "$REPO/perf/plot_calloverhead.py" --results-dir "$OUT_CALLOVERHEAD" \
+      || echo "[all] phase 4 plot_calloverhead failed"
+  fi
 }
 
 # --- PHASE 5: plots (rank 0, after the sweeps) ---------------------------------

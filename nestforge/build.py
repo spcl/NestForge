@@ -639,8 +639,23 @@ def fat_lto_flags(compiler: str) -> List[str]:
     return []
 
 
-def run(cmd: List[str]) -> None:
-    p = subprocess.run(cmd, capture_output=True, text=True)
+#: Wall-clock ceiling for a SINGLE owned-build compile/link/archive command. A compiler that
+#: spins on a pathological kernel (deep unroll, optimizer blow-up) or a deadlocked link would
+#: otherwise hang forever -- and since compiles run in a ThreadPoolExecutor whose shutdown waits
+#: for every worker, one stuck compile freezes the whole sweep rank, and srun then blocks on that
+#: rank (the 19h "job timed out" stall). Bounded so a bad config fails that one cell instead.
+#: Override with NF_COMPILE_TIMEOUT (seconds).
+COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
+
+
+def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # subprocess.run has already SIGKILLed the child; surface as a normal build failure so the
+        # sweep records this one cell as errored and moves on (never aborts the rank / the sweep).
+        raise RuntimeError(f"command timed out after {timeout:.0f}s: {' '.join(cmd[:2])} ... "
+                           f"(pathological compile/link; ceiling is NF_COMPILE_TIMEOUT)")
     if p.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
 

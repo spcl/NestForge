@@ -263,9 +263,21 @@ class NestUnit:
     argtypes: list
 
 
+#: Per-compile wall-clock ceiling (seconds). This is the compile helper the phase-1 sweep runs
+#: inside a ThreadPoolExecutor; an untimed compiler that spins on a pathological kernel would hang
+#: the worker thread, block pool.map, freeze the whole sweep rank, and leave srun waiting on it --
+#: the 19h "job timed out" stall. On timeout we return a normal (failed, err) result so only that
+#: one cell is lost. Override with NF_COMPILE_TIMEOUT.
+_COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
+
+
 def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
     t0 = time.perf_counter()
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        dt = (time.perf_counter() - t0) * 1e6
+        return False, dt, f"compile timed out after {_COMPILE_TIMEOUT_S:.0f}s (NF_COMPILE_TIMEOUT)"
     dt = (time.perf_counter() - t0) * 1e6
     return (p.returncode == 0), dt, (None if p.returncode == 0 else p.stderr[-400:])
 

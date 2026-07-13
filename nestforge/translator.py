@@ -6,6 +6,7 @@ Wrapping it here (alongside :mod:`nestforge.corpus`) keeps the rest of nest-forg
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -41,7 +42,15 @@ def translate(spec: BenchSpec,
             str(bench_info), "--out",
             str(out), "--precision", precision
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        # Bound the numpyto AOT translate+compile so a pathological kernel can't hang the rank
+        # forever (matches build.run's NF_COMPILE_TIMEOUT ceiling); a timeout is just a translate
+        # failure -> caller records the cell as errored and continues.
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"numpyto timed out for {name} (target={target}) "
+                               f"(ceiling is NF_COMPILE_TIMEOUT)")
     if res.returncode != 0:
         raise RuntimeError(f"numpyto failed for {name} (target={target}):\n{res.stderr[-2000:]}")
     return (sorted(out.glob(f"{name}_*.c")) + sorted(out.glob(f"{name}_*.cpp")) + sorted(out.glob(f"{name}_*.f90")))
