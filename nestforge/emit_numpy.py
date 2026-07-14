@@ -410,7 +410,17 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
     lines: List[str] = []
     for e in state.in_edges(state.exit_node(entry)):
         if not isinstance(e.src, nodes.AccessNode) or state.entry_node(e.src) is not entry:
-            continue  # tasklet/nested-SDFG write-outs go through their own paths; nested-map exits are separate
+            # A tasklet WCR out-edge is emitted by tasklet_lines and a nested-SDFG one by emit_nested_sdfg;
+            # a plain (non-WCR) nested-map or library passthrough leaves nothing to accumulate. But a
+            # reduction (WCR) reaching this exit from a NESTED map or library node is handled by NO path --
+            # silently dropping it would mis-emit the reduction as a no-op (the very bug this function
+            # exists to fix, one nest-level in). Refuse those so the ExternalCall falls back to the DaCe
+            # variant rather than emit a wrong kernel.
+            if e.data.wcr is not None and not isinstance(e.src, (nodes.Tasklet, nodes.NestedSDFG)):
+                raise UnsupportedNest(
+                    f"reduction (WCR) leaves the map exit from a {type(e.src).__name__}, not an in-scope "
+                    "accumulator access node; not emittable as numpy -- fall back to the DaCe variant")
+            continue
         m = e.data
         dst_name, dst_sub, src_sub = m.data, m.subset, m.other_subset
         src_name = e.src.data
