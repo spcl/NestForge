@@ -9,11 +9,11 @@
 // portable "run this target region on the caller's cudaStream_t". So an OpenMP-target leg cannot directly
 // join the driver's shared stream; the driver must bridge ordering with a CUDA event / host sync. The
 // `stream` argument is accepted for a uniform ABI but is deliberately unused here -- see omp_probe.cpp.
-#include <stddef.h>
 
 void omp_add10(double* d_x, long n, void* stream) {
     (void)stream; // OMP-target cannot bind to an external stream; ordering is bridged by the caller
 #pragma omp target teams distribute parallel for is_device_ptr(d_x)
-    for (long i = 0; i < n; ++i)
+    for (long i = 0; i < n; ++i) {
         d_x[i] += 10.0;
+    }
 }

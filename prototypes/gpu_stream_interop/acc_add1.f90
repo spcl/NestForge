@@ -9,8 +9,8 @@ module acc_interop
      ! C runtime entry: int acc_set_cuda_stream(int async, void* stream)
      function acc_set_cuda_stream(async, stream) result(res) bind(C, name="acc_set_cuda_stream")
        use iso_c_binding
-       integer(c_int), value :: async
-       type(c_ptr), value :: stream
+       integer(c_int), value, intent(in) :: async
+       type(c_ptr), value, intent(in) :: stream
        integer(c_int) :: res
      end function acc_set_cuda_stream
   end interface
@@ -20,9 +20,9 @@ subroutine acc_add1(d_in, d_out, n, stream) bind(C, name="acc_add1")
   use iso_c_binding
   use acc_interop
   implicit none
-  type(c_ptr), value :: d_in, d_out
-  integer(c_long), value :: n
-  type(c_ptr), value :: stream
+  type(c_ptr), value, intent(in) :: d_in, d_out
+  integer(c_long), value, intent(in) :: n
+  type(c_ptr), value, intent(in) :: stream
   real(c_double), pointer :: a(:), b(:)
   integer(c_int) :: qid, ierr
   integer(c_long) :: i
