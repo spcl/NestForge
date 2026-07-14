@@ -78,8 +78,10 @@ def test_atax_return_value_is_inplace_buffer():
     M, N = 7, 9
     A, x = rng.random((M, N)), rng.random(N)
     call, src = alloc_run("hpc/dense_linear_algebra/atax/atax", "atax", dict(M=M, N=N), dict(A=A, x=x))
-    assert "return " not in src and "__return" in src.splitlines()[0]  # C-style: __return is a param
-    np.testing.assert_allclose(call["__return"], (A @ x) @ A)
+    # atax is functional->in-place: its result lands in a named ``out`` buffer param, not a DaCe
+    # ``__return`` value. Still C-style -- no python ``return``; the caller pre-allocates ``out``.
+    assert "return " not in src and "out" in call
+    np.testing.assert_allclose(call["out"], (A @ x) @ A)
 
 
 def test_nussinov_conditionalblock_emits_and_computes():
@@ -108,7 +110,8 @@ def test_nussinov_conditionalblock_emits_and_computes():
                     t[i, j] = np.maximum(t[i, j], t[i + 1, j - 1])
             for k in range(i + 1, j):
                 t[i, j] = np.maximum(t[i, j], t[i, k] + t[k + 1, j])
-    np.testing.assert_array_equal(call["__return"], t)  # integer DP -> bit-exact
+    np.testing.assert_array_equal(call["table"],
+                                  t)  # functional->in-place: DP table is a named buffer; int DP -> bit-exact
 
 
 def test_contour_integral_two_returns_solve_and_indirect_negate():
@@ -279,7 +282,7 @@ def test_azimint_hist_three_level_nested_return_and_computes():
         return out
 
     ref = hist(radius, data) / hist(radius)
-    got = call[[k for k in call if k.startswith("__return")][0]]
+    got = call["out"]  # functional->in-place: the histw/histu ratio lands in the named ``out`` buffer
     np.testing.assert_allclose(got, ref, equal_nan=True)
 
 
@@ -309,7 +312,7 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
                 tmp += data[j]
                 on += 1
         res[i] = tmp / on
-    got = call[[k for k in call if k.startswith("__return")][0]]
+    got = call["res"]  # functional->in-place: the per-bin masked mean lands in the named ``res`` buffer
     np.testing.assert_allclose(got, res, equal_nan=True)
 
 

@@ -240,12 +240,16 @@ def test_my_slice_disjoint_and_covers():
 
 # --- end-to-end (all three lanes) ---------------------------------------------------------------------
 def _small_axes():
+    # One FP mode, not both: this e2e test verifies every lane/language/parallelism path compiles + runs
+    # bit-exact, not the FP axis (test_reduced_fp_modes_and_atol covers that). Keeping it to a single FP
+    # mode roughly halves the compile matrix so the test stays light under the full ``-n auto`` suite run
+    # (where the 3-language matrix, run concurrently with the rest, otherwise thrashes and times out).
     return {
         "opt_modes": ["baseline"],
         "languages": ["c", "c++", "fortran"],
         "parallelism": ["sequential", "auto-par"],
         "cost_models": ["default"],
-        "fp_modes": list(flags.REDUCED_FP_MODES),
+        "fp_modes": [flags.REDUCED_FP_MODES[0]],
         "gate": True
     }
 
@@ -262,7 +266,7 @@ def test_run_kernel_all_lanes_s000(tmp_path):
                                "skip-taskloops", {
                                    **_small_axes(), "opt_mode": None
                                },
-                               reps=2,
+                               reps=1,
                                profile_preset="S",
                                nthreads=2,
                                cxx_std=flags.CXX_STD,
@@ -312,7 +316,7 @@ def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
                                ftn,
                                "skip-taskloops",
                                axes,
-                               reps=2,
+                               reps=1,
                                profile_preset="S",
                                nthreads=2,
                                cxx_std=flags.CXX_STD,

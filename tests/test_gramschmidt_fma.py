@@ -54,8 +54,11 @@ def make_A(M, N, conditioning, seed=0):
 def prepare_compute_nest():
     kernels = {k.short_name: k for k in iter_dace_kernels()}
     sdfg = kernels["hpc/dense_linear_algebra/gramschmidt/gramschmidt"].to_sdfg(simplify=True)
-    # outer strategy -> [zero-init Q, zero-init R, compute]; index 2 holds the two np.dot reductions.
-    _, boundary = lower_nests_to_external_call(sdfg, strategy="outer")[2]
+    # simplify folds the two zero-inits (Q, R) into the compute nest, so ``outer`` returns a single nest
+    # -- the one holding the two np.dot reductions (asserted via ``nrm[0] = np.dot`` in ``emit``).
+    nests = lower_nests_to_external_call(sdfg, strategy="outer")
+    assert len(nests) == 1, f"expected one compute nest, got {len(nests)}"
+    _, boundary = nests[0]
     return boundary
 
 
@@ -88,7 +91,9 @@ def run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
     fn.argtypes = argt
     fn.restype = None
     fn(*[buffers[a].ctypes.data_as(t) if a in buffers else ctypes.c_int64(sizes[a]) for a, t in zip(order, argt)])
-    return {o: buffers[o].copy() for o in ("__return_0", "__return_1")}
+    # gramschmidt is functional->in-place: its two outputs land in the named ``Q`` (orthonormal) and ``R``
+    # (upper-triangular) buffers, not DaCe ``__return`` values. The relerr stability metric compares both.
+    return {o: buffers[o].copy() for o in ("Q", "R")}
 
 
 def relerr(got, ref):

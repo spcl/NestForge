@@ -393,6 +393,46 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
     return lines
 
 
+def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
+    """Writes that leave the map through its exit from an in-scope AccessNode.
+
+    A tasklet that writes an outer array does so directly (its out-edge memlet names the target, handled
+    in :func:`tasklet_lines`). But a canonicalized reduction stages its result in a privatized
+    accumulator AccessNode *inside* the map, whose out-edge to the MapExit carries the WCR into the real
+    output (``_priv_out += acc`` for a Sum). :func:`copy_lines` cannot emit that write -- it hangs off
+    the outer output node, which is fed by the MapExit (a passthrough it skips). Emit it here, inside the
+    loop body, accumulating for a WCR edge and overwriting otherwise, so the reduction reaches the buffer.
+
+    Mirrors the MapEntry-read convention in :func:`copy_lines`: on an edge into the exit the memlet names
+    the OUTER destination array (``m.data``/``m.subset``); the in-scope access node is the source, read at
+    ``m.other_subset``.
+    """
+    lines: List[str] = []
+    for e in state.in_edges(state.exit_node(entry)):
+        if not isinstance(e.src, nodes.AccessNode) or state.entry_node(e.src) is not entry:
+            continue  # tasklet/nested-SDFG write-outs go through their own paths; nested-map exits are separate
+        m = e.data
+        dst_name, dst_sub, src_sub = m.data, m.subset, m.other_subset
+        src_name = e.src.data
+        if src_name == dst_name:  # a self-edge moves nothing out of the map
+            continue
+        if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst_name].shape):
+            src_sub = src_sub if src_sub is not None else dst_sub
+            lhs, rhs = write_lhs(sdfg, dst_name, dst_sub), read_expr(sdfg, src_name, src_sub)
+            dst_read = read_expr(sdfg, dst_name, dst_sub)
+        else:
+            lhs = reshape_side(sdfg, dst_name, dst_sub, write=True)
+            rhs = reshape_side(sdfg, src_name, src_sub, write=False)
+            dst_read = reshape_side(sdfg, dst_name, dst_sub, write=False)
+        if m.wcr is not None:
+            combine = _WCR_BINOP.get(detect_reduction_type(m.wcr))
+            if combine is None:
+                raise UnsupportedNest(f"reduction (WCR) write-out into {dst_name} has an unsupported WCR {m.wcr!r}")
+            rhs = combine(dst_read, rhs)
+        lines.append(normalize_casts(f"{lhs} = {rhs}"))
+    return lines
+
+
 def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
     """Emit a map scope as ``for`` loops over pre-allocated buffers (no allocation of its own)."""
     headers: List[str] = []
@@ -422,6 +462,8 @@ def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> 
             body.extend(map_lines(state, sdfg, node))
         elif isinstance(node, nodes.LibraryNode):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
+
+    body.extend(map_exit_writes(state, sdfg, entry))  # reductions/writes leaving the map via its exit
 
     lines = ["    " * depth + h for depth, h in enumerate(headers)]
     lines += ["    " * len(headers) + bl for bl in (body or ["pass"])]
