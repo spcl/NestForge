@@ -276,7 +276,12 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             # element/range read; the scratch access node is the destination.
             src_name, src_sub, dst_sub = m.data, m.subset, m.other_subset
         else:
-            continue  # a tasklet / library-node source already wrote dst via its own out-edge (incl. its WCR)
+            # A Tasklet / MapExit source's WCR is emitted where that edge is owned: tasklet_lines (the
+            # tasklet out-edge names the outer array) and map_exit_writes (the exit's in-edges) handle the
+            # accumulate, so this copy edge is a genuine no-op. A LibraryNode / NestedSDFG source ignores
+            # its out-edge WCR, but that is refused at the source's own emitter (out_lhs / emit_nested_sdfg),
+            # so it never reaches a silent overwrite here either.
+            continue
         if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst.data].shape):
             # Same-rank copy: a ``None`` other-side subset means "the same range as the named side";
             # mirror it so a partial copy is not silently widened to the whole array.
@@ -356,6 +361,15 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
     control flow (a masked write to ``Z[j, k]``) stays correct because the write lands on the outer
     array in place, leaving the other elements untouched.
     """
+    for e in state.out_edges(node):
+        if e.data.wcr is not None:
+            # This function replays the inner body only (emit_region below); it never applies a WCR carried
+            # on the nested SDFG's OUTER output edge, so an accumulate would silently become an overwrite.
+            # At a map exit map_exit_writes already refuses this; guarding here also covers a nested SDFG at
+            # state-body level, which that guard never sees. Refuse -> the ExternalCall uses the DaCe variant.
+            raise UnsupportedNest(
+                f"nested SDFG output into {e.data.data} carries a reduction (WCR) that emit_nested_sdfg does "
+                "not apply; not emittable as numpy -- fall back to the DaCe variant")
     if ExpandNestedSDFGInputs is None:
         raise UnsupportedNest("nested SDFG emission needs ExpandNestedSDFGInputs (DaCe extended branch)")
     inner = copy.deepcopy(node.sdfg)
@@ -410,13 +424,14 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
     lines: List[str] = []
     for e in state.in_edges(state.exit_node(entry)):
         if not isinstance(e.src, nodes.AccessNode) or state.entry_node(e.src) is not entry:
-            # A tasklet WCR out-edge is emitted by tasklet_lines and a nested-SDFG one by emit_nested_sdfg;
-            # a plain (non-WCR) nested-map or library passthrough leaves nothing to accumulate. But a
-            # reduction (WCR) reaching this exit from a NESTED map or library node is handled by NO path --
-            # silently dropping it would mis-emit the reduction as a no-op (the very bug this function
-            # exists to fix, one nest-level in). Refuse those so the ExternalCall falls back to the DaCe
-            # variant rather than emit a wrong kernel.
-            if e.data.wcr is not None and not isinstance(e.src, (nodes.Tasklet, nodes.NestedSDFG)):
+            # Only a tasklet WCR out-edge accumulates on emit: tasklet_lines rewrites it as
+            # ``target = target + tmp``. Every other source at this exit -- a nested map, a library node,
+            # or a NESTED SDFG -- emits its body only (emit_nested_sdfg calls emit_region and never applies
+            # the out-edge WCR), so a reduction reaching the exit from one of them would silently become an
+            # overwrite (last-write-wins), mis-emitting the reduction as a no-op -- the very bug this
+            # function exists to fix, one nest-level in. Refuse those so the ExternalCall falls back to the
+            # DaCe variant rather than emit a wrong kernel.
+            if e.data.wcr is not None and not isinstance(e.src, nodes.Tasklet):
                 raise UnsupportedNest(
                     f"reduction (WCR) leaves the map exit from a {type(e.src).__name__}, not an in-scope "
                     "accumulator access node; not emittable as numpy -- fall back to the DaCe variant")

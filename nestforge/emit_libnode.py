@@ -113,6 +113,13 @@ def in_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: 
 def out_lhs(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
     edges = list(state.out_edges(node))
     edge = edges[0] if conn is None else next(e for e in edges if e.src_conn == conn)
+    if edge.data.wcr is not None:
+        # No library-node emitter applies an output-edge WCR: every one writes via write_lhs (a plain
+        # ``name[..] = rhs``), so a reduction accumulating the node's result into an existing buffer would
+        # silently become an overwrite. Refuse it so the ExternalCall falls back to the DaCe variant.
+        raise UnsupportedLibraryNode(
+            f"{type(node).__name__} output into {edge.data.data} carries a reduction (WCR) that no library-node "
+            "emitter applies; not emittable as numpy -- fall back to the DaCe variant")
     return memlet_lhs(edge.data, sdfg)
 
 
