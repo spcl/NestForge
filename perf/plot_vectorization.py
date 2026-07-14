@@ -115,9 +115,9 @@ def time_by_nest(cells: List[dict], predicate) -> Optional[float]:
 @dataclass
 class CompilerSC:
     """One compiler's single-core numbers on one kernel."""
-    vec: Optional[float] = None     # vectorized (default cost)
+    vec: Optional[float] = None  # vectorized (default cost)
     scalar: Optional[float] = None  # scalar floor (no-vec)
-    gain: Optional[float] = None    # scalar / vec  (>1 = vectorizer helped)
+    gain: Optional[float] = None  # scalar / vec  (>1 = vectorizer helped)
 
 
 @dataclass
@@ -126,9 +126,9 @@ class KernelSC:
     corpus: str
     key: str
     by_compiler: Dict[str, CompilerSC] = field(default_factory=dict)
-    fastest: Optional[str] = None      # compiler with the min vectorized single-core time
+    fastest: Optional[str] = None  # compiler with the min vectorized single-core time
     slowest: Optional[str] = None
-    gap: Optional[float] = None        # slowest_vec / fastest_vec  (>=1)
+    gap: Optional[float] = None  # slowest_vec / fastest_vec  (>=1)
 
 
 def single_core(kernel: dict, lang: str, fp: str) -> Optional[KernelSC]:
@@ -144,7 +144,8 @@ def single_core(kernel: dict, lang: str, fp: str) -> Optional[KernelSC]:
     sc = KernelSC(corpus=str(kernel.get("corpus", "?")), key=str(kernel.get("key", "?")))
     for comp in compilers:
         vec = time_by_nest(seq, lambda c, comp=comp: c.get("compiler") == comp and c.get("cost_model") == VEC_COST)
-        scalar = time_by_nest(seq, lambda c, comp=comp: c.get("compiler") == comp and c.get("cost_model") == SCALAR_COST)
+        scalar = time_by_nest(seq,
+                              lambda c, comp=comp: c.get("compiler") == comp and c.get("cost_model") == SCALAR_COST)
         gain = (scalar / vec) if (finite(vec) and finite(scalar) and vec > 0.0) else None
         sc.by_compiler[comp] = CompilerSC(vec=vec, scalar=scalar, gain=gain)
     vecs = {comp: cs.vec for comp, cs in sc.by_compiler.items() if finite(cs.vec) and cs.vec > 0.0}
@@ -165,11 +166,13 @@ def render_md(kernels: List[KernelSC], compilers: List[str], gap_threshold: floa
     """Per-kernel table (sorted by cross-compiler gap DESC) + per-compiler geomean gain + the over-threshold
     divergence list. ``compilers`` is the union column order."""
     lines = [
-        f"# Single-core vectorization report ({lang}, {fp}, sequential lane)", "",
+        f"# Single-core vectorization report ({lang}, {fp}, sequential lane)",
+        "",
         "Everything but the **compiler** is held fixed (one core, one language, one FP mode). "
         f"`vec` = the compiler's own vectorized time (µs); `gain` = `no-vec / vec` (>1 = its vectorizer "
         "helped, <1 = it HURT). `gap` = slowest-vec / fastest-vec across compilers — the single-core "
-        "spread; a big gap is a kernel where one compiler's vectorization beats another's by a lot.", "",
+        "spread; a big gap is a kernel where one compiler's vectorization beats another's by a lot.",
+        "",
     ]
     # per-compiler geomean vectorization gain (how much each vectorizer helps on average, single core)
     lines += ["## Per-compiler single-core vectorization gain (geomean `no-vec / vec`)", ""]
@@ -259,8 +262,9 @@ def plot_gap(kernels: List[KernelSC], gap_threshold: float, out_png: Path) -> No
     ax.set_ylabel("slowest-vec / fastest-vec (single core)")
     over = sum(1 for k in pts if k.gap >= gap_threshold)
     seen = {k.fastest for k in pts}
-    handles = [plt.Line2D([0], [0], marker="s", linestyle="", color=PALETTE.get(c, "#888888"), label=c)
-               for c in sorted(seen)]
+    handles = [
+        plt.Line2D([0], [0], marker="s", linestyle="", color=PALETTE.get(c, "#888888"), label=c) for c in sorted(seen)
+    ]
     ax.legend(handles=handles, title="fastest compiler", fontsize=8, loc="upper left")
     ax.set_title(f"Per-kernel single-core compiler gap  |  {over}/{len(pts)} kernels ≥ {gap_threshold:.2f}x",
                  fontsize=10)
@@ -277,7 +281,8 @@ def print_summary(kernels: List[KernelSC], compilers: List[str], gap_threshold: 
         print(f"[plot-vectorization]   {comp}: single-core geomean vec-gain {num(g, 'x')} "
               f"(n={sum(1 for x in gains if finite(x))})")
     diverged = sorted((k for k in kernels if finite(k.gap) and k.gap >= gap_threshold),
-                      key=lambda k: k.gap, reverse=True)
+                      key=lambda k: k.gap,
+                      reverse=True)
     print(f"[plot-vectorization] {len(diverged)} kernels with a single-core gap ≥ {gap_threshold:.2f}x")
     for k in diverged[:5]:
         print(f"[plot-vectorization]   {k.corpus}/{k.key}: {k.gap:.2f}x  (fastest {k.fastest}, slowest {k.slowest})")
@@ -289,7 +294,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--out-dir", default=None, help="override the output dir (default: the results dir)")
     ap.add_argument("--lang", default="c", help="language to hold fixed (default: c -- the canonical source)")
     ap.add_argument("--fp", default="default-fp", help="FP mode to hold fixed (default: default-fp)")
-    ap.add_argument("--gap-threshold", type=float, default=1.3,
+    ap.add_argument("--gap-threshold",
+                    type=float,
+                    default=1.3,
                     help="a cross-compiler single-core gap at/above this is a 'divergence' (default 1.3x)")
     args = ap.parse_args(argv)
 

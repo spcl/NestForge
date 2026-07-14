@@ -81,7 +81,9 @@ def run_compile(cmd: List[str]) -> None:
     # Bound each compile so a pathological build can't hang the rank forever (see build.run /
     # NF_COMPILE_TIMEOUT); a timeout surfaces as a normal build failure for this cell.
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
+        r = subprocess.run(cmd,
+                           capture_output=True,
+                           text=True,
                            timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"command timed out ({float(os.environ.get('NF_COMPILE_TIMEOUT', '900')):.0f}s): "
@@ -154,8 +156,8 @@ def build_and_time(cc: str, family: str, kernel_c: Path, symbol: str, params: st
         try:
             so = build(workdir)
             work = make_inputs(boundary, sizes, seed=0)
-            res = run_isolated(lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, work, sizes,
-                                                                  inner, reps))
+            res = run_isolated(
+                lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, work, sizes, inner, reps))
             out[name] = None if "error" in res else res["per_call_us"]
         except Exception as e:  # noqa: BLE001 -- one variant failing must not sink the others
             out[name] = None
@@ -196,8 +198,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
             sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=sizes)
-            src = next(
-                s for s in emit_sources(prep, nest_dir, target="c") if s.suffix == ".c" and "pluto" not in s.name)
+            src = next(s for s in emit_sources(prep, nest_dir, target="c")
+                       if s.suffix == ".c" and "pluto" not in s.name)
             text = src.read_text()
             order = abi_order(text, symbol)
             units.append(
@@ -241,12 +243,15 @@ def render_tables(out: Path) -> str:
     done = [r for r in rows if r.get("inline_us") is not None]
     skipped = [r for r in rows if "skipped" in r]
     lines = [
-        "# TSVC external-`.a` call overhead (inline vs external-lto vs external)", "",
+        "# TSVC external-`.a` call overhead (inline vs external-lto vs external)",
+        "",
         f"{len(done)} kernels timed, {len(skipped)} skipped. Per-call microseconds; overhead = variant / inline "
-        "(>1 = the external call costs more; external-lto ~1 means LTO inlined it back).", "",
+        "(>1 = the external call costs more; external-lto ~1 means LTO inlined it back).",
+        "",
         "| kernel | compiler | inline (us) | external-lto (us) | external (us) | call overhead x | lto overhead x |",
         "|" + "---|" * 7,
     ]
+
     def us(x):
         return "—" if x is None else f"{x:.4f}"
 
@@ -270,8 +275,10 @@ def render_tables(out: Path) -> str:
     if gco:
         lines += ["", f"**Geomean call overhead (external / inline):** {gco:.4f}x over {len(call_ratios)} kernels."]
     if glo:
-        lines += [f"**Geomean LTO overhead (external-lto / inline):** {glo:.4f}x over {len(lto_ratios)} kernels "
-                  "(closer to 1.0 = LTO recovers more of the inlining)."]
+        lines += [
+            f"**Geomean LTO overhead (external-lto / inline):** {glo:.4f}x over {len(lto_ratios)} kernels "
+            "(closer to 1.0 = LTO recovers more of the inlining)."
+        ]
     if skipped:
         lines += ["", "## skipped", ""
                   ] + [f"- `{r['key']}` — {r['skipped']}" for r in sorted(skipped, key=lambda x: x['key'])]

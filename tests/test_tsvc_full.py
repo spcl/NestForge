@@ -307,8 +307,17 @@ def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
         "gate": False,
         "opt_mode": None,
     }
-    res = tsvc_full.run_kernel(k, tcs, ftn, "skip-taskloops", axes, reps=2, profile_preset="S", nthreads=2,
-                               cxx_std=flags.CXX_STD, compile_jobs=4, workdir=tmp_path)
+    res = tsvc_full.run_kernel(k,
+                               tcs,
+                               ftn,
+                               "skip-taskloops",
+                               axes,
+                               reps=2,
+                               profile_preset="S",
+                               nthreads=2,
+                               cxx_std=flags.CXX_STD,
+                               compile_jobs=4,
+                               workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
     omp = [c for c in res["cells"] if c["parallel"] == "omp-emit" and c["role"] == "timing"]
     assert omp, "s000 is parallel -> the omp-emit lane must produce cells"

@@ -46,7 +46,9 @@ def translate(spec: BenchSpec,
         # forever (matches build.run's NF_COMPILE_TIMEOUT ceiling); a timeout is just a translate
         # failure -> caller records the cell as errored and continues.
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True,
+            res = subprocess.run(cmd,
+                                 capture_output=True,
+                                 text=True,
                                  timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"numpyto timed out for {name} (target={target}) "

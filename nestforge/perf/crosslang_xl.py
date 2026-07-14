@@ -305,8 +305,7 @@ def render_tables(out: Path) -> str:
         "FP-precision-level x vectorizer-cost-model point; the winner is the fastest cell that validates at "
         "its level's tolerance. `fp speedup` = strict-ieee time / winner time.", "",
         "| kernel | corpus | preset | language | compiler | winner fp/cost | strict maxdiff | winner (us) "
-        "| fp speedup |",
-        "|" + "---|" * 9
+        "| fp speedup |", "|" + "---|" * 9
     ]
     ok_by_lang: Dict[str, int] = {}
     tot_by_lang: Dict[str, int] = {}

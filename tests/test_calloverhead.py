@@ -39,8 +39,9 @@ def test_signature_params_missing_symbol_raises():
 def test_runner_source_inline_includes_kernel(tmp_path):
     kc = tmp_path / "s000.c"
     kc.write_text(C_SRC)
-    src = co.runner_source("s000_fp64", "double * restrict a, double * restrict b, int64_t LEN_1D",
-                           ["a", "b", "LEN_1D"], kernel_c=kc)
+    src = co.runner_source("s000_fp64",
+                           "double * restrict a, double * restrict b, int64_t LEN_1D", ["a", "b", "LEN_1D"],
+                           kernel_c=kc)
     assert f'#include "{kc.resolve()}"' in src  # inline build includes the kernel TU
     assert "void run_s000_fp64(" in src
     assert "s000_fp64(a, b, LEN_1D)" in src  # forwards by name
@@ -56,8 +57,13 @@ def test_runner_source_external_declares_extern(tmp_path):
 def test_render_tables_computes_ratios_and_geomean(tmp_path):
     (tmp_path / "tsvc2_s000.json").write_text(
         json.dumps({
-            "key": "s000", "compiler": "gnu", "inline_us": 1.0, "external_lto_us": 1.02, "external_us": 1.5,
-            "call_overhead": 1.5, "lto_overhead": 1.02
+            "key": "s000",
+            "compiler": "gnu",
+            "inline_us": 1.0,
+            "external_lto_us": 1.02,
+            "external_us": 1.5,
+            "call_overhead": 1.5,
+            "lto_overhead": 1.02
         }))
     (tmp_path / "tsvc2_bad.json").write_text(json.dumps({"key": "bad", "skipped": "emit: UnsupportedNest"}))
     report = co.render_tables(tmp_path)
@@ -72,16 +78,24 @@ def test_plot_calloverhead_smoke(tmp_path):
     and a non-finite external time -> PNG + CSV land, the skipped kernel is dropped, non-finite is empty."""
     (tmp_path / "tsvc2_s000.json").write_text(
         json.dumps({
-            "key": "s000", "compiler": "gnu", "inline_us": 1.0, "external_lto_us": 1.02, "external_us": 1.5,
-            "call_overhead": 1.5, "lto_overhead": 1.02
+            "key": "s000",
+            "compiler": "gnu",
+            "inline_us": 1.0,
+            "external_lto_us": 1.02,
+            "external_us": 1.5,
+            "call_overhead": 1.5,
+            "lto_overhead": 1.02
         }))
     (tmp_path / "tsvc2_s112.json").write_text('{"key": "s112", "compiler": "gnu", "inline_us": 1.0, '
                                               '"external_us": Infinity, "external_lto_us": null, '
                                               '"call_overhead": null, "lto_overhead": null}')
     (tmp_path / "tsvc2_bad.json").write_text(json.dumps({"key": "bad", "skipped": "emit failed"}))
 
-    subprocess.run([sys.executable, str(PLOT_CALLOVERHEAD), "--results-dir", str(tmp_path)],
-                   capture_output=True, text=True, check=True)
+    subprocess.run([sys.executable, str(PLOT_CALLOVERHEAD), "--results-dir",
+                    str(tmp_path)],
+                   capture_output=True,
+                   text=True,
+                   check=True)
 
     assert (tmp_path / "calloverhead.png").exists()
     with (tmp_path / "calloverhead.csv").open(newline="") as handle:

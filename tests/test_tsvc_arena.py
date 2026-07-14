@@ -397,7 +397,13 @@ def test_arena_multinest_s152_aggregates_and_validates(tmp_path):
     if not tcs:
         pytest.skip("no gcc")
     k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
-    res = tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", seed=0, reps=3, random_sizes=False,
+    res = tsvc_arena.run_kernel(k,
+                                tcs,
+                                "skip-taskloops",
+                                "baseline",
+                                seed=0,
+                                reps=3,
+                                random_sizes=False,
                                 workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
     # the roster records both nests with distinct entry points.
@@ -436,8 +442,8 @@ def test_link_multinest_s152_verifies_every_nest_symbol(tmp_path):
     k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
     wd = tmp_path / "wd_s152"
     wd.mkdir()
-    (seed_dir / "s152.json").write_text(json.dumps(tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", 0, 3,
-                                                                         False, wd)))
+    (seed_dir / "s152.json").write_text(
+        json.dumps(tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", 0, 3, False, wd)))
     report = tsvc_arena.link_whole_program(out, 0, tcs, "baseline", "skip-taskloops")
     assert "2 symbols verified present, 0 missing" in report, report
     lib = ctypes.CDLL(str(seed_dir / "link" / "libtsvc_all.so"))

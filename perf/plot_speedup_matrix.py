@@ -139,8 +139,7 @@ def build_matrix(kernels: List[dict], baseline_compiler: str, baseline_label: st
         coords = {cell_axes(c) for c in cells}
         for coord in coords:
             comp, lang, par, cost, fp = coord
-            t = kernel_time_by_nest(
-                cells, lambda c, coord=coord: cell_axes(c) == coord)
+            t = kernel_time_by_nest(cells, lambda c, coord=coord: cell_axes(c) == coord)
             if t is not None and t > 0.0:
                 samples.setdefault(coord, []).append(base / t)
     geo = {k: g for k, sps in samples.items() if (g := geomean(sps)) is not None}
@@ -162,8 +161,10 @@ def render_matrix_md(tabs: List[MatrixTab]) -> str:
     for tab in tabs:
         lines += [f"## Speedup vs {tab.baseline} default (C, sequential, default cost, default FP)", ""]
         if not tab.rows or not tab.cols:
-            lines += [f"_no data for the {tab.baseline} baseline (compiler absent or its default cell "
-                      "did not validate)_", ""]
+            lines += [
+                f"_no data for the {tab.baseline} baseline (compiler absent or its default cell "
+                "did not validate)_", ""
+            ]
             continue
         head = "| compiler / lang | " + " | ".join(f"{p}/{c}/{f}" for p, c, f in tab.cols) + " |"
         lines += [head, "|" + "---|" * (len(tab.cols) + 1)]
@@ -212,7 +213,11 @@ def plot_scatter(points: List[Tuple[str, float, str]], baseline_label: str, out_
     x = kernel rank (sorted by speedup), y = speedup (log scale); a dashed 1.0 line marks parity."""
     fig, ax = plt.subplots(figsize=(11.0, 5.0))
     if not points:
-        ax.text(0.5, 0.5, f"no kernels with a {baseline_label} baseline", ha="center", va="center",
+        ax.text(0.5,
+                0.5,
+                f"no kernels with a {baseline_label} baseline",
+                ha="center",
+                va="center",
                 transform=ax.transAxes)
         ax.set_axis_off()
         fig.savefig(out_png, dpi=120)
@@ -230,11 +235,14 @@ def plot_scatter(points: List[Tuple[str, float, str]], baseline_label: str, out_
     ax.set_ylabel(f"nest-forge best / {baseline_label} default")
     geo = geomean(ys)
     seen = {p[2] for p in pts}
-    handles = [plt.Line2D([0], [0], marker="o", linestyle="", color=palette.get(c, "#888888"), label=c)
-               for c in sorted(seen)]
+    handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="", color=palette.get(c, "#888888"), label=c) for c in sorted(seen)
+    ]
     ax.legend(handles=handles, title="winning compiler", fontsize=8, loc="upper left")
-    ax.set_title(f"Per-kernel speedup of nest-forge best vs {baseline_label} default  |  "
-                 f"geomean {('n/a' if geo is None else f'{geo:.2f}x')}", fontsize=10)
+    ax.set_title(
+        f"Per-kernel speedup of nest-forge best vs {baseline_label} default  |  "
+        f"geomean {('n/a' if geo is None else f'{geo:.2f}x')}",
+        fontsize=10)
     fig.tight_layout()
     fig.savefig(out_png, dpi=120)
     plt.close(fig)

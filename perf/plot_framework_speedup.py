@@ -57,8 +57,13 @@ DEFAULT_PARALLEL, DEFAULT_COST, DEFAULT_FP = "sequential", "default", "default-f
 
 #: Same categorical palette as plot_speedup_matrix / plot_vectorization so compiler hues match across
 #: the whole report. ``nest-forge`` (the best-of envelope) gets a distinct dark series.
-PALETTE: Dict[str, str] = {"gcc": "#4c72b0", "clang": "#dd8452", "nvhpc": "#55a868",
-                           "intel": "#c44e52", "nest-forge": "#222222"}
+PALETTE: Dict[str, str] = {
+    "gcc": "#4c72b0",
+    "clang": "#dd8452",
+    "nvhpc": "#55a868",
+    "intel": "#c44e52",
+    "nest-forge": "#222222"
+}
 MARKERS: Dict[str, str] = {"gcc": "o", "clang": "s", "nvhpc": "^", "intel": "D", "nest-forge": "*"}
 
 
@@ -125,9 +130,8 @@ def baseline_time(kernel: dict, compiler: str, lang: str) -> Optional[float]:
     absent or unvalidated for any nest."""
     cells = timing_cells(kernel)
     return kernel_time_by_nest(
-        cells, lambda c: c.get("compiler") == compiler and c.get("language") == lang
-        and c.get("parallel") == DEFAULT_PARALLEL and c.get("cost_model") == DEFAULT_COST
-        and c.get("fp_mode") == DEFAULT_FP)
+        cells, lambda c: c.get("compiler") == compiler and c.get("language") == lang and c.get("parallel") ==
+        DEFAULT_PARALLEL and c.get("cost_model") == DEFAULT_COST and c.get("fp_mode") == DEFAULT_FP)
 
 
 def best_time(cells: List[dict], predicate: Callable[[dict], bool]) -> Optional[float]:
@@ -205,14 +209,23 @@ def plot_baseline(label: str, data: Dict[str, Dict[str, float]], frameworks: Lis
             # framework points so gcc/clang markers (which often sit on it) stay visible.
             ax.plot(xs, ys, "-", color=PALETTE[s], lw=1.1, alpha=0.85, zorder=1, label=label)
         else:
-            ax.scatter(xs, ys, s=26, marker=MARKERS.get(s, "o"), c=PALETTE.get(s, "#888888"),
-                       alpha=0.8, edgecolors="none", zorder=2, label=label)
+            ax.scatter(xs,
+                       ys,
+                       s=26,
+                       marker=MARKERS.get(s, "o"),
+                       c=PALETTE.get(s, "#888888"),
+                       alpha=0.8,
+                       edgecolors="none",
+                       zorder=2,
+                       label=label)
 
     ax.axhline(1.0, linestyle="--", linewidth=1.0, color="#8a8a86")
     ax.set_yscale("log")
     ax.set_ylabel(f"speedup vs {label.replace('_', ' ')} default  (log, >1 = faster)")
-    ax.set_title(f"Per-kernel speedup of all frameworks vs {label.replace('_', ' ')} default "
-                 f"(sorted by nest-forge best)", fontsize=11)
+    ax.set_title(
+        f"Per-kernel speedup of all frameworks vs {label.replace('_', ' ')} default "
+        f"(sorted by nest-forge best)",
+        fontsize=11)
     ax.set_xticks(range(len(kernels)))
     fs = max(3.0, min(7.0, 620.0 / max(1, len(kernels))))
     ax.set_xticklabels(kernels, rotation=90, fontsize=fs)
@@ -222,7 +235,7 @@ def plot_baseline(label: str, data: Dict[str, Dict[str, float]], frameworks: Lis
     fig.tight_layout()
     out_pdf = out_png.with_suffix(".pdf")
     fig.savefig(out_png, dpi=300, bbox_inches="tight")  # high-dpi raster
-    fig.savefig(out_pdf, bbox_inches="tight")            # vector (scales losslessly)
+    fig.savefig(out_pdf, bbox_inches="tight")  # vector (scales losslessly)
     plt.close(fig)
     print(f"[framework-speedup] wrote {out_png} + {out_pdf} ({len(kernels)} kernels, series={series})")
     return geos
@@ -242,8 +255,7 @@ def render_md(results, out_path: Path) -> None:
         if not series:
             lines += ["_no measured kernels_", ""]
             continue
-        lines += ["| framework | geomean speedup | kernels | % faster than baseline |",
-                  "|---|---|---|---|"]
+        lines += ["| framework | geomean speedup | kernels | % faster than baseline |", "|---|---|---|---|"]
         for s in series:
             vals = [data[k][s] for k in data if s in data[k]]
             nf = sum(1 for v in vals if v > 1.0)
@@ -264,8 +276,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Per-framework speedup vs a single-compiler C++ baseline")
     ap.add_argument("--results-dir", required=True, help="dir of nestforge.perf.tsvc_full per-kernel JSON")
     ap.add_argument("--out-dir", default=None, help="override the output dir (default: the results dir)")
-    ap.add_argument("--baseline-lang", default="c++",
-                    help="single-toolchain baseline language (default: c++)")
+    ap.add_argument("--baseline-lang", default="c++", help="single-toolchain baseline language (default: c++)")
     args = ap.parse_args(argv)
 
     results_dir = Path(args.results_dir)

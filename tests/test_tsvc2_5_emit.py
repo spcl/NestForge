@@ -142,8 +142,10 @@ def test_float_value_scalar_is_double_not_truncated_in_compiled_c(tmp_path):
     assert f"double {float_syms[0]}" in sig, sig  # not `int64_t a_index`
 
     so = tmp_path / "lib.so"
-    r = subprocess.run([cc, "-O2", "-fPIC", "-shared", "-ffp-contract=off", str(csrc), "-o", str(so)],
-                       capture_output=True, text=True)
+    r = subprocess.run([cc, "-O2", "-fPIC", "-shared", "-ffp-contract=off",
+                        str(csrc), "-o", str(so)],
+                       capture_output=True,
+                       text=True)
     assert r.returncode == 0, r.stderr
 
     # bind by the actual C signature order + dtype-aware argtypes, run once, compare to the numpy oracle.

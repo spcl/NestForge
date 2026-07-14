@@ -150,14 +150,27 @@ def test_plot_speedup_matrix_smoke(tmp_path):
 
     def cell(comp, lang, par, cost, fp, med, nest=0, ok=True):
         return {
-            "opt_mode": "baseline", "language": lang, "compiler": comp, "parallel": par, "cost_model": cost,
-            "fp_mode": fp, "role": "timing", "nest": nest, "ok": ok, "maxdiff": 0.0, "median_us": med, "error": None
+            "opt_mode": "baseline",
+            "language": lang,
+            "compiler": comp,
+            "parallel": par,
+            "cost_model": cost,
+            "fp_mode": fp,
+            "role": "timing",
+            "nest": nest,
+            "ok": ok,
+            "maxdiff": 0.0,
+            "median_us": med,
+            "error": None
         }
 
     # kernel A: gcc default 10 (baseline); gcc omp-emit 4 -> 2.5x; clang default 12 (llvm baseline); clang omp 5.
     (tmp_path / "tsvc2_sA.json").write_text(
         json.dumps({
-            "key": "sA", "corpus": "tsvc2",
+            "key":
+            "sA",
+            "corpus":
+            "tsvc2",
             "cells": [
                 cell("gcc", "c", "sequential", "default", "default-fp", 10.0),
                 cell("gcc", "c", "omp-emit", "default", "default-fp", 4.0),
@@ -168,7 +181,10 @@ def test_plot_speedup_matrix_smoke(tmp_path):
     # kernel B: gcc default 20; clang default 18 -> nest-forge best vs gcc = 20/18 = 1.11.
     (tmp_path / "tsvc2_sB.json").write_text(
         json.dumps({
-            "key": "sB", "corpus": "tsvc2",
+            "key":
+            "sB",
+            "corpus":
+            "tsvc2",
             "cells": [
                 cell("gcc", "c", "sequential", "default", "default-fp", 20.0),
                 cell("clang", "c", "sequential", "default", "default-fp", 18.0),

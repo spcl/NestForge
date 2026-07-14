@@ -263,8 +263,8 @@ def _driver_lib_dir(compiler: str, soname: str) -> Optional[str]:
     that will link it can. Cached: the answer is fixed per (compiler, soname) for the whole sweep."""
     for cand in (f"lib{soname}.so", f"lib{soname}.dylib"):
         try:
-            out = subprocess.run([compiler, f"-print-file-name={cand}"],
-                                 capture_output=True, text=True, timeout=30).stdout.strip()
+            out = subprocess.run([compiler, f"-print-file-name={cand}"], capture_output=True, text=True,
+                                 timeout=30).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             continue
         if out and os.path.isabs(out) and os.path.exists(out):

@@ -364,8 +364,13 @@ def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: 
         measure_nest(cc, u.csrc, cflags, u.symbol, u.order, u.argtypes, u.boundary, u.inputs, u.sizes, u.oracle, reps,
                      atol, family, label, workdir) for u in units
     ]
-    return Cell(family, label, cflags, all(c.ok for c in per), max(c.maxdiff for c in per),
-                sum(c.time_us for c in per), sum(c.compile_us for c in per),
+    return Cell(family,
+                label,
+                cflags,
+                all(c.ok for c in per),
+                max(c.maxdiff for c in per),
+                sum(c.time_us for c in per),
+                sum(c.compile_us for c in per),
                 error=next((c.error for c in per if c.error), None))
 
 
@@ -676,7 +681,9 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
             archive = link_dir / f"lib{kernel.key}.a"
             if archive.exists():
                 archive.unlink()
-            subprocess.run([shutil.which("ar") or "ar", "rcs", str(archive), *[str(o) for o in objs]], check=True,
+            subprocess.run([shutil.which("ar") or "ar", "rcs",
+                            str(archive), *[str(o) for o in objs]],
+                           check=True,
                            capture_output=True)
             archives.append((archive, symbols))
         except Exception as e:

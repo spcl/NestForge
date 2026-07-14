@@ -41,7 +41,10 @@ _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
 # in the kernel (e.g. s13110's ``aa[i, j] > maxv``) materialises a boolean buffer/transient, and DaCe
 # lowers ``dace.bool`` to a 1-byte C ``bool`` (== ctypes.c_bool).
 CTYPE = {
-    "float64": ctypes.c_double, "float32": ctypes.c_float, "int64": ctypes.c_int64, "int32": ctypes.c_int32,
+    "float64": ctypes.c_double,
+    "float32": ctypes.c_float,
+    "int64": ctypes.c_int64,
+    "int32": ctypes.c_int32,
     "bool": ctypes.c_bool
 }
 

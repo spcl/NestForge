@@ -414,8 +414,13 @@ def compiler_for(lang: str, tc: Toolchain, fortran_by_family: Dict[str, str]) ->
     return fortran_by_family.get(tc.name)
 
 
-def emit_lang_sources(prep, boundary, workdir: Path, languages: List[str], validate_sizes: Dict[str, int],
-                      name: str, parallel: bool = False) -> Dict[str, Tuple[Path, List[str], list]]:
+def emit_lang_sources(prep,
+                      boundary,
+                      workdir: Path,
+                      languages: List[str],
+                      validate_sizes: Dict[str, int],
+                      name: str,
+                      parallel: bool = False) -> Dict[str, Tuple[Path, List[str], list]]:
     """Emit the numpyto sources for the requested languages and parse each signature.
 
     Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the PER-NEST base name
@@ -495,7 +500,12 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
         omp_src: Dict[str, Tuple[Path, List[str], list]] = {}
         if parallel:
             try:
-                omp_src = emit_lang_sources(prep, boundary, nest_dir / "omp", languages, validate_sizes, name,
+                omp_src = emit_lang_sources(prep,
+                                            boundary,
+                                            nest_dir / "omp",
+                                            languages,
+                                            validate_sizes,
+                                            name,
                                             parallel=True)
             except (RuntimeError, StopIteration) as e:
                 print(f"[tsvc-full] {name}: no OpenMP variant ({type(e).__name__}: {str(e)[:120]})")
@@ -601,7 +611,13 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     psrc = omp[0]
                 for cost in cost_models_for(parallel, axes["cost_models"], axes.get("matrix_preset", "full")):
                     for fp in axes["fp_modes"]:
-                        cflags, reason = flags.lane_flags(fam, fp, cost, parallel, lang, nthreads, cxx_std,
+                        cflags, reason = flags.lane_flags(fam,
+                                                          fp,
+                                                          cost,
+                                                          parallel,
+                                                          lang,
+                                                          nthreads,
+                                                          cxx_std,
                                                           compiler=exe)
                         cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing", nest=nest_idx)
                         if cflags is None:
@@ -611,7 +627,13 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                         add(cell, exe, cflags, psrc, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
             # correctness GATE cell: strict-ieee, sequential, default cost (bit-exact vs the oracle)
             if axes["gate"]:
-                cflags, _ = flags.lane_flags(fam, "strict-ieee", "default", "sequential", lang, nthreads, cxx_std,
+                cflags, _ = flags.lane_flags(fam,
+                                             "strict-ieee",
+                                             "default",
+                                             "sequential",
+                                             lang,
+                                             nthreads,
+                                             cxx_std,
                                              compiler=exe)
                 gate = Cell(opt_mode, lang, tc.name, "sequential", "default", "strict-ieee", "gate", nest=nest_idx)
                 add(gate, exe, cflags, src, flags.FP_ATOL["strict-ieee"], symbol, order, argtypes, ctx_key)
@@ -912,9 +934,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                     default=list(tsvc.OPT_MODES),
                     choices=list(tsvc.OPT_MODES),
                     dest="opt_modes")
-    ap.add_argument("--parallelism", default="both", choices=["sequential", "auto-par", "omp-emit", "both"],
+    ap.add_argument("--parallelism",
+                    default="both",
+                    choices=["sequential", "auto-par", "omp-emit", "both"],
                     help="'both' = all of sequential/auto-par/omp-emit; omp-emit uses OUR "
-                         "``#pragma omp`` source (only for DaCe-parallel nests).")
+                    "``#pragma omp`` source (only for DaCe-parallel nests).")
     ap.add_argument("--cost-models",
                     nargs="*",
                     default=list(flags.COST_MODELS),
@@ -930,9 +954,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     choices=["full", "lean"],
                     dest="matrix_preset",
                     help="'full' = sweep every cost model on every parallel mode; 'lean' = sweep the cost "
-                         "(vectorizer) axis only on the sequential single-core lane and collapse auto-par/"
-                         "omp-emit to the compiler default (roughly halves the timing cells, keeps all "
-                         "single-core vectorization data). Identical-flag cost cells are always deduped.")
+                    "(vectorizer) axis only on the sequential single-core lane and collapse auto-par/"
+                    "omp-emit to the compiler default (roughly halves the timing cells, keeps all "
+                    "single-core vectorization data). Identical-flag cost cells are always deduped.")
     ap.add_argument("--no-gate", action="store_true", help="skip the strict-ieee bit-exact correctness gate cells")
     ap.add_argument("--profile-preset",
                     default="PROF",

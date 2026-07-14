@@ -90,8 +90,7 @@ def write_csv(path: Path, rows: List[CallRow]) -> None:
             writer.writerow([key, cell(inl), cell(extl), cell(ext), cell(co), cell(lo)])
 
 
-def plot_calloverhead(rows: List[CallRow], geo_call: Optional[float], geo_lto: Optional[float],
-                      out_png: Path) -> None:
+def plot_calloverhead(rows: List[CallRow], geo_call: Optional[float], geo_lto: Optional[float], out_png: Path) -> None:
     """Grouped inline / external-lto / external bars per kernel, sorted by call overhead desc. Only kernels
     with a finite inline time are plotted; the two geomeans go in the title."""
     plottable = [(k, i, el, e, c) for (k, i, el, e, c, _l) in rows if i is not None]
