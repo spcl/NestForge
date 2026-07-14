@@ -190,14 +190,23 @@ def rewrite_math_prefix(code: str) -> str:
     return _MATH_PREFIX_CALL.sub(repl, code)
 
 
+#: a C++ ``decltype(<connector>)`` cast prefix that DaCe emits in generated tasklet code (e.g. the
+#: ``numpy.linspace`` tasklet writes ``decltype(__out)(stop - start)`` to force the connector's type). The
+#: connector name holds no parentheses, so this strips just the ``decltype(...)`` prefix and leaves the
+#: parenthesized value it casts -- numpy promotes types itself, so the cast is a no-op on the reference.
+_DECLTYPE_CAST = re.compile(r"\bdecltype\s*\([^()]*\)")
+
+
 def normalize_casts(code: str) -> str:
     """Rewrite DaCe dtype casts, math intrinsics, and sympy user-functions to numpy so the kernel needs
     no ``dace``/``math`` runtime import.
 
-    All four rewrites are value preserving. Order matters: the qualified ``math.`` rewrite runs before
-    the bare-name one, whose lookbehind then correctly skips the produced ``np.sin``; dtype casts and
+    All rewrites are value preserving. Order matters: the C++ ``decltype`` cast is stripped first (it wraps
+    a parenthesized value the later rewrites still see); the qualified ``math.`` rewrite runs before the
+    bare-name one, whose lookbehind then correctly skips the produced ``np.sin``; dtype casts and
     user-functions are independent.
     """
+    code = _DECLTYPE_CAST.sub("", code)
     code = _DACE_CAST.sub(lambda m: _DACE_DTYPES[m.group(1)], code)
     code = rewrite_math_prefix(code)
     code = _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], code)
