@@ -26,7 +26,7 @@ $CF --version >/dev/null 2>&1 || { echo "clang-format not available (apt install
 # shellcheck disable=SC2207
 PY=($(git ls-files '*.py'))
 # shellcheck disable=SC2207
-CC=($(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hpp' '*.hxx'))
+CC=($(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.cu' '*.cuh' '*.h' '*.hpp' '*.hxx'))
 
 rc=0
 if [ "${#PY[@]}" -gt 0 ]; then

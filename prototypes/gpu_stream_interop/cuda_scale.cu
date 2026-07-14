@@ -5,7 +5,8 @@
 
 __global__ void scale_kernel(const double* in, double* out, long n) {
     long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
-    if (i < n) out[i] = in[i] * 2.0;
+    if (i < n)
+        out[i] = in[i] * 2.0;
 }
 
 extern "C" void cuda_scale(const double* d_in, double* d_out, long n, void* stream) {

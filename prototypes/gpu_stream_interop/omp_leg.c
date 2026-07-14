@@ -12,7 +12,8 @@
 #include <stddef.h>
 
 void omp_add10(double* d_x, long n, void* stream) {
-    (void)stream;  // OMP-target cannot bind to an external stream; ordering is bridged by the caller
-    #pragma omp target teams distribute parallel for is_device_ptr(d_x)
-    for (long i = 0; i < n; ++i) d_x[i] += 10.0;
+    (void)stream; // OMP-target cannot bind to an external stream; ordering is bridged by the caller
+#pragma omp target teams distribute parallel for is_device_ptr(d_x)
+    for (long i = 0; i < n; ++i)
+        d_x[i] += 10.0;
 }
