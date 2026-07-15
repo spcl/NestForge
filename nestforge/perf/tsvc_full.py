@@ -91,11 +91,11 @@ from nestforge.build import BuildOptions, codegen_impls_available, default_codeg
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
-from nestforge.perf import flags
+from nestforge.perf import flags, pluto_lane
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
-from nestforge.perf.harness import (RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable, my_slice, native_setup,
-                                    native_symbol, rank_and_size, run_compile, signature_order)
+from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable,
+                                    my_slice, native_setup, native_symbol, rank_and_size, run_compile, signature_order)
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
@@ -756,6 +756,79 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     return pendings, jobs
 
 
+# --- Pluto polyhedral lane (opt-in --pluto): polycc transform of the emitted scop -------------------
+# A distinct polyhedral TOOLCHAIN (not a compiler flag): polycc tiles + auto-parallelizes the emitted
+# ``<base>_pluto_input.c`` scop offline into a different C source we then compile. The transformed function
+# keeps a VLA-parameter signature (size symbols FIRST) that signature_order cannot parse, so the ABI comes
+# from the authoritative ``_pluto_binding.json`` (see nestforge.perf.pluto_lane). At the C ABI a VLA array
+# param decays to a pointer, so ``call_c`` marshals it unchanged given the pluto (size-first) order. polycc
+# is almost always ABSENT off the optarena container -> the lane records a skip reason, never a crash.
+def pluto_validate_work(so: Path, symbol: str, order: List[str], argtypes, boundary, validate_sizes, oracle) -> Dict:
+    """Fresh-buffer correctness run of the compiled Pluto ``.so`` vs the numpy oracle, in the forked child.
+    Marshals with the Pluto (size-symbols-first) ``order`` -- the VLA params decay to pointers, so the same
+    ``call_c`` the C lane uses binds them correctly once the order is right."""
+    inputs = make_inputs(boundary, validate_sizes, seed=0)  # fresh + correct (the call runs in place)
+    outputs, _ = call_c(so, symbol, order, argtypes, boundary, inputs, validate_sizes, 1)
+    outs = {o: outputs[o] for o in boundary.outputs if o in outputs}
+    if not outs:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
+        return {"ok": False, "maxdiff": float("inf"), "unchecked": True}
+    md = float(maxdiff({o: oracle[o] for o in outs}, outs))
+    return {"ok": bool(md <= 1e-6), "maxdiff": md}
+
+
+def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) -> Dict:
+    """Pluto lane for ONE nest: locate the emitted scop, gate it (no-scop / polycc-absent / non-affine),
+    run ``polycc``, compile the transform, validate@small + time@prof. Returns a status dict with a
+    ``skip`` key for a recorded skip, or the usual ``ok``/``maxdiff``/timing shape. ``cc`` is a GNU C
+    compiler; when it or the scop is missing the lane skips cleanly."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    label = {"compiler": "pluto", "nest": nc["nest_idx"]}
+    src_dir = next(iter(nc["lang_src"].values()))[0].parent  # every nest source sits in the nest dir
+    pluto_input = pluto_lane.find_pluto_input(sorted(src_dir.glob("*.c")))
+    reason = pluto_lane.pluto_gate_reason(pluto_input)
+    if reason is not None:
+        return {**label, "skip": reason, **summarize_times([])}
+    if cc is None:
+        return {**label, "skip": "skip:not-installed:no-gnu-cc", **summarize_times([])}
+    binding = pluto_lane.read_pluto_binding(pluto_input)
+    if binding is None:
+        return {**label, "skip": "skip:unsupported:no-binding", **summarize_times([])}
+    symbol, order = pluto_lane.binding_symbol_and_order(binding)
+    boundary = nc["boundary"]
+    # ABI guard (never trust the manifest -- the plan's Pluto risk): every binding arg must be a real
+    # boundary array or size symbol, else the reordered VLA marshaling would land a size in a pointer slot.
+    known = set(boundary.standalone_sdfg.arrays) | set(nc["validate_sizes"])
+    unknown = [a for a in order if a not in known]
+    if unknown:
+        return {**label, "ok": False, "error": f"pluto binding args not in boundary: {unknown}", **summarize_times([])}
+    out_c = pluto_lane.pluto_output_path(pluto_input)
+    ok, pre = pluto_lane.run_polycc(pluto_input, out_c, COMPILE_TIMEOUT_S)
+    if not ok:
+        return {**label, "skip": pre, **summarize_times([])}
+    so = workdir / f"pluto_n{nc['nest_idx']}.so"
+    cflags = list(flags.base_flags("gnu")) + list(pluto_lane.PLUTO_EXTRA_FLAGS) + flags.openmp_rpath_flags(cc, "gnu")
+    cok, compile_us, cerr = run_compile([cc, *cflags, str(out_c), "-o", str(so)])
+    if not cok:
+        return {**label, "ok": False, "error": cerr, "compile_us": compile_us, **summarize_times([])}
+    argtypes = c_argtypes(order, boundary)
+    vres = run_isolated(
+        lambda: pluto_validate_work(so, symbol, order, argtypes, boundary, nc["validate_sizes"], nc["oracle"]))
+    if "error" in vres:
+        return {**label, "ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
+    tres = run_isolated(
+        lambda: nest_timing_work(so, symbol, order, argtypes, nc["time_inputs"], nc["time_sizes"], reps),
+        timeout=RUN_TIMEOUT_S)
+    stats = summarize_times([]) if "error" in tres else tres
+    return {
+        **label, "ok": vres["ok"],
+        "maxdiff": vres["maxdiff"],
+        "unchecked": vres.get("unchecked", False),
+        "compile_us": compile_us,
+        "error": tres.get("error"),
+        **stats
+    }
+
+
 def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str, str], strategy: str, axes: Dict,
                reps: int, profile_preset: str, nthreads: int, cxx_std: str, compile_jobs: int, workdir: Path) -> Dict:
     """Run all three lanes + the full lane-3 sweep for one kernel; return the JSON-able result."""
@@ -832,6 +905,17 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
                 vcell["nest"] = nc["nest_idx"]
                 dace_vec_cells.append(vcell)
             result["dace_cpp_vec"] = dace_vec_cells
+
+    # Optional Pluto polyhedral lane: polycc transform of the emitted scop, one cell per nest. Opt-in
+    # (--pluto) and a distinct toolchain -- almost always ABSENT off the optarena container, so each nest
+    # records a skip reason. Uses a GNU C compiler (the transformed output is plain C).
+    if axes.get("pluto"):
+        gnu_cc = next((tc.cc for tc in toolchains if tc.fp_family == "gnu" and tc.cc is not None), None)
+        pluto_cells: List[Dict] = []
+        for nc in base_ctxs:
+            pcell = measure_pluto_lane(nc, gnu_cc, reps, workdir / "pluto" / f"n{nc['nest_idx']}")
+            pluto_cells.append(pcell)
+        result["pluto"] = pluto_cells
 
     # lane 3: enumerate + dedup-compile + validate + time. Each opt-mode holds a LIST of per-nest ctxs; every
     # nest is enumerated independently (its own emitted sources + boundary/oracle/sizes + symbol).
@@ -978,6 +1062,8 @@ def render_tables(out: Path) -> str:
     speedups: List[float] = []
     codegen_speedups: List[float] = []  # per-kernel legacy/experimental DaCe-codegen ratios (the codegen axis)
     vec_speedups: List[float] = []  # per-kernel plain-DaCe / vectorized-DaCe ratios (the vectorization axis)
+    pluto_speedups: List[float] = []  # per-kernel DaCe-cpp / Pluto ratios (the polyhedral lane), where it ran
+    pluto_skips: Dict[str, int] = {}  # skip-reason -> count, so an absent polycc is reported, not hidden
     novalidate = 0
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
         # dace_cpp is a LIST of per-nest cells (older JSON: single-dict / empty tolerated), now also fanned
@@ -1010,6 +1096,17 @@ def render_tables(out: Path) -> str:
                                                                                        for m in vec_meds)) else None
         if dace_us is not None and vec_us:
             vec_speedups.append(dace_us / vec_us)
+        # Pluto polyhedral lane: DaCe-cpp total / Pluto total, only when EVERY nest's Pluto cell timed
+        # (a skip on any nest -> the kernel is not comparable). Skips are tallied by reason instead.
+        pluto_list = k.get("pluto") or []
+        for pc in pluto_list:
+            if pc.get("skip"):
+                pluto_skips[pc["skip"]] = pluto_skips.get(pc["skip"], 0) + 1
+        pluto_meds = [d.get("median_us") for d in pluto_list if d.get("ok") and not d.get("skip")]
+        pluto_us = sum(pluto_meds) if (pluto_list and len(pluto_meds) == len(pluto_list)
+                                       and all(finite(m) for m in pluto_meds)) else None
+        if dace_us is not None and pluto_us:
+            pluto_speedups.append(dace_us / pluto_us)
         nat = k.get("native") or {}
         nat_med = nat.get("median_us")
         nat_us = nat_med if (nat.get("ok") and finite(nat_med)) else None
@@ -1052,6 +1149,18 @@ def render_tables(out: Path) -> str:
             "", f"**Geomean DaCe plain / tile-op-vectorized speedup:** {vgeo:.3f}x over "
             f"{len(vec_speedups)} kernels where the vectorized lane's best config timed "
             "(>1 = the multi-dim tile-op vectorizer faster; the vectorization axis)."
+        ]
+    if pluto_speedups:
+        pgeo = math.exp(sum(math.log(s) for s in pluto_speedups) / len(pluto_speedups))
+        lines += [
+            "", f"**Geomean DaCe-cpp / Pluto speedup:** {pgeo:.3f}x over {len(pluto_speedups)} kernels where "
+            "every nest's Pluto lane timed (>1 = the polyhedral Pluto transform faster; the Pluto lane)."
+        ]
+    if pluto_skips:
+        summary = ", ".join(f"{n}x {reason}" for reason, n in sorted(pluto_skips.items()))
+        lines += [
+            "", f"**Pluto lane skips (per nest):** {summary}. A skip is recorded, never a silent drop "
+            "(polycc is a separate polyhedral toolchain, absent off the optarena container)."
         ]
     if novalidate:
         lines += [
@@ -1118,6 +1227,7 @@ def resolved_axes(args) -> Dict:
         "matrix_preset": args.matrix_preset,
         "veclibs": resolve_veclibs(args.veclibs),
         "vectorize": args.vectorize,
+        "pluto": args.pluto,
     }
 
 
@@ -1164,6 +1274,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     action="store_true",
                     help="add the vectorized DaCe lane: coordinate-descent over the multi-dim tile-op "
                     "VectorizeConfig per nest (compiles ~15-30 cells/nest; off by default).")
+    ap.add_argument("--pluto",
+                    action="store_true",
+                    help="add the Pluto polyhedral lane: polycc-transform the emitted scop per nest and "
+                    "time it (needs polycc on PATH; each nest records a skip reason when absent).")
     ap.add_argument("--profile-preset",
                     default="PROF",
                     choices=["S", "M", "L", "PROF", "XL"],
