@@ -117,3 +117,30 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: Optional[
     if isinstance(node, LoopRegion):
         return extract_loop_nest(parent_sdfg, node, name=name)
     raise TypeError(f"cannot extract node of type {type(node).__name__}; expected MapEntry or LoopRegion")
+
+
+def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
+    """A :class:`Boundary` wrapping the WHOLE (un-split) kernel SDFG -- the whole-program-scope lane, where
+    each external tool receives the entire program and auto-optimizes across nests, instead of one extracted
+    nest.
+
+    There is no extraction and no parent: ``standalone_sdfg`` is a detached copy of the whole SDFG, and the
+    replacement handles (``nsdfg_node``/``state``/``parent_sdfg``) are ``None`` -- the whole-program lane
+    emits + compiles + times, it never swaps a libnode. ``inputs``/``outputs`` come from the SDFG's
+    read/write sets (an in-place array is in BOTH, as for a nest boundary); ``symbols`` are the non-array
+    arguments (the size symbols). Restricted to NON-transient arrays: transients are the kernel's own
+    scratch, allocated by the emitted code, not part of the caller interface -- exactly the split
+    :func:`boundary_from_nsdfg` gets for free from the nest's connectors."""
+    detached = detach(sdfg)
+    read, write = detached.read_and_write_sets()
+    arrays = {n for n, desc in detached.arrays.items() if not desc.transient}
+    inputs = sorted(a for a in arrays if a in read)
+    outputs = sorted(a for a in arrays if a in write)
+    symbols = [a for a in detached.arglist() if a not in detached.arrays]
+    return Boundary(inputs=inputs,
+                    outputs=outputs,
+                    symbols=symbols,
+                    nsdfg_node=None,
+                    state=None,
+                    standalone_sdfg=detached,
+                    parent_sdfg=None)
