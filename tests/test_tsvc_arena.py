@@ -13,7 +13,7 @@ from nestforge.emit_numpy import normalize_casts
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
-from nestforge.perf import crosslang_xl, flags, staticlib_overhead, tsvc_arena
+from nestforge.perf import crosslang_xl, flags, harness, staticlib_overhead, tsvc_arena
 from nestforge.strategies import get_strategy
 
 
@@ -46,7 +46,7 @@ def test_iter_and_filter_kernels():
 
 def test_sample_sizes_indices_zero_shapes_sized():
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    sdfg = tsvc.build_sdfg(k, "baseline")
+    sdfg = tsvc.build_sdfg(k, "simplify-parallel")
     parent, node = get_strategy("skip-taskloops")(sdfg)[0]
     boundary = extract_nest_to_sdfg(parent, node, name="s000")
     sizes = tsvc.sample_sizes(k, boundary, seed=0, random_sizes=False)
@@ -75,18 +75,6 @@ def test_discover_toolchains_present():
     assert tcs and tcs[0].name == "gcc" and tcs[0].cc  # gcc is on PATH in CI
 
 
-def test_single_openmp_runtime_drops_incompatible():
-    T = tsvc_arena.Toolchain
-    tcs = [
-        T("gcc", "gcc", "g++", (15, 0), "path"),
-        T("clang", "clang", "clang++", (21, 0), "path"),
-        T("nvhpc", "nvc", "nvc++", (26, 0), "path")
-    ]
-    kept = {t.name for t in tsvc_arena.restrict_to_single_openmp_runtime(tcs, "libomp")}
-    # gcc (gomp-compat) and clang (-fopenmp=libomp) can share libomp; nvc forces its native libnvomp.
-    assert kept == {"gcc", "clang"}
-
-
 def test_intel_is_its_own_fp_family():
     icx = tsvc_arena.Toolchain("intel", "icx", "icpx", (2026, 1), "path")
     assert icx.family == "llvm"  # OpenMP-runtime family: icx is clang-based
@@ -105,7 +93,7 @@ def test_tsvc2_5_corpus_loads():
 
 def test_preset_sizes_scale():
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    sdfg = tsvc.build_sdfg(k, "baseline")
+    sdfg = tsvc.build_sdfg(k, "simplify-parallel")
     parent, node = get_strategy("skip-taskloops")(sdfg)[0]
     b = extract_nest_to_sdfg(parent, node, name="s000")
     assert tsvc.sample_sizes(k, b, preset="XL")["LEN_1D"] == tsvc._PRESET["LEN_1D"]["XL"]
@@ -113,9 +101,9 @@ def test_preset_sizes_scale():
 
 
 def test_opt_modes_produce_valid_splittable_sdfgs():
-    # The pre-split axis is exactly {baseline, canonicalize}; each yields a validating SDFG on which
-    # the loopnest-splitting pass still finds a compute nest.
-    assert tsvc.OPT_MODES == ("baseline", "canonicalize")
+    # The pre-split axis is exactly {simplify-parallel, canonicalize, auto-opt}; each yields a validating
+    # SDFG on which the loopnest-splitting pass still finds a compute nest.
+    assert tsvc.OPT_MODES == ("simplify-parallel", "canonicalize", "auto-opt")
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
     for mode in tsvc.OPT_MODES:
         sdfg = tsvc.build_sdfg(k, mode)
@@ -185,7 +173,7 @@ def test_crosslang_2d_fortran_multiline_signature(tmp_path):
 
 
 def test_rank_and_size_raises_on_rank_without_size(monkeypatch):
-    for v in tsvc_arena._RANK_VARS + tsvc_arena._SIZE_VARS:
+    for v in harness.RANK_VARS + harness.SIZE_VARS:
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("PMIX_RANK", "2")  # a rank var but no recognized size var
     with pytest.raises(RuntimeError, match="no recognized size"):
@@ -229,7 +217,7 @@ def test_mpirun_crosslang_distributed_preset_s(tmp_path):
 
 def test_staticlib_overhead_run_kernel():
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    res = staticlib_overhead.run_kernel(k, "g++", reps=2, opt_mode="baseline", fast_libnodes=False)
+    res = staticlib_overhead.run_kernel(k, "g++", reps=2, opt_mode="simplify-parallel", fast_libnodes=False)
     assert "skipped" not in res, res.get("skipped")
     assert res["monolithic_ms"] > 0 and res["external_ms"] > 0 and res["overhead_ratio"] > 0
 
@@ -263,14 +251,14 @@ def test_run_isolated_kills_runaway():
 
 
 def test_abi_order_handles_empty_and_void_params():
-    assert tsvc_arena.abi_order("void k_fp64(void) {", "k_fp64") == []
-    assert tsvc_arena.abi_order("void k_fp64() {", "k_fp64") == []
-    assert tsvc_arena.abi_order("void k_fp64(double* a, int64_t N) {", "k_fp64") == ["a", "N"]
+    assert harness.signature_order("void k_fp64(void) {", "k_fp64") == []
+    assert harness.signature_order("void k_fp64() {", "k_fp64") == []
+    assert harness.signature_order("void k_fp64(double* a, int64_t N) {", "k_fp64") == ["a", "N"]
 
 
 # --- distributed (multi-rank) self-partition ----------------------------------------------------------
 def test_rank_and_size_reads_slurm_then_mpi(monkeypatch):
-    for v in tsvc_arena._RANK_VARS + tsvc_arena._SIZE_VARS:
+    for v in harness.RANK_VARS + harness.SIZE_VARS:
         monkeypatch.delenv(v, raising=False)
     assert tsvc_arena.rank_and_size() == (0, 1)  # plain single process
     monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "2")  # an mpirun (OpenMPI) launch
@@ -343,7 +331,7 @@ def test_run_kernel_three_columns(tmp_path):
     res = tsvc_arena.run_kernel(k,
                                 tcs,
                                 "skip-taskloops",
-                                "baseline",
+                                "simplify-parallel",
                                 seed=0,
                                 reps=3,
                                 random_sizes=False,
@@ -365,14 +353,14 @@ def test_tables_and_link_roundtrip(tmp_path):
         k = tsvc.iter_tsvc_kernels(only=[key])[0]
         wd = tmp_path / f"wd_{key}"
         wd.mkdir()
-        res = tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", 0, 3, False, wd)
+        res = tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "simplify-parallel", 0, 3, False, wd)
         (seed_dir / f"{key}.json").write_text(json.dumps(res))
 
     report = tsvc_arena.render_tables(out, 0)
     assert "2 kernels measured" in report and "s000" in report
     assert (seed_dir / "tables.md").exists()
 
-    link_report = tsvc_arena.link_whole_program(out, 0, tcs, "baseline", "skip-taskloops")
+    link_report = tsvc_arena.link_whole_program(out, 0, tcs, "simplify-parallel", "skip-taskloops")
     assert "symbols verified present" in link_report
     assert (seed_dir / "link" / "libtsvc_all.so").exists()
 
@@ -382,10 +370,10 @@ def test_extract_all_nests_single_and_multi():
     """The shared helper preserves the single-nest name/symbol (``<key>`` / ``<key>_fp64`` -- so the 148
     single-nest kernels are unchanged) and gives each nest of a multi-nest kernel a distinct ``_n<idx>``
     entry point, each extracted from its own FRESH SDFG (mutation-safe)."""
-    single = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s000"])[0], "baseline"),
+    single = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s000"])[0], "simplify-parallel"),
                                "skip-taskloops", "s000")
     assert [(i, n, s) for i, n, s, _ in single] == [(0, "s000", "s000_fp64")]
-    multi = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s152"])[0], "baseline"),
+    multi = extract_all_nests(lambda: tsvc.build_sdfg(tsvc.iter_tsvc_kernels(only=["s152"])[0], "simplify-parallel"),
                               "skip-taskloops", "s152")
     assert [(i, n, s) for i, n, s, _ in multi] == [(0, "s152_n0", "s152_n0_fp64"), (1, "s152_n1", "s152_n1_fp64")]
 
@@ -400,7 +388,7 @@ def test_arena_multinest_s152_aggregates_and_validates(tmp_path):
     res = tsvc_arena.run_kernel(k,
                                 tcs,
                                 "skip-taskloops",
-                                "baseline",
+                                "simplify-parallel",
                                 seed=0,
                                 reps=3,
                                 random_sizes=False,
@@ -443,8 +431,8 @@ def test_link_multinest_s152_verifies_every_nest_symbol(tmp_path):
     wd = tmp_path / "wd_s152"
     wd.mkdir()
     (seed_dir / "s152.json").write_text(
-        json.dumps(tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "baseline", 0, 3, False, wd)))
-    report = tsvc_arena.link_whole_program(out, 0, tcs, "baseline", "skip-taskloops")
+        json.dumps(tsvc_arena.run_kernel(k, tcs, "skip-taskloops", "simplify-parallel", 0, 3, False, wd)))
+    report = tsvc_arena.link_whole_program(out, 0, tcs, "simplify-parallel", "skip-taskloops")
     assert "2 symbols verified present, 0 missing" in report, report
     lib = ctypes.CDLL(str(seed_dir / "link" / "libtsvc_all.so"))
     for sym in ("s152_n0_fp64", "s152_n1_fp64"):

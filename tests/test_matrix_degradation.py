@@ -37,7 +37,7 @@ def _synthetic_opt_ctx():
 
 def _axes():
     return {
-        "opt_mode": "baseline",
+        "opt_mode": "simplify-parallel",
         "parallelism": ["sequential", "auto-par"],
         "cost_models": ["default"],
         "fp_modes": ["default-fp"],

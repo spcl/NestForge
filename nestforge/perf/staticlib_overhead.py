@@ -32,13 +32,7 @@ import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a c
 from nestforge import tsvc
 from nestforge.arena import discover_blas_libraries
 from nestforge.build import BuildOptions, compare_link_modes
-from nestforge.perf.tsvc_arena import my_slice, rank_and_size
-
-
-def median(xs: List[float]) -> float:
-    s = sorted(xs)
-    n = len(s)
-    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+from nestforge.perf.harness import median, my_slice, rank_and_size
 
 
 def run_kernel(kernel: "tsvc.TsvcKernel", compiler: str, reps: int, opt_mode: str, fast_libnodes: bool) -> Dict:
@@ -112,9 +106,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--compiler", default="g++", help="C++ compiler for the owned DaCe build")
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--opt-mode",
-                    default="baseline",
+                    default="simplify-parallel",
                     choices=list(tsvc.OPT_MODES),
-                    help="pre-split optimization mode (baseline / canonicalize)")
+                    help="pre-split optimization mode (simplify-parallel / canonicalize / auto-opt)")
     ap.add_argument("--fast-libnodes", action="store_true", help="pick fast BLAS impl + link it (set-fast-impl)")
     ap.add_argument("--only", nargs="*", default=None)
     ap.add_argument("--limit", type=int, default=None)

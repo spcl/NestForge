@@ -81,6 +81,12 @@ _ARCH: Dict[str, str] = {
 #: "cheap" = fewer/safer vectorizations (only gcc has a direct knob, so it collapses elsewhere).
 COST_MODELS: Tuple[str, ...] = ("default", "cheap", "no-vec")
 
+#: Vector-math-library axis DOMAIN (``-fveclib=`` / ``-lsleef`` etc.): ``none`` plus the three libraries.
+#: The arena does NOT sweep all of these -- per-device characterization (``device_profile.rank_veclibs``)
+#: collapses it to ``none`` + the accuracy-gated winner. This is the full domain the figure/CLI validate
+#: against; the per-family spelling lives in ``build.VectorMathLib`` (delegated to by :func:`veclib_flags`).
+VECLIBS: Tuple[str, ...] = ("none", "sleef", "libmvec", "svml")
+
 
 def base_flags(family: str) -> List[str]:
     """``-O3`` + native tuning + PIC/shared -- the common prefix every cell shares."""
@@ -303,6 +309,24 @@ def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
     return flags
 
 
+def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Compile+link flags for a vector-math library on an external lane, or ``(None, reason)`` when it is
+    incompatible with ``compiler`` / unknown / requested without a compiler. ``None``/``"none"`` -> no
+    flags. The per-family spelling is delegated to the :class:`build.VectorMathLib` registry, imported
+    lazily so this module stays dace-free for the plot readers that never touch a veclib."""
+    if not veclib or veclib == "none":
+        return [], None
+    if not compiler:
+        return None, f"veclib {veclib} requested without a compiler to resolve its family"
+    from nestforge.build import VECTOR_LIBS
+    vl = VECTOR_LIBS.get(veclib)
+    if vl is None:
+        return None, f"unknown veclib {veclib!r} (expected one of {tuple(VECTOR_LIBS)})"
+    if not vl.compatible(compiler):
+        return None, f"veclib {veclib} incompatible with {Path(compiler).name}"
+    return vl.compile_flags(compiler) + vl.link_flags(compiler), None
+
+
 def lane_flags(family: str,
                fp_mode: str,
                cost_model: str,
@@ -310,14 +334,16 @@ def lane_flags(family: str,
                lang: str,
                nthreads: int,
                cxx_std: str = CXX_STD,
-               compiler: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
+               compiler: Optional[str] = None,
+               veclib: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
     """Compose the full compile flags for ONE full-matrix (tsvc_full) sweep cell, or ``(None, reason)``
-    when the axis combination is unsupported (e.g. clang auto-par).
+    when the axis combination is unsupported (e.g. clang auto-par, or an incompatible veclib).
 
     ``fp_mode`` is either ``"strict-ieee"`` (the bit-exact gate rung, from :data:`FP_LEVELS`) or one of
     :data:`REDUCED_FP_MODES`. ``lang`` is ``"c"`` | ``"c++"`` | ``"fortran"``; the C++ lane recompiles the
     C source (so it uses the C FP spellings plus the C++ frontend flags), Fortran uses the Fortran FP
-    spellings. Every list starts from :func:`base_flags` (``-O3``/arch/PIC/shared)."""
+    spellings. ``veclib`` (``none`` | ``sleef`` | ``libmvec`` | ``svml``) adds the vector-math-library
+    ``-fveclib=``/``-l`` flags. Every list starts from :func:`base_flags` (``-O3``/arch/PIC/shared)."""
     fp_lang = "fortran" if lang == "fortran" else "c"
     out = base_flags(family)
     if lang == "c++":
@@ -327,6 +353,10 @@ def lane_flags(family: str,
     else:
         out = out + reduced_fp_flags(family, fp_mode, fp_lang)
     out = out + cost_flags(family, cost_model)
+    vec, vreason = veclib_flags(compiler, veclib)
+    if vec is None:
+        return None, vreason
+    out = out + vec
     if parallel == "auto-par":
         ap, reason = autopar_flags(family, nthreads)
         if ap is None:

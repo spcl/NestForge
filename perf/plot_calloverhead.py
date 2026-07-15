@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-import math
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -34,29 +32,10 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
+from plot_common import finite, geomean, load_results  # noqa: E402
+
 #: key, inline us, external-lto us, external us, call overhead, lto overhead. Any numeric may be None.
 CallRow = Tuple[str, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]
-
-
-def finite(x) -> bool:
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def geomean(xs: List[float]) -> Optional[float]:
-    vals = [x for x in xs if finite(x) and x > 0.0]
-    return math.exp(sum(math.log(v) for v in vals) / len(vals)) if vals else None
-
-
-def load_results(results_dir: Path) -> List[dict]:
-    rows: List[dict] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
-        try:
-            rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
-    return rows
 
 
 def call_row(record: dict) -> Optional[CallRow]:

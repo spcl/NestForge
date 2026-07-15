@@ -115,7 +115,7 @@ def test_calloverhead_multinest_s152_sums_over_nests(tmp_path):
         pytest.skip("no gcc")
     cc, family = co.resolve_cc("gcc")
     k = tsvc.iter_tsvc_kernels(only=["s152"])[0]
-    res = co.run_kernel(k, cc, family, "baseline", "S", inner=200, reps=3, workdir=tmp_path)
+    res = co.run_kernel(k, cc, family, "simplify-parallel", "S", inner=200, reps=3, workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
     # inline is the sum over both nests' per-call cost -> a real positive time; the ratios divide finite by finite.
     assert res["inline_us"] and res["inline_us"] > 0.0

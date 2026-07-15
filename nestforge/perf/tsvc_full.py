@@ -7,18 +7,20 @@ Lanes / columns per kernel
    (one C++ compiler). The classic "how well does the compiler auto-vectorize the reference" column.
 2. **DaCe-cpp baseline** -- DaCe's OWN C++ codegen of the EXTRACTED-NEST standalone SDFG (owned
    direct-compile via ``build.build_sdfg`` -- NO cmake), a SINGLE C++ compiler, default cost model,
-   ``-O3`` + **strict-ieee** FP (``-ffp-contract=off``). THIS is the speedup baseline every nest-forge
-   cell divides by; the standalone nest (not the whole kernel) does the SAME work the nest-forge lanes
-   do, so the time is apples-to-apples even for kernels peeled to an inner nest. The median time is
-   reported always; the strict cross-check bit-matches for most kernels (loop-carried-state recurrences
-   are flagged in the tables -- see the lane-2 section comment).
+   ``-O3`` + **strict-ieee** FP (``-ffp-contract=off``). Fanned over the codegen-implementation axis:
+   ``experimental`` (the readable constexpr-index-fn codegen, nest-forge's DEFAULT and the speedup
+   denominator) plus ``legacy`` where the DaCe build has it (a measured variant). THIS default codegen is
+   the baseline every nest-forge cell divides by; the standalone nest (not the whole kernel) does the SAME
+   work the nest-forge lanes do, so the time is apples-to-apples even for kernels peeled to an inner nest.
+   The median time is reported always; the strict cross-check bit-matches for most kernels
+   (loop-carried-state recurrences are flagged in the tables -- see the lane-2 section comment).
 3. **nest-forge external-nest** -- the extracted nest translated by numpyto and compiled, swept over the
    full axis matrix below.
 
 The axis matrix (lane 3), per kernel
 ------------------------------------
-  * **opt-mode**      : ``baseline`` | ``canonicalize`` (the pre-split SDFG optimization; changes the
-    emitted source, so it is an emit-time axis, not just a flag).
+  * **opt-mode**      : ``simplify-parallel`` | ``canonicalize`` | ``auto-opt`` (the pre-split SDFG
+    optimization; changes the emitted source, so it is an emit-time axis, not just a flag).
   * **language**      : ``c`` | ``c++`` | ``fortran``. numpyto has NO C++ target, so **C++ = the emitted
     C source recompiled by a C++ frontend** (``-x c++`` + a ``restrict`` / ``__builtin_complex`` shim;
     see :func:`nestforge.perf.flags.cxx_source_flags`).
@@ -85,22 +87,21 @@ import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a c
 
 from nestforge import tsvc
 from nestforge.arena import maxdiff, make_inputs, run_oracle
-from nestforge.build import BuildOptions
+from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags
-from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers, signature_order
-from nestforge.perf.tsvc_arena import (Toolchain, c_argtypes, call_c, discover_toolchains, my_slice, native_symbol,
-                                       rank_and_size, run_compile)
+from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
+from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.perf.harness import (RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable, my_slice, native_setup,
+                                    native_symbol, rank_and_size, run_compile, signature_order)
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
 #: numpyto emit target + source suffix per language. C and C++ share the C target (numpyto has no C++
 #: target); C++ just recompiles the emitted ``.c`` with a C++ frontend.
 _EMIT = {"c": ("c", ".c"), "c++": ("c", ".c"), "fortran": ("fortran", ".f90")}
-#: base C-type name -> ctypes type, for binding the native ``_original.cpp`` baseline (lane 1).
-_C_BASE = {"double": ctypes.c_double, "float": ctypes.c_float, "int64_t": ctypes.c_int64, "int": ctypes.c_int}
 #: presets that are too large for the O(N) pure-Python oracle -> validate at ``M`` instead.
 _VALIDATE_CAP = "M"
 
@@ -119,24 +120,6 @@ def default_threads() -> int:
         return int(os.environ.get("OMP_NUM_THREADS") or (os.cpu_count() or 4))
     except ValueError:
         return os.cpu_count() or 4
-
-
-def finite(x) -> bool:
-    """True only for a real, usable numeric time: a finite int/float. Rejects ``None`` (a non-finite value
-    mapped away by :func:`jsonable` on write) as well as ``inf``/``nan``."""
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def jsonable(obj):
-    """Recursively map non-finite floats (``inf``/``nan``) to ``None`` so ``json.dumps`` emits standard JSON
-    (which has no ``Infinity``/``NaN`` literals). Dict/list structure is otherwise preserved."""
-    if isinstance(obj, float):
-        return obj if math.isfinite(obj) else None
-    if isinstance(obj, dict):
-        return {k: jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [jsonable(v) for v in obj]
-    return obj
 
 
 # --- median-of-N timing (pure functions: unit-tested without a compiler) -----------------------------
@@ -210,35 +193,6 @@ def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inp
     return summarize_times(collect_samples(fn, cargs, reps))
 
 
-# --- lane 1: native original.cpp bind + validate + time ----------------------------------------------
-def native_setup(so: Path, symbol: str, sig, kernel: "tsvc.TsvcKernel", buffers: Dict[str, np.ndarray],
-                 sizes: Dict[str, int]):
-    """Bind ``_original.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``. The native bounds are
-    independent of the nest buffers, so an OOB here is real -- run through :func:`run_isolated`."""
-    pool = {"iterations": 1, "vlen": 8}
-    pool.update({s.lower(): int(v) for s, v in sizes.items()})
-    pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
-    argtypes, ptr_names = [], []
-    for name, base, is_ptr in sig:
-        ct = _C_BASE[base]
-        if is_ptr:
-            if name not in buffers:
-                raise KeyError(f"native pointer arg {name!r} has no matching array buffer")
-            argtypes.append(ctypes.POINTER(ct))
-            ptr_names.append(name)
-        else:
-            if name.lower() not in pool:
-                raise KeyError(f"native scalar arg {name!r} unresolved")
-            argtypes.append(ct)
-    fn = ctypes.CDLL(str(so))[symbol]
-    fn.argtypes, fn.restype = argtypes, None
-    cargs = [
-        buffers[name].ctypes.data_as(ctypes.POINTER(_C_BASE[base])) if is_ptr else _C_BASE[base](pool[name.lower()])
-        for name, base, is_ptr in sig
-    ]
-    return fn, cargs, ptr_names
-
-
 def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle) -> Dict:
     buffers = make_inputs(boundary, validate_sizes, seed=0)  # fresh + correct (validation runs in place)
     fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
@@ -277,7 +231,7 @@ def measure_native_lane(cxx: str, family: str, kernel, boundary, validate_sizes,
     if "error" in vres:
         return {"ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
     tres = run_isolated(lambda: native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps),
-                        timeout=1800.0)
+                        timeout=RUN_TIMEOUT_S)
     stats = summarize_times([]) if "error" in tres else tres
     return {
         "compiler": family,
@@ -330,32 +284,42 @@ def dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, orac
 
 
 def measure_dace_cpp_lane(tc: Toolchain, boundary, validate_sizes, time_inputs, time_sizes, oracle, reps: int,
-                          cxx_std: str, workdir: Path) -> Dict:
+                          cxx_std: str, workdir: Path, codegen_impl: Optional[str] = None) -> Dict:
     """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee, one C++
     compiler. The owned build (``build.build_sdfg``) compiles DIRECTLY (no cmake) into ``workdir`` -- a
     per-kernel mkdtemp, so concurrent ranks never share a build dir (the cmake-deadlock trap does not
-    apply). The median time is reported whether or not the run bit-matches (see the section comment)."""
+    apply). The median time is reported whether or not the run bit-matches (see the section comment).
+
+    ``codegen_impl`` selects the DaCe CPU codegen (``experimental`` -- the default -- | ``legacy``); ``None``
+    -> :func:`build.default_codegen_impl`. The new codegen is the speedup denominator; ``legacy`` is the
+    measured variant. It is stamped into the returned dict so the reporter can group by codegen impl."""
+    codegen_impl = codegen_impl or default_codegen_impl()
     if tc.cxx is None:
-        return {"ok": False, "error": f"{tc.name}: no C++ compiler for the DaCe-cpp lane", **summarize_times([])}
+        return {"ok": False, "error": f"{tc.name}: no C++ compiler for the DaCe-cpp lane", "codegen_impl": codegen_impl,
+                **summarize_times([])}
     fam = tc.fp_family
     dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "strict-ieee", "c")
     try:
         t0 = time.perf_counter()
-        built = dace_build_sdfg(boundary.standalone_sdfg, workdir, BuildOptions(compiler=tc.cxx, flags=dace_flags))
+        built = dace_build_sdfg(boundary.standalone_sdfg, workdir,
+                                BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl))
         compile_us = (time.perf_counter() - t0) * 1e6
     except Exception as e:  # codegen / compile failure must not crash the kernel
-        return {"ok": False, "error": f"dace build: {type(e).__name__}: {str(e)[:200]}", **summarize_times([])}
+        return {"ok": False, "error": f"dace build: {type(e).__name__}: {str(e)[:200]}",
+                "codegen_impl": codegen_impl, **summarize_times([])}
     atol = flags.FP_ATOL["strict-ieee"]
     try:
         res = run_isolated(
             lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol, reps),
-            timeout=1800.0)
+            timeout=RUN_TIMEOUT_S)
     finally:
         built.unload()  # parent side: free the dlopen mapping (the child ran in its own COW copy)
     if "error" in res:
-        return {"ok": False, "error": res["error"], "compile_us": compile_us, **summarize_times([])}
+        return {"ok": False, "error": res["error"], "compile_us": compile_us, "codegen_impl": codegen_impl,
+                **summarize_times([])}
     return {
         "compiler": tc.name,
+        "codegen_impl": codegen_impl,
         "ok": res["ok"],
         "maxdiff": res["maxdiff"],
         "unchecked": res.get("unchecked", False),
@@ -664,9 +628,9 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
     if not contexts:
         return {**result, "skipped": "; ".join(f"{m}: {n}" for m, n in opt_notes.items()) or "no opt-mode built"}
 
-    base_key = "baseline" if "baseline" in contexts else next(iter(contexts))
+    base_key = "simplify-parallel" if "simplify-parallel" in contexts else next(iter(contexts))
     base_ctxs = contexts[base_key]  # the base opt-mode's per-nest ctxs (what lanes 1/2 measure against)
-    result["baseline_opt"] = base_key  # which opt-mode's nests lanes 1/2 actually used (may not be 'baseline')
+    result["baseline_opt"] = base_key  # which opt-mode's nests lanes 1/2 used (may not be 'simplify-parallel')
     # lane 1 (native): ONE whole-kernel measurement stamped nest=-1 -- it is compared against the SUM over
     # nests, not any single nest, so it borrows the base opt-mode's FIRST nest only for buffer sizing / the
     # oracle cross-check. lane 2 (DaCe-cpp): runs PER NEST (each cell carries its nest idx); the speedup
@@ -679,13 +643,17 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         if native is not None:
             native["nest"] = -1  # whole-kernel sentinel: not a single-nest measurement
         result["native"] = native
+        # The DaCe lane fans out over the codegen-implementation axis: 'legacy' (the speedup denominator)
+        # plus 'experimental' when this DaCe build has it. Each cell carries its nest idx + codegen_impl;
+        # the reporter sums only the legacy cells for the denominator and geomeans experimental against it.
         dace_cpp_cells: List[Dict] = []
         for nc in base_ctxs:
-            dcell = measure_dace_cpp_lane(cxx_tc, nc["boundary"], nc["validate_sizes"], nc["time_inputs"],
-                                          nc["time_sizes"], nc["oracle"], reps, cxx_std,
-                                          workdir / "dace_cpp" / f"n{nc['nest_idx']}")
-            dcell["nest"] = nc["nest_idx"]
-            dace_cpp_cells.append(dcell)
+            for impl in codegen_impls_available():
+                dcell = measure_dace_cpp_lane(cxx_tc, nc["boundary"], nc["validate_sizes"], nc["time_inputs"],
+                                              nc["time_sizes"], nc["oracle"], reps, cxx_std,
+                                              workdir / "dace_cpp" / f"n{nc['nest_idx']}_{impl}", codegen_impl=impl)
+                dcell["nest"] = nc["nest_idx"]
+                dace_cpp_cells.append(dcell)
         result["dace_cpp"] = dace_cpp_cells
 
     # lane 3: enumerate + dedup-compile + validate + time. Each opt-mode holds a LIST of per-nest ctxs; every
@@ -738,7 +706,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         if cell.role == "timing" and cell.ok:  # only VALIDATED timing cells are (expensively) timed
             tres = run_isolated(lambda: nest_timing_work(so, p.symbol, p.order, p.argtypes, ctx["time_inputs"], ctx[
                 "time_sizes"], reps),
-                                timeout=1800.0)
+                                timeout=RUN_TIMEOUT_S)
             if "error" in tres:
                 cell.error = f"timing: {tres['error']}"
             else:
@@ -767,10 +735,6 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
 
 
 # --- tables ------------------------------------------------------------------------------------------
-def fmt(x) -> str:
-    return "—" if x is None or x == float("inf") else f"{x:.2f}"
-
-
 def kernel_winner(cells: List[Dict],
                   opt_mode: str,
                   lang: str,
@@ -835,17 +799,31 @@ def render_tables(out: Path) -> str:
         "| maxdiff | nest/DaCe |", "|" + "---|" * 11
     ]
     speedups: List[float] = []
+    codegen_speedups: List[float] = []  # per-kernel legacy/experimental DaCe-codegen ratios (the codegen axis)
     novalidate = 0
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
-        # dace_cpp is a LIST of per-nest cells (legacy single-dict / empty-dict tolerated): the baseline is
-        # the SUM over nests, defined only when every nest timed a finite median.
+        # dace_cpp is a LIST of per-nest cells (older JSON: single-dict / empty tolerated), now also fanned
+        # over the codegen-impl axis. The DENOMINATOR is the legacy cells only (a cell with no codegen_impl
+        # predates the axis -> treated as legacy), summed over nests, defined only when every nest timed.
         dcpp_raw = k.get("dace_cpp")
         dcpp_list = dcpp_raw if isinstance(dcpp_raw, list) else ([dcpp_raw] if dcpp_raw else [])
-        dace_meds = [d.get("median_us") for d in dcpp_list]
+        legacy_cells = [d for d in dcpp_list if d.get("codegen_impl", "legacy") == "legacy"]
+        exp_cells = [d for d in dcpp_list if d.get("codegen_impl") == "experimental"]
+        # Denominator = the NEW (experimental) codegen when the run produced it (nest-forge's default),
+        # else legacy. A cell with no codegen_impl predates the axis -> counts as legacy.
+        primary_cells = exp_cells if exp_cells else legacy_cells
+        dace_meds = [d.get("median_us") for d in primary_cells]
         dace_us = sum(dace_meds) if (dace_meds and all(finite(m) for m in dace_meds)) else None
-        dace_flag = "" if (dace_us is None or all(d.get("ok") for d in dcpp_list)) else "†"
+        dace_flag = "" if (dace_us is None or all(d.get("ok") for d in primary_cells)) else "†"
         if dace_flag:
             novalidate += 1
+        # codegen axis: legacy total / experimental total for this kernel, when BOTH impls fully timed.
+        legacy_meds = [d.get("median_us") for d in legacy_cells]
+        exp_meds = [d.get("median_us") for d in exp_cells]
+        legacy_us = sum(legacy_meds) if (legacy_meds and all(finite(m) for m in legacy_meds)) else None
+        exp_us = sum(exp_meds) if (exp_meds and all(finite(m) for m in exp_meds)) else None
+        if legacy_us and exp_us:
+            codegen_speedups.append(legacy_us / exp_us)
         nat = k.get("native") or {}
         nat_med = nat.get("median_us")
         nat_us = nat_med if (nat.get("ok") and finite(nat_med)) else None
@@ -864,8 +842,8 @@ def render_tables(out: Path) -> str:
             sp = (dace_us / win_us) if (dace_us is not None and win_us) else None
             if sp is not None and math.isfinite(sp):
                 speedups.append(sp)
-            lines.append(f"| {k['key']} | {k['corpus']} | {opt_mode} | {lang} | {comp} | {fmt(nat_us)} "
-                         f"| {fmt(dace_us)}{dace_flag} | {fmt(win_us)} | {cfg} | {md} | "
+            lines.append(f"| {k['key']} | {k['corpus']} | {opt_mode} | {lang} | {comp} | {fmt_us(nat_us)} "
+                         f"| {fmt_us(dace_us)}{dace_flag} | {fmt_us(win_us)} | {cfg} | {md} | "
                          f"{'—' if sp is None else f'{sp:.2f}x'} |")
 
     if speedups:
@@ -873,6 +851,13 @@ def render_tables(out: Path) -> str:
         lines += [
             "", f"**Geomean best-nest / DaCe-cpp speedup:** {geo:.3f}x over {len(speedups)} "
             "(kernel x opt x lang x compiler) rows where both timed."
+        ]
+    if codegen_speedups:
+        cgeo = math.exp(sum(math.log(s) for s in codegen_speedups) / len(codegen_speedups))
+        lines += [
+            "", f"**Geomean DaCe legacy / experimental codegen speedup:** {cgeo:.3f}x over "
+            f"{len(codegen_speedups)} kernels where both codegen impls timed "
+            "(>1 = experimental faster; the codegen-implementation axis)."
         ]
     if novalidate:
         lines += [

@@ -11,6 +11,7 @@ it as a size-1 buffer).
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import ctypes
 import ctypes.util
@@ -43,7 +44,7 @@ _C_SCALAR = {
 _C_PTR = {"float": ctypes.c_float, "double": ctypes.c_double, "int32_t": ctypes.c_int32, "int64_t": ctypes.c_int64}
 
 DEFAULT_COMPILER = "g++"
-DEFAULT_FLAGS = ["-O3", "-march=native", "-std=c++14", "-fPIC", "-shared"]
+DEFAULT_FLAGS = ["-O3", "-march=native", "-std=c++20", "-fPIC", "-shared"]
 
 
 def compiler_family(compiler: str) -> str:
@@ -218,101 +219,6 @@ def runtime_installed(rt: OpenMPRuntime) -> bool:
     without a ``lib_dir`` it reads as not-installed here -- which is why a config that names it for a
     non-nvhpc link gets pruned with a warning."""
     return lib_findable(rt.soname, rt.lib_dir)
-
-
-@dataclass
-class ArenaConfig:
-    """The DESIRED sweep: which compilers and OpenMP runtimes to try. A wish list -- entries may be
-    uninstalled or ABI-incompatible; :func:`prune_to_valid_combinations` reduces it to the (compiler,
-    runtime) pairs that actually work here.
-
-    Runtimes default to just ``libomp`` (PARALLEL.md mandates ONE runtime; libomp is the portable one).
-    NOTE: nvc++ and classic icc link only their native runtimes (libnvomp / libiomp5), so under the
-    libomp-only default they are pruned with a warning -- add those to ``runtimes`` to sweep them."""
-    compilers: List[str] = field(default_factory=lambda: ["g++", "clang++", "nvc++", "icpx"])
-    runtimes: List[str] = field(default_factory=lambda: ["libomp"])
-
-
-@dataclass
-class PrunedConfig:
-    """The result of :func:`prune_to_valid_combinations`: the surviving compilers and runtimes, and the
-    concrete ABI-valid, installed ``(compiler, runtime_name)`` pairs to actually build."""
-    compilers: List[str]
-    runtimes: List[str]
-    combos: List[Tuple[str, str]]
-
-
-def prune_to_valid_combinations(config: ArenaConfig,
-                                *,
-                                probe_compilers: bool = True,
-                                probe_runtimes: bool = True) -> PrunedConfig:
-    """Reduce a desired :class:`ArenaConfig` to the combinations that can actually be built here. EVERY
-    removal raises a ``warnings.warn`` so a silently shrinking matrix is visible. Reasons:
-
-    1. a compiler not on ``PATH`` is dropped;
-    2. a runtime whose library is not found on the system is dropped (see :func:`runtime_installed`);
-    3. compatibility pruning to a fixpoint -- drop a runtime no remaining compiler can LINK, then a compiler
-       with no compatible remaining runtime; each drop can orphan the other, so iterate until stable.
-
-    :param probe_compilers: check ``PATH`` (off for a pure-logic test on a machine missing the toolchains).
-    :param probe_runtimes: check the filesystem for each runtime's ``.so`` (off to test ABI logic alone).
-    """
-    compilers = list(dict.fromkeys(config.compilers))  # de-dup, keep order
-    runtimes = list(dict.fromkeys(config.runtimes))
-
-    if probe_compilers:
-        present = []
-        for c in compilers:
-            if shutil.which(c):
-                present.append(c)
-            else:
-                warnings.warn(f"compiler {c!r} is not on PATH; removing it from the arena candidates "
-                              f"(install it, or drop it from ArenaConfig.compilers)")
-        compilers = present
-
-    if probe_runtimes:
-        found = []
-        for r in runtimes:
-            rt = resolve_runtime(r)
-            if runtime_installed(rt):
-                found.append(r)
-            else:
-                warnings.warn(f"OpenMP runtime {r!r} (lib{rt.soname}) is not installed on this system; removing "
-                              f"it from the arena candidates (install it, or set OpenMPRuntime.lib_dir to its path)")
-        runtimes = found
-
-    # An unknown runtime name has no registered ABI. resolve_runtime assumes it is GOMP-capable so gcc can
-    # link it explicitly (-l<soname>); no LLVM compiler can name-select a custom runtime and icc/nvc++ use
-    # their native ones, so a custom runtime is only ever usable with gcc/gfortran. Warn once, here (after
-    # the install-probe, so we do not reassure about a runtime that was just dropped as missing).
-    for r in runtimes:
-        if r not in OPENMP_RUNTIMES:
-            rt = resolve_runtime(r)
-            warnings.warn(f"OpenMP runtime {r!r} is not a known runtime; assuming lib{rt.soname} is GOMP-ABI so "
-                          f"gcc/gfortran can link it via -l{rt.soname}. LLVM compilers cannot select a custom "
-                          f"runtime by name and icc/nvc++ use their native runtimes, so {r!r} is only usable with "
-                          f"gcc/gfortran -- verify it actually provides the GOMP_* symbols.")
-
-    while True:  # fixpoint: drops shrink both lists monotonically, so this terminates
-        keep_rt = [r for r in runtimes if any(resolve_runtime(r).compatible(c) for c in compilers)]
-        for r in runtimes:
-            if r not in keep_rt:
-                warnings.warn(f"OpenMP runtime {r!r} is ABI-incompatible with every remaining compiler "
-                              f"({compilers}); removing it. Add a compiler that emits its ABI, or a runtime "
-                              f"those compilers can link.")
-        keep_cc = [c for c in compilers if any(resolve_runtime(r).compatible(c) for r in keep_rt)]
-        for c in compilers:
-            if c not in keep_cc:
-                extra = (" -- NVIDIA nvc/nvc++ needs the 'libnvomp' runtime (it links libnvomp via -mp)"
-                         if compiler_family(c) == "nvidia" else "")
-                warnings.warn(f"compiler {c!r} has no compatible OpenMP runtime among {keep_rt}; removing it from "
-                              f"the arena candidates{extra}.")
-        if keep_rt == runtimes and keep_cc == compilers:
-            break
-        runtimes, compilers = keep_rt, keep_cc
-
-    combos = [(c, r) for c in compilers for r in runtimes if resolve_runtime(r).compatible(c)]
-    return PrunedConfig(compilers=compilers, runtimes=runtimes, combos=combos)
 
 
 #: -fveclib token (clang / flang / icx / icpx) per vector-math-library name.
@@ -522,16 +428,73 @@ class BuiltSDFG:
             self.close()
 
 
-def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Tuple[Path, str]:
+def config_has(*path) -> bool:
+    """True when the running DaCe config schema DEFINES the key at ``path``. ``Config.get`` raises on an
+    unknown key, so a plain ``extended`` checkout that lacks (e.g.) ``compiler.cpu.implementation`` reads
+    as ``False`` here -- letting the codegen axis degrade gracefully instead of crashing. (No getattr.)"""
+    try:
+        dace.config.Config.get(*path)
+        return True
+    except (KeyError, TypeError):
+        return False
+
+
+#: The codegen-implementation axis values (``compiler.cpu.implementation``): ``experimental`` emits the
+#: human-readable constexpr-index-function codegen (which ``static constexpr`` index fns + ``const_init``
+#: ride unconditionally) and is nest-forge's DEFAULT; ``legacy`` is the classic connector-based codegen,
+#: kept as a toggleable variant. Ordered default-first. See :func:`codegen_impls_available`.
+CODEGEN_IMPLS = ("experimental", "legacy")
+#: nest-forge defaults to DaCe's NEW (human-readable) codegen when the running DaCe build supports it.
+DEFAULT_CODEGEN_IMPL = "experimental"
+
+
+def default_codegen_impl() -> str:
+    """The codegen impl a build uses when the caller specifies none: the new ``experimental`` codegen when
+    this DaCe build carries ``compiler.cpu.implementation``, else ``legacy`` -- so the readable-codegen
+    branch defaults to new while a plain ``extended`` checkout still builds (legacy)."""
+    return DEFAULT_CODEGEN_IMPL if config_has("compiler", "cpu", "implementation") else "legacy"
+
+
+def codegen_impls_available() -> Tuple[str, ...]:
+    """The toggleable codegen-implementation axis values THIS DaCe build supports, DEFAULT FIRST:
+    ``('experimental', 'legacy')`` when the schema carries ``compiler.cpu.implementation``, else
+    ``('legacy',)``. The driver sweeps exactly this tuple, so a plain ``extended`` checkout runs legacy
+    only while the readable-codegen branch measures both variants."""
+    return CODEGEN_IMPLS if config_has("compiler", "cpu", "implementation") else ("legacy", )
+
+
+@contextlib.contextmanager
+def codegen_config(codegen_impl: str):
+    """Scope the DaCe codegen config for ONE ``generate_code`` call: pin ``compiler.emit_tree_reductions``
+    true (never an axis) and select the CPU codegen ``implementation``. ``temporary_config`` snapshots and
+    restores the WHOLE config, so nothing leaks to the next in-process cell (``set_temporary`` is
+    process-global). The ``implementation`` key is set only when the schema has it; an ``experimental``
+    request against a build that lacks it RAISES rather than silently emitting legacy and mislabelling it
+    (the default path never hits this -- :func:`default_codegen_impl` already downgrades to legacy there)."""
+    with dace.config.temporary_config():
+        dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
+        if config_has("compiler", "cpu", "implementation"):
+            dace.config.Config.set("compiler", "cpu", "implementation", value=codegen_impl)
+        elif codegen_impl != "legacy":
+            raise ValueError(f"codegen_impl={codegen_impl!r} requested, but this DaCe build has no "
+                             "'compiler.cpu.implementation' key (needs the experimental-codegen branch)")
+        yield
+
+
+def generate_program_folder(sdfg: dace.SDFG, out_dir: Path, codegen_impl: Optional[str] = None) -> Tuple[Path, str]:
     """Lay out DaCe's full compilable source tree (``src/cpu/<name>.cpp`` + ``include/`` with the
     generated headers) via DaCe's own ``generate_program_folder`` -- so the relative
     ``#include "../../include/hash.h"`` resolves -- WITHOUT letting DaCe compile it. We compile it.
 
+    :param codegen_impl: the CPU codegen implementation axis (``experimental`` | ``legacy``); ``None`` ->
+        :func:`default_codegen_impl` (new codegen where available). Scopes the DaCe config only for the
+        ``generate_code`` call that reads it (see :func:`codegen_config`).
     :returns: (the C++ Frame source path, sdfg name).
     """
     from dace.codegen import codegen, compiler as dace_compiler
     out_dir.mkdir(parents=True, exist_ok=True)
-    code_objects = codegen.generate_code(sdfg)
+    with codegen_config(codegen_impl or default_codegen_impl()):
+        code_objects = codegen.generate_code(sdfg)
     folder = Path(dace_compiler.generate_program_folder(sdfg, code_objects, str(out_dir)))
     frame = folder / "src" / "cpu" / f"{sdfg.name}.cpp"
     if not frame.exists():  # fall back to whatever CPU Frame the layout produced
@@ -705,6 +668,9 @@ class BuildOptions:
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
     lto: bool = False  # enable LTO: -flto (monolithic) / fat-LTO object in the .a (external) -- applies to both
     veclib: Optional[VectorMathLib] = None  # SLEEF / libmvec / SVML, a separate axis from flags/openmp
+    # DaCe CPU codegen: 'experimental' (constexpr-index-fn, the DEFAULT where available) | 'legacy'. The
+    # factory downgrades to legacy on a DaCe build without the key, so a plain BuildOptions() always builds.
+    codegen_impl: str = field(default_factory=default_codegen_impl)
 
     def resolved_flags(self) -> List[str]:
         return list(self.flags if self.flags is not None else DEFAULT_FLAGS)
@@ -806,7 +772,7 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = No
         sdfg.expand_library_nodes()
     elif opts.fast_libnodes:  # keep the library nodes, but pick the fast (OpenBLAS/MKL) implementation
         set_fast_libnodes(sdfg)
-    frame, name = generate_program_folder(sdfg, out_dir)
+    frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
     folder = frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
     codegen_seconds = time.perf_counter() - t_opt
 
@@ -844,7 +810,7 @@ def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptio
         sdfg.expand_library_nodes()
     elif opts.fast_libnodes:
         set_fast_libnodes(sdfg)
-    frame, name = generate_program_folder(sdfg, out_dir)
+    frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
     folder = frame.parent.parent.parent
     codegen_seconds = time.perf_counter() - t_opt
     _, mono = compile(frame, folder, name, replace(opts, link_external=False))

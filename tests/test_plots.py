@@ -77,7 +77,7 @@ def test_plot_winners_smoke(tmp_path):
              cost="default",
              fp="default-fp"):
         return {
-            "opt_mode": "baseline",
+            "opt_mode": "simplify-parallel",
             "language": lang,
             "compiler": compiler,
             "parallel": parallel,
@@ -150,7 +150,7 @@ def test_plot_speedup_matrix_smoke(tmp_path):
 
     def cell(comp, lang, par, cost, fp, med, nest=0, ok=True):
         return {
-            "opt_mode": "baseline",
+            "opt_mode": "simplify-parallel",
             "language": lang,
             "compiler": comp,
             "parallel": par,

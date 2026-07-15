@@ -90,7 +90,9 @@ mkdir -p "$REPO/perf_results" || {
 }
 echo "[all] repo root: $REPO (results under $REPO/perf_results/); PYTHONPATH pinned to the clone"
 
-export OMP_NUM_THREADS="72"
+export OMP_NUM_THREADS="72"        # one Grace socket's worth of cores per rank
+export OMP_PROC_BIND="close"       # pin OpenMP threads, packed within the rank's socket (matches dace slurm_perf.sh)
+export OMP_PLACES="cores"          # one OpenMP place per physical core -- without these the timed medians drift
 export PYTHONUNBUFFERED=1
 
 # dace transitively imports mpi4py; under srun's PMI it auto-inits MPI and hangs/aborts. This driver
@@ -111,8 +113,22 @@ alias python=python3.11
 # discover_toolchains picks up whatever is on PATH, so loading all of them here == "all compilers".
 spack load gcc@16.1.0
 spack load llvm@22.1.5
+spack load cmake                   # DaCe's default (CMake) codegen lane needs cmake on PATH
+spack load openblas 2>/dev/null || echo "[all] openblas not in spack -- BLAS-backed lanes fall back to naive loops"
 module load nvhpc 2>/dev/null || echo "[all] nvhpc module not found -- nvc/nvc++/nvfortran skipped"
 source /opt/intel/oneapi/setvars.sh 2>/dev/null || echo "[all] oneAPI setvars not found -- icx/icpx/ifx skipped"
+
+# `spack load openblas` sets PATH but NOT LD_LIBRARY_PATH/CPATH, and the install sits off the ldconfig
+# cache -- so DaCe's detection needs OPENBLAS_DIR + the lib dir on LD_LIBRARY_PATH, or BLAS-backed nodes
+# report "not installed" and expand to a naive loop (~25x slower). Matches dace slurm_perf.sh:84-90.
+OPENBLAS_DIR="$(spack location -i openblas 2>/dev/null || echo "${OPENBLAS_DIR:-}")"
+if [ -n "$OPENBLAS_DIR" ]; then
+  export OPENBLAS_DIR
+  for _d in "$OPENBLAS_DIR"/lib "$OPENBLAS_DIR"/lib64; do
+    [ -d "$_d" ] && export LD_LIBRARY_PATH="$_d:${LD_LIBRARY_PATH:-}" LIBRARY_PATH="$_d:${LIBRARY_PATH:-}"
+  done
+  [ -d "$OPENBLAS_DIR/include" ] && export CPATH="$OPENBLAS_DIR/include:${CPATH:-}"
+fi
 
 # Multi-rank build hygiene (see the cmake-hang note above).
 export DACE_compiler_use_cache=0
@@ -123,7 +139,7 @@ CORPORA="${CORPORA:-tsvc2 tsvc2_5}"
 LANGUAGES="${LANGUAGES:-c c++ fortran}"    # phase 1 (tsvc_full) languages: c / c++ / fortran
 CROSSLANG_LANGUAGES="${CROSSLANG_LANGUAGES:-c fortran}"  # phase 2 (crosslang_xl) accepts only c/fortran
 PARALLELISM="${PARALLELISM:-both}"
-OPT_MODES="${OPT_MODES:-baseline canonicalize}"
+OPT_MODES="${OPT_MODES:-simplify-parallel canonicalize auto-opt}"
 COST_MODELS="${COST_MODELS:-default cheap no-vec}"
 FP_MODES="${FP_MODES:-default-fp no-fast-errno}"
 PROFILE_PRESET="${PROFILE_PRESET:-PROF}"   # phase 1 size (>L3, memory-bound)
@@ -163,8 +179,9 @@ OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-$REPO/perf_results/calloverhead}"
 # srun gives each rank a UNIQUE dace build folder (SLURM_PROCID). `|| echo` keeps a rank/compiler
 # failure from aborting the table pass or the later phases.
 run_full () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.tsvc_full \
       --corpora '"$CORPORA"' --languages '"$LANGUAGES"' --opt-modes '"$OPT_MODES"' \
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
@@ -189,8 +206,9 @@ run_full () {
 
 # --- PHASE 2: cross-language XL (nestforge.perf.crosslang_xl) -------------------
 run_crosslang () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.crosslang_xl \
       --corpora '"$CORPORA"' --languages '"$CROSSLANG_LANGUAGES"' --preset "'"$XL_PRESET"'" \
       --compilers "'"$COMPILERS"'" --reps "'"$XL_REPS"'" --out "'"$OUT_XL"'"
@@ -201,8 +219,9 @@ run_crosslang () {
 
 # --- PHASE 3: static-lib compile overhead (nestforge.perf.staticlib_overhead) --
 run_overhead () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.staticlib_overhead \
       --compiler "'"$OVERHEAD_CXX"'" --reps "'"$OVERHEAD_REPS"'" --out "'"$OUT_OVERHEAD"'"
   ' || echo "[all] phase 3 (staticlib_overhead) sweep failed (partial results kept)"
@@ -219,8 +238,9 @@ run_overhead () {
 # inlines from the archive), external plain `.a` (out-of-line call) -- and TIMED. external/inline is the
 # call cost; external-lto/inline (~1.0) shows LTO recovering it.
 run_calloverhead () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.calloverhead \
       --compiler "'"$CALLOVERHEAD_CC"'" --preset "'"$CALLOVERHEAD_PRESET"'" \
       --inner "'"$CALLOVERHEAD_INNER"'" --reps "'"$CALLOVERHEAD_REPS"'" --out "'"$OUT_CALLOVERHEAD"'"

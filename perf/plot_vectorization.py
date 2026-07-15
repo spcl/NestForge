@@ -40,17 +40,17 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib
 
 matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE importing pyplot
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
+
+from plot_common import finite, geomean, load_results  # noqa: E402
 
 #: The single-core coordinate this reader lives on. Vectorized = the compiler's own cost model; the
 #: scalar floor = ``no-vec``. Both on the ``sequential`` (one-core) lane so the only difference that
@@ -59,32 +59,6 @@ SEQ, VEC_COST, SCALAR_COST = "sequential", "default", "no-vec"
 
 #: Same palette as plot_speedup_matrix so the winning-compiler colours match across the report.
 PALETTE: Dict[str, str] = {"gcc": "#4c72b0", "clang": "#dd8452", "nvhpc": "#55a868", "intel": "#c44e52"}
-
-
-def finite(x) -> bool:
-    """True only for a real, usable numeric time (finite int/float); rejects ``None`` / ``inf`` / ``nan``."""
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def geomean(xs: List[float]) -> Optional[float]:
-    """Geometric mean of the finite positive values; ``None`` when there are none."""
-    vals = [x for x in xs if finite(x) and x > 0.0]
-    if not vals:
-        return None
-    return math.exp(sum(math.log(v) for v in vals) / len(vals))
-
-
-def load_results(results_dir: Path) -> List[dict]:
-    """Every per-kernel JSON in ``results_dir`` (``tables.md`` and unparseable files skipped)."""
-    rows: List[dict] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
-        try:
-            rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
-    return rows
 
 
 def timing_cells(kernel: dict) -> List[dict]:
@@ -169,7 +143,7 @@ def render_md(kernels: List[KernelSC], compilers: List[str], gap_threshold: floa
         f"# Single-core vectorization report ({lang}, {fp}, sequential lane)",
         "",
         "Everything but the **compiler** is held fixed (one core, one language, one FP mode). "
-        f"`vec` = the compiler's own vectorized time (µs); `gain` = `no-vec / vec` (>1 = its vectorizer "
+        "`vec` = the compiler's own vectorized time (µs); `gain` = `no-vec / vec` (>1 = its vectorizer "
         "helped, <1 = it HURT). `gap` = slowest-vec / fastest-vec across compilers — the single-core "
         "spread; a big gap is a kernel where one compiler's vectorization beats another's by a lot.",
         "",

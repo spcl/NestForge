@@ -32,7 +32,6 @@ import os
 import re
 import shutil
 import socket
-import statistics
 import subprocess
 import tempfile
 import time
@@ -48,13 +47,10 @@ from nestforge.build import ar_for, fat_lto_flags
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
-from nestforge.perf.tsvc_arena import (abi_order, c_argtypes, discover_toolchains, my_slice, rank_and_size)
+from nestforge.perf.tsvc_arena import discover_toolchains
+from nestforge.perf.harness import c_argtypes, median, my_slice, rank_and_size, signature_order
 from nestforge.perf.tsvc_full import c_call_args
 from nestforge.translate import emit_sources, prepare
-
-
-def median(xs: List[float]) -> float:
-    return float(statistics.median(xs))
 
 
 def signature_params(csrc: str, symbol: str) -> str:
@@ -201,7 +197,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
             src = next(s for s in emit_sources(prep, nest_dir, target="c")
                        if s.suffix == ".c" and "pluto" not in s.name)
             text = src.read_text()
-            order = abi_order(text, symbol)
+            order = signature_order(text, symbol)
             units.append(
                 CoNest(idx, name, symbol, boundary, sizes, src, order, c_argtypes(order, boundary),
                        signature_params(text, symbol), nest_dir))

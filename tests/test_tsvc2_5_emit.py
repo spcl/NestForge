@@ -34,7 +34,7 @@ def load(key: str):
     return found[0]
 
 
-def emit_and_call(key: str, sizes: dict, inputs: dict, opt_mode: str = "baseline"):
+def emit_and_call(key: str, sizes: dict, inputs: dict, opt_mode: str = "simplify-parallel"):
     """Extract + emit ``key``, allocate every buffer C-style from the emitted signature, run it, return
     the call dict (buffers hold the results in place)."""
     kernel = load(key)
@@ -77,10 +77,10 @@ def test_ext_break_find_first_emits_break_and_stops():
     assert int(call["__sym_out_i"][0]) == 17  # stopped exactly at the negative element
 
 
-@pytest.mark.parametrize("opt_mode", ["baseline", "canonicalize"])
+@pytest.mark.parametrize("opt_mode", ["simplify-parallel", "canonicalize", "auto-opt"])
 def test_cond_reduce_sym_scalar_read_and_wcr(opt_mode):
-    """Size-1 buffer read as ``x[0]`` (baseline) and WCR copy accumulates (canonicalize): out = sum of
-    a[i] where a[i] > K. Both opt-modes must reduce correctly."""
+    """Size-1 buffer read as ``x[0]`` (simplify-parallel) and WCR copy accumulates (canonicalize/auto-opt):
+    out = sum of a[i] where a[i] > K. Every opt-mode must reduce correctly through emit+compile+run."""
     n, K = 96, 0.5
     a = np.random.default_rng(0).random(n)
     call, _ = emit_and_call("cond_reduce_sym", dict(LEN_1D=n, K=K), dict(a=a.copy()), opt_mode=opt_mode)
@@ -118,7 +118,7 @@ def test_float_value_scalar_is_double_not_truncated_in_compiled_c(tmp_path):
         pytest.skip("no C compiler")
 
     kernel = load("cond_reduce_sym")
-    sdfg = tsvc.build_sdfg(kernel, opt_mode="baseline")
+    sdfg = tsvc.build_sdfg(kernel, opt_mode="simplify-parallel")
     refs = get_strategy("skip-taskloops")(sdfg)
     b = extract_nest_to_sdfg(refs[0][0], refs[0][1], name="cond_reduce_sym")
     ssdfg = b.standalone_sdfg

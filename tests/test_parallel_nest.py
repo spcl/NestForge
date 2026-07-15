@@ -15,7 +15,7 @@ from nestforge.emit_numpy import sdfg_to_numpy
 from nestforge.strategies import get_strategy, is_parallel_nest
 
 
-def _refs(key, opt_mode="baseline", strategy="skip-taskloops"):
+def _refs(key, opt_mode="simplify-parallel", strategy="skip-taskloops"):
     kernel = tsvc.iter_tsvc_kernels(only=[key], corpus="tsvc2")[0]
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     return sdfg, get_strategy(strategy)(sdfg)

@@ -29,8 +29,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -41,38 +39,14 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
+from plot_common import finite, geomean, load_results  # noqa: E402
+
 #: The two vendor-default baselines, keyed by the tab label -> the compiler name whose default cell is it.
 BASELINES: Dict[str, str] = {"gcc": "gcc", "llvm": "clang"}
 
 #: The axis coordinates of a "vendor default" cell: no parallelism, the compiler's own vectorizer cost
 #: model, and its default FP. This is what "default vector and fp flags" means.
 DEFAULT_PARALLEL, DEFAULT_COST, DEFAULT_FP, DEFAULT_LANG = "sequential", "default", "default-fp", "c"
-
-
-def finite(x) -> bool:
-    """True only for a real, usable numeric time (a finite int/float); rejects ``None`` / ``inf`` / ``nan``."""
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def geomean(xs: List[float]) -> Optional[float]:
-    """Geometric mean of the finite positive values; ``None`` when there are none."""
-    vals = [x for x in xs if finite(x) and x > 0.0]
-    if not vals:
-        return None
-    return math.exp(sum(math.log(v) for v in vals) / len(vals))
-
-
-def load_results(results_dir: Path) -> List[dict]:
-    """Every per-kernel JSON in ``results_dir`` (``tables.md`` and unparseable files skipped)."""
-    rows: List[dict] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
-        try:
-            rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
-    return rows
 
 
 def timing_cells(kernel: dict) -> List[dict]:

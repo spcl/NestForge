@@ -12,7 +12,7 @@ import pytest
 
 from nestforge import tsvc
 from nestforge.isolation import run_isolated
-from nestforge.perf import crosslang_xl, flags, tsvc_arena
+from nestforge.perf import crosslang_xl, flags, harness, tsvc_arena
 
 
 # --- native-baseline signature parsing (tsvc.native_signature) ----------------------------------------
@@ -36,7 +36,7 @@ def test_native_symbol_fallback_to_first_kernel():
         tsvc_arena.native_symbol("int not_a_kernel;", "s000_d")
 
 
-# --- emitted-source signature order (crosslang_xl.signature_order / tsvc_arena.abi_order) --------------
+# --- emitted-source signature order (harness.signature_order, re-exported via crosslang_xl) -----------
 def test_signature_order_c_and_fortran_multiline():
     csrc = "void s000_fp64(double* a, double* out, int64_t N) {"
     assert crosslang_xl.signature_order(csrc, "s000_fp64", "c") == ["a", "out", "N"]
@@ -53,7 +53,7 @@ def test_fortran_unmunge_multiple_and_no_underscore():
 
 
 def test_abi_order_pointer_star_stripped():
-    assert tsvc_arena.abi_order("void k_fp64(double *a, double* b, int64_t N) {", "k_fp64") == ["a", "b", "N"]
+    assert harness.signature_order("void k_fp64(double *a, double* b, int64_t N) {", "k_fp64") == ["a", "b", "N"]
 
 
 # --- flag composition (flags.*) -----------------------------------------------------------------------
@@ -87,6 +87,28 @@ def test_flag_matrix_atol_covers_every_level():
     assert flags.FP_ATOL["strict-ieee"] < flags.FP_ATOL["fast-math"]
     for level, model, cflags in flags.flag_matrix("gnu"):
         assert cflags[:1] == ["-O3"] and level in flags.FP_LEVELS and model in flags.COST_MODELS
+
+
+def test_veclib_flags_compose_and_gate_by_compatibility():
+    # 'none'/empty -> no flags, no error; a compatible pairing yields -fveclib + -l; an incompatible one
+    # (sleef on gcc) or a missing compiler is rejected with a reason, not silent flags.
+    assert flags.veclib_flags("g++", "none") == ([], None)
+    assert flags.veclib_flags("clang++", None) == ([], None)
+    fl, r = flags.veclib_flags("clang++", "sleef")
+    assert r is None and fl == ["-fveclib=SLEEF", "-lsleef"]
+    assert flags.veclib_flags("g++", "libmvec") == (["-lmvec"], None)  # glibc: auto compile, -lmvec link
+    bad, reason = flags.veclib_flags("g++", "sleef")
+    assert bad is None and "incompatible" in reason
+    nocc, reason2 = flags.veclib_flags(None, "sleef")
+    assert nocc is None and "without a compiler" in reason2
+    assert set(flags.VECLIBS) == {"none", "sleef", "libmvec", "svml"}
+
+
+def test_lane_flags_threads_veclib_and_rejects_incompatible():
+    ok, r = flags.lane_flags("llvm", "default-fp", "default", "sequential", "c", 4, compiler="clang++", veclib="sleef")
+    assert r is None and "-fveclib=SLEEF" in ok and "-lsleef" in ok
+    bad, reason = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c", 4, compiler="g++", veclib="sleef")
+    assert bad is None and "incompatible" in reason  # unsupported cell recorded, never silently emitted
 
 
 def test_family_of_maps_labels_to_fp_families():

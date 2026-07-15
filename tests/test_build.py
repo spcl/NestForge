@@ -26,9 +26,10 @@ from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from dace.sdfg import nodes
 from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
-                             ArenaConfig, prune_to_valid_combinations, resolve_runtime, compare_link_modes, LinkTimings,
-                             available_linkers, fastest_linker, linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML,
-                             vectorlib_installed, BuildOptions, set_fast_libnodes, runtime_installed)
+                             compare_link_modes, LinkTimings, available_linkers, fastest_linker, linker_supported,
+                             VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions, set_fast_libnodes,
+                             runtime_installed, config_has, codegen_impls_available, codegen_config,
+                             default_codegen_impl, CODEGEN_IMPLS)
 
 
 def kernels():
@@ -203,7 +204,7 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     # Compiler-neutral flags only (no -march=native: nvc++ spells it -tp); OpenMP is the separate axis.
     built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_par_")),
-                       BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++14"], openmp=rt))
+                       BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++20"], openmp=rt))
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
@@ -305,67 +306,6 @@ def test_veclib_libmvec_build_is_correct():
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
 
-def test_prune_selecting_libgomp_discards_kmpc_compilers():
-    """User rule: select libgomp (GOMP-only) and every kmpc compiler is discarded -- clang++ AND nvc++
-    both emit ``__kmpc_*`` which libgomp lacks; only gcc (which emits ``GOMP_*``) survives. Each drop
-    warns. (probe off: pure ABI logic, independent of what is installed.)"""
-    cfg = ArenaConfig(compilers=["g++", "clang++", "nvc++"], runtimes=["libgomp"])
-    with pytest.warns(UserWarning, match="nvc"):
-        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=False)
-    assert pruned.compilers == ["g++"]
-    assert pruned.runtimes == ["libgomp"]
-    assert pruned.combos == [("g++", "libgomp")]
-
-
-def test_prune_removes_runtime_with_no_compatible_compiler():
-    """The "remove runtimes by default" step: with only nvc++ as a compiler, both libomp AND libgomp are
-    compatible with no remaining compiler (nvc++ links only its native libnvomp via -mp) and are dropped
-    with a warning; libnvomp stays. So nvc++ is forced onto libnvomp -- the "nvc++ -> libnvomp" rule."""
-    cfg = ArenaConfig(compilers=["nvc++"], runtimes=["libnvomp", "libomp", "libgomp"])
-    with pytest.warns(UserWarning, match="incompatible"):
-        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=False)
-    assert pruned.runtimes == ["libnvomp"]
-    assert pruned.combos == [("nvc++", "libnvomp")]
-    # invariant: every surviving combo is ABI-valid.
-    assert all(resolve_runtime(r).compatible(c) for c, r in pruned.combos)
-
-
-def test_prune_removes_uninstalled_compiler_with_warning():
-    """A compiler not on PATH is dropped with a warning (real probe: the bogus name cannot exist)."""
-    cfg = ArenaConfig(compilers=["g++", "nf-not-a-real-compiler"], runtimes=["libomp"])
-    with pytest.warns(UserWarning, match="not on PATH"):
-        pruned = prune_to_valid_combinations(cfg, probe_compilers=True, probe_runtimes=False)
-    assert pruned.compilers == ["g++"]
-
-
-def test_prune_removes_uninstalled_runtime_with_warning(monkeypatch):
-    """A runtime whose library is not found is dropped with a warning. Only libnvomp is forced absent (via
-    monkeypatch); g++ keeps libomp, which is installed on any toolchain host (libomp-dev is in setup_apt)."""
-    if not runtime_installed(LIBOMP):
-        pytest.skip("libomp not installed here; this test needs it present so g++ keeps it after pruning")
-    import nestforge.build as B
-    real = B.runtime_installed
-    monkeypatch.setattr(B, "runtime_installed", lambda rt: rt.soname != "nvomp" and real(rt))
-    cfg = ArenaConfig(compilers=["g++"], runtimes=["libomp", "libnvomp"])
-    with pytest.warns(UserWarning, match="not installed"):
-        pruned = prune_to_valid_combinations(cfg, probe_compilers=False, probe_runtimes=True)
-    assert "libnvomp" not in pruned.runtimes and "libomp" in pruned.runtimes
-
-
-def test_prune_default_config_yields_gcc_on_libomp():
-    """The default arena (g++/clang++/nvc++/icpx x libomp) pruned on this machine keeps at least the
-    gcc-on-libomp combo; uninstalled toolchains (e.g. icpx without setvars) just warn and drop out (not
-    asserted here since which toolchains are present is host-dependent)."""
-    if shutil.which("g++") is None or not runtime_installed(LIBOMP):
-        pytest.skip("needs g++ + an installed libomp (absent on a bare login node without the toolchain module)")
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        pruned = prune_to_valid_combinations(ArenaConfig())
-    assert ("g++", "libomp") in pruned.combos
-    assert all(resolve_runtime(r).compatible(c) for c, r in pruned.combos)
-
-
 def test_owned_build_reusable_handle_program():
     """After one init, __program can be called repeatedly in place (the timing path) on one handle."""
     boundary = first_nest("hpc/dense_linear_algebra/gemm/gemm")
@@ -401,3 +341,43 @@ def test_set_fast_libnodes_selects_implementation():
     set_fast_libnodes(sdfg)  # must not raise, and must not expand the node away
     still = [n for s in sdfg.all_states() for n in s.nodes() if isinstance(n, nodes.LibraryNode)]
     assert still and all(n.implementation for n in still)  # every node carries a chosen implementation
+
+
+# --- codegen-implementation axis (legacy | experimental) ---------------------------------------------
+def test_config_has_reflects_schema():
+    """config_has answers whether the running DaCe schema DEFINES a key -- true for a core key, false for
+    a bogus one -- without getattr/hasattr, so the codegen axis can degrade on a build lacking the key."""
+    assert config_has("compiler", "build_type")  # a core key every DaCe schema has
+    assert not config_has("compiler", "cpu", "definitely_not_a_real_key_zzz")
+
+
+def test_codegen_impls_available_default_first_and_consistent():
+    """The toggleable axis always offers legacy, lists the default first, and default_codegen_impl agrees
+    with the first entry. On this (readable-codegen) DaCe build both impls are available, new first."""
+    impls = codegen_impls_available()
+    assert "legacy" in impls
+    assert impls[0] == default_codegen_impl()  # default-first ordering
+    assert set(impls) <= set(CODEGEN_IMPLS)
+    # A plain build defaults to whatever is available first -- experimental where the key exists.
+    assert BuildOptions().codegen_impl == default_codegen_impl()
+
+
+def test_codegen_config_degrades_gracefully_without_the_key(monkeypatch):
+    """On a DaCe build WITHOUT compiler.cpu.implementation (simulated), the default is legacy, a legacy
+    scope is a no-op that still runs, and an explicit experimental request RAISES rather than silently
+    emitting legacy and mislabelling it."""
+    monkeypatch.setattr("nestforge.build.config_has", lambda *path: False)
+    assert default_codegen_impl() == "legacy"
+    assert codegen_impls_available() == ("legacy", )
+    with codegen_config("legacy"):
+        pass  # no key to set; the emit_tree_reductions pin is harmless
+    with pytest.raises(ValueError):
+        with codegen_config("experimental"):
+            pass
+
+
+@pytest.mark.parametrize("impl", codegen_impls_available())
+def test_both_codegen_impls_build_and_match_oracle(impl):
+    """Every toggleable codegen impl builds the same nest to a working kernel that matches the oracle --
+    the axis is genuinely selectable, not just a stamped label."""
+    owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d", opts=BuildOptions(codegen_impl=impl))

@@ -135,9 +135,9 @@ def _make_dace(short):
 
 def _make_tsvc(short, corpus):
     kernel = tsvc.iter_tsvc_kernels(only=[short], corpus=corpus)[0]
-    probe = tsvc.build_sdfg(kernel, opt_mode="baseline")
+    probe = tsvc.build_sdfg(kernel, opt_mode="simplify-parallel")
     sizes = {str(s): 8 for s in probe.free_symbols}
-    return (lambda: tsvc.build_sdfg(kernel, opt_mode="baseline")), sizes, 0.5  # centered: exercise sign branches
+    return (lambda: tsvc.build_sdfg(kernel, opt_mode="simplify-parallel")), sizes, 0.5  # centered: exercise sign branches
 
 
 def _base_inputs(sdfg, sizes, center, seed=0):

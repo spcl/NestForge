@@ -37,8 +37,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
-import math
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -47,6 +45,8 @@ import matplotlib
 matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE importing pyplot
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
+
+from plot_common import finite, geomean, load_results  # noqa: E402
 
 #: The two single-compiler baselines: plot label -> the compiler whose default c++ cell is the baseline.
 BASELINES: Dict[str, str] = {"gcc_cpp": "gcc", "llvm_cpp": "clang"}
@@ -65,32 +65,6 @@ PALETTE: Dict[str, str] = {
     "nest-forge": "#222222"
 }
 MARKERS: Dict[str, str] = {"gcc": "o", "clang": "s", "nvhpc": "^", "intel": "D", "nest-forge": "*"}
-
-
-def finite(x) -> bool:
-    """True only for a real, usable numeric time (a finite int/float); rejects ``None`` / ``inf`` / ``nan``."""
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def geomean(xs: List[float]) -> Optional[float]:
-    """Geometric mean of the finite positive values; ``None`` when there are none."""
-    vals = [x for x in xs if finite(x) and x > 0.0]
-    if not vals:
-        return None
-    return math.exp(sum(math.log(v) for v in vals) / len(vals))
-
-
-def load_results(results_dir: Path) -> List[dict]:
-    """Every per-kernel JSON in ``results_dir`` (``tables.md`` and unparseable files skipped)."""
-    rows: List[dict] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
-        try:
-            rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
-    return rows
 
 
 def timing_cells(kernel: dict) -> List[dict]:

@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -46,35 +44,10 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
+from plot_common import finite, geomean, load_results  # noqa: E402
+
 #: label for the "let nest-forge choose per kernel" bar in the chart / summary.
 NESTFORGE_LABEL = "nestforge-best"
-
-
-def finite(x) -> bool:
-    """True only for a real, usable numeric time: a finite int/float. Rejects ``None`` (a non-finite value
-    the driver mapped to ``null`` on write) and ``inf`` / ``nan``."""
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def geomean(xs: List[float]) -> Optional[float]:
-    """Geometric mean of the finite positive values; ``None`` when there are none."""
-    vals = [x for x in xs if finite(x) and x > 0.0]
-    if not vals:
-        return None
-    return math.exp(sum(math.log(v) for v in vals) / len(vals))
-
-
-def load_results(results_dir: Path) -> List[dict]:
-    """Every per-kernel JSON in ``results_dir`` (``tables.md`` and unparseable files skipped)."""
-    rows: List[dict] = []
-    for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
-        try:
-            rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
-    return rows
 
 
 def baseline_us(kernel: dict) -> Optional[float]:

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import socket
 import tempfile
@@ -35,8 +34,8 @@ from nestforge.arena import maxdiff, make_inputs, run_oracle
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
-from nestforge.perf.tsvc_arena import (Toolchain, c_argtypes, call_c, discover_toolchains, rank_and_size, my_slice,
-                                       run_compile)
+from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.perf.harness import c_argtypes, call_c, my_slice, rank_and_size, run_compile, signature_order
 from nestforge.translate import emit_sources, prepare
 
 #: language -> (numpyto target, source suffix, per-family compiler-exe candidates). numpyto has no
@@ -83,23 +82,6 @@ def lang_compilers(languages: List[str], toolchains: List[Toolchain]) -> Dict[st
                     break
         out[lang] = per_family
     return out
-
-
-def signature_order(text: str, symbol: str, lang: str) -> List[str]:
-    """Parameter names of the kernel entry, in declaration order, for the language's syntax.
-
-    A long Fortran argument list wraps across lines with ``&`` free-form continuations
-    (``arg1, &\\n  & arg2``); those markers are stripped before splitting, or an arg name would carry a
-    stray ``&``/newline (``&\\n&aa_slice`` -> a bogus name -> KeyError at the call)."""
-    if lang == "fortran":
-        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
-        if not m:
-            raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
-        return [a.strip() for a in m.group(1).replace("&", " ").split(",") if a.strip()]
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", text, re.S)
-    if not m:
-        raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
-    return [p.strip().split()[-1].lstrip("*") for p in m.group(1).split(",") if p.strip() and p.strip() != "void"]
 
 
 def fortran_unmunge(order: List[str], names: List[str]) -> List[str]:
@@ -207,7 +189,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
                preset: str,
                reps: int,
                workdir: Path,
-               opt_mode: str = "baseline") -> Dict:
+               opt_mode: str = "simplify-parallel") -> Dict:
     """Emit + compile + run + time one kernel across every requested language x compiler.
 
     A kernel may split into several compute nests (its work is the SUM of its nests): every
@@ -347,9 +329,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--compilers", default="auto")
     ap.add_argument("--strategy", default="skip-taskloops")
     ap.add_argument("--opt-mode",
-                    default="baseline",
+                    default="simplify-parallel",
                     choices=list(tsvc.OPT_MODES),
-                    help="pre-split optimization mode (baseline / canonicalize)")
+                    help="pre-split optimization mode (simplify-parallel / canonicalize / auto-opt)")
     ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--only", nargs="*", default=None)
     ap.add_argument("--limit", type=int, default=None)

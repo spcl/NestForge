@@ -63,7 +63,9 @@ mkdir -p "$REPO/perf_results" || {
 }
 echo "[smoke] repo root: $REPO (results under $REPO/perf_results/); PYTHONPATH pinned to the clone"
 
-export OMP_NUM_THREADS="72"
+export OMP_NUM_THREADS="72"        # one Grace socket's worth of cores per rank
+export OMP_PROC_BIND="close"       # pin OpenMP threads (matches dace slurm_perf.sh + daint_all.sh)
+export OMP_PLACES="cores"          # one OpenMP place per physical core
 export PYTHONUNBUFFERED=1
 
 # dace transitively imports mpi4py; under srun's PMI it auto-inits MPI and hangs/aborts. This driver
@@ -81,6 +83,8 @@ alias python=python3.11
 
 spack load gcc@16.1.0
 spack load llvm@22.1.5
+spack load cmake                   # DaCe's default (CMake) codegen lane needs cmake on PATH
+spack load openblas 2>/dev/null || echo "[all-smoke] openblas not in spack -- BLAS-backed lanes fall back to naive loops"
 module load nvhpc 2>/dev/null || echo "[all-smoke] nvhpc module not found -- nvc/nvc++/nvfortran skipped"
 source /opt/intel/oneapi/setvars.sh 2>/dev/null || echo "[all-smoke] oneAPI setvars not found -- icx/icpx/ifx skipped"
 
@@ -92,7 +96,7 @@ ONLY="${ONLY:-s000 s1115}"                 # a handful of kernels only
 CORPORA="${CORPORA:-tsvc2}"
 LANGUAGES="${LANGUAGES:-c fortran}"        # keeps phase 2 green (crosslang = c/fortran only); see note
 PARALLELISM="${PARALLELISM:-both}"
-OPT_MODES="${OPT_MODES:-baseline canonicalize}"
+OPT_MODES="${OPT_MODES:-simplify-parallel canonicalize auto-opt}"
 COST_MODELS="${COST_MODELS:-default cheap no-vec}"
 FP_MODES="${FP_MODES:-default-fp no-fast-errno}"
 PROFILE_PRESET="${PROFILE_PRESET:-S}"      # SMALL
@@ -122,8 +126,9 @@ OUT_CALLOVERHEAD="${OUT_CALLOVERHEAD:-$REPO/perf_results/all_smoke/calloverhead}
 
 # --- PHASE 1: full axis matrix (nestforge.perf.tsvc_full) ----------------------
 run_full () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.tsvc_full \
       --corpora '"$CORPORA"' --only '"$ONLY"' --languages '"$LANGUAGES"' --opt-modes '"$OPT_MODES"' \
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
@@ -136,8 +141,9 @@ run_full () {
 
 # --- PHASE 2: cross-language XL (nestforge.perf.crosslang_xl) -------------------
 run_crosslang () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.crosslang_xl \
       --corpora '"$CORPORA"' --only '"$ONLY"' --languages '"$LANGUAGES"' --preset "'"$XL_PRESET"'" \
       --compilers "'"$COMPILERS"'" --reps "'"$XL_REPS"'" --out "'"$OUT_XL"'"
@@ -148,8 +154,9 @@ run_crosslang () {
 
 # --- PHASE 3: static-lib compile overhead (nestforge.perf.staticlib_overhead) --
 run_overhead () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.staticlib_overhead \
       --only '"$ONLY"' --compiler "'"$OVERHEAD_CXX"'" --reps "'"$OVERHEAD_REPS"'" --out "'"$OUT_OVERHEAD"'"
   ' || echo "[all-smoke] phase 3 (staticlib_overhead) sweep failed (partial results kept)"
@@ -159,8 +166,9 @@ run_overhead () {
 
 # --- PHASE 4: runtime call overhead (nestforge.perf.calloverhead) --------------
 run_calloverhead () {
-  srun --cpu-bind=cores bash -c '
-    export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+  srun --cpu-bind=verbose,cores --distribution=block:block bash -c '
+    export DACE_default_build_folder="/dev/shm/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
+    [ -w /dev/shm ] || export DACE_default_build_folder="${TMPDIR:-/tmp}/nf_dace_smoke_${SLURM_JOB_ID:-0}_${SLURM_PROCID:-0}"
     python3 -m nestforge.perf.calloverhead \
       --only '"$ONLY"' --compiler "'"$CALLOVERHEAD_CC"'" --preset "'"$CALLOVERHEAD_PRESET"'" \
       --inner "'"$CALLOVERHEAD_INNER"'" --reps "'"$CALLOVERHEAD_REPS"'" --out "'"$OUT_CALLOVERHEAD"'"

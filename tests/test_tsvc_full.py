@@ -135,24 +135,24 @@ def _cell(opt, lang, comp, par, cost, fp, role, ok, median, maxdiff=0.0):
 
 def test_kernel_winner_picks_fastest_validated_timing_cell():
     cells = [
-        _cell("baseline", "c", "gcc", "sequential", "default", "default-fp", "timing", True, 5.0),
-        _cell("baseline", "c", "gcc", "auto-par", "no-vec", "no-fast-errno", "timing", True, 2.0),
-        _cell("baseline", "c", "gcc", "sequential", "cheap", "default-fp", "timing", False, 1.0),  # not ok
-        _cell("baseline", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 9.0),  # gate, not timing
+        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "default-fp", "timing", True, 5.0),
+        _cell("simplify-parallel", "c", "gcc", "auto-par", "no-vec", "no-fast-errno", "timing", True, 2.0),
+        _cell("simplify-parallel", "c", "gcc", "sequential", "cheap", "default-fp", "timing", False, 1.0),  # not ok
+        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 9.0),  # gate, not timing
     ]
-    win = tsvc_full.kernel_winner(cells, "baseline", "c", "gcc")
+    win = tsvc_full.kernel_winner(cells, "simplify-parallel", "c", "gcc")
     assert win["median_us"] == 2.0 and win["parallel"] == "auto-par"
-    assert tsvc_full.kernel_winner(cells, "baseline", "c", "clang") is None  # no such group
+    assert tsvc_full.kernel_winner(cells, "simplify-parallel", "c", "clang") is None  # no such group
 
 
 def test_render_tables_gate_speedup_and_unsupported(tmp_path):
     cells = [
         # a bit-exact gate + a validated timing winner
-        _cell("baseline", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 0.0, maxdiff=0.0),
-        _cell("baseline", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0),
+        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 0.0, maxdiff=0.0),
+        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0),
         # an unsupported auto-par cell (recorded)
         {
-            **_cell("baseline", "c", "clang", "auto-par", "default", "default-fp", "timing", False, float("inf")), "error":
+            **_cell("simplify-parallel", "c", "clang", "auto-par", "default", "default-fp", "timing", False, float("inf")), "error":
             "unsupported: clang/flang has no plain-loop auto-parallelizer"
         },
     ]
@@ -183,7 +183,7 @@ def test_render_tables_gate_speedup_and_unsupported(tmp_path):
 
 
 def test_render_tables_reports_gate_failure(tmp_path):
-    bad = _cell("baseline",
+    bad = _cell("simplify-parallel",
                 "c",
                 "gcc",
                 "sequential",
@@ -210,7 +210,7 @@ def test_render_tables_gate_ok_with_tiny_nonzero_maxdiff_is_not_a_failure(tmp_pa
     """REGRESSION: strict-ieee is NOT atol-0 (pairwise-sum reductions / transcendentals drift ~1e-15 from
     numpy), so a gate cell that VALIDATED (``ok=True``) but has a tiny non-zero ``maxdiff`` (here 1e-16)
     must NOT be reported as a gate failure. The report keys off ``cell.ok``, never ``maxdiff == 0.0``."""
-    passing = _cell("baseline", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 4.0, maxdiff=1e-16)
+    passing = _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 4.0, maxdiff=1e-16)
     (tmp_path / "tsvc2_sO.json").write_text(
         json.dumps({
             "key": "sO",
@@ -245,7 +245,7 @@ def _small_axes():
     # mode roughly halves the compile matrix so the test stays light under the full ``-n auto`` suite run
     # (where the 3-language matrix, run concurrently with the rest, otherwise thrashes and times out).
     return {
-        "opt_modes": ["baseline"],
+        "opt_modes": ["simplify-parallel"],
         "languages": ["c", "c++", "fortran"],
         "parallelism": ["sequential", "auto-par"],
         "cost_models": ["default"],
@@ -303,7 +303,7 @@ def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
     ftn = lang_compilers(["fortran"], tcs).get("fortran", {})
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
     axes = {
-        "opt_modes": ["baseline"],
+        "opt_modes": ["simplify-parallel"],
         "languages": ["c", "c++", "fortran"],
         "parallelism": ["sequential", "omp-emit"],
         "cost_models": ["default"],
@@ -338,7 +338,7 @@ def test_omp_emit_sources_carry_the_pragma(tmp_path):
     if not tcs:
         pytest.skip("no gcc")
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    ctxs = tsvc_full.build_opt_context(k, "baseline", "skip-taskloops", "S", ["c", "fortran"], tmp_path)
+    ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c", "fortran"], tmp_path)
     nc = ctxs[0]
     assert nc["parallel"], "s000 nest should be classified parallel"
     assert nc["omp_src"], "a parallel nest must have omp sources"
@@ -357,7 +357,7 @@ def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
     # build_opt_context now returns a per-nest list; s000 is single-nest -> nest 0. Its symbol carries the
     # per-nest suffix ``_n0_fp64`` (each nest is an independently-linked external call).
-    ctxs = tsvc_full.build_opt_context(k, "baseline", "skip-taskloops", "S", ["c", "c++"], tmp_path)
+    ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c", "c++"], tmp_path)
     wrapper, order, argtypes = ctxs[0]["lang_src"]["c++"]
     symbol = ctxs[0]["symbol"]  # s000_n0_fp64
     cflags, _ = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c++", 2)
@@ -372,7 +372,7 @@ def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
 
 def _one_lang_axes():
     return {
-        "opt_modes": ["baseline"],
+        "opt_modes": ["simplify-parallel"],
         "languages": ["c"],
         "parallelism": ["sequential"],
         "cost_models": ["default"],

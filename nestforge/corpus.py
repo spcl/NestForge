@@ -28,7 +28,7 @@ DACE_TRACKS = ("hpc", "ml")
 
 def set_precision_fp64() -> None:
     """Fix optarena's kernel dtype global to float64 before kernel modules import it."""
-    import optarena.infrastructure.dace_framework as dfw
+    import optarena.frameworks.dace_framework as dfw
     dfw.dc_float = dace.float64
     dfw.dc_complex_float = dace.complex128
 

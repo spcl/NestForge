@@ -31,6 +31,7 @@ import yaml
 
 import dace
 from dace import symbolic
+from dace.transformation.auto.auto_optimize import auto_optimize
 from dace.transformation.dataflow import MapFusionHorizontal, MapFusionVertical
 from dace.transformation.interstate import LoopToMap
 from dace.transformation.passes.canonicalize import canonicalize
@@ -177,27 +178,34 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -
     return out
 
 
-#: The optimization modes applied to a kernel's SDFG *before* the loopnest-splitting pass runs.
-OPT_MODES = ("baseline", "canonicalize")
+#: The optimization modes applied to a kernel's SDFG *before* the loopnest-splitting pass runs. This is
+#: the DaCe-side opt-pipeline axis: each value is a distinct lowering the external compiler then sees.
+OPT_MODES = ("simplify-parallel", "canonicalize", "auto-opt")
 
 
-def build_sdfg(kernel: TsvcKernel, opt_mode: str = "baseline") -> dace.SDFG:
+def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.SDFG:
     """The kernel's SDFG after an optimization mode, ready for the loopnest-splitting pass.
 
     Optimization modes (the pre-split axis):
-    - ``"baseline"``     -- DaCe ``simplify`` + ``LoopToMap`` + ``MapFusion`` (V+H) + ``simplify``;
-      the reference map-nest form the external compiler vectorizes/tiles.
-    - ``"canonicalize"`` -- the DaCe extended-branch canonicalization pipeline (statement-level
+    - ``"simplify-parallel"`` -- DaCe ``simplify`` + ``LoopToMap`` + ``MapFusion`` (V+H) + ``simplify``;
+      the reference map-nest form the external compiler vectorizes/tiles. (Formerly ``"baseline"``.)
+    - ``"canonicalize"``      -- the DaCe extended-branch canonicalization pipeline (statement-level
       normal form: normalized loops/maps, lifted reductions, parallelized where sound).
+    - ``"auto-opt"``          -- DaCe's full CPU ``auto_optimize`` pipeline (greedy map fusion, tiling,
+      transient reuse, library-node specialization) as DaCe would ship it -- the strongest DaCe-side
+      lowering, measured as its own axis rather than assumed.
     """
     sdfg = kernel.program.to_sdfg(simplify=True)
-    if opt_mode == "baseline":
+    if opt_mode == "simplify-parallel":
         sdfg.apply_transformations_repeated([LoopToMap])
         sdfg.apply_transformations_repeated([MapFusionVertical, MapFusionHorizontal])
         sdfg.simplify()
         return sdfg
     if opt_mode == "canonicalize":
         canonicalize(sdfg, target="cpu")
+        return sdfg
+    if opt_mode == "auto-opt":
+        auto_optimize(sdfg, dace.DeviceType.CPU)
         return sdfg
     raise ValueError(f"unknown opt_mode {opt_mode!r}; expected one of {OPT_MODES}")
 

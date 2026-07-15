@@ -15,7 +15,7 @@ library for the aggregate whole-program comparison.
 
 Usage::
 
-    python -m nestforge.perf.tsvc_arena --select tsvc --strategy skip-taskloops \\
+    python -m nestforge.perf.tsvc_arena --strategy skip-taskloops \\
         --compilers auto --reps 100 --seed 0 --random-sizes
     python -m nestforge.perf.tsvc_arena --link --seed 0
     python -m nestforge.perf.tsvc_arena --tables-only --seed 0
@@ -27,7 +27,6 @@ import ctypes
 import json
 import math
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -43,23 +42,14 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the DaCe package (not a cwd-shadowing stub) is importable
 
 from nestforge import tsvc
-from nestforge.arena import CTYPE, maxdiff, make_inputs, run_oracle, scalar_ctype
-from nestforge.build import compiler_family, compiler_version, resolve_runtime
+from nestforge.arena import maxdiff, make_inputs, run_oracle
+from nestforge.build import compiler_family, compiler_version
 from nestforge.perf import flags
+from nestforge.perf.harness import (C_BASE, c_argtypes, call_c, fmt_us, geomean, my_slice, native_symbol, rank_and_size,
+                                    run_compile, signature_order)
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.translate import emit_sources, prepare
-
-
-def default_flags(family: str) -> List[str]:
-    """The default-flags column: the compiler's plain optimizing flags (``flags.base_flags``, family-aware
-    so nvidia gets ``-tp=native``) with no FP-mode or cost-model tweak. The native ``.cpp`` baseline is
-    compiled at the SAME flags, so the "same default flags" fairness the report claims cannot drift."""
-    return flags.base_flags(family)
-
-
-#: base C-type name -> ctypes type, for the native-baseline signature.
-_C_BASE = {"double": ctypes.c_double, "float": ctypes.c_float, "int64_t": ctypes.c_int64, "int": ctypes.c_int}
 
 
 # --- compiler discovery (item b: PATH + spack, gcc/clang/nvc++) --------------------------------------
@@ -205,26 +195,6 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
     return out
 
 
-def restrict_to_single_openmp_runtime(toolchains: List[Toolchain], runtime_name: str = "libomp") -> List[Toolchain]:
-    """Keep only toolchains that can link the ONE chosen OpenMP runtime.
-
-    PARALLEL.md mandates a single runtime for the whole program: mixing e.g. nvc's native ``libnvomp``
-    with gcc/clang's ``libomp`` double-loads the OpenMP runtime (the ``OMP Error #15`` abort /
-    thread-pool oversubscription). Uses ``build.py``'s per-family compatibility model; drops -- with a
-    warning -- any compiler that would be forced onto a different runtime. Apply this ONLY to a job that
-    actually links OpenMP (a parallel-emitting or whole-program-linking job); the serial nest arena
-    links no OpenMP, so it keeps every compiler."""
-    rt = resolve_runtime(runtime_name)
-    kept: List[Toolchain] = []
-    for tc in toolchains:
-        if rt.compatible(tc.cc) and (tc.cxx is None or rt.compatible(tc.cxx)):
-            kept.append(tc)
-        else:
-            warnings.warn(f"{tc.name}: family {tc.family} cannot link the single OpenMP runtime "
-                          f"{runtime_name!r} (it forces its own); dropping from the OpenMP sweep")
-    return kept
-
-
 # The flag matrix (FP-precision level x vectorizer cost-model, per family) is the shared
 # ``nestforge.perf.flags.flag_matrix``; see ``docs/FP_PRECISION_LEVELS.md``. The crosslang job sweeps
 # the same matrix, so the two arenas stay in lock-step on one FP-precision ladder.
@@ -261,76 +231,6 @@ class NestUnit:
     csrc: Path
     order: List[str]
     argtypes: list
-
-
-#: Per-compile wall-clock ceiling (seconds). This is the compile helper the phase-1 sweep runs
-#: inside a ThreadPoolExecutor; an untimed compiler that spins on a pathological kernel would hang
-#: the worker thread, block pool.map, freeze the whole sweep rank, and leave srun waiting on it --
-#: the 19h "job timed out" stall. On timeout we return a normal (failed, err) result so only that
-#: one cell is lost. Override with NF_COMPILE_TIMEOUT.
-_COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
-
-
-def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
-    t0 = time.perf_counter()
-    try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=_COMPILE_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        dt = (time.perf_counter() - t0) * 1e6
-        return False, dt, f"compile timed out after {_COMPILE_TIMEOUT_S:.0f}s (NF_COMPILE_TIMEOUT)"
-    dt = (time.perf_counter() - t0) * 1e6
-    return (p.returncode == 0), dt, (None if p.returncode == 0 else p.stderr[-400:])
-
-
-def abi_order(csrc_text: str, symbol: str) -> List[str]:
-    """The parameter names of ``void <symbol>(...)`` in declaration order, read from the emitted C.
-
-    numpyto orders the C parameters canonically (sorted arrays, then symbols), which is NOT the manifest
-    ``input_args`` order -- so args must be bound to the *actual* C signature, or a size lands in a
-    pointer slot (garbage index -> a runaway loop). Mirrors ``scripts/overhead_baseline.abi_order``.
-    An empty / ``void`` parameter list yields ``[]`` (a zero-arg kernel), never an IndexError.
-    """
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", csrc_text, re.S)
-    if not m:
-        raise LookupError(f"entry point {symbol} not found in the emitted C")
-    params = [p.strip() for p in m.group(1).split(",") if p.strip() and p.strip() != "void"]
-    return [p.split()[-1].lstrip("*") for p in params]
-
-
-def c_argtypes(order: List[str], boundary) -> list:
-    """ctypes type per C parameter: an array name -> pointer-to-its-dtype, a size / index symbol -> int64,
-    a value scalar (a staged ``a_index = a[i]`` read) -> its SDFG dtype (``c_double``), matching the
-    translator's ``double`` signature so the value is neither truncated nor mis-passed."""
-    sdfg = boundary.standalone_sdfg
-    return [
-        ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
-        for a in order
-    ]
-
-
-def call_c(so: Path, symbol: str, order: List[str], argtypes: list, boundary, inputs, sizes, reps: int):
-    """Bind by the C signature order, run once for correctness (snapshotting outputs), then time ``reps``
-    bare-ctypes calls on the same buffers. Runs the kernel IN PLACE on ``inputs``; every caller invokes it
-    inside a forked child, so the COW-inherited buffers are mutated without touching the parent -- this
-    avoids a full per-cell copy of the (time-size) input set. The one correctness run precedes any mutation
-    from timing, so validation still sees fresh inputs."""
-    fn = ctypes.CDLL(str(so))[symbol]
-    fn.argtypes, fn.restype = argtypes, None
-
-    def build_args():
-        return [
-            inputs[a].ctypes.data_as(t) if a in inputs else t(sizes[a])  # t: c_int64 size / c_double value scalar
-            for a, t in zip(order, argtypes)
-        ]
-
-    fn(*build_args())  # correctness run
-    outputs = {o: inputs[o].copy() for o in boundary.outputs}
-    cargs = build_args()
-    fn(*cargs)  # warm
-    t0 = time.perf_counter()
-    for _ in range(reps):
-        fn(*cargs)
-    return outputs, (time.perf_counter() - t0) / reps * 1e6
 
 
 def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List[str], argtypes, boundary, inputs,
@@ -375,17 +275,6 @@ def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: 
 
 
 # --- native baseline (item e) -----------------------------------------------------------------------
-def native_symbol(text: str, expected: str) -> str:
-    """The first ``extern "C"`` kernel symbol in the baseline source (``expected`` is the ``<key>_d``
-    convention, used only as the search hint / fallback)."""
-    if re.search(rf"\b{re.escape(expected)}\s*\(", text):
-        return expected
-    m = re.search(r"\bvoid\s+(\w+)\s*\(", text)
-    if not m:
-        raise LookupError("no kernel function found in the native baseline source")
-    return m.group(1)
-
-
 def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, oracle, reps: int) -> Dict:
     """Bind + validate + time the native baseline; runs inside the forked child
     (:func:`nestforge.isolation.run_isolated`), so an out-of-bounds access in the original C (its bounds
@@ -395,7 +284,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
     pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
     argtypes, ptr_names = [], []
     for name, base, is_ptr in sig:
-        ct = _C_BASE[base]
+        ct = C_BASE[base]
         if is_ptr:
             if name not in inputs:
                 raise KeyError(f"native pointer arg {name!r} has no matching array buffer")
@@ -411,7 +300,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
     def build_args():
         return [
-            inputs[name].ctypes.data_as(ctypes.POINTER(_C_BASE[base])) if is_ptr else _C_BASE[base](pool[name.lower()])
+            inputs[name].ctypes.data_as(ctypes.POINTER(C_BASE[base])) if is_ptr else C_BASE[base](pool[name.lower()])
             for name, base, is_ptr in sig
         ]
 
@@ -435,7 +324,7 @@ def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes,
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:
         return None
-    nat = default_flags(family)  # native baseline uses the SAME default flags as the default column
+    nat = flags.base_flags(family)  # native baseline uses the SAME default flags as the default column
     text = cpp.read_text()
     try:
         symbol = native_symbol(text, kernel.native_symbol)
@@ -481,7 +370,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
             inputs = make_inputs(boundary, sizes, seed=seed)
             oracle = run_oracle(prep, boundary, inputs, sizes)
             csrc = select_c_source(emit_sources(prep, nest_dir))
-            order = abi_order(csrc.read_text(), symbol)
+            order = signature_order(csrc.read_text(), symbol)
             units.append(
                 NestUnit(idx, name, symbol, boundary, sizes, inputs, oracle, csrc, order, c_argtypes(order, boundary)))
     except Exception as e:
@@ -498,7 +387,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
     rows: List[Dict] = []
     for tc in toolchains:
         fam = tc.fp_family  # flag-matrix / FP family (intel != llvm); also the cell's compiler label
-        default = measure_over_nests(tc.cc, units, default_flags(fam), reps, 1e-6, fam, "default", workdir)
+        default = measure_over_nests(tc.cc, units, flags.base_flags(fam), reps, 1e-6, fam, "default", workdir)
         cells = [
             measure_over_nests(tc.cc, units, cflags, reps, flags.FP_ATOL[level], fam, f"{level}/{model}", workdir)
             for level, model, cflags in flags.flag_matrix(fam)
@@ -528,42 +417,7 @@ def ensure_seed_dir(out: Path, seed: int) -> Path:
     return d
 
 
-def my_slice(items: List, procid: int, ntasks: int) -> List:
-    """This rank's disjoint stride of the kernel list (round-robin balances long/short kernels)."""
-    return items[procid::ntasks] if ntasks > 1 else items
-
-
-#: rank / size environment variables, most specific launcher first: SLURM (srun), then OpenMPI, then
-#: MPICH/Hydra (mpirun). Whichever the job was launched with wins, so the driver self-partitions the
-#: same under ``srun`` on daint and under a local ``mpirun`` in a test.
-_RANK_VARS = ("SLURM_PROCID", "OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK")
-_SIZE_VARS = ("SLURM_NTASKS", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE")
-
-
-def rank_and_size() -> Tuple[int, int]:
-    """``(rank, nranks)`` from the launcher's environment (SLURM or an MPI runtime), defaulting to
-    ``(0, 1)`` for a plain single-process run. Every rank sees the same total, so the round-robin
-    partition is disjoint and covers every kernel exactly once.
-
-    Fails loud on an asymmetric environment -- a launcher that sets a rank variable but no recognized
-    size variable -- because silently defaulting the size to 1 would make EVERY rank process the whole
-    list (N-fold duplicated work + concurrent writes to the same per-kernel result file)."""
-    rank_var = next((v for v in _RANK_VARS if os.environ.get(v)), None)
-    size_var = next((v for v in _SIZE_VARS if os.environ.get(v)), None)
-    if rank_var is not None and size_var is None:
-        raise RuntimeError(f"launcher set a rank ({rank_var}={os.environ[rank_var]}) but no recognized size variable "
-                           f"({list(_SIZE_VARS)}); cannot partition safely -- every rank would run the whole list. Set "
-                           "the matching size env var, or run without a launcher for a single process.")
-    rank = int(os.environ[rank_var]) if rank_var else 0
-    size = int(os.environ[size_var]) if size_var else 1
-    return rank, max(size, 1)
-
-
 # --- tables (item g) --------------------------------------------------------------------------------
-def fmt_us(x) -> str:
-    return "—" if x is None or x == float("inf") else f"{x:.2f}"
-
-
 def render_tables(out: Path, seed: int) -> str:
     """Merge every per-kernel JSON under ``seed<seed>/`` into a markdown report."""
     seed_dir = ensure_seed_dir(out, seed)
@@ -597,7 +451,7 @@ def render_tables(out: Path, seed: int) -> str:
                          f"| {md} | {'—' if sp is None else f'{sp:.2f}x'} |")
 
     if speedups:
-        geo = math.exp(sum(math.log(s) for s in speedups) / len(speedups))
+        geo = geomean(speedups)
         lines += [
             "", f"**Geomean flag-matrix speedup vs native baseline:** {geo:.3f}x "
             f"(over {len(speedups)} kernel x compiler rows where both timed)."
@@ -738,7 +592,6 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
 # --- CLI --------------------------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC compiler-arena driver")
-    ap.add_argument("--select", default="tsvc", help="kernel set (only 'tsvc' is supported today)")
     ap.add_argument("--strategy", default="skip-taskloops", help="nest-detection strategy")
     ap.add_argument("--opt-mode",
                     default="baseline",
@@ -755,9 +608,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--link", action="store_true", help="assemble winners into one whole-TSVC library + compare")
     ap.add_argument("--tables-only", action="store_true", help="merge existing per-kernel JSON into markdown")
     args = ap.parse_args(argv)
-
-    if args.select != "tsvc":
-        ap.error(f"--select {args.select!r} unsupported; only 'tsvc' is available")
     out = Path(args.out)
 
     if args.tables_only:
