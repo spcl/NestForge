@@ -7,6 +7,7 @@ JSON), so they run fast and without any compiler on PATH -- unlike the end-to-en
 together cover both the wiring and the numbers-under-load.
 """
 import json
+import shutil
 
 import pytest
 
@@ -109,6 +110,73 @@ def test_lane_flags_threads_veclib_and_rejects_incompatible():
     assert r is None and "-fveclib=SLEEF" in ok and "-lsleef" in ok
     bad, reason = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c", 4, compiler="g++", veclib="sleef")
     assert bad is None and "incompatible" in reason  # unsupported cell recorded, never silently emitted
+
+
+def test_source_has_math_gates_the_veclib_axis():
+    from nestforge.perf import tsvc_full
+    assert tsvc_full.source_has_math("y[i] = sin(x[i]) + 1.0;")
+    assert tsvc_full.source_has_math("z = pow(a, b);")
+    assert not tsvc_full.source_has_math("c[i] = a[i] + b[i] * 2.0;")  # arithmetic-only nest -> no veclib
+
+
+def test_veclibs_for_gates_on_math_and_compatibility():
+    from nestforge.perf import tsvc_full
+    math_src, plain_src = "y[i] = exp(x[i]);", "c[i] = a[i] + b[i];"
+    assert tsvc_full.veclibs_for(math_src, ("none", "libmvec"), "gcc") == ("none", "libmvec")  # math + compatible
+    assert tsvc_full.veclibs_for(math_src, ("none", "sleef"), "g++") == ("none", )  # sleef incompatible w/ gcc
+    assert tsvc_full.veclibs_for(plain_src, ("none", "libmvec"), "gcc") == ("none", )  # no math -> none only
+
+
+def test_resolve_veclibs_spec_and_auto():
+    from nestforge.perf import tsvc_full
+    assert tsvc_full.resolve_veclibs(["none"]) == ("none", )
+    assert tsvc_full.resolve_veclibs(["libmvec"]) == ("none", "libmvec")  # 'none' ensured present
+    assert tsvc_full.resolve_veclibs(["sleef", "libmvec"])[0] == "none"
+    auto = tsvc_full.resolve_veclibs(["auto"])  # none + characterized winner, or none if nothing installed
+    assert auto[0] == "none" and 1 <= len(auto) <= 2
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
+def test_enumerate_cells_gates_veclib_cells_by_nest_math():
+    """The veclib axis fans lane-3 cells only for a nest whose source has libm math: a math nest gets both
+    none and libmvec timing cells, a plain arithmetic nest gets none only (no wasted compiles)."""
+    import tempfile
+    from pathlib import Path
+    from nestforge.perf import tsvc_full
+    from nestforge.perf.tsvc_arena import discover_toolchains
+    tcs = discover_toolchains("gcc")
+    d = Path(tempfile.mkdtemp())
+    axes = {
+        "opt_mode": "simplify-parallel",
+        "parallelism": ["sequential"],
+        "cost_models": ["default"],
+        "fp_modes": ["default-fp"],
+        "gate": False,
+        "matrix_preset": "lean",
+        "veclibs": ("none", "libmvec")
+    }
+    msrc = d / "m_fp64.c"
+    msrc.write_text("void m_fp64(double* a, double* b){ *a = exp(*b); }")
+    pend, _ = tsvc_full.enumerate_cells(
+        {
+            "lang_src": {
+                "c": (msrc, ["a", "b"], [None, None])
+            },
+            "symbol": "m_fp64",
+            "nest_idx": 0
+        }, tcs, {}, axes, 4, "c++23", d)
+    assert {p.cell.veclib for p in pend if p.cell.role == "timing"} == {"none", "libmvec"}
+    psrc = d / "p_fp64.c"
+    psrc.write_text("void p_fp64(double* a, double* b){ *a = *b + 1.0; }")
+    pend2, _ = tsvc_full.enumerate_cells(
+        {
+            "lang_src": {
+                "c": (psrc, ["a", "b"], [None, None])
+            },
+            "symbol": "p_fp64",
+            "nest_idx": 0
+        }, tcs, {}, axes, 4, "c++23", d)
+    assert {p.cell.veclib for p in pend2 if p.cell.role == "timing"} == {"none"}
 
 
 def test_family_of_maps_labels_to_fp_families():

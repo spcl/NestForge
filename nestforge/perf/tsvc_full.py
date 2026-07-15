@@ -79,7 +79,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -283,8 +283,16 @@ def dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, orac
     return {**verdict, **summarize_times(samples)}
 
 
-def measure_dace_cpp_lane(tc: Toolchain, boundary, validate_sizes, time_inputs, time_sizes, oracle, reps: int,
-                          cxx_std: str, workdir: Path, codegen_impl: Optional[str] = None) -> Dict:
+def measure_dace_cpp_lane(tc: Toolchain,
+                          boundary,
+                          validate_sizes,
+                          time_inputs,
+                          time_sizes,
+                          oracle,
+                          reps: int,
+                          cxx_std: str,
+                          workdir: Path,
+                          codegen_impl: Optional[str] = None) -> Dict:
     """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee, one C++
     compiler. The owned build (``build.build_sdfg``) compiles DIRECTLY (no cmake) into ``workdir`` -- a
     per-kernel mkdtemp, so concurrent ranks never share a build dir (the cmake-deadlock trap does not
@@ -295,8 +303,12 @@ def measure_dace_cpp_lane(tc: Toolchain, boundary, validate_sizes, time_inputs, 
     measured variant. It is stamped into the returned dict so the reporter can group by codegen impl."""
     codegen_impl = codegen_impl or default_codegen_impl()
     if tc.cxx is None:
-        return {"ok": False, "error": f"{tc.name}: no C++ compiler for the DaCe-cpp lane", "codegen_impl": codegen_impl,
-                **summarize_times([])}
+        return {
+            "ok": False,
+            "error": f"{tc.name}: no C++ compiler for the DaCe-cpp lane",
+            "codegen_impl": codegen_impl,
+            **summarize_times([])
+        }
     fam = tc.fp_family
     dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "strict-ieee", "c")
     try:
@@ -305,8 +317,12 @@ def measure_dace_cpp_lane(tc: Toolchain, boundary, validate_sizes, time_inputs, 
                                 BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl))
         compile_us = (time.perf_counter() - t0) * 1e6
     except Exception as e:  # codegen / compile failure must not crash the kernel
-        return {"ok": False, "error": f"dace build: {type(e).__name__}: {str(e)[:200]}",
-                "codegen_impl": codegen_impl, **summarize_times([])}
+        return {
+            "ok": False,
+            "error": f"dace build: {type(e).__name__}: {str(e)[:200]}",
+            "codegen_impl": codegen_impl,
+            **summarize_times([])
+        }
     atol = flags.FP_ATOL["strict-ieee"]
     try:
         res = run_isolated(
@@ -315,8 +331,13 @@ def measure_dace_cpp_lane(tc: Toolchain, boundary, validate_sizes, time_inputs, 
     finally:
         built.unload()  # parent side: free the dlopen mapping (the child ran in its own COW copy)
     if "error" in res:
-        return {"ok": False, "error": res["error"], "compile_us": compile_us, "codegen_impl": codegen_impl,
-                **summarize_times([])}
+        return {
+            "ok": False,
+            "error": res["error"],
+            "compile_us": compile_us,
+            "codegen_impl": codegen_impl,
+            **summarize_times([])
+        }
     return {
         "compiler": tc.name,
         "codegen_impl": codegen_impl,
@@ -345,6 +366,7 @@ class Cell:
     fp_mode: str
     role: str  # "timing" | "gate"
     nest: int = 0  # which extracted nest this cell belongs to (0-based); -1 = whole-kernel (native lane)
+    veclib: str = "none"  # vector-math library axis: 'none' | the per-device characterized winner
     ok: bool = False
     maxdiff: float = float("inf")
     median_us: float = float("inf")
@@ -509,6 +531,33 @@ def cost_models_for(parallel: str, cost_models: List[str], matrix_preset: str) -
     return list(cost_models)
 
 
+#: libm transcendentals a vector-math library (``-fveclib``) can accelerate in the emitted source. A nest
+#: whose source calls none of these gets no veclib axis (the library is inert for it) -- the plan's prune.
+_MATH_CALLS = ("sin", "cos", "exp", "log", "pow", "tan", "asin", "acos", "atan", "atan2", "hypot", "sinh", "cosh",
+               "tanh", "cbrt", "expm1", "log1p")
+
+
+def source_has_math(text: str) -> bool:
+    """True when the emitted source calls a libm transcendental a veclib could vectorize (a plain ``name(``
+    scan of the numpyto output). Cheap gate so a math-free nest skips the veclib axis entirely."""
+    return any(f"{fn}(" in text for fn in _MATH_CALLS)
+
+
+def veclibs_for(source_text: str, veclibs: Sequence[str], compiler: Optional[str]) -> Tuple[str, ...]:
+    """The veclib values to actually sweep for one (nest-source, compiler): always ``none``; a candidate is
+    added only when the source has a libm call AND the veclib is compatible with the compiler (an
+    incompatible one is dropped here, never turned into an error cell)."""
+    out = ["none"]
+    if source_has_math(source_text):
+        for vl in veclibs:
+            if vl == "none":
+                continue
+            resolved, _ = flags.veclib_flags(compiler, vl)
+            if resolved:  # compatible and contributes at least one flag
+                out.append(vl)
+    return tuple(out)
+
+
 def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_family: Dict[str, str], axes: Dict,
                     nthreads: int, cxx_std: str, workdir: Path) -> Tuple[List[Pending], Dict[Tuple, Dict]]:
     """Build every lane-3 :class:`Pending` cell for one opt-mode + the deduped compile jobs.
@@ -534,7 +583,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                 return
             seen_timing.add(key)
         so = workdir / (f"{opt_mode}_n{cell.nest}_{cell.language.replace('+', 'x')}_{cell.compiler}_{cell.parallel}_"
-                        f"{cell.cost_model}_{cell.fp_mode}_{len(jobs)}.so")
+                        f"{cell.cost_model}_{cell.fp_mode}_{cell.veclib}_{len(jobs)}.so")
         jobs.setdefault(key, {"exe": exe, "flags": cflags, "src": src, "so": so})
         pendings.append(
             Pending(cell=cell,
@@ -548,6 +597,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     for lang, (src, order, argtypes) in opt_ctx["lang_src"].items():
         symbol = opt_ctx["symbol"]
         ctx_key = (opt_mode, nest_idx, lang)
+        src_text = src.read_text()  # scanned once per lang to gate the veclib axis (math-free nest -> none only)
         for tc in toolchains:
             exe = compiler_for(lang, tc, fortran_by_family)
             fam = tc.fp_family
@@ -575,20 +625,31 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     psrc = omp[0]
                 for cost in cost_models_for(parallel, axes["cost_models"], axes.get("matrix_preset", "full")):
                     for fp in axes["fp_modes"]:
-                        cflags, reason = flags.lane_flags(fam,
-                                                          fp,
-                                                          cost,
-                                                          parallel,
-                                                          lang,
-                                                          nthreads,
-                                                          cxx_std,
-                                                          compiler=exe)
-                        cell = Cell(opt_mode, lang, tc.name, parallel, cost, fp, "timing", nest=nest_idx)
-                        if cflags is None:
-                            cell.error = f"unsupported: {reason}"
-                            pendings.append(Pending(cell=cell))
-                            continue
-                        add(cell, exe, cflags, psrc, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
+                        for veclib in veclibs_for(src_text, axes.get("veclibs", ("none", )), exe):
+                            cflags, reason = flags.lane_flags(fam,
+                                                              fp,
+                                                              cost,
+                                                              parallel,
+                                                              lang,
+                                                              nthreads,
+                                                              cxx_std,
+                                                              compiler=exe,
+                                                              veclib=veclib)
+                            cell = Cell(opt_mode,
+                                        lang,
+                                        tc.name,
+                                        parallel,
+                                        cost,
+                                        fp,
+                                        "timing",
+                                        nest=nest_idx,
+                                        veclib=veclib)
+                            if cflags is None:
+                                if veclib == "none":  # base combo unsupported (e.g. clang auto-par): record once
+                                    cell.error = f"unsupported: {reason}"
+                                    pendings.append(Pending(cell=cell))
+                                continue
+                            add(cell, exe, cflags, psrc, flags.REDUCED_FP_ATOL[fp], symbol, order, argtypes, ctx_key)
             # correctness GATE cell: strict-ieee, sequential, default cost (bit-exact vs the oracle)
             if axes["gate"]:
                 cflags, _ = flags.lane_flags(fam,
@@ -649,9 +710,16 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         dace_cpp_cells: List[Dict] = []
         for nc in base_ctxs:
             for impl in codegen_impls_available():
-                dcell = measure_dace_cpp_lane(cxx_tc, nc["boundary"], nc["validate_sizes"], nc["time_inputs"],
-                                              nc["time_sizes"], nc["oracle"], reps, cxx_std,
-                                              workdir / "dace_cpp" / f"n{nc['nest_idx']}_{impl}", codegen_impl=impl)
+                dcell = measure_dace_cpp_lane(cxx_tc,
+                                              nc["boundary"],
+                                              nc["validate_sizes"],
+                                              nc["time_inputs"],
+                                              nc["time_sizes"],
+                                              nc["oracle"],
+                                              reps,
+                                              cxx_std,
+                                              workdir / "dace_cpp" / f"n{nc['nest_idx']}_{impl}",
+                                              codegen_impl=impl)
                 dcell["nest"] = nc["nest_idx"]
                 dace_cpp_cells.append(dcell)
         result["dace_cpp"] = dace_cpp_cells
@@ -835,7 +903,8 @@ def render_tables(out: Path) -> str:
             wins = [kernel_winner(k["cells"], opt_mode, lang, comp, n) for n in nests]
             if wins and all(w is not None for w in wins):
                 win_us = sum(w["median_us"] for w in wins)
-                cfg = "+".join(f"{w['parallel']}/{w['cost_model']}/{w['fp_mode']}" for w in wins)
+                cfg = "+".join(f"{w['parallel']}/{w['cost_model']}/{w['fp_mode']}"
+                               f"{'/' + w['veclib'] if w.get('veclib', 'none') != 'none' else ''}" for w in wins)
                 md = f"{max(w['maxdiff'] for w in wins):g}"
             else:
                 win_us, cfg, md = None, "—", "—"
@@ -897,6 +966,21 @@ def render_tables(out: Path) -> str:
 
 
 # --- CLI ---------------------------------------------------------------------------------------------
+def resolve_veclibs(spec: List[str], compiler: str = "gcc") -> Tuple[str, ...]:
+    """Resolve the ``--veclibs`` spec to the axis values. ``'auto'`` -> ``('none',)`` plus the per-device
+    characterized winner (``device_profile.rank_veclibs`` -- compiles tiny probes once); ``'none'`` ->
+    ``('none',)``; an explicit list is used verbatim with ``none`` ensured present. A box with no installed
+    veclib resolves to ``('none',)``, so the axis silently disappears rather than erroring."""
+    if list(spec) == ["auto"]:
+        from nestforge.device_profile import rank_veclibs
+        ranked = [p for p in rank_veclibs(compiler) if p.ok]
+        return ("none", ranked[0].name) if ranked else ("none", )
+    out = list(dict.fromkeys(spec))
+    if "none" not in out:
+        out = ["none"] + out
+    return tuple(out)
+
+
 def resolved_axes(args) -> Dict:
     parallelism = list(flags.PARALLEL_MODES) if args.parallelism == "both" else [args.parallelism]
     return {
@@ -907,6 +991,7 @@ def resolved_axes(args) -> Dict:
         "fp_modes": args.fp_modes,
         "gate": not args.no_gate,
         "matrix_preset": args.matrix_preset,
+        "veclibs": resolve_veclibs(args.veclibs),
     }
 
 
@@ -943,6 +1028,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "omp-emit to the compiler default (roughly halves the timing cells, keeps all "
                     "single-core vectorization data). Identical-flag cost cells are always deduped.")
     ap.add_argument("--no-gate", action="store_true", help="skip the strict-ieee bit-exact correctness gate cells")
+    ap.add_argument("--veclibs",
+                    nargs="*",
+                    default=["auto"],
+                    help="vector-math library axis: 'auto' (none + the per-device characterized winner), "
+                    "'none', or an explicit list from {none, sleef, libmvec, svml}. Only nests whose source "
+                    "calls a libm transcendental get the non-none cells.")
     ap.add_argument("--profile-preset",
                     default="PROF",
                     choices=["S", "M", "L", "PROF", "XL"],

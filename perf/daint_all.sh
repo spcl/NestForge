@@ -140,6 +140,7 @@ LANGUAGES="${LANGUAGES:-c c++ fortran}"    # phase 1 (tsvc_full) languages: c / 
 CROSSLANG_LANGUAGES="${CROSSLANG_LANGUAGES:-c fortran}"  # phase 2 (crosslang_xl) accepts only c/fortran
 PARALLELISM="${PARALLELISM:-both}"
 OPT_MODES="${OPT_MODES:-simplify-parallel canonicalize auto-opt}"
+VECLIBS="${VECLIBS:-auto}"                  # phase 1 vector-math library axis: auto (none + device winner) / none / list
 COST_MODELS="${COST_MODELS:-default cheap no-vec}"
 FP_MODES="${FP_MODES:-default-fp no-fast-errno}"
 PROFILE_PRESET="${PROFILE_PRESET:-PROF}"   # phase 1 size (>L3, memory-bound)
@@ -185,6 +186,7 @@ run_full () {
     python3 -m nestforge.perf.tsvc_full \
       --corpora '"$CORPORA"' --languages '"$LANGUAGES"' --opt-modes '"$OPT_MODES"' \
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
+      --veclibs '"$VECLIBS"' \
       --profile-preset "'"$PROFILE_PRESET"'" --compilers "'"$COMPILERS"'" --reps "'"$REPS"'" \
       --matrix-preset "'"$MATRIX_PRESET"'" --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
   ' || echo "[all] phase 1 (tsvc_full) sweep failed (partial results kept)"
