@@ -381,3 +381,12 @@ def test_both_codegen_impls_build_and_match_oracle(impl):
     """Every toggleable codegen impl builds the same nest to a working kernel that matches the oracle --
     the axis is genuinely selectable, not just a stamped label."""
     owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d", opts=BuildOptions(codegen_impl=impl))
+
+
+def test_vectorized_owned_build_matches_oracle():
+    """The DaCe multi-dim tile-op vectorizer plugs into the owned build: a VectorizeConfig on BuildOptions
+    is applied before codegen and the vectorized kernel still matches the numpy oracle (AUTO resolves to
+    the host ISA, so this is host-agnostic)."""
+    from dace.transformation.passes.vectorization.config import VectorizeConfig
+    owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d", size=256,
+                               opts=BuildOptions(vectorize=VectorizeConfig(widths=(8, ), target_isa="AUTO")))

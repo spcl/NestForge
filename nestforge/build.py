@@ -671,6 +671,10 @@ class BuildOptions:
     # DaCe CPU codegen: 'experimental' (constexpr-index-fn, the DEFAULT where available) | 'legacy'. The
     # factory downgrades to legacy on a DaCe build without the key, so a plain BuildOptions() always builds.
     codegen_impl: str = field(default_factory=default_codegen_impl)
+    # DaCe multi-dim tile-op vectorizer config applied to the SDFG before codegen; None = no vectorization
+    # (the compiler's own auto-vectorizer is still the cost-model axis). A VectorizeConfig; typed as object
+    # to keep the vectorizer import lazy (build_sdfg imports it only when this is set).
+    vectorize: Optional[object] = None
 
     def resolved_flags(self) -> List[str]:
         return list(self.flags if self.flags is not None else DEFAULT_FLAGS)
@@ -758,6 +762,16 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     return so, time.perf_counter() - t0
 
 
+def apply_vectorizer(sdfg: dace.SDFG, config) -> None:
+    """Apply the DaCe multi-dim tile-op CPU vectorizer to ``sdfg`` in place, from a ``VectorizeConfig``.
+    The tile library nodes are FORCE-expanded to tasklets (``expand_tile_nodes=True``) regardless of the
+    config, because the owned build codegens the frame DIRECTLY (no ``dace.compile`` to lower them later).
+    Imported lazily -- the vectorizer pipeline import closes a cycle if eager (see its package doc)."""
+    import dataclasses
+    from dace.transformation.passes.vectorization import VectorizeCPUMultiDim
+    VectorizeCPUMultiDim(dataclasses.replace(config, expand_tile_nodes=True)).apply_pass(sdfg, {})
+
+
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> BuiltSDFG:
     """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call, carrying
     the ``codegen_seconds`` (optimization) and ``compile_seconds`` (post-optimization toolchain) times.
@@ -772,6 +786,8 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = No
         sdfg.expand_library_nodes()
     elif opts.fast_libnodes:  # keep the library nodes, but pick the fast (OpenBLAS/MKL) implementation
         set_fast_libnodes(sdfg)
+    if opts.vectorize is not None:
+        apply_vectorizer(sdfg, opts.vectorize)
     frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
     folder = frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
     codegen_seconds = time.perf_counter() - t_opt
