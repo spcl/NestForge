@@ -221,7 +221,7 @@ def reduced_fp_flags(family: str, mode: str, lang: str = "c") -> List[str]:
 
 
 @functools.lru_cache(maxsize=None)
-def _compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
+def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``compiler`` accepts ``probe_flags`` on a trivial COMPILE-ONLY invocation.
 
     Gates the two polyhedral auto-parallelizers, which ride an OPTIONAL compiler back end a given
@@ -259,7 +259,7 @@ def autopar_flags(family: str,
         recorded as an error cell, never silently dropped.
 
     Both polyhedral back ends are OPTIONAL compiler features: when ``compiler`` is supplied it is probed
-    (:func:`_compiler_accepts`) and an absent back end yields ``(None, reason)`` -- a recorded skip, not a
+    (:func:`compiler_accepts`) and an absent back end yields ``(None, reason)`` -- a recorded skip, not a
     crash. With no ``compiler`` the intended flag list is returned unprobed (pure composition, for tests /
     figures). ``-fopenmp`` here also pulls an OpenMP runtime; :func:`lane_flags` rpaths it so the ``.so``
     loads standalone."""
@@ -275,7 +275,7 @@ def autopar_flags(family: str,
         return ["-qopenmp", "-parallel"], None
     else:
         return None, f"no auto-parallelizer known for compiler family {family!r}"
-    if compiler is not None and not _compiler_accepts(compiler, tuple(ap)):
+    if compiler is not None and not compiler_accepts(compiler, tuple(ap)):
         return None, absent
     return ap, None
 
@@ -295,7 +295,7 @@ _OMP_DEFAULT_SONAME: Dict[str, str] = {"gnu": "gomp", "llvm": "omp", "intel": "i
 
 
 @functools.lru_cache(maxsize=None)
-def _driver_lib_dir(compiler: str, soname: str) -> Optional[str]:
+def driver_lib_dir(compiler: str, soname: str) -> Optional[str]:
     """The directory holding ``lib<soname>.so``, as reported by the COMPILER DRIVER itself
     (``<compiler> -print-file-name=lib<soname>.so``). Absolute directory, or ``None`` if the driver
     only echoes the bare name (does not know the file).
@@ -319,7 +319,7 @@ def openmp_rpath_flags(compiler: Optional[str], family: str) -> List[str]:
     """Link flags so an OpenMP-enabled node library LOADS its runtime WITHOUT ``LD_LIBRARY_PATH``:
     ``-L`` (link search) plus ``-Wl,-rpath`` (bake the dir into the ``.so`` for the runtime loader).
 
-    The runtime directory is detected from the compiler driver (:func:`_driver_lib_dir`) for the
+    The runtime directory is detected from the compiler driver (:func:`driver_lib_dir`) for the
     soname a bare ``-fopenmp`` / ``-mp`` links on this ``family`` (:data:`_OMP_DEFAULT_SONAME`).
     Returns ``[]`` when the compiler is unknown or the runtime cannot be located (then the default
     loader path must already carry it -- as gcc's libgomp does). This is what lets clang ``omp-emit``
@@ -328,7 +328,7 @@ def openmp_rpath_flags(compiler: Optional[str], family: str) -> List[str]:
     already does for its own node-library dependency."""
     if not compiler:
         return []
-    d = _driver_lib_dir(compiler, _OMP_DEFAULT_SONAME.get(family, "omp"))
+    d = driver_lib_dir(compiler, _OMP_DEFAULT_SONAME.get(family, "omp"))
     return ["-L%s" % d, "-Wl,-rpath,%s" % d] if d else []
 
 

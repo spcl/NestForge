@@ -50,7 +50,7 @@ def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path, monkeypat
     tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
     # Force the polyhedral-backend probe to report ABSENT so clang auto-par (Polly) degrades
     # deterministically -- independent of whether this box's clang happens to ship Polly.
-    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: False)
+    monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
     pendings, jobs = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
 
     def by_lang(lang):
@@ -85,7 +85,7 @@ def test_enumerate_cells_autopar_compiles_when_polyhedral_backend_present(tmp_pa
     supported and produces real compile jobs instead of degrading -- the axis is gated by capability, not
     hard-coded unsupported as it was before Phase 2."""
     tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
-    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: True)
+    monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: True)
     pendings, _ = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
     c_autopar = [p for p in pendings if p.cell.language == "c" and p.cell.parallel == "auto-par"]
     assert c_autopar and all(p.compile_key is not None and not p.cell.error for p in c_autopar)
