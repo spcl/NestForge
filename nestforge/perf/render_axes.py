@@ -69,8 +69,9 @@ def lanes() -> List[Lane]:
             Axis("cost-model", flags.COST_MODELS),
             Axis("fp", flags.REDUCED_FP_MODES),
         ]),
-        Lane("dace-cpp", "DaCe-cpp baseline (speedup denominator)", [
+        Lane("dace-cpp", "DaCe-cpp lane (speedup denominator)", [
             Axis("codegen-impl", CODEGEN_IMPLS),
+            Axis("vectorization", ("«ISA x width x strategy (per-device staged select, --vectorize)»", )),
             Axis("fp", ("strict-ieee", )),
         ]),
         Lane("nest-forge", "nest-forge external-nest sweep", [
@@ -81,7 +82,6 @@ def lanes() -> List[Lane]:
             Axis("cost-model", flags.COST_MODELS),
             Axis("fp", flags.REDUCED_FP_MODES),
             Axis("veclib", ("none", "«device winner»")),
-            Axis("vectorization", ("«ISA x width x strategy (per-device staged select)»", )),
         ]),
     ]
 

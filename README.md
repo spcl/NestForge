@@ -95,12 +95,14 @@ graph TD
   L0 --> L0A3["fp"]
   L0A3 --> L0A3V0["default-fp"]
   L0A3 --> L0A3V1["no-fast-errno"]
-  ARENA --> L1["DaCe-cpp baseline (speedup denominator)<br/>2 cells"]
+  ARENA --> L1["DaCe-cpp lane (speedup denominator)<br/>2 cells"]
   L1 --> L1A0["codegen-impl"]
   L1A0 --> L1A0V0["experimental"]
   L1A0 --> L1A0V1["legacy"]
-  L1 --> L1A1["fp"]
-  L1A1 --> L1A1V0["strict-ieee"]
+  L1 --> L1A1["vectorization"]
+  L1A1 --> L1A1V0["«ISA x width x strategy (per-device staged select, --vectorize)»"]
+  L1 --> L1A2["fp"]
+  L1A2 --> L1A2V0["strict-ieee"]
   ARENA --> L2["nest-forge external-nest sweep<br/>1296 cells"]
   L2 --> L2A0["opt-mode"]
   L2A0 --> L2A0V0["simplify-parallel"]
@@ -129,8 +131,6 @@ graph TD
   L2 --> L2A6["veclib"]
   L2A6 --> L2A6V0["none"]
   L2A6 --> L2A6V1["«device winner»"]
-  L2 --> L2A7["vectorization"]
-  L2A7 --> L2A7V0["«ISA x width x strategy (per-device staged select)»"]
 ```
 <!-- AXES:END -->
 
