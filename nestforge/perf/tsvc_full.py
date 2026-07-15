@@ -354,6 +354,82 @@ def measure_dace_cpp_lane(tc: Toolchain,
     }
 
 
+def measure_dace_vectorized_lane(tc: Toolchain,
+                                 boundary,
+                                 validate_sizes,
+                                 time_inputs,
+                                 time_sizes,
+                                 oracle,
+                                 reps: int,
+                                 cxx_std: str,
+                                 workdir: Path,
+                                 codegen_impl: Optional[str] = None,
+                                 rounds: int = 2) -> Dict:
+    """The DaCe lane WITH the multi-dim tile-op vectorizer: a coordinate-descent search over
+    ``VectorizeConfig`` variants (``build_sdfg(vectorize=cfg)`` then a forked run) for the fastest config
+    that still VALIDATES against the numpy oracle on this nest. Each candidate is validated on the
+    ``contract-fma`` tolerance (FMA is a swept knob), so a mis-vectorization is caught, not timed. Returns
+    the winning vectorized cell (``vectorized=True`` + the ``vec_variant`` name), or an error cell when no
+    config validated (a non-vectorizable nest). The search's compiles are reused -- the winner's full timing
+    is looked up from the descent, not re-measured."""
+    if tc.cxx is None:
+        return {
+            "ok": False,
+            "error": f"{tc.name}: no C++ compiler for the vectorized DaCe lane",
+            "vectorized": True,
+            **summarize_times([])
+        }
+    from nestforge import vectorize_variants as vv
+    fam = tc.fp_family
+    dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "contract-fma", "c")
+    atol = flags.FP_ATOL["contract-fma"]
+    results: Dict[tuple, Dict] = {}
+    counter = {"i": 0}
+
+    def measure(cfg) -> Optional[float]:
+        counter["i"] += 1
+        try:
+            built = dace_build_sdfg(
+                boundary.standalone_sdfg, workdir / f"vec{counter['i']}",
+                BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg))
+        except Exception:  # a config the vectorizer / codegen rejects is simply not a candidate
+            return None
+        try:
+            res = run_isolated(
+                lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol, reps),
+                timeout=RUN_TIMEOUT_S)
+        finally:
+            built.unload()
+        if "error" in res or not res.get("ok") or not finite(res.get("median_us", float("inf"))):
+            return None
+        results[vv.resolved_key(cfg)] = {**res, "vec_variant": vv.variant_name(cfg)}
+        return res["median_us"]
+
+    best_cfg, best_t = vv.multistart_descent(vv.default_seeds(), vv.descent_axes(), measure, rounds)
+    winner = results.get(vv.resolved_key(best_cfg)) if best_t is not None else None
+    if winner is None:
+        return {
+            "ok": False,
+            "error": "no vectorization config validated (non-vectorizable nest)",
+            "vectorized": True,
+            "compiler": tc.name,
+            **summarize_times([])
+        }
+    return {
+        "compiler": tc.name,
+        "vectorized": True,
+        "vec_variant": winner["vec_variant"],
+        "ok": winner["ok"],
+        "maxdiff": winner["maxdiff"],
+        "error": None,
+        "median_us": winner["median_us"],
+        "min_us": winner["min_us"],
+        "p25_us": winner["p25_us"],
+        "p75_us": winner["p75_us"],
+        "mean_us": winner["mean_us"]
+    }
+
+
 # --- lane 3 cell model -------------------------------------------------------------------------------
 @dataclass
 class Cell:
@@ -723,6 +799,24 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
                 dcell["nest"] = nc["nest_idx"]
                 dace_cpp_cells.append(dcell)
         result["dace_cpp"] = dace_cpp_cells
+        # Optional vectorized DaCe lane: the multi-dim tile-op vectorizer, coordinate-descent per nest for
+        # the fastest validating VectorizeConfig. Opt-in (--vectorize) since it compiles ~15-30 cells/nest.
+        if axes.get("vectorize"):
+            dace_vec_cells: List[Dict] = []
+            for nc in base_ctxs:
+                vcell = measure_dace_vectorized_lane(cxx_tc,
+                                                     nc["boundary"],
+                                                     nc["validate_sizes"],
+                                                     nc["time_inputs"],
+                                                     nc["time_sizes"],
+                                                     nc["oracle"],
+                                                     reps,
+                                                     cxx_std,
+                                                     workdir / "dace_vec" / f"n{nc['nest_idx']}",
+                                                     codegen_impl=default_codegen_impl())
+                vcell["nest"] = nc["nest_idx"]
+                dace_vec_cells.append(vcell)
+            result["dace_cpp_vec"] = dace_vec_cells
 
     # lane 3: enumerate + dedup-compile + validate + time. Each opt-mode holds a LIST of per-nest ctxs; every
     # nest is enumerated independently (its own emitted sources + boundary/oracle/sizes + symbol).
@@ -868,6 +962,7 @@ def render_tables(out: Path) -> str:
     ]
     speedups: List[float] = []
     codegen_speedups: List[float] = []  # per-kernel legacy/experimental DaCe-codegen ratios (the codegen axis)
+    vec_speedups: List[float] = []  # per-kernel plain-DaCe / vectorized-DaCe ratios (the vectorization axis)
     novalidate = 0
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
         # dace_cpp is a LIST of per-nest cells (older JSON: single-dict / empty tolerated), now also fanned
@@ -892,6 +987,14 @@ def render_tables(out: Path) -> str:
         exp_us = sum(exp_meds) if (exp_meds and all(finite(m) for m in exp_meds)) else None
         if legacy_us and exp_us:
             codegen_speedups.append(legacy_us / exp_us)
+        # vectorization axis: plain-DaCe (denominator) total / vectorized-DaCe total, when both fully timed.
+        vec_raw = k.get("dace_cpp_vec")
+        vec_list = vec_raw if isinstance(vec_raw, list) else ([vec_raw] if vec_raw else [])
+        vec_meds = [d.get("median_us") for d in vec_list if d.get("ok")]
+        vec_us = sum(vec_meds) if (vec_list and len(vec_meds) == len(vec_list) and all(finite(m)
+                                                                                       for m in vec_meds)) else None
+        if dace_us is not None and vec_us:
+            vec_speedups.append(dace_us / vec_us)
         nat = k.get("native") or {}
         nat_med = nat.get("median_us")
         nat_us = nat_med if (nat.get("ok") and finite(nat_med)) else None
@@ -927,6 +1030,13 @@ def render_tables(out: Path) -> str:
             "", f"**Geomean DaCe legacy / experimental codegen speedup:** {cgeo:.3f}x over "
             f"{len(codegen_speedups)} kernels where both codegen impls timed "
             "(>1 = experimental faster; the codegen-implementation axis)."
+        ]
+    if vec_speedups:
+        vgeo = math.exp(sum(math.log(s) for s in vec_speedups) / len(vec_speedups))
+        lines += [
+            "", f"**Geomean DaCe plain / tile-op-vectorized speedup:** {vgeo:.3f}x over "
+            f"{len(vec_speedups)} kernels where the vectorized lane's best config timed "
+            "(>1 = the multi-dim tile-op vectorizer faster; the vectorization axis)."
         ]
     if novalidate:
         lines += [
@@ -992,6 +1102,7 @@ def resolved_axes(args) -> Dict:
         "gate": not args.no_gate,
         "matrix_preset": args.matrix_preset,
         "veclibs": resolve_veclibs(args.veclibs),
+        "vectorize": args.vectorize,
     }
 
 
@@ -1034,6 +1145,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="vector-math library axis: 'auto' (none + the per-device characterized winner), "
                     "'none', or an explicit list from {none, sleef, libmvec, svml}. Only nests whose source "
                     "calls a libm transcendental get the non-none cells.")
+    ap.add_argument("--vectorize",
+                    action="store_true",
+                    help="add the vectorized DaCe lane: coordinate-descent over the multi-dim tile-op "
+                    "VectorizeConfig per nest (compiles ~15-30 cells/nest; off by default).")
     ap.add_argument("--profile-preset",
                     default="PROF",
                     choices=["S", "M", "L", "PROF", "XL"],

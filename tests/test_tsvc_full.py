@@ -138,7 +138,8 @@ def test_kernel_winner_picks_fastest_validated_timing_cell():
         _cell("simplify-parallel", "c", "gcc", "sequential", "default", "default-fp", "timing", True, 5.0),
         _cell("simplify-parallel", "c", "gcc", "auto-par", "no-vec", "no-fast-errno", "timing", True, 2.0),
         _cell("simplify-parallel", "c", "gcc", "sequential", "cheap", "default-fp", "timing", False, 1.0),  # not ok
-        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 9.0),  # gate, not timing
+        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True,
+              9.0),  # gate, not timing
     ]
     win = tsvc_full.kernel_winner(cells, "simplify-parallel", "c", "gcc")
     assert win["median_us"] == 2.0 and win["parallel"] == "auto-par"
@@ -182,6 +183,43 @@ def test_render_tables_gate_speedup_and_unsupported(tmp_path):
     assert (tmp_path / "tables.md").exists()
 
 
+def test_render_tables_reports_vectorized_dace_geomean(tmp_path):
+    """When a kernel carries a vectorized DaCe lane, the reporter emits the plain/vectorized geomean."""
+    cells = [_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0)]
+    (tmp_path / "tsvc2_sV.json").write_text(
+        json.dumps({
+            "key":
+            "sV",
+            "corpus":
+            "tsvc2",
+            "regime":
+            "1d",
+            "profile_preset":
+            "PROF",
+            "native": {
+                "ok": True,
+                "median_us": 8.0
+            },
+            "dace_cpp": [{
+                "ok": True,
+                "median_us": 10.0,
+                "codegen_impl": "experimental",
+                "nest": 0
+            }],
+            "dace_cpp_vec": [{
+                "ok": True,
+                "median_us": 4.0,
+                "vectorized": True,
+                "vec_variant": "cpu-avx512-w16",
+                "nest": 0
+            }],
+            "cells":
+            cells
+        }))
+    rep = tsvc_full.render_tables(tmp_path)
+    assert "plain / tile-op-vectorized speedup:** 2.500x" in rep  # 10 / 4
+
+
 def test_render_tables_reports_gate_failure(tmp_path):
     bad = _cell("simplify-parallel",
                 "c",
@@ -210,7 +248,16 @@ def test_render_tables_gate_ok_with_tiny_nonzero_maxdiff_is_not_a_failure(tmp_pa
     """REGRESSION: strict-ieee is NOT atol-0 (pairwise-sum reductions / transcendentals drift ~1e-15 from
     numpy), so a gate cell that VALIDATED (``ok=True``) but has a tiny non-zero ``maxdiff`` (here 1e-16)
     must NOT be reported as a gate failure. The report keys off ``cell.ok``, never ``maxdiff == 0.0``."""
-    passing = _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 4.0, maxdiff=1e-16)
+    passing = _cell("simplify-parallel",
+                    "c",
+                    "gcc",
+                    "sequential",
+                    "default",
+                    "strict-ieee",
+                    "gate",
+                    True,
+                    4.0,
+                    maxdiff=1e-16)
     (tmp_path / "tsvc2_sO.json").write_text(
         json.dumps({
             "key": "sO",
