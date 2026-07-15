@@ -109,4 +109,26 @@ The survey's non-tile framing is deliberate. Out of scope, and why:
 
 **Bottom line.** DaCe emits CUDA and HIP today from one `CUDACodeGen` (`cuda.py:70-73`), non-tile, one `GPU_Device` map → one `__global__` kernel + one `{backend}LaunchKernel`. The only backend worth adding first is **CUDA C**, and only as a **DaCe-native GPU-correctness lane** (device-scope-cut M4 + `ExpandExternCallGPU`), decoupled from the CPU compiler × FP-flag arena — because a GPU cell is a new device execution path, its flags and timing don't share the host axis, and a 6 GB laptop GPU makes perf ranking meaningless while codegen correctness is the real prize.
 
+---
+
+## 6. Deferred GPU items carried over from the CPU arena (Phase 2/2c/1.3)
+
+Three concrete items surfaced while landing the CPU polyhedral lanes and the tile-op vectorization axis. They are GPU by nature, so the CPU-first decision parks them here rather than in the arena.
+
+### 6.1 Externalize-before-offload — a hard ordering invariant
+
+If DaCe offloads a loop nest to the device and then a polyhedral tool (PPCG below) independently decides the *same* nest is GPU-viable, the offload decision has been made twice, inconsistently. So the order is fixed and non-negotiable: **externalize each loop nest into a library call FIRST** (`pass_lower.lower_nests_to_external_call` → the `ExternalCall` libnode), *then* each tool decides on its own whether its kernel is offloadable. No lane may pre-decide offload before extraction. This is CPU-irrelevant today (every CPU lane compiles a host `.so`), which is exactly why it is recorded now — it only starts to bite once two independent GPU emitters (DaCe's `CUDACodeGen` and PPCG) can both claim the same nest.
+
+### 6.2 PPCG — polyhedral C → CUDA (the GPU sibling of the Pluto lane)
+
+PPCG is a **standalone** polyhedral source-to-source tool (not a numpyto target and not a compiler flag) that consumes the SAME affine `#pragma scop` C input as Pluto's `polycc` — nest-forge already emits it as `<base>_pluto_input.c` — and transforms it into **CUDA**. So a PPCG lane is the GPU analogue of the CPU Pluto lane (`nestforge/perf/pluto_lane.py`): probe `ppcg` on PATH; skip-with-reason when absent (it is a distinct polyhedral toolchain, off every box that lacks the container); gate the scop through the shared affine-index detector (`optarena.pluto_affine.scop_nonaffine_reason`) exactly as the Pluto lane does; then `ppcg <scop> → .cu`, `nvcc -arch=sm_89`, run on-device, D2H-compare vs the numpy oracle (§4.3). Because its output is CUDA, it belongs in the GPU-correctness lane (§3/§4), never the CPU compiler × FP-flag grid.
+
+**Install.** PPCG has no spack package and is source-build-only (isl + pet + libclang + gmp + libyaml). It does NOT warrant a fresh recipe: optarena's `containers/pluto.Dockerfile` already pins clang-17/llvm-17-dev + libclang-17-dev, autoconf/automake/libtool/pkg-config, libgmp-dev, libyaml-dev, and builds isl + pet for `polycc` — every PPCG dependency. Adding `ppcg` there is a few `RUN` lines that reuse the whole pinned tree and the CI job that already builds+verifies the image; no new `.so`, no new pinned toolchain. That container is the install path when the GPU work begins — it is intentionally NOT built now, since a CUDA-emitting lane cannot land under the CPU-first scope.
+
+### 6.3 GPU tile-op vectorization presets + the half2 rule
+
+The CPU tile-op vectorizer (`VectorizeConfig`, `VectorizeCPUMultiDim`) has a `device` knob (`config.py:59`, `DeviceType.CPU`/`GPU`) and a `BRANCHED_TAIL` GPU remainder strategy that the CPU arena never exercises. The GPU presets to sweep once a GPU lane exists: `gpu-scalar`, `gpu-fp16-scalar`, `gpu-w2-branched[-fma]`, `gpu-w4-even[-fma]` — the GPU analogue of the staged CPU screening in `vectorize_variants.py`, with `BRANCHED_TAIL` replacing the CPU `MASKED_TAIL`/`SCALAR_POSTAMBLE` remainders (a warp-divergent branch is the GPU-natural tail, not a mask).
+
+**The half2 rule (record it before it is lost):** on fp16, two lanes pack into one `half2` register, so a width-2 fp16 kernel is the fast path — BUT a **masked** remainder defeats `half2` packing (you cannot half-predicate a packed pair), so the emitter must fall back to scalar whenever the tail is masked. Concretely: fp16 → `half2` only when the tail is NOT masked (`!Masked`); otherwise scalar. This is why the GPU presets pair `w2` with `branched` (a branch, not a mask) and why `assume_even` (no remainder at all) is the cleanest fp16 path. The CPU `fp16→half2 else scalar` rule already lives in the vectorizer; the GPU remainder interaction is the piece that must not be re-derived from scratch when the GPU lane lands.
+
 Grounding files (all absolute): `/home/primrose/Work/nest-forge/nestforge/arena.py`, `.../nestforge/build.py`, `.../nestforge/libnode.py`, `.../nestforge/translate.py`, `.../nestforge/emit_numpy.py`, `.../PARALLEL.md`, `.../README.md`; DaCe `dace/codegen/targets/cuda.py`, `dace/codegen/common.py`, `dace/dtypes.py`.
