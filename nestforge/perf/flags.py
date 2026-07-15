@@ -195,11 +195,12 @@ REDUCED_FP_ATOL: Dict[str, float] = {"default-fp": 1e-6, "no-fast-errno": 1e-12}
 
 #: The parallelization axis of the full-matrix job.
 #:  * ``sequential`` -- the sequential emit, no parallel flags.
-#:  * ``auto-par``   -- the sequential emit + the compiler's OWN plain-loop auto-parallelizer
-#:    (gcc ``-ftree-parallelize-loops``, nvc ``-Mconcur``, icx ``-parallel``; clang/flang have none).
+#:  * ``auto-par``   -- the sequential emit + the compiler's OWN auto-parallelizer, POLYHEDRAL by default
+#:    per the plan (gcc ``Graphite``, clang ``Polly``, nvc ``-Mconcur``, icx ``-parallel``). Graphite and
+#:    Polly are optional back ends: a compiler lacking them yields a recorded skip (see :func:`autopar_flags`).
 #:  * ``omp-emit``   -- OUR ``#pragma omp parallel for`` source (numpyto ``c_omp``/``fortran_omp``) + a
-#:    bare ``-fopenmp``. Works for EVERY family (clang/flang included, which auto-par cannot reach) and
-#:    only for the nests the DaCe schedule marks parallel AND numpyto can soundly parallelize.
+#:    bare ``-fopenmp``. Works for EVERY family (clang/flang included) and only for the nests the DaCe
+#:    schedule marks parallel AND numpyto can soundly parallelize.
 PARALLEL_MODES: Tuple[str, ...] = ("sequential", "auto-par", "omp-emit")
 
 #: Default C++ standard for the C++ lane (numpyto emits no C++ target; the C source is recompiled as
@@ -219,28 +220,64 @@ def reduced_fp_flags(family: str, mode: str, lang: str = "c") -> List[str]:
     return flags
 
 
-def autopar_flags(family: str, nthreads: int) -> Tuple[Optional[List[str]], Optional[str]]:
-    """Compiler AUTO-PARALLELIZER flags for a family, or ``(None, reason)`` if the family has no
-    plain-loop auto-parallelizer.
+@functools.lru_cache(maxsize=None)
+def _compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
+    """True if ``compiler`` accepts ``probe_flags`` on a trivial COMPILE-ONLY invocation.
 
-    Verified on the local gcc 15 / clang 21 / nvc 26.3:
-      * ``gnu``     -- ``-ftree-parallelize-loops=N -fopenmp`` genuinely emits ``GOMP_parallel`` for
-        loops the middle-end proves independent (confirmed via ``nm`` on the emitted ``.so``);
+    Gates the two polyhedral auto-parallelizers, which ride an OPTIONAL compiler back end a given
+    install may lack -- clang's Polly (``-mllvm -polly``) and gcc's isl/Graphite (``-floop-nest-optimize``).
+    A missing back end makes the invocation exit non-zero (LLVM: ``Unknown command line argument '-polly'``;
+    gcc: ``Graphite loop optimizations cannot be used (isl is not available)``), which is exactly what this
+    detects. ``-c`` keeps it compile-only, so a missing OpenMP RUNTIME (a link-time concern the caller
+    rpaths separately) does not confound the feature probe. Cached: fixed per (compiler, flags) for the run."""
+    src = "void f(double *a, int n){for (int i = 0; i < n; i++) a[i] *= 2.0;}\n"
+    try:
+        proc = subprocess.run([compiler, "-x", "c", "-", "-c", "-O3", "-o", os.devnull, *probe_flags],
+                              input=src,
+                              capture_output=True,
+                              text=True,
+                              timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def autopar_flags(family: str,
+                  nthreads: int,
+                  compiler: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Compiler AUTO-PARALLELIZER flags for a family, or ``(None, reason)`` when the family has no
+    auto-parallelizer OR its polyhedral back end is absent from ``compiler``.
+
+    Per the plan the DEFAULT auto-parallelizer for the two open-source families is polyhedral:
+      * ``gnu``     -- **Graphite**: ``-ftree-parallelize-loops=N -floop-parallelize-all
+        -floop-nest-optimize -fopenmp`` (the isl loop-nest optimizer plus parallelize-all, which needs
+        the ``-ftree-parallelize-loops`` machinery). ``-floop-nest-optimize`` requires gcc built with isl;
+      * ``llvm``    -- **Polly**: ``-mllvm -polly -mllvm -polly-parallel -fopenmp`` (mirrors optarena
+        ``POLLY_PAR``). Requires clang built with Polly -- distribution clang frequently is not;
       * ``nvidia``  -- ``-Mconcur`` auto-concurrentizes; threads come from ``OMP_NUM_THREADS``/``NCPUS``;
-      * ``intel``   -- ``-qopenmp -parallel`` (classic icc/ifort auto-par). icx (LLVM-based) may have
-        dropped ``-parallel``; a rejecting compile is RECORDED as an error cell, never silently dropped,
-        so this stays a best-effort attempt to be confirmed on the daint oneAPI;
-      * ``llvm``    -- UNSUPPORTED. clang/flang have no plain-loop auto-parallelizer: the numpyto-emitted
-        source carries NO OpenMP pragmas for ``-fopenmp`` to act on, and Polly is not reliably built into
-        a distribution clang. Returned as an explicit unsupported reason (recorded, not dropped)."""
+      * ``intel``   -- ``-qopenmp -parallel`` (classic icc/ifort auto-par); a rejecting icx compile is
+        recorded as an error cell, never silently dropped.
+
+    Both polyhedral back ends are OPTIONAL compiler features: when ``compiler`` is supplied it is probed
+    (:func:`_compiler_accepts`) and an absent back end yields ``(None, reason)`` -- a recorded skip, not a
+    crash. With no ``compiler`` the intended flag list is returned unprobed (pure composition, for tests /
+    figures). ``-fopenmp`` here also pulls an OpenMP runtime; :func:`lane_flags` rpaths it so the ``.so``
+    loads standalone."""
     if family == "gnu":
-        return ["-ftree-parallelize-loops=%d" % nthreads, "-fopenmp"], None
-    if family == "nvidia":
+        ap = ["-ftree-parallelize-loops=%d" % nthreads, "-floop-parallelize-all", "-floop-nest-optimize", "-fopenmp"]
+        absent = "gcc built without Graphite (isl unavailable: -floop-nest-optimize rejected)"
+    elif family == "llvm":
+        ap = ["-mllvm", "-polly", "-mllvm", "-polly-parallel", "-fopenmp"]
+        absent = "clang built without Polly (-mllvm -polly rejected)"
+    elif family == "nvidia":
         return ["-Mconcur"], None
-    if family == "intel":
+    elif family == "intel":
         return ["-qopenmp", "-parallel"], None
-    return None, ("clang/flang has no plain-loop auto-parallelizer (the emitted source has no OpenMP "
-                  "pragmas for -fopenmp to act on; Polly is not guaranteed present)")
+    else:
+        return None, f"no auto-parallelizer known for compiler family {family!r}"
+    if compiler is not None and not _compiler_accepts(compiler, tuple(ap)):
+        return None, absent
+    return ap, None
 
 
 def omp_emit_flags(family: str) -> List[str]:
@@ -358,7 +395,7 @@ def lane_flags(family: str,
         return None, vreason
     out = out + vec
     if parallel == "auto-par":
-        ap, reason = autopar_flags(family, nthreads)
+        ap, reason = autopar_flags(family, nthreads, compiler)
         if ap is None:
             return None, reason
         # -fopenmp/-qopenmp here also pulls an OpenMP runtime -> rpath it so the .so loads standalone.

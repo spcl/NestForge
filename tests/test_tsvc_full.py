@@ -48,14 +48,26 @@ def test_reduced_fp_modes_and_atol():
 
 
 # --- auto-parallelization axis ------------------------------------------------------------------------
-def test_autopar_flags_per_family():
+def test_autopar_flags_per_family(monkeypatch):
+    # gcc default auto-par is Graphite (isl loop-nest optimizer + parallelize-all); no compiler -> no probe.
     gnu, r = flags.autopar_flags("gnu", 72)
-    assert gnu == ["-ftree-parallelize-loops=72", "-fopenmp"] and r is None
+    assert gnu == ["-ftree-parallelize-loops=72", "-floop-parallelize-all", "-floop-nest-optimize", "-fopenmp"]
+    assert r is None
+    # llvm default auto-par is Polly (mirrors optarena POLLY_PAR).
+    llvm, rl = flags.autopar_flags("llvm", 8)
+    assert llvm == ["-mllvm", "-polly", "-mllvm", "-polly-parallel", "-fopenmp"] and rl is None
     assert flags.autopar_flags("nvidia", 8)[0] == ["-Mconcur"]
     assert flags.autopar_flags("intel", 8)[0] == ["-qopenmp", "-parallel"]
-    # clang/flang has no plain-loop auto-parallelizer -> recorded unsupported, not dropped.
-    ap, reason = flags.autopar_flags("llvm", 8)
-    assert ap is None and "auto-parallelizer" in reason
+    # Both polyhedral back ends are OPTIONAL: with a compiler supplied, an absent back end (probe False)
+    # is a recorded skip, not a crash -- and when present (probe True) the flags come back.
+    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: False)
+    apl, reasonl = flags.autopar_flags("llvm", 8, compiler="clang")
+    assert apl is None and "Polly" in reasonl
+    apg, reasong = flags.autopar_flags("gnu", 8, compiler="gcc")
+    assert apg is None and "Graphite" in reasong
+    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: True)
+    ok, rok = flags.autopar_flags("llvm", 8, compiler="clang")
+    assert ok[:2] == ["-mllvm", "-polly"] and rok is None
 
 
 # --- C++ lane flag composition (the C source recompiled as C++) --------------------------------------

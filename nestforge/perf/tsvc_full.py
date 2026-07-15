@@ -571,6 +571,15 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
                                             parallel=True)
             except (RuntimeError, StopIteration) as e:
                 print(f"[tsvc-full] {name}: no OpenMP variant ({type(e).__name__}: {str(e)[:120]})")
+        # Precompute the veclib gate per lang ONCE, here where the sources exist (enumeration stays I/O-free).
+        # C++ compiles the SAME C source (its own path is just an ``extern "C"`` #include wrapper with no math
+        # calls of its own), so it inherits C's math content rather than scanning the wrapper.
+        has_math: Dict[str, bool] = {
+            lang: source_has_math(src.read_text())
+            for lang, (src, _o, _a) in lang_src.items() if lang != "c++"
+        }
+        if "c++" in lang_src:
+            has_math["c++"] = has_math.get("c", False)
         ctxs.append({
             "nest_idx": idx,
             "name": name,
@@ -582,6 +591,7 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             "validate_sizes": validate_sizes,
             "oracle": oracle,
             "lang_src": lang_src,
+            "has_math": has_math,
             "omp_src": omp_src,
             "parallel": parallel,
         })
@@ -619,12 +629,15 @@ def source_has_math(text: str) -> bool:
     return any(f"{fn}(" in text for fn in _MATH_CALLS)
 
 
-def veclibs_for(source_text: str, veclibs: Sequence[str], compiler: Optional[str]) -> Tuple[str, ...]:
-    """The veclib values to actually sweep for one (nest-source, compiler): always ``none``; a candidate is
-    added only when the source has a libm call AND the veclib is compatible with the compiler (an
-    incompatible one is dropped here, never turned into an error cell)."""
+def veclibs_for(has_math: bool, veclibs: Sequence[str], compiler: Optional[str]) -> Tuple[str, ...]:
+    """The veclib values to actually sweep for one (nest-lang, compiler): always ``none``; a candidate is
+    added only when the nest HAS a libm call (``has_math``, precomputed per-lang in the ctx by
+    :func:`source_has_math` -- see :func:`build_opt_context`) AND the veclib is compatible with the compiler
+    (an incompatible one is dropped here, never turned into an error cell). Taking the precomputed flag (not
+    the source text) keeps :func:`enumerate_cells` free of source I/O and lets the C++ lane inherit the C
+    source's math content instead of scanning its ``#include``-only wrapper."""
     out = ["none"]
-    if source_has_math(source_text):
+    if has_math:
         for vl in veclibs:
             if vl == "none":
                 continue
@@ -673,7 +686,9 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     for lang, (src, order, argtypes) in opt_ctx["lang_src"].items():
         symbol = opt_ctx["symbol"]
         ctx_key = (opt_mode, nest_idx, lang)
-        src_text = src.read_text()  # scanned once per lang to gate the veclib axis (math-free nest -> none only)
+        # veclib gate is a PRECOMPUTED per-lang fact (build_opt_context read the source once); enumeration
+        # itself does no source I/O, so it runs on synthetic ctxs with dummy paths. Absent -> math-free.
+        has_math = opt_ctx.get("has_math", {}).get(lang, False)
         for tc in toolchains:
             exe = compiler_for(lang, tc, fortran_by_family)
             fam = tc.fp_family
@@ -701,7 +716,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     psrc = omp[0]
                 for cost in cost_models_for(parallel, axes["cost_models"], axes.get("matrix_preset", "full")):
                     for fp in axes["fp_modes"]:
-                        for veclib in veclibs_for(src_text, axes.get("veclibs", ("none", )), exe):
+                        for veclib in veclibs_for(has_math, axes.get("veclibs", ("none", )), exe):
                             cflags, reason = flags.lane_flags(fam,
                                                               fp,
                                                               cost,

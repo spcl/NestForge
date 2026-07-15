@@ -45,9 +45,12 @@ def _axes():
     }
 
 
-def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path):
+def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path, monkeypatch):
     # a clang-only toolchain: no C++ frontend, no fortran in the (empty) family map.
     tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
+    # Force the polyhedral-backend probe to report ABSENT so clang auto-par (Polly) degrades
+    # deterministically -- independent of whether this box's clang happens to ship Polly.
+    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: False)
     pendings, jobs = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
 
     def by_lang(lang):
@@ -68,13 +71,24 @@ def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path):
     c_jobs = [p for p in c_cells if p.compile_key is not None]
     assert c_jobs and jobs  # deduped compile jobs were produced for the C lane
 
-    # (4) clang/llvm + auto-par is unsupported -> recorded error cell (no job) while its sequential
-    #     cells still compile. The matrix shrinks per-coordinate, it is never dropped silently.
+    # (4) clang auto-par with Polly ABSENT (probe forced False) -> recorded error cell (no job) while its
+    #     sequential cells still compile. The matrix shrinks per-coordinate, it is never dropped silently.
     c_autopar = [p for p in c_cells if p.cell.parallel == "auto-par"]
     assert c_autopar and all(p.compile_key is None for p in c_autopar)
     assert all(p.cell.error and "unsupported" in p.cell.error for p in c_autopar)
     c_seq = [p for p in c_cells if p.cell.parallel == "sequential" and p.cell.role == "timing"]
     assert c_seq and all(p.compile_key is not None for p in c_seq)
+
+
+def test_enumerate_cells_autopar_compiles_when_polyhedral_backend_present(tmp_path, monkeypatch):
+    """Mirror of case (4): with the polyhedral-backend probe reporting PRESENT, clang auto-par (Polly) is
+    supported and produces real compile jobs instead of degrading -- the axis is gated by capability, not
+    hard-coded unsupported as it was before Phase 2."""
+    tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
+    monkeypatch.setattr(flags, "_compiler_accepts", lambda *a, **k: True)
+    pendings, _ = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
+    c_autopar = [p for p in pendings if p.cell.language == "c" and p.cell.parallel == "auto-par"]
+    assert c_autopar and all(p.compile_key is not None and not p.cell.error for p in c_autopar)
 
 
 def test_enumerate_cells_with_present_c_compiler_does_not_raise(tmp_path):

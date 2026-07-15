@@ -8,6 +8,7 @@ together cover both the wiring and the numbers-under-load.
 """
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -121,10 +122,10 @@ def test_source_has_math_gates_the_veclib_axis():
 
 def test_veclibs_for_gates_on_math_and_compatibility():
     from nestforge.perf import tsvc_full
-    math_src, plain_src = "y[i] = exp(x[i]);", "c[i] = a[i] + b[i];"
-    assert tsvc_full.veclibs_for(math_src, ("none", "libmvec"), "gcc") == ("none", "libmvec")  # math + compatible
-    assert tsvc_full.veclibs_for(math_src, ("none", "sleef"), "g++") == ("none", )  # sleef incompatible w/ gcc
-    assert tsvc_full.veclibs_for(plain_src, ("none", "libmvec"), "gcc") == ("none", )  # no math -> none only
+    # veclibs_for takes the PRECOMPUTED per-lang has_math flag (source scanned once at ctx-build time).
+    assert tsvc_full.veclibs_for(True, ("none", "libmvec"), "gcc") == ("none", "libmvec")  # math + compatible
+    assert tsvc_full.veclibs_for(True, ("none", "sleef"), "g++") == ("none", )  # sleef incompatible w/ gcc
+    assert tsvc_full.veclibs_for(False, ("none", "libmvec"), "gcc") == ("none", )  # no math -> none only
 
 
 def test_resolve_veclibs_spec_and_auto():
@@ -137,15 +138,13 @@ def test_resolve_veclibs_spec_and_auto():
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
-def test_enumerate_cells_gates_veclib_cells_by_nest_math():
-    """The veclib axis fans lane-3 cells only for a nest whose source has libm math: a math nest gets both
-    none and libmvec timing cells, a plain arithmetic nest gets none only (no wasted compiles)."""
-    import tempfile
-    from pathlib import Path
+def test_enumerate_cells_gates_veclib_cells_by_nest_math(tmp_path):
+    """The veclib axis fans lane-3 cells off the PRECOMPUTED per-lang ``has_math`` flag (build_opt_context
+    scans the source once): a math nest (has_math=True) gets both none and libmvec timing cells, a plain
+    arithmetic nest (has_math=False) gets none only. Dummy source paths -- enumeration does no source I/O."""
     from nestforge.perf import tsvc_full
     from nestforge.perf.tsvc_arena import discover_toolchains
     tcs = discover_toolchains("gcc")
-    d = Path(tempfile.mkdtemp())
     axes = {
         "opt_mode": "simplify-parallel",
         "parallelism": ["sequential"],
@@ -155,27 +154,29 @@ def test_enumerate_cells_gates_veclib_cells_by_nest_math():
         "matrix_preset": "lean",
         "veclibs": ("none", "libmvec")
     }
-    msrc = d / "m_fp64.c"
-    msrc.write_text("void m_fp64(double* a, double* b){ *a = exp(*b); }")
     pend, _ = tsvc_full.enumerate_cells(
         {
             "lang_src": {
-                "c": (msrc, ["a", "b"], [None, None])
+                "c": (Path("m_fp64.c"), ["a", "b"], [None, None])
+            },
+            "has_math": {
+                "c": True
             },
             "symbol": "m_fp64",
             "nest_idx": 0
-        }, tcs, {}, axes, 4, "c++23", d)
+        }, tcs, {}, axes, 4, "c++23", tmp_path)
     assert {p.cell.veclib for p in pend if p.cell.role == "timing"} == {"none", "libmvec"}
-    psrc = d / "p_fp64.c"
-    psrc.write_text("void p_fp64(double* a, double* b){ *a = *b + 1.0; }")
     pend2, _ = tsvc_full.enumerate_cells(
         {
             "lang_src": {
-                "c": (psrc, ["a", "b"], [None, None])
+                "c": (Path("p_fp64.c"), ["a", "b"], [None, None])
+            },
+            "has_math": {
+                "c": False
             },
             "symbol": "p_fp64",
             "nest_idx": 0
-        }, tcs, {}, axes, 4, "c++23", d)
+        }, tcs, {}, axes, 4, "c++23", tmp_path)
     assert {p.cell.veclib for p in pend2 if p.cell.role == "timing"} == {"none"}
 
 
