@@ -42,6 +42,7 @@ class Proposal:
     """
     name: str
     lane: str  # "dace" | "external"
+    scope: str = "per-nest"  # "per-nest" (one extracted nest) | "whole-program" (the un-split program)
     fp_mode: str = "strict-ieee"  # the FP-precision rung this variant runs at (flags.FP_LEVELS)
     cost_model: str = "default"  # the vectorizer cost model (flags.COST_MODELS)
     # --- DaCe lane ---
@@ -61,6 +62,8 @@ class Proposal:
                 raise ValueError(f"external proposal {self.name!r} needs language, compiler, flags")
         else:
             raise ValueError(f"unknown lane {self.lane!r} in proposal {self.name!r}")
+        if self.scope not in ("per-nest", "whole-program"):
+            raise ValueError(f"unknown scope {self.scope!r} in proposal {self.name!r}")
 
 
 class Optimizer(abc.ABC):
@@ -151,6 +154,29 @@ class NoOpAgent(Optimizer):
 
     def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
         return Proposal(self.name, "dace", opt_mode=BASELINE_OPT_MODE, build=BuildOptions())
+
+
+class WholeProgramOptimizer(Optimizer):
+    """A WHOLE-PROGRAM optimizer: optimize the entire un-split program as one unit, so the per-nest arena
+    has an honest baseline to beat -- a per-nest win that merely recovers what a whole-program optimizer
+    gets for free is not a win.
+
+    The deterministic baseline is DaCe ``auto-opt`` across all nests (``opt_mode='auto-opt'``); ``simplify-
+    parallel`` / ``canonicalize`` are the weaker whole-program rungs. An *agent* whole-program optimizer is
+    just another subclass of :class:`Optimizer` proposing ``scope='whole-program'`` -- the "agent or
+    anything" the lane accepts -- so this class is the non-AI floor, not the only whole-program optimizer.
+    Consumed by :func:`nestforge.whole_program.measure_whole_program`.
+    """
+
+    def __init__(self, opt_mode: str = "auto-opt", build: Optional[BuildOptions] = None, name: Optional[str] = None):
+        if opt_mode not in tsvc.OPT_MODES:
+            raise ValueError(f"opt_mode {opt_mode!r} not in {tsvc.OPT_MODES}")
+        self.opt_mode = opt_mode
+        self.build = build if build is not None else BuildOptions()
+        self.name = name or f"whole-program:opt={opt_mode},cc={self.build.compiler}"
+
+    def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
+        return Proposal(self.name, "dace", scope="whole-program", opt_mode=self.opt_mode, build=self.build)
 
 
 def deterministic_optimizers(

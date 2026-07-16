@@ -1,0 +1,113 @@
+"""Whole-program baseline lane: optimize the ENTIRE un-split program as one unit and measure it.
+
+The per-nest arena extracts each loop nest and tunes it in isolation. That risks crediting a "win" that a
+whole-program optimizer -- DaCe ``auto-opt`` across all nests, or a compiler auto-parallelizing the whole
+emitted source -- already gets for free. This lane is the honest baseline: hand the whole program to ONE
+optimizer, build it, validate it bit-exact, and time it, so a per-nest result has something real to beat.
+
+Any :class:`~nestforge.optimizers.Optimizer` proposing ``scope='whole-program'`` plugs in -- the
+deterministic :class:`~nestforge.optimizers.WholeProgramOptimizer` (auto-opt) now, an agent later ("agent
+or anything"). The build + validate path is the per-nest lane's, pointed at the WHOLE-program boundary
+(:func:`~nestforge.extract.whole_program_boundary`) instead of an extracted nest; the compiled kernel runs
+FORKED (:func:`~nestforge.isolation.run_isolated`) so a crash in fresh code never takes down the caller.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+
+from nestforge import build, tsvc
+from nestforge.arena import make_inputs, maxdiff, run_oracle
+from nestforge.extract import whole_program_boundary
+from nestforge.isolation import run_isolated
+from nestforge.optimizers import Optimizer
+from nestforge.perf import flags
+from nestforge.perf.harness import median
+from nestforge.translate import prepare_whole_program
+
+
+@dataclass
+class WholeProgramResult:
+    """One whole-program measurement. ``median_us`` is ``inf`` and ``error`` is set when the build or the
+    forked run failed; ``ok`` is the bit-exact verdict vs the whole-program numpy oracle."""
+    optimizer: str
+    opt_mode: str
+    ok: bool
+    maxdiff: float
+    median_us: float
+    reps: int
+    error: Optional[str] = None
+
+
+def measure_whole_program(optimizer: Optimizer,
+                          kernel: tsvc.TsvcKernel,
+                          out_dir,
+                          preset: str = "S",
+                          reps: int = 7,
+                          seed: int = 0,
+                          atol: Optional[float] = None,
+                          timeout: float = 900.0) -> WholeProgramResult:
+    """Build + validate + time ``optimizer``'s whole-program proposal for ``kernel``.
+
+    The proposal must be ``scope='whole-program'``, DaCe lane (the external whole-program lane -- gcc /
+    clang+Polly / gcc+Graphite / pluto over the whole emitted source -- is future work). The optimizer's
+    ``opt_mode`` optimizes the WHOLE kernel SDFG (``auto-opt`` fuses/tiles across nests); the numpy oracle
+    is emitted from that same optimized program, so the check is codegen-vs-emit on identical semantics.
+    ``atol`` defaults to the strict-ieee tolerance.
+    """
+    proposal = optimizer.propose()
+    if proposal is None:
+        return WholeProgramResult(optimizer.name, "", False, float("inf"), float("inf"), 0, "optimizer declined")
+    if proposal.scope != "whole-program":
+        raise ValueError(f"{optimizer.name} proposes scope {proposal.scope!r}; measure_whole_program needs "
+                         f"'whole-program' (use the per-nest arena for a per-nest optimizer)")
+    if proposal.lane != "dace":
+        raise NotImplementedError(f"whole-program lane builds the DaCe scope; {proposal.lane!r} is future work")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    atol = flags.FP_ATOL["strict-ieee"] if atol is None else atol
+
+    sdfg = tsvc.build_sdfg(kernel, proposal.opt_mode)  # optimize the WHOLE program (across nests)
+    boundary = whole_program_boundary(sdfg)
+    sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
+    inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))
+    prep = prepare_whole_program(sdfg, kernel.key, out_dir, sizes=sizes)
+    oracle = run_oracle(prep, boundary, inputs, sizes)
+    built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
+
+    def work():
+        # Validate: one in-place run, compared to the oracle. bind_program binds only the SDFG's own
+        # parameters, so make_inputs' extra scratch buffers (internal transients of the whole program) are
+        # harmlessly ignored.
+        vbuf = {k: v.copy() for k, v in inputs.items()}
+        built.run(vbuf, sizes)
+        outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
+        if outs:
+            md = float(maxdiff({o: oracle[o] for o in outs}, outs))
+            verdict = {"ok": bool(md <= atol), "maxdiff": md}
+        else:
+            verdict = {"ok": False, "maxdiff": float("inf")}
+        # Time: init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling).
+        tbuf = {k: v.copy() for k, v in inputs.items()}
+        built.init(sizes)
+        try:
+            fn, cargs = built.bind_program(tbuf, sizes)
+            fn(*cargs)  # warm
+            samples: List[float] = []
+            for _ in range(reps):
+                t0 = time.perf_counter()
+                fn(*cargs)
+                samples.append((time.perf_counter() - t0) * 1e6)
+        finally:
+            built.close()
+        return {**verdict, "median_us": median(samples)}
+
+    res = run_isolated(work, timeout=timeout)
+    if "error" in res:
+        return WholeProgramResult(optimizer.name, proposal.opt_mode, False, float("inf"), float("inf"), reps,
+                                  res["error"])
+    return WholeProgramResult(optimizer.name, proposal.opt_mode, bool(res["ok"]), float(res["maxdiff"]),
+                              float(res["median_us"]), reps)
