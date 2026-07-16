@@ -80,9 +80,20 @@ jobs:
 
       # Unit set only (-m "not integration"): vendor-compiler + heavy-launcher tests are marked
       # @pytest.mark.integration and excluded here. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the
-      # session if any of the remaining tests skip -- the unit set must run with zero skips.
+      # session if any of the remaining tests skip -- the unit set must run with zero skips. This already
+      # covers the optimizer contract (each variant is an optimizer) and the no-op agent's proposal, which
+      # are pure-config unit tests (no compile).
       - name: Phase 3 -- pytest (unit set, 0-skip enforced)
         env:
           NESTFORGE_CI_NO_SKIP: '1'
         run: |
           python -m pytest -q -p no:cacheprovider -m "not integration" -n auto --timeout=900
+
+      # The optimizer loop END TO END: the no-op agent proposes the Phase-1 baseline, and the arena builds
+      # it and validates bit-exact vs the numpy oracle. That smoke is @pytest.mark.integration (it compiles
+      # a nest), so the unit phase skips it -- run it here on its own, where g++ is present on the runner.
+      # This is the CI guarantee that the deterministic-optimizer / no-op-agent loop actually runs, not just
+      # that its recipes are well-formed.
+      - name: Phase 4 -- optimizer loop end-to-end (no-op agent builds + validates)
+        run: |
+          python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py --timeout=900
