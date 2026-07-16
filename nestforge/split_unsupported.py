@@ -15,6 +15,7 @@ directly externalizable via the same nesting the extractor already uses (:mod:`n
 """
 from __future__ import annotations
 
+import copy
 from typing import List, Set
 
 import dace
@@ -61,11 +62,15 @@ def isolate_into_own_state(sdfg: dace.SDFG, state: dace.SDFGState, node: nodes.N
 
     Two :func:`state_fission` steps: (1) move ``node`` and its ancestors into a new top state, leaving the
     rest below; (2) peel the ancestors off that top state so ``node`` stands alone. A node with no
-    ancestors (a pure source) needs only the first step -- it lands at the top with the rest below."""
-    top = state_fission(SubgraphView(state, list(upstream_nodes(state, node) | {node})))
+    ancestors (a pure source) needs only the first step -- it lands at the top with the rest below.
+
+    ``allow_isolated_nodes=False``: a source that fed only ``node`` (e.g. a scalar ``root`` read only by an
+    MPI collective) would otherwise be left as an isolated, dataflow-dead access node on the wrong side of
+    the split -- dropping it keeps each resulting state a clean, independently-extractable region."""
+    top = state_fission(SubgraphView(state, list(upstream_nodes(state, node) | {node})), allow_isolated_nodes=False)
     upstream_in_top = upstream_nodes(top, node)
     if upstream_in_top:
-        state_fission(SubgraphView(top, list(upstream_in_top)))
+        state_fission(SubgraphView(top, list(upstream_in_top)), allow_isolated_nodes=False)
 
 
 def isolate_unsupported_library_nodes(sdfg: dace.SDFG) -> int:
@@ -132,3 +137,50 @@ def whole_program_regions(sdfg: dace.SDFG):
         groups.setdefault(find(s), []).append(s)
     regions = list(groups.values())
     return regions, islands
+
+
+def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], name: str) -> dace.SDFG:
+    """Copy one whole-program region (a set of connected pure-compute states) into a fresh, independently
+    compilable SDFG that :func:`~nestforge.emit_numpy.sdfg_to_numpy` can emit on its own.
+
+    The boundary is the crux: a **transient** that is written in the region and used OUTSIDE it (or read in
+    the region and written outside) crosses the region boundary and is promoted to non-transient so it
+    becomes a region input / output -- while a whole-program transient stays internal. Arrays touched only
+    outside the region are dropped. The region's single entry state (no in-region predecessor) becomes the
+    start.
+
+    ``region_states`` are states of ``sdfg`` (as returned by :func:`whole_program_regions`); ``sdfg`` is not
+    mutated (the work is done on a deep copy)."""
+    region_labels = {s.label for s in region_states}
+    outside_read: Set[str] = set()
+    outside_write: Set[str] = set()
+    for state in sdfg.states():
+        if state.label in region_labels:
+            continue
+        read, write = state.read_and_write_sets()
+        outside_read |= read
+        outside_write |= write
+
+    work = copy.deepcopy(sdfg)
+    work.name = name
+    for state in list(work.states()):
+        if state.label not in region_labels:
+            work.remove_node(state)
+
+    region_used: Set[str] = set()
+    for state in work.states():
+        read, write = state.read_and_write_sets()
+        region_used |= read | write
+    for aname in list(work.arrays):
+        if aname not in region_used:
+            del work.arrays[aname]  # touched only outside the region (after orphan drop, no node references it)
+        elif work.arrays[aname].transient and (aname in outside_read or aname in outside_write):
+            work.arrays[aname].transient = False  # crosses the region boundary -> a region input / output
+
+    entries = [s for s in work.states() if work.in_degree(s) == 0]
+    if len(entries) != 1:
+        raise ValueError(f"region {name} has {len(entries)} entry states; only a single-entry region is "
+                         "externalizable (a multi-entry region needs a synthetic join -- not yet handled)")
+    work.start_block = work.node_id(entries[0])
+    work.reset_cfg_list()
+    return work

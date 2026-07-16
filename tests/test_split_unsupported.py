@@ -9,8 +9,9 @@ import pytest
 from dace.sdfg import nodes
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, is_emittable_library_node
+from nestforge.emit_numpy import sdfg_to_numpy
 from nestforge.split_unsupported import (isolate_into_own_state, isolate_unsupported_library_nodes,
-                                         unsupported_library_nodes, whole_program_regions)
+                                         region_to_standalone, unsupported_library_nodes, whole_program_regions)
 
 N = dace.symbol("N")
 
@@ -229,3 +230,28 @@ def test_whole_program_regions_two_islands_split_three_regions():
     assert len(islands) == 2
     assert len(regions) == 3  # producers | mid | consumers around the two bcast islands
     assert all(not unsupported_library_nodes(s) for r in regions for s in r)
+
+
+def test_region_to_standalone_emits_and_runs_each_region():
+    import inspect
+
+    import numpy as np
+    sdfg, st, bcast = bcast_sdfg()
+    regions, islands = whole_program_regions(sdfg)
+    fns = {}
+    for i, region in enumerate(regions):
+        stand = region_to_standalone(sdfg, region, f"region{i}")
+        stand.validate()  # the extracted region must be a valid standalone SDFG
+        ns = {"np": np}
+        exec(sdfg_to_numpy(stand, f"region{i}"), ns)
+        fn = ns[f"region{i}"]
+        fns[frozenset(inspect.signature(fn).parameters)] = fn
+    # a boundary transient becomes a region input/output: producer A -> tmp, consumer tmp2 -> B.
+    producer = fns[frozenset({"A", "tmp"})]
+    consumer = fns[frozenset({"tmp2", "B"})]
+    a, tmp = np.arange(8, dtype=np.float64), np.zeros(8)
+    producer(A=a.copy(), tmp=tmp)
+    assert tmp[0] == a[0] + 1.0  # the producer's element-0 tasklet ran in the extracted region
+    tmp2, b = np.arange(8, dtype=np.float64) + 5.0, np.zeros(8)
+    consumer(tmp2=tmp2.copy(), B=b)
+    assert b[0] == tmp2[0] - 1.0  # the consumer ran, reading the promoted boundary input
