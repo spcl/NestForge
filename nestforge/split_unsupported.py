@@ -22,14 +22,18 @@ from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.transformation.helpers import state_fission
 
-from nestforge.emit_libnode import LIBNODE_EMITTERS
+from nestforge.emit_libnode import is_emittable_library_node
 
 
 def unsupported_library_nodes(state: dace.SDFGState) -> List[nodes.LibraryNode]:
-    """Library nodes in ``state`` with no numpy emitter -- MPI/pblas communication, sparse, an explicitly
-    refused node, or simply one no emitter is registered for. These are exactly the nodes the whole-program
-    lane must split around instead of emit (a registered node is emittable and stays in place)."""
-    return [n for n in state.nodes() if isinstance(n, nodes.LibraryNode) and type(n).__name__ not in LIBNODE_EMITTERS]
+    """Library nodes in ``state`` the numpy emitter will not emit -- MPI/pblas communication, sparse, an
+    explicitly refused node, or one no emitter is registered for. These are exactly the nodes the
+    whole-program lane must split around instead of emit (an emittable node stays in place).
+
+    Uses :func:`~nestforge.emit_libnode.is_emittable_library_node` -- the SAME predicate the emitter uses --
+    so a name collision (an MPI ``Reduce`` shares its class name with the registered standard ``Reduce``)
+    cannot make this pass leave in place a node the emitter would refuse."""
+    return [n for n in state.nodes() if isinstance(n, nodes.LibraryNode) and not is_emittable_library_node(n)]
 
 
 def upstream_nodes(state: dace.SDFGState, node: nodes.Node) -> Set[nodes.Node]:

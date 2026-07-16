@@ -543,19 +543,42 @@ REFUSED_LIBRARY_NODES: Dict[str, str] = {
 _COMM_MODULE_PREFIXES = ("dace.libraries.mpi", "dace.libraries.pblas")
 
 
+def is_comm_node(node: nodes.LibraryNode) -> bool:
+    """True if ``node`` is a distributed-communication library node (dace.libraries.mpi / pblas). Matched by
+    MODULE, not class name, so an MPI ``Reduce`` / ``Gather`` (which collide by name with the registered
+    standard ``Reduce`` and a layout ``Gather``) is correctly identified rather than mis-routed."""
+    return type(node).__module__.startswith(_COMM_MODULE_PREFIXES)
+
+
+def is_emittable_library_node(node: nodes.LibraryNode) -> bool:
+    """True iff :func:`emit_library_node` will actually emit ``node`` -- it is not a communication node, not
+    an explicitly refused class, and has a registered emitter. The single source of truth for "supported",
+    used by both the emitter and the split-around-unsupported pass so a name collision cannot make one
+    treat a node as supported while the other refuses it."""
+    if is_comm_node(node):
+        return False
+    if type(node).__name__ in REFUSED_LIBRARY_NODES:
+        return False
+    return type(node).__name__ in LIBNODE_EMITTERS
+
+
 def emit_library_node(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
-    """Numpy statement(s) for a library node, or raise if none is registered / deliberately unsupported. A
-    single-statement emitter returns a ``str`` (wrapped here); a multi-output node (``ArgReduce``,
-    ``Potrf``) returns a list of statements."""
+    """Numpy statement(s) for a library node, or raise if it is a communication node / deliberately
+    unsupported / unregistered. A single-statement emitter returns a ``str`` (wrapped here); a multi-output
+    node (``ArgReduce``, ``Potrf``) returns a list of statements.
+
+    Communication and refusal are checked BEFORE the name registry: an MPI ``Reduce`` shares its class name
+    with the registered standard ``Reduce``, so a name-first lookup would mis-route it to the wrong
+    emitter."""
     cls = type(node).__name__
-    emitter = LIBNODE_EMITTERS.get(cls)
-    if emitter is not None:
-        result = emitter(node, state, sdfg)
-        return result if isinstance(result, list) else [result]
-    if type(node).__module__.startswith(_COMM_MODULE_PREFIXES):
+    if is_comm_node(node):
         raise UnsupportedLibraryNode(f"{cls} is a distributed communication node (dace.libraries.mpi/pblas); "
                                      "not emittable as single-process numpy -- isolate it in its own state and "
                                      "externalize the compute before/after it")
     if cls in REFUSED_LIBRARY_NODES:
         raise UnsupportedLibraryNode(f"{cls}: {REFUSED_LIBRARY_NODES[cls]}")
-    raise UnsupportedLibraryNode(f"no numpy emission for library node {cls}")
+    emitter = LIBNODE_EMITTERS.get(cls)
+    if emitter is None:
+        raise UnsupportedLibraryNode(f"no numpy emission for library node {cls}")
+    result = emitter(node, state, sdfg)
+    return result if isinstance(result, list) else [result]
