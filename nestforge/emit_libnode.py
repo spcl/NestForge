@@ -351,6 +351,94 @@ def emit_scatter_conflict_check(node, state, sdfg) -> List[str]:
     ]
 
 
+def out_data_name(state: dace.SDFGState, node: nodes.Node, conn: str) -> str:
+    """The array NAME an output connector writes (for reading the buffer's prior value, e.g. the
+    untouched triangle a symmetric BLAS update preserves)."""
+    return next(e for e in state.out_edges(node) if e.src_conn == conn).data.data
+
+
+def has_in_conn(state: dace.SDFGState, node: nodes.Node, conn: str) -> bool:
+    return any(e.dst_conn == conn for e in state.in_edges(node))
+
+
+def reject_runtime_scalars(node, state: dace.SDFGState) -> None:
+    """Refuse a BLAS node with a wired runtime ``_alpha`` / ``_beta`` scalar connector: the emitters
+    below fold only the compile-time ``alpha``/``beta`` properties, so a runtime coefficient would be
+    silently dropped. Uncommon (kernels almost always bake the scalars); refuse rather than mis-scale."""
+    if has_in_conn(state, node, "_alpha") or has_in_conn(state, node, "_beta"):
+        raise UnsupportedLibraryNode(f"{type(node).__name__} has a runtime _alpha/_beta scalar connector; "
+                                     "only compile-time alpha/beta are emitted -- fall back to the DaCe variant")
+
+
+def triangle_funcs(uplo: str):
+    """``(write_fn, keep_fn, keep_offset)`` for a symmetric BLAS update that touches only the ``uplo``
+    triangle: the written triangle (incl. diagonal) plus the STRICT opposite triangle of the prior value,
+    so the untouched half is preserved bit-for-bit (the DaCe reference leaves it unchanged)."""
+    return ("np.tril", "np.triu", 1) if uplo == "L" else ("np.triu", "np.tril", -1)
+
+
+def emit_syrk(node, state, sdfg) -> str:
+    """BLAS SYRK: ``C := alpha*(A@A.T) + beta*C`` (``trans='N'``, ``A`` is ``N x K``) or ``alpha*(A.T@A)``
+    (``trans='T'``, ``A`` is ``K x N``), updating ONLY the ``uplo`` triangle of symmetric ``C``; the
+    opposite triangle keeps its prior value. Connectors ``_a``/``_c`` -> ``_c`` (in-place); ``_c`` is read
+    only when ``beta != 0``."""
+    reject_runtime_scalars(node, state)
+    a = in_expr(state, node, "_a", sdfg)
+    prod = f"{a}.T @ {a}" if node.trans == "T" else f"{a} @ {a}.T"
+    rhs = scaled(f"({prod})", node.alpha)
+    c_buf = out_data_name(state, node, "_c")
+    if not is_zero(node.beta):
+        rhs = f"{rhs} + {node.beta} * {read_expr(sdfg, c_buf, None)}"
+    write, keep, off = triangle_funcs(node.uplo)
+    return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
+
+
+def emit_syr2k(node, state, sdfg) -> str:
+    """BLAS SYR2K: ``C := alpha*(A@B.T + B@A.T) + beta*C`` (``trans='N'``, ``A``/``B`` are ``N x K``) or
+    ``alpha*(A.T@B + B.T@A) + beta*C`` (``trans='T'``, ``A``/``B`` are ``K x N``); ``A``/``B`` read in FULL
+    (rectangular), only the ``uplo`` triangle of symmetric ``C`` written. Connectors ``_a``/``_b``/``_c`` ->
+    ``_c``; ``_c`` read only when ``beta != 0``."""
+    reject_runtime_scalars(node, state)
+    a = in_expr(state, node, "_a", sdfg)
+    b = in_expr(state, node, "_b", sdfg)
+    prod = f"{a}.T @ {b} + {b}.T @ {a}" if node.trans == "T" else f"{a} @ {b}.T + {b} @ {a}.T"
+    rhs = scaled(f"({prod})", node.alpha)
+    c_buf = out_data_name(state, node, "_c")
+    if not is_zero(node.beta):
+        rhs = f"{rhs} + {node.beta} * {read_expr(sdfg, c_buf, None)}"
+    write, keep, off = triangle_funcs(node.uplo)
+    return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
+
+
+def emit_symm(node, state, sdfg) -> str:
+    """BLAS SYMM: ``C := alpha*(A@B) + beta*C`` (``side='L'``) or ``alpha*(B@A) + beta*C`` (``side='R'``),
+    where ``A`` is symmetric with only its ``uplo`` triangle stored -> reconstruct the FULL symmetric ``A``
+    first. Output ``C`` is FULL (no triangle masking). Connectors ``_a``/``_b``/``_c`` -> ``_c``."""
+    reject_runtime_scalars(node, state)
+    a = in_expr(state, node, "_a", sdfg)
+    b = in_expr(state, node, "_b", sdfg)
+    asym = f"(np.tril({a}) + np.tril({a}, -1).T)" if node.uplo == "L" else f"(np.triu({a}) + np.triu({a}, 1).T)"
+    mat = f"{asym} @ {b}" if node.side == "L" else f"{b} @ {asym}"
+    rhs = scaled(mat, node.alpha)
+    if not is_zero(node.beta):
+        rhs = f"{rhs} + {node.beta} * {in_expr(state, node, '_c', sdfg)}"
+    return f"{out_lhs(state, node, '_c', sdfg)} = {rhs}"
+
+
+def emit_potrf(node, state, sdfg) -> List[str]:
+    """LAPACK POTRF (Cholesky factorization) -> ``np.linalg.cholesky`` (lower) / ``.conj().T`` (upper),
+    mirroring :func:`emit_cholesky`; connectors ``_xin`` -> ``_xout`` (+ optional ``_res`` info scalar,
+    always success ``0`` for a numpy reference)."""
+    a = in_expr(state, node, "_xin", sdfg)
+    expr = f"np.linalg.cholesky({a})"
+    if not node.lower:
+        expr = f"({expr}).conj().T"
+    lines = [f"{out_lhs(state, node, '_xout', sdfg)} = {expr}"]
+    if any(e.src_conn == "_res" for e in state.out_edges(node)):
+        lines.append(f"{out_lhs(state, node, '_res', sdfg)} = np.array(0, np.int32)")
+    return lines
+
+
 def emit_dot(node, state, sdfg) -> str:
     x = in_expr(state, node, "_x", sdfg)
     y = in_expr(state, node, "_y", sdfg)
@@ -419,6 +507,10 @@ LIBNODE_EMITTERS: Dict[str, Callable] = {
     "Solve": emit_solve,
     "Cholesky": emit_cholesky,
     "Inv": emit_inv,
+    "Symm": emit_symm,
+    "Syrk": emit_syrk,
+    "Syr2k": emit_syr2k,
+    "Potrf": emit_potrf,
     "FFT": emit_fft,
     "IFFT": emit_ifft,
     "Reduce": emit_reduce,
@@ -428,12 +520,42 @@ LIBNODE_EMITTERS: Dict[str, Callable] = {
     "ScatterConflictCheck": emit_scatter_conflict_check,
 }
 
+#: Library nodes DELIBERATELY not emitted as numpy, each with the reason. Distinct from an *unregistered*
+#: node (a genuine gap): these have no faithful single-process numpy form (sparse formats / FPGA streams /
+#: arbitrary stencil code / LAPACK primitives that output pivots or packed in-place factors). The whole-
+#: program lane must SPLIT AROUND one of these -- isolate it in its own state and externalize the
+#: pure-compute states before/after -- rather than abandon the program (see the MPI policy below).
+REFUSED_LIBRARY_NODES: Dict[str, str] = {
+    "CSRMM": "sparse CSR matrix-matrix product; not emitted as dense numpy",
+    "CSRMV": "sparse CSR matrix-vector product; not emitted as dense numpy",
+    "Gearbox": "FPGA stream rate-changer; operands are Streams, not arrays",
+    "Stencil": "arbitrary stencil code (relative offsets + boundary conditions); not a numpy op",
+    "Getrf": "LAPACK LU factorization outputs pivots (ipiv) + packed in-place LU; no pure-numpy form",
+    "Getri": "LAPACK inverse-from-LU consumes packed LU + pivots; no pure-numpy form",
+    "Getrs": "LAPACK solve-from-LU consumes packed LU + pivots; no pure-numpy form",
+}
+
+#: DaCe library subpackages whose nodes are DISTRIBUTED communication (MPI point-to-point / collectives /
+#: redistribution / parallel BLAS). None has a single-process numpy equivalent, and the offload policy is
+#: the same for all: never offload the comm node itself -- place it in its own state and offload only the
+#: pure-compute states before and after it. Matched by module so a name collision (an MPI ``Gather`` vs a
+#: layout ``Gather``) cannot mis-route.
+_COMM_MODULE_PREFIXES = ("dace.libraries.mpi", "dace.libraries.pblas")
+
 
 def emit_library_node(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
-    """Numpy statement(s) for a library node, or raise if none is registered. A single-statement emitter
-    returns a ``str`` (wrapped here); a multi-output node (``ArgReduce``) returns a list of statements."""
-    emitter = LIBNODE_EMITTERS.get(type(node).__name__)
-    if emitter is None:
-        raise UnsupportedLibraryNode(f"no numpy emission for library node {type(node).__name__}")
-    result = emitter(node, state, sdfg)
-    return result if isinstance(result, list) else [result]
+    """Numpy statement(s) for a library node, or raise if none is registered / deliberately unsupported. A
+    single-statement emitter returns a ``str`` (wrapped here); a multi-output node (``ArgReduce``,
+    ``Potrf``) returns a list of statements."""
+    cls = type(node).__name__
+    emitter = LIBNODE_EMITTERS.get(cls)
+    if emitter is not None:
+        result = emitter(node, state, sdfg)
+        return result if isinstance(result, list) else [result]
+    if type(node).__module__.startswith(_COMM_MODULE_PREFIXES):
+        raise UnsupportedLibraryNode(f"{cls} is a distributed communication node (dace.libraries.mpi/pblas); "
+                                     "not emittable as single-process numpy -- isolate it in its own state and "
+                                     "externalize the compute before/after it")
+    if cls in REFUSED_LIBRARY_NODES:
+        raise UnsupportedLibraryNode(f"{cls}: {REFUSED_LIBRARY_NODES[cls]}")
+    raise UnsupportedLibraryNode(f"no numpy emission for library node {cls}")
