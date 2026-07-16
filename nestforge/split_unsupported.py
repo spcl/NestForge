@@ -24,6 +24,7 @@ from dace.sdfg.graph import SubgraphView
 from dace.transformation.helpers import state_fission
 
 from nestforge.emit_libnode import is_emittable_library_node
+from nestforge.emit_numpy import UnsupportedNest
 
 
 def unsupported_library_nodes(state: dace.SDFGState) -> List[nodes.LibraryNode]:
@@ -111,8 +112,20 @@ def whole_program_regions(sdfg: dace.SDFG):
     (branches and loops of pure states stay in one region); an interstate edge between two regions always
     runs through an island, which is the boundary the compute splits around.
 
+    Only a FLAT program is partitioned: every state must sit directly in ``sdfg``. ``sdfg.states()`` also
+    yields states nested in a control-flow region (a ``LoopRegion``, a ``ConditionalBlock``), but the edges
+    reaching such a region run to the REGION, not to its states -- the union-find below would never join
+    them to their neighbours and would report more (and smaller) regions than really exist, i.e. a wrong
+    extraction. ``region_to_standalone`` likewise addresses states as top-level nodes of ``sdfg``. Refuse.
+
     Mutates ``sdfg`` (isolation fissions states) -- pass a detached copy if the original must be preserved.
     """
+    nested = [s for s in sdfg.states() if s.parent_graph is not sdfg]
+    if nested:
+        raise UnsupportedNest(f"whole-program region partition needs a flat state graph, but "
+                              f"{len(nested)} state(s) live inside a control-flow region "
+                              f"(e.g. {nested[0].label!r} in {type(nested[0].parent_graph).__name__} "
+                              f"{nested[0].parent_graph.label!r}); nested regions are not yet partitioned")
     isolate_unsupported_library_nodes(sdfg)
     islands = [s for s in sdfg.states() if unsupported_library_nodes(s)]
     island_set = set(islands)
@@ -120,6 +133,22 @@ def whole_program_regions(sdfg: dace.SDFG):
     # Union-find over the pure states: union the endpoints of every interstate edge whose BOTH ends are
     # pure. Each resulting set is one externalizable region.
     parent = {s: s for s in sdfg.states() if s not in island_set}
+
+    # Every interstate edge must run between states we partition. An endpoint that is NOT a state -- a
+    # control-flow region, or a bare Return/Break/Continue block -- carries connectivity the union-find
+    # cannot see, so its neighbours would be reported as separate regions with no island between them: a
+    # wrong extraction, silently. The nested-state check above does not cover this: a branch region holding
+    # no SDFGState at all (the ordinary ``if (cond) return;`` shape) leaves `nested` empty while its edges
+    # still bypass the partition. Refuse on the CAUSE -- a skipped edge -- not on a proxy for it.
+    known = set(parent) | island_set
+    for edge in sdfg.all_interstate_edges():
+        for end in (edge.src, edge.dst):
+            if end not in known:
+                raise UnsupportedNest(
+                    f"whole-program region partition needs every interstate edge to run between states, but "
+                    f"{edge.src.label!r} -> {edge.dst.label!r} has the endpoint {end.label!r} of type "
+                    f"{type(end).__name__}, which is not a partitioned state; its connectivity would be "
+                    f"dropped and the neighbours reported as independent regions")
 
     def find(s):
         while parent[s] is not s:

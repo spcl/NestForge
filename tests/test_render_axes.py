@@ -35,6 +35,17 @@ def test_lane_cell_counts_are_the_axis_product():
         assert f"{lane.cells()} cells" in render_axes.mermaid()
 
 
+def test_native_lane_is_a_single_fixed_cell():
+    """``tsvc_full.measure_native_lane`` compiles ``_original.cpp`` ONCE -- one C++ toolchain, ``base_flags``
+    only (no ``cost_flags``, no ``reduced_fp_flags``). Fanning the native lane over compiler/cost-model/fp
+    would document a sweep the arena never runs, so every native axis must be single-valued."""
+    native = next(lane for lane in render_axes.lanes() if lane.key == "native")
+    for ax in native.axes:
+        assert len(ax.values) == 1, (f"native axis {ax.name!r} advertises {len(ax.values)} values, but "
+                                     f"measure_native_lane compiles once: {ax.values}")
+    assert native.cells() == 1
+
+
 def test_splice_is_idempotent():
     """Regenerating an already-current README is a no-op (splice twice == splice once)."""
     once = render_axes.splice(render_axes.readme_path().read_text())

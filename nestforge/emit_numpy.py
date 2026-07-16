@@ -252,7 +252,10 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
         conn_expr[e.src_conn] = temp  # the body writes the temporary, then we accumulate into target
         wcr_updates.append(f"{target} = {combine(target, temp)}")
     lines = [normalize_casts(sub_connectors(line, conn_expr)) for line in tasklet.code.as_string.splitlines()]
-    return lines + wcr_updates
+    # The accumulate lines are built here, not from tasklet code, but they embed the target's rendered
+    # subset -- a strided/derived index renders as sympy ``int_floor(...)``, which is not python. They need
+    # the same normalization the body lines get.
+    return lines + [normalize_casts(u) for u in wcr_updates]
 
 
 def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -> List[str]:

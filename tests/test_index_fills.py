@@ -21,17 +21,19 @@ GATHER_KERNELS = [("tsvc2", "vag", "ip"), ("tsvc2", "s4113", "ip"), ("tsvc2", "s
                   ("tsvc2_5", "reroll_gather", "ip")]
 
 
+# These kernels are named constants of the corpora this repo pins, and every one is a gather/scatter whose
+# index array is the whole point of the test. A missing kernel or a nest-less kernel is therefore a broken
+# corpus or a broken splitter -- a failure to surface, never a skip to hide behind. (A skip here would also
+# fail CI, which runs the unit set under NESTFORGE_CI_NO_SKIP=1.)
 def first_nest(kernel):
     nests = extract_all_nests(lambda: kernel.program.to_sdfg(simplify=True), "outer", kernel.key)
-    if not nests:
-        pytest.skip(f"{kernel.key}: no compute nest")
+    assert nests, f"{kernel.key}: the splitter found no compute nest -- this kernel has one"
     return nests[0][3]
 
 
 def load(corpus, key):
     kernels = iter_tsvc_kernels(only=[key], corpus=corpus)
-    if not kernels:
-        pytest.skip(f"{key} not in the {corpus} corpus")
+    assert kernels, f"{key} is not in the {corpus} corpus -- the corpus this test pins has changed"
     return kernels[0]
 
 

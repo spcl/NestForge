@@ -23,7 +23,7 @@ is the thing standing between the agent and a silently wrong program.
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 import dace
 from dace.sdfg import nodes
@@ -45,18 +45,22 @@ def fission_to_statements(sdfg: dace.SDFG) -> int:
     return applied
 
 
-def map_fission_moves(sdfg: dace.SDFG) -> List[nodes.MapEntry]:
-    """Map entries ``MapFission`` can split (a map whose nested-SDFG body has independent output groups) --
-    the single-pair fission move for fine agent control. Each entry ``me`` is applied with
-    ``MapFission.apply_to(sdfg, map_entry=me, nested_sdfg=<its body>)``."""
-    entries: List[nodes.MapEntry] = []
+def map_fission_moves(sdfg: dace.SDFG) -> List[Tuple[nodes.MapEntry, nodes.NestedSDFG]]:
+    """``(map_entry, nested_sdfg)`` pairs ``MapFission`` can split (a map whose nested-SDFG body has
+    independent output groups) -- the single-pair fission move for fine agent control. Each pair is applied
+    with ``MapFission.apply_to(sdfg, expr_index=1, map_entry=me, nested_sdfg=nsdfg)``; the validated body is
+    carried in the move so the caller applies the same pair that was checked."""
+    moves: List[Tuple[nodes.MapEntry, nodes.NestedSDFG]] = []
     for state in sdfg.all_states():
         for node in state.nodes():
             if not isinstance(node, nodes.MapEntry):
                 continue
-            body = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.NestedSDFG)]
+            # A map entry reaches its body over one edge per connector, so dedup before checking.
+            body = dict.fromkeys(e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.NestedSDFG))
             for nsdfg in body:
-                if MapFission.can_be_applied_to(sdfg, map_entry=node, nested_sdfg=nsdfg):
-                    entries.append(node)
-                    break
-    return entries
+                # expr_index=1 is MapFission's map-with-nested-SDFG pattern. The default 0 is the
+                # map-with-subgraph pattern, whose match drops `nested_sdfg` and rejects a lone
+                # NestedSDFG body as a single component -- i.e. exactly the maps enumerated here.
+                if MapFission.can_be_applied_to(sdfg, expr_index=1, map_entry=node, nested_sdfg=nsdfg):
+                    moves.append((node, nsdfg))
+    return moves

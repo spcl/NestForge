@@ -434,6 +434,19 @@ def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
     assert ctypes.CDLL(str(so))[symbol]  # ctypes binds it
 
 
+def test_cxx_only_run_keeps_the_veclib_axis(tmp_path):
+    """A ``--languages c++`` run (no ``c``) must still gate the veclib axis ON for a nest whose emitted C
+    source calls libm: the C++ lane compiles that very source through its ``extern "C"`` wrapper, so the
+    veclib is live for it. s451 calls ``sin``; the gate may not be read off a ``c`` entry that a c++-only
+    run never produces, or the axis silently collapses to ``none`` with no skip reason recorded."""
+    k = tsvc.iter_tsvc_kernels(only=["s451"])[0]
+    ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c++"], tmp_path)
+    nc = ctxs[0]
+    assert "c" not in nc["lang_src"], "c++-only run must not carry a c lane to inherit the gate from"
+    assert nc["has_math"]["c++"], "sin() in the emitted C source must gate the veclib axis ON for c++"
+    assert tsvc_full.veclibs_for(nc["has_math"]["c++"], ("none", "svml"), "icx") == ("none", "svml")
+
+
 def _one_lang_axes():
     return {
         "opt_modes": ["simplify-parallel"],

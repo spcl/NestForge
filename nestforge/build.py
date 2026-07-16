@@ -318,7 +318,9 @@ def parse_params(param_str: str) -> List[Param]:
     """Parse a C parameter list into typed params. Skips the leading ``N_state_t *__state`` handle."""
     params: List[Param] = []
     for raw in split_params(param_str):
-        tok = raw.replace("__restrict__", "").replace("const", "").strip()
+        # Strip the qualifiers as whole WORDS: a substring strip would also eat them out of a parameter
+        # NAME (``const_term``, ``nconst``), whose mangled remains would then miss the SDFG array.
+        tok = re.sub(r"\b(?:const|__restrict__)\b", "", raw).strip()
         if not tok or tok.endswith("_state_t *__state") or tok.endswith("_state_t* __state"):
             continue
         is_ptr = "*" in tok
@@ -327,7 +329,14 @@ def parse_params(param_str: str) -> List[Param]:
         if is_ptr:
             params.append(Param(name, ctypes.POINTER(_C_PTR.get(base, ctypes.c_double)), True))
         else:
-            params.append(Param(name, _C_SCALAR.get(base, ctypes.c_int64), False))
+            # An unmapped by-value type means _C_SCALAR is incomplete; guessing a width here is an ABI
+            # bug that ctypes cannot catch (a float passed as c_int64 goes in the wrong register class
+            # and the callee silently reads garbage), so refuse instead.
+            ctype = _C_SCALAR.get(base)
+            if ctype is None:
+                raise ValueError(f"parameter {name!r} of entry point has C type {base!r}, which has no ctypes "
+                                 f"mapping (known: {sorted(_C_SCALAR)}); add it to _C_SCALAR")
+            params.append(Param(name, ctype, False))
     return params
 
 
@@ -726,7 +735,9 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
 
     if not opts.link_external and not opts.openmp:
         # No mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in).
-        cmd = [compiler, *flags, *lto_f, *vec_c, *vec_l, *inc, str(frame), "-o", str(so), *blas_l]
+        # Libraries go AFTER the source: ld resolves left-to-right, so a -l ahead of the object that
+        # references it contributes nothing (undefined ref, or a veclib silently not linked at all).
+        cmd = [compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l]
         t0 = time.perf_counter()
         run(cmd)
     elif not opts.link_external:

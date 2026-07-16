@@ -607,14 +607,17 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             except (RuntimeError, StopIteration) as e:
                 print(f"[tsvc-full] {name}: no OpenMP variant ({type(e).__name__}: {str(e)[:120]})")
         # Precompute the veclib gate per lang ONCE, here where the sources exist (enumeration stays I/O-free).
-        # C++ compiles the SAME C source (its own path is just an ``extern "C"`` #include wrapper with no math
-        # calls of its own), so it inherits C's math content rather than scanning the wrapper.
         has_math: Dict[str, bool] = {
             lang: source_has_math(src.read_text())
             for lang, (src, _o, _a) in lang_src.items() if lang != "c++"
         }
         if "c++" in lang_src:
-            has_math["c++"] = has_math.get("c", False)
+            # C++ compiles the SAME emitted C source (its own path is just an ``extern "C"`` #include wrapper
+            # with no math calls of its own), so its gate is that .c file's math content. Read the .c from disk
+            # rather than inheriting ``has_math["c"]``: ``c`` need not have been requested (emit_lang_sources
+            # emits the .c for a c++-only run too), and an absent entry would silently gate the axis OFF.
+            c_src = next(s for s in nest_dir.glob("*.c") if "pluto" not in s.name)
+            has_math["c++"] = source_has_math(c_src.read_text())
         ctxs.append({
             "nest_idx": idx,
             "name": name,

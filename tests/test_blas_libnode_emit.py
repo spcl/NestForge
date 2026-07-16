@@ -173,6 +173,31 @@ def test_new_blas_lapack_nodes_are_registered():
         assert name in LIBNODE_EMITTERS
 
 
+@pytest.mark.parametrize("conn", ["_alpha", "_beta"])
+def test_gemm_runtime_coefficient_connector_is_refused(conn):
+    """A Gemm carrying a runtime ``_alpha``/``_beta`` connector must be refused, not emitted from the
+    compile-time properties alone: the numpy oracle and the translated C both derive from the emission, so a
+    dropped runtime coefficient scales BOTH identically and maxdiff validation cannot catch it."""
+    from dace.libraries.blas.nodes.gemm import Gemm
+    n, m, k = 3, 5, 4
+    sdfg = dace.SDFG(f"gemm_rt{conn}")
+    sdfg.add_array("A", [n, k], DT)
+    sdfg.add_array("B", [k, m], DT)
+    sdfg.add_array("C", [n, m], DT)
+    sdfg.add_array("s", [1], DT)
+    st = sdfg.add_state()
+    # The property stays at its neutral value, so folding it alone silently drops the runtime coefficient.
+    node = Gemm("g", alpha_input=(conn == "_alpha"), beta_input=(conn == "_beta"))
+    st.add_edge(st.add_read("A"), None, node, "_a", dace.Memlet(f"A[0:{n}, 0:{k}]"))
+    st.add_edge(st.add_read("B"), None, node, "_b", dace.Memlet(f"B[0:{k}, 0:{m}]"))
+    st.add_edge(st.add_read("s"), None, node, conn, dace.Memlet("s[0]"))
+    if conn == "_beta":
+        st.add_edge(st.add_read("C"), None, node, "_c", dace.Memlet(f"C[0:{n}, 0:{m}]"))
+    st.add_edge(node, "_c", st.add_write("C"), None, dace.Memlet(f"C[0:{n}, 0:{m}]"))
+    with pytest.raises(UnsupportedLibraryNode, match="runtime _alpha/_beta"):
+        emit_library_node(node, st, sdfg)
+
+
 def test_mpi_node_is_refused_by_module():
     from dace.libraries.mpi.nodes.bcast import Bcast
     sdfg = dace.SDFG("mpi")

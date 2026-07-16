@@ -2,8 +2,12 @@
 import numpy as np
 import pytest
 import dace
+from dace.sdfg.state import LoopRegion
 
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.arena import make_inputs, scratch_names
+from nestforge.emit_numpy import maxsize_loop_scratch, nest_to_numpy, sdfg_to_numpy
+from nestforge.extract import Boundary
+from nestforge.pass_lower import lower_nests_to_external_call
 
 N = dace.symbol('N')
 
@@ -143,8 +147,103 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     # __return is an in-place buffer parameter in the numpy signature AND the manifest -- aligned.
     assert "__return" in prep.numpy_source.splitlines()[0]
     assert "return " not in prep.numpy_source
-    assert prep.manifest["input_args"] == list(prep.manifest["input_args"])  # well-formed
+    # emit_yaml.arg_order and emit_numpy.nest_to_numpy build the signature independently, so the manifest is
+    # only usable while they agree: arrays in array_args order (inputs, extra outputs, scratch), then symbols.
+    header = prep.numpy_source.splitlines()[0]
+    signature = [a.strip() for a in header[header.index("(") + 1:header.rindex(")")].split(",")]
+    args = list(prep.manifest["input_args"])
+    arrays = list(prep.manifest["array_args"])
+    assert args == arrays + [s for s in boundary.symbols if s not in arrays]
+    assert args == signature, f"manifest input_args {args} != emitted numpy signature {signature}"
     assert "__return" in prep.manifest["input_args"]
     sizes = {"N": 16}
     out = run_oracle(prep, boundary, make_inputs(boundary, sizes), sizes)  # crashed pre-fix
     assert "__return" in out
+
+
+# ----- an in-place nest's DaceReference expansion resolves BOTH of its connectors ------------------
+@dace.program
+def scale_inplace(A: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        A[i] = A[i] * 2.0 + b[i]
+
+
+def inplace_lowered():
+    sdfg = scale_inplace.to_sdfg(simplify=True)
+    ext, boundary = lower_nests_to_external_call(sdfg)[0]
+    assert "A" in boundary.inputs and "A" in boundary.outputs, "A must be read+written for this to test anything"
+    return sdfg, ext
+
+
+def test_inplace_nest_reference_sdfg_declares_every_connector():
+    """An in-place array is in BOTH boundary.inputs and boundary.outputs, so its ExternalCall carries two
+    connectors (``_in_A`` and ``_out_A``) for one array. ``reference_sdfg`` renamed the body to ``_in_A``
+    first, which left the ``_out_A`` rename a silent no-op (``SDFG._replace_dict_keys`` skips a name that is
+    already gone) and the DaceReference expansion with no ``_out_A`` descriptor -- NestedSDFG validation then
+    rejects the connector. Guards the ExternalCall/reference connector alignment for read+write boundaries."""
+    sdfg, ext = inplace_lowered()
+    arrays = ext._standalone_sdfg.arrays
+    for conn in set(ext.in_connectors) | set(ext.out_connectors):
+        assert conn in arrays, f"connector {conn} has no descriptor in the reference SDFG: {sorted(arrays)}"
+    sdfg.expand_library_nodes()
+    sdfg.validate()  # raised InvalidSDFGNodeError('Connector "_out_A" ... not a registered data descriptor')
+
+
+@pytest.mark.integration  # compiles + runs the DaceReference expansion
+def test_inplace_nest_reference_expansion_is_value_preserving():
+    """The reference expansion must not just validate, it must still compute: the body works on ``_out_A``
+    (the one pointer connector_for also hands the extern call for an in-place arg), which the parent aliases
+    to the same AccessNode as ``_in_A``, so it carries the input values on entry."""
+    n = 16
+    rng = np.random.default_rng(0)
+    a, b = rng.random(n), rng.random(n)
+    expected = a * 2.0 + b
+
+    sdfg, _ = inplace_lowered()
+    got = a.copy()
+    sdfg(A=got, b=b.copy(), N=n)
+    np.testing.assert_allclose(got, expected)
+
+
+# ----- arena: caller-side scratch sizing must match the emitter's widening ------------------------
+def loop_scratch_boundary():
+    """A nest with a scratch transient shaped by the LOOP VARIABLE (``tmp[loop_i + 1]``) -- the shape the
+    emitter widens to ``N + 1`` so the buffer stays a caller-allocated parameter."""
+    # A dedicated symbol name: ``i`` is a common loop variable, and dace's symbol registry rejects a
+    # re-declaration with a different dtype, which would couple this test to whatever ran before it.
+    loop_i = dace.symbol("loop_i", dace.int64)
+    sdfg = dace.SDFG("loop_scratch")
+    sdfg.add_array("a", [N], dace.float64)
+    sdfg.add_transient("tmp", [loop_i + 1], dace.float64)
+    loop = LoopRegion("loop", "loop_i < N", "loop_i", "loop_i = 0", "loop_i = loop_i + 1")
+    sdfg.add_node(loop, is_start_block=True)
+    body = loop.add_state("body", is_start_block=True)
+    body.add_edge(body.add_read("a"), None, body.add_tasklet("t", {"i0"}, {"o0"}, "o0 = i0 + 1.0"), "i0",
+                  dace.Memlet("a[0]"))
+    return Boundary(inputs=["a"],
+                    outputs=["a"],
+                    symbols=["N"],
+                    nsdfg_node=None,
+                    state=None,
+                    standalone_sdfg=sdfg,
+                    parent_sdfg=None)
+
+
+def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
+    """make_inputs sized scratch from the RAW descriptor while the emitted kernel is written against the
+    ``maxsize_loop_scratch``-widened one, so the caller handed the kernel a buffer smaller than it indexes
+    -- a write past the end of the allocation across the ABI (heap corruption in the forked child)."""
+    boundary = loop_scratch_boundary()
+    sizes = {"N": 4}
+    widened = maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols).arrays["tmp"]
+    assert str(widened.shape[0]) == "N + 1"  # the extent the emitted kernel addresses
+
+    got = make_inputs(boundary, sizes, seed=0)["tmp"]
+    assert got.shape == (sizes["N"] + 1, ), "scratch allocated from the raw (smaller) shape, not the emitted one"
+
+
+def test_scratch_names_reports_the_emitted_scratch_buffers():
+    # The scratch parameter list must come from the same widened SDFG the signature is rendered from.
+    boundary = loop_scratch_boundary()
+    assert scratch_names(boundary) == ["tmp"]
+    assert nest_to_numpy(boundary, "k").splitlines()[0] == "def k(a, tmp, N):"

@@ -9,7 +9,7 @@ import pytest
 from dace.sdfg import nodes
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, is_emittable_library_node
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy
 from nestforge.split_unsupported import (isolate_into_own_state, isolate_unsupported_library_nodes,
                                          region_to_standalone, unsupported_library_nodes, whole_program_regions)
 
@@ -232,6 +232,23 @@ def test_whole_program_regions_two_islands_split_three_regions():
     assert all(not unsupported_library_nodes(s) for r in regions for s in r)
 
 
+def test_whole_program_regions_refuses_states_nested_in_a_loop_region():
+    # Compute inside a LoopRegion: the interstate edges reaching the loop end at the REGION, so a union-find
+    # keyed on states alone would never join the loop body to its neighbours and would silently report a
+    # finer (wrong) partition. The refusal must be loud instead.
+    from dace.sdfg.state import LoopRegion
+    sdfg, st, m = linear_chain_sdfg()  # pure program, no islands -> would otherwise be ONE region
+    loop = LoopRegion("loop", "i < 4", "i", "i = 0", "i = i + 1")
+    sdfg.add_node(loop)
+    body = loop.add_state("body", is_start_block=True)
+    acc = body.add_tasklet("acc", {"i0"}, {"o0"}, "o0 = i0 + 1.0")
+    body.add_edge(body.add_read("B"), None, acc, "i0", dace.Memlet("B[0]"))
+    body.add_edge(acc, "o0", body.add_write("B"), None, dace.Memlet("B[0]"))
+    sdfg.add_edge(st, loop, dace.InterstateEdge())
+    with pytest.raises(UnsupportedNest, match="flat state graph"):
+        whole_program_regions(sdfg)
+
+
 def test_region_to_standalone_emits_and_runs_each_region():
     import inspect
 
@@ -268,3 +285,30 @@ def test_prepare_regions_splits_around_mpi(tmp_path):
     for prep in prepared:
         assert prep.numpy_path.exists() and prep.yaml_path.exists()
         assert f"def {prep.name}(" in prep.numpy_source
+
+
+def test_refuses_an_interstate_edge_through_a_region_that_holds_no_state():
+    """The nested-state check is a PROXY; this is the cause.
+
+    A branch region holding no SDFGState -- the ordinary ``if (cond) return;`` after lowering, whose branch
+    carries only a ReturnBlock -- leaves every state top-level, so the nested-state guard sees nothing. But
+    the edges ``a -> cb`` and ``cb -> b`` have a non-state endpoint, so the union-find never joins `a` to
+    `b`: they would be reported as two independent regions with NO island between them, and
+    region_to_standalone would then extract a region that is not independent. Refuse instead.
+    """
+    from dace.properties import CodeBlock
+    from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
+
+    sdfg = dace.SDFG("branch_returns")
+    a, b = sdfg.add_state("a"), sdfg.add_state("b")
+    cb = ConditionalBlock("cb")
+    sdfg.add_node(cb)
+    branch = ControlFlowRegion("br")
+    cb.add_branch(CodeBlock("1"), branch)
+    branch.add_node(ReturnBlock("r"), is_start_block=True)  # the branch holds NO SDFGState
+    sdfg.add_edge(a, cb, dace.InterstateEdge())
+    sdfg.add_edge(cb, b, dace.InterstateEdge())
+
+    assert not [s for s in sdfg.states() if s.parent_graph is not sdfg]  # the proxy guard sees nothing
+    with pytest.raises(UnsupportedNest, match="not a partitioned state"):
+        whole_program_regions(sdfg)

@@ -20,12 +20,25 @@ from nestforge.strategies import Strategy, get_strategy
 
 def reference_sdfg(boundary: Boundary) -> "dace.SDFG":
     """A copy of the standalone SDFG whose boundary arrays are renamed to the node's connectors,
-    so the ``DaceReference`` nested-SDFG expansion lines up with the ``ExternalCall`` connectors."""
+    so the ``DaceReference`` nested-SDFG expansion lines up with the ``ExternalCall`` connectors.
+
+    An in-place array is in BOTH ``inputs`` and ``outputs`` and so carries two connectors, but it is
+    one array: the body is renamed to the ``_out_`` name only -- the same single pointer
+    :func:`~nestforge.libnode.connector_for` hands the extern-C call for an in-place arg, and the
+    parent wires both connectors to the one AccessNode, so ``_out_`` already holds the input values.
+    ``_in_`` then carries only the read dependency, but a NestedSDFG connector must still resolve to
+    a descriptor, so register one for it (renaming the body to ``_in_`` instead would leave the
+    ``_out_`` connector undefined and fail NestedSDFG validation).
+    """
     ref = copy.deepcopy(boundary.standalone_sdfg)
+    inplace = set(boundary.inputs) & set(boundary.outputs)
     for i in boundary.inputs:
-        ref.replace(i, in_conn(i))
+        if i not in inplace:
+            ref.replace(i, in_conn(i))
     for o in boundary.outputs:
         ref.replace(o, out_conn(o))
+    for name in sorted(inplace):
+        ref.add_datadesc(in_conn(name), copy.deepcopy(ref.arrays[out_conn(name)]))
     return ref
 
 

@@ -3,6 +3,8 @@ into a call, then put each call in its OWN state -- the scope between the call a
 offload is decided per-call (the externalize-before-offload invariant). Structural checks are unit tests;
 one integration test runs the transformed program to prove externalize + isolate stayed value-preserving.
 """
+import pathlib
+
 import numpy as np
 import pytest
 
@@ -96,3 +98,13 @@ def test_externalized_isolated_program_is_value_preserving(tmp_path):
     got_out = np.zeros(n)
     work(a=a.copy(), b=b.copy(), out=got_out, N=n)  # externalized + isolated, still runnable
     assert np.allclose(got_out, ref_out), "externalize + isolate changed the program value"
+
+
+def test_value_preserving_run_is_named_by_a_ci_step_that_keeps_integration_tests():
+    # The run-and-compare above is the ONLY proof the offload analysis preserves program value, and it is
+    # integration-marked -- so it runs in CI only if a step names this file WITHOUT deselecting integration.
+    # A CI that never names it lets a value-corrupting change ship green; this unit test is that guarantee.
+    ci = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+    naming = [line for line in ci.read_text().splitlines() if "tests/test_offload_scopes.py" in line]
+    assert naming, "no CI step names tests/test_offload_scopes.py -- its value-preservation run never executes"
+    assert all("not integration" not in line for line in naming), "CI names this file only where integration is off"

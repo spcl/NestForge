@@ -61,13 +61,17 @@ def lanes() -> List[Lane]:
     """The lane/axis spec, built from the live axis constants -- add a value to a tuple (or a new Axis) and
     both the arena and this figure change together. ``veclib`` and ``vectorization`` show per-device
     symbolic leaves (``none`` + the characterized winner; the ISA x width x strategy staged-select) because
-    their concrete values are chosen per device by ``device_profile``, not fixed in the committed figure."""
+    their concrete values are chosen per device by ``device_profile``, not fixed in the committed figure.
+
+    The native lane is deliberately NOT fanned over compiler/cost-model/fp: ``tsvc_full.measure_native_lane``
+    compiles ``_original.cpp`` exactly ONCE, with the first discovered toolchain that has a C++ frontend and
+    with ``flags.base_flags`` only (``-O3`` + arch tuning; no ``cost_flags``, no ``reduced_fp_flags``). It is
+    a single fixed reference point, so it must render as one cell -- see the lane's symbolic leaves."""
     return [
         Lane("native", "native original.cpp reference", [
             Axis("language", ("c++", )),
-            Axis("compiler", COMPILERS),
-            Axis("cost-model", flags.COST_MODELS),
-            Axis("fp", flags.REDUCED_FP_MODES),
+            Axis("compiler", ("«first C++ toolchain on PATH»", )),
+            Axis("flags", ("«-O3 + arch tuning, vendor-default fp»", )),
         ]),
         Lane("dace-cpp", "DaCe-cpp lane (speedup denominator)", [
             Axis("codegen-impl", CODEGEN_IMPLS),

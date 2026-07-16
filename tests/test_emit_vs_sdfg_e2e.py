@@ -193,13 +193,30 @@ def _maxdiff(oracle, cand):
         cplx = np.iscomplexobj(want) or np.iscomplexobj(got)
         a, b = (want.astype(np.complex128), got.astype(np.complex128)) if cplx else \
                (want.astype(np.float64), got.astype(np.float64))
+        # ``a - b`` is NaN wherever either side is NaN (and for inf - inf). A NaN on only ONE side is a
+        # MAXIMAL disagreement -- exactly what this gate exists to catch -- so it scores as inf and can
+        # never be dropped. Positions that are bit-equal (incl. both NaN, or both +-inf) are genuine
+        # agreement: the emitted code reproduced the SDFG's value, so they score 0.
+        same = (a == b) | (np.isnan(a) & np.isnan(b))
         d = np.abs(a - b)
-        worst = max(worst, float(np.nanmax(d)) if d.size else 0.0)
+        d = np.where(same, 0.0, np.where(np.isnan(d), np.inf, d))
+        worst = max(worst, float(d.max()) if d.size else 0.0)
     return worst
 
 
 def _builder(kind, short):
     return _make_dace(short) if kind == "dace" else _make_tsvc(short, kind)
+
+
+def test_maxdiff_scores_nan_mismatch_as_divergence():
+    """A kernel emitting NaN where the SDFG is finite must FAIL the gate, not be scored on the rest."""
+    oracle = {"x": np.array([1.0, 2.0, 3.0])}
+    assert _maxdiff(oracle, {"x": np.array([1.0, np.nan, 3.0])}) == np.inf
+    assert _maxdiff({"x": np.array([1.0, np.nan, 3.0])}, oracle) == np.inf
+    # Reproducing the SDFG's NaN / inf at the same position is agreement, not divergence.
+    assert _maxdiff({"x": np.array([1.0, np.nan, np.inf])}, {"x": np.array([1.0, np.nan, np.inf])}) == 0.0
+    assert _maxdiff({"x": np.array([1.0 + 1j, np.nan + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == 0.0
+    assert _maxdiff({"x": np.array([1.0 + 1j, 2.0 + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == np.inf
 
 
 # ---- L1: emitted numpy == the SDFG --------------------------------------------------------------------

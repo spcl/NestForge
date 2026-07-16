@@ -29,7 +29,7 @@ from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, co
                              compare_link_modes, LinkTimings, available_linkers, fastest_linker, linker_supported,
                              VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions, set_fast_libnodes,
                              runtime_installed, config_has, codegen_impls_available, codegen_config,
-                             default_codegen_impl, CODEGEN_IMPLS)
+                             default_codegen_impl, CODEGEN_IMPLS, parse_params)
 
 
 def kernels():
@@ -291,6 +291,46 @@ def test_veclib_flag_mapping_and_compatibility():
     assert SVML.compile_flags("icx") == ["-fveclib=SVML"] and SVML.compile_flags("g++") == ["-mveclibabi=svml"]
     # NVIDIA cannot use any of these.
     assert not any(vl.compatible("nvc++") for vl in VECTOR_LIBS.values())
+
+
+def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch, tmp_path):
+    """ld resolves left-to-right: a -l placed BEFORE the object that references it contributes nothing, so
+    the veclib would silently not be linked and its 'speedup' would just be libm. Assert the composed
+    command ORDER (no compile needed) for every branch of :func:`compile`."""
+    import nestforge.build as B
+    cmds = []
+    monkeypatch.setattr(B, "run", lambda cmd, **kw: cmds.append(list(cmd)))
+    frame = tmp_path / "src" / "cpu" / "k.cpp"
+    frame.parent.mkdir(parents=True)
+    frame.write_text("")
+    for opts in (BuildOptions(compiler="clang++",
+                              veclib=SLEEF), BuildOptions(compiler="clang++", veclib=SLEEF, openmp=LIBOMP),
+                 BuildOptions(compiler="clang++", veclib=SLEEF, link_external=True)):
+        cmds.clear()
+        B.compile(frame, tmp_path, "k", opts)
+        link = [c for c in cmds if "-lsleef" in c]
+        assert len(link) == 1, opts
+        cmd = link[0]
+        # whichever input carries the code that references the veclib symbols (source / object / archive)
+        inputs = [str(frame), str(tmp_path / "k.o"), str(tmp_path / "libk_nest.a")]
+        pos = [cmd.index(i) for i in inputs if i in cmd]
+        assert pos and max(pos) < cmd.index("-lsleef"), cmd
+
+
+def test_parse_params_strips_the_const_qualifier_only_as_a_word():
+    """``const`` is a QUALIFIER, not a substring: a parameter merely NAMED ``constant`` / ``const_term``
+    must keep its name, or the ctypes bind looks the array up under a mangled key."""
+    params = parse_params("k_state_t *__state, const double * __restrict__ constant, const int const_term")
+    assert [p.name for p in params] == ["constant", "const_term"]
+    assert params[0].is_pointer and params[0].ctype == ctypes.POINTER(ctypes.c_double)
+    assert not params[1].is_pointer and params[1].ctype == ctypes.c_int
+
+
+def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
+    """An unmapped by-value type must fail LOUD: defaulting it to int64 puts a float in a GP register on
+    the SysV ABI, and the callee then reads garbage with no ctypes error."""
+    with pytest.raises(ValueError, match="uint64_t"):
+        parse_params("k_state_t *__state, uint64_t n")
 
 
 @pytest.mark.skipif(not vectorlib_installed(LIBMVEC), reason="glibc libmvec not found")

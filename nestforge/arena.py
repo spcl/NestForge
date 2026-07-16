@@ -17,9 +17,9 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-import dace
 from dace import symbolic
 
+from nestforge.emit_numpy import maxsize_loop_scratch, scratch_arrays
 from nestforge.extract import Boundary
 from nestforge.isolation import run_isolated
 from nestforge.translate import Prepared
@@ -117,11 +117,22 @@ def resolve_shape(shape, sizes: Dict[str, int]):
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
 
 
+def emitted_sdfg(boundary: Boundary):
+    """The descriptors the EMITTED kernel is written against, not the raw nest's.
+
+    ``nest_to_numpy``/``sdfg_to_numpy`` widen a scratch transient sized by a loop variable to its
+    caller-sizable maximum (``maxsize_loop_scratch``) before rendering, so the kernel indexes that
+    buffer up to the widened extent. Every caller-side allocation must be sized from the SAME widened
+    descriptor -- sizing from ``boundary.standalone_sdfg`` gives a smaller buffer than the kernel
+    writes, which is a heap overflow across the ABI. Reused from the emitter rather than re-derived so
+    the two sizing rules cannot drift apart.
+    """
+    return maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)
+
+
 def scratch_names(boundary: Boundary) -> List[str]:
     """Transient array buffers the C-style kernel expects the caller to pre-allocate."""
-    sdfg = boundary.standalone_sdfg
-    return sorted(name for name, desc in sdfg.arrays.items()
-                  if desc.transient and not (isinstance(desc, dace.data.Scalar) or desc.total_size == 1))
+    return scratch_arrays(emitted_sdfg(boundary))
 
 
 #: Upper bound of the random-input range ``[0, INPUT_HIGH)``. Kept BELOW ``1/4`` so a squaring recurrence
@@ -147,12 +158,12 @@ def make_inputs(boundary: Boundary,
     ``given`` array is checked against the resolved shape and dtype: it crosses the ABI as the kernel's
     own buffer, so a mismatch would corrupt memory instead of raising.
     """
-    sdfg = boundary.standalone_sdfg
+    sdfg = emitted_sdfg(boundary)  # widened scratch: allocate what the kernel indexes, not the raw shape
     rng = np.random.default_rng(seed)
     given = given or {}
     arrays: Dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]
-    zero_filled = out_only + [s for s in scratch_names(boundary) if s not in boundary.inputs]
+    zero_filled = out_only + [s for s in scratch_arrays(sdfg) if s not in boundary.inputs]
     for name in list(boundary.inputs) + zero_filled:
         desc = sdfg.arrays[name]
         shape = resolve_shape(desc.shape, sizes)

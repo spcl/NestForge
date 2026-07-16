@@ -21,9 +21,14 @@ def kernels():
     return {k.short_name: k for k in iter_dace_kernels()}
 
 
-def alloc_run(short, fn_name, sizes, inputs, seed=0):
-    """Emit ``short``, allocate every buffer parameter C-style, run it, return the buffer dict."""
-    sdfg = kernels()[short].to_sdfg(simplify=True)
+def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
+    """Emit ``short``, allocate every buffer parameter C-style, run it, return the buffer dict.
+
+    ``sdfg`` lets a caller that must guard the BUILD separately (see the nbody test) hand in the SDFG it
+    already built, so the build is not repeated here.
+    """
+    if sdfg is None:
+        sdfg = kernels()[short].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, fn_name)
     ns = {"np": np}
     exec(src, ns)
@@ -212,17 +217,24 @@ def test_nbody_nested_where_emits_and_computes():
     rng = np.random.default_rng(0)
     mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
     dt, G, soft = 0.01, 1.0, 0.1
+    # The stock-DaCe gaps below are BUILD failures, so guard the build ALONE. IndexError is also a
+    # routine symptom of an emitter bug, and the emitter only runs after this point -- catching it
+    # around the emit/run step too would turn a nest-forge regression into a skip blamed on DaCe.
     try:
-        call, _ = alloc_run(
-            "hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt),
-            dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft])))
-    except (UnsupportedNest, DaceSyntaxError, IndexError) as e:
+        sdfg = kernels()["hpc/n_body_methods/nbody/nbody"].to_sdfg(simplify=True)
+    except (DaceSyntaxError, IndexError) as e:
         # Stock DaCe's numpy frontend cannot build nbody as-is: the boolean-mask assignment
         # (``inv_r3[inv_r3 > 0] = ...``) lowers to per-element index loops whose ``.shape[1]``
-        # access trips the frontend, and the ``np.empty(Nt + 1)`` allocation needs the scalar
-        # ``Nt`` promoted to a symbol. Both are DaCe-frontend gaps, not nest-forge emitter gaps;
-        # the test runs and validates once a DaCe that supports them is present.
+        # access trips newast.visit_Subscript with an IndexError, and the ``np.empty(Nt + 1)``
+        # allocation needs the scalar ``Nt`` promoted to a symbol. Both are DaCe-frontend gaps, not
+        # nest-forge emitter gaps; the test runs and validates once a DaCe that supports them is present.
         pytest.skip(f"stock DaCe cannot lower nbody's masked assignment / scalar-shaped Nt+1: {type(e).__name__}")
+    inputs = dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft]))
+    try:
+        call, _ = alloc_run("hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg)
+    except UnsupportedNest:
+        # The emitter's own explicit refusal: it names the DaCe-side ExpandNestedSDFGInputs gap it hit.
+        pytest.skip("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
 
     def getAcc(pos, mass, G, softening):
         x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
@@ -261,6 +273,33 @@ def test_nbody_nested_where_emits_and_computes():
     got = [call[k] for k in sorted(k for k in call if k.startswith("__return"))]
     for ref in (KE, PE):  # KE and PE are the two returns (order-independent match)
         assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
+
+
+def test_nbody_skip_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):
+    """The nbody skip must stay pinned to the stock-DaCe FRONTEND gap (an IndexError out of ``to_sdfg``).
+    An IndexError raised once the SDFG is built comes from the emitter -- a nest-forge regression that has
+    to fail the suite, since a skip attributed to DaCe would hide it from CI entirely."""
+    pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")  # match the nbody test
+
+    class BuiltSdfg:
+        """A build that SUCCEEDS -- so the DaCe-frontend gap is out of the picture and anything raised
+        afterwards is the emitter's."""
+
+        def to_sdfg(self, simplify=True):
+            return self
+
+    def emitter_indexerror(*args, **kwargs):
+        raise IndexError("list index out of range")  # the shape stock DaCe's frontend gap also takes
+
+    monkeypatch.setitem(globals(), "kernels", lambda: {"hpc/n_body_methods/nbody/nbody": BuiltSdfg()})
+    monkeypatch.setitem(globals(), "alloc_run", emitter_indexerror)
+    try:
+        test_nbody_nested_where_emits_and_computes()
+    except IndexError:
+        return  # propagated to the caller: the regression is visible
+    except BaseException as exc:  # pytest's Skipped outcome derives from BaseException, not Exception
+        pytest.fail(f"an emitter IndexError was swallowed instead of raised: {type(exc).__name__}: {exc}")
+    pytest.fail("an emitter IndexError was swallowed instead of raised: nbody test returned")
 
 
 def test_azimint_hist_three_level_nested_return_and_computes():

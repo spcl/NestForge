@@ -40,6 +40,7 @@ from optarena.initialize import fill_index_array
 from optarena.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
+from nestforge.extract import nest_defined_symbols
 
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
@@ -119,6 +120,28 @@ def corpus_module(corpus: str = "tsvc2") -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@functools.lru_cache(maxsize=None)
+def corpus_symbol_values(corpus: str = "tsvc2") -> Dict[str, int]:
+    """Concrete values for a corpus' own SCALAR symbols -- the multiplier ``S``, plus tile/offset symbols
+    such as ``T``/``K``/``SSYM`` -- as the corpus script itself declares them.
+
+    The two corpora declare them differently: ``tsvc2`` binds a lone ``S_VALUE``, ``tsvc2_5`` a ``SIZES``
+    dict (``S`` is 2 in one and 4 in the other). Both spellings are read rather than either assumed, so a
+    ``tsvc2_5`` kernel resolves its symbols instead of raising on a missing ``S_VALUE``. The value is
+    irrelevant to a reference-vs-candidate comparison (both sides see the same one); it must be concrete
+    and it must be the corpus' own, since the kernel's loop bounds are written to stay in range for it.
+
+    ``_SHAPE_SYMS`` are dropped: sizing those is the arena's job (the preset/random sweep IS the size
+    axis), so a corpus' ``LEN_1D`` -- a small correctness-run size -- must never shadow the sampled one.
+    Read via ``vars`` because a corpus script is a module namespace, not an object with an API.
+    """
+    namespace = vars(corpus_module(corpus))
+    values = dict(namespace.get("SIZES", {}))
+    if "S_VALUE" in namespace:
+        values.setdefault("S", namespace["S_VALUE"])
+    return {sym: int(val) for sym, val in values.items() if sym not in _SHAPE_SYMS}
 
 
 @functools.lru_cache(maxsize=1)
@@ -268,19 +291,43 @@ def sample_sizes(kernel: TsvcKernel,
     A symbol that sizes an array (``LEN_1D``/``LEN_2D``/``LEN_3D``) is set from the fixed ``preset``
     scale (``S``/``M``/``L``/``XL``) when ``preset`` is given -- so every compiler and language sees the
     same size -- else drawn from the OptArena preset range (randomly when ``random_sizes``, seeded;
-    otherwise the ``M``-scale default). A registered scalar parameter takes its value, ``S`` the corpus
-    ``S_VALUE``, and a symbol that sizes nothing (a loop-carried index leaked into the boundary, e.g.
-    ``i``) takes ``0`` -- the nest resets it before use, keeping oracle and candidate in agreement.
+    otherwise the ``M``-scale default). A registered scalar parameter takes its value, and a scalar the
+    corpus itself binds (``S``, ``T``, ``K``, ...) takes :func:`corpus_symbol_values`.
+
+    A leftover symbol takes ``0`` in exactly two cases, which are NOT equally strong:
+
+    * the standalone SDFG never takes it as an argument -- a proof: a value that is never passed cannot
+      reach the computation, so 0 is as good as anything;
+    * the nest assigns it somewhere (:func:`nest_defined_symbols`) -- an ALLOWANCE, not a proof. DaCe may
+      still list such a symbol in ``arglist()``/``free_symbols``, which is DaCe's own statement that it is
+      read before it is defined: the nine leaked induction starts (s123/s124/s341/s342 ``j``,
+      s125/s126/s318/s343 ``k``, s128 ``j``) are that shape -- the corpus inits the counter *before* the
+      loop (s123: ``j = -1``), the splitter leaves the init outside the nest, and the counter enters as a
+      free argument. Starting it at 0 SHIFTS the result (``a[1..]`` rather than ``a[0..]``); it does not
+      make it degenerate, and oracle and candidate share the same start, so the lowering is still
+      genuinely validated -- but the kernel is not reproducing the corpus's exact initial state. Resolving
+      the real incoming value from the parent SDFG would remove the allowance; until then it is named here
+      rather than dressed up as a proof.
+
+    Anything else is a symbol the nest genuinely READS that this function failed to classify, and is
+    raised on: sizing it 0 would hand both oracle and candidate the same degenerate (often empty) bound,
+    so they would agree and the kernel would validate vacuously. A loud skip beats a silent green.
     """
     rng = np.random.default_rng(seed + key_seed(kernel.key))
     presets = yaml_presets(kernel)
     shape_syms = shape_symbols(boundary.standalone_sdfg)
+    corpus_values = corpus_symbol_values(kernel.corpus)
+    # Symbols the nest itself assigns before any read, and the arguments it actually takes: together these
+    # say whether a leftover symbol's value can reach the computation at all (see the 0-vs-raise below).
+    nest_defined = nest_defined_symbols(boundary.standalone_sdfg)
+    nest_arglist = set(boundary.standalone_sdfg.arglist())
     sizes: Dict[str, int] = {}
     for sym in boundary.symbols:
         if sym in kernel.params:
             sizes[sym] = int(kernel.params[sym])
-        elif sym == "S":
-            sizes[sym] = int(corpus_module(kernel.corpus).S_VALUE)
+        elif sym in corpus_values and sym not in shape_syms:
+            # Guarded on shape_syms: a corpus scalar that also sizes a buffer here is the sampler's to size.
+            sizes[sym] = corpus_values[sym]
         elif preset and sym in _PRESET:
             sizes[sym] = int(_PRESET[sym][preset])
         elif sym in _SHAPE_SYMS and sym in shape_syms and sym in _SYM_RANGE:
@@ -295,8 +342,17 @@ def sample_sizes(kernel: TsvcKernel,
             # a shape symbol outside the known 1D/2D pair with no preset (e.g. LEN_3D in the non-preset
             # path): a small default so a 3D buffer stays modest (LEN_3D is only used by the preset job).
             sizes[sym] = _PRESET.get(sym, {}).get("M", 64)
+        elif sym not in nest_arglist:
+            sizes[sym] = 0  # never passed to the nest: the value provably cannot reach the computation
+        elif sym in nest_defined:
+            # Assigned by the nest AND still in its arglist -- i.e. DaCe says it is read before defined: a
+            # leaked induction start. 0 is an arbitrary-but-shared start, not a proof. See the docstring.
+            sizes[sym] = 0
         else:
-            sizes[sym] = 0  # a loop-carried index that sizes nothing
+            raise ValueError(f"{kernel.corpus} kernel {kernel.key!r}: boundary symbol {sym!r} is read by the nest but "
+                             f"is not a registered parameter, a corpus symbol ({sorted(corpus_values)}) or a shape "
+                             f"symbol, so nothing here knows its value. Sizing it 0 would validate vacuously against a "
+                             f"degenerate result -- bind it in the corpus (SIZES/S_VALUE) or in the kernel's params.")
     return sizes
 
 

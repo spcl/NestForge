@@ -128,12 +128,24 @@ def c_argtypes(order: List[str], boundary) -> list:
     ]
 
 
-def call_c(so: Path, symbol: str, order: List[str], argtypes: list, boundary, inputs, sizes, reps: int):
+def call_c(so: Path,
+           symbol: str,
+           order: List[str],
+           argtypes: list,
+           boundary,
+           inputs,
+           sizes,
+           reps: int,
+           copy_outputs: bool = True):
     """Bind by the C signature order, run once for correctness (snapshotting outputs), then time ``reps``
     bare-ctypes calls on the same buffers. Runs the kernel IN PLACE on ``inputs``; every caller invokes it
     inside a forked child, so the COW-inherited buffers are mutated without touching the parent -- this
     avoids a full per-cell copy of the (time-size) input set. The one correctness run precedes any mutation
-    from timing, so validation still sees fresh inputs."""
+    from timing, so validation still sees fresh inputs.
+
+    ``copy_outputs=False`` returns ``None`` instead of the snapshot: a pure-timing caller never reads the
+    outputs, and at the profiling size one output is GBs -- snapshotting it would double the child's peak
+    RSS (an OOM kill recorded as a spurious cell error) to build a dict that is discarded."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
 
@@ -144,7 +156,7 @@ def call_c(so: Path, symbol: str, order: List[str], argtypes: list, boundary, in
         ]
 
     fn(*build_args())  # correctness run
-    outputs = {o: inputs[o].copy() for o in boundary.outputs}
+    outputs = {o: inputs[o].copy() for o in boundary.outputs} if copy_outputs else None
     cargs = build_args()
     fn(*cargs)  # warm
     t0 = time.perf_counter()

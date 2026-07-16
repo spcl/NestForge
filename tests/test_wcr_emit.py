@@ -163,6 +163,33 @@ def test_tasklet_wcr_combine_ops_at_map_exit(wcr, seed, reduce_fn, token):
     np.testing.assert_allclose(out[0], reduce_fn(a))
 
 
+def test_tasklet_wcr_symbolic_index_target_is_normalized():
+    """A WCR whose write target has a derived index (``out[int_floor(i, 2)]`` -- pairwise reduction) renders
+    its subset through sympy's ``symstr``, which spells integer division as ``int_floor(a, b)``: not python.
+    The accumulate line must go through the same normalization as the tasklet body, or the emitted kernel
+    carries a bare ``int_floor(...)`` and dies with NameError at exec."""
+    sdfg = dc.SDFG("pairsum")
+    sdfg.add_array("A", [N], dc.float64)
+    sdfg.add_array("out", [M], dc.float64)
+    st = sdfg.add_state()
+    a = st.add_access("A")
+    o = st.add_access("out")
+    me, mx = st.add_map("m", dict(i="0:N"))
+    t = st.add_tasklet("t", {"inp"}, {"res"}, "res = inp")
+    st.add_memlet_path(a, me, t, dst_conn="inp", memlet=dc.Memlet("A[i]"))
+    st.add_memlet_path(t, mx, o, src_conn="res", memlet=dc.Memlet("out[int_floor(i, 2)]", wcr="lambda x, y: x + y"))
+    sdfg.validate()
+    src = sdfg_to_numpy(sdfg, "pairsum")
+    assert "int_floor" not in src  # sympy spelling must not reach the emitted python
+    ns = {"np": np}
+    exec(src, ns)
+    rng = np.random.default_rng(11)
+    a = rng.random(16)
+    out = np.zeros(8)
+    ns["pairsum"](A=a.copy(), out=out, N=16, M=8)
+    np.testing.assert_allclose(out, a.reshape(8, 2).sum(axis=1))
+
+
 def test_two_distinct_wcr_out_edges_from_one_tasklet():
     """One tasklet with two output connectors carrying DIFFERENT WCRs (Sum + Max) must emit both
     augmented assignments independently -- each accumulator reduces over the full range."""

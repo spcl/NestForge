@@ -170,6 +170,7 @@ def emit_matmul(node, state, sdfg) -> str:
 def emit_gemm(node, state, sdfg) -> str:
     """``alpha * (opA(A) @ opB(B)) + beta * C`` -- the BLAS GEMM ``MatMul`` expands to, connectors
     ``_a``/``_b``/``_c`` with ``transA``/``transB`` operand transposes and scalar ``alpha``/``beta``."""
+    reject_runtime_scalars(node, state)
     a = transposed(in_expr(state, node, "_a", sdfg), node.transA)
     b = transposed(in_expr(state, node, "_b", sdfg), node.transB)
     expr = scaled(f"{a} @ {b}", node.alpha)

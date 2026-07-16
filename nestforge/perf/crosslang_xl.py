@@ -126,7 +126,9 @@ def cell_work(so: Path,
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
     md = float(maxdiff(oracle, vout))
     del vin, vout
-    _, us = call_c(so, symbol, order, argtypes, boundary, time_inputs, time_sizes, reps)
+    # copy_outputs=False: timing checks no output, and at XL one output is ~2 GiB -- snapshotting it would
+    # double this child's peak RSS for a dict thrown away here.
+    _, us = call_c(so, symbol, order, argtypes, boundary, time_inputs, time_sizes, reps, copy_outputs=False)
     return {"ok": bool(md <= atol), "maxdiff": md, "time_us": float(us)}
 
 

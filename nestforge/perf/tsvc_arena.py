@@ -1,5 +1,6 @@
-"""TSVC compiler-arena driver: run every TSVC kernel through the ``skip-taskloops`` strategy and, for
-each kernel x each discovered compiler, report three runtime columns:
+"""TSVC compiler-arena driver: run every TSVC kernel of the selected corpora (``tsvc2`` + ``tsvc2_5``)
+through the ``skip-taskloops`` strategy and, for each kernel x each discovered compiler, report three
+runtime columns:
 
   1. **native baseline** -- the original ``_original.cpp`` loop at default flags (the compiler's own
      auto-vectorization of the reference),
@@ -15,7 +16,7 @@ library for the aggregate whole-program comparison.
 
 Usage::
 
-    python -m nestforge.perf.tsvc_arena --strategy skip-taskloops \\
+    python -m nestforge.perf.tsvc_arena --corpora tsvc2 tsvc2_5 --strategy skip-taskloops \\
         --compilers auto --reps 100 --seed 0 --random-sizes
     python -m nestforge.perf.tsvc_arena --link --seed 0
     python -m nestforge.perf.tsvc_arena --tables-only --seed 0
@@ -306,7 +307,9 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
     fn(*build_args())  # correctness run
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
-    md = maxdiff({k: oracle[k] for k in outs}, outs) if outs else 0.0
+    if not outs:  # nothing to compare -> UNCHECKED, never report 0.0/ok for an unvalidatable lane
+        return {"ok": False, "maxdiff": float("inf"), "time_us": float("inf"), "unchecked": True}
+    md = maxdiff({k: oracle[k] for k in outs}, outs)
     cargs = build_args()
     fn(*cargs)  # warm
     t0 = time.perf_counter()
@@ -340,7 +343,10 @@ def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes,
     res = run_isolated(lambda: native_work(so, symbol, sig, kernel, boundary, inputs, sizes, oracle, reps))
     if "error" in res:
         return Cell(family, "native", nat, False, float("inf"), float("inf"), compile_us, error=res["error"])
-    return Cell(family, "native", nat, res["ok"], res["maxdiff"], res["time_us"], compile_us)
+    # An unvalidatable native lane carries its reason: this cell is the speedup DENOMINATOR, so publishing
+    # it as a pass would fabricate a bit-exact baseline nothing was ever compared against.
+    unchecked = "native outputs resolve to no pointer arg; nothing validated" if res.get("unchecked") else None
+    return Cell(family, "native", nat, res["ok"], res["maxdiff"], res["time_us"], compile_us, error=unchecked)
 
 
 # --- per-kernel run ---------------------------------------------------------------------------------
@@ -357,7 +363,13 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
     cell just aggregates its nests and the result/row schema is unchanged. The whole-kernel native
     ``.cpp`` baseline stays a single measurement (it already covers all the kernel's work); it borrows the
     first nest's buffers for sizing, mirroring ``tsvc_full.build_opt_context``."""
-    result: Dict = {"key": kernel.key, "regime": kernel.regime, "seed": seed, "host": socket.gethostname()}
+    result: Dict = {
+        "key": kernel.key,
+        "corpus": kernel.corpus,  # the --link read-back must re-resolve the key from ITS OWN corpus
+        "regime": kernel.regime,
+        "seed": seed,
+        "host": socket.gethostname()
+    }
     try:
         nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
         if not nests:
@@ -504,7 +516,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
         # is one flag set summed over nests). Compile EACH nest's winning-flags object and archive them all
         # into one lib<key>.a; the whole-program verify then checks every nest symbol.
         try:
-            kernel = tsvc.iter_tsvc_kernels(only=[k["key"]])[0]
+            kernel = tsvc.iter_tsvc_kernels(only=[k["key"]], corpus=k.get("corpus", "tsvc2"))[0]
             nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
         except Exception as e:
             notes.append(f"`{k['key']}` — extract failed: {type(e).__name__}: {str(e)[:120]}")
@@ -600,6 +612,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     choices=list(tsvc.OPT_MODES),
                     help="pre-split optimization mode: baseline (simplify+LoopToMap+MapFusion) "
                     "or canonicalize (extended-branch canonicalization)")
+    ap.add_argument("--corpora", nargs="*", default=["tsvc2", "tsvc2_5"], choices=["tsvc2", "tsvc2_5"])
     ap.add_argument("--compilers", default="auto", help="'auto' or a whitespace list (gcc clang nvc++)")
     ap.add_argument("--reps", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0)
@@ -632,7 +645,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     for t in toolchains))
 
     procid, ntasks = rank_and_size()
-    kernels = tsvc.iter_tsvc_kernels(only=args.only)
+    # kernels of every selected corpus, then self-partitioned across ranks as ONE combined list (mirrors
+    # crosslang_xl / tsvc_full). The two corpora's keys are disjoint, so per-kernel JSON stays unique.
+    kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
     mine = my_slice(kernels, procid, ntasks)
     if args.limit:
         mine = mine[:args.limit]

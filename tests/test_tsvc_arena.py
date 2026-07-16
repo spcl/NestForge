@@ -1,16 +1,21 @@
 """TSVC compiler-arena driver + adapter, plus the emitter user-function rewrites it depends on."""
 import ctypes
+import ctypes.util
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
+import types
 
 import pytest
 
+import dace
+
 from nestforge import tsvc
 from nestforge.emit_numpy import normalize_casts
-from nestforge.extract import extract_nest_to_sdfg
+from nestforge.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbols
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import crosslang_xl, flags, harness, staticlib_overhead, tsvc_arena
@@ -98,6 +103,87 @@ def test_preset_sizes_scale():
     b = extract_nest_to_sdfg(parent, node, name="s000")
     assert tsvc.sample_sizes(k, b, preset="XL")["LEN_1D"] == tsvc._PRESET["LEN_1D"]["XL"]
     assert tsvc.sample_sizes(k, b, preset="S")["LEN_1D"] == 512
+
+
+def test_corpus_symbol_values_read_both_corpus_spellings():
+    # The corpora bind their scalars differently -- tsvc2 a lone S_VALUE, tsvc2_5 a SIZES dict -- so the
+    # value is inferred from whichever the corpus script declares, never assumed to be one of the two.
+    tsvc2 = vars(tsvc.corpus_module("tsvc2"))
+    tsvc2_5 = vars(tsvc.corpus_module("tsvc2_5"))
+    assert tsvc.corpus_symbol_values("tsvc2")["S"] == tsvc2["S_VALUE"]
+    assert tsvc.corpus_symbol_values("tsvc2_5")["S"] == tsvc2_5["SIZES"]["S"]
+    # the corpus' own correctness-run shape sizes must not shadow the arena's preset/sample axis.
+    assert not set(tsvc.corpus_symbol_values("tsvc2_5")) & set(tsvc._SHAPE_SYMS)
+
+
+def test_tsvc2_5_scalar_symbols_resolve_from_corpus_sizes():
+    # A tsvc2_5 kernel carrying S must size it from the corpus SIZES dict; reaching for a tsvc2-only
+    # S_VALUE raised AttributeError, which the per-kernel except in tsvc_full swallowed into a silent skip.
+    k = tsvc.iter_tsvc_kernels(only=["ext_tile_2d_sym"], corpus="tsvc2_5")[0]
+    sdfg = tsvc.build_sdfg(k, "simplify-parallel")
+    parent, node = get_strategy("skip-taskloops")(sdfg)[0]
+    b = extract_nest_to_sdfg(parent, node, name="ext_tile_2d_sym")
+    assert "S" in b.symbols  # guards the premise: this kernel is what exercises the S path
+    assert tsvc.sample_sizes(k, b, preset="S")["S"] == vars(tsvc.corpus_module("tsvc2_5"))["SIZES"]["S"]
+    # a corpus tile symbol likewise takes its declared value: 0 would be a degenerate (empty) tile.
+    tiled = tsvc.iter_tsvc_kernels(only=["jacobi2d_tiled_sym"], corpus="tsvc2_5")[0]
+    tp, tn = get_strategy("skip-taskloops")(tsvc.build_sdfg(tiled, "simplify-parallel"))[0]
+    tb = extract_nest_to_sdfg(tp, tn, name="jacobi2d_tiled_sym")
+    assert tsvc.sample_sizes(tiled, tb, preset="S")["T"] == vars(tsvc.corpus_module("tsvc2_5"))["SIZES"]["T"]
+
+
+def synthetic_boundary(map_range: str, extra_symbols=()):
+    """A one-map nest over ``a[LEN_1D]`` whose map range is ``map_range``, as a bare :class:`Boundary`.
+    Keeps the sizing contract testable without leaning on which nest DaCe's splitter happens to pick."""
+    sdfg = dace.SDFG("sized_nest")
+    sdfg.add_array("a", [dace.symbol("LEN_1D")], dace.float64)
+    for s in extra_symbols:
+        sdfg.add_symbol(s, dace.int64)  # arglist resolves a free symbol's dtype from sdfg.symbols
+    state = sdfg.add_state(is_start_block=True)
+    state.add_mapped_tasklet("t", {"i": map_range}, {}, "out = 1.0", {"out": dace.Memlet("a[i]")}, external_edges=True)
+    symbols = ["LEN_1D", *extra_symbols]
+    return Boundary(inputs=[], outputs=["a"], symbols=symbols, nsdfg_node=None, state=None, standalone_sdfg=sdfg)
+
+
+def test_sample_sizes_raises_on_symbol_the_nest_reads_but_nothing_binds():
+    # An unclassified symbol the nest genuinely READS must surface, not silently size 0: a 0 bound makes
+    # oracle and candidate agree on a degenerate result, so the kernel would validate vacuously.
+    k = tsvc.TsvcKernel(key="synthetic", program=None, regime="1d", params={}, corpus="tsvc2")
+    b = synthetic_boundary("0:bound", extra_symbols=["bound"])
+    assert "bound" in b.standalone_sdfg.arglist()  # premise: the nest is actually passed this symbol
+    with pytest.raises(ValueError, match="bound"):
+        tsvc.sample_sizes(k, b, preset="S")
+
+
+def test_sample_sizes_zeroes_a_symbol_the_nest_never_takes_as_an_argument():
+    # The PROVABLE zero: a value that is never passed cannot reach the computation.
+    k = tsvc.TsvcKernel(key="synthetic", program=None, regime="1d", params={}, corpus="tsvc2")
+    b = synthetic_boundary("0:LEN_1D", extra_symbols=["never_passed"])
+    assert "never_passed" not in b.standalone_sdfg.arglist()
+    sizes = tsvc.sample_sizes(k, b, preset="S")
+    assert sizes["never_passed"] == 0 and sizes["LEN_1D"] == tsvc._PRESET["LEN_1D"]["S"]
+
+
+def test_sample_sizes_zeroes_a_leaked_induction_start_and_that_is_an_allowance():
+    """Pins the WEAK branch: a symbol the nest assigns that DaCe STILL lists in its arglist -- i.e. it is
+    read before defined -- is started at 0.
+
+    This is the nine leaked induction starts (s123 j, s125 k, ...): the corpus inits the counter before the
+    loop, the splitter leaves that init outside the nest, and the counter enters as a free argument. It is
+    an arbitrary-but-shared start, NOT a proof that the value cannot reach the computation -- the result is
+    shifted, oracle and candidate merely agree on the shift. Pinned so the allowance cannot silently widen
+    into zeroing a symbol that is not nest-assigned (that case raises, above).
+    """
+    k = tsvc.TsvcKernel(key="s123", program=None, regime="1d", params={}, corpus="tsvc2")
+    real = tsvc.iter_tsvc_kernels(only=["s123"])[0]
+    nests = extract_all_nests(lambda: tsvc.build_sdfg(real, "simplify-parallel"), "outer", real.key)
+    boundary = nests[0][3]
+    sdfg = boundary.standalone_sdfg
+    # the premise that makes this the WEAK branch and not the provable one
+    assert "j" in {str(s) for s in sdfg.free_symbols}, "s123's j is no longer free -- re-pick the kernel"
+    assert "j" in sdfg.arglist(), "s123's j is no longer passed -- this would be the provable branch"
+    assert "j" in nest_defined_symbols(sdfg), "s123 no longer assigns j -- the allowance would not apply"
+    assert tsvc.sample_sizes(real, boundary, preset="S")["j"] == 0
 
 
 def test_opt_modes_produce_valid_splittable_sdfgs():
@@ -343,6 +429,47 @@ def test_run_kernel_three_columns(tmp_path):
     assert row["winner"] and row["winner"]["ok"]
     assert row["default"]["ok"]
     assert res["sizes"]["LEN_1D"] == tsvc._SYM_FIXED["LEN_1D"]
+
+
+def test_native_work_reports_unchecked_when_nothing_was_compared():
+    """A native lane whose outputs resolve to NO pointer arg compared nothing, so it must report
+    unchecked/inf -- never ok/0.0. This cell is the speedup DENOMINATOR: a bogus pass would publish a
+    "bit-exact" baseline that was never validated. Mirrors ``tsvc_full.native_validate_work``'s guard.
+
+    Driven against a stock libc symbol (``abs``, a harmless scalar call) so the guard is exercised with no
+    compile: the point is the empty-``outs`` verdict, not which native binary produced it.
+    """
+    libc = ctypes.util.find_library("c")
+    if not libc:
+        pytest.skip("no libc found")
+    kernel = tsvc.iter_tsvc_kernels(only=["s000"])[0]
+    boundary = types.SimpleNamespace(outputs=[])  # no output resolves to a pointer arg -> nothing to compare
+    res = tsvc_arena.native_work(pathlib.Path(libc),
+                                 "abs", [("n", "int", False)],
+                                 kernel,
+                                 boundary,
+                                 inputs={},
+                                 sizes={"n": 4},
+                                 oracle={},
+                                 reps=1)
+    assert res["unchecked"] is True
+    assert res["ok"] is False and res["maxdiff"] == float("inf")
+
+
+def test_arena_sweeps_both_corpora_by_default(monkeypatch, tmp_path):
+    """The driver must sweep BOTH corpora like crosslang_xl / tsvc_full / calloverhead: iterating only
+    tsvc2 silently drops tsvc2_5's 65 kernels, and their absence is invisible in the output."""
+    monkeypatch.setattr(tsvc_arena, "discover_toolchains",
+                        lambda requested: [tsvc_arena.Toolchain("gcc", "gcc", "g++", (13, 0), "path")])
+    seen = []
+
+    def record(only=None, corpus="tsvc2"):
+        seen.append(corpus)
+        return []
+
+    monkeypatch.setattr(tsvc, "iter_tsvc_kernels", record)
+    assert tsvc_arena.main(["--out", str(tmp_path)]) == 0
+    assert seen == ["tsvc2", "tsvc2_5"]  # both corpora, in the siblings' order
 
 
 def test_tables_and_link_roundtrip(tmp_path):

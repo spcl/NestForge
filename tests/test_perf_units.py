@@ -6,10 +6,12 @@ JSON), so they run fast and without any compiler on PATH -- unlike the end-to-en
 ``test_tsvc_arena.py`` which compile and run real kernels (and skip when a toolchain is absent). The two
 together cover both the wiring and the numbers-under-load.
 """
+import ctypes
 import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from nestforge import tsvc
@@ -331,3 +333,58 @@ def test_run_isolated_malformed_result_is_error_not_crash():
 
 def test_run_isolated_passes_through_plain_dict():
     assert run_isolated(lambda: {"ok": True, "n": 7}) == {"ok": True, "n": 7}
+
+
+# --- call_c output snapshotting (harness.call_c) -------------------------------------------------------
+class CountingArray(np.ndarray):
+    """An ndarray that counts its own .copy() calls, so a test can assert call_c did not snapshot."""
+    copies = 0
+
+    def copy(self, *a, **kw):
+        self.copies += 1
+        return super().copy(*a, **kw)
+
+
+class FakeBoundary:
+
+    def __init__(self, outputs):
+        self.outputs = outputs
+
+
+class FakeKernel:
+    """Stands in for the ctypes entry: records calls, and accepts the argtypes/restype the binder sets."""
+
+    def __init__(self):
+        self.calls = 0
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        self.calls += 1
+
+
+def call_c_on_stub(monkeypatch, reps, **kw):
+    """Drive harness.call_c against a stubbed .so -- the ABI marshalling is real (real buffers, real
+    ctypes pointers), only the compiled entry is faked, so no compiler/toolchain is needed."""
+    fn = FakeKernel()
+    monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
+    buf = np.zeros(4, dtype=np.float64).view(CountingArray)
+    inputs = {"a": buf}
+    argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int64]
+    out, us = harness.call_c(Path("stub.so"), "k_fp64", ["a", "LEN_1D"], argtypes, FakeBoundary(["a"]), inputs,
+                             {"LEN_1D": 4}, reps, **kw)
+    return out, us, buf, fn
+
+
+def test_call_c_skips_the_output_snapshot_when_not_requested(monkeypatch):
+    # The timing path discards the outputs; at XL one output is GBs, so the snapshot must not be built.
+    out, _, buf, fn = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
+    assert out is None
+    assert buf.copies == 0
+    assert fn.calls == 5  # correctness + warm + reps
+
+
+def test_call_c_snapshots_outputs_by_default(monkeypatch):
+    # The validate path still needs the post-correctness-run values, snapshotted before timing mutates them.
+    out, _, buf, _ = call_c_on_stub(monkeypatch, reps=1)
+    assert set(out) == {"a"} and buf.copies == 1
