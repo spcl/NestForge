@@ -50,6 +50,7 @@ def maxdiff(a, b):
 
 
 def assert_emit_matches_reference(build, inputs, tol=1e-9):
+
     def work():
         ref = dace_reference(build, inputs)
         got = emit_run(build, inputs)
