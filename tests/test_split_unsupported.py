@@ -255,3 +255,16 @@ def test_region_to_standalone_emits_and_runs_each_region():
     tmp2, b = np.arange(8, dtype=np.float64) + 5.0, np.zeros(8)
     consumer(tmp2=tmp2.copy(), B=b)
     assert b[0] == tmp2[0] - 1.0  # the consumer ran, reading the promoted boundary input
+
+
+def test_prepare_regions_splits_around_mpi(tmp_path):
+    from nestforge.translate import prepare_regions
+    sdfg, st, bcast = bcast_sdfg()
+    prepared, islands = prepare_regions(sdfg, "with_bcast", tmp_path, sizes={})
+    # one native island (the MPI Bcast) and two externalizable regions (producer / consumer).
+    assert len(islands) == 1 and unsupported_library_nodes(islands[0])
+    assert len(prepared) == 2
+    # each region emitted its own named numpy kernel + manifest file.
+    for prep in prepared:
+        assert prep.numpy_path.exists() and prep.yaml_path.exists()
+        assert f"def {prep.name}(" in prep.numpy_source

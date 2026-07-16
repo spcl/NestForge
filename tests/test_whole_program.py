@@ -8,7 +8,7 @@ import pytest
 import dace
 
 from nestforge.extract import whole_program_boundary
-from nestforge.translate import prepare_whole_program
+from nestforge.translate import prepare_regions, prepare_whole_program
 
 N = dace.symbol("N")
 
@@ -58,3 +58,12 @@ def test_whole_program_boundary_detaches_no_parent_links():
     # detached copy must not alias the source object (mutations in emit must not touch the original).
     assert b.standalone_sdfg is not sdfg
     assert b.standalone_sdfg.parent is None and b.standalone_sdfg.parent_sdfg is None
+
+
+def test_prepare_regions_pure_program_is_one_region(tmp_path):
+    # a program with no unsupported node is a single externalizable region == the whole program.
+    prepared, islands = prepare_regions(_sdfg(), "two_nest", tmp_path, sizes={"N": 64})
+    assert islands == []
+    assert len(prepared) == 1
+    assert "def two_nest(" in prepared[0].numpy_source
+    assert prepared[0].manifest["output_args"] == ["out"]

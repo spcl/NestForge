@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import yaml
 
@@ -17,7 +17,8 @@ import dace
 
 from nestforge.emit_numpy import nest_to_numpy, sdfg_to_numpy
 from nestforge.emit_yaml import manifest_dict
-from nestforge.extract import Boundary, whole_program_boundary
+from nestforge.extract import Boundary, detach, whole_program_boundary
+from nestforge.split_unsupported import region_to_standalone, whole_program_regions
 from nestforge.translator import BenchSpec, translate
 
 
@@ -77,6 +78,36 @@ def prepare_whole_program(sdfg: dace.SDFG,
     numpy_source = sdfg_to_numpy(boundary.standalone_sdfg, fn_name=name)
     manifest = manifest_dict(boundary, name, sizes=sizes, preset=preset)
     return build_prepared(name, out, numpy_source, manifest)
+
+
+def prepare_regions(sdfg: dace.SDFG,
+                    name: str,
+                    out_dir: os.PathLike,
+                    sizes: Dict[str, int] = None,
+                    preset: str = "S") -> Tuple[List[Prepared], List[dace.SDFGState]]:
+    """Split-around-unsupported whole-program preparation: isolate every non-emittable library node
+    (MPI/pblas, sparse, ...) into its own state, then emit a :class:`Prepared` for each externalizable
+    REGION -- the pure-compute states before/after each island -- leaving the island states native.
+
+    Returns ``(prepared, islands)``: one :class:`Prepared` per region (each a standalone numpy kernel over
+    that region, with cross-boundary transients surfaced as its inputs/outputs) and the list of native
+    island states the caller must run through the DaCe path, not externalize. When the whole program is
+    pure this is a single region == the whole program (equivalent to :func:`prepare_whole_program`).
+
+    Runs on a detached copy, so ``sdfg`` is not mutated. May raise ``UnsupportedNest`` when a region cannot
+    be emitted (e.g. an early return) -- the caller records that region as a whole-program skip."""
+    out = Path(out_dir)
+    work = detach(sdfg)
+    regions, islands = whole_program_regions(work)
+    prepared: List[Prepared] = []
+    for i, region in enumerate(regions):
+        region_name = f"{name}_region{i}" if len(regions) > 1 else name
+        standalone = region_to_standalone(work, region, region_name)
+        boundary = whole_program_boundary(standalone)
+        numpy_source = sdfg_to_numpy(standalone, fn_name=region_name)
+        manifest = manifest_dict(boundary, region_name, sizes=sizes, preset=preset)
+        prepared.append(build_prepared(region_name, out, numpy_source, manifest))
+    return prepared, islands
 
 
 def emit_sources(prep: Prepared, out_dir: os.PathLike, target: str = "c", precision: str = "float64") -> List[Path]:
