@@ -267,13 +267,19 @@ def run_arena(prep: Prepared,
               out_dir: Path,
               sizes: Dict[str, int],
               reps: int = 100,
-              seed: int = 0) -> ArenaResult:
-    """Sweep discovered compilers x FP modes; validate + time each; pick a winner per FP mode."""
+              seed: int = 0,
+              given: Optional[Dict[str, np.ndarray]] = None) -> ArenaResult:
+    """Sweep discovered compilers x FP modes; validate + time each; pick a winner per FP mode.
+
+    ``given`` is forwarded to :func:`make_inputs`: this layer is corpus-agnostic (it never sees a kernel),
+    so a caller measuring a corpus kernel passes ``tsvc.index_fills(...)`` here -- without it a declared
+    integer index array fills to all-zeros and the sweep times a degenerate gather while validating
+    vacuously."""
     out_dir.mkdir(parents=True, exist_ok=True)
     compilers = discover_compilers()
     symbol = f"{prep.name}_fp64"
     argtypes = resolve_argtypes(prep, boundary)
-    inputs = make_inputs(boundary, sizes, seed=seed)
+    inputs = make_inputs(boundary, sizes, seed=seed, given=given)
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
     result = ArenaResult(name=prep.name)

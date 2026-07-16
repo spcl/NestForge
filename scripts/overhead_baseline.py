@@ -40,6 +40,7 @@ from nestforge.strategies import get_strategy
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare, emit_sources
 from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE
+from nestforge.tsvc import index_fills_for_manifest
 
 # one compiler, one flag set -- the fixed operating point for the overhead comparison.
 FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
@@ -130,7 +131,11 @@ def run(track=None, limit=None, reps=50):
             try:
                 boundary = extract_nest_to_sdfg(parent, node, name=name)
                 sizes = _sizes(boundary)
-                inputs = make_inputs(boundary, sizes, seed=0)
+                # The manifest's index arrays, keyed by the kernel's manifest name (these are OptArena
+                # kernels, not TsvcKernels). Without them a declared integer index array fills to all-zeros
+                # and the gather being measured degenerates to one cached read.
+                fills = index_fills_for_manifest(k.short_name.split("/")[-1], boundary, sizes)
+                inputs = make_inputs(boundary, sizes, seed=0, given=fills)
                 prep = prepare(boundary, name, Path(tempfile.mkdtemp(prefix="nf_ovh_p_")))
                 oracle = run_oracle(prep, boundary, inputs, sizes)
                 off_out, off_us = _time_offload(prep, boundary, sizes, inputs, reps)

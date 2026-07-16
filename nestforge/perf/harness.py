@@ -67,6 +67,15 @@ def rank_and_size() -> Tuple[int, int]:
         raise RuntimeError(f"launcher set a rank ({rank_var}={os.environ[rank_var]}) but no recognized size variable "
                            f"({list(SIZE_VARS)}); cannot partition safely -- every rank would run the whole list. Set "
                            "the matching size env var, or run without a launcher for a single process.")
+    if size_var is not None and rank_var is None:
+        # The mirror asymmetry, and the quieter one: defaulting the rank to 0 keeps a size of N, so this
+        # single process takes only slice 0 -- 1/N of the corpus -- and the run publishes a geomean over a
+        # fraction of the kernels with nothing to notice. `sbatch --ntasks=4` running the module directly
+        # (no srun) sets SLURM_NTASKS without SLURM_PROCID and lands exactly here.
+        raise RuntimeError(f"launcher set a size ({size_var}={os.environ[size_var]}) but no recognized rank variable "
+                           f"({list(RANK_VARS)}); cannot partition safely -- this process would measure only "
+                           f"1/{os.environ[size_var]} of the list and report it as the whole. Set the matching rank "
+                           "env var (srun/mpirun set both), or run without a launcher for a single process.")
     rank = int(os.environ[rank_var]) if rank_var else 0
     size = int(os.environ[size_var]) if size_var else 1
     return rank, max(size, 1)

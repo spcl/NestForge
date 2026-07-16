@@ -169,7 +169,9 @@ def collect_samples(fn, cargs, reps: int) -> List[float]:
 def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], sizes: Dict[str, int]) -> list:
     """ctypes arguments for the emitted kernel, in C-signature order: an array -> its buffer pointer, a
     size symbol -> an int64 by value."""
-    return [work[a].ctypes.data_as(t) if a in work else ctypes.c_int64(int(sizes[a])) for a, t in zip(order, argtypes)]
+    # ``t(...)`` -- NOT a hardcoded c_int64: c_argtypes types a leaked FLOAT value-scalar as c_double, and
+    # passing it an int64 raises once fn.argtypes is set, dropping every timing cell for that nest.
+    return [work[a].ctypes.data_as(t) if a in work else t(sizes[a]) for a, t in zip(order, argtypes)]
 
 
 # --- lane 3: nest cell validate / time (run inside a forked child) -----------------------------------

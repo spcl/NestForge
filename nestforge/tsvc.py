@@ -324,9 +324,22 @@ def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optio
     ``seed=None`` draws fresh entropy (fuzz); an int pins the fill. Returns ``{}`` for a kernel with no
     manifest and for one whose manifest declares no index array.
     """
-    if kernel.optarena_name is None:
+    return index_fills_for_manifest(kernel.optarena_name, boundary, sizes, seed=seed)
+
+
+def index_fills_for_manifest(manifest_name: Optional[str],
+                             boundary,
+                             sizes: Dict[str, int],
+                             seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
+    """:func:`index_fills` keyed by the OptArena manifest NAME rather than a :class:`TsvcKernel`.
+
+    The fills depend only on the manifest and the nest, not on anything TSVC-specific, so a caller holding
+    a bare manifest name (a driver iterating OptArena kernels rather than the TSVC corpus) gets the same
+    valid-subscript fills instead of the all-zeros default. ``None`` -> ``{}``.
+    """
+    if manifest_name is None:
         return {}
-    spec = BenchSpec.load(kernel.optarena_name)
+    spec = BenchSpec.load(manifest_name)
     if spec.init is None:
         return {}
     rng = np.random.default_rng(seed)

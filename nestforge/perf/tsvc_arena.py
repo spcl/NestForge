@@ -367,7 +367,9 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
             sizes = tsvc.sample_sizes(kernel, boundary, seed=seed, random_sizes=random_sizes)
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=sizes)
-            inputs = make_inputs(boundary, sizes, seed=seed)
+            # SEEDED fills for the manifest's index arrays: the oracle and every cell must see the same
+            # subscripts, and without them a gather/scatter kernel is measured degenerate (all-zero ip).
+            inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))
             oracle = run_oracle(prep, boundary, inputs, sizes)
             csrc = select_c_source(emit_sources(prep, nest_dir))
             order = signature_order(csrc.read_text(), symbol)
@@ -594,7 +596,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC compiler-arena driver")
     ap.add_argument("--strategy", default="skip-taskloops", help="nest-detection strategy")
     ap.add_argument("--opt-mode",
-                    default="baseline",
+                    default="simplify-parallel",
                     choices=list(tsvc.OPT_MODES),
                     help="pre-split optimization mode: baseline (simplify+LoopToMap+MapFusion) "
                     "or canonicalize (extended-branch canonicalization)")

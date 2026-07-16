@@ -35,7 +35,7 @@ import socket
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -136,11 +136,26 @@ def time_work(so: Path, run_symbol: str, order: List[str], argtypes: list, work:
     return {"per_call_us": median(samples) / inner}
 
 
-def build_and_time(cc: str, family: str, kernel_c: Path, symbol: str, params: str, argnames: List[str],
-                   order: List[str], argtypes: list, boundary, sizes: Dict[str, int], inner: int, reps: int,
-                   workdir: Path) -> Dict:
+def build_and_time(cc: str,
+                   family: str,
+                   kernel_c: Path,
+                   symbol: str,
+                   params: str,
+                   argnames: List[str],
+                   order: List[str],
+                   argtypes: list,
+                   boundary,
+                   sizes: Dict[str, int],
+                   inner: int,
+                   reps: int,
+                   workdir: Path,
+                   given=None) -> Dict:
     """Build the three variants and time each in isolation. A variant that fails to build/run is recorded
-    as ``None`` (never aborts the others)."""
+    as ``None`` (never aborts the others).
+
+    ``given`` is forwarded to :func:`make_inputs` -- the manifest's index-array fills. Without them a
+    gather/scatter kernel is timed with an all-zero index array, i.e. against the wrong memory behaviour,
+    which is precisely what this job claims to measure."""
     cflags = flags.base_flags(family)
     builders = {
         "inline": lambda d: build_inline(cc, cflags, kernel_c, symbol, params, argnames, d),
@@ -151,7 +166,7 @@ def build_and_time(cc: str, family: str, kernel_c: Path, symbol: str, params: st
     for name, build in builders.items():
         try:
             so = build(workdir)
-            work = make_inputs(boundary, sizes, seed=0)
+            work = make_inputs(boundary, sizes, seed=0, given=given)
             res = run_isolated(
                 lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, work, sizes, inner, reps))
             out[name] = None if "error" in res else res["per_call_us"]
@@ -175,6 +190,7 @@ class CoNest:
     argtypes: list
     params: str
     nest_dir: Path
+    given: Dict[str, object] = field(default_factory=dict)  # manifest index fills for this nest
 
 
 def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, preset: str, inner: int, reps: int,
@@ -200,7 +216,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
             order = signature_order(text, symbol)
             units.append(
                 CoNest(idx, name, symbol, boundary, sizes, src, order, c_argtypes(order, boundary),
-                       signature_params(text, symbol), nest_dir))
+                       signature_params(text, symbol), nest_dir, tsvc.index_fills(kernel, boundary, sizes)))
     except Exception as e:  # noqa: BLE001
         return {**result, "skipped": f"emit: {type(e).__name__}: {str(e)[:150]}"}
 
@@ -211,7 +227,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
     for u in units:
         # the trampoline forwards the kernel's parameters by name; abi_order gives exactly those names.
         times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.order, u.argtypes, u.boundary, u.sizes,
-                               inner, reps, u.nest_dir)
+                               inner, reps, u.nest_dir, u.given)
         for v in per_variant:
             per_variant[v].append(times.get(v))
         for k in ("inline_error", "external_error", "external_lto_error"):
@@ -295,7 +311,7 @@ def resolve_cc(compiler: str) -> Tuple[str, str]:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC external-.a runtime call-overhead job")
     ap.add_argument("--compiler", default="gcc", help="compiler family for the C build (gcc/clang/nvc/icx)")
-    ap.add_argument("--opt-mode", default="baseline", choices=list(tsvc.OPT_MODES))
+    ap.add_argument("--opt-mode", default="simplify-parallel", choices=list(tsvc.OPT_MODES))
     ap.add_argument("--preset", default="M", help="problem size (small enough that call cost is visible)")
     ap.add_argument("--inner", type=int, default=2000, help="kernel calls per timed trampoline invocation")
     ap.add_argument("--reps", type=int, default=7, help="timed trampoline invocations (median)")
