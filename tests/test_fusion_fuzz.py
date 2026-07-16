@@ -38,11 +38,29 @@ def gen_source(seed: int) -> str:
     that would be a race, making the program's own reference run order-dependent and the bit-exact
     comparison meaningless. Same-index reads (``src[i]``) are fine even for an array written in the map
     (an intra-iteration dependence the state's dataflow orders). Recurrences are sequential-only.
+
+    The grammar also emits a LOOP-INVARIANT scalar ``s``: a sequential loop may write it (``s = a[i]``,
+    last iteration wins) and any loop may read it. That shape is what a carried-offset dependence
+    classifier sees no offset for -- there is no iterator in the subset to carry one -- and reading that
+    as "no dependence" is a real fusion miscompile (a loop reading ``s`` unfused sees the FINAL value,
+    fused it sees the RUNNING one). An earlier grammar without it fuzzed green over a live bug.
+
+    One loop either READS ``s`` or WRITES it, never both, and only a sequential loop writes it:
+
+      * writing ``s`` from a map is a race on the scalar (every iteration stores to one cell);
+      * reading AND writing ``s`` in the same body (``d[i] = b[i] + s; ...; s = c[i]``) builds a state
+        holding two ``s`` AccessNodes -- one ``in=0 out=2`` read, one ``in=1 out=0`` write -- with NO
+        edge between them, so nothing orders the read before the write. The program's own value then
+        depends on which order codegen happens to pick (measured: wrong ~1/3 of runs once any pass
+        perturbs the graph), which makes it useless as a bit-exact reference.
+
+    The write/read hazard the arms must handle is still generated -- it just spans two loops, which is
+    where fusion has to reason about it anyway.
     """
     rng = np.random.default_rng(seed)
     lines = [
         "import dace", "import numpy as np", "", 'N = dace.symbol("N")', "f64 = dace.float64", "", "@dace.program",
-        f"def k({', '.join(f'{x}: f64[N]' for x in ARRAYS)}):"
+        f"def k({', '.join(f'{x}: f64[N]' for x in ARRAYS)}):", "    s = np.float64(0.0)"
     ]
     for _ in range(int(rng.integers(2, 5))):
         parallel = bool(rng.integers(0, 2))
@@ -52,17 +70,27 @@ def gen_source(seed: int) -> str:
         targets = list(rng.choice(ARRAYS, size=min(nstmt, len(ARRAYS)), replace=False))
         written = set(targets)
         safe_offset_srcs = [x for x in ARRAYS if x not in written]  # offset-readable without a race
+        # This loop's ONE relationship to the invariant scalar (never both -- see the docstring); only a
+        # sequential loop may write it.
+        s_use = ("read", "write", "none")[int(rng.integers(3))] if not parallel else ("read",
+                                                                                      "none")[int(rng.integers(2))]
 
         body = []
-        for tgt in targets:
+        for pos, tgt in enumerate(targets):
             if parallel:
                 forms = ["elementwise"] + (["stencil"] if safe_offset_srcs else [])
             else:
                 forms = ["elementwise", "stencil", "recurrence", "scaled_rec"]
-            form = forms[int(rng.integers(len(forms)))]
+            # A loop that reads s reads it in its FIRST statement, rather than leaving it to the form
+            # draw: the write-then-read pair is the hazard this grammar exists to reach, and letting the
+            # RNG miss it made the shape rare enough to be worthless as coverage.
+            form = "invariant_read" if (s_use == "read" and pos == 0) else forms[int(rng.integers(len(forms)))]
             if form == "elementwise":
                 src = ARRAYS[int(rng.integers(len(ARRAYS)))]  # same-index read: never a cross-iteration dep
                 body.append(f"        {tgt}[i] = {src}[i] * 2.0")
+            elif form == "invariant_read":
+                src = ARRAYS[int(rng.integers(len(ARRAYS)))]
+                body.append(f"        {tgt}[i] = {src}[i] + s")
             elif form == "stencil":
                 pool = safe_offset_srcs if parallel else list(ARRAYS)
                 src = pool[int(rng.integers(len(pool)))]
@@ -73,6 +101,10 @@ def gen_source(seed: int) -> str:
             else:
                 src = ARRAYS[int(rng.integers(len(ARRAYS)))]
                 body.append(f"        {tgt}[i] = {tgt}[i - 1] * 0.5 + {src}[i]")
+        if s_use == "write":
+            # the invariant WRITE, sequential-only. Paired with an invariant_read in ANOTHER loop, this is
+            # the cross-loop fusion hazard; no statement of THIS body reads s, so the body stays ordered.
+            body.append(f"        s = {ARRAYS[int(rng.integers(len(ARRAYS)))]}[i]")
         lines.append("    for i in dace.map[1:N - 1]:" if parallel else "    for i in range(1, N - 1):")
         lines.extend(body)
     return "\n".join(lines) + "\n"

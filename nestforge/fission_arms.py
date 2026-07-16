@@ -10,9 +10,16 @@ with :mod:`nestforge.fusion_arms`. Fission is done by the existing pipeline:
   * ``LoopFission`` -- distributes a sequential loop into one loop per independent statement group.
   * ``MapFission`` -- the map-side distributor for a map whose body is a nested SDFG of independent groups.
 
-Every step is a semantics-preserving DaCe pass; the composition is value-preserving by construction, and
-the tests assert it bit-exact. ``MapFission`` is additionally a single-pair transformation, exposed here so
-the agent can fission ONE map at a time when it wants fine control.
+Every step is an existing DaCe pass, and the tests assert the composition bit-exact. ``MapFission`` is
+additionally a single-pair transformation, exposed here so the agent can fission ONE map at a time when it
+wants fine control.
+
+Every step is value-preserving, but that was not free: fuzzing this composition found a real
+``LoopFission`` miscompile (a body chained through a scalar had its per-iteration write-before-read
+ordering dropped by a speculative rewrite the pass then failed to fission, wrong ~1/3 of runs). Fixed in
+DaCe -- the pass now decides on a copy and leaves an un-fissionable loop untouched. Worth remembering that
+the arm layer inherits whatever the passes it composes get wrong, so the bit-exact fuzz over this module
+is the thing standing between the agent and a silently wrong program.
 """
 from __future__ import annotations
 
