@@ -388,5 +388,6 @@ def test_vectorized_owned_build_matches_oracle():
     is applied before codegen and the vectorized kernel still matches the numpy oracle (AUTO resolves to
     the host ISA, so this is host-agnostic)."""
     from dace.transformation.passes.vectorization.config import VectorizeConfig
-    owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d", size=256,
+    owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d",
+                               size=256,
                                opts=BuildOptions(vectorize=VectorizeConfig(widths=(8, ), target_isa="AUTO")))

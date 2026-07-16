@@ -21,8 +21,7 @@ def test_figure_lists_every_axis_value():
     """Every value of every live axis tuple appears as a leaf, so the figure can't silently omit an axis
     the arena actually sweeps."""
     diagram = render_axes.mermaid()
-    for value in (*tsvc.OPT_MODES, *CODEGEN_IMPLS, *flags.PARALLEL_MODES, *flags.COST_MODELS,
-                  *flags.REDUCED_FP_MODES):
+    for value in (*tsvc.OPT_MODES, *CODEGEN_IMPLS, *flags.PARALLEL_MODES, *flags.COST_MODELS, *flags.REDUCED_FP_MODES):
         assert f'"{value}"' in diagram, f"axis value {value!r} missing from the generated figure"
 
 

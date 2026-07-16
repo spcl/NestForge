@@ -81,16 +81,21 @@ def test_cxx_source_flags_restrict_and_builtin_complex():
     assert not any("__builtin_complex" in t for t in flags.cxx_source_flags("llvm"))
 
 
-def test_lane_flags_gate_reduced_cxx_and_unsupported():
+def test_lane_flags_gate_reduced_cxx_and_unsupported(monkeypatch):
     # strict-ieee gate uses the ladder's strict flags.
     gate, r = flags.lane_flags("gnu", "strict-ieee", "default", "sequential", "c", 4)
     assert r is None and "-ffp-contract=off" in gate
     # a reduced timing cell in C++ carries the C++ frontend flags + the C FP spelling.
     cxx, _ = flags.lane_flags("gnu", "no-fast-errno", "default", "sequential", "c++", 4)
     assert "-x" in cxx and "-ffp-contract=fast" in cxx and "-Drestrict=__restrict__" in cxx
-    # auto-par on clang is unsupported -> (None, reason), so the cell is recorded, never silently dropped.
-    none, reason = flags.lane_flags("llvm", "default-fp", "default", "auto-par", "c", 4)
-    assert none is None and reason
+    # llvm auto-par is Polly now (a real lane): with no compiler to probe, the intended flags come back.
+    poll, reason = flags.lane_flags("llvm", "default-fp", "default", "auto-par", "c", 4)
+    assert reason is None and "-polly" in poll
+    # but when a compiler IS probed and its polyhedral back end is absent, the cell records (None, reason)
+    # -- it is never silently dropped.
+    monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
+    none, why = flags.lane_flags("llvm", "default-fp", "default", "auto-par", "c", 4, compiler="clang")
+    assert none is None and why
     # gcc auto-par threads the requested count into the flag.
     par, _ = flags.lane_flags("gnu", "default-fp", "default", "auto-par", "c", 16)
     assert "-ftree-parallelize-loops=16" in par
