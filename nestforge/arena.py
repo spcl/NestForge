@@ -210,10 +210,17 @@ def scalar_ctype(sdfg, name: str):
     return ctypes.c_int64
 
 
-def resolve_argtypes(prep: Prepared, boundary: Boundary) -> list:
+def resolve_argtypes(order: List[str], boundary: Boundary) -> list:
+    """ctypes argtypes for the emitted entry, in the order the EMITTED SIGNATURE declares.
+
+    ``order`` must come from parsing the generated source (``harness.signature_order``), NOT from the
+    manifest's ``input_args``: numpyto emits parameters in ``param_order()`` -- arrays sorted, then scalars
+    sorted -- and deliberately ignores ``input_args``, which is a ROLE order (inputs, outputs, symbols).
+    The two coincide only by luck of the alphabet.
+    """
     sdfg = boundary.standalone_sdfg
     types = []
-    for arg in prep.manifest["input_args"]:
+    for arg in order:
         if arg in sdfg.arrays:
             dt = np.dtype(sdfg.arrays[arg].dtype.type).name
             types.append(ctypes.POINTER(CTYPE[dt]))
@@ -222,8 +229,11 @@ def resolve_argtypes(prep: Prepared, boundary: Boundary) -> list:
     return types
 
 
-def call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary: Boundary,
+def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundary: Boundary,
                 inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int):
+    """Bind + call the compiled entry. ``order`` is the EMITTED-signature parameter order (see
+    :func:`resolve_argtypes`); binding by the manifest's role order instead puts each buffer in the wrong
+    parameter slot, which same-typed arrays make completely silent."""
     lib = ctypes.CDLL(str(so))
     fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
     fn.argtypes = argtypes
@@ -232,7 +242,7 @@ def call_native(so: Path, symbol: str, argtypes: list, prep: Prepared, boundary:
 
     def build_args():
         out = []
-        for arg, at in zip(prep.manifest["input_args"], argtypes):
+        for arg, at in zip(order, argtypes):
             if arg in work:
                 out.append(work[arg].ctypes.data_as(at))
             else:
@@ -278,7 +288,11 @@ def run_arena(prep: Prepared,
     out_dir.mkdir(parents=True, exist_ok=True)
     compilers = discover_compilers()
     symbol = f"{prep.name}_fp64"
-    argtypes = resolve_argtypes(prep, boundary)
+    # The bind order comes from the REAL emitted signature, never the manifest (see resolve_argtypes).
+    # Imported here, not at module scope: harness imports arena, so a top-level import would cycle.
+    from nestforge.perf.harness import signature_order
+    order = signature_order(c_source.read_text(), symbol)
+    argtypes = resolve_argtypes(order, boundary)
     inputs = make_inputs(boundary, sizes, seed=seed, given=given)
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
@@ -306,7 +320,7 @@ def run_arena(prep: Prepared,
             # the child. maxdiff is computed child-side (only the summary crosses the pipe). ``so``/
             # ``mode`` are default args to dodge late-binding-closure capture of the loop variables.
             def work(so=so, mode=mode):
-                outs, us = call_native(so, symbol, argtypes, prep, boundary, inputs, sizes, reps)
+                outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
                 md = float(maxdiff(oracle, outs))
                 return {"ok": bool(md <= MODE_ATOL[mode]), "maxdiff": md, "time_us": float(us)}
 
