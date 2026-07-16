@@ -13,18 +13,24 @@ FORKED (:func:`~nestforge.isolation.run_isolated`) so a crash in fresh code neve
 """
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
+
+import dace
 
 from nestforge import build, tsvc
 from nestforge.arena import make_inputs, maxdiff, run_oracle
-from nestforge.extract import whole_program_boundary
+from nestforge.extract import Boundary, find_state_of_node, whole_program_boundary
 from nestforge.isolation import run_isolated
+from nestforge.libnode import ExternalCall
 from nestforge.optimizers import Optimizer
+from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf import flags
 from nestforge.perf.harness import median
+from nestforge.split_unsupported import isolate_into_own_state
 from nestforge.translate import prepare_whole_program
 
 
@@ -111,3 +117,59 @@ def measure_whole_program(optimizer: Optimizer,
                                   res["error"])
     return WholeProgramResult(optimizer.name, proposal.opt_mode, bool(res["ok"]), float(res["maxdiff"]),
                               float(res["median_us"]), reps)
+
+
+# --- offload analysis: externalize before deciding offload -------------------------------------------
+# Whole-program scope is the full un-split program (`whole_program_boundary`). Offloading works at a FINER
+# scope: each loop nest is externalized into a call first, and only THEN does a tool decide whether that
+# call is offloadable. The order is fixed -- if DaCe offloaded a loop and a polyhedral tool then found the
+# same loop GPU-viable, the offload decision would change underneath us -- so no lane may pre-decide
+# offload before extraction. Each externalized call is put in its OWN state: that isolated state is the
+# scope "between" the call and the host program, where the host<->device transfer lives, so every call
+# decides offload independently.
+@dataclass
+class OffloadScope:
+    """One externalized call as an INDEPENDENT offload unit -- the scope between the call and the host
+    program. ``inputs`` cross INTO the scope (host->device on offload), ``outputs`` cross OUT
+    (device->host). ``offloadable`` is the per-call decision (a tool's, injected -- see
+    :func:`offload_scopes`); ``reason`` says why not when it is ``False``."""
+    call: str
+    inputs: List[str]
+    outputs: List[str]
+    offloadable: bool = True
+    reason: str = ""
+
+
+def default_offloadable(call: ExternalCall, boundary: Boundary) -> Tuple[bool, str]:
+    """Default decision: an externalized compute nest may offload. The real per-tool GPU-viability check
+    (polyhedral affinity, data-parallelism, cost) plugs in here -- the analysis provides the scope, the
+    tool provides the verdict."""
+    return True, ""
+
+
+def offload_scopes(
+    sdfg: dace.SDFG,
+    strategy: str = "skip-taskloops",
+    offloadable: Optional[Callable[[ExternalCall, Boundary], Tuple[bool, str]]] = None
+) -> Tuple[dace.SDFG, List[OffloadScope]]:
+    """Whole-program offload analysis: externalize each nest into a call, then put each call in its OWN
+    state so it is an independent offload unit.
+
+    NON-DESTRUCTIVE: works on a deepcopy, so the caller's SDFG is untouched (an analysis that does not
+    commit must not mutate the input). Returns the transformed SDFG (externalized + isolated, still runnable
+    via the ``DaceReference`` expansion) and one :class:`OffloadScope` per call, in extraction order.
+
+    ``offloadable`` is the per-call decision, injected because the invariant is that each TOOL decides
+    independently after extraction; it defaults to :func:`default_offloadable`.
+    """
+    decide = offloadable or default_offloadable
+    work = copy.deepcopy(sdfg)
+    calls = lower_nests_to_external_call(work, strategy)
+    scopes: List[OffloadScope] = []
+    for ext, boundary in calls:
+        # Re-find the state each time: isolating a prior call fissions states, but the node object is stable.
+        state = find_state_of_node(work, ext)
+        isolate_into_own_state(work, state, ext)
+        ok, reason = decide(ext, boundary)
+        scopes.append(OffloadScope(ext.name, list(boundary.inputs), list(boundary.outputs), ok, reason))
+    return work, scopes
