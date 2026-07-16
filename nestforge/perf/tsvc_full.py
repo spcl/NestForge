@@ -173,10 +173,17 @@ def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], s
 
 
 # --- lane 3: nest cell validate / time (run inside a forked child) -----------------------------------
-def nest_validate_work(so: Path, symbol: str, order: List[str], argtypes, boundary, validate_sizes, oracle,
-                       atol: float) -> Dict:
+def nest_validate_work(so: Path,
+                       symbol: str,
+                       order: List[str],
+                       argtypes,
+                       boundary,
+                       validate_sizes,
+                       oracle,
+                       atol: float,
+                       given=None) -> Dict:
     """Correctness at the SMALL preset: bind, run once, maxdiff vs the oracle. Fast (small buffers)."""
-    vin = make_inputs(boundary, validate_sizes, seed=0)
+    vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
     md = float(maxdiff(oracle, vout))
     return {"ok": bool(md <= atol), "maxdiff": md}
@@ -193,8 +200,8 @@ def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inp
     return summarize_times(collect_samples(fn, cargs, reps))
 
 
-def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle) -> Dict:
-    buffers = make_inputs(boundary, validate_sizes, seed=0)  # fresh + correct (validation runs in place)
+def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, given=None) -> Dict:
+    buffers = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (validation runs in place)
     fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
     fn(*cargs)
     outs = {o: buffers[o] for o in boundary.outputs if o in ptr_names}
@@ -209,8 +216,18 @@ def native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps) -
     return summarize_times(collect_samples(fn, cargs, reps))
 
 
-def measure_native_lane(cxx: str, family: str, kernel, boundary, validate_sizes, time_inputs, time_sizes, oracle,
-                        reps: int, cxx_std: str, workdir: Path) -> Optional[Dict]:
+def measure_native_lane(cxx: str,
+                        family: str,
+                        kernel,
+                        boundary,
+                        validate_sizes,
+                        time_inputs,
+                        time_sizes,
+                        oracle,
+                        reps: int,
+                        cxx_std: str,
+                        workdir: Path,
+                        validate_fills=None) -> Optional[Dict]:
     """Lane 1: compile ``_original.cpp`` at ``-O3 -march=native``, validate@small + time@prof (median).
     ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
@@ -227,7 +244,8 @@ def measure_native_lane(cxx: str, family: str, kernel, boundary, validate_sizes,
     ok, compile_us, err = run_compile([cxx, *nat_flags, str(cpp), "-o", str(so)])
     if not ok:
         return {"ok": False, "error": err, "compile_us": compile_us, **summarize_times([])}
-    vres = run_isolated(lambda: native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle))
+    vres = run_isolated(
+        lambda: native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, validate_fills))
     if "error" in vres:
         return {"ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
     tres = run_isolated(lambda: native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps),
@@ -254,11 +272,19 @@ def measure_native_lane(cxx: str, family: str, kernel, boundary, validate_sizes,
 # oracle is a recorded cross-check: it is bit-exact for most kernels, but DaCe's raw codegen and numpyto
 # lower the boundary contract for PROMOTED loop-carried state (s111/s112 recurrences) differently, so
 # those show a non-bit-exact baseline (flagged in the tables) while their timing stays representative.
-def dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol: float, reps: int) -> Dict:
+def dace_run_work(built,
+                  boundary,
+                  validate_sizes,
+                  time_inputs,
+                  time_sizes,
+                  oracle,
+                  atol: float,
+                  reps: int,
+                  given=None) -> Dict:
     """Validate@small then time@prof DaCe's own codegen, in the forked child. ``built`` (its ``CDLL``) and
     ``time_inputs`` are shared copy-on-write across the fork, so a large time-size run OOM-kills only the
     child. Validation uses a fresh small buffer; timing reuses the context's pre-allocated time buffer."""
-    vbuf = make_inputs(boundary, validate_sizes, seed=0)  # fresh + correct (validation runs in place)
+    vbuf = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (validation runs in place)
     built.run(vbuf, validate_sizes)  # init -> program -> close
     outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
     if outs:
@@ -292,7 +318,8 @@ def measure_dace_cpp_lane(tc: Toolchain,
                           reps: int,
                           cxx_std: str,
                           workdir: Path,
-                          codegen_impl: Optional[str] = None) -> Dict:
+                          codegen_impl: Optional[str] = None,
+                          validate_fills=None) -> Dict:
     """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee, one C++
     compiler. The owned build (``build.build_sdfg``) compiles DIRECTLY (no cmake) into ``workdir`` -- a
     per-kernel mkdtemp, so concurrent ranks never share a build dir (the cmake-deadlock trap does not
@@ -325,9 +352,9 @@ def measure_dace_cpp_lane(tc: Toolchain,
         }
     atol = flags.FP_ATOL["strict-ieee"]
     try:
-        res = run_isolated(
-            lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol, reps),
-            timeout=RUN_TIMEOUT_S)
+        res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol,
+                                                 reps, validate_fills),
+                           timeout=RUN_TIMEOUT_S)
     finally:
         built.unload()  # parent side: free the dlopen mapping (the child ran in its own COW copy)
     if "error" in res:
@@ -364,7 +391,8 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                                  cxx_std: str,
                                  workdir: Path,
                                  codegen_impl: Optional[str] = None,
-                                 rounds: int = 2) -> Dict:
+                                 rounds: int = 2,
+                                 validate_fills=None) -> Dict:
     """The DaCe lane WITH the multi-dim tile-op vectorizer: a coordinate-descent search over
     ``VectorizeConfig`` variants (``build_sdfg(vectorize=cfg)`` then a forked run) for the fastest config
     that still VALIDATES against the numpy oracle on this nest. Each candidate is validated on the
@@ -395,9 +423,9 @@ def measure_dace_vectorized_lane(tc: Toolchain,
         except Exception:  # a config the vectorizer / codegen rejects is simply not a candidate
             return None
         try:
-            res = run_isolated(
-                lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle, atol, reps),
-                timeout=RUN_TIMEOUT_S)
+            res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
+                                                     atol, reps, validate_fills),
+                               timeout=RUN_TIMEOUT_S)
         finally:
             built.unload()
         if "error" in res or not res.get("ok") or not finite(res.get("median_us", float("inf"))):
@@ -552,8 +580,13 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
         nest_dir = workdir / f"n{idx}"
         time_sizes = tsvc.sample_sizes(kernel, boundary, preset=profile_preset)
         validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_cap(profile_preset))
+        # The manifest-declared index arrays, once per nest and SEEDED: the oracle and every cell that
+        # validates against it must see the SAME subscripts, so the fill cannot be drawn per call.
+        validate_fills = tsvc.index_fills(kernel, boundary, validate_sizes)
+        time_fills = tsvc.index_fills(kernel, boundary, time_sizes)
         prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
-        oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
+        oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0, given=validate_fills),
+                            validate_sizes)
         lang_src = emit_lang_sources(prep, boundary, nest_dir, languages, validate_sizes, name)
         # A DaCe-parallel nest ALSO gets the OpenMP ``omp-emit`` sources (numpyto c_omp/fortran_omp). numpyto
         # refuses a nest it cannot soundly parallelize (colliding scatter) -> RuntimeError; that nest simply
@@ -587,8 +620,9 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             "boundary": boundary,
             "time_sizes": time_sizes,
             # allocated ONCE per nest; every timing cell reuses it via COW-fork isolation (see nest_timing_work).
-            "time_inputs": make_inputs(boundary, time_sizes, seed=0),
+            "time_inputs": make_inputs(boundary, time_sizes, seed=0, given=time_fills),
             "validate_sizes": validate_sizes,
+            "validate_fills": validate_fills,
             "oracle": oracle,
             "lang_src": lang_src,
             "has_math": has_math,
@@ -763,11 +797,18 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
 # from the authoritative ``_pluto_binding.json`` (see nestforge.perf.pluto_lane). At the C ABI a VLA array
 # param decays to a pointer, so ``call_c`` marshals it unchanged given the pluto (size-first) order. polycc
 # is almost always ABSENT off the optarena container -> the lane records a skip reason, never a crash.
-def pluto_validate_work(so: Path, symbol: str, order: List[str], argtypes, boundary, validate_sizes, oracle) -> Dict:
+def pluto_validate_work(so: Path,
+                        symbol: str,
+                        order: List[str],
+                        argtypes,
+                        boundary,
+                        validate_sizes,
+                        oracle,
+                        given=None) -> Dict:
     """Fresh-buffer correctness run of the compiled Pluto ``.so`` vs the numpy oracle, in the forked child.
     Marshals with the Pluto (size-symbols-first) ``order`` -- the VLA params decay to pointers, so the same
     ``call_c`` the C lane uses binds them correctly once the order is right."""
-    inputs = make_inputs(boundary, validate_sizes, seed=0)  # fresh + correct (the call runs in place)
+    inputs = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (the call runs in place)
     outputs, _ = call_c(so, symbol, order, argtypes, boundary, inputs, validate_sizes, 1)
     outs = {o: outputs[o] for o in boundary.outputs if o in outputs}
     if not outs:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
@@ -811,8 +852,8 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
     if not cok:
         return {**label, "ok": False, "error": cerr, "compile_us": compile_us, **summarize_times([])}
     argtypes = c_argtypes(order, boundary)
-    vres = run_isolated(
-        lambda: pluto_validate_work(so, symbol, order, argtypes, boundary, nc["validate_sizes"], nc["oracle"]))
+    vres = run_isolated(lambda: pluto_validate_work(so, symbol, order, argtypes, boundary, nc["validate_sizes"], nc[
+        "oracle"], nc["validate_fills"]))
     if "error" in vres:
         return {**label, "ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
     tres = run_isolated(
@@ -864,7 +905,8 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
     if cxx_tc is not None:
         nat0 = base_ctxs[0]
         native = measure_native_lane(cxx_tc.cxx, cxx_tc.fp_family, kernel, nat0["boundary"], nat0["validate_sizes"],
-                                     nat0["time_inputs"], nat0["time_sizes"], nat0["oracle"], reps, cxx_std, workdir)
+                                     nat0["time_inputs"], nat0["time_sizes"], nat0["oracle"], reps, cxx_std, workdir,
+                                     nat0["validate_fills"])
         if native is not None:
             native["nest"] = -1  # whole-kernel sentinel: not a single-nest measurement
         result["native"] = native
@@ -883,7 +925,8 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
                                               reps,
                                               cxx_std,
                                               workdir / "dace_cpp" / f"n{nc['nest_idx']}_{impl}",
-                                              codegen_impl=impl)
+                                              codegen_impl=impl,
+                                              validate_fills=nc["validate_fills"])
                 dcell["nest"] = nc["nest_idx"]
                 dace_cpp_cells.append(dcell)
         result["dace_cpp"] = dace_cpp_cells
@@ -901,7 +944,8 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
                                                      reps,
                                                      cxx_std,
                                                      workdir / "dace_vec" / f"n{nc['nest_idx']}",
-                                                     codegen_impl=default_codegen_impl())
+                                                     codegen_impl=default_codegen_impl(),
+                                                     validate_fills=nc["validate_fills"])
                 vcell["nest"] = nc["nest_idx"]
                 dace_vec_cells.append(vcell)
             result["dace_cpp_vec"] = dace_vec_cells
@@ -958,7 +1002,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         ctx = ctx_by_key[p.opt_ctx_key]
         so = job["so"]
         vres = run_isolated(lambda: nest_validate_work(so, p.symbol, p.order, p.argtypes, ctx["boundary"], ctx[
-            "validate_sizes"], ctx["oracle"], p.atol))
+            "validate_sizes"], ctx["oracle"], p.atol, ctx["validate_fills"]))
         if "error" in vres:
             cell.error = vres["error"]
             cells_out.append(asdict(cell))

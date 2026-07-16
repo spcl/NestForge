@@ -36,7 +36,10 @@ from dace.transformation.dataflow import MapFusionHorizontal, MapFusionVertical
 from dace.transformation.interstate import LoopToMap
 from dace.transformation.passes.canonicalize import canonicalize
 
-from optarena.spec import KERNELS
+from optarena.initialize import fill_index_array
+from optarena.spec import KERNELS, BenchSpec
+
+from nestforge.arena import resolve_shape
 
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
@@ -149,8 +152,23 @@ class TsvcKernel:
 
     @property
     def yaml_path(self) -> Optional[Path]:
-        p = foundation_dir() / f"tsvc_2_{self.key}.yaml"
-        return p if p.exists() else None
+        """The kernel's OptArena manifest, or ``None`` when it has no foundation entry.
+
+        The two corpora name their manifests differently: a ``tsvc2`` kernel is ``tsvc_2_<key>.yaml``
+        while a ``tsvc2_5`` kernel is a bare ``<key>.yaml`` (``reroll_gather.yaml``). Both are checked --
+        the prefixed name first -- so a ``tsvc2_5`` kernel reaches its presets and its declared index
+        arrays instead of silently falling back to the defaults. The two namespaces do not overlap.
+        """
+        for filename in (f"tsvc_2_{self.key}.yaml", f"{self.key}.yaml"):
+            p = foundation_dir() / filename
+            if p.exists():
+                return p
+        return None
+
+    @property
+    def optarena_name(self) -> Optional[str]:
+        """The kernel's OptArena short name (the manifest stem), or ``None`` when it has no manifest."""
+        return self.yaml_path.stem if self.yaml_path is not None else None
 
 
 def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -> List[TsvcKernel]:
@@ -280,6 +298,48 @@ def sample_sizes(kernel: TsvcKernel,
         else:
             sizes[sym] = 0  # a loop-carried index that sizes nothing
     return sizes
+
+
+def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
+    """Valid-subscript values for the nest's integer INDEX arrays, as the kernel's OptArena manifest
+    declares them. Feed the result to :func:`nestforge.arena.make_inputs` as ``given``.
+
+    A nest's NON-transient arrays are the benchmark's own arrays, so the manifest -- not a nest-forge
+    guess -- says what belongs in them. The case that bites is the integer index array: the manifest
+    declares e.g. ``ip: int32`` and fills it with a PERMUTATION of ``[0, N)``, whereas the default
+    uniform float fill cast to an integer dtype collapses to ALL-ZEROS. That silently degrades a gather
+    ``a[i] = b[ip[i]]`` into a single cached read of ``b[0]`` -- so the arena times the wrong memory
+    behaviour -- and inverts a scatter ``a[ip[i]] = ...`` from OptArena's guaranteed conflict-FREE
+    permutation into a maximal write conflict on ``a[0]``, which is an outright race once the nest
+    lowers to a ``dace.map``.
+
+    Only arrays the MANIFEST declares with an integer dtype are filled: an integer array is not
+    automatically a subscript, and the manifest is what separates an index (``ip``) from a mask. Only
+    arrays the nest actually READS are materialized -- the manifest declares every array of the whole
+    kernel, and an unused ``(LEN_2D,LEN_2D)`` fp64 buffer is 2 GiB at the ``XL`` preset.
+
+    The fill takes the SDFG descriptor's dtype, not the manifest's: this buffer crosses the ABI as the
+    kernel's own argument, so its width must be the one the compiled code reads.
+
+    ``seed=None`` draws fresh entropy (fuzz); an int pins the fill. Returns ``{}`` for a kernel with no
+    manifest and for one whose manifest declares no index array.
+    """
+    if kernel.optarena_name is None:
+        return {}
+    spec = BenchSpec.load(kernel.optarena_name)
+    if spec.init is None:
+        return {}
+    rng = np.random.default_rng(seed)
+    arrays = boundary.standalone_sdfg.arrays
+    fills: Dict[str, np.ndarray] = {}
+    for name, declared in sorted(spec.init.dtypes.items()):
+        if np.dtype(declared).kind not in "iu" or name not in boundary.inputs:
+            continue
+        dtype = np.dtype(arrays[name].dtype.type)
+        if dtype.kind not in "iu":
+            continue  # the manifest calls it an index but the nest holds it as a float: not a subscript
+        fills[name] = fill_index_array(resolve_shape(arrays[name].shape, sizes), dtype, rng=rng)
+    return fills
 
 
 def native_signature(cpp_text: str, symbol: str) -> List[Tuple[str, str, bool]]:

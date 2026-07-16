@@ -133,13 +133,23 @@ def scratch_names(boundary: Boundary) -> List[str]:
 INPUT_HIGH = 0.25
 
 
-def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dict[str, np.ndarray]:
+def make_inputs(boundary: Boundary,
+                sizes: Dict[str, int],
+                seed: int = 0,
+                given: Optional[Dict[str, np.ndarray]] = None) -> Dict[str, np.ndarray]:
     """Random arrays for inputs; zeros for outputs and scratch buffers (all caller-pre-allocated).
 
     Inputs are drawn from ``[0, INPUT_HIGH)`` -- see :data:`INPUT_HIGH` for why the range is conditioned.
+
+    ``given`` supplies ready-made values for named input arrays, for the values a uniform float fill
+    cannot express -- chiefly the manifest-declared index arrays of :func:`nestforge.tsvc.index_fills`,
+    whose entries must be valid subscripts. Every array absent from ``given`` is filled as usual. A
+    ``given`` array is checked against the resolved shape and dtype: it crosses the ABI as the kernel's
+    own buffer, so a mismatch would corrupt memory instead of raising.
     """
     sdfg = boundary.standalone_sdfg
     rng = np.random.default_rng(seed)
+    given = given or {}
     arrays: Dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]
     zero_filled = out_only + [s for s in scratch_names(boundary) if s not in boundary.inputs]
@@ -147,7 +157,14 @@ def make_inputs(boundary: Boundary, sizes: Dict[str, int], seed: int = 0) -> Dic
         desc = sdfg.arrays[name]
         shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
-        arrays[name] = (np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt))
+        if name in given:
+            value = given[name]
+            if value.shape != shape or value.dtype != dt:
+                raise ValueError(f"given array {name!r} is {value.dtype}{value.shape}, but the nest declares "
+                                 f"{dt}{shape}; it is passed straight across the ABI, so it must match exactly")
+            arrays[name] = value.copy()
+        else:
+            arrays[name] = (np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt))
     return arrays
 
 

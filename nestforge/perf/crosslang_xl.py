@@ -23,7 +23,7 @@ import json
 import shutil
 import socket
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -104,15 +104,25 @@ def validate_preset(preset: str) -> str:
     return preset if _PRESET_ORDER.index(preset) <= _PRESET_ORDER.index(_VALIDATE_CAP) else _VALIDATE_CAP
 
 
-def cell_work(so: Path, symbol: str, order: List[str], argtypes, boundary, validate_sizes, time_inputs, time_sizes,
-              oracle, reps: int, atol: float) -> Dict:
+def cell_work(so: Path,
+              symbol: str,
+              order: List[str],
+              argtypes,
+              boundary,
+              validate_sizes,
+              time_inputs,
+              time_sizes,
+              oracle,
+              reps: int,
+              atol: float,
+              given=None) -> Dict:
     """Runs inside the forked child. Validates correctness at the SMALL ``validate_sizes`` (fresh buffers
     built here, fast oracle) and times at the large ``time_sizes``. ``time_inputs`` is the pre-built
     XL buffer set inherited COW from the parent -- timing does not check output, so it needs no per-cell
     freshness; ``call_c`` runs the kernel in place on that COW copy, whose page-out OOM-kills only this child.
     ``atol`` is the FP-level tolerance (:data:`flags.FP_ATOL`): ``strict-ieee`` ~bit-exact, ``fast-math``
     admits reassociation drift."""
-    vin = make_inputs(boundary, validate_sizes, seed=0)
+    vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
     md = float(maxdiff(oracle, vout))
     del vin, vout
@@ -148,6 +158,7 @@ class XlNest:
     oracle: Dict[str, object]
     time_inputs: Dict[str, object]
     names: List[str]  # SDFG array + size names, for the Fortran leading-underscore un-munge
+    validate_fills: Dict[str, object] = field(default_factory=dict)
 
 
 def measure_xl_cell(cc: str, lang: str, fam_label: str, fp_level: str, cost_model: str, cflags: List[str],
@@ -171,7 +182,7 @@ def measure_xl_cell(cc: str, lang: str, fam_label: str, fp_level: str, cost_mode
         # OOM/segfault kill only the child, and the timeout only catches a genuine runaway.
         res = run_isolated(lambda u=u, order=order, argtypes=argtypes, so=so: cell_work(
             so, u.symbol, order, argtypes, u.boundary, u.validate_sizes, u.time_inputs, u.time_sizes, u.oracle, reps,
-            atol),
+            atol, u.validate_fills),
                            timeout=3600.0)
         if "error" in res:
             ok_all, md_max, time_sum, err = False, float("inf"), float("inf"), res["error"]
@@ -208,14 +219,20 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
             validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_preset(preset))
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
-            oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0), validate_sizes)
+            # SEEDED once per nest: the oracle and every cell validating against it must see the same subscripts.
+            validate_fills = tsvc.index_fills(kernel, boundary, validate_sizes)
+            oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0, given=validate_fills),
+                                validate_sizes)
             # Build the large timing buffers ONCE per nest; every cell's fork COW-inherits them (timing does
             # not validate output, so the same buffers are reused across cells -- no per-cell re-fill).
-            time_inputs = make_inputs(boundary, time_sizes, seed=0)
+            time_inputs = make_inputs(boundary,
+                                      time_sizes,
+                                      seed=0,
+                                      given=tsvc.index_fills(kernel, boundary, time_sizes))
             names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
             units.append(
                 XlNest(idx, name, symbol, boundary, prep, nest_dir, time_sizes, validate_sizes, oracle, time_inputs,
-                       names))
+                       names, validate_fills))
     except Exception as e:
         return {**result, "skipped": f"{type(e).__name__}: {str(e)[:160]}"}
 

@@ -307,8 +307,8 @@ def test_mpirun_distributed_no_compile_conflicts(tmp_path):
     if "open-mpi" in subprocess.run([mpirun, "--version"], capture_output=True, text=True).stdout.lower():
         cmd.append("--oversubscribe")
     cmd += [
-        sys.executable, "-m", "nestforge.perf.tsvc_arena", "--select", "tsvc", "--compilers", "gcc", "--reps", "1",
-        "--seed", "0", "--only", *keys, "--out",
+        sys.executable, "-m", "nestforge.perf.tsvc_arena", "--compilers", "gcc", "--reps", "1", "--seed", "0", "--only",
+        *keys, "--out",
         str(out)
     ]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=400, cwd=repo, env=env)
