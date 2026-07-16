@@ -10,7 +10,7 @@ from dace.sdfg import nodes
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, is_emittable_library_node
 from nestforge.split_unsupported import (isolate_into_own_state, isolate_unsupported_library_nodes,
-                                         unsupported_library_nodes)
+                                         unsupported_library_nodes, whole_program_regions)
 
 N = dace.symbol("N")
 
@@ -202,3 +202,30 @@ def test_independent_compute_alongside_mpi_is_preserved():
     all_tasklets = [n.label for s in sdfg.states() for n in s.nodes() if isinstance(n, nodes.Tasklet)]
     assert "ind" in all_tasklets  # the independent branch survived the split
     assert isolate_unsupported_library_nodes(sdfg) == 0
+
+
+def test_whole_program_regions_pure_program_is_one_region():
+    sdfg, st, m = linear_chain_sdfg()  # m is a plain tasklet, nothing unsupported
+    regions, islands = whole_program_regions(sdfg)
+    assert islands == []
+    assert len(regions) == 1
+    assert set(regions[0]) == set(sdfg.states())
+
+
+def test_whole_program_regions_single_island_splits_two_regions():
+    sdfg, st, bcast = bcast_sdfg()
+    regions, islands = whole_program_regions(sdfg)
+    assert len(islands) == 1 and bcast in islands[0].nodes()
+    # producers | (island) | consumers  ->  two externalizable regions, each a single state.
+    assert len(regions) == 2
+    assert all(len(r) == 1 for r in regions)
+    # every region state is free of unsupported nodes.
+    assert all(not unsupported_library_nodes(s) for r in regions for s in r)
+
+
+def test_whole_program_regions_two_islands_split_three_regions():
+    sdfg, bcasts = two_bcast_chain_sdfg()
+    regions, islands = whole_program_regions(sdfg)
+    assert len(islands) == 2
+    assert len(regions) == 3  # producers | mid | consumers around the two bcast islands
+    assert all(not unsupported_library_nodes(s) for r in regions for s in r)

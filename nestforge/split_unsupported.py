@@ -93,3 +93,42 @@ def isolate_unsupported_library_nodes(sdfg: dace.SDFG) -> int:
         isolated += 1
     raise RuntimeError("isolate_unsupported_library_nodes did not converge; a state_fission failed to "
                        "separate an unsupported node from surrounding compute")
+
+
+def whole_program_regions(sdfg: dace.SDFG):
+    """Isolate every unsupported node (in place), then partition ``sdfg``'s states into externalizable
+    REGIONS and native ISLANDS -- the split-around-unsupported view of the whole program.
+
+    Returns ``(regions, islands)``. Each *island* is one state holding an unsupported (non-emittable) node,
+    left native. Each *region* is a maximal set of connected pure-compute states -- one externalizable unit
+    the whole-program lane hands to an external tool (nest -> function call -> ExternalCall). Regions are
+    connected components of the state graph with the islands removed, so the partition is CFG-general
+    (branches and loops of pure states stay in one region); an interstate edge between two regions always
+    runs through an island, which is the boundary the compute splits around.
+
+    Mutates ``sdfg`` (isolation fissions states) -- pass a detached copy if the original must be preserved.
+    """
+    isolate_unsupported_library_nodes(sdfg)
+    islands = [s for s in sdfg.states() if unsupported_library_nodes(s)]
+    island_set = set(islands)
+
+    # Union-find over the pure states: union the endpoints of every interstate edge whose BOTH ends are
+    # pure. Each resulting set is one externalizable region.
+    parent = {s: s for s in sdfg.states() if s not in island_set}
+
+    def find(s):
+        while parent[s] is not s:
+            parent[s] = parent[parent[s]]
+            s = parent[s]
+        return s
+
+    for edge in sdfg.all_interstate_edges():
+        src, dst = edge.src, edge.dst
+        if src in parent and dst in parent:
+            parent[find(src)] = find(dst)
+
+    groups: dict = {}
+    for s in parent:
+        groups.setdefault(find(s), []).append(s)
+    regions = list(groups.values())
+    return regions, islands
