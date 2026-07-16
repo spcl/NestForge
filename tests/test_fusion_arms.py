@@ -11,8 +11,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from dace.transformation.interstate.state_fusion import StateFusion
 
-from nestforge.fusion_arms import (FusionMove, apply_fusion, enumerate_fusions, horizontal_map_moves,
-                                   loop_fusion_moves, vertical_map_moves)
+from nestforge.fusion_arms import (FusionMove, apply_fusion, enumerate_fusions, horizontal_map_moves, loop_fusion_moves,
+                                   vertical_map_moves)
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -148,6 +148,7 @@ def test_random_fusion_sequence_is_value_preserving(seed):
 
 
 def test_no_moves_on_a_single_map():
+
     @dace.program
     def one_map(a: f64[N], b: f64[N]):
         for i in dace.map[0:N]:

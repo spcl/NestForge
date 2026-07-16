@@ -99,6 +99,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
 
 
 def test_fission_no_op_on_single_statement():
+
     @dace.program
     def one_statement(a: f64[N], b: f64[N]):
         for i in range(1, N):

@@ -67,12 +67,13 @@ def vertical_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
             consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
             for mx in producers:
                 for me in consumers:
-                    if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=mx, array=node,
-                                                           second_map_entry=me):
+                    if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=mx, array=node, second_map_entry=me):
                         moves.append(
-                            FusionMove("fuse-map-vertical",
-                                       {"first_map_exit": mx, "array": node, "second_map_entry": me},
-                                       MapFusionVertical))
+                            FusionMove("fuse-map-vertical", {
+                                "first_map_exit": mx,
+                                "array": node,
+                                "second_map_entry": me
+                            }, MapFusionVertical))
     return moves
 
 
@@ -86,12 +87,14 @@ def horizontal_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
             for second in entries[i + 1:]:
                 if scope[first] is not scope[second]:
                     continue
-                if MapFusionHorizontal.can_be_applied_to(sdfg, first_parallel_map_entry=first,
+                if MapFusionHorizontal.can_be_applied_to(sdfg,
+                                                         first_parallel_map_entry=first,
                                                          second_parallel_map_entry=second):
                     moves.append(
-                        FusionMove("fuse-map-horizontal",
-                                   {"first_parallel_map_entry": first, "second_parallel_map_entry": second},
-                                   MapFusionHorizontal))
+                        FusionMove("fuse-map-horizontal", {
+                            "first_parallel_map_entry": first,
+                            "second_parallel_map_entry": second
+                        }, MapFusionHorizontal))
     return moves
 
 
