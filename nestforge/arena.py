@@ -194,6 +194,11 @@ class Cell:
     compile_us: float = 0.0  # wall time of THIS candidate's compile (the post-optimization toolchain cost)
     so_path: Optional[str] = None
     symbol: Optional[str] = None
+    #: The EMITTED signature's parameter order this .so was compiled with (harness.signature_order). A
+    #: consumer that binds or declares this symbol must use it verbatim: numpyto orders parameters by
+    #: param_order() (arrays sorted, then scalars), not by the manifest's role order, so re-deriving the
+    #: order anywhere else is the drift that silently swaps pointers.
+    abi_order: Optional[List[str]] = None
     error: Optional[str] = None
 
 
@@ -337,7 +342,8 @@ def run_arena(prep: Prepared,
                          res["time_us"],
                          compile_us=compile_us,
                          so_path=str(so),
-                         symbol=symbol))
+                         symbol=symbol,
+                         abi_order=list(order)))
 
     result.optimization_seconds = time.perf_counter() - t_sweep
     for mode in FP_MODES:

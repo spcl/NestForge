@@ -65,6 +65,7 @@ def test_extern_call_links_winner_and_runs(tmp_path):
     ext.implementation = "ExternCall"
     ext.lib_path = win.so_path
     ext.symbol = win.symbol
+    ext.abi_order = win.abi_order  # the order the .so was compiled with; the manifest's role order differs
     sdfg.expand_library_nodes()
     sdfg.validate()
 

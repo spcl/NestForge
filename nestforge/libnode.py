@@ -37,25 +37,42 @@ def connector_for(arg: str, outputs: set) -> str:
 
 
 def proto_and_call(node: "ExternalCall") -> (str, str):
-    """Build the ``extern "C"`` prototype and the call expression from the manifest.
+    """Build the ``extern "C"`` prototype and the call expression for the linked kernel.
 
     Array args are passed by their connector variable (``_in_X`` / ``_out_Y``); size symbols are
     referenced by name (available in the tasklet's symbol scope).
+
+    The parameter order is ``node.abi_order`` -- the order the .so was ACTUALLY compiled with, recorded by
+    the arena from the emitted signature. It is NOT the manifest's ``input_args`` (a role order: inputs,
+    outputs, symbols): numpyto emits ``param_order()`` (arrays sorted, then scalars) and deliberately
+    ignores ``input_args``. Declaring the wrong order here is silent -- C linkage matches on the symbol
+    NAME alone, so a self-consistent-but-wrong prototype compiles and links cleanly and simply passes each
+    buffer to the wrong parameter.
+
+    Scalar C types come from the manifest, not a blanket ``int64_t``: a float value scalar crosses as a
+    ``double``, and declaring it ``int64_t`` both truncates it and breaks the SysV register class (GP vs
+    XMM), so the callee reads garbage.
     """
     manifest = node.config
     arrays = set(manifest["array_args"])
     outputs = set(manifest["output_args"])
     dtypes_map = {a: v["dtype"] for a, v in manifest["init"]["arrays"].items()}
+    scalar_dtypes = {n: v["dtype"] for n, v in (manifest["init"].get("scalars") or {}).items() if isinstance(v, dict)}
+    order = list(node.abi_order or [])
+    if not order:
+        raise ValueError(f"ExternalCall {node.name!r} has no abi_order: the extern-call expansion must declare the "
+                         f"linked symbol in the order it was compiled with (the arena records it on the winning "
+                         f"Cell). Falling back to the manifest's role order would silently mis-declare the ABI.")
     params: List[str] = []
     call_args: List[str] = []
-    for arg in manifest["input_args"]:
+    for arg in order:
         if arg in arrays:
             c = _CPP_SCALAR[dtypes_map[arg]]
             const = "" if arg in outputs else "const "
             params.append(f"{const}{c}* {arg}")
             call_args.append(connector_for(arg, outputs))
         else:
-            params.append(f"int64_t {arg}")
+            params.append(f"{_CPP_SCALAR.get(scalar_dtypes.get(arg, 'int64'), 'int64_t')} {arg}")
             call_args.append(arg)
     proto = f'extern "C" void {node.symbol}({", ".join(params)});'
     call = f'{node.symbol}({", ".join(call_args)});'
@@ -139,6 +156,10 @@ class ExternalCall(nodes.LibraryNode):
                                           default=None,
                                           desc="OptArena manifest (symbols, shapes, dtypes)")
     symbol = dace.properties.Property(dtype=str, default="", desc="extern-C symbol to call")
+    abi_order = dace.properties.ListProperty(element_type=str,
+                                             default=[],
+                                             desc="parameter order the linked .so was compiled with "
+                                             "(the emitted signature order -- NOT the manifest role order)")
     lib_path = dace.properties.Property(dtype=str, default="", desc="compiled static/shared lib")
     fp_mode = dace.properties.Property(dtype=str, default="", desc="winning FP mode")
 
