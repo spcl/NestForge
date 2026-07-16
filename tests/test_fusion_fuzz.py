@@ -45,14 +45,13 @@ def gen_source(seed: int) -> str:
     as "no dependence" is a real fusion miscompile (a loop reading ``s`` unfused sees the FINAL value,
     fused it sees the RUNNING one). An earlier grammar without it fuzzed green over a live bug.
 
-    One loop either READS ``s`` or WRITES it, never both, and only a sequential loop writes it:
-
-      * writing ``s`` from a map is a race on the scalar (every iteration stores to one cell);
-      * reading AND writing ``s`` in the same body (``d[i] = b[i] + s; ...; s = c[i]``) builds a state
-        holding two ``s`` AccessNodes -- one ``in=0 out=2`` read, one ``in=1 out=0`` write -- with NO
-        edge between them, so nothing orders the read before the write. The program's own value then
-        depends on which order codegen happens to pick (measured: wrong ~1/3 of runs once any pass
-        perturbs the graph), which makes it useless as a bit-exact reference.
+    One loop either READS ``s`` or WRITES it, never both, and only a sequential loop writes it. Writing
+    ``s`` from a map is a race on the scalar -- every iteration stores to one cell. Reading and writing it
+    in the same body (``d[i] = b[i] + s; ...; s = c[i]``) is perfectly well-defined and DaCe compiles it
+    correctly; it is excluded only because it chains every statement through ``s``, which makes the loop
+    un-fissionable and so exercises none of the granularity the fission arm exists to reach. (It did find
+    a real ``LoopFission`` miscompile on the way in -- fixed in DaCe, and pinned there by its own
+    regression test, which is where that belongs rather than in this generator.)
 
     The write/read hazard the arms must handle is still generated -- it just spans two loops, which is
     where fusion has to reason about it anyway.
