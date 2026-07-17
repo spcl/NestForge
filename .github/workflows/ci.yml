@@ -48,6 +48,27 @@ jobs:
       - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
+      # SLEEF vector-math library, built from source: there is no apt package, so the veclib probe needs a
+      # real libsleef on the runner. Installed to /usr/local (+ ldconfig) so -lsleef / -lsleefgnuabi resolve
+      # with no -L, same as the rest of the toolchain. Two libs land here: libsleef (the Sleef_* API) and
+      # libsleefgnuabi, which EXPORTS the glibc vector-ABI symbols (_ZGVbN2v_sin, _ZGVdN4v_sin, ...) that
+      # gcc's auto-vectorizer emits -- so gcc links SLEEF for vector sin/exp with no -fveclib flag at all.
+      # Pinned to the 3.9.0 release tag; shared + Release; tests and tlfloat OFF (tests pull mpfr/gmp, tlfloat
+      # is only used by the test harness) to keep the build lean and free of extra fetches.
+      - name: Phase 1b -- SLEEF vector-math library (from source)
+        run: |
+          git clone --depth 1 --branch 3.9.0 https://github.com/shibatch/sleef "$RUNNER_TEMP/sleef"
+          cmake -S "$RUNNER_TEMP/sleef" -B "$RUNNER_TEMP/sleef/build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DSLEEF_BUILD_SHARED_LIBS=ON -DSLEEF_BUILD_GNUABI_LIBS=ON \
+            -DSLEEF_BUILD_TESTS=OFF -DSLEEF_ENABLE_TLFLOAT=OFF
+          cmake --build "$RUNNER_TEMP/sleef/build" --parallel 2
+          sudo cmake --install "$RUNNER_TEMP/sleef/build"
+          sudo ldconfig
+          # sanity: gnuabi lib must exist and export the glibc vector-ABI sin symbol gcc emits
+          nm -D /usr/local/lib/libsleefgnuabi.so | grep -q '_ZGVdN4v_sin'
+          test -f /usr/local/include/sleef.h
+
       - name: Phase 2 -- DaCe (extended) + OptArena + nest-forge[dev], editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }

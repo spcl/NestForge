@@ -364,24 +364,30 @@ def test_veclib_flag_mapping_and_compatibility():
     """Each vector-math library maps to the right per-compiler-family flag, and an incompatible pairing
     raises rather than silently emitting nothing."""
     assert set(VECTOR_LIBS) == {"sleef", "libmvec", "svml"}
-    # SLEEF: clang/llvm via -fveclib; gcc unsupported (no -fveclib / -mveclibabi for it).
-    assert SLEEF.compile_flags("clang++") == ["-fveclib=SLEEF"] and SLEEF.link_flags("icx") == ["-lsleef"]
-    assert not SLEEF.compatible("g++")
-    with pytest.raises(ValueError):
-        SLEEF.compile_flags("g++")
+    # x86 model: there is no -fveclib=SLEEF, so SLEEF emits via the libmvec token (glibc _ZGV*) and is
+    # LINKED against libsleefgnuabi -- so it works on gcc too, and shares libmvec's compile flags.
+    assert SLEEF.compile_flags("clang++") == ["-fveclib=libmvec"]
+    assert SLEEF.compatible("g++") and SLEEF.compile_flags("g++") == []
+    assert any("-lsleefgnuabi" in a for a in SLEEF.link_flags("clang++"))  # linked lib, pinned via push-state
     # libmvec: clang names it; gcc uses it automatically (no compile flag) but links -lmvec.
     assert LIBMVEC.compile_flags("clang++") == ["-fveclib=libmvec"]
-    assert LIBMVEC.compatible("g++") and LIBMVEC.compile_flags("g++") == [] and LIBMVEC.link_flags("g++") == ["-lmvec"]
-    # SVML: icx via -fveclib, gcc via -mveclibabi.
-    assert SVML.compile_flags("icx") == ["-fveclib=SVML"] and SVML.compile_flags("g++") == ["-mveclibabi=svml"]
+    assert LIBMVEC.compatible("g++") and LIBMVEC.compile_flags("g++") == []
+    assert any("-lmvec" in a for a in LIBMVEC.link_flags("g++"))
+    # SVML: clang/icx via -fveclib=SVML -> __svml_*. gcc CANNOT: it only ever emits _ZGV*, and libsvml
+    # exports no _ZGV* names (-mveclibabi=svml is a no-op on modern gcc), so the pairing raises.
+    assert SVML.compile_flags("icx") == ["-fveclib=SVML"]
+    assert not SVML.compatible("g++")
+    with pytest.raises(ValueError):
+        SVML.compile_flags("g++")
     # NVIDIA cannot use any of these.
     assert not any(vl.compatible("nvc++") for vl in VECTOR_LIBS.values())
 
 
 def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch, tmp_path):
-    """ld resolves left-to-right: a -l placed BEFORE the object that references it contributes nothing, so
-    the veclib would silently not be linked and its 'speedup' would just be libm. Assert the composed
-    command ORDER (no compile needed) for every branch of :func:`compile`."""
+    """The veclib ``-l`` is pinned NEEDED via ``--push-state,--no-as-needed,...,--pop-state``, so unlike a
+    bare ``-l`` its POSITION no longer decides linkage (a shared veclib listed before the object is still
+    kept). Assert the composed command still carries the veclib exactly once and that :func:`compile` places
+    it after the source/object (construction hygiene) for every branch of :func:`compile`."""
     import nestforge.build as B
     cmds = []
     monkeypatch.setattr(B, "run", lambda cmd, **kw: cmds.append(list(cmd)))
@@ -393,13 +399,14 @@ def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch,
                  BuildOptions(compiler="clang++", veclib=SLEEF, link_external=True)):
         cmds.clear()
         B.compile(frame, tmp_path, "k", opts)
-        link = [c for c in cmds if "-lsleef" in c]
+        link = [c for c in cmds if any("-lsleefgnuabi" in a for a in c)]
         assert len(link) == 1, opts
         cmd = link[0]
+        vec_idx = next(i for i, a in enumerate(cmd) if "-lsleefgnuabi" in a)  # the combined push-state arg
         # whichever input carries the code that references the veclib symbols (source / object / archive)
         inputs = [str(frame), str(tmp_path / "k.o"), str(tmp_path / "libk_nest.a")]
         pos = [cmd.index(i) for i in inputs if i in cmd]
-        assert pos and max(pos) < cmd.index("-lsleef"), cmd
+        assert pos and max(pos) < vec_idx, cmd
 
 
 def test_parse_params_strips_the_const_qualifier_only_as_a_word():

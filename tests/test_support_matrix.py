@@ -5,13 +5,15 @@ The unit tests here exercise the LOGIC (ranking, the nvhpc drop, the cache) with
 need no exotic toolchain. One integration test builds the real matrix on whatever compilers are present.
 """
 import json
+from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
-from nestforge.build import OPENMP_RUNTIMES
 from nestforge.perf import flags
-from nestforge.perf.support_matrix import (MachineCompat, MatrixCell, build_support_matrix, loop_source, machine_compat,
-                                           machine_config, render_matrix, resolve_tool_paths, surviving_runtimes)
+from nestforge.perf.support_matrix import (MachineCompat, MatrixCell, VeclibCell, build_support_matrix, loop_source,
+                                           machine_compat, machine_config, render_matrix, resolve_tool_paths,
+                                           surviving_runtimes, try_veclib, vectorized_via)
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 
 
@@ -68,6 +70,7 @@ def test_machine_config_writes_then_loads_without_reprobing(tmp_path, monkeypatc
     import nestforge.perf.support_matrix as sm
     monkeypatch.setattr(sm, "discover_toolchains", fake_discover)
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
+    monkeypatch.setattr(sm, "probe_vector_libs", lambda tcs: [])  # keep synthetic: no real veclib compiles
 
     first = machine_config(cache=cache)
     assert cache.exists() and calls["n"] == 1
@@ -89,6 +92,7 @@ def test_machine_config_refresh_reprobes(tmp_path, monkeypatch):
                         "discover_toolchains",
                         lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
+    monkeypatch.setattr(sm, "probe_vector_libs", lambda tcs: [])  # keep synthetic: no real veclib compiles
     cfg = machine_config(cache=cache, refresh=True)
     assert "stale" not in cfg and "compilers" in cfg
 
@@ -101,6 +105,7 @@ def test_a_corrupt_cache_reprobes_instead_of_crashing(tmp_path, monkeypatch):
                         "discover_toolchains",
                         lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
+    monkeypatch.setattr(sm, "probe_vector_libs", lambda tcs: [])  # keep synthetic: no real veclib compiles
     cfg = machine_config(cache=cache)  # must not raise on the bad file
     assert "compilers" in cfg
 
@@ -188,6 +193,7 @@ def test_machine_compat_reads_the_cache(tmp_path, monkeypatch):
                         "discover_toolchains",
                         lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
+    monkeypatch.setattr(sm, "probe_vector_libs", lambda tcs: [])  # keep synthetic: no real veclib compiles
     compat = machine_compat(cache=cache)  # probes once, writes cache
     assert compat.default_runtime().name == flags.DEFAULT_OPENMP_RUNTIME.name
     assert cache.exists()
@@ -258,3 +264,100 @@ def test_resolve_tool_paths_returns_absolute_paths():
     assert paths.compiler.startswith("/")
     for d in paths.openmp.values():
         assert d.startswith("/")  # absolute runtime dirs, as promised
+
+
+# --- the vector-math-library probe: query logic + the symbol detector (all synthetic, no compiling) ---
+def vcell(veclib, compiler, vectorized=True, correct=True, loads=True, ok=True):
+    return VeclibCell(veclib=veclib, compiler=compiler, ok=ok, loads=loads, vectorized=vectorized, correct=correct)
+
+
+def veclib_compat(cells=(), supported=None):
+    """A MachineCompat over a synthetic veclib config -- no toolchain, to test the query logic alone."""
+    cfg = {"support_matrix": [], "veclib_matrix": [asdict(c) for c in cells]}
+    if supported is not None:
+        cfg["supported_veclibs"] = supported
+    return MachineCompat(cfg)
+
+
+def test_supported_veclibs_reads_the_config_field():
+    compat = veclib_compat(supported={"gnu": ["none", "libmvec"], "llvm": ["none", "sleef", "libmvec"]})
+    assert compat.supported_veclibs("gnu") == ["none", "libmvec"]
+    assert compat.supported_veclibs("llvm") == ["none", "sleef", "libmvec"]
+    assert compat.supported_veclibs("intel-classic") == []  # a family with no correct veclib -> nothing
+    assert MachineCompat({}).supported_veclibs("gnu") == []  # bare config -> empty, never a crash
+
+
+def test_veclib_vectorizes_needs_both_vectorized_and_correct():
+    compat = veclib_compat([
+        vcell("libmvec", "gnu", vectorized=True, correct=True),  # the real thing
+        vcell("none", "gnu", vectorized=False, correct=True),  # scalar baseline: correct but NOT vectorized
+        vcell("svml", "gnu", vectorized=True, correct=False),  # called the packed sin but diverged -> unusable
+    ])
+    assert compat.veclib_vectorizes("gnu", "libmvec")
+    assert not compat.veclib_vectorizes("gnu", "none")  # a scalar baseline is never 'vectorized'
+    assert not compat.veclib_vectorizes("gnu", "svml")  # ran the packed call but wrong answer
+    assert not compat.veclib_vectorizes("gnu", "sleef")  # no such cell at all
+    assert not compat.veclib_vectorizes("llvm", "libmvec")  # right veclib, wrong family
+
+
+def test_vectorized_via_matches_the_per_library_symbol_fingerprint(monkeypatch):
+    """The detector reads ``nm -u`` and matches each library's undefined-symbol fingerprint. Driven with
+    hard-coded nm output (real samples this box emits) so it needs no compiling."""
+    import nestforge.perf.support_matrix as sm
+    zgv = "                 U sin\n                 U _ZGVdN4v_sin@GLIBC_2.22\n"  # glibc GNU-vector-ABI
+    masked = "                 U _ZGVeM8v_sin\n"  # AVX512 masked variant (omp-simd)
+    svml = "                 U __svml_sin4\n"
+    scalar = "                 U sin\n"
+
+    def feed(out):
+        monkeypatch.setattr(sm.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=out, returncode=0))
+
+    feed(zgv)
+    # libmvec AND sleef both emit the glibc _ZGV* names on x86 (they differ only in the linked library),
+    # so the same object fingerprint satisfies both.
+    assert vectorized_via("libmvec", "x.o") and vectorized_via("sleef", "x.o")
+    assert not vectorized_via("svml", "x.o")  # the _ZGV names are not svml's __svml_*
+    assert not vectorized_via("none", "x.o")  # none is scalar-by-definition even when vector syms are present
+
+    feed(masked)
+    assert vectorized_via("libmvec", "x.o") and vectorized_via("sleef", "x.o")  # masked _ZGV* also detected
+
+    feed(svml)
+    assert vectorized_via("svml", "x.o")
+    assert not vectorized_via("libmvec", "x.o") and not vectorized_via("sleef", "x.o")
+
+    feed(scalar)
+    assert not any(vectorized_via(v, "x.o") for v in ("libmvec", "svml", "sleef"))  # only scalar sin -> nothing fired
+
+
+# --- integration: the real veclib probe on local gcc (compiles two tiny sin loops) -------------------
+@pytest.mark.integration
+def test_try_veclib_none_libmvec_and_sleef_on_local_gcc(tmp_path):
+    """On this box: the scalar ``none`` baseline proves the probe harness works end to end
+    (compile -> link -> fork -> match numpy.sin); libmvec (glibc, always present) both VECTORIZES (emits a
+    packed ``_ZGV*_sin``) and matches numpy; and SLEEF -- when its from-source ``libsleefgnuabi`` is present
+    -- takes the SAME ``_ZGV*`` emission but binds to SLEEF's lib, proving gcc links SLEEF with no -fveclib.
+    Absent that lib, the sleef cell must fail HONESTLY at link, never silently pass as glibc libmvec."""
+    import warnings
+
+    from nestforge import build
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tcs = discover_toolchains("gcc")
+    assert tcs, "no gcc discovered -- this box is expected to have gcc"
+    gcc = tcs[0]
+
+    baseline = try_veclib(gcc, "none", tmp_path)
+    assert baseline.ok and baseline.loads and baseline.correct, f"scalar baseline failed: {baseline.reason}"
+    assert not baseline.vectorized, "the 'none' baseline must report scalar, never vectorized"
+
+    mvec = try_veclib(gcc, "libmvec", tmp_path)
+    assert mvec.ok and mvec.loads and mvec.correct, f"libmvec cell failed: {mvec.reason}"
+    assert mvec.vectorized, "gcc libmvec must emit a packed vector sin here (e.g. _ZGVdN4v_sin)"
+
+    sleef = try_veclib(gcc, "sleef", tmp_path)
+    if build.veclib_lib_dir("sleefgnuabi", gcc.cc) is not None:
+        assert sleef.ok and sleef.loads and sleef.correct, f"gcc sleef cell failed: {sleef.reason}"
+        assert sleef.vectorized, "gcc sleef must emit a packed vector sin (the same _ZGV* glibc ABI)"
+    else:  # no libsleefgnuabi installed: a clean link failure, not a silent fallback to libmvec
+        assert not sleef.ok and "link" in sleef.reason.lower(), f"expected a link failure, got: {sleef!r}"

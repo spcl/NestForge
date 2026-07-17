@@ -281,6 +281,133 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
     return "\n".join(lines)
 
 
+@dataclass
+class VeclibCell:
+    """One (compiler-family, veclib) attempt: does a ``sin`` loop COMPILE and LINK against this vector-math
+    library, does the object actually CALL the library's packed ``sin`` (not scalar ``sin``), and does the
+    linked result match ``numpy.sin``? The veclib analogue of :class:`MatrixCell` -- answered by TRYING,
+    because a ``-fveclib=`` flag can be accepted while the vectorizer leaves the call scalar, exactly as a
+    runtime can link yet run serial."""
+    veclib: str
+    compiler: str  # compiler-family label (gnu | llvm | intel-classic | nvidia)
+    ok: bool  # compiled AND linked
+    loads: bool  # the linked .so dlopened and ran
+    vectorized: bool  # the object references the veclib's packed sin (nm -u fingerprint)
+    correct: bool  # ran and matched numpy.sin
+    reason: str = ""
+
+
+#: One ``sin`` loop under ``#pragma omp simd``: at ``-O3``/native with fast-math the vectorizer is FREE to
+#: replace the scalar ``sin`` with a packed vector-math routine (libmvec / SVML / SLEEF) -- the very
+#: substitution :func:`vectorized_via` confirms in the object's undefined symbols. The lone ``sinloop``
+#: symbol is what the forked driver dlopens and calls.
+_SIN_SOURCE = """#include <math.h>
+void sinloop(double *restrict a, const double *restrict b, int n) {
+  #pragma omp simd
+  for (int i = 0; i < n; i++) a[i] = sin(b[i]);
+}
+"""
+
+
+def vectorized_via(veclib: str, obj_path: str) -> bool:
+    """True if object ``obj_path`` actually CALLS the packed vector ``sin`` of ``veclib`` -- read from
+    ``nm -u`` and matched against that library's undefined-symbol fingerprint. Proof the vectorizer FIRED,
+    not that a flag was merely accepted (the veclib analogue of :func:`emits_fork_call`).
+
+    ``none`` is always False: it is the scalar baseline, whose plain ``sin`` makes no vectorization claim.
+    Fingerprints (x86_64): ``libmvec`` AND ``sleef`` both emit the glibc GNU-vector-ABI ``_ZGV<isa><mask>
+    <lanes>v_sin`` names -- they share the emission and differ ONLY in the linked library (glibc libmvec vs
+    libsleefgnuabi), a link-time fact not visible in the object -- so both match the same symbols; ``svml``
+    emits ``__svml_sin*``. (There is no ``-fveclib=SLEEF`` on x86 and thus no ``Sleef_*`` call to look for.)"""
+    if veclib == "none":
+        return False
+    try:
+        syms = subprocess.run(["nm", "-u", obj_path], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if veclib in ("libmvec", "sleef"):
+        return any(s in syms for s in (
+            "_ZGVbN2v_sin",
+            "_ZGVcN4v_sin",
+            "_ZGVdN4v_sin",
+            "_ZGVeN8v_sin",  # unmasked SSE/AVX/AVX2/AVX512
+            "_ZGVbM2v_sin",
+            "_ZGVcM4v_sin",
+            "_ZGVdM4v_sin",
+            "_ZGVeM8v_sin"))  # masked (omp-simd/AVX512)
+    if veclib == "svml":
+        return "__svml_sin" in syms
+    return False
+
+
+def try_veclib(tc: Toolchain, veclib: str, workdir: Path) -> VeclibCell:
+    """Compile a ``sin`` loop with ``tc`` against ``veclib``, prove the object CALLS the packed routine,
+    link it, and run it FORKED to check the answer against ``numpy.sin`` -- the veclib analogue of
+    :func:`try_combination`, and the whole experiment for one veclib cell.
+
+    ``-O3``/native/``omp-simd`` let the loop vectorize; ``-ffast-math`` is what AUTHORISES swapping the
+    scalar ``sin`` for a packed vector-math call (and, on gcc, implicitly pulls libmvec). The per-family
+    veclib spelling (``-fveclib=`` / ``-l``) comes from :func:`flags.veclib_flags`; an incompatible pair
+    (e.g. SLEEF on gcc) never compiles and returns ``ok=False`` with that reason. The ``none`` baseline
+    OMITS fast-math so it stays genuinely SCALAR -- WITH it, gcc emits libmvec calls this cell never links
+    (no ``-lmvec``), so the scalar baseline would fail to even load. Each stage that fails forces the
+    later stages False, so the cell records WHERE it failed."""
+    fam = compiler_family(tc.cc)
+    vec, reason = flags.veclib_flags(tc.cc, veclib)
+    if vec is None:
+        return VeclibCell(veclib, fam, False, False, False, False, reason or f"veclib {veclib} unsupported")
+    # -ffast-math authorises the transcendental->packed substitution; the scalar baseline must NOT carry
+    # it, or gcc emits unlinked libmvec calls and 'none' fails to load (see the docstring).
+    base = ["-O3", "-march=native", "-fopenmp-simd", "-fPIC", "-shared"]
+    if veclib != "none":
+        base = ["-ffast-math", *base]
+    src = workdir / "sinloop.c"
+    src.write_text(_SIN_SOURCE)
+    obj = workdir / "sinloop.o"
+    comp = subprocess.run([tc.cc, *base, *vec, "-c", str(src), "-o", str(obj)], capture_output=True, text=True)
+    if comp.returncode != 0:
+        last = comp.stderr.strip().splitlines()[-1][:80] if comp.stderr.strip() else "?"
+        return VeclibCell(veclib, fam, False, False, False, False, f"compile: {last}")
+    vectorized = vectorized_via(veclib, str(obj))
+    # Link the object BEFORE the veclib -l flags: under --as-needed a library listed ahead of the object
+    # that needs it is dropped from DT_NEEDED, and the .so then fails to dlopen (verified for -lmvec here).
+    so = workdir / "sinloop.so"
+    link = subprocess.run([tc.cc, *base, str(obj), *vec, "-o", str(so)], capture_output=True, text=True)
+    if link.returncode != 0:
+        last = link.stderr.strip().splitlines()[-1][:80] if link.stderr.strip() else "?"
+        return VeclibCell(veclib, fam, False, False, vectorized, False, f"link: {last}")
+
+    def work():
+        lib = ctypes.CDLL(str(so))
+        lib.sinloop.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+        lib.sinloop.restype = None
+        n = 1024
+        a = np.zeros(n)
+        b = np.linspace(0.0, 6.0, n)
+        lib.sinloop(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                    b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)
+        return {"ok": bool(np.allclose(a, np.sin(b), atol=1e-6)), "maxdiff": float(np.max(np.abs(a - np.sin(b))))}
+
+    res = run_isolated(work, timeout=60.0)
+    if "error" in res:
+        return VeclibCell(veclib, fam, True, False, vectorized, False, f"load/run: {res['error'][:80]}")
+    return VeclibCell(veclib, fam, True, True, vectorized, bool(res["ok"]),
+                      "" if res["ok"] else "ran but diverged from numpy.sin")
+
+
+def probe_vector_libs(toolchains: List[Toolchain]) -> List[VeclibCell]:
+    """Probe every (toolchain, veclib) empirically: compile+link a ``sin`` loop, confirm it CALLS the
+    packed routine, and run it forked against ``numpy.sin``. ``none`` is included as the scalar baseline
+    that proves the probe harness itself works here (compile -> link -> fork -> match numpy) -- the veclib
+    analogue of :func:`build_support_matrix`."""
+    cells: List[VeclibCell] = []
+    for tc in toolchains:
+        for veclib in flags.VECLIBS:
+            with tempfile.TemporaryDirectory() as d:
+                cells.append(try_veclib(tc, veclib, Path(d)))
+    return cells
+
+
 class MachineCompat:
     """Queryable view of the discovered support matrix -- 'what does THIS machine actually support', for a
     sweep to prune against instead of the static ABI table.
@@ -295,6 +422,7 @@ class MachineCompat:
     def __init__(self, config: Dict):
         self.config = config
         self._cells = config.get("support_matrix", [])
+        self._veclib_cells = config.get("veclib_matrix", [])
 
     def default_runtime(self) -> OpenMPRuntime:
         """The runtime the sweep should standardise on for this machine: the empirically-best cross-compiler
@@ -339,6 +467,19 @@ class MachineCompat:
         own = self.supported_runtimes(compiler_family)
         return OPENMP_RUNTIMES.get(own[0]) if own else None
 
+    def supported_veclibs(self, compiler_family: str) -> List[str]:
+        """The vector-math libraries ``compiler_family`` ran CORRECTLY here (``none`` -- the scalar mode --
+        included, since it is always a valid choice for the arena's veclib axis). Evidence from the
+        empirical probe, not the ABI table -- read from the ``supported_veclibs`` config field."""
+        return list(self.config.get("supported_veclibs", {}).get(compiler_family, []))
+
+    def veclib_vectorizes(self, compiler_family: str, veclib: str) -> bool:
+        """Did ``compiler_family`` x ``veclib`` actually emit a packed vector ``sin`` AND match numpy here?
+        The per-cell answer that separates a veclib that really vectorises from one whose flag was accepted
+        while the call stayed scalar (or ran but diverged) -- read from the ``veclib_matrix`` cells."""
+        return any(c["compiler"] == compiler_family and c["veclib"] == veclib and c["vectorized"] and c["correct"]
+                   for c in self._veclib_cells)
+
 
 def machine_compat(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> MachineCompat:
     """The compatibility view for this machine, from the cache (probing once if absent)."""
@@ -382,6 +523,11 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
         warnings.simplefilter("ignore")
         toolchains = discover_toolchains("auto")
     cells, notes = build_support_matrix(toolchains)
+    veclib_cells = probe_vector_libs(toolchains)
+    supported_vec: Dict[str, List[str]] = {}
+    for c in veclib_cells:
+        if c.correct and c.veclib not in supported_vec.setdefault(c.compiler, []):
+            supported_vec[c.compiler].append(c.veclib)
     config = {
         "compilers": {
             t.name: {
@@ -399,6 +545,8 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
         "default_openmp_runtime": (surviving_runtimes(cells) or [flags.DEFAULT_OPENMP_RUNTIME.name])[0],
         "surviving_runtimes": surviving_runtimes(cells),
         "support_matrix": [asdict(c) for c in cells],
+        "veclib_matrix": [asdict(c) for c in veclib_cells],
+        "supported_veclibs": supported_vec,
         "notes": notes,
     }
     try:

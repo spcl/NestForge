@@ -320,35 +320,75 @@ def runtime_installed(rt: OpenMPRuntime) -> bool:
     return lib_findable(rt.soname, rt.lib_dir)
 
 
-#: -fveclib token (clang / flang / icx / icpx) per vector-math-library name.
-_CLANG_VECLIB = {"sleef": "SLEEF", "libmvec": "libmvec", "svml": "SVML"}
+#: -fveclib token (clang / flang / icx) per vector-math-library name. On x86_64 there is NO
+#: ``-fveclib=SLEEF`` -- clang AND icx reject it (``unsupported option 'SLEEF' for target 'x86_64'``); it
+#: exists only on aarch64. So on x86 SLEEF is reached the SAME way as libmvec: emit the glibc GNU-vector-ABI
+#: ``_ZGV*`` calls with ``-fveclib=libmvec`` and then LINK ``libsleefgnuabi`` (which exports exactly those
+#: symbols) instead of glibc's libmvec. The two veclibs thus share an emission path and differ ONLY in the
+#: linked library (see :meth:`VectorMathLib.link_flags`); ``svml`` is the distinct ``__svml_*`` mechanism.
+_CLANG_VECLIB = {"sleef": "libmvec", "libmvec": "libmvec", "svml": "SVML"}
+
+#: Roots under which Intel oneAPI keeps libsvml (+ its libintlc/libimf/libirng support libs), globbed for
+#: the versioned ``*/lib`` dir. Off the default loader path and unknown to gcc/clang, so a non-Intel cell
+#: that links libsvml must be pointed at it explicitly.
+_INTEL_ONEAPI_ROOTS = ("/opt/intel/oneapi/compiler", "/opt/intel/oneapi")
+
+
+def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
+    """Absolute directory holding ``lib<soname>`` for ``compiler`` -- for ``-L`` + ``-Wl,-rpath`` so the
+    veclib links AND the built ``.so`` loads without ``LD_LIBRARY_PATH`` -- or ``None`` when it is already
+    on the default path.
+
+    The veclib analogue of :func:`~nestforge.perf.flags.runtime_dir`: ask the compiler driver first (icx
+    knows its own libsvml dir), then the Intel oneAPI lib dirs (newest first -- libsvml lives there, off
+    ldconfig and unknown to gcc/clang), then a from-source SLEEF prefix (``NF_SLEEF_PREFIX`` / ``~/.local`` /
+    ``/usr/local``, where ``libsleefgnuabi`` is installed). Returns the DIRECTORY, never the file, so one
+    rpath of it also covers the library's siblings living beside it (libsvml's libintlc)."""
+    found = driver_lib_path(soname, compiler)
+    if found is not None:
+        return str(found.parent)
+    dirs: List[str] = []
+    for root in _INTEL_ONEAPI_ROOTS:
+        dirs += sorted((str(p) for p in Path(root).glob("*/lib")), reverse=True)
+    prefix = os.environ.get("NF_SLEEF_PREFIX")
+    if prefix:
+        dirs.append(str(Path(prefix) / "lib"))
+    dirs += [str(Path.home() / ".local" / "lib"), "/usr/local/lib"]
+    for d in dirs:
+        if any(Path(d).glob(f"lib{soname}.so*")):
+            return d
+    return None
 
 
 @dataclass
 class VectorMathLib:
     """A vectorized math library supplying SIMD implementations of elementary functions (exp/log/sin/...),
     so an autovectorized loop calls a packed routine instead of scalarizing the transcendental. A SEPARATE
-    axis from the OpenMP runtime and the base flags. Support is per-compiler-family:
+    axis from the OpenMP runtime and the base flags. The model here is x86_64, verified on this box:
 
-    * ``sleef``   (portable): clang/flang/icx via ``-fveclib=SLEEF`` (+ ``-lsleef``); unsupported on gcc.
-    * ``libmvec`` (glibc): clang via ``-fveclib=libmvec``; gcc uses it AUTOMATICALLY under ``-O3``/fast-math
-      with an AVX ``-march`` (no compile flag), linking ``-lmvec``.
-    * ``svml``    (Intel): icx/clang via ``-fveclib=SVML``; gcc via ``-mveclibabi=svml``; classic icc emits
-      SVML natively. Links ``-lsvml``.
+    * ``libmvec`` (glibc): gcc emits the GNU-vector-ABI ``_ZGV*`` calls AUTOMATICALLY under fast-math + an
+      AVX ``-march`` (no compile flag); clang/icx via ``-fveclib=libmvec``. Resolved by glibc's ``libmvec``.
+    * ``sleef``   (portable, from source): the SAME ``_ZGV*`` emission (gcc autovec / ``-fveclib=libmvec``),
+      but LINKED against ``libsleefgnuabi`` -- SLEEF's GNU-ABI library, which exports those very symbols --
+      instead of glibc libmvec. So SLEEF works on gcc AND clang AND icx. (``-fveclib=SLEEF`` does not exist
+      on x86; see :data:`_CLANG_VECLIB`.)
+    * ``svml``    (Intel): clang/icx via ``-fveclib=SVML`` -> ``__svml_*`` calls, linked against ``libsvml``.
+      NOT available on gcc: gcc only ever emits ``_ZGV*``, never ``__svml_*`` (``-mveclibabi=svml`` is a
+      no-op on modern gcc), and libsvml does not export the ``_ZGV*`` names, so gcc cannot use it.
 
     Note: the vectorizer only SUBSTITUTES these calls when the FP mode relaxes math semantics -- that
     fast-math FP-mode axis is kept separate from this library selection.
     """
-    name: str  # sleef | libmvec | svml
+    name: str  # libmvec | sleef | svml
     soname: Optional[str]  # -l<soname> for the vector symbols (None: toolchain/glibc provides)
-    lib_dir: Optional[str] = None  # -L if the library is not on the default search path
+    lib_dir: Optional[str] = None  # explicit -L override; when None the dir is resolved via veclib_lib_dir
 
     def compatible(self, compiler: str) -> bool:
         fam = compiler_family(compiler)
-        if fam == "llvm":
-            return self.name in _CLANG_VECLIB
-        if fam == "gnu":
-            return self.name in ("libmvec", "svml")  # glibc libmvec (auto) or -mveclibabi=svml
+        if fam == "llvm":  # clang/icx: -fveclib=libmvec (also SLEEF's emission path) or -fveclib=SVML
+            return self.name in ("libmvec", "sleef", "svml")
+        if fam == "gnu":  # gcc emits _ZGV* under fast-math; libmvec (glibc) or SLEEF (libsleefgnuabi) satisfy it
+            return self.name in ("libmvec", "sleef")  # NOT svml: gcc never emits __svml_*
         if fam == "intel-classic":
             return self.name == "svml"  # classic icc emits SVML natively
         return False  # nvidia: use its own -Mvect, not these
@@ -360,22 +400,29 @@ class VectorMathLib:
 
     def compile_flags(self, compiler: str) -> List[str]:
         self.check(compiler)
-        fam = compiler_family(compiler)
-        if fam == "llvm":
+        if compiler_family(compiler) == "llvm":  # emit the packed calls: SVML -> __svml_*, else glibc _ZGV*
             return [f"-fveclib={_CLANG_VECLIB[self.name]}"]
-        if fam == "gnu":
-            return ["-mveclibabi=svml"] if self.name == "svml" else []  # libmvec is automatic on gcc
-        return []  # intel-classic svml: native
+        return []  # gnu: -ffast-math autovec already emits _ZGV*; intel-classic: SVML is native
 
     def link_flags(self, compiler: str) -> List[str]:
         self.check(compiler)
         if not self.soname:
             return []
-        libdir = [f"-L{self.lib_dir}"] if self.lib_dir else []
-        return [*libdir, f"-l{self.soname}"]
+        libdir = self.lib_dir or veclib_lib_dir(self.soname, compiler)
+        search = [f"-L{libdir}", f"-Wl,-rpath,{libdir}"] if libdir else []
+        if self.name == "svml":
+            # libsvml pulls libintlc.so.5 (its own dependency, same dir). A plain -Wl,-rpath emits
+            # DT_RUNPATH, which the loader does NOT consult for a dependency's OWN dependencies, so libintlc
+            # goes unresolved at dlopen. --disable-new-dtags makes it DT_RPATH, which IS searched
+            # transitively -- so the single -L/-rpath covers libsvml and its libintlc together.
+            search.append("-Wl,--disable-new-dtags")
+        # Pin the library NEEDED regardless of its position on the link line: a veclib -l can precede the
+        # object under --as-needed and be dropped (exactly as an OpenMP -l can); --pop-state restores
+        # --as-needed so nothing else is over-linked. Mirrors openmp_runtime_flags' gnu handling.
+        return [*search, f"-Wl,--push-state,--no-as-needed,-l{self.soname},--pop-state"]
 
 
-SLEEF = VectorMathLib(name="sleef", soname="sleef")
+SLEEF = VectorMathLib(name="sleef", soname="sleefgnuabi")  # SLEEF's GNU-ABI lib, exporting _ZGV* symbols
 LIBMVEC = VectorMathLib(name="libmvec", soname="mvec")  # glibc's libmvec
 SVML = VectorMathLib(name="svml", soname="svml")  # Intel SVML runtime
 
@@ -384,11 +431,13 @@ VECTOR_LIBS = {"sleef": SLEEF, "libmvec": LIBMVEC, "svml": SVML}
 
 
 def vectorlib_installed(vl: VectorMathLib) -> bool:
-    """True if the vector library's shared object is findable (shares :func:`lib_findable` with
-    :func:`runtime_installed`). A ``soname``-less entry (toolchain/glibc-provided) is always present."""
+    """True if the vector library's shared object is findable. A ``soname``-less entry (toolchain/glibc-
+    provided) is always present. libsvml (Intel oneAPI) and libsleefgnuabi (from-source SLEEF) live off the
+    ldconfig cache, so :func:`lib_findable` alone reports them absent -- fall back to :func:`veclib_lib_dir`,
+    which knows their off-path homes (asked with the default compiler; the arena re-checks per real cell)."""
     if not vl.soname:
         return True
-    return lib_findable(vl.soname, vl.lib_dir)
+    return lib_findable(vl.soname, vl.lib_dir) or veclib_lib_dir(vl.soname, DEFAULT_COMPILER) is not None
 
 
 # TODO(blas): add a BLAS/LAPACK library axis (openblas / mkl / blis / nvpl / accelerate) the same way --

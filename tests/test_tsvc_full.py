@@ -49,9 +49,14 @@ def test_reduced_fp_modes_and_atol():
 
 # --- auto-parallelization axis ------------------------------------------------------------------------
 def test_autopar_flags_per_family(monkeypatch):
-    # gcc default auto-par is Graphite (isl loop-nest optimizer + parallelize-all); no compiler -> no probe.
+    # gcc default auto-par is Graphite: parloops (-ftree-parallelize-loops + -floop-parallelize-all) + the
+    # isl loop-nest optimizer + -fgraphite-identity (forces SCoP model construction so detection != 0). No
+    # compiler -> no probe. We do NOT force the back end past its cost model (no Polly -process-unprofitable).
     gnu, r = flags.autopar_flags("gnu", 72)
-    assert gnu == ["-ftree-parallelize-loops=72", "-floop-parallelize-all", "-floop-nest-optimize", "-fopenmp"]
+    assert gnu == [
+        "-ftree-parallelize-loops=72", "-floop-parallelize-all", "-floop-nest-optimize", "-fgraphite-identity",
+        "-fopenmp"
+    ]
     assert r is None
     # llvm default auto-par is Polly (mirrors optarena POLLY_PAR).
     llvm, rl = flags.autopar_flags("llvm", 8)
