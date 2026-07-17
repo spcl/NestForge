@@ -8,9 +8,10 @@ import json
 
 import pytest
 
+from nestforge.build import OPENMP_RUNTIMES
 from nestforge.perf import flags
-from nestforge.perf.support_matrix import (MatrixCell, build_support_matrix, loop_source, machine_config, render_matrix,
-                                           resolve_tool_paths, surviving_runtimes)
+from nestforge.perf.support_matrix import (MachineCompat, MatrixCell, build_support_matrix, loop_source, machine_compat,
+                                           machine_config, render_matrix, resolve_tool_paths, surviving_runtimes)
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 
 
@@ -102,6 +103,127 @@ def test_a_corrupt_cache_reprobes_instead_of_crashing(tmp_path, monkeypatch):
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
     cfg = machine_config(cache=cache)  # must not raise on the bad file
     assert "compilers" in cfg
+
+
+# --- dynamic compatibility: query the discovered matrix, prune per-machine ---------------------------
+def compat_from(cells, default_runtime="libomp", surviving=("libomp", "libiomp5")):
+    """A MachineCompat over a synthetic config -- no toolchain needed to test the query logic."""
+    return MachineCompat({
+        "default_openmp_runtime": default_runtime,
+        "surviving_runtimes": list(surviving),
+        "support_matrix": [vars(c) if hasattr(c, "__dict__") else c for c in cells],
+    })
+
+
+# the machine this session targets: libomp works for gcc/clang/intel, libgomp gcc-only, nvc islanded.
+THIS_MACHINE = [
+    cell("libomp", ("gcc", "clang")),
+    cell("libomp", ("gcc", "intel")),
+    cell("libomp", ("clang", "intel")),
+    cell("libgomp", ("gcc", "gcc")),
+    cell("libnvomp", ("nvhpc", "nvhpc")),
+]
+
+
+def test_default_runtime_is_the_machine_survivor_not_a_hardcoded_constant():
+    compat = compat_from(THIS_MACHINE, default_runtime="libiomp5")
+    assert compat.default_runtime().name == "libiomp5"  # follows the CACHE, not flags.DEFAULT_OPENMP_RUNTIME
+    # a bare machine with no discovery falls back to the portable default rather than crashing.
+    assert MachineCompat({}).default_runtime().name == flags.DEFAULT_OPENMP_RUNTIME.name
+
+
+def test_is_supported_reflects_the_empirical_cells_not_the_abi_table():
+    compat = compat_from(THIS_MACHINE)
+    assert compat.is_supported("gcc", "libomp") and compat.is_supported("intel", "libomp")
+    # clang+libgomp is ABI-IMPOSSIBLE and never in the matrix -- the query must say so from evidence.
+    assert not compat.is_supported("clang", "libgomp")
+    # nvc only ever appears with libnvomp.
+    assert compat.is_supported("nvhpc", "libnvomp") and not compat.is_supported("nvhpc", "libomp")
+
+
+def test_an_inert_cell_is_not_supported_even_though_it_ran():
+    # a cell that produced the right answer but NEVER parallelised (Polly inert) must not count as support:
+    # the arena would time it as parallel while it ran serial.
+    inert = cell("libomp", ("clang", "clang"))
+    inert.parallel = False
+    compat = compat_from([inert])
+    assert not compat.is_supported("clang", "libomp"), "a serially-run cell is not parallel support"
+
+
+def test_supported_runtimes_ranks_the_machine_default_first():
+    compat = compat_from(THIS_MACHINE, default_runtime="libomp", surviving=("libomp", "libiomp5"))
+    assert compat.supported_runtimes("gcc")[0] == "libomp"  # default first, so a fallback stays portable
+    assert "libgomp" in compat.supported_runtimes("gcc")  # gcc really can use it here
+    assert compat.supported_runtimes("clang") == ["libomp"]  # clang cannot use libgomp/libnvomp
+
+
+def test_runtime_for_keeps_the_sweep_on_one_runtime_when_possible():
+    compat = compat_from(THIS_MACHINE)
+    # gcc, clang and intel all support the default -> all get the SAME runtime (one thread pool for the
+    # whole program, the entire point of the single-runtime contract).
+    assert compat.runtime_for("gcc").name == "libomp"
+    assert compat.runtime_for("clang").name == "libomp"
+    assert compat.runtime_for("intel").name == "libomp"
+
+
+def test_runtime_for_falls_back_to_a_compilers_own_runtime_off_the_default():
+    # nvc cannot link the shared libomp default, so it gets its own libnvomp rather than being dropped.
+    compat = compat_from(THIS_MACHINE)
+    assert compat.runtime_for("nvhpc").name == "libnvomp"
+    # a compiler that parallelises against NOTHING here is dropped from the parallel lanes (None).
+    assert compat.runtime_for("unknownfamily") is None
+
+
+def test_supported_compilers_names_who_can_share_a_runtime():
+    compat = compat_from(THIS_MACHINE)
+    assert set(compat.supported_compilers("libomp")) == {"gcc", "clang", "intel"}
+    assert compat.supported_compilers("libnvomp") == ["nvhpc"]  # islanded
+    assert compat.supported_compilers("libgomp") == ["gcc"]
+
+
+def test_machine_compat_reads_the_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "toolchains.json"
+    import nestforge.perf.support_matrix as sm
+    monkeypatch.setattr(sm,
+                        "discover_toolchains",
+                        lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
+    monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
+    compat = machine_compat(cache=cache)  # probes once, writes cache
+    assert compat.default_runtime().name == flags.DEFAULT_OPENMP_RUNTIME.name
+    assert cache.exists()
+
+
+def test_cached_default_runtime_never_probes(tmp_path, monkeypatch):
+    """The hot-path accessor must be safe: with NO cache it returns the static default WITHOUT triggering a
+    discovery build -- discovery compiles dozens of programs and must never be a surprise mid-sweep."""
+    import nestforge.perf.support_matrix as sm
+
+    def explode(*a, **k):
+        raise AssertionError("cached_default_runtime probed -- it must never build")
+
+    monkeypatch.setattr(sm, "discover_toolchains", explode)
+    monkeypatch.setattr(sm, "build_support_matrix", explode)
+    assert sm.cached_default_runtime(tmp_path / "absent.json").name == flags.DEFAULT_OPENMP_RUNTIME.name
+
+
+def test_cached_default_runtime_uses_the_discovered_runtime_when_a_cache_exists(tmp_path):
+    import json as _json
+    import nestforge.perf.support_matrix as sm
+    cache = tmp_path / "toolchains.json"
+    cache.write_text(
+        _json.dumps({
+            "default_openmp_runtime": "libiomp5",
+            "surviving_runtimes": ["libiomp5"],
+            "support_matrix": []
+        }))
+    assert sm.cached_default_runtime(cache).name == "libiomp5"  # follows the cache, no probing
+
+
+def test_cached_default_runtime_survives_a_corrupt_cache(tmp_path):
+    import nestforge.perf.support_matrix as sm
+    cache = tmp_path / "toolchains.json"
+    cache.write_text("{ broken")
+    assert sm.cached_default_runtime(cache).name == flags.DEFAULT_OPENMP_RUNTIME.name  # falls back, no raise
 
 
 # --- integration: the real matrix on whatever is installed -------------------------------------------

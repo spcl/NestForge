@@ -91,7 +91,7 @@ from nestforge.build import BuildOptions, codegen_impls_available, default_codeg
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
-from nestforge.perf import flags, pluto_lane
+from nestforge.perf import flags, pluto_lane, support_matrix
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable,
@@ -897,8 +897,9 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
         return {**label, "skip": pre, **summarize_times([])}
     so = workdir / f"pluto_n{nc['nest_idx']}.so"
     # PLUTO_EXTRA_FLAGS carries -fopenmp (polycc emits the pragmas), which would link gcc's DEFAULT
-    # libgomp -- a second runtime beside the one every other lane links. Pin the mandated one here too.
-    omp_rt, omp_reason = flags.openmp_runtime_flags(cc, "gnu", flags.DEFAULT_OPENMP_RUNTIME)
+    # libgomp -- a second runtime beside the one every other lane links. Pin the machine's runtime (the one
+    # discovery found works cross-compiler here), falling back to the portable default when uncharacterised.
+    omp_rt, omp_reason = flags.openmp_runtime_flags(cc, "gnu", support_matrix.cached_default_runtime())
     if omp_rt is None:
         return {**label, "skip": omp_reason, **summarize_times([])}
     cflags = list(flags.base_flags("gnu")) + list(pluto_lane.PLUTO_EXTRA_FLAGS) + omp_rt

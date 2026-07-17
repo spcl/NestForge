@@ -281,6 +281,87 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
     return "\n".join(lines)
 
 
+class MachineCompat:
+    """Queryable view of the discovered support matrix -- 'what does THIS machine actually support', for a
+    sweep to prune against instead of the static ABI table.
+
+    The ABI table (:meth:`OpenMPRuntime.compatible`) answers what is possible IN PRINCIPLE; this answers
+    what SURVIVED the empirical build-link-load-run on this specific box. They differ exactly where it
+    matters -- a runtime the driver cannot locate, a Polly that is inert, a libiomp5 that is really libomp.
+    Built from a :func:`machine_config` dict, so it reads the cache: discovery ran once, every sweep
+    consults the result.
+    """
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self._cells = config.get("support_matrix", [])
+
+    def default_runtime(self) -> OpenMPRuntime:
+        """The runtime the sweep should standardise on for this machine: the empirically-best cross-compiler
+        survivor, or LIBOMP when nothing was discovered (a bare checkout with no cache)."""
+        name = self.config.get("default_openmp_runtime") or flags.DEFAULT_OPENMP_RUNTIME.name
+        return OPENMP_RUNTIMES.get(name, flags.DEFAULT_OPENMP_RUNTIME)
+
+    def is_supported(self, compiler_family: str, runtime_name: str) -> bool:
+        """Did a cell where ``compiler_family`` built a nest linked against ``runtime_name`` actually build,
+        load, parallelise and run correct on this machine? The per-cell answer the arena prunes on."""
+        return any(c["runtime"] == runtime_name and compiler_family in c["compilers"] and c["correct"] and c["parallel"]
+                   for c in self._cells)
+
+    def supported_runtimes(self, compiler_family: str) -> List[str]:
+        """Every runtime ``compiler_family`` can actually use here, ranked with the machine default first --
+        so a per-compiler fallback picks the most-portable working runtime, not an arbitrary one."""
+        order = self.config.get("surviving_runtimes", []) + list(OPENMP_RUNTIMES)
+        seen, out = set(), []
+        for rt in order:
+            if rt not in seen and self.is_supported(compiler_family, rt):
+                seen.add(rt)
+                out.append(rt)
+        return out
+
+    def supported_compilers(self, runtime_name: str) -> List[str]:
+        """Every compiler family that can target ``runtime_name`` here -- who may join a sweep standardised
+        on that one runtime."""
+        fams = {
+            f
+            for c in self._cells if c["runtime"] == runtime_name and c["correct"] and c["parallel"]
+            for f in c["compilers"]
+        }
+        return sorted(fams)
+
+    def runtime_for(self, compiler_family: str) -> Optional[OpenMPRuntime]:
+        """The runtime to build ``compiler_family``'s cells with: the machine default if this compiler
+        supports it (keeps the whole sweep on ONE runtime), else its best own-supported runtime, else None
+        -- a compiler that can parallelise against NOTHING here is dropped from the parallel lanes."""
+        default = self.default_runtime()
+        if self.is_supported(compiler_family, default.name):
+            return default
+        own = self.supported_runtimes(compiler_family)
+        return OPENMP_RUNTIMES.get(own[0]) if own else None
+
+
+def machine_compat(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> MachineCompat:
+    """The compatibility view for this machine, from the cache (probing once if absent)."""
+    return MachineCompat(machine_config(cache=cache, refresh=refresh))
+
+
+def cached_default_runtime(cache: Path = DEFAULT_CACHE) -> OpenMPRuntime:
+    """The machine's discovered default OpenMP runtime IF a cache already exists, else the static default.
+
+    This NEVER probes -- unlike :func:`machine_compat`, it will not trigger a discovery build. That is the
+    difference that makes it safe to call from the sweep hot path: discovery compiles dozens of programs
+    and must be an explicit, once-per-machine step (the CLI, or the first ``machine_config`` call), never a
+    surprise mid-sweep. With no cache the sweep simply uses the portable :data:`~flags.DEFAULT_OPENMP_RUNTIME`,
+    exactly as before this layer existed -- so a machine that has never been characterised behaves
+    identically, and one that has picks up its discovered runtime for free."""
+    if cache.exists():
+        try:
+            return MachineCompat(json.loads(cache.read_text())).default_runtime()
+        except (OSError, ValueError):
+            pass
+    return flags.DEFAULT_OPENMP_RUNTIME
+
+
 def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
     """The discovered toolchain config for THIS machine: absolute compiler/runtime/veclib paths and the
     surviving cross-compiler runtimes. Probed ONCE and cached; loaded verbatim thereafter.
