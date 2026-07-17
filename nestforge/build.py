@@ -275,8 +275,14 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
             found = driver_lib_path(soname, probe)
             if found is not None:
                 return str(found.parent)
-    # Newest LLVM first: when several are installed, an older libomp is the less likely intent.
-    for d in sorted((str(x) for x in Path("/usr/lib").glob("llvm-*/lib")), reverse=True):
+    # Newest LLVM first: when several are installed, an older libomp is the less likely intent. lib64 as
+    # well as lib: Debian/Ubuntu multiarch puts libraries under lib/<triple>, but RHEL/Fedora/SUSE use
+    # lib64, so a lib-only search finds nothing there.
+    for root in ("/usr/lib", "/usr/lib64"):
+        for d in sorted((str(x) for x in Path(root).glob("llvm-*/lib*")), reverse=True):
+            if (Path(d) / f"lib{soname}.so").exists():
+                return d
+    for d in ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib"):
         if (Path(d) / f"lib{soname}.so").exists():
             return d
     return None

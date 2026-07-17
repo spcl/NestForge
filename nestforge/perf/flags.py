@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from nestforge.build import LIBOMP, OpenMPRuntime, driver_lib_path, lib_linkable
+from nestforge.build import LIBOMP, OpenMPRuntime, compiler_family, driver_lib_path, lib_linkable, linkable_lib_dir
 
 #: The ONE OpenMP runtime every lane links unless a cell names another. libomp because it is the only
 #: runtime BOTH families can link -- LLVM selects it by name, and it carries a ``GOMP_*`` compat layer a
@@ -298,6 +298,57 @@ def omp_emit_flags(family: str) -> List[str]:
     return {"nvidia": ["-mp"]}.get(family, ["-fopenmp"])
 
 
+#: A support library a compiler AUTO-LINKS into every object, over and above the OpenMP runtime. icx
+#: pulls Intel's vector-math + libm set (libsvml/libimf/libirng/libintlc), which live in the compiler's
+#: OWN lib dir -- off the loader's default path -- and icx bakes NO RUNPATH. Probing for one of them
+#: locates the whole set: they share a directory. gcc/clang auto-link nothing comparable, so the probe
+#: simply answers None for them and costs one cached driver call.
+SUPPORT_LIB_PROBE = "svml"
+
+
+@functools.lru_cache(maxsize=None)
+def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
+    """``-Wl,-rpath`` for the compiler's own auto-linked support libraries, or ``()`` when it has none.
+
+    Not the same directory as the OpenMP runtime, and assuming so is a real failure: an icx cell built
+    against the DEFAULT libomp rpaths the SYSTEM libomp dir, which holds no libsvml, and the .so links
+    cleanly and then dies at ``dlopen`` with ``libsvml.so: cannot open shared object file``. It works with
+    libiomp5 only because Intel keeps its runtime and its support libs in ONE dir -- coincidence, not
+    design, and it evaporates the moment the global runtime is libomp. Measured both ways.
+
+    This is what lets an icx cell be discovered by path alone, with no ``setvars.sh``: the arena dlopens
+    node libraries IN-PROCESS, so a runtime that needs ``LD_LIBRARY_PATH`` set before interpreter start is
+    unusable to it. Baking the rpath is the same technique :func:`openmp_runtime_flags` already uses to
+    make clang's off-path libomp loadable.
+    """
+    found = driver_lib_path(SUPPORT_LIB_PROBE, compiler)
+    return ("-Wl,-rpath,%s" % found.parent, ) if found else ()
+
+
+@functools.lru_cache(maxsize=None)
+def runtime_dir(soname: str, compiler: str) -> Optional[str]:
+    """The directory for BOTH ``-L`` (so ``-l<soname>`` resolves) and ``-Wl,-rpath`` (so the ``.so``
+    LOADS without ``LD_LIBRARY_PATH``), or ``None`` when neither is needed.
+
+    Two questions, two answers, and conflating them is a real bug rather than a nicety -- it is exactly
+    how CI broke: availability was checked with :func:`~nestforge.build.lib_linkable` (which knows to ask
+    a SIBLING driver, and answered "yes, clang-18 has it") while the ``-L`` came from
+    :func:`~nestforge.build.driver_lib_path` (which asks gcc ITSELF, and answered None). The cell then
+    emitted a bare ``-lomp`` with no ``-L`` and died with ``cannot find -lomp``. On a box where gcc finds
+    libomp directly the two agree and the bug is invisible.
+
+    Ask the compiler that will do the linking FIRST: it ships its own runtime and knows its libdir under
+    any prefix -- clang -> its libomp, icx -> libiomp5 (whose directory also holds libsvml, which icx
+    auto-links, so one rpath covers both and the .so loads standalone), nvc -> libnvomp. Only when that
+    driver does not know the runtime does the wider search apply (explicit LD_LIBRARY_PATH / LIBRARY_PATH,
+    then a sibling driver, then the distro's LLVM layouts).
+    """
+    found = driver_lib_path(soname, compiler)
+    if found is not None:
+        return str(found.parent)
+    return linkable_lib_dir(soname, compiler)
+
+
 def openmp_runtime_flags(compiler: Optional[str], family: str,
                          runtime: OpenMPRuntime) -> Tuple[Optional[List[str]], Optional[str]]:
     """Pin this cell to EXACTLY ONE OpenMP runtime -- ``runtime``, whichever compiler builds it -- or
@@ -341,13 +392,19 @@ def openmp_runtime_flags(compiler: Optional[str], family: str,
     # only inside the NVIDIA HPC SDK, so gcc+libnvomp passes the ABI test and then dies at link with
     # `cannot find -lnvomp`. Ask whether -l<soname> actually resolves for THIS compiler before emitting a
     # cell that cannot build: an absent runtime is a recorded skip, never a hard failure.
-    if family not in ("intel-classic", "nvidia") and not lib_linkable(runtime.soname, compiler):
+    # The OpenMP family is NOT the caller's ``family``: that labels the FP-flag matrix, where icx/ifx are
+    # split out as 'intel' because they default to -fp-model=fast. For RUNTIME selection they are
+    # clang-based and select by name, so ask the authority -- compiler_family() -- or icx would take the
+    # gnu branch and pin its runtime with -l instead of -fopenmp=<name>.
+    omp_family = compiler_family(compiler)
+    if omp_family not in ("intel-classic", "nvidia") and not lib_linkable(runtime.soname, compiler):
         return None, f"{runtime.name} is not linkable by {Path(compiler).name} (runtime not installed for it)"
-    found = driver_lib_path(runtime.soname, compiler)
-    search = ["-L%s" % found.parent, "-Wl,-rpath,%s" % found.parent] if found else []
-    if family == "llvm":
+    lib_dir = runtime_dir(runtime.soname, compiler)
+    search = ["-L%s" % lib_dir, "-Wl,-rpath,%s" % lib_dir] if lib_dir else []
+    search += list(support_rpath_flags(compiler))
+    if omp_family == "llvm":
         return [f"-fopenmp={runtime.name}", *search], None
-    if family in ("intel-classic", "nvidia"):
+    if omp_family in ("intel-classic", "nvidia"):
         return search, None  # -qopenmp / -mp already hard-link the only runtime they accept
     # gnu: pin NEEDED despite preceding the source, then restore --as-needed so -lgomp drops out.
     return [*search, f"-Wl,--push-state,--no-as-needed,-l{runtime.soname},--pop-state"], None

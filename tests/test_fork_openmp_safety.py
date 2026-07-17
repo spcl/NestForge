@@ -11,13 +11,16 @@ one and recovers. Since the OpenMP runtime is a configurable axis -- libgomp is 
 assert the child still runs.
 """
 import ctypes
+import inspect
+import os
+import select
 import shutil
 import subprocess
 
 import numpy as np
 import pytest
 
-from nestforge.isolation import OMP_PAUSE_MODES, pause_openmp_pools, run_isolated
+from nestforge.isolation import OMP_PAUSE_MODES, OMP_PAUSE_SOFT, pause_openmp_pools, run_isolated
 
 OMP_SRC = """#include <omp.h>
 void kern(double *a, int n) {
@@ -28,11 +31,31 @@ void kern(double *a, int n) {
 
 N = 4096
 
+#: (runtime, mode) -> does omp_pause_resource_all ACTUALLY tear the thread pool down? MEASURED here, not
+#: assumed, by counting threads in /proc/self/task across the call:
+#:     libgomp soft 16->1   libgomp hard 16->1   libomp soft 16->16   libomp hard 16->2
+#: libomp's SOFT pause is the outlier: it leaves the pool fully up and still returns 0 ("success"), so the
+#: return code cannot detect it -- only the thread count can. That cell's fork is safe anyway, but for a
+#: different reason (libomp's pthread_atfork handler rebuilds the child's pool), which is precisely why
+#: "the child didn't hang" is too weak an observable to pin tear-down with. The default -- libgomp + soft
+#: -- is the one that must genuinely tear down, and does.
+TEARS_DOWN_POOL = {("gomp", "soft"): True, ("gomp", "hard"): True, ("omp", "soft"): False, ("omp", "hard"): True}
 
+
+def thread_count():
+    """Live threads in THIS process, straight from procfs -- no ``ps`` shell-out. A live OpenMP pool shows
+    up here as one thread per core beyond the baseline, so tear-down is directly observable rather than
+    inferred from a fork that happened not to hang."""
+    return len(os.listdir("/proc/self/task"))
+
+
+# gcc and both OpenMP runtimes are hard requirements of this file, not optional extras: gcc is the repo's
+# default compiler and libgomp is what it links by default, so "no gcc" or "no libgomp" is a broken
+# environment to surface, never a skip to hide behind -- a skip here would silently retire THE regression
+# this file exists to pin, and would fail CI anyway (the unit set runs under NESTFORGE_CI_NO_SKIP=1).
 def build(tmp_path, runtime):
     """A kernel with an OpenMP region, linked against ``runtime`` ("gomp" or "omp")."""
-    if not shutil.which("gcc"):
-        pytest.skip("no gcc")
+    assert shutil.which("gcc"), "gcc is required to build the OpenMP kernel this file's regression needs"
     src = tmp_path / "k.c"
     src.write_text(OMP_SRC)
     so = tmp_path / f"k_{runtime}.so"
@@ -40,8 +63,8 @@ def build(tmp_path, runtime):
     if runtime != "gomp":  # gcc's default IS libgomp; anything else must be pinned at link
         libdir = subprocess.run(["gcc", f"-print-file-name=lib{runtime}.so"], capture_output=True,
                                 text=True).stdout.strip()
-        if not libdir.startswith("/"):
-            pytest.skip(f"lib{runtime}.so not linkable by gcc here")
+        assert libdir.startswith("/"), (f"lib{runtime}.so is not linkable by gcc here (got {libdir!r}). The "
+                                        f"runtime axis is a pinned dependency of this suite, not an optional one.")
         extra = [f"-L{libdir.rsplit('/', 1)[0]}", f"-Wl,--push-state,--no-as-needed,-l{runtime},--pop-state"]
     proc = subprocess.run(
         ["gcc", "-O2", "-fPIC", "-shared", "-fopenmp", *extra,
