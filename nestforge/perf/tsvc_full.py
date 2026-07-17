@@ -113,13 +113,57 @@ def validate_cap(profile_preset: str) -> str:
     return profile_preset if profile_preset in ("S", _VALIDATE_CAP) else _VALIDATE_CAP
 
 
+def physical_cores(cpus) -> int:
+    """How many PHYSICAL cores the logical CPU ids ``cpus`` cover, collapsing SMT siblings.
+
+    A hyperthread is not a core: two threads on one core share its execution units, so sizing an
+    auto-par team by logical CPUs oversubscribes it ~2x and the extra "threads" contend rather than
+    compute. Linux exposes the grouping per CPU as ``topology/thread_siblings_list``; CPUs whose
+    sibling list is unreadable (a kernel without the file) each count as their own core, which
+    degrades to the logical count rather than to zero.
+    """
+    groups = set()
+    for c in cpus:
+        try:
+            groups.add(Path(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read_text().strip())
+        except OSError:
+            groups.add(str(c))
+    return len(groups)
+
+
 def default_threads() -> int:
-    """Default auto-par thread count. ``OMP_NUM_THREADS`` may be a comma list (e.g. ``72,8`` for nested
-    levels), which ``int()`` rejects -- fall back to the CPU count then rather than crashing at parse."""
+    """Default auto-par thread count: the physical cores THIS process may actually use.
+
+    ``os.cpu_count()`` is the wrong answer on every machine that matters -- it reports the whole node.
+    Under one rank of a 4-rank job on a 288-CPU node it says 288 where the rank owns 72, so an auto-par
+    team is sized 4x the cores it has and the ranks fight each other. Asked in order of authority:
+
+    1. ``OMP_NUM_THREADS`` -- explicit intent, so it wins. It may be a NESTED list (``72,8``): the first
+       level is the outer team size, which is what an auto-par loop gets. The old code passed the whole
+       string to ``int()``, took the ValueError, and fell back to the node's CPU count -- turning the
+       most explicit possible request into the worst possible answer.
+    2. ``SLURM_CPUS_PER_TASK`` / ``SLURM_CPUS_ON_NODE`` -- the rank's share, which no CPU count can see.
+    3. the affinity mask -- what ``srun --cpu-bind`` / ``taskset`` / a cgroup actually permits, collapsed
+       to physical cores. This is what makes an un-hinted container or pinned rank come out right.
+    """
+    env = (os.environ.get("OMP_NUM_THREADS") or "").strip()
+    if env:
+        try:
+            return max(1, int(env.split(",")[0]))
+        except ValueError:
+            pass  # unparseable: fall through to the machine rather than guess at the intent
+    for var in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+        val = (os.environ.get(var) or "").strip()
+        if val:
+            try:
+                return max(1, int(val))
+            except ValueError:
+                pass
     try:
-        return int(os.environ.get("OMP_NUM_THREADS") or (os.cpu_count() or 4))
-    except ValueError:
-        return os.cpu_count() or 4
+        cpus = os.sched_getaffinity(0)  # honours cgroups / taskset / srun --cpu-bind; cpu_count() does not
+    except (AttributeError, OSError):
+        cpus = set(range(os.cpu_count() or 4))
+    return max(1, physical_cores(cpus))
 
 
 # --- median-of-N timing (pure functions: unit-tested without a compiler) -----------------------------
