@@ -43,31 +43,40 @@ jobs:
           python -m pip install yapf clang-format
           bash scripts/format.sh --check
 
-      # The two sibling repos nest-forge imports live: OptArena (corpus + numpyto) and DaCe (branch
-      # extended). Both public -> plain checkouts, no key and no token.
-      - name: Phase 1a -- OptArena checkout (sibling ./optarena)
+      # The two repos nest-forge imports: OptArena (corpus + numpyto) and DaCe (branch extended). Both
+      # public -> plain checkouts, no key and no token.
+      #
+      # They go under .deps/ and NOT ./dace + ./optarena: pytest puts the repo root on sys.path, so a
+      # checkout named ./dace shadows the `dace` PACKAGE and every test dies with "cannot import name
+      # 'SDFG' from partially initialized module 'dace.sdfg' (most likely due to a circular import)".
+      # The editable installs below are what make the imports resolve, so the checkout path is free to
+      # be anything that does not collide with an importable name. Locally the two are true siblings of
+      # nest-forge, which is why this never bit outside CI.
+      - name: Phase 1a -- OptArena checkout (.deps/optarena)
         uses: actions/checkout@v4
         with:
           repository: spcl/OptArena
-          path: optarena
+          path: .deps/optarena
 
       - uses: actions/checkout@v4
         with:
           repository: spcl/dace
           ref: extended
-          path: dace
+          path: .deps/dace
           submodules: recursive
 
       # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).
       - name: Phase 1b -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
-      - name: Phase 2 -- DaCe (extended) + OptArena (sibling) + test deps, editable
+      - name: Phase 2 -- DaCe (extended) + OptArena + test deps, editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
-          pip_retry -e ./dace
-          pip_retry -e ./optarena
+          pip_retry -e ./.deps/dace
+          pip_retry -e ./.deps/optarena
           pip_retry numpy pytest pytest-timeout pytest-xdist sympy
+          # the checkouts must not shadow the packages they provide (see Phase 1a)
+          python -c "import dace, optarena; print('dace', dace.__file__); print('optarena', optarena.__file__)"
 
       # Unit set only (-m "not integration"): vendor-compiler + heavy-launcher tests are marked
       # @pytest.mark.integration and excluded here. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the
