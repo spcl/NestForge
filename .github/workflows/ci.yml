@@ -1,13 +1,14 @@
 name: CI
 
 # One CPU runner: a format gate, then the toolchain via the repo's
-# own scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable,
-# then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler + heavy-launcher tests
-# are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the cross-compiler OpenMP matrix.
+# own scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable
+# from GitHub over HTTPS, then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler
+# + heavy-launcher tests are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the
+# cross-compiler OpenMP matrix.
 #
-# spcl/OptArena and spcl/dace are both PUBLIC, so their sibling checkouts need no key and no token.
-# This workflow must stay credential-free: the moment a checkout here needs a secret, CI stops running on
-# fork PRs (secrets are not exposed to them), which is how it ended up dispatch-only before.
+# spcl/OptArena and spcl/dace are both PUBLIC, so the HTTPS installs in Phase 2 need no key and no token.
+# This workflow must stay credential-free: the moment fetching a dep here needs a secret, CI stops running
+# on fork PRs (secrets are not exposed to them), which is how it ended up dispatch-only before.
 #
 # The pytest phase runs the UNIT set (-m "not integration") and enforces ZERO skips via
 # NESTFORGE_CI_NO_SKIP (repo-root conftest.py fails the session if any remaining test skips).
@@ -43,49 +44,38 @@ jobs:
           python -m pip install yapf clang-format
           bash scripts/format.sh --check
 
-      # The two repos nest-forge imports: OptArena (corpus + numpyto) and DaCe (branch extended). Both
-      # public -> plain checkouts, no key and no token.
-      #
-      # They go under .deps/ and NOT ./dace + ./optarena: pytest puts the repo root on sys.path, so a
-      # checkout named ./dace shadows the `dace` PACKAGE and every test dies with "cannot import name
-      # 'SDFG' from partially initialized module 'dace.sdfg' (most likely due to a circular import)".
-      # The editable installs below are what make the imports resolve, so the checkout path is free to
-      # be anything that does not collide with an importable name. Locally the two are true siblings of
-      # nest-forge, which is why this never bit outside CI.
-      - name: Phase 1a -- OptArena checkout (.deps/optarena)
-        uses: actions/checkout@v4
-        with:
-          repository: spcl/OptArena
-          path: .deps/optarena
-
-      - uses: actions/checkout@v4
-        with:
-          repository: spcl/dace
-          ref: extended
-          path: .deps/dace
-          submodules: recursive
-
       # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).
-      - name: Phase 1b -- system toolchain (scripts/setup_apt.sh)
+      - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
-      - name: Phase 2 -- DaCe (extended) + OptArena + test deps, editable
+      - name: Phase 2 -- DaCe (extended) + OptArena + nest-forge[dev], editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
-          pip_retry -e ./.deps/dace
-          pip_retry -e ./.deps/optarena
-          # Two deps that only a CLEAN environment exposes -- both are present on the dev box, so nothing
-          # local ever needed them declared:
-          #   sqlmodel   -- imported by optarena (frameworks/schema.py, frameworks/test.py). optarena's
-          #                 setup.py used to declare NO dependencies at all, so `pip install -e` above
-          #                 resolved none of them and ~38 tests died with ModuleNotFoundError. Fixed
-          #                 upstream in OptArena 610c1c7e (install_requires), which `-e ./.deps/optarena`
-          #                 now pulls. Kept explicit so a regression in that declaration turns into a
-          #                 packaging bug for optarena to fix, not ~38 red tests here.
-          #   matplotlib -- nest-forge's OWN perf/plot_*.py import it, and the plot smokes run them as a
-          #                 SUBPROCESS, so a missing import surfaces only as "exit status 1" from 4 tests.
-          pip_retry numpy pytest pytest-timeout pytest-xdist sympy sqlmodel matplotlib
-          # the checkouts must not shadow the packages they provide (see Phase 1a)
+          # The two repos nest-forge imports, installed EDITABLE straight from GitHub over HTTPS: both are
+          # public, so no checkout step, no key and no token -- which is what keeps this workflow running
+          # on fork PRs (secrets are not exposed to them). @extended pins DaCe to the branch nest-forge
+          # needs; OptArena tracks its default branch. requirements-dev.txt does the same editable install
+          # from the sibling ../dace + ../optarena checkouts instead -- CI has none, and pulling here means
+          # a run always tests the CURRENT extended rather than a pinned snapshot.
+          #
+          # pip runs `git submodule update --init --recursive` for a git requirement, which DaCe REQUIRES:
+          # it vendors its runtime headers as submodules (external/moodycamel/blockingconcurrentqueue.h,
+          # included by dace/runtime/include/dace/stream.h), and without them the first SDFG build dies
+          # with "fatal error: blockingconcurrentqueue.h: No such file or directory".
+          #
+          # --src keeps the clones OUT of the workspace. pytest puts the repo root on sys.path, so a
+          # directory named ./dace would shadow the `dace` PACKAGE and every test dies with "cannot import
+          # name 'SDFG' from partially initialized module 'dace.sdfg' (most likely due to a circular
+          # import)". $RUNNER_TEMP cannot collide with an importable name at all.
+          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
+          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=optarena"
+          # nest-forge + its [dev] extra: pytest/pytest-timeout/pytest-xdist/matplotlib/yapf/ruff/
+          # clang-format, and the runtime deps (numpy, pyyaml, sympy) via [project].dependencies. This
+          # installing at all is itself a regression test -- `pip install -e .` used to fail outright on
+          # "No matching distribution found for optarena". sqlmodel arrives with optarena's own
+          # install_requires (OptArena 610c1c7e); matplotlib is needed because the plot smokes run
+          # perf/plot_*.py as a SUBPROCESS, where a missing import surfaces only as "exit status 1".
+          pip_retry -e ".[dev]"
           python -c "import dace, optarena; print('dace', dace.__file__); print('optarena', optarena.__file__)"
 
       # Unit set only (-m "not integration"): vendor-compiler + heavy-launcher tests are marked

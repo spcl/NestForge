@@ -1,12 +1,16 @@
-# nest-forge dev/test dependencies.
+# nest-forge dev/test dependencies -- the LOCAL box.
 #
-# This file exists for the two deps pip cannot resolve by NAME -- both are installed EDITABLE from the
-# documented sibling layout (../dace and ../optarena next to ./nest-forge; adjust if yours differs).
-# Everything else lives in pyproject.toml and is pulled in by the `-e .[dev]` below, so the tool list
-# is stated once rather than drifting between two files.
+# This file exists for the two deps pip cannot resolve by NAME. Locally they are the sibling checkouts
+# you actually develop in (../dace and ../optarena next to ./nest-forge, the documented layout; adjust
+# if yours differs), installed editable so an edit there is live in nest-forge with no reinstall.
 #
 #   git -C ../dace switch extended           # nest-forge needs the extended branch, not PyPI's dace
 #   pip install -r requirements-dev.txt
+#
+# CI does NOT use this file: it has no sibling checkouts, so it installs both editable straight from
+# GitHub over HTTPS (see .github/workflows/ci.yml, Phase 2). That is the same editable install from a
+# different source -- deliberately, so a CI run always tests the CURRENT extended rather than whatever
+# happens to be checked out here.
 #
 # DaCe MUST be the `extended` branch: PyPI's `dace` tops out at 1.0.2 and lacks the extended-only passes
 # nest-forge calls (e.g. dace.transformation.interstate.expand_nested_sdfg_inputs -- without it the
@@ -17,6 +21,7 @@
 -e ../optarena
 
 # nest-forge itself, editable, plus the [dev] extra from pyproject.toml (pytest, xdist, matplotlib,
-# yapf, ruff, clang-format). Its runtime deps (numpy, pyyaml, sympy) come with it. Listed LAST so the
-# two editable checkouts above are already installed and nothing tries to resolve `dace` from PyPI.
+# yapf, ruff, clang-format). Its runtime deps (numpy, pyyaml, sympy) come with it, and optarena's own
+# install_requires brings sqlmodel. Listed LAST so the two editable checkouts above are already
+# installed and nothing tries to resolve `dace` from PyPI.
 -e .[dev]
