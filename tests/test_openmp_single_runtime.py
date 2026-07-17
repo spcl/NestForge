@@ -11,19 +11,21 @@ were written for was invisible to every flag-level assertion, because each famil
 perfectly correct in isolation. Only linking a cell from each compiler and comparing the results shows
 the two runtimes.
 
-Nothing here RUNS a kernel: linking is what selects a runtime, so compiling is the whole experiment.
-That also keeps the file free of the libgomp fork hazard (an OpenMP region in this process would
-poison every later ``run_isolated`` fork).
+Most tests here only LINK -- linking is what selects a runtime, so compiling is the whole experiment,
+and it keeps this process free of the libgomp fork hazard (an OpenMP region here would poison every
+later ``run_isolated`` fork). The one end-to-end test that must RUN both nests does so in a fresh
+interpreter via exec, for the same reason plus a second: a forked child inherits every mapping the
+worker already had, so it could not tell which runtime the two node libraries themselves pulled in.
 """
-import ctypes
+import json
 import shutil
 import subprocess
+import sys
 
 import numpy as np
 import pytest
 
 from nestforge.build import OPENMP_RUNTIMES, compiler_family
-from nestforge.isolation import run_isolated
 from nestforge.perf import flags
 
 #: A minimal nest with an OpenMP region: enough to make the compiler link a runtime, which is all that
@@ -181,28 +183,44 @@ def test_libgomp_is_pruned_for_llvm_but_kept_for_gnu():
 
 
 # --- end to end: two compilers' nests, ONE process, ONE runtime, and the numbers are right -----------
-def mapped_openmp_runtimes():
-    """The OpenMP runtimes mapped into THIS process, from /proc/self/maps -- what is actually loaded, as
-    opposed to what DT_NEEDED promised. Two runtimes here means two thread pools on the same cores."""
+#: Loads BOTH node libraries into one process, runs both nests, and reports what got mapped. Run via
+#: EXEC, not fork: the claim is "these two libraries bring in one runtime", and a forked child inherits
+#: every mapping the pytest worker already had -- including runtimes other tests deliberately loaded (
+#: tests/test_fork_openmp_safety.py loads libgomp on purpose), which would be counted against these two
+#: libraries and fail the assertion for something they did not do. A fresh interpreter has no OpenMP
+#: runtime mapped until these .so's pull one, so the measurement means exactly what it claims.
+RUN_BOTH_SRC = '''
+import ctypes, json, sys
+import numpy as np
+so_a, so_b, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+def mapped():
     with open("/proc/self/maps") as fh:
         maps = fh.read()
-    return sorted({name for name in OMP_SONAMES if name + ".so" in maps})
+    return sorted({x for x in ("libgomp", "libomp", "libiomp5", "libnvomp") if x + ".so" in maps})
+
+before = mapped()
+a = np.arange(n, dtype=np.float64)
+lib_a, lib_b = ctypes.CDLL(so_a), ctypes.CDLL(so_b)
+lib_a.kern.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+lib_a.kern.restype = None
+lib_b.kern2.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+lib_b.kern2.restype = ctypes.c_double
+p = a.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+lib_a.kern(p, n)                 # gcc's nest:   a[i] += 1.0, in place
+total = lib_b.kern2(p, n)        # clang's nest: sum(a[i] * 2.0), over gcc's output
+print(json.dumps({"a": a.tolist(), "total": float(total), "runtimes": mapped(), "before": before}))
+'''
 
 
-def load_and_run_both(so_a, so_b, n):
-    """Load BOTH node libraries into one process and run both OpenMP nests, exactly as a program linking
-    node libraries from different compilers would. Runs in a forked child (compiled kernels always do),
-    which also keeps any OpenMP pool out of the parent -- libgomp is not fork-safe, so a parent that has
-    run a parallel region deadlocks every later forked child that enters one."""
-    a = np.arange(n, dtype=np.float64)
-    lib_a, lib_b = ctypes.CDLL(str(so_a)), ctypes.CDLL(str(so_b))
-    lib_a.kern.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
-    lib_a.kern.restype = None
-    lib_b.kern2.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
-    lib_b.kern2.restype = ctypes.c_double
-    lib_a.kern(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)  # a[i] += 1.0, in place
-    total = lib_b.kern2(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)  # sum(a[i] * 2.0)
-    return {"a": a.tolist(), "total": float(total), "runtimes": mapped_openmp_runtimes()}
+def run_both_in_a_clean_process(tmp_path, so_a, so_b, n):
+    """Run both nests in a FRESH interpreter and return its report (see :data:`RUN_BOTH_SRC`)."""
+    script = tmp_path / "run_both.py"
+    script.write_text(RUN_BOTH_SRC)
+    proc = subprocess.run(
+        [sys.executable, str(script), str(so_a), str(so_b), str(n)], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, f"running both nests together failed:\n{proc.stderr[-1500:]}"
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_path):
@@ -232,10 +250,10 @@ def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_pat
         assert linked_openmp_runtimes(so) == linked_openmp_runtimes(built["gnu"]), "cells disagree on the runtime"
 
     n = 512
-    res = run_isolated(lambda: load_and_run_both(built["gnu"], built["llvm"], n), timeout=120.0)
-    assert "error" not in res, f"running both nests together failed: {res.get('error')}"
+    res = run_both_in_a_clean_process(tmp_path, built["gnu"], built["llvm"], n)
 
     # ONE runtime actually mapped -- the claim, checked in the process that ran both nests.
+    assert not res["before"], f"the fresh interpreter already had an OpenMP runtime mapped: {res['before']}"
     assert len(res["runtimes"]) == 1, (f"two node libraries from two compilers loaded {len(res['runtimes'])} OpenMP "
                                        f"runtimes into one process: {res['runtimes']}")
     # ... and the shared runtime computed the right answers (gcc's nest, then clang's over its output).
