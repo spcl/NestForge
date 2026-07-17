@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -234,12 +235,11 @@ def reduced_fp_flags(family: str, mode: str, lang: str = "c") -> List[str]:
 def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``compiler`` accepts ``probe_flags`` on a trivial COMPILE-ONLY invocation.
 
-    Gates the two polyhedral auto-parallelizers, which ride an OPTIONAL compiler back end a given
-    install may lack -- clang's Polly (``-mllvm -polly``) and gcc's isl/Graphite (``-floop-nest-optimize``).
-    A missing back end makes the invocation exit non-zero (LLVM: ``Unknown command line argument '-polly'``;
-    gcc: ``Graphite loop optimizations cannot be used (isl is not available)``), which is exactly what this
-    detects. ``-c`` keeps it compile-only, so a missing OpenMP RUNTIME (a link-time concern the caller
-    rpaths separately) does not confound the feature probe. Cached: fixed per (compiler, flags) for the run."""
+    A NECESSARY gate, not a sufficient one: it detects a back end whose FLAG is rejected (LLVM:
+    ``Unknown command line argument '-polly'``; gcc: ``Graphite ... isl is not available``). It does NOT
+    detect a back end whose flag is accepted but does nothing -- for that see :func:`autopar_fires`, which
+    is what actually gates the polyhedral lanes. ``-c`` keeps it compile-only so a missing OpenMP RUNTIME
+    (a link-time concern) does not confound the probe. Cached per (compiler, flags) for the run."""
     src = "void f(double *a, int n){for (int i = 0; i < n; i++) a[i] *= 2.0;}\n"
     try:
         proc = subprocess.run([compiler, "-x", "c", "-", "-c", "-O3", "-o", os.devnull, *probe_flags],
@@ -250,6 +250,45 @@ def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
+
+
+#: The OpenMP fork call an auto-parallelized loop must contain to have actually been parallelized:
+#: ``GOMP_parallel`` (gcc's parloops) or ``__kmpc_fork_call`` (LLVM). Absence == the loop stayed serial.
+_AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
+
+
+@functools.lru_cache(maxsize=None)
+def autopar_fires(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
+    """True if ``probe_flags`` make ``compiler`` actually EMIT a parallel loop -- not merely accept the flag.
+
+    :func:`compiler_accepts` is not enough for the polyhedral lanes, and the gap is a correctness trap:
+    Ubuntu's clang 21 STATICALLY COMPILES Polly's command-line options in (so ``-mllvm -polly`` parses
+    cleanly, exit 0) but does not SCHEDULE Polly's passes into the default pipeline, so it transforms
+    nothing. A ``-fpass-plugin=LLVMPolly.so`` to force it crashes with a duplicate-option registration.
+    The result is a cell that compiles, links, validates bit-exact -- and runs sequentially under a
+    ``polly`` label. gcc Graphite has a milder version: ``-floop-nest-optimize`` is accepted and inert on
+    a nest with nothing to reorder, while the real parallelizer is ``-ftree-parallelize-loops``.
+
+    So probe FUNCTIONALLY: compile a trivially-parallelizable loop and look for the runtime fork call in
+    the object. This is the same evidence the arena's own tests use (``nm -u`` for the fork symbol). Built
+    to an object in a temp dir, not run: emitting the call is the whole question, and it keeps this off
+    the libgomp fork path. A back end that does not fire is a recorded skip, never an inert cell."""
+    src = "void f(double *restrict a, const double *restrict b, int n){\n" \
+          "  for (int i = 0; i < n; i++) a[i] = b[i] * 2.0 + 1.0;\n}\n"
+    with tempfile.TemporaryDirectory() as d:
+        obj = os.path.join(d, "probe.o")
+        try:
+            proc = subprocess.run([compiler, "-x", "c", "-", "-c", "-O3", "-o", obj, *probe_flags],
+                                  input=src,
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=60)
+            if proc.returncode != 0:
+                return False
+            syms = subprocess.run(["nm", "-u", obj], capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return any(s in syms for s in _AUTOPAR_FORK_SYMS)
 
 
 def autopar_flags(family: str,
@@ -285,8 +324,14 @@ def autopar_flags(family: str,
         return ["-qopenmp", "-parallel"], None
     else:
         return None, f"no auto-parallelizer known for compiler family {family!r}"
-    if compiler is not None and not compiler_accepts(compiler, tuple(ap)):
-        return None, absent
+    if compiler is not None:
+        if not compiler_accepts(compiler, tuple(ap)):
+            return None, absent
+        # Accepted is not enough: Ubuntu clang 21 parses -mllvm -polly and schedules nothing, and gcc's
+        # -floop-nest-optimize is inert on a nest with nothing to reorder. A lane that does not actually
+        # emit a fork call would be timed as parallel while running serial -- so require it to FIRE.
+        if not autopar_fires(compiler, tuple(ap)):
+            return None, f"{Path(compiler).name} accepts the auto-par flags but emits no parallel loop (back end inert)"
     return ap, None
 
 

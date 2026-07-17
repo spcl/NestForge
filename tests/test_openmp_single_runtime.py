@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -69,6 +70,27 @@ def linked_openmp_runtimes(so):
     return {name for name in OMP_SONAMES if f"[{name}.so" in out}
 
 
+#: The runtime call a compiler emits to OPEN a parallel region: LLVM/Intel ``__kmpc_fork_call``, GNU
+#: ``GOMP_parallel``. Its presence is the only proof the region survived compilation.
+OMP_FORK_SYMBOLS = ("kmpc_fork", "GOMP_parallel")
+
+
+def emits_parallel_region(so):
+    """True if ``so`` actually CALLS into an OpenMP runtime to open a parallel region.
+
+    Linking a runtime does not mean using it, and the difference is invisible to every other check here.
+    ``clang -fopenmp=libgomp`` exits 0 with no warning, records libgomp in DT_NEEDED -- and emits ZERO
+    fork calls, because clang generates only ``__kmpc_*`` and libgomp implements only ``GOMP_*``. The
+    result links, loads, and computes the RIGHT ANSWER, sequentially. A correctness gate cannot catch it
+    (a serial loop gives identical numbers) and neither can a DT_NEEDED check (exactly one runtime is
+    linked). In an arena the cell would report sequential timings under a parallel label.
+
+    So: an undefined fork symbol is what distinguishes "parallel" from "parallel-shaped".
+    """
+    out = subprocess.run(["nm", "-u", str(so)], capture_output=True, text=True).stdout
+    return any(sym in out for sym in OMP_FORK_SYMBOLS)
+
+
 def available_families():
     """The (family, compiler) pairs whose C compiler exists here. Never empty: gcc or clang is present
     on any box that can build a nest at all, and the CI runner has both."""
@@ -92,6 +114,15 @@ def build_cell(tmp_path, family, compiler, mode, runtime, src=OMP_SRC, tag="k"):
     proc = subprocess.run([compiler, *f, str(csrc), "-o", str(so)], capture_output=True, text=True)
     if proc.returncode != 0:
         pytest.fail(f"{compiler} {mode} {runtime.name} failed to link:\n{proc.stderr[-1500:]}")
+    # A cell the matrix OFFERS must actually be parallel. If lane_flags emits a cell whose parallel
+    # region was silently dropped, the arena times sequential code under a parallel label -- see
+    # emits_parallel_region. omp-emit has the pragma in the source, so it must always survive; auto-par
+    # depends on the compiler's analysis, so absence there is a cost-model decision, not a broken cell.
+    if mode == "omp-emit":
+        assert emits_parallel_region(so), (f"{Path(compiler).name} + {runtime.name}: the cell links "
+                                           f"{sorted(linked_openmp_runtimes(so))} but emits NO OpenMP fork call -- "
+                                           f"the parallel region was silently dropped, so this cell would be timed "
+                                           f"as parallel while running sequentially")
     return linked_openmp_runtimes(so), None
 
 
@@ -260,6 +291,62 @@ def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_pat
     expect_a = np.arange(n, dtype=np.float64) + 1.0
     np.testing.assert_allclose(np.array(res["a"]), expect_a, rtol=0, atol=0)
     np.testing.assert_allclose(res["total"], float(np.sum(expect_a * 2.0)), rtol=1e-12)
+
+
+def test_the_default_runtime_gives_every_compiler_a_REAL_parallel_region(tmp_path):
+    """The single-runtime choice must not silently serialize any compiler's cells.
+
+    This is the reason libomp is the default and libgomp is pruned for the kmpc families -- and it is a
+    correctness trap, not a link error: ``clang -fopenmp=libgomp`` exits 0, links libgomp, and drops
+    every parallel region, because clang emits ``__kmpc_*`` and libgomp implements only ``GOMP_*``. The
+    cell would be timed as parallel while running sequentially, and no numeric or DT_NEEDED check sees
+    it. So assert the fork call SURVIVES for every available compiler under the global runtime.
+    """
+    checked = 0
+    for family, cc in available_families():
+        f, reason = flags.lane_flags(family,
+                                     "default-fp",
+                                     "default",
+                                     "omp-emit",
+                                     "c",
+                                     2,
+                                     compiler=cc,
+                                     openmp=flags.DEFAULT_OPENMP_RUNTIME)
+        if f is None:
+            continue
+        csrc = tmp_path / f"real_{cc}.c"
+        csrc.write_text(OMP_SRC)
+        so = tmp_path / f"real_{cc}.so"
+        proc = subprocess.run([cc, *f, str(csrc), "-o", str(so)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"{cc}: {proc.stderr[-800:]}"
+        assert emits_parallel_region(so), (f"{cc} + {flags.DEFAULT_OPENMP_RUNTIME.name}: parallel region "
+                                           f"silently dropped -- would time as parallel, run sequentially")
+        checked += 1
+    assert checked, "no compiler exercised the default runtime"
+
+
+def test_a_kmpc_compiler_on_libgomp_would_be_caught_not_silently_serialized(tmp_path):
+    """The trap itself, pinned so a future 'just allow libgomp everywhere' change cannot pass unnoticed.
+
+    Directly build the mismatch the matrix forbids (clang emitting kmpc, linked against gomp-only
+    libgomp) and prove emits_parallel_region SEES the serialization. If this ever starts emitting a fork
+    call, libgomp gained a kmpc layer and the prune can be revisited -- but that must be a deliberate,
+    tested decision, never a default that quietly went sequential."""
+    if not shutil.which("clang"):
+        pytest.skip("no clang")
+    csrc = tmp_path / "mismatch.c"
+    csrc.write_text(OMP_SRC)
+    so = tmp_path / "mismatch.so"
+    proc = subprocess.run(
+        ["clang", "-O2", "-fPIC", "-shared", "-fopenmp=libgomp",
+         str(csrc), "-o", str(so)],
+        capture_output=True,
+        text=True)
+    if proc.returncode != 0:
+        pytest.skip("this clang refuses -fopenmp=libgomp outright (also acceptable -- no silent serial cell)")
+    assert "libgomp" in linked_openmp_runtimes(so), "expected the mismatch to link libgomp"
+    assert not emits_parallel_region(so), ("clang -fopenmp=libgomp emitted a fork call -- libgomp now has a kmpc "
+                                           "layer, so the single-runtime prune for kmpc families can be revisited")
 
 
 def test_lane_flags_names_the_runtime_rather_than_leaving_it_to_the_compiler_default():

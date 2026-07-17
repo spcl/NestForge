@@ -20,6 +20,7 @@ import subprocess
 import numpy as np
 import pytest
 
+from nestforge.perf import flags
 from nestforge.isolation import OMP_PAUSE_MODES, OMP_PAUSE_SOFT, pause_openmp_pools, run_isolated
 
 OMP_SRC = """#include <omp.h>
@@ -54,24 +55,32 @@ def thread_count():
 # environment to surface, never a skip to hide behind -- a skip here would silently retire THE regression
 # this file exists to pin, and would fail CI anyway (the unit set runs under NESTFORGE_CI_NO_SKIP=1).
 def build(tmp_path, runtime):
-    """A kernel with an OpenMP region, linked against ``runtime`` ("gomp" or "omp")."""
+    """A kernel with an OpenMP region, linked against ``runtime`` ("gomp" or "omp").
+
+    libomp is located with the SAME helper the product uses (:func:`~nestforge.perf.flags.runtime_dir`)
+    rather than a bare ``gcc -print-file-name``. That is not a nicety: on the CI runner gcc does not know
+    where libomp lives (libomp-18-dev puts it under /usr/lib/llvm-18/lib, off gcc's path -- the exact
+    split runtime_dir exists to bridge), so the bare probe returns "libomp.so" and a hand-rolled check
+    either wrongly skips or wrongly fails. If runtime_dir cannot find it either, the runtime genuinely is
+    not installed and the test skips -- an absent toolchain is a skip, never a red test."""
     assert shutil.which("gcc"), "gcc is required to build the OpenMP kernel this file's regression needs"
     src = tmp_path / "k.c"
     src.write_text(OMP_SRC)
     so = tmp_path / f"k_{runtime}.so"
     extra = []
     if runtime != "gomp":  # gcc's default IS libgomp; anything else must be pinned at link
-        libdir = subprocess.run(["gcc", f"-print-file-name=lib{runtime}.so"], capture_output=True,
-                                text=True).stdout.strip()
-        assert libdir.startswith("/"), (f"lib{runtime}.so is not linkable by gcc here (got {libdir!r}). The "
-                                        f"runtime axis is a pinned dependency of this suite, not an optional one.")
-        extra = [f"-L{libdir.rsplit('/', 1)[0]}", f"-Wl,--push-state,--no-as-needed,-l{runtime},--pop-state"]
+        lib_dir = flags.runtime_dir(runtime, "gcc")
+        if lib_dir is None and not flags.lib_linkable(runtime, "gcc"):
+            pytest.skip(f"lib{runtime}.so is not installed / linkable by gcc here")
+        search = [f"-L{lib_dir}", f"-Wl,-rpath,{lib_dir}"] if lib_dir else []
+        extra = [*search, f"-Wl,--push-state,--no-as-needed,-l{runtime},--pop-state"]
     proc = subprocess.run(
         ["gcc", "-O2", "-fPIC", "-shared", "-fopenmp", *extra,
          str(src), "-o", str(so)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr[-800:]
     needed = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True).stdout
-    assert f"[lib{runtime}.so" in needed, f"expected lib{runtime} in DT_NEEDED, got:\n{needed}"
+    # DT_NEEDED may show libomp.so.5 for a libiomp5 request (ABI-compat symlink); accept the resolved one.
+    assert any(f"[lib{r}.so" in needed for r in (runtime, "omp")), f"expected lib{runtime} in DT_NEEDED, got:\n{needed}"
     return so
 
 
