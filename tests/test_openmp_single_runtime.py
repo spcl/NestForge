@@ -15,11 +15,15 @@ Nothing here RUNS a kernel: linking is what selects a runtime, so compiling is t
 That also keeps the file free of the libgomp fork hazard (an OpenMP region in this process would
 poison every later ``run_isolated`` fork).
 """
+import ctypes
 import shutil
 import subprocess
+
+import numpy as np
 import pytest
 
 from nestforge.build import OPENMP_RUNTIMES, compiler_family
+from nestforge.isolation import run_isolated
 from nestforge.perf import flags
 
 #: A minimal nest with an OpenMP region: enough to make the compiler link a runtime, which is all that
@@ -174,6 +178,70 @@ def test_libgomp_is_pruned_for_llvm_but_kept_for_gnu():
     assert not libomp.compatible("nvc") and OPENMP_RUNTIMES["libnvomp"].compatible("nvc")
     assert not libomp.compatible("icc") and OPENMP_RUNTIMES["libiomp5"].compatible("icc")
     assert compiler_family("icx") == "llvm" and libomp.compatible("icx")  # icx is clang-based: name-selects libomp
+
+
+# --- end to end: two compilers' nests, ONE process, ONE runtime, and the numbers are right -----------
+def mapped_openmp_runtimes():
+    """The OpenMP runtimes mapped into THIS process, from /proc/self/maps -- what is actually loaded, as
+    opposed to what DT_NEEDED promised. Two runtimes here means two thread pools on the same cores."""
+    with open("/proc/self/maps") as fh:
+        maps = fh.read()
+    return sorted({name for name in OMP_SONAMES if name + ".so" in maps})
+
+
+def load_and_run_both(so_a, so_b, n):
+    """Load BOTH node libraries into one process and run both OpenMP nests, exactly as a program linking
+    node libraries from different compilers would. Runs in a forked child (compiled kernels always do),
+    which also keeps any OpenMP pool out of the parent -- libgomp is not fork-safe, so a parent that has
+    run a parallel region deadlocks every later forked child that enters one."""
+    a = np.arange(n, dtype=np.float64)
+    lib_a, lib_b = ctypes.CDLL(str(so_a)), ctypes.CDLL(str(so_b))
+    lib_a.kern.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+    lib_a.kern.restype = None
+    lib_b.kern2.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+    lib_b.kern2.restype = ctypes.c_double
+    lib_a.kern(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)  # a[i] += 1.0, in place
+    total = lib_b.kern2(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)  # sum(a[i] * 2.0)
+    return {"a": a.tolist(), "total": float(total), "runtimes": mapped_openmp_runtimes()}
+
+
+def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_path):
+    """THE end-to-end contract, numerically: one nest built by gcc and a different nest built by clang,
+    loaded into ONE process and RUN -- sharing a single OpenMP runtime, and computing the right answer.
+
+    The link-level tests above prove DT_NEEDED holds one runtime; they cannot prove the two libraries
+    coexist at RUNTIME or that the shared runtime computes correctly. Only loading both and checking the
+    numbers against numpy does, which is the actual claim: node libraries built by different compilers
+    share ONE runtime and ONE thread pool, and the results are still right.
+    """
+    fams = {fam: cc for fam, cc in available_families()}
+    if "gnu" not in fams or "llvm" not in fams:
+        pytest.skip(f"needs gcc AND clang, found {sorted(fams.values())}")
+    runtime = flags.DEFAULT_OPENMP_RUNTIME
+    built = {}
+    for fam, src, sym in (("gnu", OMP_SRC, "kern"), ("llvm", OMP_SRC_REDUCE, "kern2")):
+        cc = fams[fam]
+        f, reason = flags.lane_flags(fam, "default-fp", "default", "omp-emit", "c", 2, compiler=cc, openmp=runtime)
+        assert f is not None, f"{cc} cannot link the global runtime {runtime.name}: {reason}"
+        csrc = tmp_path / f"e2e_{sym}.c"
+        csrc.write_text(src)
+        so = tmp_path / f"e2e_{fam}_{sym}.so"
+        proc = subprocess.run([cc, *f, str(csrc), "-o", str(so)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"{cc} failed to link {sym}:\n{proc.stderr[-1500:]}"
+        built[fam] = so
+        assert linked_openmp_runtimes(so) == linked_openmp_runtimes(built["gnu"]), "cells disagree on the runtime"
+
+    n = 512
+    res = run_isolated(lambda: load_and_run_both(built["gnu"], built["llvm"], n), timeout=120.0)
+    assert "error" not in res, f"running both nests together failed: {res.get('error')}"
+
+    # ONE runtime actually mapped -- the claim, checked in the process that ran both nests.
+    assert len(res["runtimes"]) == 1, (f"two node libraries from two compilers loaded {len(res['runtimes'])} OpenMP "
+                                       f"runtimes into one process: {res['runtimes']}")
+    # ... and the shared runtime computed the right answers (gcc's nest, then clang's over its output).
+    expect_a = np.arange(n, dtype=np.float64) + 1.0
+    np.testing.assert_allclose(np.array(res["a"]), expect_a, rtol=0, atol=0)
+    np.testing.assert_allclose(res["total"], float(np.sum(expect_a * 2.0)), rtol=1e-12)
 
 
 def test_lane_flags_names_the_runtime_rather_than_leaving_it_to_the_compiler_default():
