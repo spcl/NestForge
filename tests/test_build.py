@@ -171,6 +171,51 @@ def parallel_axpy_sdfg(name="paxpy"):
     return sdfg
 
 
+def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch):
+    """REGRESSION: the linker and the loader do not search the same places, so "the runtime is installed"
+    does not imply "-l<soname> resolves".
+
+    Ubuntu splits them across packages AND moves the link-time symlink by release: ``libomp-dev`` resolves
+    to ``libomp-21-dev`` on one box (``/usr/lib/x86_64-linux-gnu/libomp.so``, on the default path) and to
+    ``libomp-18-dev`` on a CI runner, which puts it under ``/usr/lib/llvm-18/lib`` where the linker never
+    looks. ldconfig still reports libomp.so.5, so every installed-probe said yes and the build died with
+    ``cannot find -lomp``. Pinning the apt package cannot fix that; finding the file can.
+    """
+    from nestforge import build as build_mod
+    (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
+    # LD_LIBRARY_PATH, not LIBRARY_PATH: the LOADER searches it and the LINKER does not, which is the
+    # whole point -- it is also exactly where a spack/module runtime lives. (Setting LIBRARY_PATH would
+    # prove nothing: the linker searches that itself, so no -L would be needed and none is added.)
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
+    build_mod.linkable_lib_dir.cache_clear()
+    rt = OpenMPRuntime(name="libfakeomp", soname="fakeomp")
+    assert not build_mod.linker_finds("fakeomp", "g++"), "premise: the linker cannot find it unaided"
+    assert f"-L{tmp_path}" in rt.link_flags("g++")
+    assert build_mod.lib_linkable("fakeomp", "g++")  # and the honest probe agrees it can be linked
+    build_mod.linkable_lib_dir.cache_clear()
+
+
+def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch):
+    # The discovery must stay invisible on a box where the library is already on the default path -- and
+    # must never silently swap in some other LLVM version's copy. Forced rather than read off this box, so
+    # the assertion means the same thing wherever it runs.
+    from nestforge import build as build_mod
+    monkeypatch.setattr(build_mod, "linker_finds", lambda *a, **kw: True)
+    build_mod.linkable_lib_dir.cache_clear()
+    assert OpenMPRuntime().link_flags("g++") == ["-lomp"]
+    build_mod.linkable_lib_dir.cache_clear()
+
+
+def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch):
+    # A spack/module runtime is pinned by hand and must win; "" means "I know: use a bare -l".
+    from nestforge import build as build_mod
+    monkeypatch.setattr(build_mod, "linker_finds", lambda *a, **kw: False)
+    build_mod.linkable_lib_dir.cache_clear()
+    assert "-L/opt/spack/omp" in OpenMPRuntime(lib_dir="/opt/spack/omp").link_flags("g++")
+    assert OpenMPRuntime(lib_dir="").link_flags("g++") == ["-lomp"]
+    build_mod.linkable_lib_dir.cache_clear()
+
+
 def test_parallel_map_emits_omp_pragma():
     """The sanity nest is actually parallel: DaCe lowers the ``CPU_Multicore`` map to an OpenMP pragma in
     the generated C++ (so the cross-compiler tests below really do exercise the OpenMP runtime link)."""

@@ -82,7 +82,10 @@ class OpenMPRuntime:
     too -- letting node libraries built with DIFFERENT compilers share ONE runtime and thread pool."""
     name: str = "libomp"  # runtime selected by name on LLVM (``-fopenmp=<name>``)
     soname: str = "omp"  # ``-l<soname>`` for explicit linking (omp/gomp/iomp5)
-    lib_dir: Optional[str] = None  # ``-L`` if the runtime is not on the default search path
+    #: ``-L`` for the runtime. Left None it is DISCOVERED (:func:`linkable_lib_dir`) rather than assumed to
+    #: be on the default linker path -- which it is not on every distro (see that function). Pass an
+    #: explicit path to pin one (a spack/module runtime); pass ``""`` to force bare ``-l<soname>``.
+    lib_dir: Optional[str] = None
     #: the OpenMP ABIs this runtime implements. libomp/libiomp5/libnvomp expose BOTH ``__kmpc_*`` and a
     #: ``GOMP_*`` compat layer; libgomp exposes only ``GOMP_*`` -- so a kmpc compiler (clang/flang/icx/
     #: nvc++) cannot use libgomp.
@@ -150,7 +153,10 @@ class OpenMPRuntime:
         oversubscription of mixing libgomp + libomp)."""
         self.check(compiler)
         fam = compiler_family(compiler)
-        libdir = [f"-L{self.lib_dir}"] if self.lib_dir else []
+        # An explicit lib_dir wins (pin a spack/module runtime, or "" to force bare -l<soname>); otherwise
+        # ask where the library actually is, using the compiler that will do the linking.
+        pinned = self.lib_dir if self.lib_dir is not None else linkable_lib_dir(self.soname, compiler)
+        libdir = [f"-L{pinned}"] if pinned else []
         if fam == "llvm":
             return [f"-fopenmp={self.name}", *libdir]
         if fam == "intel-classic":
@@ -199,6 +205,62 @@ def env_library_dirs() -> List[str]:
     for var in ("LD_LIBRARY_PATH", "LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
         dirs += [d for d in os.environ.get(var, "").split(os.pathsep) if d]
     return dirs
+
+
+def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
+    """True if ``compiler`` already resolves ``-l<soname>`` with no ``-L``.
+
+    Asks the driver itself (``-print-file-name``), which is the only authority: it echoes the name back
+    unchanged when it cannot find the file. ``ldconfig``/``find_library`` answer a DIFFERENT question --
+    what the LOADER can find at run time -- and the two disagree exactly where this matters (see
+    :func:`linkable_lib_dir`).
+    """
+    try:
+        out = subprocess.run([compiler, f"-print-file-name=lib{soname}.so"], capture_output=True,
+                             text=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out != f"lib{soname}.so" and Path(out).exists()
+
+
+@functools.lru_cache(maxsize=None)
+def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[str]:
+    """The ``-L`` directory needed to LINK ``lib<soname>``, or ``None`` when the linker already finds it.
+
+    The loader and the linker do not search the same places, and the split is not academic: Ubuntu ships
+    the runtime (``libomp.so.5``, in the ldconfig cache) and the link-time symlink (``libomp.so``) in
+    different packages, and WHERE the symlink lands depends on the release. ``libomp-dev`` resolves to
+    ``libomp-21-dev`` on one box -- ``/usr/lib/x86_64-linux-gnu/libomp.so``, on the default path -- and to
+    ``libomp-18-dev`` on another, which puts it under ``/usr/lib/llvm-18/lib`` where the linker never looks.
+    So an ldconfig-based probe reports the runtime "installed" and the link then fails with
+    ``cannot find -lomp``. Pinning the apt package cannot fix that; finding the file can.
+
+    Returns ``None`` when no ``-L`` is needed, so a box with the library on the default path keeps linking
+    exactly as before -- and never silently swaps in some other LLVM version's copy.
+    """
+    if shutil.which(compiler) is None:
+        return None  # cannot ask a linker that is not here, and a guessed -L for it would be worse than none
+    if linker_finds(soname, compiler):
+        return None
+    # Newest LLVM first: when several are installed, an older libomp is the less likely intent.
+    llvm_dirs = sorted((str(d) for d in Path("/usr/lib").glob("llvm-*/lib")), reverse=True)
+    for d in env_library_dirs() + llvm_dirs:
+        p = Path(d)
+        if (p / f"lib{soname}.so").exists() or (p / f"lib{soname}.a").exists() or (p / f"lib{soname}.dylib").exists():
+            return d
+    return None
+
+
+def lib_linkable(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
+    """True if ``-l<soname>`` will actually resolve at link time -- on the default path, or via the ``-L``
+    :func:`linkable_lib_dir` finds.
+
+    The question to ask before building something that links it. ``ctypes.util.find_library`` answers
+    whether the LOADER can find the runtime, which is not the same thing: it is satisfied by a versioned
+    ``libomp.so.5`` while the linker needs the ``libomp.so`` symlink from the -dev package, so it reports
+    "installed" for a library that cannot be linked.
+    """
+    return linker_finds(soname, compiler) or linkable_lib_dir(soname, compiler) is not None
 
 
 def lib_findable(soname: str, lib_dir: Optional[str]) -> bool:

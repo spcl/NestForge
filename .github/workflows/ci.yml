@@ -1,6 +1,6 @@
 name: CI
 
-# One CPU runner (the nest-forge unit suite is ~30s): a format gate, then the toolchain via the repo's
+# One CPU runner: a format gate, then the toolchain via the repo's
 # own scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable,
 # then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler + heavy-launcher tests
 # are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the cross-compiler OpenMP matrix.
@@ -74,11 +74,14 @@ jobs:
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
           pip_retry -e ./.deps/dace
           pip_retry -e ./.deps/optarena
-          # sqlmodel: imported by optarena (frameworks/schema.py, frameworks/test.py) but declared in
-          # neither its requirements.txt nor its setup.py, so `pip install -e` does not pull it and the
-          # unit set dies with ModuleNotFoundError in ~38 tests. It happens to be present on the dev box,
-          # which is why only a clean env shows it. Installed here explicitly until optarena declares it.
-          pip_retry numpy pytest pytest-timeout pytest-xdist sympy sqlmodel
+          # Two deps that only a CLEAN environment exposes -- both are present on the dev box, so nothing
+          # local ever needed them declared:
+          #   sqlmodel   -- imported by optarena (frameworks/schema.py, frameworks/test.py) but declared in
+          #                 neither its requirements.txt nor its setup.py, so `pip install -e` cannot pull
+          #                 it; ~38 tests died with ModuleNotFoundError. Drop this once optarena declares it.
+          #   matplotlib -- the perf/plot_*.py scripts import it, and the plot smokes run them as a
+          #                 SUBPROCESS, so a missing import surfaces only as "exit status 1" from 4 tests.
+          pip_retry numpy pytest pytest-timeout pytest-xdist sympy sqlmodel matplotlib
           # the checkouts must not shadow the packages they provide (see Phase 1a)
           python -c "import dace, optarena; print('dace', dace.__file__); print('optarena', optarena.__file__)"
 
