@@ -93,11 +93,12 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider -m "not integration" -n auto --timeout=900
 
-      # The optimizer loop END TO END: the no-op agent proposes the Phase-1 baseline, and the arena builds
-      # it and validates bit-exact vs the numpy oracle. That smoke is @pytest.mark.integration (it compiles
-      # a nest), so the unit phase skips it -- run it here on its own, where g++ is present on the runner.
-      # This is the CI guarantee that the deterministic-optimizer / no-op-agent loop actually runs, not just
-      # that its recipes are well-formed. The whole-program tests join it for the same reason: their
+      # The optimizer loop END TO END: the no-op agent's proposal and the STUB AGENT's whole
+      # propose -> build -> validate bit-exact -> time -> observe -> stop loop, against the real build path.
+      # Those smokes are @pytest.mark.integration (they compile a nest), so the unit phase skips them -- run
+      # them here on their own, where g++ is present on the runner. Phase 3 already covers the loop against
+      # a FAKE measure (no compiler); this is the half that proves an agent's proposal survives a real one.
+      # Neither runs inference -- there is none to run. The whole-program tests join it for the same reason: their
       # run-and-compare (externalize + isolate, and the whole-program lane) is the ONLY proof that the
       # offload analysis is value-preserving, and it is integration-marked, so Phase 3 never runs it.
       # Everything named here needs only g++, which the runner has.

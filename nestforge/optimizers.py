@@ -156,6 +156,68 @@ class NoOpAgent(Optimizer):
         return Proposal(self.name, "dace", opt_mode=BASELINE_OPT_MODE, build=BuildOptions())
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """What one measured round tells an agent: did the proposal build, was it bit-exact, how fast.
+
+    The agent's whole world. ``ok=False`` means the candidate lost the correctness gate (which is hard --
+    a wrong candidate never competes on speed), so the agent may only react by proposing something else.
+    """
+    proposal: Proposal
+    ok: bool  # validated bit-exact vs the numpy oracle
+    median_us: float = float("inf")
+    error: Optional[str] = None
+
+
+class AgenticOptimizer(Optimizer):
+    """An optimizer that ITERATES: propose -> the caller measures -> :meth:`observe` -> propose again, until
+    it proposes ``None`` (its ``stop`` action) or the round budget runs out.
+
+    This is the surface Phase 2/4 of ``docs/agentic_optimizer`` describes -- the fuse/fission decision is
+    driven by MEASUREMENT, so the agent must see results, which a one-shot :class:`Optimizer` cannot express.
+    A plain ``Optimizer`` is the degenerate case: one round, no feedback.
+
+    ``max_rounds`` is the hard stop. It is the agent's own bound, not the caller's politeness: an agent that
+    never says ``stop`` must still terminate, or a CI job hangs instead of failing.
+    """
+
+    def __init__(self, max_rounds: int = 1):
+        if max_rounds < 1:
+            raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
+        self.max_rounds = max_rounds
+        self.rounds = 0
+        self.observed: List[Outcome] = []
+
+    def observe(self, outcome: Outcome) -> None:
+        """Take the measured result of the round just proposed. Default: record it."""
+        self.observed.append(outcome)
+
+
+class StubAgent(AgenticOptimizer):
+    """The agentic loop with NOTHING in it: propose the Phase-1 baseline once, take the outcome, stop.
+
+    Why it exists: the no-op agent (:class:`NoOpAgent`) proves a single proposal builds and validates, but
+    it is one-shot, so it never exercises the LOOP -- observe, decide, terminate. That plumbing is where an
+    agent integration actually breaks (a round that never stops, an outcome the agent cannot read, a
+    proposal issued after ``stop``), and none of it needs a model to test. This runs the whole loop in CI
+    with no inference, no network and no scripted moves, and it is the control every real agent is measured
+    against: an agent that cannot beat "propose the baseline and stop" has done nothing.
+
+    It NEVER runs inference -- there is none to run (``docs/agentic_optimizer``: "Never run real inference
+    on the dev box -- scripted/stub only"). A scripted agent replaying fixed moves is the next rung up and
+    is a different class; this one deliberately makes no move at all.
+    """
+    name = "stub-agent"
+
+    def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
+        if self.rounds >= self.max_rounds:
+            return None  # stop: the round budget is spent
+        self.rounds += 1
+        if self.observed:
+            return None  # stop: it has seen a result and has no move to make -- that is the whole stub
+        return Proposal(self.name, "dace", opt_mode=BASELINE_OPT_MODE, build=BuildOptions())
+
+
 class WholeProgramOptimizer(Optimizer):
     """A WHOLE-PROGRAM optimizer: optimize the entire un-split program as one unit, so the per-nest arena
     has an honest baseline to beat -- a per-nest win that merely recovers what a whole-program optimizer
@@ -177,6 +239,28 @@ class WholeProgramOptimizer(Optimizer):
 
     def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
         return Proposal(self.name, "dace", scope="whole-program", opt_mode=self.opt_mode, build=self.build)
+
+
+def run_agent_loop(agent: AgenticOptimizer, nest: Optional[object], measure) -> List[Outcome]:
+    """Drive ``agent`` to a stop: propose -> ``measure(proposal)`` -> observe, until it proposes ``None``.
+
+    ``measure`` is the caller's build+validate+time step and returns an :class:`Outcome`; keeping it a
+    parameter is what lets CI run the loop against a fake measure with no compiler at all.
+
+    The round bound is enforced HERE as well as in the agent. An agent is expected to stop itself, but a
+    buggy one that keeps proposing must not hang the job: this raises instead, so the failure is a red test
+    with a name rather than a CI timeout with none.
+    """
+    outcomes: List[Outcome] = []
+    for _ in range(agent.max_rounds + 1):
+        proposal = agent.propose(nest)
+        if proposal is None:
+            return outcomes
+        outcome = measure(proposal)
+        outcomes.append(outcome)
+        agent.observe(outcome)
+    raise RuntimeError(f"agent {agent.name!r} proposed past its own max_rounds={agent.max_rounds} "
+                       f"without stopping ({len(outcomes)} rounds measured)")
 
 
 def deterministic_optimizers(
