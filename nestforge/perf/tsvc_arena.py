@@ -27,6 +27,7 @@ import argparse
 import ctypes
 import json
 import math
+import glob
 import os
 import shutil
 import socket
@@ -150,8 +151,46 @@ def spack_compiler_bin_dirs() -> List[Path]:
     return dirs
 
 
+#: Default install roots of the two vendor toolchains that ship OFF PATH, newest-version-first globs.
+#: Intel oneAPI and NVIDIA HPC put their compilers under a versioned tree and expect a ``setvars.sh`` /
+#: module to add them to PATH -- which a plain CI job or a fresh shell has not sourced. NF_EXTRA_COMPILER_DIRS
+#: (colon-separated) is prepended so a site can point at a non-default prefix without code change.
+_VENDOR_COMPILER_GLOBS = (
+    "/opt/intel/oneapi/compiler/*/bin",  # icx / icpx / ifx (NOT the 'latest' symlink -- it can point at an
+    # older version that ships only ifx; the glob + version sort finds icx)
+    "/opt/nvidia/hpc_sdk/Linux_x86_64/*/compilers/bin",  # nvc / nvc++ / nvfortran
+)
+
+
+def vendor_compiler_bin_dirs() -> List[Path]:
+    """``bin`` dirs of vendor toolchains installed at their DEFAULT location but not on PATH -- Intel
+    oneAPI (icx/icpx/ifx) and NVIDIA HPC (nvc/nvc++/nvfortran). Both expect a ``setvars.sh`` / module to
+    put them on PATH, which a fresh shell or CI job has not sourced.
+
+    Sourcing setvars is deliberately NOT done: it mutates the environment of a shell, whereas the arena
+    dlopens node libraries IN-PROCESS, so an LD_LIBRARY_PATH set at shell start does not help the loader
+    here (:func:`nestforge.perf.flags.support_rpath_flags` bakes the rpath instead). All this needs is the
+    directory holding the exe; the driver itself then answers for its own runtime libs.
+
+    Newest version first (reverse-sorted): when several oneAPI versions coexist, the latest is the intended
+    one, and -- critically -- an older dir may ship only ``ifx`` with no ``icx`` (measured on this box), so
+    an unsorted first-match could hide a compiler that exists one directory over. ``NF_EXTRA_COMPILER_DIRS``
+    (colon-separated absolute dirs) is honoured first, for a site whose install is not at the default root.
+    """
+    dirs: List[Path] = []
+    for d in os.environ.get("NF_EXTRA_COMPILER_DIRS", "").split(os.pathsep):
+        p = Path(d)
+        if d and p.is_dir():
+            dirs.append(p)
+    for pattern in _VENDOR_COMPILER_GLOBS:
+        for d in sorted((Path(x) for x in glob.glob(pattern)), reverse=True):
+            if d.is_dir() and d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
 def which_on_path(exe: str, extra_dirs: List[Path]) -> Optional[str]:
-    """``exe`` on PATH, else under one of ``extra_dirs`` (the spack install bins)."""
+    """``exe`` on PATH, else under one of ``extra_dirs`` (the spack + vendor install bins)."""
     found = shutil.which(exe)
     if found:
         return found
@@ -177,21 +216,22 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
             families.append(fam)
     # PATH first (via which_on_path), then spack: installed packages AND registered compilers. On a
     # spack-default host the compiler may be in neither PATH nor a `spack find` prefix, only registered.
-    spack_dirs = spack_bin_dirs()
-    for d in spack_compiler_bin_dirs():
-        if d not in spack_dirs:
-            spack_dirs.append(d)
+    extra_dirs = spack_bin_dirs()
+    for d in spack_compiler_bin_dirs() + vendor_compiler_bin_dirs():
+        if d not in extra_dirs:
+            extra_dirs.append(d)
     out: List[Toolchain] = []
     for fam in families:
         cc_exe, cxx_exe = _FAMILY_EXES[fam]
-        cc = which_on_path(cc_exe, spack_dirs)
+        cc = which_on_path(cc_exe, extra_dirs)
         if cc is None:
-            warnings.warn(f"{fam}: C compiler {cc_exe!r} not found (PATH or spack); skipping this family")
+            warnings.warn(f"{fam}: C compiler {cc_exe!r} not found (PATH, spack or vendor default); skipping "
+                          f"this family")
             continue
-        cxx = which_on_path(cxx_exe, spack_dirs)
+        cxx = which_on_path(cxx_exe, extra_dirs)
         if cxx is None:
             warnings.warn(f"{fam}: C++ compiler {cxx_exe!r} not found; native-baseline column disabled for {fam}")
-        source = "path" if shutil.which(cc_exe) else "spack"
+        source = "path" if shutil.which(cc_exe) else "vendor/spack"
         out.append(Toolchain(name=fam, cc=cc, cxx=cxx, version=compiler_version(cc), source=source))
     return out
 

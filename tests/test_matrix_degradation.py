@@ -81,11 +81,14 @@ def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path, monkeypat
 
 
 def test_enumerate_cells_autopar_compiles_when_polyhedral_backend_present(tmp_path, monkeypatch):
-    """Mirror of case (4): with the polyhedral-backend probe reporting PRESENT, clang auto-par (Polly) is
-    supported and produces real compile jobs instead of degrading -- the axis is gated by capability, not
-    hard-coded unsupported as it was before Phase 2."""
+    """Mirror of case (4): with BOTH polyhedral-backend probes reporting PRESENT-AND-FIRING, clang
+    auto-par (Polly) is supported and produces real compile jobs instead of degrading -- the axis is
+    gated by capability, not hard-coded unsupported as it was before Phase 2. Both probes are forced
+    because a real Polly may be inert (accepted, unscheduled) on this box; that inertness is its own
+    tested path, not this one."""
     tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: True)
+    monkeypatch.setattr(flags, "autopar_fires", lambda *a, **k: True)
     pendings, _ = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
     c_autopar = [p for p in pendings if p.cell.language == "c" and p.cell.parallel == "auto-par"]
     assert c_autopar and all(p.compile_key is not None and not p.cell.error for p in c_autopar)

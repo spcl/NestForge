@@ -58,14 +58,23 @@ def test_autopar_flags_per_family(monkeypatch):
     assert llvm == ["-mllvm", "-polly", "-mllvm", "-polly-parallel", "-fopenmp"] and rl is None
     assert flags.autopar_flags("nvidia", 8)[0] == ["-Mconcur"]
     assert flags.autopar_flags("intel", 8)[0] == ["-qopenmp", "-parallel"]
-    # Both polyhedral back ends are OPTIONAL: with a compiler supplied, an absent back end (probe False)
-    # is a recorded skip, not a crash -- and when present (probe True) the flags come back.
+    # Both polyhedral back ends are OPTIONAL and gated by TWO probes: the flag must be accepted
+    # (compiler_accepts) AND actually emit a parallel loop (autopar_fires). A back end that parses but is
+    # inert -- Ubuntu clang's statically-linked-but-unscheduled Polly -- must be a recorded skip, not a
+    # cell that times as parallel while running serial. Force both probes so the test does not depend on
+    # whether THIS box's clang has a working Polly.
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
     apl, reasonl = flags.autopar_flags("llvm", 8, compiler="clang")
     assert apl is None and "Polly" in reasonl
     apg, reasong = flags.autopar_flags("gnu", 8, compiler="gcc")
     assert apg is None and "Graphite" in reasong
+    # accepted but INERT (fires False) -> still a skip, now for the emits-no-parallel-loop reason.
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: True)
+    monkeypatch.setattr(flags, "autopar_fires", lambda *a, **k: False)
+    apn, reasonn = flags.autopar_flags("llvm", 8, compiler="clang")
+    assert apn is None and "no parallel loop" in reasonn
+    # accepted AND firing -> the flags come back.
+    monkeypatch.setattr(flags, "autopar_fires", lambda *a, **k: True)
     ok, rok = flags.autopar_flags("llvm", 8, compiler="clang")
     assert ok[:2] == ["-mllvm", "-polly"] and rok is None
 
