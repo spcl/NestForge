@@ -94,14 +94,16 @@ def test_flag_matrix_atol_covers_every_level():
 
 
 def test_veclib_flags_compose_and_gate_by_compatibility():
-    # 'none'/empty -> no flags, no error; a compatible pairing yields -fveclib + -l; an incompatible one
-    # (sleef on gcc) or a missing compiler is rejected with a reason, not silent flags.
+    # 'none'/empty -> no flags, no error; a compatible pairing yields the emit flag + the pinned -l; an
+    # incompatible one (svml on gcc) or a missing compiler is rejected with a reason, not silent flags. The
+    # -L/-rpath the resolver adds is machine-dependent, so assert membership rather than exact lists.
     assert flags.veclib_flags("g++", "none") == ([], None)
     assert flags.veclib_flags("clang++", None) == ([], None)
-    fl, r = flags.veclib_flags("clang++", "sleef")
-    assert r is None and fl == ["-fveclib=SLEEF", "-lsleef"]
-    assert flags.veclib_flags("g++", "libmvec") == (["-lmvec"], None)  # glibc: auto compile, -lmvec link
-    bad, reason = flags.veclib_flags("g++", "sleef")
+    fl, r = flags.veclib_flags("clang++", "sleef")  # x86: emit via libmvec token, link libsleefgnuabi
+    assert r is None and "-fveclib=libmvec" in fl and any("-lsleefgnuabi" in a for a in fl)
+    flg, rg = flags.veclib_flags("g++", "libmvec")  # glibc: no compile flag, -lmvec pinned at link
+    assert rg is None and any("-lmvec" in a for a in flg) and not any("-fveclib" in a for a in flg)
+    bad, reason = flags.veclib_flags("g++", "svml")  # gcc emits _ZGV*, never __svml_* -> unusable
     assert bad is None and "incompatible" in reason
     nocc, reason2 = flags.veclib_flags(None, "sleef")
     assert nocc is None and "without a compiler" in reason2
@@ -110,8 +112,8 @@ def test_veclib_flags_compose_and_gate_by_compatibility():
 
 def test_lane_flags_threads_veclib_and_rejects_incompatible():
     ok, r = flags.lane_flags("llvm", "default-fp", "default", "sequential", "c", 4, compiler="clang++", veclib="sleef")
-    assert r is None and "-fveclib=SLEEF" in ok and "-lsleef" in ok
-    bad, reason = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c", 4, compiler="g++", veclib="sleef")
+    assert r is None and "-fveclib=libmvec" in ok and any("-lsleefgnuabi" in a for a in ok)
+    bad, reason = flags.lane_flags("gnu", "default-fp", "default", "sequential", "c", 4, compiler="g++", veclib="svml")
     assert bad is None and "incompatible" in reason  # unsupported cell recorded, never silently emitted
 
 
@@ -126,7 +128,8 @@ def test_veclibs_for_gates_on_math_and_compatibility():
     from nestforge.perf import tsvc_full
     # veclibs_for takes the PRECOMPUTED per-lang has_math flag (source scanned once at ctx-build time).
     assert tsvc_full.veclibs_for(True, ("none", "libmvec"), "gcc") == ("none", "libmvec")  # math + compatible
-    assert tsvc_full.veclibs_for(True, ("none", "sleef"), "g++") == ("none", )  # sleef incompatible w/ gcc
+    assert tsvc_full.veclibs_for(True, ("none", "sleef"), "g++") == ("none", "sleef")  # gcc DOES sleef (gnuabi)
+    assert tsvc_full.veclibs_for(True, ("none", "svml"), "g++") == ("none", )  # svml incompatible w/ gcc
     assert tsvc_full.veclibs_for(False, ("none", "libmvec"), "gcc") == ("none", )  # no math -> none only
 
 

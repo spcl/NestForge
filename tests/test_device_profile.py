@@ -40,7 +40,7 @@ def test_pure_only_math_ops_are_the_veclib_captured_ops():
 
 def test_characterize_veclib_gates_without_compiling():
     """An incompatible or unknown veclib is reported ok=False WITH a reason -- no compile, no raise."""
-    incompat = dp.characterize_veclib("g++", "sleef")  # sleef unsupported on gcc
+    incompat = dp.characterize_veclib("g++", "svml")  # gcc emits _ZGV*, never __svml_*, so svml is unusable
     assert not incompat.ok and "incompatible" in incompat.reason
     unknown = dp.characterize_veclib("g++", "not_a_veclib")
     assert not unknown.ok and "unknown" in unknown.reason

@@ -92,7 +92,7 @@ _ARCH: Dict[str, str] = {
 #: "cheap" = fewer/safer vectorizations (only gcc has a direct knob, so it collapses elsewhere).
 COST_MODELS: Tuple[str, ...] = ("default", "cheap", "no-vec")
 
-#: Vector-math-library axis DOMAIN (``-fveclib=`` / ``-lsleef`` etc.): ``none`` plus the three libraries.
+#: Vector-math-library axis DOMAIN (``-fveclib=`` / ``-lsleefgnuabi`` etc.): ``none`` plus the three libraries.
 #: The arena does NOT sweep all of these -- per-device characterization (``device_profile.rank_veclibs``)
 #: collapses it to ``none`` + the accuracy-gated winner. This is the full domain the figure/CLI validate
 #: against; the per-family spelling lives in ``build.VectorMathLib`` (delegated to by :func:`veclib_flags`).
