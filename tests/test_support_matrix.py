@@ -9,14 +9,13 @@ import json
 import pytest
 
 from nestforge.perf import flags
-from nestforge.perf.support_matrix import (MatrixCell, build_support_matrix, loop_source, machine_config,
-                                           render_matrix, resolve_tool_paths, surviving_runtimes)
+from nestforge.perf.support_matrix import (MatrixCell, build_support_matrix, loop_source, machine_config, render_matrix,
+                                           resolve_tool_paths, surviving_runtimes)
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 
 
 def cell(runtime, compilers, correct=True):
-    return MatrixCell(runtime=runtime, compilers=tuple(compilers), ok=True, loads=True, parallel=True,
-                      correct=correct)
+    return MatrixCell(runtime=runtime, compilers=tuple(compilers), ok=True, loads=True, parallel=True, correct=correct)
 
 
 def test_surviving_runtimes_ranks_by_cross_compiler_support():
@@ -85,7 +84,8 @@ def test_machine_config_refresh_reprobes(tmp_path, monkeypatch):
     cache = tmp_path / "toolchains.json"
     cache.write_text(json.dumps({"stale": True}))
     import nestforge.perf.support_matrix as sm
-    monkeypatch.setattr(sm, "discover_toolchains",
+    monkeypatch.setattr(sm,
+                        "discover_toolchains",
                         lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
     cfg = machine_config(cache=cache, refresh=True)
@@ -96,7 +96,8 @@ def test_a_corrupt_cache_reprobes_instead_of_crashing(tmp_path, monkeypatch):
     cache = tmp_path / "toolchains.json"
     cache.write_text("{ not valid json")
     import nestforge.perf.support_matrix as sm
-    monkeypatch.setattr(sm, "discover_toolchains",
+    monkeypatch.setattr(sm,
+                        "discover_toolchains",
                         lambda _r="auto": [Toolchain("gcc", "/usr/bin/gcc", "/usr/bin/g++", (15, 0), "path")])
     monkeypatch.setattr(sm, "build_support_matrix", lambda tcs: ([cell("libomp", ("gcc", "gcc"))], []))
     cfg = machine_config(cache=cache)  # must not raise on the bad file

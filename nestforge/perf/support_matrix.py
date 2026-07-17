@@ -42,8 +42,8 @@ from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 #: repeat and, worse, non-deterministic to re-run mid-sweep. A machine's compilers do not move between
 #: runs; when they do, the user deletes the file (or points NF_TOOLCHAIN_CACHE elsewhere) to force a
 #: re-probe. Under the repo root's .cache so it is per-checkout and git-ignored.
-DEFAULT_CACHE = Path(os.environ.get("NF_TOOLCHAIN_CACHE") or (Path(__file__).resolve().parents[2] / ".cache" /
-                                                              "toolchains.json"))
+DEFAULT_CACHE = Path(
+    os.environ.get("NF_TOOLCHAIN_CACHE") or (Path(__file__).resolve().parents[2] / ".cache" / "toolchains.json"))
 
 #: The vector-math libraries whose absolute path we resolve per compiler (a compiler auto-links or is
 #: pointed at exactly one; the arena's veclib axis selects among what is present). SVML ships with Intel,
@@ -135,8 +135,14 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
     objs: List[str] = []
     parallel = True
     for idx, tc in enumerate(nests_by):
-        f, reason = flags.lane_flags(tc.fp_family, "strict-ieee", "default", "omp-emit", "c", 2,
-                                     compiler=tc.cc, openmp=runtime)
+        f, reason = flags.lane_flags(tc.fp_family,
+                                     "strict-ieee",
+                                     "default",
+                                     "omp-emit",
+                                     "c",
+                                     2,
+                                     compiler=tc.cc,
+                                     openmp=runtime)
         if f is None:
             return MatrixCell(runtime.name, label, False, False, False, False, f"{tc.name}: {reason}")
         src = workdir / f"nest{idx}.c"
@@ -146,8 +152,9 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
         comp = [tc.cc, *[x for x in f if x not in ("-shared", )], "-c", str(src), "-o", str(obj)]
         proc = subprocess.run(comp, capture_output=True, text=True)
         if proc.returncode != 0:
-            return MatrixCell(runtime.name, label, False, False, False, False,
-                              f"{tc.name} compile: {proc.stderr.strip().splitlines()[-1][:80] if proc.stderr.strip() else '?'}")
+            return MatrixCell(
+                runtime.name, label, False, False, False, False,
+                f"{tc.name} compile: {proc.stderr.strip().splitlines()[-1][:80] if proc.stderr.strip() else '?'}")
         parallel = parallel and emits_fork_call(str(obj))
         objs.append(str(obj))
 
@@ -167,8 +174,12 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
     calls = "\n".join(f"  nest{i}(a, b, n);" for i in range(len(nests_by)))
     driver.write_text(_DRIVER_SRC.format(externs=externs, calls=calls))
     prog = workdir / "prog.so"
-    proc = subprocess.run([linker.cc, "-shared", "-fPIC", str(driver), str(so), "-o", str(prog),
-                           f"-Wl,-rpath,{so.parent}"], capture_output=True, text=True)
+    proc = subprocess.run(
+        [linker.cc, "-shared", "-fPIC",
+         str(driver), str(so), "-o",
+         str(prog), f"-Wl,-rpath,{so.parent}"],
+        capture_output=True,
+        text=True)
     if proc.returncode != 0:
         return MatrixCell(runtime.name, label, True, False, parallel, False, "driver link failed")
 
@@ -291,9 +302,19 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
         toolchains = discover_toolchains("auto")
     cells, notes = build_support_matrix(toolchains)
     config = {
-        "compilers": {t.name: {"cc": t.cc, "cxx": t.cxx, "version": list(t.version), "source": t.source}
-                      for t in toolchains},
-        "paths": {t.name: asdict(resolve_tool_paths(t)) for t in toolchains},
+        "compilers": {
+            t.name: {
+                "cc": t.cc,
+                "cxx": t.cxx,
+                "version": list(t.version),
+                "source": t.source
+            }
+            for t in toolchains
+        },
+        "paths": {
+            t.name: asdict(resolve_tool_paths(t))
+            for t in toolchains
+        },
         "default_openmp_runtime": (surviving_runtimes(cells) or [flags.DEFAULT_OPENMP_RUNTIME.name])[0],
         "surviving_runtimes": surviving_runtimes(cells),
         "support_matrix": [asdict(c) for c in cells],
