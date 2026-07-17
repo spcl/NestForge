@@ -852,7 +852,12 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
     if not ok:
         return {**label, "skip": pre, **summarize_times([])}
     so = workdir / f"pluto_n{nc['nest_idx']}.so"
-    cflags = list(flags.base_flags("gnu")) + list(pluto_lane.PLUTO_EXTRA_FLAGS) + flags.openmp_rpath_flags(cc, "gnu")
+    # PLUTO_EXTRA_FLAGS carries -fopenmp (polycc emits the pragmas), which would link gcc's DEFAULT
+    # libgomp -- a second runtime beside the one every other lane links. Pin the mandated one here too.
+    omp_rt, omp_reason = flags.openmp_runtime_flags(cc, "gnu", flags.DEFAULT_OPENMP_RUNTIME)
+    if omp_rt is None:
+        return {**label, "skip": omp_reason, **summarize_times([])}
+    cflags = list(flags.base_flags("gnu")) + list(pluto_lane.PLUTO_EXTRA_FLAGS) + omp_rt
     cok, compile_us, cerr = run_compile([cc, *cflags, str(out_c), "-o", str(so)])
     if not cok:
         return {**label, "ok": False, "error": cerr, "compile_us": compile_us, **summarize_times([])}

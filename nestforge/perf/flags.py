@@ -20,6 +20,16 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from nestforge.build import LIBOMP, OpenMPRuntime, driver_lib_path, lib_linkable
+
+#: The ONE OpenMP runtime every lane links unless a cell names another. libomp because it is the only
+#: runtime BOTH families can link -- LLVM selects it by name, and it carries a ``GOMP_*`` compat layer a
+#: gcc object resolves against -- so gcc- and clang-built node libraries share one runtime and one thread
+#: pool. (libiomp5 qualifies too, ABI-compatible with libomp, but ships only with Intel's toolchain.)
+#: Same default and same class as the DaCe lane's :class:`~nestforge.build.OpenMPRuntime`, deliberately:
+#: one runtime GLOBALLY means one choice, honoured by every lane.
+DEFAULT_OPENMP_RUNTIME = LIBOMP
+
 #: FP-precision levels, strictest first; the index is the ladder rung.
 FP_LEVELS: Tuple[str, ...] = ("strict-ieee", "contract-fma", "assume-finite", "fast-math")
 
@@ -288,48 +298,59 @@ def omp_emit_flags(family: str) -> List[str]:
     return {"nvidia": ["-mp"]}.get(family, ["-fopenmp"])
 
 
-#: The soname of the OpenMP runtime a bare ``-fopenmp`` / ``-mp`` links per family: gcc pulls libgomp,
-#: clang pulls LLVM's libomp, icx pulls Intel's libiomp5, nvc (``-mp``) its native libnvomp. Used to
-#: LOCATE that runtime via the compiler driver so it can be rpath-baked into the linked node library.
-_OMP_DEFAULT_SONAME: Dict[str, str] = {"gnu": "gomp", "llvm": "omp", "intel": "iomp5", "nvidia": "nvomp"}
+def openmp_runtime_flags(compiler: Optional[str], family: str,
+                         runtime: OpenMPRuntime) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Pin this cell to EXACTLY ONE OpenMP runtime -- ``runtime``, whichever compiler builds it -- or
+    ``(None, reason)`` when this compiler cannot link it (a recorded skip, never a silent other runtime).
 
+    PARALLEL.md mandates one runtime for every node library AND the driver, so that libraries built by
+    different compilers share ONE runtime and ONE thread pool. Left to the bare ``-fopenmp`` each family
+    links its OWN default (gcc->libgomp, clang->libomp, icx->libiomp5), which quietly puts TWO runtimes
+    and two thread pools in one process the moment a sweep spans gcc and clang -- the dual-runtime
+    oversubscription :class:`~nestforge.build.OpenMPRuntime` exists to prevent. The DaCe lane already
+    routes through that class; this is the same contract for the external lanes, so a runtime chosen
+    once holds across every lane and compiler.
 
-@functools.lru_cache(maxsize=None)
-def driver_lib_dir(compiler: str, soname: str) -> Optional[str]:
-    """The directory holding ``lib<soname>.so``, as reported by the COMPILER DRIVER itself
-    (``<compiler> -print-file-name=lib<soname>.so``). Absolute directory, or ``None`` if the driver
-    only echoes the bare name (does not know the file).
+    Per family, given ``-fopenmp`` is already on the line (from :func:`omp_emit_flags` /
+    :func:`autopar_flags`, which is what compiles the pragmas):
 
-    This is how a spack/module OpenMP runtime that sits OFF the loader's default path is found -- e.g.
-    LLVM's ``libomp.so`` lives in the clang install tree, on neither the ldconfig cache nor
-    ``LD_LIBRARY_PATH``, so the loader / ``ctypes.util.find_library`` cannot see it, but the driver
-    that will link it can. Cached: the answer is fixed per (compiler, soname) for the whole sweep."""
-    for cand in (f"lib{soname}.so", f"lib{soname}.dylib"):
-        try:
-            out = subprocess.run([compiler, f"-print-file-name={cand}"], capture_output=True, text=True,
-                                 timeout=30).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if out and os.path.isabs(out) and os.path.exists(out):
-            return str(Path(out).resolve().parent)
-    return None
+    * ``llvm``  -- selects BY NAME: ``-fopenmp=<name>`` overrides the default; nothing else needed.
+    * ``gnu``   -- has no ``-fopenmp=<lib>``, so the runtime is chosen at LINK, and ORDER decides it.
+      These flags land BEFORE the source (``[exe, *flags, src, -o, so]``), where nothing is undefined
+      yet, so a plain ``--as-needed -l<soname>`` is dropped as unused and the driver's implicit trailing
+      ``-lgomp`` wins -- the exact opposite of the intent. ``--push-state,--no-as-needed`` pins the
+      runtime NEEDED regardless of position, and ``--pop-state`` restores ``--as-needed`` so that
+      trailing ``-lgomp`` is then dropped: its ``GOMP_*`` calls already resolve against the runtime
+      already in the link. Bare ``--no-as-needed`` would link BOTH. Verified by ``readelf -d``.
+    * ``intel-classic`` / ``nvidia`` -- ``-qopenmp`` / ``-mp`` hard-link their native runtime and
+      accept no other, which :meth:`OpenMPRuntime.compatible` already encodes; only the search path
+      is added.
 
-
-def openmp_rpath_flags(compiler: Optional[str], family: str) -> List[str]:
-    """Link flags so an OpenMP-enabled node library LOADS its runtime WITHOUT ``LD_LIBRARY_PATH``:
-    ``-L`` (link search) plus ``-Wl,-rpath`` (bake the dir into the ``.so`` for the runtime loader).
-
-    The runtime directory is detected from the compiler driver (:func:`driver_lib_dir`) for the
-    soname a bare ``-fopenmp`` / ``-mp`` links on this ``family`` (:data:`_OMP_DEFAULT_SONAME`).
-    Returns ``[]`` when the compiler is unknown or the runtime cannot be located (then the default
-    loader path must already carry it -- as gcc's libgomp does). This is what lets clang ``omp-emit``
-    cells load at all: without it they die at dlopen with ``libomp.so: cannot open shared object
-    file`` because LLVM's libomp is off the default loader path. Mirrors the rpath baking libnode.py
-    already does for its own node-library dependency."""
+    The ``-L`` + ``-Wl,-rpath`` pair makes the ``.so`` LOAD its runtime without ``LD_LIBRARY_PATH``
+    (LLVM's libomp lives in the clang install tree, off the default loader path -- without this a clang
+    omp-emit cell dies at dlopen with ``libomp.so: cannot open shared object file``). The directory
+    comes from the compiler driver via :func:`~nestforge.build.driver_lib_path`, the one helper that
+    knows to normalise lexically rather than ``resolve()`` (``libomp.so`` is a symlink to a
+    ``libomp.so.5`` that can live in a DIFFERENT directory, one holding no ``libomp.so`` to link).
+    """
     if not compiler:
-        return []
-    d = driver_lib_dir(compiler, _OMP_DEFAULT_SONAME.get(family, "omp"))
-    return ["-L%s" % d, "-Wl,-rpath,%s" % d] if d else []
+        return [], None  # pure composition (tests / figures): no driver to ask, no cell to build
+    if not runtime.compatible(compiler):
+        return None, f"{Path(compiler).name} cannot link {runtime.name} (single-runtime contract)"
+    # compatible() answers ABI ("gcc COULD link any gomp-ABI runtime"), not availability. libnvomp ships
+    # only inside the NVIDIA HPC SDK, so gcc+libnvomp passes the ABI test and then dies at link with
+    # `cannot find -lnvomp`. Ask whether -l<soname> actually resolves for THIS compiler before emitting a
+    # cell that cannot build: an absent runtime is a recorded skip, never a hard failure.
+    if family not in ("intel-classic", "nvidia") and not lib_linkable(runtime.soname, compiler):
+        return None, f"{runtime.name} is not linkable by {Path(compiler).name} (runtime not installed for it)"
+    found = driver_lib_path(runtime.soname, compiler)
+    search = ["-L%s" % found.parent, "-Wl,-rpath,%s" % found.parent] if found else []
+    if family == "llvm":
+        return [f"-fopenmp={runtime.name}", *search], None
+    if family in ("intel-classic", "nvidia"):
+        return search, None  # -qopenmp / -mp already hard-link the only runtime they accept
+    # gnu: pin NEEDED despite preceding the source, then restore --as-needed so -lgomp drops out.
+    return [*search, f"-Wl,--push-state,--no-as-needed,-l{runtime.soname},--pop-state"], None
 
 
 def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
@@ -372,7 +393,8 @@ def lane_flags(family: str,
                nthreads: int,
                cxx_std: str = CXX_STD,
                compiler: Optional[str] = None,
-               veclib: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
+               veclib: Optional[str] = None,
+               openmp: Optional[OpenMPRuntime] = None) -> Tuple[Optional[List[str]], Optional[str]]:
     """Compose the full compile flags for ONE full-matrix (tsvc_full) sweep cell, or ``(None, reason)``
     when the axis combination is unsupported (e.g. clang auto-par, or an incompatible veclib).
 
@@ -380,7 +402,14 @@ def lane_flags(family: str,
     :data:`REDUCED_FP_MODES`. ``lang`` is ``"c"`` | ``"c++"`` | ``"fortran"``; the C++ lane recompiles the
     C source (so it uses the C FP spellings plus the C++ frontend flags), Fortran uses the Fortran FP
     spellings. ``veclib`` (``none`` | ``sleef`` | ``libmvec`` | ``svml``) adds the vector-math-library
-    ``-fveclib=``/``-l`` flags. Every list starts from :func:`base_flags` (``-O3``/arch/PIC/shared)."""
+    ``-fveclib=``/``-l`` flags. Every list starts from :func:`base_flags` (``-O3``/arch/PIC/shared).
+
+    ``openmp`` is the ONE runtime every parallel cell links, whatever compiler builds it
+    (:data:`DEFAULT_OPENMP_RUNTIME` when unset) -- see :func:`openmp_runtime_flags`. It is a knob, not a
+    constant: any of :data:`~nestforge.build.OPENMP_RUNTIMES` can be selected, and a compiler that cannot
+    link the chosen one yields ``(None, reason)`` rather than quietly falling back to its own default.
+    Note libgomp can only ever be a gnu-ONLY choice: clang emits ``__kmpc_*``, which libgomp does not
+    implement, so it is not a viable cross-compiler runtime (:meth:`OpenMPRuntime.compatible`)."""
     fp_lang = "fortran" if lang == "fortran" else "c"
     out = base_flags(family)
     if lang == "c++":
@@ -394,15 +423,18 @@ def lane_flags(family: str,
     if vec is None:
         return None, vreason
     out = out + vec
-    if parallel == "auto-par":
-        ap, reason = autopar_flags(family, nthreads, compiler)
-        if ap is None:
+    if parallel in ("auto-par", "omp-emit"):
+        if parallel == "auto-par":
+            par, reason = autopar_flags(family, nthreads, compiler)
+        else:
+            # OUR pragmas are already in the source (numpyto c_omp/fortran_omp); just enable OpenMP.
+            par, reason = omp_emit_flags(family), None
+        if par is None:
             return None, reason
-        # -fopenmp/-qopenmp here also pulls an OpenMP runtime -> rpath it so the .so loads standalone.
-        out = out + ap + openmp_rpath_flags(compiler, family)
-    elif parallel == "omp-emit":
-        # OUR pragmas are already in the source (numpyto c_omp/fortran_omp); just enable OpenMP. Bake an
-        # rpath to the OpenMP runtime so the linked .so loads it without LD_LIBRARY_PATH (fixes clang
-        # 'libomp.so: cannot open shared object file': LLVM's libomp is off the default loader path).
-        out = out + omp_emit_flags(family) + openmp_rpath_flags(compiler, family)
+        # Both spellings enable OpenMP but leave the RUNTIME to the family default; pin the one mandated
+        # runtime instead, so a gcc cell and a clang cell in one process share it (and one thread pool).
+        rt, reason = openmp_runtime_flags(compiler, family, openmp or DEFAULT_OPENMP_RUNTIME)
+        if rt is None:
+            return None, reason
+        out = out + par + rt
     return out, None
