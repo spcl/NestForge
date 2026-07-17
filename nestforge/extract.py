@@ -134,9 +134,8 @@ def trip_count_symbols(sdfg: dace.SDFG) -> set:
 def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
     """Outline a CFG loop region into a standalone SDFG (M1)."""
     from dace.sdfg.graph import SubgraphView
-    # nest_sdfg_subgraph emits a "symbolic output" for each symbol defined in the nest and looks up its
-    # dtype in the nested-or-PARENT sdfg.symbols. A loop index DaCe never registered as a symbol (it need
-    # not be) would KeyError there; pre-declare each nest-defined symbol on the parent as int64.
+    # Pre-declare each nest-defined symbol on the parent as int64: nest_sdfg_subgraph looks up its dtype
+    # there and KeyErrors otherwise.
     for s in nest_defined_symbols(loop):
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dace.int64)

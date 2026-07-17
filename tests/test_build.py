@@ -1,10 +1,8 @@
-"""nest-forge owns the DaCe build (BUILD.md): generate DaCe's C++, compile+link it ourselves with a
-chosen compiler+flags, and call it via ctypes with manual init/program/exit -- not ``dace.compile``.
+"""nest-forge owns the DaCe build (BUILD.md): generate DaCe's C++, compile+link it ourselves, call it via
+ctypes with manual init/program/exit -- not ``dace.compile``.
 
-These tests build real corpus nests through :mod:`nestforge.build` and check the owned-built kernel
-matches the numpy oracle, exercising: the ``generate_program_folder`` source-tree layout + our own
-compile, the ``__dace_init``/``__program``/``__dace_exit`` call sequence, and per-parameter ctype
-marshaling (a size symbol is ``int`` or ``int64_t`` per its DaCe dtype; a Scalar passes by value).
+Tests build real corpus nests through :mod:`nestforge.build` and check the owned-built kernel matches the
+numpy oracle: source-tree layout, the init/program/exit call sequence, and per-parameter ctype marshaling.
 """
 import ctypes.util
 import shutil
@@ -76,34 +74,25 @@ def test_owned_build_jacobi_matches_oracle():
 
 
 def without_search_paths(flags):
-    """``flags`` minus any ``-L`` discovery path, i.e. WHICH runtime is selected without WHERE it was
-    found. The two are separate concerns and only the first is host-independent: whether a ``-L`` is
-    needed depends on where this box's distro put the library (Ubuntu's libomp-18-dev hides it under
-    /usr/lib/llvm-18/lib, libomp-21-dev does not), so an exact-list assertion on link_flags passes on
-    the dev box and fails on the CI runner for a difference the axis does not care about. The ``-L``
-    itself is covered, host-independently, by the discovery tests below.
-
-    The position varies by family (gnu emits ``-L`` before ``-l<soname>``, the others after their
-    ``-fopenmp=``/``-qopenmp``/``-mp`` selector), so filter rather than index.
+    """``flags`` minus any ``-L`` discovery path: WHICH runtime is selected, not WHERE it was found (the
+    latter is host-dependent -- e.g. Ubuntu moves libomp-18-dev under /usr/lib/llvm-18/lib). Filter rather
+    than index since the ``-L`` position varies by family.
     """
     return [f for f in flags if not f.startswith("-L")]
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
-    """The OpenMP runtime is one configurable knob that maps to the right flag PER COMPILER, so a set of
-    node libraries built with different compilers all target the SAME runtime -- the mixed-compiler
-    single-runtime contract from PARALLEL.md."""
+    """The OpenMP runtime maps to the right flag PER COMPILER, so mixed-compiler builds share ONE runtime."""
     rt = OpenMPRuntime()  # default libomp
     assert compiler_family("gfortran") == "gnu" and compiler_family("flang") == "llvm"
     assert compiler_family("icx") == "llvm" and compiler_family("icc") == "intel-classic"
-    # LLVM family selects the runtime BY NAME (the user's example: flang -fopenmp=libomp).
+    # LLVM family selects the runtime BY NAME (flang -fopenmp=libomp).
     assert rt.compile_flags("flang") == ["-fopenmp=libomp"]
     assert rt.compile_flags("clang++") == ["-fopenmp=libomp"]
     assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
     # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
     assert rt.compile_flags("g++") == ["-fopenmp"] and without_search_paths(rt.link_flags("g++")) == ["-lomp"]
-    # intel-classic and nvidia link ONLY their native runtimes (icc -qopenmp -> libiomp5, nvc -mp ->
-    # libnvomp), so libomp is not compatible with either -- their spellings are checked on those runtimes.
+    # intel-classic and nvidia link ONLY their native runtimes (icc->libiomp5, nvc->libnvomp), not libomp.
     from nestforge.build import LIBIOMP5
     assert LIBIOMP5.compile_flags("icc") == ["-qopenmp"]
     assert without_search_paths(LIBIOMP5.link_flags("icc")) == ["-qopenmp"]
@@ -114,21 +103,19 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
 
 
 def test_openmp_runtime_registry_covers_the_popular_runtimes():
-    """The four popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel; ABI-
-    compatible with libomp), libnvomp (NVIDIA HPC, via nvc -mp only)."""
+    """The four popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel, ABI-compat
+    with libomp), libnvomp (NVIDIA, nvc -mp only)."""
     from nestforge.build import OPENMP_RUNTIMES, LIBGOMP, LIBIOMP5
     assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5", "libnvomp"}
-    # gcc object on Intel's runtime (has GOMP compat). Search paths filtered: see without_search_paths.
+    # gcc on Intel's runtime (GOMP-compat); search paths filtered (see without_search_paths).
     assert without_search_paths(LIBIOMP5.link_flags("g++")) == ["-liomp5"]
     assert without_search_paths(LIBGOMP.link_flags("g++")) == ["-lgomp"]
 
 
 def test_openmp_abi_compatibility_is_enforced():
-    """A runtime is usable with a compiler only if the compiler can actually LINK it -- which depends on
-    HOW the family selects a runtime, not ABI alone. gcc links any gomp-capable runtime via -l<soname>.
-    LLVM (clang/flang/icx) name-selects only libomp/libgomp/libiomp5, restricted to its kmpc ABI -> libomp/
-    libiomp5, NOT libgomp (no __kmpc_*) and NOT libnvomp (not name-selectable). Classic icc (-qopenmp) and
-    nvc++ (-mp) hard-link their native libiomp5 / libnvomp ALONE. Mismatches raise, not silently mis-link."""
+    """A runtime is usable only if the compiler can actually LINK it, which depends on HOW the family
+    selects a runtime, not ABI alone: gcc links any gomp-capable runtime by soname; LLVM name-selects only
+    libomp/libiomp5 (kmpc ABI); icc/nvc++ hard-link their native runtime alone. Mismatches raise."""
     from nestforge.build import LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP
     # nvc++ / icc link ONLY their native runtimes.
     assert LIBNVOMP.compatible("nvc++") and not LIBOMP.compatible("nvc++") and not LIBIOMP5.compatible("nvc++")
@@ -149,10 +136,8 @@ def test_openmp_abi_compatibility_is_enforced():
 
 @pytest.mark.skipif(ctypes.util.find_library("omp") is None, reason="libomp not installed")
 def test_gcc_compiled_kernel_links_against_libomp():
-    """A g++-compiled kernel (which emits GOMP_* calls under -fopenmp) links + runs against libomp via
-    libomp's GOMP-compat ABI -- the concrete mixed-compiler / one-runtime case: a GCC node library can
-    share the same libomp a clang/flang node library uses. Builds gemm with openmp=OpenMPRuntime() on
-    g++ and checks it still matches the oracle."""
+    """A g++-compiled kernel (GOMP_* calls under -fopenmp) links + runs against libomp via its GOMP-compat
+    ABI -- proof a GCC node library can share the same libomp a clang/flang node library uses."""
     boundary = first_nest("hpc/dense_linear_algebra/gemm/gemm")
     shape_syms = {
         s
@@ -171,10 +156,8 @@ def test_gcc_compiled_kernel_links_against_libomp():
 
 
 def parallel_axpy_sdfg(name="paxpy"):
-    """A minimal SDFG with ONE genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel
-    for``): ``Z[i] = X[i] + Y[i]``. Hermetic (no corpus dependency) so the cross-compiler OpenMP link
-    matrix is tested on a guaranteed-parallel loop, not on whatever schedule a corpus kernel happens to
-    carry."""
+    """A minimal SDFG with ONE genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel for``):
+    ``Z[i] = X[i] + Y[i]``. Hermetic, so the OpenMP link matrix tests a guaranteed-parallel loop."""
     N = dace.symbol("N", dace.int64)
     sdfg = dace.SDFG(name)
     for a in ("X", "Y", "Z"):
@@ -189,20 +172,14 @@ def parallel_axpy_sdfg(name="paxpy"):
 
 
 def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch):
-    """REGRESSION: the linker and the loader do not search the same places, so "the runtime is installed"
-    does not imply "-l<soname> resolves".
-
-    Ubuntu splits them across packages AND moves the link-time symlink by release: ``libomp-dev`` resolves
-    to ``libomp-21-dev`` on one box (``/usr/lib/x86_64-linux-gnu/libomp.so``, on the default path) and to
-    ``libomp-18-dev`` on a CI runner, which puts it under ``/usr/lib/llvm-18/lib`` where the linker never
-    looks. ldconfig still reports libomp.so.5, so every installed-probe said yes and the build died with
-    ``cannot find -lomp``. Pinning the apt package cannot fix that; finding the file can.
+    """REGRESSION: the linker and the loader don't search the same places, so "installed" doesn't imply
+    "-l<soname> resolves" -- e.g. Ubuntu's libomp-dev package moves the lib off the default linker path
+    across releases. Pinning the apt package can't fix that; finding the file can.
     """
     from nestforge import build as build_mod
     (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
-    # LD_LIBRARY_PATH, not LIBRARY_PATH: the LOADER searches it and the LINKER does not, which is the
-    # whole point -- it is also exactly where a spack/module runtime lives. (Setting LIBRARY_PATH would
-    # prove nothing: the linker searches that itself, so no -L would be needed and none is added.)
+    # LD_LIBRARY_PATH (not LIBRARY_PATH): the LOADER searches it, the LINKER does not -- exactly where a
+    # spack/module runtime lives. LIBRARY_PATH would prove nothing (the linker already searches that).
     monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
     build_mod.linkable_lib_dir.cache_clear()
     rt = OpenMPRuntime(name="libfakeomp", soname="fakeomp")
@@ -213,9 +190,8 @@ def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path,
 
 
 def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch):
-    # The discovery must stay invisible on a box where the library is already on the default path -- and
-    # must never silently swap in some other LLVM version's copy. Forced rather than read off this box, so
-    # the assertion means the same thing wherever it runs.
+    # Discovery must stay invisible when the lib is already on the default path. Forced rather than read
+    # off this box, so the assertion means the same thing wherever it runs.
     from nestforge import build as build_mod
     monkeypatch.setattr(build_mod, "linker_finds", lambda *a, **kw: True)
     build_mod.linkable_lib_dir.cache_clear()
@@ -224,12 +200,9 @@ def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime
 
 
 def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
-    """``libomp.so`` IS a symlink (-> ``libomp.so.5``), and the two can sit in different directories.
-
-    So the answer must be normalised two ways at once: gcc replies with an unnormalised path full of
-    ``..`` segments, which has to be cleaned up -- but ``resolve()`` would ALSO follow the symlink and hand
-    back the TARGET's directory, which holds no ``libomp.so``. ``-L`` there finds nothing and the link
-    fails again, for a second and subtler reason. Lexical normalisation gives both.
+    """``libomp.so`` IS a symlink (-> ``libomp.so.5``) and the two can live in different directories, so the
+    answer needs normalising WITHOUT following it: ``resolve()`` would follow the symlink to a directory
+    with no ``libomp.so``, so lexical normalisation is used instead.
     """
     link_dir, target_dir = tmp_path / "linkdir", tmp_path / "targetdir"
     link_dir.mkdir()
@@ -257,17 +230,15 @@ def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch):
 
 
 def test_parallel_map_emits_omp_pragma():
-    """The sanity nest is actually parallel: DaCe lowers the ``CPU_Multicore`` map to an OpenMP pragma in
-    the generated C++ (so the cross-compiler tests below really do exercise the OpenMP runtime link)."""
+    """The sanity nest is actually parallel: DaCe lowers ``CPU_Multicore`` to an OpenMP pragma in the
+    generated C++ (so the cross-compiler tests below really exercise the runtime link)."""
     from nestforge.build import generate_program_folder
     frame, _ = generate_program_folder(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
     assert "#pragma omp parallel for" in frame.read_text()
 
 
-# gcc is the driver; each of these compilers builds the SAME parallel nest as a node library, each
-# linking the ONE runtime it can: libomp for gcc/clang/icx (kmpc+gomp), libnvomp for nvc++ (which links
-# only its native runtime via -mp -- see the C2 fix). This is the mixed-compiler / single-runtime sanity
-# matrix: prove each compiler emits a correct parallel loop that links + runs. Missing toolchains skip.
+# Each compiler builds the SAME parallel nest, linking the ONE runtime it can (libomp for gcc/clang/icx,
+# libnvomp for nvc++) -- the mixed-compiler / single-runtime sanity matrix. Missing toolchains skip.
 @pytest.mark.parametrize(
     "compiler",
     [
@@ -295,25 +266,23 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
 
 
 def test_build_tracks_optimization_and_compile_time():
-    """Every owned build records the optimization time (DaCe codegen) and the post-optimization compile
-    time (the toolchain subprocess), so both are trackable per build."""
+    """Every owned build records both the codegen (optimization) time and the compile (toolchain) time."""
     built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_time_")))
     assert built.codegen_seconds > 0.0
     assert built.compile_seconds > 0.0
 
 
 def test_external_linking_build_is_correct():
-    """The nest built as a SEPARATE static ``.a`` (link_external) and linked into the ``.so`` runs
-    identically to the monolithic build -- the external-linking path is correct, not merely timeable."""
+    """A nest built as a separate static ``.a`` (link_external) and linked into the ``.so`` runs identically
+    to the monolithic build -- external linking is correct, not merely timeable."""
     built = owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True))
     assert built.compile_seconds > 0.0
     assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
 
 
 def test_compare_link_modes_tracks_compile_time_with_and_without_external_linking():
-    """One optimization (codegen) pass, then the same frame compiled two ways: WITHOUT external linking
-    (monolithic single TU) and WITH external linking (static ``.a`` -> ``.so``). All three times are
-    tracked and positive -- this is the with/without-external-linking compile-time comparison."""
+    """One codegen pass, then the same frame compiled two ways (monolithic vs. external-linked ``.a`` ->
+    ``.so``); all three times are tracked and positive."""
     t = compare_link_modes(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_linkmodes_")))
     assert isinstance(t, LinkTimings)
     assert t.codegen_seconds > 0.0
@@ -322,16 +291,16 @@ def test_compare_link_modes_tracks_compile_time_with_and_without_external_linkin
 
 
 def test_external_linking_with_lto_is_correct():
-    """External linking + ``-flto`` (via the LTO-aware ``ar``) still matches the oracle -- LTO is the
-    knob meant to recover the cross-TU inlining that external linking otherwise costs."""
+    """External linking + ``-flto`` (LTO-aware ``ar``) still matches the oracle -- recovers the cross-TU
+    inlining external linking otherwise costs."""
     if shutil.which("gcc-ar") is None:
         pytest.skip("gcc-ar (LTO-aware archiver) not on PATH")
     owned_build_matches_oracle("hpc/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True, lto=True))
 
 
 def test_available_linkers_and_fastest_pick():
-    """Linker discovery reports the installed fast linkers (fastest first); the picker chooses the fastest
-    one the compiler is NEW ENOUGH to accept (version-gated), and never touches nvc/nvc++ (no -fuse-ld)."""
+    """Linker discovery reports installed fast linkers (fastest first); the picker chooses the fastest one
+    the compiler is new enough to accept, and never touches nvc/nvc++ (no -fuse-ld)."""
     av = available_linkers()
     assert all(Path(p).exists() for p in av.values())  # every reported linker really is on disk
     assert set(av) <= {"mold", "lld", "gold"}
@@ -348,9 +317,8 @@ def test_available_linkers_and_fastest_pick():
 
 
 def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
-    """The pick is VERSION-gated: an old compiler that predates -fuse-ld=mold must not be handed mold even
-    when mold is installed. Force the compiler version below mold's floor and assert mold is skipped (this
-    fails if the version gate is dropped, unlike the host-dependent check above)."""
+    """The pick is VERSION-gated: an old compiler predating -fuse-ld=mold must not get mold even when
+    installed. Forces the version below mold's floor (unlike the host-dependent check above)."""
     import nestforge.build as B
     monkeypatch.setattr(B, "compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
     assert not B.linker_supported("g++", "mold")
@@ -361,11 +329,10 @@ def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
 
 
 def test_veclib_flag_mapping_and_compatibility():
-    """Each vector-math library maps to the right per-compiler-family flag, and an incompatible pairing
-    raises rather than silently emitting nothing."""
+    """Each vector-math library maps to the right per-compiler-family flag; an incompatible pairing raises
+    rather than silently emitting nothing."""
     assert set(VECTOR_LIBS) == {"sleef", "libmvec", "svml"}
-    # x86 model: there is no -fveclib=SLEEF, so SLEEF emits via the libmvec token (glibc _ZGV*) and is
-    # LINKED against libsleefgnuabi -- so it works on gcc too, and shares libmvec's compile flags.
+    # x86: no -fveclib=SLEEF, so SLEEF emits via the libmvec token (glibc _ZGV*) but LINKS libsleefgnuabi.
     assert SLEEF.compile_flags("clang++") == ["-fveclib=libmvec"]
     assert SLEEF.compatible("g++") and SLEEF.compile_flags("g++") == []
     assert any("-lsleefgnuabi" in a for a in SLEEF.link_flags("clang++"))  # linked lib, pinned via push-state
@@ -373,8 +340,7 @@ def test_veclib_flag_mapping_and_compatibility():
     assert LIBMVEC.compile_flags("clang++") == ["-fveclib=libmvec"]
     assert LIBMVEC.compatible("g++") and LIBMVEC.compile_flags("g++") == []
     assert any("-lmvec" in a for a in LIBMVEC.link_flags("g++"))
-    # SVML: clang/icx via -fveclib=SVML -> __svml_*. gcc CANNOT: it only ever emits _ZGV*, and libsvml
-    # exports no _ZGV* names (-mveclibabi=svml is a no-op on modern gcc), so the pairing raises.
+    # SVML: clang/icx use -fveclib=SVML -> __svml_*; gcc always emits _ZGV* (libsvml has none), so it raises.
     assert SVML.compile_flags("icx") == ["-fveclib=SVML"]
     assert not SVML.compatible("g++")
     with pytest.raises(ValueError):
@@ -385,9 +351,8 @@ def test_veclib_flag_mapping_and_compatibility():
 
 def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch, tmp_path):
     """The veclib ``-l`` is pinned NEEDED via ``--push-state,--no-as-needed,...,--pop-state``, so unlike a
-    bare ``-l`` its POSITION no longer decides linkage (a shared veclib listed before the object is still
-    kept). Assert the composed command still carries the veclib exactly once and that :func:`compile` places
-    it after the source/object (construction hygiene) for every branch of :func:`compile`."""
+    bare ``-l`` its POSITION no longer decides linkage. Still, assert it appears exactly once, after the
+    source/object, in every branch of :func:`compile` (construction hygiene)."""
     import nestforge.build as B
     cmds = []
     monkeypatch.setattr(B, "run", lambda cmd, **kw: cmds.append(list(cmd)))
@@ -410,8 +375,8 @@ def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch,
 
 
 def test_parse_params_strips_the_const_qualifier_only_as_a_word():
-    """``const`` is a QUALIFIER, not a substring: a parameter merely NAMED ``constant`` / ``const_term``
-    must keep its name, or the ctypes bind looks the array up under a mangled key."""
+    """``const`` is a QUALIFIER, not a substring: params literally named ``constant``/``const_term`` must
+    keep their name, or the ctypes bind looks them up under a mangled key."""
     params = parse_params("k_state_t *__state, const double * __restrict__ constant, const int const_term")
     assert [p.name for p in params] == ["constant", "const_term"]
     assert params[0].is_pointer and params[0].ctype == ctypes.POINTER(ctypes.c_double)
@@ -419,16 +384,15 @@ def test_parse_params_strips_the_const_qualifier_only_as_a_word():
 
 
 def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
-    """An unmapped by-value type must fail LOUD: defaulting it to int64 puts a float in a GP register on
-    the SysV ABI, and the callee then reads garbage with no ctypes error."""
+    """An unmapped by-value type must fail LOUD: defaulting to int64 puts a float in a GP register (SysV
+    ABI), so the callee reads garbage with no ctypes error."""
     with pytest.raises(ValueError, match="uint64_t"):
         parse_params("k_state_t *__state, uint64_t n")
 
 
 @pytest.mark.skipif(not vectorlib_installed(LIBMVEC), reason="glibc libmvec not found")
 def test_veclib_libmvec_build_is_correct():
-    """Building against glibc's libmvec (g++: -lmvec, no compile flag) links + runs correctly -- the
-    veclib axis threads through the owned build without breaking it."""
+    """Building against glibc's libmvec (g++: -lmvec, no compile flag) links + runs correctly."""
     n = 128
     x, y = np.random.default_rng(2).random(n), np.random.default_rng(3).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
@@ -458,9 +422,8 @@ def test_owned_build_reusable_handle_program():
 
 
 def test_set_fast_libnodes_selects_implementation():
-    """set_fast_libnodes picks a concrete library-node implementation (OpenBLAS/MKL when a BLAS env is
-    available on the extended branch, else the pure fallback) instead of expanding to naive loops -- the
-    node keeps its library form with an implementation set, which is what fast_libnodes relies on."""
+    """set_fast_libnodes picks a concrete library-node implementation (OpenBLAS/MKL, else the pure fallback)
+    instead of expanding to naive loops -- the node keeps its library form with an implementation set."""
     N = dace.symbol("N")
 
     @dace.program
@@ -477,15 +440,15 @@ def test_set_fast_libnodes_selects_implementation():
 
 # --- codegen-implementation axis (legacy | experimental) ---------------------------------------------
 def test_config_has_reflects_schema():
-    """config_has answers whether the running DaCe schema DEFINES a key -- true for a core key, false for
-    a bogus one -- without getattr/hasattr, so the codegen axis can degrade on a build lacking the key."""
+    """config_has answers whether the running DaCe schema DEFINES a key, without getattr/hasattr, so the
+    codegen axis can degrade on a build lacking the key."""
     assert config_has("compiler", "build_type")  # a core key every DaCe schema has
     assert not config_has("compiler", "cpu", "definitely_not_a_real_key_zzz")
 
 
 def test_codegen_impls_available_default_first_and_consistent():
     """The toggleable axis always offers legacy, lists the default first, and default_codegen_impl agrees
-    with the first entry. On this (readable-codegen) DaCe build both impls are available, new first."""
+    with the first entry."""
     impls = codegen_impls_available()
     assert "legacy" in impls
     assert impls[0] == default_codegen_impl()  # default-first ordering
@@ -495,9 +458,8 @@ def test_codegen_impls_available_default_first_and_consistent():
 
 
 def test_codegen_config_degrades_gracefully_without_the_key(monkeypatch):
-    """On a DaCe build WITHOUT compiler.cpu.implementation (simulated), the default is legacy, a legacy
-    scope is a no-op that still runs, and an explicit experimental request RAISES rather than silently
-    emitting legacy and mislabelling it."""
+    """Without compiler.cpu.implementation (simulated), the default is legacy, a legacy scope is a no-op,
+    and an explicit experimental request RAISES rather than silently mislabelling itself as legacy."""
     monkeypatch.setattr("nestforge.build.config_has", lambda *path: False)
     assert default_codegen_impl() == "legacy"
     assert codegen_impls_available() == ("legacy", )
@@ -510,15 +472,14 @@ def test_codegen_config_degrades_gracefully_without_the_key(monkeypatch):
 
 @pytest.mark.parametrize("impl", codegen_impls_available())
 def test_both_codegen_impls_build_and_match_oracle(impl):
-    """Every toggleable codegen impl builds the same nest to a working kernel that matches the oracle --
-    the axis is genuinely selectable, not just a stamped label."""
+    """Every toggleable codegen impl builds the same nest to a working kernel matching the oracle -- the
+    axis is genuinely selectable, not just a stamped label."""
     owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d", opts=BuildOptions(codegen_impl=impl))
 
 
 def test_vectorized_owned_build_matches_oracle():
     """The DaCe multi-dim tile-op vectorizer plugs into the owned build: a VectorizeConfig on BuildOptions
-    is applied before codegen and the vectorized kernel still matches the numpy oracle (AUTO resolves to
-    the host ISA, so this is host-agnostic)."""
+    still matches the numpy oracle (AUTO resolves to the host ISA, so this stays host-agnostic)."""
     from dace.transformation.passes.vectorization.config import VectorizeConfig
     owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d",
                                size=256,

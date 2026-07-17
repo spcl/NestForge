@@ -1,9 +1,7 @@
 """Unit + end-to-end tests for the TSVC full-matrix driver (nestforge.perf.tsvc_full).
 
-The pure-logic tests (median timing, reduced-FP / auto-par / C++ flag composition, PROF>L3 sizing,
-winner selection, table math, rank partition) run without a compiler. The end-to-end tests compile and
-run real kernels through all three lanes and skip when no toolchain is on PATH -- mirroring the split in
-test_perf_units.py vs test_tsvc_arena.py.
+Pure-logic tests (timing, flag composition, sizing, winner selection, table math) run without a compiler;
+end-to-end tests compile and run real kernels through all three lanes, skipping when no toolchain is on PATH.
 """
 import ctypes
 import json
@@ -49,9 +47,8 @@ def test_reduced_fp_modes_and_atol():
 
 # --- auto-parallelization axis ------------------------------------------------------------------------
 def test_autopar_flags_per_family(monkeypatch):
-    # gcc default auto-par is Graphite: parloops (-ftree-parallelize-loops + -floop-parallelize-all) + the
-    # isl loop-nest optimizer + -fgraphite-identity (forces SCoP model construction so detection != 0). No
-    # compiler -> no probe. We do NOT force the back end past its cost model (no Polly -process-unprofitable).
+    # gcc default auto-par is Graphite: parloops + isl-loop-nest-optimize + -fgraphite-identity (forces SCoP
+    # construction). Never forces the back end past its own cost model (no -process-unprofitable).
     gnu, r = flags.autopar_flags("gnu", 72)
     assert gnu == [
         "-ftree-parallelize-loops=72", "-floop-parallelize-all", "-floop-nest-optimize", "-fgraphite-identity",
@@ -63,11 +60,9 @@ def test_autopar_flags_per_family(monkeypatch):
     assert llvm == ["-mllvm", "-polly", "-mllvm", "-polly-parallel", "-fopenmp"] and rl is None
     assert flags.autopar_flags("nvidia", 8)[0] == ["-Mconcur"]
     assert flags.autopar_flags("intel", 8)[0] == ["-qopenmp", "-parallel"]
-    # Both polyhedral back ends are OPTIONAL and gated by TWO probes: the flag must be accepted
-    # (compiler_accepts) AND actually emit a parallel loop (autopar_fires). A back end that parses but is
-    # inert -- Ubuntu clang's statically-linked-but-unscheduled Polly -- must be a recorded skip, not a
-    # cell that times as parallel while running serial. Force both probes so the test does not depend on
-    # whether THIS box's clang has a working Polly.
+    # Both polyhedral back ends are OPTIONAL, gated by TWO probes: flag accepted (compiler_accepts) AND
+    # actually parallel (autopar_fires) -- an inert-but-accepted back end (Ubuntu clang's Polly) must be a
+    # recorded skip, not a false "parallel" cell. Forced here so the test doesn't depend on this box's clang.
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
     apl, reasonl = flags.autopar_flags("llvm", 8, compiler="clang")
     assert apl is None and "Polly" in reasonl
@@ -105,8 +100,7 @@ def test_lane_flags_gate_reduced_cxx_and_unsupported(monkeypatch):
     # llvm auto-par is Polly now (a real lane): with no compiler to probe, the intended flags come back.
     poll, reason = flags.lane_flags("llvm", "default-fp", "default", "auto-par", "c", 4)
     assert reason is None and "-polly" in poll
-    # but when a compiler IS probed and its polyhedral back end is absent, the cell records (None, reason)
-    # -- it is never silently dropped.
+    # when a compiler IS probed and its polyhedral back end is absent, the cell records (None, reason).
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
     none, why = flags.lane_flags("llvm", "default-fp", "default", "auto-par", "c", 4, compiler="clang")
     assert none is None and why
@@ -116,8 +110,8 @@ def test_lane_flags_gate_reduced_cxx_and_unsupported(monkeypatch):
 
 
 def test_lane_flags_omp_emit_enables_openmp_every_family():
-    # omp-emit is supported for EVERY family (the pragmas are in OUR source) -- a bare -fopenmp / -mp,
-    # NOT an auto-parallelizer, so clang (which auto-par cannot reach) DOES get an omp-emit lane.
+    # omp-emit is supported for EVERY family (pragmas are in OUR source, a bare -fopenmp/-mp, not an
+    # auto-parallelizer) -- so clang (which auto-par cannot reach) still gets an omp-emit lane.
     assert "omp-emit" in flags.PARALLEL_MODES
     for fam, sw in (("gnu", "-fopenmp"), ("llvm", "-fopenmp"), ("intel", "-fopenmp"), ("nvidia", "-mp")):
         omp, reason = flags.lane_flags(fam, "default-fp", "default", "omp-emit", "c", 8)
@@ -276,9 +270,9 @@ def test_render_tables_reports_gate_failure(tmp_path):
 
 
 def test_render_tables_gate_ok_with_tiny_nonzero_maxdiff_is_not_a_failure(tmp_path):
-    """REGRESSION: strict-ieee is NOT atol-0 (pairwise-sum reductions / transcendentals drift ~1e-15 from
-    numpy), so a gate cell that VALIDATED (``ok=True``) but has a tiny non-zero ``maxdiff`` (here 1e-16)
-    must NOT be reported as a gate failure. The report keys off ``cell.ok``, never ``maxdiff == 0.0``."""
+    """REGRESSION: strict-ieee is NOT atol-0 (transcendentals drift ~1e-15 from numpy), so a gate cell that
+    VALIDATED (``ok=True``) with a tiny non-zero ``maxdiff`` must NOT report as a failure -- keyed off
+    ``cell.ok``, never ``maxdiff == 0.0``."""
     passing = _cell("simplify-parallel",
                     "c",
                     "gcc",
@@ -318,10 +312,8 @@ def test_my_slice_disjoint_and_covers():
 
 # --- end-to-end (all three lanes) ---------------------------------------------------------------------
 def _small_axes():
-    # One FP mode, not both: this e2e test verifies every lane/language/parallelism path compiles + runs
-    # bit-exact, not the FP axis (test_reduced_fp_modes_and_atol covers that). Keeping it to a single FP
-    # mode roughly halves the compile matrix so the test stays light under the full ``-n auto`` suite run
-    # (where the 3-language matrix, run concurrently with the rest, otherwise thrashes and times out).
+    # One FP mode, not both (test_reduced_fp_modes_and_atol covers that axis): halves the compile matrix so
+    # this test stays light when the 3-language matrix runs concurrently under -n auto.
     return {
         "opt_modes": ["simplify-parallel"],
         "languages": ["c", "c++", "fortran"],
@@ -372,9 +364,8 @@ def test_run_kernel_all_lanes_s000(tmp_path):
 
 
 def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
-    """s000 (elementwise ``a[i]=b[i]+1``) is a DaCe-parallel nest, so it MUST get the omp-emit lane: OUR
-    ``#pragma omp parallel for`` source (numpyto c_omp) compiled with -fopenmp, validated bit-exact and
-    timed -- across C, C++ AND Fortran, and for clang too (which auto-par cannot parallelize)."""
+    """s000 (elementwise ``a[i]=b[i]+1``) is DaCe-parallel, so it MUST get the omp-emit lane: OUR ``#pragma
+    omp parallel for`` source, validated bit-exact and timed across C/C++/Fortran, incl. clang."""
     tcs = discover_toolchains("auto")
     if not tcs:
         pytest.skip("no toolchain")
@@ -410,8 +401,8 @@ def test_omp_emit_lane_runs_for_parallel_nest_s000(tmp_path):
 
 
 def test_omp_emit_sources_carry_the_pragma(tmp_path):
-    """The omp-emit source numpyto produces for a parallel nest actually contains the OpenMP pragma with the
-    SAME symbol as the sequential emit (a drop-in). A sequential nest produces no omp source."""
+    """The omp-emit source numpyto produces for a parallel nest contains the OpenMP pragma under the SAME
+    symbol as the sequential emit (a drop-in); a sequential nest produces no omp source."""
     tcs = discover_toolchains("gcc")
     if not tcs:
         pytest.skip("no gcc")
@@ -427,14 +418,13 @@ def test_omp_emit_sources_carry_the_pragma(tmp_path):
 
 
 def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
-    """The C++ lane recompiles the C source, so the entry MUST stay C-ABI (unmangled ``<key>_fp64``) or
-    ctypes -- and any whole-program link -- cannot resolve it. Verify with ``nm`` and a ctypes load."""
+    """The C++ lane recompiles the C source, so the entry MUST stay C-ABI (unmangled) or ctypes -- and any
+    whole-program link -- cannot resolve it."""
     tcs = discover_toolchains("gcc")
     if not tcs or shutil.which("nm") is None:
         pytest.skip("no gcc / nm")
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
-    # build_opt_context now returns a per-nest list; s000 is single-nest -> nest 0. Its symbol carries the
-    # per-nest suffix ``_n0_fp64`` (each nest is an independently-linked external call).
+    # build_opt_context returns a per-nest list; s000 is single-nest -> nest 0, symbol suffixed ``_n0_fp64``.
     ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c", "c++"], tmp_path)
     wrapper, order, argtypes = ctxs[0]["lang_src"]["c++"]
     symbol = ctxs[0]["symbol"]  # s000_n0_fp64
@@ -450,9 +440,8 @@ def test_cxx_lane_symbol_is_c_abi_unmangled(tmp_path):
 
 def test_cxx_only_run_keeps_the_veclib_axis(tmp_path):
     """A ``--languages c++`` run (no ``c``) must still gate the veclib axis ON for a nest whose emitted C
-    source calls libm: the C++ lane compiles that very source through its ``extern "C"`` wrapper, so the
-    veclib is live for it. s451 calls ``sin``; the gate may not be read off a ``c`` entry that a c++-only
-    run never produces, or the axis silently collapses to ``none`` with no skip reason recorded."""
+    source calls libm (the C++ lane compiles that source via its ``extern "C"`` wrapper): the gate must not
+    be read off a ``c`` entry a c++-only run never produces, nor silently collapse to ``none``."""
     k = tsvc.iter_tsvc_kernels(only=["s451"])[0]
     ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c++"], tmp_path)
     nc = ctxs[0]
@@ -474,10 +463,9 @@ def _one_lang_axes():
 
 
 def test_dace_baseline_timing_always_produced_recurrence(tmp_path):
-    """s111 is a linear recurrence: the nest extraction promotes its loop-carried state to boundary I/O,
-    and DaCe's raw codegen of the standalone nest diverges from numpyto's boundary semantics. The DaCe
-    baseline is still the SAME iteration space, so its MEDIAN TIME must still be produced (a fair timing
-    baseline) even if it does not bit-match -- the nest-forge gate is the real correctness guarantee."""
+    """s111 is a linear recurrence: nest extraction promotes its loop-carried state to boundary I/O, so
+    DaCe's raw codegen of the standalone nest diverges from numpyto's semantics. Same iteration space
+    though, so its MEDIAN TIME must still be produced even without a bit-match (the gate is the real check)."""
     tcs = discover_toolchains("gcc")
     if not tcs:
         pytest.skip("no gcc")
@@ -501,9 +489,9 @@ def test_dace_baseline_timing_always_produced_recurrence(tmp_path):
 
 
 def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
-    """s1115 is peeled to an INNER nest (outer index fixed): the standalone-nest DaCe lane does the same
-    one-row work as the nest-forge lanes, so it bit-matches -- and its time is apples-to-apples (the
-    whole-kernel SDFG would do ~LEN more work and inflate the speedup)."""
+    """s1115 is peeled to an INNER nest (outer index fixed): the standalone DaCe lane does the same one-row
+    work as the nest-forge lanes, so it bit-matches and its time stays apples-to-apples (a whole-kernel SDFG
+    would do ~LEN more work and inflate the speedup)."""
     tcs = discover_toolchains("gcc")
     if not tcs:
         pytest.skip("no gcc")

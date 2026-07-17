@@ -1,13 +1,7 @@
-"""nest-forge owns the DaCe build (see BUILD.md): generate DaCe's C++ ourselves, compile + link it with
-one chosen compiler + flag set, and call it via ctypes with manual init / program / exit -- instead of
-``dace.compile()`` (whose Python ``__call__`` re-marshals every argument, confounding timing, and whose
-build system we do not control).
-
-The generated code exposes three C-linkage entry points for an SDFG named ``N``: ``__dace_init_N`` (allocate
-state, return opaque handle), ``__program_N`` (the kernel, timed per invocation), ``__dace_exit_N`` (free
-state). The ``.so`` does not auto-initialize; we call all three. Arrays pass as pointers; size symbols and
-scalars pass by value (a DaCe ``Scalar`` is by value -- unlike nest-forge's C-style emission, which treats
-it as a size-1 buffer).
+"""Owns the DaCe build (see BUILD.md): generate DaCe's C++, compile + link with one chosen compiler +
+flag set, call via ctypes (manual init/program/exit) -- not ``dace.compile()``, whose ``__call__``
+re-marshals every argument and confounds timing. Entry points per SDFG ``N``: ``__dace_init_N`` /
+``__program_N`` / ``__dace_exit_N``; arrays pass as pointers, scalars by value.
 """
 from __future__ import annotations
 
@@ -48,10 +42,8 @@ DEFAULT_FLAGS = ["-O3", "-march=native", "-std=c++20", "-fPIC", "-shared"]
 
 
 def compiler_family(compiler: str) -> str:
-    """The OpenMP-relevant family of a compiler executable: ``llvm`` (clang/flang and LLVM-based Intel
-    icx/icpx/ifx -- select the runtime by name), ``intel-classic`` (icc/icpc/ifort -> ``-qopenmp``,
-    libiomp5), ``nvidia`` (nvc/nvc++/nvfortran -> ``-mp``), or ``gnu`` (gcc/gfortran -> ``-fopenmp``,
-    emits GOMP calls with the runtime chosen at link)."""
+    """OpenMP-relevant compiler family: ``llvm`` (clang/flang, icx/icpx/ifx), ``intel-classic``
+    (icc/icpc/ifort), ``nvidia`` (nvc/nvc++/nvfortran), or ``gnu`` (gcc/gfortran, default)."""
     b = Path(compiler).name.lower()
     if "clang" in b or "flang" in b or b.startswith(("icx", "icpx", "ifx")):
         return "llvm"
@@ -62,47 +54,31 @@ def compiler_family(compiler: str) -> str:
     return "gnu"
 
 
-#: The OpenMP ABI a compiler family *emits* -- ``gomp`` (GCC's ``GOMP_*`` entry points) or ``kmpc`` (the
-#: LLVM/Intel ``__kmpc_*`` entry points, which clang/flang/icx/icc AND nvc/nvc++ all emit). A runtime is
-#: link-compatible with a compiler only if it implements the ABI the compiler emits.
+#: OpenMP ABI a family emits -- ``gomp`` (GCC ``GOMP_*``) or ``kmpc`` (LLVM/Intel ``__kmpc_*``, incl. nvc/nvc++).
 _COMPILER_ABI = {"gnu": "gomp", "llvm": "kmpc", "intel-classic": "kmpc", "nvidia": "kmpc"}
 
-#: The runtimes clang/flang/icx can select by NAME via ``-fopenmp=<name>`` -- the driver only understands
-#: these three tokens, so a runtime outside this set (libnvomp, a custom name) is NOT reachable from an
-#: LLVM compiler even if its ABI matches. gcc, by contrast, links any runtime explicitly with ``-l<soname>``.
+#: Runtimes selectable by name via ``-fopenmp=<name>`` on clang/flang/icx; libnvomp/custom names aren't
+#: reachable this way even with a matching ABI (gcc links any runtime explicitly via ``-l<soname>``).
 _LLVM_SELECTABLE = frozenset({"libomp", "libgomp", "libiomp5"})
 
 
 @dataclass
 class OpenMPRuntime:
-    """The single OpenMP runtime the whole program links against -- a SEPARATE, configurable flag axis, not
-    folded into the base flags (PARALLEL.md mandates one runtime for every node library and the driver).
-    ``libomp`` is the default because it is the most portable: LLVM selects it by name, it is ABI-compatible
-    with Intel's libiomp5, AND it implements the ``GOMP_*`` ABI, so a GCC-compiled object resolves against it
-    too -- letting node libraries built with DIFFERENT compilers share ONE runtime and thread pool."""
+    """The one OpenMP runtime the whole program links against (PARALLEL.md: one runtime for every node
+    library + the driver). ``libomp`` is default -- LLVM-selectable by name, ABI-compat with libiomp5,
+    AND implements GOMP_*, so gcc- and clang-built libraries can share one runtime/thread pool."""
     name: str = "libomp"  # runtime selected by name on LLVM (``-fopenmp=<name>``)
     soname: str = "omp"  # ``-l<soname>`` for explicit linking (omp/gomp/iomp5)
-    #: ``-L`` for the runtime. Left None it is DISCOVERED (:func:`linkable_lib_dir`) rather than assumed to
-    #: be on the default linker path -- which it is not on every distro (see that function). Pass an
-    #: explicit path to pin one (a spack/module runtime); pass ``""`` to force bare ``-l<soname>``.
+    #: ``-L`` for the runtime; None -> DISCOVERED via :func:`linkable_lib_dir` (not always on the default
+    #: linker path). Pin an explicit path, or ``""`` to force bare ``-l<soname>``.
     lib_dir: Optional[str] = None
-    #: the OpenMP ABIs this runtime implements. libomp/libiomp5/libnvomp expose BOTH ``__kmpc_*`` and a
-    #: ``GOMP_*`` compat layer; libgomp exposes only ``GOMP_*`` -- so a kmpc compiler (clang/flang/icx/
-    #: nvc++) cannot use libgomp.
+    #: ABIs this runtime implements. libomp/libiomp5/libnvomp expose BOTH __kmpc_* and GOMP_*; libgomp is
+    #: GOMP_*-only, so a kmpc compiler (clang/flang/icx/nvc++) cannot use it.
     provides: frozenset = frozenset({"kmpc", "gomp"})
 
     def compatible(self, compiler: str) -> bool:
-        """True if ``compiler`` can actually LINK against THIS runtime -- depends on how each family selects
-        its runtime, not on ABI alone:
-
-        * ``nvidia``: OpenMP only via ``-mp``, hard-links native ``libnvomp`` -- compatible with it ALONE.
-        * ``intel-classic``: ``-qopenmp`` hard-links native ``libiomp5`` -- compatible with it ALONE.
-        * ``llvm``: selects BY NAME (``-fopenmp=<name>``), driver only knows :data:`_LLVM_SELECTABLE`, so
-          compatible with a runtime in that set whose ABI it emits (kmpc): libomp/libiomp5, NOT libnvomp /
-          a custom name (unreachable by name) nor libgomp (lacks ``__kmpc_*``).
-        * ``gnu``: links any runtime explicitly with ``-l<soname>``, so compatible with any gomp-ABI runtime
-          (all four, via the GOMP-compat layer).
-        """
+        """True if ``compiler`` can LINK this runtime: nvidia/intel-classic hard-link their own native
+        runtime only; llvm selects by name from :data:`_LLVM_SELECTABLE`; gnu links any gomp-ABI runtime."""
         fam = compiler_family(compiler)
         if fam == "nvidia":
             return self.name == "libnvomp"
@@ -140,21 +116,19 @@ class OpenMPRuntime:
         """Flags to compile a translation unit with OpenMP against this runtime."""
         self.check(compiler)
         fam = compiler_family(compiler)
-        if fam == "llvm":  # clang / clang++ / flang / icx: pick the runtime by name
+        if fam == "llvm":  # pick the runtime by name
             return [f"-fopenmp={self.name}"]
         if fam == "intel-classic":
             return ["-qopenmp"]
-        if fam == "nvidia":  # nvc/nvc++/nvfortran: -mp links libnvomp (its native kmpc
-            return ["-mp"]  # runtime); no -fopenmp=<lib> switch to force another one
-        return ["-fopenmp"]  # gnu: emit GOMP calls; the runtime is fixed at link
+        if fam == "nvidia":
+            return ["-mp"]  # hard-links native libnvomp; no -fopenmp=<lib> switch
+        return ["-fopenmp"]  # gnu: runtime fixed at link, not by this flag
 
     def link_flags(self, compiler: str) -> List[str]:
-        """Flags to link a program against THIS runtime (and no other -- avoids the dual-runtime abort /
-        oversubscription of mixing libgomp + libomp)."""
+        """Flags to link a program against THIS runtime only (avoids dual-runtime oversubscription)."""
         self.check(compiler)
         fam = compiler_family(compiler)
-        # An explicit lib_dir wins (pin a spack/module runtime, or "" to force bare -l<soname>); otherwise
-        # ask where the library actually is, using the compiler that will do the linking.
+        # explicit lib_dir wins (pin a spack/module runtime, "" forces bare -l<soname>); else discover it
         pinned = self.lib_dir if self.lib_dir is not None else linkable_lib_dir(self.soname, compiler)
         libdir = [f"-L{pinned}"] if pinned else []
         if fam == "llvm":
@@ -163,31 +137,27 @@ class OpenMPRuntime:
             return ["-qopenmp", *libdir]
         if fam == "nvidia":
             return ["-mp", *libdir]
-        # gnu: link the mandated runtime EXPLICITLY rather than ``-fopenmp`` (which would pull libgomp).
-        # libomp's GOMP-compat layer resolves the object's GOMP_* symbols, so a gcc lib joins the same
-        # single runtime as the clang/flang libs.
+        # gnu: link the runtime EXPLICITLY (bare -fopenmp would pull libgomp instead)
         return [*libdir, f"-l{self.soname}"]
 
 
-#: The popular OpenMP runtimes as ready knobs. libomp / libgomp / libiomp5 are mutually GOMP-ABI compatible
-#: (libomp and libiomp5 also implement the ``GOMP_*`` entry points). NVIDIA's HPC SDK ships its OWN runtime
-#: (libnvomp), reachable only via nvc/nvfortran ``-mp`` and NOT interchangeable with the other three.
-LIBOMP = OpenMPRuntime(name="libomp", soname="omp")  # LLVM (clang / flang) -- the default; kmpc+gomp
+#: Ready-made OpenMP runtimes. libomp/libgomp/libiomp5 are mutually GOMP-ABI compatible (libomp/libiomp5
+#: also implement __kmpc_*). NVIDIA's libnvomp is reachable only via nvc/nvfortran -mp.
+LIBOMP = OpenMPRuntime(name="libomp", soname="omp")  # LLVM default; kmpc+gomp
 LIBGOMP = OpenMPRuntime(
     name="libgomp",
-    soname="gomp",  # GNU (gcc / gfortran); GOMP-only -> a kmpc
-    provides=frozenset({"gomp"}))  #   compiler (clang/flang/icx/nvc++) cannot use it
-LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")  # Intel (icx / icc); kmpc+gomp, ABI-compat with libomp
-LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")  # NVIDIA HPC (nvc/nvc++ -mp); kmpc+gomp
+    soname="gomp",  # GNU; GOMP-only
+    provides=frozenset({"gomp"}))  # unusable by a kmpc compiler (clang/flang/icx/nvc++)
+LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")  # Intel; kmpc+gomp, ABI-compat with libomp
+LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")  # NVIDIA HPC; kmpc+gomp
 
 #: name -> runtime, for a config/CLI knob.
 OPENMP_RUNTIMES = {"libomp": LIBOMP, "libgomp": LIBGOMP, "libiomp5": LIBIOMP5, "libnvomp": LIBNVOMP}
 
 
 def resolve_runtime(name: str) -> OpenMPRuntime:
-    """A named runtime as an :class:`OpenMPRuntime`. Known names hit the registry; an unknown name is taken
-    as ``lib<soname>`` with the default ABI set so it has a compat model (in practice only reachable from
-    gcc via ``-l<soname>``; see :meth:`OpenMPRuntime.compatible`)."""
+    """Named runtime as an :class:`OpenMPRuntime`; unknown names fall back to ``lib<soname>`` with the
+    default ABI set (only reachable from gcc via ``-l<soname>``)."""
     rt = OPENMP_RUNTIMES.get(name)
     if rt is not None:
         return rt
@@ -196,31 +166,23 @@ def resolve_runtime(name: str) -> OpenMPRuntime:
 
 
 def env_library_dirs() -> List[str]:
-    """Directories the loader searches via environment variables -- where a spack-loaded (module) runtime
-    lives when it is NOT in the ldconfig cache. On Linux ``ctypes.util.find_library`` consults ldconfig
-    and the compiler, NOT ``LD_LIBRARY_PATH``, so a spack/module runtime reads as absent unless we probe
-    these explicitly. Covers the linker (``LIBRARY_PATH``) and the runtime loader (``LD_LIBRARY_PATH`` /
-    ``DYLD_*`` on macOS)."""
+    """Directories from env vars (``LD_LIBRARY_PATH``/``LIBRARY_PATH``/``DYLD_*``) where a spack/module
+    runtime lives -- ``ctypes.util.find_library`` only consults ldconfig, missing these."""
     dirs: List[str] = []
     for var in ("LD_LIBRARY_PATH", "LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
         dirs += [d for d in os.environ.get(var, "").split(os.pathsep) if d]
     return dirs
 
 
-#: Drivers to ask where a runtime lives when the target compiler cannot find it. Each SHIPS one (clang ->
-#: libomp, gcc -> libgomp), so it knows its own libdir whatever prefix it was installed under -- which
-#: beats guessing paths. Ordered clang-first because libomp is the mandated runtime.
+#: Drivers to ask where a runtime lives when the target compiler can't find it (each ships its own).
+#: clang-first since libomp is the mandated runtime.
 _LIB_PROBE_DRIVERS = ("clang++", "clang", "g++", "gcc")
 
 
 def driver_lib_path(soname: str, compiler: str) -> Optional[Path]:
-    """Where ``compiler`` resolves ``lib<soname>.so``, or ``None`` if it cannot find it.
-
-    ``-print-file-name`` is the only authority on what a driver itself resolves: it returns a full path, or
-    echoes the name back unchanged when there is nothing to find. ``ldconfig`` / ``ctypes.util.find_library``
-    answer a DIFFERENT question -- what the LOADER can find at run time -- and the two disagree exactly
-    where it matters (see :func:`linkable_lib_dir`).
-    """
+    """Where ``compiler`` resolves ``lib<soname>.so``, or ``None``. ``-print-file-name`` answers what the
+    driver itself resolves; ldconfig/``find_library`` answer a different question (what the loader finds),
+    and the two disagree exactly where it matters (see :func:`linkable_lib_dir`)."""
     try:
         out = subprocess.run([compiler, f"-print-file-name=lib{soname}.so"], capture_output=True,
                              text=True).stdout.strip()
@@ -228,11 +190,7 @@ def driver_lib_path(soname: str, compiler: str) -> Optional[Path]:
         return None
     if not out or out == f"lib{soname}.so":
         return None
-    # Normalise LEXICALLY, never resolve(): gcc answers with an unnormalised path
-    # (``/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libomp.so``) which has to be cleaned
-    # up, but resolve() would also follow the symlink -- and ``libomp.so`` is precisely a symlink, often
-    # to a ``libomp.so.5`` in a DIFFERENT directory. Its target's directory is the wrong answer: ``-L``
-    # there would find no ``libomp.so`` and the link would fail again, for a second subtle reason.
+    # normalize LEXICALLY, never resolve(): libomp.so is often a symlink to a libomp.so.5 in another dir
     path = Path(os.path.normpath(out))
     return path if path.exists() else None
 
@@ -244,26 +202,12 @@ def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[str]:
-    """The ``-L`` directory needed to LINK ``lib<soname>``, or ``None`` when the linker already finds it.
-
-    The loader and the linker do not search the same places, and the split is not academic: Ubuntu ships
-    the runtime (``libomp.so.5``, in the ldconfig cache) and the link-time symlink (``libomp.so``) in
-    different packages, and WHERE the symlink lands depends on the release. ``libomp-dev`` resolves to
-    ``libomp-21-dev`` on one box -- ``/usr/lib/x86_64-linux-gnu/libomp.so``, on the default path -- and to
-    ``libomp-18-dev`` on another, which puts it under ``/usr/lib/llvm-18/lib`` where the linker never looks.
-    So an ldconfig-based probe reports the runtime "installed" and the link then fails with
-    ``cannot find -lomp``. Pinning the apt package cannot fix that; finding the file can.
-
-    Returns ``None`` when no ``-L`` is needed, so a box with the library on the default path keeps linking
-    exactly as before -- and never silently swaps in some other LLVM version's copy.
-
-    Found by ASKING, in order: an explicit loader path (``LD_LIBRARY_PATH`` -- a spack/module runtime, and
-    deliberate, so it wins); then the drivers that ship these runtimes (clang knows where its libomp is,
-    whatever prefix it was installed under -- on the CI runner clang-18 answers ``/usr/lib/llvm-18/lib``);
-    only then a guess at LLVM's layout, for a box with the -dev files but no matching clang.
-    """
+    """The ``-L`` directory needed to LINK ``lib<soname>``, or ``None`` if the linker already finds it.
+    Loader and linker search different paths (e.g. Ubuntu's libomp-dev symlink can land under
+    ``/usr/lib/llvm-18/lib``, off the link path, while ldconfig still reports the runtime "installed").
+    Resolved by asking: env loader path, then the drivers that ship these runtimes, then a layout guess."""
     if shutil.which(compiler) is None:
-        return None  # cannot ask a linker that is not here, and a guessed -L for it would be worse than none
+        return None  # no linker to ask; a guessed -L would be worse than none
     if linker_finds(soname, compiler):
         return None
     for d in env_library_dirs():  # explicit intent (spack/module) outranks anything inferred
@@ -275,9 +219,7 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
             found = driver_lib_path(soname, probe)
             if found is not None:
                 return str(found.parent)
-    # Newest LLVM first: when several are installed, an older libomp is the less likely intent. lib64 as
-    # well as lib: Debian/Ubuntu multiarch puts libraries under lib/<triple>, but RHEL/Fedora/SUSE use
-    # lib64, so a lib-only search finds nothing there.
+    # newest LLVM first (older libomp less likely); lib64 too (RHEL/SUSE, vs Debian's lib/<triple>)
     for root in ("/usr/lib", "/usr/lib64"):
         for d in sorted((str(x) for x in Path(root).glob("llvm-*/lib*")), reverse=True):
             if (Path(d) / f"lib{soname}.so").exists():
@@ -289,23 +231,15 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
 
 
 def lib_linkable(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
-    """True if ``-l<soname>`` will actually resolve at link time -- on the default path, or via the ``-L``
-    :func:`linkable_lib_dir` finds.
-
-    The question to ask before building something that links it. ``ctypes.util.find_library`` answers
-    whether the LOADER can find the runtime, which is not the same thing: it is satisfied by a versioned
-    ``libomp.so.5`` while the linker needs the ``libomp.so`` symlink from the -dev package, so it reports
-    "installed" for a library that cannot be linked.
-    """
+    """True if ``-l<soname>`` resolves at link time (default path, or via :func:`linkable_lib_dir`).
+    Not the same question as ``find_library``, which is satisfied by a versioned ``.so.5`` even when
+    the linker needs the ``-dev`` package's ``.so`` symlink."""
     return linker_finds(soname, compiler) or linkable_lib_dir(soname, compiler) is not None
 
 
 def lib_findable(soname: str, lib_dir: Optional[str]) -> bool:
-    """True if ``lib<soname>`` can be found -- in a pinned ``lib_dir``, on an environment loader path
-    (``LD_LIBRARY_PATH`` / ``LIBRARY_PATH``, where spack modules put their runtimes off the ldconfig
-    cache), or on the system loader search path (ldconfig cache / compiler default). Matches a versioned
-    ``.so.N`` as well as a bare ``.so`` / ``.a`` / ``.dylib``. Shared by the OpenMP-runtime and
-    vector-math-library installed-probes so the two never drift."""
+    """True if ``lib<soname>`` is found in ``lib_dir``, an env loader path, or the system loader path.
+    Matches versioned ``.so.N`` too. Shared by the OpenMP-runtime and veclib installed-probes."""
     for d in ([lib_dir] if lib_dir else []) + env_library_dirs():
         p = Path(d)
         if (p / f"lib{soname}.a").exists() or (p / f"lib{soname}.dylib").exists() or any(p.glob(f"lib{soname}.so*")):
@@ -314,14 +248,13 @@ def lib_findable(soname: str, lib_dir: Optional[str]) -> bool:
 
 
 def runtime_installed(rt: OpenMPRuntime) -> bool:
-    """True if the runtime's shared object can be found. NVIDIA's libnvomp lives off the default path, so
-    without a ``lib_dir`` it reads as not-installed here -- which is why a config that names it for a
-    non-nvhpc link gets pruned with a warning."""
+    """True if the runtime's shared object can be found. libnvomp lives off the default path, so without
+    a ``lib_dir`` it reads as not-installed (pruning it with a warning for a non-nvhpc link)."""
     return lib_findable(rt.soname, rt.lib_dir)
 
 
-#: clang/icx -fveclib token per veclib. x86 has no -fveclib=SLEEF (aarch64 only), so sleef reuses the
-#: libmvec token (emit _ZGV*) and differs only in the linked lib (libsleefgnuabi); svml is __svml_*.
+#: clang/icx -fveclib token per veclib. x86 has no -fveclib=SLEEF, so sleef reuses libmvec's token
+#: (differs only in linked lib, libsleefgnuabi); svml is __svml_*.
 _CLANG_VECLIB = {"sleef": "libmvec", "libmvec": "libmvec", "svml": "SVML"}
 
 #: Intel oneAPI roots holding libsvml (+ libintlc/libimf/libirng), off the default path; globbed for */lib.
@@ -329,9 +262,8 @@ _INTEL_ONEAPI_ROOTS = ("/opt/intel/oneapi/compiler", "/opt/intel/oneapi")
 
 
 def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
-    """Directory holding ``lib<soname>`` for ``-L``/``-rpath``, or ``None`` if already on the default path.
-    Asks the driver first (icx knows its libsvml), then the Intel oneAPI dirs (newest first), then a SLEEF
-    prefix (``NF_SLEEF_PREFIX``/``~/.local``/``/usr/local``). Returns a dir so one rpath covers siblings too."""
+    """Directory holding ``lib<soname>`` for ``-L``/``-rpath``, or ``None`` if on the default path.
+    Tries the driver, then Intel oneAPI dirs, then a SLEEF prefix (env/``~/.local``/``/usr/local``)."""
     found = driver_lib_path(soname, compiler)
     if found is not None:
         return str(found.parent)
@@ -351,25 +283,21 @@ def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
 @dataclass
 class VectorMathLib:
     """SIMD elementary-math library (sin/exp/...) an autovectorized loop calls instead of scalarizing.
-    x86_64 model, verified:
-    * ``libmvec`` (glibc): gcc emits ``_ZGV*`` under fast-math + AVX (no flag); clang/icx ``-fveclib=libmvec``.
-    * ``sleef``: SAME ``_ZGV*`` emission, but linked against ``libsleefgnuabi`` -- so it works on gcc/clang/icx
-      (there is no ``-fveclib=SLEEF`` on x86; see :data:`_CLANG_VECLIB`).
-    * ``svml``: clang/icx ``-fveclib=SVML`` -> ``__svml_*``, linked ``libsvml``. Not gcc (it emits only ``_ZGV*``).
-    Packed calls appear only under a fast-math FP mode (a separate axis)."""
+    ``libmvec``/``sleef`` both emit ``_ZGV*`` (gcc fast-math, or clang/icx ``-fveclib=libmvec``; sleef
+    just links ``libsleefgnuabi`` instead); ``svml`` is clang/icx-only, ``-fveclib=SVML`` -> ``__svml_*``."""
     name: str  # libmvec | sleef | svml
     soname: Optional[str]  # -l<soname> for the vector symbols (None: toolchain/glibc provides)
     lib_dir: Optional[str] = None  # explicit -L override; when None the dir is resolved via veclib_lib_dir
 
     def compatible(self, compiler: str) -> bool:
         fam = compiler_family(compiler)
-        if fam == "llvm":  # clang/icx: -fveclib=libmvec (also SLEEF's emission path) or -fveclib=SVML
+        if fam == "llvm":  # -fveclib=libmvec (also SLEEF's path) or -fveclib=SVML
             return self.name in ("libmvec", "sleef", "svml")
-        if fam == "gnu":  # gcc emits _ZGV* under fast-math; libmvec (glibc) or SLEEF (libsleefgnuabi) satisfy it
+        if fam == "gnu":  # gcc emits _ZGV* under fast-math; libmvec/SLEEF satisfy it
             return self.name in ("libmvec", "sleef")  # NOT svml: gcc never emits __svml_*
         if fam == "intel-classic":
             return self.name == "svml"  # classic icc emits SVML natively
-        return False  # nvidia: use its own -Mvect, not these
+        return False  # nvidia: uses its own -Mvect, not these
 
     def check(self, compiler: str) -> None:
         if not self.compatible(compiler):
@@ -378,9 +306,9 @@ class VectorMathLib:
 
     def compile_flags(self, compiler: str) -> List[str]:
         self.check(compiler)
-        if compiler_family(compiler) == "llvm":  # emit the packed calls: SVML -> __svml_*, else glibc _ZGV*
+        if compiler_family(compiler) == "llvm":  # SVML -> __svml_*, else glibc _ZGV*
             return [f"-fveclib={_CLANG_VECLIB[self.name]}"]
-        return []  # gnu: -ffast-math autovec already emits _ZGV*; intel-classic: SVML is native
+        return []  # gnu: -ffast-math autovec already emits _ZGV*; intel-classic: SVML native
 
     def link_flags(self, compiler: str) -> List[str]:
         self.check(compiler)
@@ -389,12 +317,12 @@ class VectorMathLib:
         libdir = self.lib_dir or veclib_lib_dir(self.soname, compiler)
         search = [f"-L{libdir}", f"-Wl,-rpath,{libdir}"] if libdir else []
         if self.name == "svml":
-            search.append("-Wl,--disable-new-dtags")  # libsvml's own libintlc needs DT_RPATH (transitive), not RUNPATH
-        # pin NEEDED regardless of link-line position (a veclib -l before the object drops under --as-needed)
+            search.append("-Wl,--disable-new-dtags")  # libintlc (transitive) needs DT_RPATH, not RUNPATH
+        # pin NEEDED regardless of link-line position (else a veclib -l before the object is dropped)
         return [*search, f"-Wl,--push-state,--no-as-needed,-l{self.soname},--pop-state"]
 
 
-SLEEF = VectorMathLib(name="sleef", soname="sleefgnuabi")  # SLEEF's GNU-ABI lib, exporting _ZGV* symbols
+SLEEF = VectorMathLib(name="sleef", soname="sleefgnuabi")  # GNU-ABI lib, exports _ZGV* symbols
 LIBMVEC = VectorMathLib(name="libmvec", soname="mvec")  # glibc's libmvec
 SVML = VectorMathLib(name="svml", soname="svml")  # Intel SVML runtime
 
@@ -403,20 +331,16 @@ VECTOR_LIBS = {"sleef": SLEEF, "libmvec": LIBMVEC, "svml": SVML}
 
 
 def vectorlib_installed(vl: VectorMathLib) -> bool:
-    """True if the vector library's shared object is findable. A ``soname``-less entry (toolchain/glibc-
-    provided) is always present. libsvml (Intel oneAPI) and libsleefgnuabi (from-source SLEEF) live off the
-    ldconfig cache, so :func:`lib_findable` alone reports them absent -- fall back to :func:`veclib_lib_dir`,
-    which knows their off-path homes (asked with the default compiler; the arena re-checks per real cell)."""
+    """True if the vector library is findable. A ``soname``-less entry is always present. libsvml/
+    libsleefgnuabi live off the ldconfig cache, so fall back to :func:`veclib_lib_dir` for their homes."""
     if not vl.soname:
         return True
     return lib_findable(vl.soname, vl.lib_dir) or veclib_lib_dir(vl.soname, DEFAULT_COMPILER) is not None
 
 
-# TODO(blas): add a BLAS/LAPACK library axis (openblas / mkl / blis / nvpl / accelerate) the same way --
-# a linkable-library knob with per-library link flags + an installed-probe, feeding the same prune model.
-# Discovery already exists (nestforge.arena.discover_blas_libraries); what's missing is threading a chosen
-# BLAS into the owned build's link line (for library-node expansions that lower to gemm/gemv) and a
-# compat/prune step. Kept as a TODO here so the vector-math axis lands first.
+# TODO(blas): add a BLAS/LAPACK library axis (openblas/mkl/blis/nvpl/accelerate) the same way -- a
+# linkable-library knob + link flags + installed-probe. Discovery exists (arena.discover_blas_libraries);
+# missing piece is threading a chosen BLAS into the owned build's link line + a compat/prune step.
 
 
 def dace_runtime_include() -> Path:
@@ -438,8 +362,7 @@ def parse_params(param_str: str) -> List[Param]:
     """Parse a C parameter list into typed params. Skips the leading ``N_state_t *__state`` handle."""
     params: List[Param] = []
     for raw in split_params(param_str):
-        # Strip the qualifiers as whole WORDS: a substring strip would also eat them out of a parameter
-        # NAME (``const_term``, ``nconst``), whose mangled remains would then miss the SDFG array.
+        # strip qualifiers as whole WORDS: a substring strip would corrupt names like `const_term`
         tok = re.sub(r"\b(?:const|__restrict__)\b", "", raw).strip()
         if not tok or tok.endswith("_state_t *__state") or tok.endswith("_state_t* __state"):
             continue
@@ -449,9 +372,7 @@ def parse_params(param_str: str) -> List[Param]:
         if is_ptr:
             params.append(Param(name, ctypes.POINTER(_C_PTR.get(base, ctypes.c_double)), True))
         else:
-            # An unmapped by-value type means _C_SCALAR is incomplete; guessing a width here is an ABI
-            # bug that ctypes cannot catch (a float passed as c_int64 goes in the wrong register class
-            # and the callee silently reads garbage), so refuse instead.
+            # an unmapped type would guess a width silently -- an ABI bug ctypes can't catch -- so refuse
             ctype = _C_SCALAR.get(base)
             if ctype is None:
                 raise ValueError(f"parameter {name!r} of entry point has C type {base!r}, which has no ctypes "
@@ -494,27 +415,22 @@ class BuiltSDFG:
     _lib: ctypes.CDLL
     _init_params: List[Param]
     _prog_params: List[Param]
-    #: wall time of the OPTIMIZATION phase (DaCe codegen: the optimizing passes + C++ emission +
-    #: source-tree layout) -- distinct from the toolchain compile below.
+    #: wall time of the OPTIMIZATION phase (DaCe codegen + C++ emission), distinct from the compile below.
     codegen_seconds: float = 0.0
-    #: wall time of the post-optimization COMPILE (the compiler/linker subprocess turning the generated
-    #: C++ into the ``.so``); reflects whether external linking was used (see ``link_external``).
+    #: wall time of the post-optimization COMPILE (compiler/linker turning C++ into the ``.so``).
     compile_seconds: float = 0.0
     _handle: Optional[ctypes.c_void_p] = field(default=None, repr=False)
 
     def init(self, sizes: Dict[str, int]) -> None:
-        fn = self._lib[f"__dace_init_{self.name}"]  # ctypes CDLL indexing (not getattr) to bind the entry point
+        fn = self._lib[f"__dace_init_{self.name}"]  # ctypes CDLL indexing (not getattr) binds the entry point
         fn.restype = ctypes.c_void_p
         fn.argtypes = [p.ctype for p in self._init_params]
-        # Use each parameter's OWN ctype -- DaCe types a size symbol as int / int64_t per its declared
-        # dtype, so a hardcoded width mismatches (jacobi's ``int N`` vs gemm's ``int64_t NI``).
+        # each param's OWN ctype: a hardcoded width would mismatch (jacobi's int N vs gemm's int64_t NI)
         self._handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self._init_params]))
 
     def bind_program(self, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
-        """Bind ``__program_N`` and its ctypes argument list ONCE; return ``(fn, args)``. For timing, bind
-        once then call ``fn(*args)`` in the rep loop so the measured region is the bare kernel call with no
-        per-rep numpy->ctypes marshaling -- the same thing the native/nest ctypes lanes time. ``init`` must
-        have run; ``buffers`` must stay alive while ``args`` (which holds pointers into them) is used."""
+        """Bind ``__program_N`` and its ctypes args ONCE; return ``(fn, args)``, so a timed rep loop calls
+        ``fn(*args)`` with no per-rep marshaling. ``init`` must have run; ``buffers`` must stay alive."""
         fn = self._lib[f"__program_{self.name}"]
         fn.restype = None
         fn.argtypes = [ctypes.c_void_p] + [p.ctype for p in self._prog_params]
@@ -534,8 +450,8 @@ class BuiltSDFG:
         fn(*args)
 
     def unload(self) -> None:
-        """Release the ``dlopen`` mapping of the ``.so`` (its file may be deleted afterward). A long sweep
-        that builds one library per kernel would otherwise accumulate one live mapping per kernel."""
+        """Release the ``dlopen`` mapping (file may be deleted after). Prevents a long sweep from
+        accumulating one live mapping per kernel."""
         if self._lib is not None:
             dlclose(self._lib._handle)
             self._lib = None
@@ -558,9 +474,8 @@ class BuiltSDFG:
 
 
 def config_has(*path) -> bool:
-    """True when the running DaCe config schema DEFINES the key at ``path``. ``Config.get`` raises on an
-    unknown key, so a plain ``extended`` checkout that lacks (e.g.) ``compiler.cpu.implementation`` reads
-    as ``False`` here -- letting the codegen axis degrade gracefully instead of crashing. (No getattr.)"""
+    """True when the running DaCe config schema DEFINES the key at ``path`` (``Config.get`` raises on an
+    unknown key); lets the codegen axis degrade gracefully instead of crashing. (No getattr.)"""
     try:
         dace.config.Config.get(*path)
         return True
@@ -568,38 +483,30 @@ def config_has(*path) -> bool:
         return False
 
 
-#: The codegen-implementation axis values (``compiler.cpu.implementation``): ``experimental`` emits the
-#: human-readable constexpr-index-function codegen (which ``static constexpr`` index fns + ``const_init``
-#: ride unconditionally) and is nest-forge's DEFAULT; ``legacy`` is the classic connector-based codegen,
-#: kept as a toggleable variant. Ordered default-first. See :func:`codegen_impls_available`.
+#: Codegen-implementation axis (``compiler.cpu.implementation``): ``experimental`` is the readable
+#: constexpr-index-fn codegen (nest-forge's DEFAULT); ``legacy`` is the classic connector-based codegen.
 CODEGEN_IMPLS = ("experimental", "legacy")
 #: nest-forge defaults to DaCe's NEW (human-readable) codegen when the running DaCe build supports it.
 DEFAULT_CODEGEN_IMPL = "experimental"
 
 
 def default_codegen_impl() -> str:
-    """The codegen impl a build uses when the caller specifies none: the new ``experimental`` codegen when
-    this DaCe build carries ``compiler.cpu.implementation``, else ``legacy`` -- so the readable-codegen
-    branch defaults to new while a plain ``extended`` checkout still builds (legacy)."""
+    """Codegen impl used when the caller specifies none: ``experimental`` if this DaCe build supports
+    ``compiler.cpu.implementation``, else ``legacy``."""
     return DEFAULT_CODEGEN_IMPL if config_has("compiler", "cpu", "implementation") else "legacy"
 
 
 def codegen_impls_available() -> Tuple[str, ...]:
-    """The toggleable codegen-implementation axis values THIS DaCe build supports, DEFAULT FIRST:
-    ``('experimental', 'legacy')`` when the schema carries ``compiler.cpu.implementation``, else
-    ``('legacy',)``. The driver sweeps exactly this tuple, so a plain ``extended`` checkout runs legacy
-    only while the readable-codegen branch measures both variants."""
+    """Codegen-implementation values THIS DaCe build supports, default first: both when the schema has
+    ``compiler.cpu.implementation``, else just ``('legacy',)``. The driver sweeps exactly this tuple."""
     return CODEGEN_IMPLS if config_has("compiler", "cpu", "implementation") else ("legacy", )
 
 
 @contextlib.contextmanager
 def codegen_config(codegen_impl: str):
-    """Scope the DaCe codegen config for ONE ``generate_code`` call: pin ``compiler.emit_tree_reductions``
-    true (never an axis) and select the CPU codegen ``implementation``. ``temporary_config`` snapshots and
-    restores the WHOLE config, so nothing leaks to the next in-process cell (``set_temporary`` is
-    process-global). The ``implementation`` key is set only when the schema has it; an ``experimental``
-    request against a build that lacks it RAISES rather than silently emitting legacy and mislabelling it
-    (the default path never hits this -- :func:`default_codegen_impl` already downgrades to legacy there)."""
+    """Scope the DaCe codegen config for ONE ``generate_code`` call: pin ``emit_tree_reductions`` true and
+    select the CPU codegen ``implementation``. Raises for ``experimental`` on a build that lacks the key,
+    rather than silently emitting legacy and mislabelling it (``temporary_config`` restores the whole config)."""
     with dace.config.temporary_config():
         dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
         if config_has("compiler", "cpu", "implementation"):
@@ -611,13 +518,10 @@ def codegen_config(codegen_impl: str):
 
 
 def generate_program_folder(sdfg: dace.SDFG, out_dir: Path, codegen_impl: Optional[str] = None) -> Tuple[Path, str]:
-    """Lay out DaCe's full compilable source tree (``src/cpu/<name>.cpp`` + ``include/`` with the
-    generated headers) via DaCe's own ``generate_program_folder`` -- so the relative
-    ``#include "../../include/hash.h"`` resolves -- WITHOUT letting DaCe compile it. We compile it.
+    """Lay out DaCe's compilable source tree (``src/cpu/<name>.cpp`` + ``include/``) via DaCe's own
+    ``generate_program_folder``, so relative includes resolve -- but WITHOUT letting DaCe compile it.
 
-    :param codegen_impl: the CPU codegen implementation axis (``experimental`` | ``legacy``); ``None`` ->
-        :func:`default_codegen_impl` (new codegen where available). Scopes the DaCe config only for the
-        ``generate_code`` call that reads it (see :func:`codegen_config`).
+    :param codegen_impl: ``experimental`` | ``legacy``; ``None`` -> :func:`default_codegen_impl`.
     :returns: (the C++ Frame source path, sdfg name).
     """
     from dace.codegen import codegen, compiler as dace_compiler
@@ -632,15 +536,13 @@ def generate_program_folder(sdfg: dace.SDFG, out_dir: Path, codegen_impl: Option
 
 
 def include_flags(folder: Path) -> List[str]:
-    """Header search paths: the generated ``include/`` (hash.h + copied dace headers) and DaCe's
-    runtime include (angle-bracket ``<dace/...>``)."""
+    """Header search paths: the generated ``include/`` and DaCe's runtime include."""
     return [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"]
 
 
 def clang_major_via_preprocessor(compiler: str) -> Optional[int]:
-    """The underlying clang major of an LLVM compiler that hides it from ``--version`` (icx/icpx/ifx print
-    an oneAPI banner, not ``clang version``), by asking the preprocessor for ``__clang_major__``. ``None``
-    if it cannot be determined."""
+    """Underlying clang major via the preprocessor's ``__clang_major__`` -- for icx/icpx/ifx, whose
+    ``--version`` prints an oneAPI banner instead of ``clang version``. ``None`` if undetermined."""
     try:
         p = subprocess.run([compiler, "-dM", "-E", "-x", "c", "/dev/null"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
@@ -651,10 +553,8 @@ def clang_major_via_preprocessor(compiler: str) -> Optional[int]:
 
 @functools.lru_cache(maxsize=None)
 def compiler_version(compiler: str) -> Tuple[int, int]:
-    """The compiler's ``(major, minor)`` version, parsed from ``<compiler> --version`` (cached per
-    invocation string). Gates version-dependent features (fast linkers, fat-LTO). Returns ``(0, 0)`` if it
-    cannot be run or parsed: a CONSERVATIVE "assume old" that DISABLES the version-gated features rather
-    than emitting a flag the compiler may reject."""
+    """The compiler's ``(major, minor)`` version, parsed from ``--version``. Gates version-dependent
+    features (fast linkers, fat-LTO). Returns ``(0, 0)`` (assume old) if unparseable, never a guess."""
     try:
         p = subprocess.run([compiler, "--version"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
@@ -665,8 +565,7 @@ def compiler_version(compiler: str) -> Tuple[int, int]:
         m = re.search(r"clang version (\d+)\.(\d+)", out)
         if m:
             return (int(m.group(1)), int(m.group(2)))
-        # icx/icpx/ifx (oneAPI) hide the clang version behind their own banner -- ask the preprocessor,
-        # so the >=18 fat-LTO gate reflects the REAL clang base (an old oneAPI must not be assumed modern).
+        # icx/icpx/ifx hide the clang version behind their own banner; ask the preprocessor instead
         cmaj = clang_major_via_preprocessor(compiler)
         return (cmaj, 0) if cmaj is not None else (0, 0)
     if fam == "gnu":
@@ -677,17 +576,14 @@ def compiler_version(compiler: str) -> Tuple[int, int]:
 
 
 def ar_for(compiler: str) -> str:
-    """The ``ar`` that understands this compiler's object files -- the LTO-plugin-aware wrapper (``gcc-ar``
-    for gcc, ``llvm-ar`` for clang/flang/icx) when present, so archiving an ``-flto`` object keeps it
-    linkable; plain ``ar`` otherwise. Classic icc is not fat-LTO'd here (see :func:`fat_lto_flags`), so its
-    object is plain and plain ``ar`` suffices."""
+    """The LTO-plugin-aware ``ar`` for this compiler (``gcc-ar``/``llvm-ar``) when present, so archiving
+    an ``-flto`` object keeps it linkable; plain ``ar`` otherwise."""
     cand = {"gnu": "gcc-ar", "llvm": "llvm-ar"}.get(compiler_family(compiler), "ar")
     return cand if shutil.which(cand) else "ar"
 
 
-#: Minimum compiler ``(major, minor)`` that accepts ``-fuse-ld=<linker>``, per family. Absent (family,
-#: linker) pairs are treated as unsupported. mold needs gcc>=12.1 / clang>=12; lld is old on both; gold is
-#: effectively always there via binutils. (icx/icpx report as modern LLVM, so they clear the clang gates.)
+#: Minimum compiler version accepting ``-fuse-ld=<linker>``, per family; absent pairs are unsupported.
+#: mold needs gcc>=12.1/clang>=12; icx/icpx report as modern LLVM, clearing the clang gates.
 _LINKER_MIN: Dict[str, Dict[str, Tuple[int, int]]] = {
     "mold": {
         "gnu": (12, 1),
@@ -715,10 +611,8 @@ def linker_supported(compiler: str, linker: str) -> bool:
 
 
 def fat_lto_flags(compiler: str) -> List[str]:
-    """Flags to compile a FAT-LTO object (LTO bitcode + real machine code) for this compiler, or ``[]`` if
-    it cannot -- in which case a warning is emitted and the node library is archived without LTO. gcc has
-    fat LTO since ~4.8; clang only since 18; ``icx``/``icpx`` (modern LLVM) qualify; classic icc uses
-    ``-ipo`` (a different, non-fat model) and NVIDIA has no fat-LTO, so both archive without it."""
+    """Flags for a FAT-LTO object (bitcode + real machine code), or ``[]`` if this compiler can't (warns,
+    archives without LTO). gcc since ~4.8, clang since 18; classic icc/NVIDIA have no fat-LTO."""
     fam = compiler_family(compiler)
     if fam == "gnu":
         return ["-flto", "-ffat-lto-objects"]
@@ -731,11 +625,8 @@ def fat_lto_flags(compiler: str) -> List[str]:
     return []
 
 
-#: Wall-clock ceiling for a SINGLE owned-build compile/link/archive command. A compiler that
-#: spins on a pathological kernel (deep unroll, optimizer blow-up) or a deadlocked link would
-#: otherwise hang forever -- and since compiles run in a ThreadPoolExecutor whose shutdown waits
-#: for every worker, one stuck compile freezes the whole sweep rank, and srun then blocks on that
-#: rank (the 19h "job timed out" stall). Bounded so a bad config fails that one cell instead.
+#: Wall-clock ceiling for a SINGLE compile/link/archive command. A stuck compile would otherwise hang
+#: forever and freeze the whole sweep rank (ThreadPoolExecutor shutdown waits for every worker).
 #: Override with NF_COMPILE_TIMEOUT (seconds).
 COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 
@@ -744,24 +635,20 @@ def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        # subprocess.run has already SIGKILLed the child; surface as a normal build failure so the
-        # sweep records this one cell as errored and moves on (never aborts the rank / the sweep).
+        # child already SIGKILLed; surface as a normal build failure so the sweep moves on, not aborts
         raise RuntimeError(f"command timed out after {timeout:.0f}s: {' '.join(cmd[:2])} ... "
                            f"(pathological compile/link; ceiling is NF_COMPILE_TIMEOUT)")
     if p.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
 
 
-#: Fast alternative linkers, FASTEST FIRST. The default ``bfd`` ``ld`` is always present and is the
-#: fallback, so it is not listed here. Install more with e.g. ``apt install mold`` (fastest) or
-#: ``apt install binutils-gold``.
+#: Fast alternative linkers, FASTEST FIRST. Default ``bfd`` ``ld`` is always the fallback (not listed).
 _FAST_LINKERS = ("mold", "lld", "gold")
 
 
 def available_linkers() -> Dict[str, str]:
-    """The fast alternative linkers installed on this system, fastest first: name (the ``-fuse-ld=<name>``
-    token) -> backing binary path. The default ``bfd`` ld is not listed (it is always the fallback). Use
-    it to report what is available and what could be installed for a faster link."""
+    """Fast alternative linkers installed, fastest first: name -> backing binary path. Default ``bfd``
+    is not listed (always the fallback)."""
     found: Dict[str, str] = {}
     for ld in _FAST_LINKERS:
         p = shutil.which(ld) or shutil.which(f"ld.{ld}")
@@ -771,10 +658,8 @@ def available_linkers() -> Dict[str, str]:
 
 
 def fastest_linker(compiler: str) -> List[str]:
-    """``-fuse-ld=<linker>`` for the fastest installed linker THIS compiler is new enough to accept
-    (mold > lld > gold), or ``[]`` if none qualify / only the default ``ld`` is present. NVIDIA's
-    nvc/nvc++ has no ``-fuse-ld`` switch, so it always keeps its default. The version gate (see
-    :func:`linker_supported`) is what stops an old gcc/clang being handed ``-fuse-ld=mold`` it rejects."""
+    """``-fuse-ld=<linker>`` for the fastest installed linker this compiler accepts (mold > lld > gold),
+    or ``[]``. NVIDIA's nvc/nvc++ has no ``-fuse-ld`` switch, so it keeps its default."""
     if compiler_family(compiler) == "nvidia":
         return []
     for ld in available_linkers():  # dict preserves the fastest-first order of _FAST_LINKERS
@@ -785,24 +670,21 @@ def fastest_linker(compiler: str) -> List[str]:
 
 @dataclass
 class BuildOptions:
-    """Toolchain + optimization knobs for the owned build, grouped so :func:`build_sdfg` /
-    :func:`compare_link_modes` take one options object instead of a long parameter list. Each axis is
-    independent: the base ``flags``, the ``openmp`` runtime, the ``veclib``, and the link mode."""
+    """Toolchain + optimization knobs for the owned build, so :func:`build_sdfg` / :func:`compare_link_modes`
+    take one options object instead of a long parameter list. Each axis is independent."""
     compiler: str = DEFAULT_COMPILER
     flags: Optional[List[str]] = None  # None -> DEFAULT_FLAGS
-    expand_libnodes: bool = False  # expand library nodes to naive loops (the "without libnodes" variant)
-    fast_libnodes: bool = False  # instead of expanding, pick the fast library impl (OpenBLAS/MKL) -- see below
-    blas_link: Optional[List[str]] = None  # link flags for the chosen BLAS (e.g. ['-lopenblas']); see fast_libnodes
+    expand_libnodes: bool = False  # expand library nodes to naive loops ("without libnodes" variant)
+    fast_libnodes: bool = False  # instead of expanding, pick the fast library impl (OpenBLAS/MKL)
+    blas_link: Optional[List[str]] = None  # link flags for the chosen BLAS (e.g. ['-lopenblas'])
     openmp: Optional[OpenMPRuntime] = None  # the one mandated runtime to link (per-compiler flags)
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
-    lto: bool = False  # enable LTO: -flto (monolithic) / fat-LTO object in the .a (external) -- applies to both
+    lto: bool = False  # enable LTO: -flto (monolithic) / fat-LTO object in the .a (external)
     veclib: Optional[VectorMathLib] = None  # SLEEF / libmvec / SVML, a separate axis from flags/openmp
-    # DaCe CPU codegen: 'experimental' (constexpr-index-fn, the DEFAULT where available) | 'legacy'. The
-    # factory downgrades to legacy on a DaCe build without the key, so a plain BuildOptions() always builds.
+    # DaCe CPU codegen: 'experimental' (DEFAULT where available) | 'legacy'; downgrades on an older build.
     codegen_impl: str = field(default_factory=default_codegen_impl)
-    # DaCe multi-dim tile-op vectorizer config applied to the SDFG before codegen; None = no vectorization
-    # (the compiler's own auto-vectorizer is still the cost-model axis). A VectorizeConfig; typed as object
-    # to keep the vectorizer import lazy (build_sdfg imports it only when this is set).
+    # DaCe multi-dim tile-op vectorizer config applied before codegen; None = no vectorization. Typed as
+    # object to keep the vectorizer import lazy.
     vectorize: Optional[object] = None
 
     def resolved_flags(self) -> List[str]:
@@ -810,36 +692,17 @@ class BuildOptions:
 
 
 def set_fast_libnodes(sdfg: dace.SDFG) -> None:
-    """Select the fastest AVAILABLE library-node implementation (OpenBLAS / MKL / LAPACK on the DaCe
-    ``extended`` branch) for every library node -- instead of ``expand_library_nodes()`` which lowers them
-    to naive loops. Codegen then emits the chosen library call; its link flags must be supplied via
-    :attr:`BuildOptions.blas_link` (e.g. ``nestforge.arena.discover_blas_libraries``).
+    """Select the fastest AVAILABLE library-node implementation (OpenBLAS/MKL/LAPACK) for every library
+    node, instead of lowering to naive loops. Link flags come via :attr:`BuildOptions.blas_link`.
 
-    TODO(lib-axis): generalize into a per-node "try every known backend" sweep -- time each and keep the
-    winner (the library-choice axis, counterpart of the compiler x flag axes)."""
+    TODO(lib-axis): generalize into a per-node "try every backend" sweep, keeping the timed winner."""
     set_fast_implementations(sdfg, dace.dtypes.DeviceType.CPU)
 
 
 def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[Path, float]:
-    """Compile the generated frame into ``lib<name>.so`` and return (path, wall_seconds -- the toolchain
-    work ONLY: capability probes and PATH lookups happen before the clock starts, so the time is comparable
-    across link modes).
-
-    Two link modes -- the axis behind "compile time WITH vs WITHOUT external linking":
-
-    * ``opts.link_external=False`` (monolithic): a single translation unit, so the compiler inlines freely.
-      Without a mandated OpenMP runtime it is one compile+link command. WITH a runtime it is split into a
-      ``-c`` compile then a ``-shared`` link so EXACTLY that runtime is linked (a single ``g++ -fopenmp ...
-      -lomp`` would auto-link libgomp alongside the explicit ``-lomp`` and load two runtimes). ``opts.lto``
-      adds ``-flto``.
-    * ``opts.link_external=True``: the static-node-library path -- compile to an object, archive it into
-      ``lib<name>_nest.a``, then link the ``.so`` from that archive (``--whole-archive`` keeps every symbol)
-      via the fastest available linker. ``opts.lto`` makes the archived object a FAT-LTO object (LTO bitcode
-      AND real machine code, when supported; see :func:`fat_lto_flags`) so the ``.a`` is LTO-ready for a
-      future cross-node driver link; without it the object is plain (cheaper, no cross-TU consumer yet).
-      Either way the ``.so`` is linked from the object's REAL code (never ``-flto`` at this link) with
-      ``--export-dynamic``, so the extern-C entry points survive.
-    """
+    """Compile the generated frame into ``lib<name>.so``; return (path, toolchain wall_seconds only).
+    Two link modes: ``link_external=False`` (monolithic, single TU) or ``=True`` (archive to a static
+    ``.a`` then link via ``--whole-archive``); see the branches below for the runtime/LTO details."""
     compiler = opts.compiler
     flags = opts.resolved_flags()
     inc = include_flags(folder)
@@ -854,24 +717,21 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     lto_f = ["-flto"] if opts.lto else []
 
     if not opts.link_external and not opts.openmp:
-        # No mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in).
-        # Libraries go AFTER the source: ld resolves left-to-right, so a -l ahead of the object that
-        # references it contributes nothing (undefined ref, or a veclib silently not linked at all).
+        # no mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in)
+        # libs go AFTER the source: ld resolves left-to-right, so a -l before the object contributes nothing
         cmd = [compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l]
         t0 = time.perf_counter()
         run(cmd)
     elif not opts.link_external:
-        # Monolithic but with a mandated runtime: split compile from link so ONLY that runtime is linked
-        # (single TU, so inlining is unaffected). See the docstring for the gnu dual-runtime trap.
+        # mandated runtime: split compile from link so ONLY that runtime is linked (gnu dual-runtime trap)
         compile_cmd = [compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
         link_cmd = [compiler, "-shared", *cflags, *lto_f, str(obj), *omp_l, *vec_l, *blas_l, "-o", str(so)]
         t0 = time.perf_counter()
         run(compile_cmd)
         run(link_cmd)
     else:
-        # External static-node-library path. Resolve everything that is NOT toolchain work -- fat-LTO
-        # capability probe (runs the compiler once, cached), archiver, fastest linker, stale-archive
-        # cleanup -- BEFORE the clock starts, so compile_seconds is just the compile+archive+link work.
+        # external static-node-library path; resolve non-toolchain work (LTO probe, archiver, linker,
+        # stale-archive cleanup) BEFORE the clock starts so compile_seconds is compile+archive+link only
         lto_c = fat_lto_flags(compiler) if opts.lto else []
         ar = ar_for(compiler)
         ld = fastest_linker(compiler)
@@ -880,7 +740,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
             archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
         compile_cmd = [compiler, *cflags, *lto_c, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
         ar_cmd = [ar, "rcs", str(archive), str(obj)]
-        # Link the .so from the object's REAL code (NOT -flto) so the entry points survive + export.
+        # link the .so from the object's REAL code (NOT -flto) so the entry points survive + export
         link_cmd = [
             compiler, "-shared", *cflags, *ld, "-Wl,--export-dynamic", "-Wl,--whole-archive",
             str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, *blas_l, "-o",
@@ -894,21 +754,19 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
 
 
 def apply_vectorizer(sdfg: dace.SDFG, config) -> None:
-    """Apply the DaCe multi-dim tile-op CPU vectorizer to ``sdfg`` in place, from a ``VectorizeConfig``.
-    The tile library nodes are FORCE-expanded to tasklets (``expand_tile_nodes=True``) regardless of the
-    config, because the owned build codegens the frame DIRECTLY (no ``dace.compile`` to lower them later).
-    Imported lazily -- the vectorizer pipeline import closes a cycle if eager (see its package doc)."""
+    """Apply the DaCe multi-dim tile-op CPU vectorizer to ``sdfg`` in place. Force-expands tile library
+    nodes to tasklets regardless of ``config`` (no ``dace.compile`` here to lower them later). Lazy
+    import: eager would close an import cycle."""
     import dataclasses
     from dace.transformation.passes.vectorization import VectorizeCPUMultiDim
     VectorizeCPUMultiDim(dataclasses.replace(config, expand_tile_nodes=True)).apply_pass(sdfg, {})
 
 
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> BuiltSDFG:
-    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` ready to call, carrying
-    the ``codegen_seconds`` (optimization) and ``compile_seconds`` (post-optimization toolchain) times.
+    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` carrying
+    ``codegen_seconds``/``compile_seconds`` timing.
 
-    :param opts: the toolchain + optimization knobs (:class:`BuildOptions`); ``None`` uses all defaults
-        (g++, ``DEFAULT_FLAGS``, monolithic link, no OpenMP/veclib).
+    :param opts: toolchain + optimization knobs; ``None`` uses all defaults (g++, monolithic, no OpenMP/veclib).
     """
     opts = opts or BuildOptions()
     t_opt = time.perf_counter()
@@ -946,10 +804,9 @@ class LinkTimings:
 
 
 def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> LinkTimings:
-    """Generate the code ONCE (one optimization pass), then compile that same frame both monolithically
-    and via an external static library, so ``compile_seconds`` is the only thing that differs. Returns
-    the optimization time plus both post-optimization compile times. ``opts``' link mode is overridden per
-    build; its other axes (compiler / flags / openmp / veclib / expand_libnodes / lto) apply to both."""
+    """Generate the code ONCE, then compile that same frame both monolithically and externally, so
+    ``compile_seconds`` is the only thing that differs. ``opts``' link mode is overridden per build; its
+    other axes apply to both."""
     opts = opts or BuildOptions()
     t_opt = time.perf_counter()
     sdfg = copy.deepcopy(sdfg)

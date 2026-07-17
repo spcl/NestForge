@@ -766,10 +766,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                     argtypes=argtypes,
                     opt_ctx_key=ctx_key))
 
-    # The machine's discovered OpenMP runtime, read ONCE here: cached_default_runtime reads a JSON cache
-    # file, so it must never be called inside the five-deep cell loops below. Every parallel TIMING cell
-    # links this one runtime (mirroring the pluto lane); sequential/gate cells link none. With no cache it
-    # is the portable DEFAULT_OPENMP_RUNTIME, so an uncharacterised machine behaves exactly as before.
+    # Read once: cached_default_runtime hits a JSON cache file, so it must not be called in the loops below.
     machine_runtime = support_matrix.cached_default_runtime()
 
     for lang, (src, order, argtypes) in opt_ctx["lang_src"].items():
@@ -794,9 +791,8 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
                                       error=f"no {lang} compiler for family {tc.name}")))
                 continue
             # timing cells: parallel x cost x reduced-FP
-            # TODO(machine-compat prune): when a cache exists, skip parallel cells whose (OpenMP family,
-            # machine_runtime) is not MachineCompat.is_supported -- keying on compiler_family(exe) (icx='llvm'),
-            # NOT tc.fp_family (icx='intel'); the two must not be conflated, so left unpruned until mapped cleanly.
+            # TODO(machine-compat prune): skip cells MachineCompat.is_supported rejects, keyed on
+            # compiler_family(exe) not tc.fp_family (icx: 'llvm' vs 'intel' -- must not conflate).
             for parallel in axes["parallelism"]:
                 # omp-emit uses OUR ``#pragma omp`` source (numpyto c_omp/fortran_omp); it exists only for
                 # a nest the DaCe schedule marked parallel AND numpyto could soundly parallelize.

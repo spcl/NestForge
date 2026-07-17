@@ -1,13 +1,7 @@
-"""The MAIN arena timing cells must link the OpenMP runtime the machine actually supports -- the one
-``support_matrix.cached_default_runtime`` reports -- not the static ``flags.DEFAULT_OPENMP_RUNTIME``. This
-mirrors the pluto lane, which already pins that runtime. The wiring under test: ``enumerate_cells`` reads
-the machine runtime ONCE and threads it (``openmp=``) into the timing-cell ``flags.lane_flags`` call, while
-the sequential correctness GATE cell stays runtime-free.
-
-Pure enumeration path (dummy source Paths -- ``enumerate_cells`` never reads them), so no DaCe codegen and
-no source I/O; only a tiny gcc link-probe resolves the runtime soname. Mirrors the lightweight fixture in
-``tests/test_matrix_degradation.py`` (``_synthetic_opt_ctx`` / ``_axes``), trimmed to the C lane and driven
-through the omp-emit parallel axis (the lane that actually links a runtime).
+"""The MAIN arena timing cells must link the OpenMP runtime the machine actually supports (from
+``support_matrix.cached_default_runtime``), not the static ``flags.DEFAULT_OPENMP_RUNTIME`` -- mirroring
+the pluto lane. ``enumerate_cells`` reads the machine runtime ONCE and threads it into timing cells only;
+the sequential correctness GATE cell stays runtime-free. Pure enumeration path (dummy Paths, no source I/O).
 """
 from pathlib import Path
 
@@ -15,17 +9,15 @@ from nestforge.build import LIBGOMP, LIBOMP
 from nestforge.perf import flags, support_matrix, tsvc_full
 from nestforge.perf.tsvc_arena import Toolchain
 
-# The gnu link spelling openmp_runtime_flags emits for a runtime's soname (see flags.openmp_runtime_flags):
-# a gnu cell selects its runtime at LINK, so libgomp -> -lgomp and the default libomp -> -lomp, both pinned
-# with --push-state,--no-as-needed. The two are the discriminator between "injected runtime" and "default".
+# The gnu link spelling for a runtime's soname (flags.openmp_runtime_flags): libgomp -> -lgomp, default
+# libomp -> -lomp, both pinned via --push-state,--no-as-needed. Discriminates "injected" from "default".
 GNU_LIBGOMP = "-Wl,--push-state,--no-as-needed,-lgomp,--pop-state"
 GNU_LIBOMP = "-Wl,--push-state,--no-as-needed,-lomp,--pop-state"
 
 
 def synthetic_omp_ctx():
-    """A lane-3 context with one C source plus its omp-emit source -- dummy Paths, enumerate_cells never
-    reads them. Same shape as test_matrix_degradation._synthetic_opt_ctx, trimmed to the C lane and given
-    an ``omp_src`` so the omp-emit lane (the one that links a runtime) fires."""
+    """A lane-3 context with one C source plus its omp-emit source -- dummy Paths, never read. Same shape
+    as test_matrix_degradation._synthetic_opt_ctx, trimmed to C and given ``omp_src`` so omp-emit fires."""
     return {
         "lang_src": {
             "c": (Path("x.c"), ["a", "N"], [None, None]),
@@ -65,9 +57,7 @@ def omp_emit_timing_flags(pendings, jobs):
 
 def test_arena_timing_cell_links_injected_machine_runtime(tmp_path, monkeypatch):
     """Inject LIBGOMP as the discovered machine runtime: the gnu omp-emit timing cell must link -lgomp, not
-    the static-default -lomp. This is the fix's discriminator -- before ``openmp=machine_runtime`` is
-    threaded into lane_flags, the call falls back to DEFAULT_OPENMP_RUNTIME=libomp and the injection is
-    ignored, so -lgomp would be ABSENT and this assertion would fail."""
+    the static-default -lomp -- fails before ``openmp=machine_runtime`` is threaded into lane_flags."""
     monkeypatch.setattr(support_matrix, "cached_default_runtime", lambda *a, **k: LIBGOMP)
     pendings, jobs = tsvc_full.enumerate_cells(synthetic_omp_ctx(), [gnu_toolchain()], {}, omp_axes(), 4, flags.CXX_STD,
                                                tmp_path)
@@ -77,9 +67,9 @@ def test_arena_timing_cell_links_injected_machine_runtime(tmp_path, monkeypatch)
 
 
 def test_arena_timing_cell_passes_the_reported_runtime_through(tmp_path, monkeypatch):
-    """Inject the static default (LIBOMP): the same cell links -lomp and never -lgomp. Proves the wiring
-    passes whatever cached_default_runtime reports THROUGH, rather than hard-coding gomp -- an
-    uncharacterised machine (no cache -> DEFAULT_OPENMP_RUNTIME) behaves exactly as before."""
+    """Inject the static default (LIBOMP): the same cell links -lomp, never -lgomp -- proves the wiring
+    passes whatever cached_default_runtime reports THROUGH, rather than hard-coding gomp (an uncharacterised
+    machine still behaves exactly as before)."""
     monkeypatch.setattr(support_matrix, "cached_default_runtime", lambda *a, **k: LIBOMP)
     pendings, jobs = tsvc_full.enumerate_cells(synthetic_omp_ctx(), [gnu_toolchain()], {}, omp_axes(), 4, flags.CXX_STD,
                                                tmp_path)
@@ -89,8 +79,8 @@ def test_arena_timing_cell_passes_the_reported_runtime_through(tmp_path, monkeyp
 
 
 def test_arena_gate_cell_links_no_runtime(tmp_path, monkeypatch):
-    """The sequential correctness GATE cell links NO OpenMP runtime whatever the machine runtime is:
-    enumerate_cells leaves the gate lane_flags call runtime-free (the fix must not touch it)."""
+    """The sequential correctness GATE cell links NO OpenMP runtime whatever the machine runtime is --
+    enumerate_cells leaves the gate lane_flags call runtime-free."""
     monkeypatch.setattr(support_matrix, "cached_default_runtime", lambda *a, **k: LIBGOMP)
     pendings, jobs = tsvc_full.enumerate_cells(synthetic_omp_ctx(), [gnu_toolchain()], {}, omp_axes(), 4, flags.CXX_STD,
                                                tmp_path)

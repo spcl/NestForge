@@ -1,8 +1,6 @@
-"""The empirical support matrix: discover compilers + runtimes, then find which (compilers, ONE runtime)
-combinations actually build, link, load and run an N-loopnest program compiled by DIFFERENT compilers.
-
-The unit tests here exercise the LOGIC (ranking, the nvhpc drop, the cache) with synthetic cells so they
-need no exotic toolchain. One integration test builds the real matrix on whatever compilers are present.
+"""The empirical support matrix: discover compilers + runtimes, find which (compilers, ONE runtime) combos
+actually build, link, load and run. Unit tests here exercise the LOGIC (ranking, nvhpc drop, cache) with
+synthetic cells; one integration test builds the real matrix on whatever compilers are present.
 """
 import json
 from dataclasses import asdict
@@ -34,14 +32,13 @@ def test_surviving_runtimes_ranks_by_cross_compiler_support():
 
 
 def test_ties_prefer_the_portable_default_over_a_symlinked_equivalent():
-    # libomp and libiomp5 tie on this machine (libiomp5 -> libomp via ABI symlink); the portable name wins.
+    # libomp and libiomp5 tie (libiomp5 -> libomp via ABI symlink); the portable name wins.
     cells = [cell("libiomp5", ("gcc", "clang")), cell("libomp", ("gcc", "clang"))]
     assert surviving_runtimes(cells)[0] == flags.DEFAULT_OPENMP_RUNTIME.name
 
 
 def test_a_vendor_only_runtime_never_ranks_as_cross_compiler():
-    # nvc can only ever link libnvomp, so libnvomp has no cross-compiler cell -- it must not be offered as
-    # a shared runtime even though nvhpc+nvhpc works.
+    # nvc can only ever link libnvomp, so it has no cross-compiler cell and must not be offered as shared.
     cells = [cell("libnvomp", ("nvhpc", "nvhpc")), cell("libomp", ("gcc", "clang"))]
     assert surviving_runtimes(cells) == ["libomp"]
 
@@ -79,8 +76,8 @@ def test_machine_config_writes_then_loads_without_reprobing(tmp_path, monkeypatc
 
     second = machine_config(cache=cache)  # must LOAD, not re-probe
     assert calls["n"] == 1, "a present cache must be loaded, never re-probed"
-    # Compare through JSON: the first result still holds in-memory tuples, the loaded one holds the lists
-    # they serialised to. Semantic identity is what matters, and it is what the cache round-trip preserves.
+    # Compare through JSON: tuples vs. their serialised lists -- semantic identity is what the round-trip
+    # preserves.
     assert second == json.loads(json.dumps(first))
 
 
@@ -120,7 +117,7 @@ def compat_from(cells, default_runtime="libomp", surviving=("libomp", "libiomp5"
     })
 
 
-# the machine this session targets: libomp works for gcc/clang/intel, libgomp gcc-only, nvc islanded.
+# synthetic machine: libomp works for gcc/clang/intel, libgomp gcc-only, nvc islanded.
 THIS_MACHINE = [
     cell("libomp", ("gcc", "clang")),
     cell("libomp", ("gcc", "intel")),
@@ -147,8 +144,7 @@ def test_is_supported_reflects_the_empirical_cells_not_the_abi_table():
 
 
 def test_an_inert_cell_is_not_supported_even_though_it_ran():
-    # a cell that produced the right answer but NEVER parallelised (Polly inert) must not count as support:
-    # the arena would time it as parallel while it ran serial.
+    # a cell that produced the right answer but never parallelised (Polly inert) must not count as support.
     inert = cell("libomp", ("clang", "clang"))
     inert.parallel = False
     compat = compat_from([inert])
@@ -164,8 +160,7 @@ def test_supported_runtimes_ranks_the_machine_default_first():
 
 def test_runtime_for_keeps_the_sweep_on_one_runtime_when_possible():
     compat = compat_from(THIS_MACHINE)
-    # gcc, clang and intel all support the default -> all get the SAME runtime (one thread pool for the
-    # whole program, the entire point of the single-runtime contract).
+    # gcc, clang and intel all support the default -> all get the SAME runtime (the single-runtime contract).
     assert compat.runtime_for("gcc").name == "libomp"
     assert compat.runtime_for("clang").name == "libomp"
     assert compat.runtime_for("intel").name == "libomp"
@@ -200,8 +195,8 @@ def test_machine_compat_reads_the_cache(tmp_path, monkeypatch):
 
 
 def test_cached_default_runtime_never_probes(tmp_path, monkeypatch):
-    """The hot-path accessor must be safe: with NO cache it returns the static default WITHOUT triggering a
-    discovery build -- discovery compiles dozens of programs and must never be a surprise mid-sweep."""
+    """The hot-path accessor is safe: with no cache it returns the static default without triggering a
+    discovery build."""
     import nestforge.perf.support_matrix as sm
 
     def explode(*a, **k):
@@ -235,8 +230,8 @@ def test_cached_default_runtime_survives_a_corrupt_cache(tmp_path):
 # --- integration: the real matrix on whatever is installed -------------------------------------------
 @pytest.mark.integration  # compiles a few dozen tiny programs
 def test_real_support_matrix_finds_a_cross_compiler_runtime():
-    """On any box with >=2 C compilers, at least one runtime must support a real cross-compiler program --
-    and it must be libomp or libiomp5 (its ABI-compat twin), never libgomp (clang cannot emit its ABI)."""
+    """On any box with >=2 C compilers, >=1 runtime must support a real cross-compiler program -- and it
+    must be libomp or libiomp5 (its ABI-compat twin), never libgomp (clang cannot emit its ABI)."""
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -301,8 +296,8 @@ def test_veclib_vectorizes_needs_both_vectorized_and_correct():
 
 
 def test_vectorized_via_matches_the_per_library_symbol_fingerprint(monkeypatch):
-    """The detector reads ``nm -u`` and matches each library's undefined-symbol fingerprint. Driven with
-    hard-coded nm output (real samples this box emits) so it needs no compiling."""
+    """The detector reads ``nm -u`` and matches each library's undefined-symbol fingerprint, driven with
+    hard-coded nm output so it needs no compiling."""
     import nestforge.perf.support_matrix as sm
     zgv = "                 U sin\n                 U _ZGVdN4v_sin@GLIBC_2.22\n"  # glibc GNU-vector-ABI
     masked = "                 U _ZGVeM8v_sin\n"  # AVX512 masked variant (omp-simd)
@@ -313,8 +308,7 @@ def test_vectorized_via_matches_the_per_library_symbol_fingerprint(monkeypatch):
         monkeypatch.setattr(sm.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=out, returncode=0))
 
     feed(zgv)
-    # libmvec AND sleef both emit the glibc _ZGV* names on x86 (they differ only in the linked library),
-    # so the same object fingerprint satisfies both.
+    # libmvec AND sleef both emit the glibc _ZGV* names on x86, differing only in the linked library.
     assert vectorized_via("libmvec", "x.o") and vectorized_via("sleef", "x.o")
     assert not vectorized_via("svml", "x.o")  # the _ZGV names are not svml's __svml_*
     assert not vectorized_via("none", "x.o")  # none is scalar-by-definition even when vector syms are present
@@ -333,11 +327,9 @@ def test_vectorized_via_matches_the_per_library_symbol_fingerprint(monkeypatch):
 # --- integration: the real veclib probe on local gcc (compiles two tiny sin loops) -------------------
 @pytest.mark.integration
 def test_try_veclib_none_libmvec_and_sleef_on_local_gcc(tmp_path):
-    """On this box: the scalar ``none`` baseline proves the probe harness works end to end
-    (compile -> link -> fork -> match numpy.sin); libmvec (glibc, always present) both VECTORIZES (emits a
-    packed ``_ZGV*_sin``) and matches numpy; and SLEEF -- when its from-source ``libsleefgnuabi`` is present
-    -- takes the SAME ``_ZGV*`` emission but binds to SLEEF's lib, proving gcc links SLEEF with no -fveclib.
-    Absent that lib, the sleef cell must fail HONESTLY at link, never silently pass as glibc libmvec."""
+    """The scalar ``none`` baseline proves the harness works end to end; libmvec (glibc) vectorizes and
+    matches numpy; SLEEF, when ``libsleefgnuabi`` is present, shares the same ``_ZGV*`` emission but binds
+    SLEEF's lib -- absent that lib it must fail HONESTLY at link, never silently pass as libmvec."""
     import warnings
 
     from nestforge import build

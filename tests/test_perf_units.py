@@ -1,10 +1,6 @@
-"""Compile-free unit tests for the perf/arena plumbing: signature parsing, the FP-precision x
-cost-model flag composition, winner selection, and the markdown reporters.
-
-These exercise the pure logic on synthetic inputs (hand-written C/Fortran signatures, synthetic result
-JSON), so they run fast and without any compiler on PATH -- unlike the end-to-end driver tests in
-``test_tsvc_arena.py`` which compile and run real kernels (and skip when a toolchain is absent). The two
-together cover both the wiring and the numbers-under-load.
+"""Compile-free unit tests for the perf/arena plumbing: signature parsing, FP-precision x cost-model flag
+composition, winner selection, and the markdown reporters -- pure logic on synthetic inputs, so no compiler
+needed (unlike the end-to-end ``test_tsvc_arena.py``, which compiles and skips without a toolchain).
 """
 import ctypes
 import json
@@ -94,9 +90,8 @@ def test_flag_matrix_atol_covers_every_level():
 
 
 def test_veclib_flags_compose_and_gate_by_compatibility():
-    # 'none'/empty -> no flags, no error; a compatible pairing yields the emit flag + the pinned -l; an
-    # incompatible one (svml on gcc) or a missing compiler is rejected with a reason, not silent flags. The
-    # -L/-rpath the resolver adds is machine-dependent, so assert membership rather than exact lists.
+    # 'none'/empty -> no flags; incompatible (svml on gcc) or missing compiler -> rejected with a reason.
+    # -L/-rpath is machine-dependent, so assert membership, not exact lists.
     assert flags.veclib_flags("g++", "none") == ([], None)
     assert flags.veclib_flags("clang++", None) == ([], None)
     fl, r = flags.veclib_flags("clang++", "sleef")  # x86: emit via libmvec token, link libsleefgnuabi
@@ -144,9 +139,8 @@ def test_resolve_veclibs_spec_and_auto():
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
 def test_enumerate_cells_gates_veclib_cells_by_nest_math(tmp_path):
-    """The veclib axis fans lane-3 cells off the PRECOMPUTED per-lang ``has_math`` flag (build_opt_context
-    scans the source once): a math nest (has_math=True) gets both none and libmvec timing cells, a plain
-    arithmetic nest (has_math=False) gets none only. Dummy source paths -- enumeration does no source I/O."""
+    """The veclib axis fans lane-3 cells off the PRECOMPUTED per-lang ``has_math`` flag: a math nest gets
+    both none and libmvec timing cells, a plain-arithmetic nest gets none only. Dummy paths -- no source I/O."""
     from nestforge.perf import tsvc_full
     from nestforge.perf.tsvc_arena import discover_toolchains
     tcs = discover_toolchains("gcc")
@@ -367,8 +361,8 @@ class FakeKernel:
 
 
 def call_c_on_stub(monkeypatch, reps, **kw):
-    """Drive harness.call_c against a stubbed .so -- the ABI marshalling is real (real buffers, real
-    ctypes pointers), only the compiled entry is faked, so no compiler/toolchain is needed."""
+    """Drive harness.call_c against a stubbed .so -- the ABI marshalling is real, only the compiled entry
+    is faked, so no compiler/toolchain is needed."""
     fn = FakeKernel()
     monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
     buf = np.zeros(4, dtype=np.float64).view(CountingArray)
