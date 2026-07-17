@@ -5,20 +5,16 @@ name: CI
 # then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler + heavy-launcher tests
 # are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the cross-compiler OpenMP matrix.
 #
-# OptArena is a PRIVATE repo (git@github.com:spcl/OptArena.git), checked out as the sibling ./optarena dir
-# with an SSH deploy key in the `secrets.OPTARENA_DEPLOY_KEY` secret (a key with read access to
-# spcl/OptArena); switch it to a tokenless checkout once OptArena is public. DaCe may still be private, so
-# its sibling checkout keeps `secrets.NESTFORGE_CI_TOKEN` (a read PAT); drop that token once spcl/dace is public.
+# spcl/OptArena and spcl/dace are both PUBLIC, so their sibling checkouts need no key and no token.
+# This workflow must stay credential-free: the moment a checkout here needs a secret, CI stops running on
+# fork PRs (secrets are not exposed to them), which is how it ended up dispatch-only before.
 #
 # The pytest phase runs the UNIT set (-m "not integration") and enforces ZERO skips via
 # NESTFORGE_CI_NO_SKIP (repo-root conftest.py fails the session if any remaining test skips).
-
-# DISABLED for now: CI needs the private OptArena checkout, pulled with the OPTARENA_DEPLOY_KEY secret,
-# which is not configured yet -- so it only runs on manual dispatch and never blocks a push/PR. No key is
-# ever stored in the repo (the workflow only references `secrets.OPTARENA_DEPLOY_KEY`, a GitHub secret).
-# To re-enable: add the OPTARENA_DEPLOY_KEY secret (read access to spcl/OptArena) and restore the
-# `push`/`pull_request` triggers below.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -31,8 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      # NestForge itself is public -> the default token checkout is fine; the private OptArena repo
-      # is checked out separately below as a sibling dir with its own SSH key.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -49,23 +43,20 @@ jobs:
           python -m pip install yapf clang-format
           bash scripts/format.sh --check
 
-      # OptArena checked out as a sibling dir (private) via its SSH deploy key. Once OptArena is public,
-      # drop the ssh-key and use a tokenless checkout.
-      - name: Phase 1a -- OptArena checkout (SSH deploy key)
+      # The two sibling repos nest-forge imports live: OptArena (corpus + numpyto) and DaCe (branch
+      # extended). Both public -> plain checkouts, no key and no token.
+      - name: Phase 1a -- OptArena checkout (sibling ./optarena)
         uses: actions/checkout@v4
         with:
           repository: spcl/OptArena
           path: optarena
-          ssh-key: ${{ secrets.OPTARENA_DEPLOY_KEY }}
 
-      # DaCe checked out as a sibling dir (branch extended). Keeps the PAT secret while spcl/dace is private.
       - uses: actions/checkout@v4
         with:
           repository: spcl/dace
           ref: extended
           path: dace
           submodules: recursive
-          token: ${{ secrets.NESTFORGE_CI_TOKEN }}
 
       # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).
       - name: Phase 1b -- system toolchain (scripts/setup_apt.sh)

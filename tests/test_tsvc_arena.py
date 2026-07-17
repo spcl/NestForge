@@ -15,7 +15,7 @@ import dace
 
 from nestforge import tsvc
 from nestforge.emit_numpy import normalize_casts
-from nestforge.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbols
+from nestforge.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbols, trip_count_symbols
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import crosslang_xl, flags, harness, staticlib_overhead, tsvc_arena
@@ -132,27 +132,47 @@ def test_tsvc2_5_scalar_symbols_resolve_from_corpus_sizes():
     assert tsvc.sample_sizes(tiled, tb, preset="S")["T"] == vars(tsvc.corpus_module("tsvc2_5"))["SIZES"]["T"]
 
 
-def synthetic_boundary(map_range: str, extra_symbols=()):
-    """A one-map nest over ``a[LEN_1D]`` whose map range is ``map_range``, as a bare :class:`Boundary`.
-    Keeps the sizing contract testable without leaning on which nest DaCe's splitter happens to pick."""
+@pytest.mark.parametrize("opt_mode", list(tsvc.OPT_MODES))
+def test_build_sdfg_propagates_a_derived_loop_bound_back_to_its_real_parameter(opt_mode):
+    """s122 loops ``range(n1 - 1, LEN_1D, n3)``. The frontend names that bound with a fresh symbol and
+    assigns it on an inter-state edge (``n1_minus_1 = n1 - 1``); the splitter leaves the edge outside the
+    nest, so the nest takes ``n1_minus_1`` as a free argument -- which nothing can bind, because the kernel
+    declares ``n1``. The kernel was then dropped from the sweep with a raise that looked principled.
+
+    Every mode must propagate it away: it is a frontend artifact, not part of a variant's definition.
+    ``canonicalize`` always did (its pipeline runs the pass); ``simplify-parallel`` and ``auto-opt`` did
+    not, since DaCe's ``Simplify`` does not include it.
+    """
+    kernel = tsvc.iter_tsvc_kernels(only=["s122"])[0]
+    assert "n1" in kernel.params, "premise: n1 is the parameter the corpus actually declares"
+    parent, node = get_strategy("outer")(tsvc.build_sdfg(kernel, opt_mode))[0]
+    boundary = extract_nest_to_sdfg(parent, node, name="s122_n0")
+    # Only the LOOP BOUND's derived name is at issue. `__sym_LEN_1D_minus_k` is a different animal -- the
+    # frontend's name for the `b[LEN_1D - k]` subscript, which is nest-assigned and sizes nothing.
+    assert "n1_minus_1" not in boundary.symbols, f"derived bound leaked: {boundary.symbols}"
+    sizes = tsvc.sample_sizes(kernel, boundary, preset="S")  # the raise this fixes
+    if "n1" in boundary.symbols:  # folded to a constant under some modes; bound from params under others
+        assert sizes["n1"] == kernel.params["n1"]
+
+
+def synthetic_boundary(map_range: str, extra_symbols=(), subscript: str = "i"):
+    """A one-map nest over ``a[LEN_1D]`` whose map range is ``map_range`` and whose write lands at
+    ``a[subscript]``, as a bare :class:`Boundary`. Keeps the sizing contract testable without leaning on
+    which nest DaCe's splitter happens to pick.
+
+    ``map_range`` vs ``subscript`` is the discriminator the contract turns on: a symbol in the RANGE sizes
+    the work (0 -> zero-trip -> vacuous), while one in the SUBSCRIPT only selects which element it lands on.
+    """
     sdfg = dace.SDFG("sized_nest")
     sdfg.add_array("a", [dace.symbol("LEN_1D")], dace.float64)
     for s in extra_symbols:
         sdfg.add_symbol(s, dace.int64)  # arglist resolves a free symbol's dtype from sdfg.symbols
     state = sdfg.add_state(is_start_block=True)
-    state.add_mapped_tasklet("t", {"i": map_range}, {}, "out = 1.0", {"out": dace.Memlet("a[i]")}, external_edges=True)
+    state.add_mapped_tasklet("t", {"i": map_range}, {},
+                             "out = 1.0", {"out": dace.Memlet(f"a[{subscript}]")},
+                             external_edges=True)
     symbols = ["LEN_1D", *extra_symbols]
     return Boundary(inputs=[], outputs=["a"], symbols=symbols, nsdfg_node=None, state=None, standalone_sdfg=sdfg)
-
-
-def test_sample_sizes_raises_on_symbol_the_nest_reads_but_nothing_binds():
-    # An unclassified symbol the nest genuinely READS must surface, not silently size 0: a 0 bound makes
-    # oracle and candidate agree on a degenerate result, so the kernel would validate vacuously.
-    k = tsvc.TsvcKernel(key="synthetic", program=None, regime="1d", params={}, corpus="tsvc2")
-    b = synthetic_boundary("0:bound", extra_symbols=["bound"])
-    assert "bound" in b.standalone_sdfg.arglist()  # premise: the nest is actually passed this symbol
-    with pytest.raises(ValueError, match="bound"):
-        tsvc.sample_sizes(k, b, preset="S")
 
 
 def test_sample_sizes_zeroes_a_symbol_the_nest_never_takes_as_an_argument():
@@ -164,25 +184,60 @@ def test_sample_sizes_zeroes_a_symbol_the_nest_never_takes_as_an_argument():
     assert sizes["never_passed"] == 0 and sizes["LEN_1D"] == tsvc._PRESET["LEN_1D"]["S"]
 
 
-def test_sample_sizes_zeroes_a_leaked_induction_start_and_that_is_an_allowance():
-    """Pins the WEAK branch: a symbol the nest assigns that DaCe STILL lists in its arglist -- i.e. it is
-    read before defined -- is started at 0.
+def test_sample_sizes_zeroes_a_leaked_index_but_raises_on_a_bound_of_the_same_shape():
+    """THE DISCRIMINATOR: both symbols are passed to the nest and neither is bindable, so only their USE
+    separates them -- one sizes the work, the other only picks an element.
 
-    This is the nine leaked induction starts (s123 j, s125 k, ...): the corpus inits the counter before the
-    loop, the splitter leaves that init outside the nest, and the counter enters as a free argument. It is
-    an arbitrary-but-shared start, NOT a proof that the value cannot reach the computation -- the result is
-    shifted, oracle and candidate merely agree on the shift. Pinned so the allowance cannot silently widen
-    into zeroing a symbol that is not nest-assigned (that case raises, above).
+    Same nest, same symbol shape, opposite verdicts. A rule keyed on anything but the use (e.g. "the nest
+    assigns it") cannot tell these two apart.
     """
-    k = tsvc.TsvcKernel(key="s123", program=None, regime="1d", params={}, corpus="tsvc2")
+    k = tsvc.TsvcKernel(key="synthetic", program=None, regime="1d", params={}, corpus="tsvc2")
+
+    # in the map RANGE -> 0 makes the map zero-trip -> oracle and candidate agree on untouched memory.
+    bound = synthetic_boundary("0:bound", extra_symbols=["bound"])
+    assert "bound" in bound.standalone_sdfg.arglist()
+    with pytest.raises(ValueError, match="bound"):
+        tsvc.sample_sizes(k, bound, preset="S")
+
+    # in the SUBSCRIPT only -> 0 still runs the full LEN_1D iteration space, just landing at a[0+i].
+    off = synthetic_boundary("0:LEN_1D", extra_symbols=["off"], subscript="i + off")
+    assert "off" in off.standalone_sdfg.arglist(), "premise: the nest is actually passed this symbol"
+    assert tsvc.sample_sizes(k, off, preset="S")["off"] == 0
+
+
+def test_sample_sizes_zeroes_the_leaked_outer_index_of_a_peeled_inner_nest():
+    """REGRESSION (s1115, skip-taskloops): the inner nest is peeled with its outer index fixed, so ``i``
+    enters as a free argument that the nest only CONSUMES (``aa[i, j]``, ``cc[j, i]``) and never assigns.
+
+    A rule keyed on "the nest assigns it" raises here and takes the kernel out of the arena entirely. The
+    work is a full row either way -- ``i`` picks WHICH row, not how many -- so 0 is sound.
+    """
+    real = tsvc.iter_tsvc_kernels(only=["s1115"])[0]
+    parent, node = get_strategy("skip-taskloops")(tsvc.build_sdfg(real, "simplify-parallel"))[0]
+    boundary = extract_nest_to_sdfg(parent, node, name="s1115_n0")
+    sdfg = boundary.standalone_sdfg
+    # the premises that make this the case the old nest-assigned allowance could not express
+    assert "i" in sdfg.arglist(), "s1115's i is no longer passed -- it would take the never-passed proof"
+    assert "i" not in nest_defined_symbols(sdfg), "s1115 now assigns i -- re-pick the kernel"
+    assert "i" not in trip_count_symbols(sdfg), "s1115's i now sizes work -- it must raise, not zero"
+    assert tsvc.sample_sizes(real, boundary, preset="S")["i"] == 0
+
+
+def test_sample_sizes_zeroes_a_leaked_induction_start():
+    """s123's ``j``: the corpus inits the counter before the loop (``j = -1``), the splitter leaves that
+    init outside the nest, and the counter enters as a free argument whose only uses are ``a[j]`` and the
+    ``j = j + 1`` inter-state ASSIGNMENT -- never a condition. So it cannot size the work either.
+
+    0 is sound but SHIFTS the result (``a[0..]`` not ``a[-1..]``); oracle and candidate merely agree on the
+    shift. Pinned to keep an assignment from being read as a trip-count use, which would raise here.
+    """
     real = tsvc.iter_tsvc_kernels(only=["s123"])[0]
     nests = extract_all_nests(lambda: tsvc.build_sdfg(real, "simplify-parallel"), "outer", real.key)
     boundary = nests[0][3]
     sdfg = boundary.standalone_sdfg
-    # the premise that makes this the WEAK branch and not the provable one
     assert "j" in {str(s) for s in sdfg.free_symbols}, "s123's j is no longer free -- re-pick the kernel"
-    assert "j" in sdfg.arglist(), "s123's j is no longer passed -- this would be the provable branch"
-    assert "j" in nest_defined_symbols(sdfg), "s123 no longer assigns j -- the allowance would not apply"
+    assert "j" in sdfg.arglist(), "s123's j is no longer passed -- this would be the never-passed proof"
+    assert "j" not in trip_count_symbols(sdfg), "s123's j now sizes work -- it must raise, not zero"
     assert tsvc.sample_sizes(real, boundary, preset="S")["j"] == 0
 
 

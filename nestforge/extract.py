@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 import dace
+from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 from dace.transformation import helpers
@@ -88,6 +89,45 @@ def nest_defined_symbols(loop: LoopRegion) -> set:
             syms.add(b.loop_variable)
     for e in loop.all_interstate_edges():
         syms.update(e.data.assignments.keys())
+    return syms
+
+
+def trip_count_symbols(sdfg: dace.SDFG) -> set:
+    """Symbols that can change HOW MUCH work ``sdfg`` does: loop init/condition/update statements, map
+    ranges, and inter-state-edge conditions -- named as ``sdfg`` itself sees them.
+
+    Interstate ASSIGNMENTS are deliberately excluded. An assignment (``j = j + 1``) carries a value along
+    the iteration; it does not decide whether the iteration happens. A ``condition`` does.
+
+    Nested SDFGs are RECURSED INTO, and each inner name is translated back through the NestedSDFG's
+    ``symbol_mapping``: a symbol is only useful to a caller under the name that caller can bind. Skipping
+    the recursion would silently report a bound buried one level down as "cannot size the work" -- the
+    exact vacuous-validation hole this function exists to close.
+
+    The complement is the useful half: a symbol absent from this set (and from every array shape) cannot
+    make a loop zero-trip or a buffer empty, so binding it to an arbitrary value keeps the amount of work
+    intact -- it only selects WHICH element the work touches. That is what makes such a binding safe to
+    validate against (see :func:`nestforge.tsvc.sample_sizes`).
+    """
+    syms = set()
+    for block in sdfg.all_control_flow_blocks():
+        if isinstance(block, LoopRegion):
+            for stmt in (block.init_statement, block.loop_condition, block.update_statement):
+                if stmt is not None:
+                    syms.update(str(s) for s in stmt.get_free_symbols())
+    for state in sdfg.states():
+        for node in state.nodes():
+            if isinstance(node, nodes.MapEntry):
+                syms.update(str(s) for s in node.map.range.free_symbols)
+            elif isinstance(node, nodes.NestedSDFG):
+                for inner in trip_count_symbols(node.sdfg):
+                    bound_to = node.symbol_mapping.get(inner)
+                    if bound_to is None:
+                        syms.add(inner)  # not remapped: the parent knows it under the same name
+                    else:
+                        syms.update(str(s) for s in symbolic.pystr_to_symbolic(bound_to).free_symbols)
+    for edge in sdfg.all_interstate_edges():
+        syms.update(str(s) for s in edge.data.condition.get_free_symbols())
     return syms
 
 

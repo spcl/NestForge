@@ -186,7 +186,10 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
     rng = np.random.default_rng(11)
     a = rng.random(16)
     out = np.zeros(8)
-    ns["pairsum"](A=a.copy(), out=out, N=16, M=8)
+    # M sizes `out` and nothing else, so DaCe's arglist leaves it out and the emitted signature is
+    # (A, out, N) -- the passed array already carries its own shape. Passing M= would be a TypeError.
+    assert "M" not in sdfg.arglist() and "M" in {str(s) for s in sdfg.free_symbols}
+    ns["pairsum"](A=a.copy(), out=out, N=16)
     np.testing.assert_allclose(out, a.reshape(8, 2).sum(axis=1))
 
 

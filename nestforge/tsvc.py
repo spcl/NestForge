@@ -35,12 +35,13 @@ from dace.transformation.auto.auto_optimize import auto_optimize
 from dace.transformation.dataflow import MapFusionHorizontal, MapFusionVertical
 from dace.transformation.interstate import LoopToMap
 from dace.transformation.passes.canonicalize import canonicalize
+from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
 from optarena.initialize import fill_index_array
 from optarena.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
-from nestforge.extract import nest_defined_symbols
+from nestforge.extract import trip_count_symbols
 
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
@@ -235,8 +236,19 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
     - ``"auto-opt"``          -- DaCe's full CPU ``auto_optimize`` pipeline (greedy map fusion, tiling,
       transient reuse, library-node specialization) as DaCe would ship it -- the strongest DaCe-side
       lowering, measured as its own axis rather than assumed.
+
+    ``SymbolPropagation`` runs for EVERY mode, before the branch. The frontend names each derived loop
+    bound with a fresh symbol and assigns it on an inter-state edge (``n1_minus_1 = n1 - 1`` for s122's
+    ``range(n1 - 1, LEN_1D, n3)``). That edge stays OUTSIDE the nest when the splitter peels the loop, so
+    the nest takes the DERIVED name as a free argument -- and nothing can bind it: the kernel declares
+    ``n1``, not ``n1_minus_1``. Propagating first rewrites the bound to ``n1 - 1`` and the real parameter
+    reappears. It is a frontend artifact, not part of any variant's definition, so no mode should carry it:
+    ``canonicalize`` already ran the pass inside its own pipeline and so never leaked (the pass is
+    idempotent, so running it here costs that mode nothing), while ``simplify-parallel`` and ``auto-opt``
+    both did -- silently dropping s122/s172/s4114, since DaCe's ``Simplify`` does not include the pass.
     """
     sdfg = kernel.program.to_sdfg(simplify=True)
+    SymbolPropagation().apply_pass(sdfg, {})
     if opt_mode == "simplify-parallel":
         sdfg.apply_transformations_repeated([LoopToMap])
         sdfg.apply_transformations_repeated([MapFusionVertical, MapFusionHorizontal])
@@ -294,33 +306,41 @@ def sample_sizes(kernel: TsvcKernel,
     otherwise the ``M``-scale default). A registered scalar parameter takes its value, and a scalar the
     corpus itself binds (``S``, ``T``, ``K``, ...) takes :func:`corpus_symbol_values`.
 
-    A leftover symbol takes ``0`` in exactly two cases, which are NOT equally strong:
+    A leftover symbol takes ``0`` in exactly two cases, both proofs:
 
-    * the standalone SDFG never takes it as an argument -- a proof: a value that is never passed cannot
-      reach the computation, so 0 is as good as anything;
-    * the nest assigns it somewhere (:func:`nest_defined_symbols`) -- an ALLOWANCE, not a proof. DaCe may
-      still list such a symbol in ``arglist()``/``free_symbols``, which is DaCe's own statement that it is
-      read before it is defined: the nine leaked induction starts (s123/s124/s341/s342 ``j``,
-      s125/s126/s318/s343 ``k``, s128 ``j``) are that shape -- the corpus inits the counter *before* the
-      loop (s123: ``j = -1``), the splitter leaves the init outside the nest, and the counter enters as a
-      free argument. Starting it at 0 SHIFTS the result (``a[1..]`` rather than ``a[0..]``); it does not
-      make it degenerate, and oracle and candidate share the same start, so the lowering is still
-      genuinely validated -- but the kernel is not reproducing the corpus's exact initial state. Resolving
-      the real incoming value from the parent SDFG would remove the allowance; until then it is named here
-      rather than dressed up as a proof.
+    * the standalone SDFG never takes it as an argument -- a value that is never passed cannot reach the
+      computation, so 0 is as good as anything;
+    * it cannot change the nest's TRIP COUNT (absent from :func:`trip_count_symbols` and from every array
+      shape) -- so it decides WHICH element the nest touches, never HOW MUCH work it does. The nest still
+      runs its full iteration space over full-size buffers, and oracle and candidate are handed the same
+      value, so the comparison is over real work. Two shapes reach this branch:
 
-    Anything else is a symbol the nest genuinely READS that this function failed to classify, and is
-    raised on: sizing it 0 would hand both oracle and candidate the same degenerate (often empty) bound,
-    so they would agree and the kernel would validate vacuously. A loud skip beats a silent green.
+      - a leaked OUTER INDEX the nest only consumes (s1115 peeled to an inner nest: ``i`` appears in
+        ``aa[i, j]`` / ``cc[j, i]`` and in no bound at all) -- 0 means "row 0", a full row of work;
+      - a leaked INDUCTION START the nest both reads and increments (s123/s124/s341/s342 ``j``,
+        s125/s126/s318/s343 ``k``, s128 ``j``): the corpus inits the counter before the loop (s123:
+        ``j = -1``) and the splitter leaves that init outside the nest, so it enters as a free argument
+        whose only uses are ``a[j]`` and the ``j = j + 1`` inter-state assignment.
+
+      What this branch does NOT claim: that 0 is the corpus's real starting value. It is not -- s123
+      shifts to ``a[0..]`` rather than ``a[-1..]``. The lowering is validated; the kernel's exact initial
+      state is not reproduced. Resolving the true incoming value from ``boundary.parent_sdfg`` would fix
+      that and is the proper follow-up.
+
+    Anything else is a symbol the nest READS that CAN change its trip count and that nothing here can
+    value, and is raised on: sizing it 0 would hand both oracle and candidate the same degenerate (often
+    empty) bound, so they would agree and the kernel would validate vacuously. A loud skip beats a silent
+    green.
     """
     rng = np.random.default_rng(seed + key_seed(kernel.key))
     presets = yaml_presets(kernel)
     shape_syms = shape_symbols(boundary.standalone_sdfg)
     corpus_values = corpus_symbol_values(kernel.corpus)
-    # Symbols the nest itself assigns before any read, and the arguments it actually takes: together these
-    # say whether a leftover symbol's value can reach the computation at all (see the 0-vs-raise below).
-    nest_defined = nest_defined_symbols(boundary.standalone_sdfg)
+    # The arguments the nest actually takes, and the symbols that can change how much work it does:
+    # together these say whether a leftover symbol's value can reach -- or degenerate -- the computation
+    # (see the 0-vs-raise below). Shapes join the trip-count set: both size the work.
     nest_arglist = set(boundary.standalone_sdfg.arglist())
+    work_syms = trip_count_symbols(boundary.standalone_sdfg) | shape_syms
     sizes: Dict[str, int] = {}
     for sym in boundary.symbols:
         if sym in kernel.params:
@@ -344,15 +364,18 @@ def sample_sizes(kernel: TsvcKernel,
             sizes[sym] = _PRESET.get(sym, {}).get("M", 64)
         elif sym not in nest_arglist:
             sizes[sym] = 0  # never passed to the nest: the value provably cannot reach the computation
-        elif sym in nest_defined:
-            # Assigned by the nest AND still in its arglist -- i.e. DaCe says it is read before defined: a
-            # leaked induction start. 0 is an arbitrary-but-shared start, not a proof. See the docstring.
+        elif sym not in work_syms:
+            # A leaked index -- consumed (s1115's outer `i`) or self-incremented (s123's `j`). It selects
+            # WHICH element the nest touches, never HOW MUCH work it does, so 0 keeps the iteration space
+            # and the buffers full-size and both sides see the same one. See the docstring.
             sizes[sym] = 0
         else:
-            raise ValueError(f"{kernel.corpus} kernel {kernel.key!r}: boundary symbol {sym!r} is read by the nest but "
-                             f"is not a registered parameter, a corpus symbol ({sorted(corpus_values)}) or a shape "
-                             f"symbol, so nothing here knows its value. Sizing it 0 would validate vacuously against a "
-                             f"degenerate result -- bind it in the corpus (SIZES/S_VALUE) or in the kernel's params.")
+            raise ValueError(f"{kernel.corpus} kernel {kernel.key!r}: boundary symbol {sym!r} is read by the nest and "
+                             f"sizes its work (it appears in a loop bound, a map range, an inter-state condition or an "
+                             f"array shape), but is not a registered parameter, a corpus symbol "
+                             f"({sorted(corpus_values)}) or a known shape symbol, so nothing here knows its value. "
+                             f"Sizing it 0 would validate vacuously against a degenerate result -- bind it in the "
+                             f"corpus (SIZES/S_VALUE) or in the kernel's params.")
     return sizes
 
 

@@ -219,7 +219,15 @@ def test_nbody_nested_where_emits_and_computes():
     dt, G, soft = 0.01, 1.0, 0.1
     # The stock-DaCe gaps below are BUILD failures, so guard the build ALONE. IndexError is also a
     # routine symptom of an emitter bug, and the emitter only runs after this point -- catching it
-    # around the emit/run step too would turn a nest-forge regression into a skip blamed on DaCe.
+    # around the emit/run step too would turn a nest-forge regression into an xfail blamed on DaCe.
+    #
+    # xfail, NOT skip: a skip is invisible to CI (which runs the unit set under NESTFORGE_CI_NO_SKIP)
+    # and, worse, reads as "nothing to see here". These are known upstream gaps, which is what xfail
+    # means. It is raised imperatively rather than via a decorator on purpose: a decorator would mark
+    # the WHOLE test expected-to-fail, so an emitter regression further down would land in the same
+    # green xfail bucket and hide -- exactly what the meta-test below exists to prevent. Raised here,
+    # it fires only for the build gap, and the day DaCe can build nbody the test simply runs and
+    # validates, which is the notification.
     try:
         sdfg = kernels()["hpc/n_body_methods/nbody/nbody"].to_sdfg(simplify=True)
     except (DaceSyntaxError, IndexError) as e:
@@ -228,13 +236,13 @@ def test_nbody_nested_where_emits_and_computes():
         # access trips newast.visit_Subscript with an IndexError, and the ``np.empty(Nt + 1)``
         # allocation needs the scalar ``Nt`` promoted to a symbol. Both are DaCe-frontend gaps, not
         # nest-forge emitter gaps; the test runs and validates once a DaCe that supports them is present.
-        pytest.skip(f"stock DaCe cannot lower nbody's masked assignment / scalar-shaped Nt+1: {type(e).__name__}")
+        pytest.xfail(f"stock DaCe cannot lower nbody's masked assignment / scalar-shaped Nt+1: {type(e).__name__}")
     inputs = dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft]))
     try:
         call, _ = alloc_run("hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg)
     except UnsupportedNest:
         # The emitter's own explicit refusal: it names the DaCe-side ExpandNestedSDFGInputs gap it hit.
-        pytest.skip("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
+        pytest.xfail("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
 
     def getAcc(pos, mass, G, softening):
         x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
@@ -275,10 +283,10 @@ def test_nbody_nested_where_emits_and_computes():
         assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
 
 
-def test_nbody_skip_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):
-    """The nbody skip must stay pinned to the stock-DaCe FRONTEND gap (an IndexError out of ``to_sdfg``).
+def test_nbody_xfail_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):
+    """The nbody xfail must stay pinned to the stock-DaCe FRONTEND gap (an IndexError out of ``to_sdfg``).
     An IndexError raised once the SDFG is built comes from the emitter -- a nest-forge regression that has
-    to fail the suite, since a skip attributed to DaCe would hide it from CI entirely."""
+    to fail the suite, since an xfail attributed to DaCe would hide it from CI entirely."""
     pytest.importorskip("dace.transformation.interstate.expand_nested_sdfg_inputs")  # match the nbody test
 
     class BuiltSdfg:
@@ -297,7 +305,7 @@ def test_nbody_skip_covers_the_dace_build_only_not_an_emitter_indexerror(monkeyp
         test_nbody_nested_where_emits_and_computes()
     except IndexError:
         return  # propagated to the caller: the regression is visible
-    except BaseException as exc:  # pytest's Skipped outcome derives from BaseException, not Exception
+    except BaseException as exc:  # pytest's Skipped/XFailed outcomes derive from BaseException, not Exception
         pytest.fail(f"an emitter IndexError was swallowed instead of raised: {type(exc).__name__}: {exc}")
     pytest.fail("an emitter IndexError was swallowed instead of raised: nbody test returned")
 
