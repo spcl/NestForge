@@ -230,13 +230,12 @@ def test_nbody_nested_where_emits_and_computes():
     # validates, which is the notification.
     try:
         sdfg = kernels()["hpc/n_body_methods/nbody/nbody"].to_sdfg(simplify=True)
-    except (DaceSyntaxError, IndexError) as e:
-        # Stock DaCe's numpy frontend cannot build nbody as-is: the boolean-mask assignment
-        # (``inv_r3[inv_r3 > 0] = ...``) lowers to per-element index loops whose ``.shape[1]``
-        # access trips newast.visit_Subscript with an IndexError, and the ``np.empty(Nt + 1)``
-        # allocation needs the scalar ``Nt`` promoted to a symbol. Both are DaCe-frontend gaps, not
-        # nest-forge emitter gaps; the test runs and validates once a DaCe that supports them is present.
-        pytest.xfail(f"stock DaCe cannot lower nbody's masked assignment / scalar-shaped Nt+1: {type(e).__name__}")
+    except (DaceSyntaxError, IndexError, FileExistsError) as e:
+        # DaCe-frontend gaps (not nest-forge): the boolean-mask assignment lowers to index loops that trip an
+        # IndexError, and ``np.empty(Nt + 1)`` registers ``Nt_plus_1`` as BOTH a scalar and a shape symbol so
+        # add_symbol raises FileExistsError. The test runs once DaCe promotes the scalar instead of colliding.
+        pytest.xfail(
+            f"stock DaCe cannot lower nbody's masked assignment / Nt+1 scalar-symbol collision: {type(e).__name__}")
     inputs = dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft]))
     try:
         call, _ = alloc_run("hpc/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg)
