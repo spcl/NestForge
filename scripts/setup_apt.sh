@@ -119,7 +119,8 @@ apt_install libomp-dev libgomp1
 log "fast linkers (lld/gold/mold) + LTO archivers (gcc-ar via binutils, llvm-ar via llvm)"
 apt_install lld binutils binutils-gold mold
 
-log "vector-math libraries: SLEEF (glibc libmvec is part of libc6, already present)"
+# libsleef-dev ships libsleefgnuabi (the _ZGV* GNU-ABI lib gcc needs) on-path -- no from-source build.
+log "vector-math libraries: SLEEF via libsleef-dev (glibc libmvec is part of libc6, already present)"
 apt_install libsleef-dev
 
 log "BLAS/LAPACK (arena BLAS axis is a TODO; install the libs now)"

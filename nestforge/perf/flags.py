@@ -298,26 +298,18 @@ def autopar_flags(family: str,
     auto-parallelizer OR its polyhedral back end is absent from ``compiler``.
 
     Per the plan the DEFAULT auto-parallelizer for the two open-source families is polyhedral:
-      * ``gnu``     -- **Graphite**: ``-ftree-parallelize-loops=N -floop-parallelize-all
-        -floop-nest-optimize -fgraphite-identity -fopenmp``. ``-ftree-parallelize-loops`` is the parloops
-        machinery that actually emits the threads; ``-floop-nest-optimize`` is the isl loop-nest optimizer;
-        ``-fgraphite-identity`` forces Graphite to build the polyhedral model for every SCoP it can detect
-        (without it a nest with nothing to reorder yields ``number of SCoPs: 0`` and the polyhedral path
-        does nothing) -- it is a DETECTION switch, not a profitability override. All three need gcc built
-        with isl;
+      * ``gnu``     -- Graphite: ``-ftree-parallelize-loops=N -floop-parallelize-all -floop-nest-optimize
+        -fgraphite-identity -fopenmp``. parloops emits the threads; ``-fgraphite-identity`` forces SCoP-model
+        build (else ``number of SCoPs: 0``) -- detection, not a profitability override. Needs gcc+isl;
       * ``llvm``    -- **Polly**: ``-mllvm -polly -mllvm -polly-parallel -fopenmp`` (mirrors optarena
         ``POLLY_PAR``). Requires clang built with Polly -- distribution clang frequently is not;
       * ``nvidia``  -- ``-Mconcur`` auto-concurrentizes; threads come from ``OMP_NUM_THREADS``/``NCPUS``;
       * ``intel``   -- ``-qopenmp -parallel`` (classic icc/ifort auto-par); a rejecting icx compile is
         recorded as an error cell, never silently dropped.
 
-    What is deliberately NOT passed: the flags that force a back end past its OWN profitability model
-    (Polly ``-polly-process-unprofitable``; gcc has no matching detection-only knob). ``auto-par`` is meant
-    to measure what each compiler's auto-parallelizer does under its default cost model, so forcing it to
-    parallelize loops it judged not worth it would misrepresent the lane -- the arena's own timing is the
-    final cost model. (gcc's ``-floop-parallelize-all`` is kept because it is load-bearing: gcc parallelizes
-    NO symbolic-bound loop without it, since it cannot prove the trip count profitable, so the whole lane
-    would go dark -- it handles unprovable profitability rather than overriding a negative verdict.)
+    NOT passed: flags forcing a back end past its own cost model (Polly ``-polly-process-unprofitable``) --
+    ``auto-par`` measures the compiler's default judgment, and the arena's timing is the final cost model.
+    gcc's ``-floop-parallelize-all`` is kept only because without it gcc parallelizes no symbolic-bound loop.
 
     Both polyhedral back ends are OPTIONAL compiler features: when ``compiler`` is supplied it is probed
     (:func:`compiler_accepts`) and an absent back end yields ``(None, reason)`` -- a recorded skip, not a
@@ -490,9 +482,7 @@ def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Option
     flags. The per-family spelling is delegated to the :class:`build.VectorMathLib` registry, imported
     lazily so this module stays dace-free for the plot readers that never touch a veclib."""
     if not veclib or veclib == "none":
-        # Even the scalar baseline needs the compiler's OWN support-lib rpath: icx auto-links libsvml/libimf/
-        # libintlc into every object it builds (its runtime), so an icx 'none' .so fails to load without it,
-        # though it calls scalar sin and vectorises nothing. Empty for gcc/clang, which auto-link no such set.
+        # icx auto-links libsvml/libimf into every object, so even the scalar baseline needs its support rpath
         return (list(support_rpath_flags(compiler)) if compiler else []), None
     if not compiler:
         return None, f"veclib {veclib} requested without a compiler to resolve its family"
@@ -502,10 +492,7 @@ def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Option
         return None, f"unknown veclib {veclib!r} (expected one of {tuple(VECTOR_LIBS)})"
     if not vl.compatible(compiler):
         return None, f"veclib {veclib} incompatible with {Path(compiler).name}"
-    # support_rpath_flags rpaths the compiler's OWN auto-linked support libs: an icx-built veclib cell pulls
-    # libimf/libintlc/libirng from icx's lib dir (off the default path), and without their rpath the .so
-    # dlopens with `libimf.so: cannot open shared object file` even though the veclib itself resolved. Empty
-    # for gcc/clang; the veclib's own dir (libsvml's libintlc, libsleefgnuabi) is handled in link_flags.
+    # + the compiler's own support-lib rpath (icx auto-links libimf/libintlc off-path); empty for gcc/clang.
     return vl.compile_flags(compiler) + vl.link_flags(compiler) + list(support_rpath_flags(compiler)), None
 
 

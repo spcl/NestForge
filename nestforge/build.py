@@ -320,30 +320,18 @@ def runtime_installed(rt: OpenMPRuntime) -> bool:
     return lib_findable(rt.soname, rt.lib_dir)
 
 
-#: -fveclib token (clang / flang / icx) per vector-math-library name. On x86_64 there is NO
-#: ``-fveclib=SLEEF`` -- clang AND icx reject it (``unsupported option 'SLEEF' for target 'x86_64'``); it
-#: exists only on aarch64. So on x86 SLEEF is reached the SAME way as libmvec: emit the glibc GNU-vector-ABI
-#: ``_ZGV*`` calls with ``-fveclib=libmvec`` and then LINK ``libsleefgnuabi`` (which exports exactly those
-#: symbols) instead of glibc's libmvec. The two veclibs thus share an emission path and differ ONLY in the
-#: linked library (see :meth:`VectorMathLib.link_flags`); ``svml`` is the distinct ``__svml_*`` mechanism.
+#: clang/icx -fveclib token per veclib. x86 has no -fveclib=SLEEF (aarch64 only), so sleef reuses the
+#: libmvec token (emit _ZGV*) and differs only in the linked lib (libsleefgnuabi); svml is __svml_*.
 _CLANG_VECLIB = {"sleef": "libmvec", "libmvec": "libmvec", "svml": "SVML"}
 
-#: Roots under which Intel oneAPI keeps libsvml (+ its libintlc/libimf/libirng support libs), globbed for
-#: the versioned ``*/lib`` dir. Off the default loader path and unknown to gcc/clang, so a non-Intel cell
-#: that links libsvml must be pointed at it explicitly.
+#: Intel oneAPI roots holding libsvml (+ libintlc/libimf/libirng), off the default path; globbed for */lib.
 _INTEL_ONEAPI_ROOTS = ("/opt/intel/oneapi/compiler", "/opt/intel/oneapi")
 
 
 def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
-    """Absolute directory holding ``lib<soname>`` for ``compiler`` -- for ``-L`` + ``-Wl,-rpath`` so the
-    veclib links AND the built ``.so`` loads without ``LD_LIBRARY_PATH`` -- or ``None`` when it is already
-    on the default path.
-
-    The veclib analogue of :func:`~nestforge.perf.flags.runtime_dir`: ask the compiler driver first (icx
-    knows its own libsvml dir), then the Intel oneAPI lib dirs (newest first -- libsvml lives there, off
-    ldconfig and unknown to gcc/clang), then a from-source SLEEF prefix (``NF_SLEEF_PREFIX`` / ``~/.local`` /
-    ``/usr/local``, where ``libsleefgnuabi`` is installed). Returns the DIRECTORY, never the file, so one
-    rpath of it also covers the library's siblings living beside it (libsvml's libintlc)."""
+    """Directory holding ``lib<soname>`` for ``-L``/``-rpath``, or ``None`` if already on the default path.
+    Asks the driver first (icx knows its libsvml), then the Intel oneAPI dirs (newest first), then a SLEEF
+    prefix (``NF_SLEEF_PREFIX``/``~/.local``/``/usr/local``). Returns a dir so one rpath covers siblings too."""
     found = driver_lib_path(soname, compiler)
     if found is not None:
         return str(found.parent)
@@ -362,23 +350,13 @@ def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
 
 @dataclass
 class VectorMathLib:
-    """A vectorized math library supplying SIMD implementations of elementary functions (exp/log/sin/...),
-    so an autovectorized loop calls a packed routine instead of scalarizing the transcendental. A SEPARATE
-    axis from the OpenMP runtime and the base flags. The model here is x86_64, verified on this box:
-
-    * ``libmvec`` (glibc): gcc emits the GNU-vector-ABI ``_ZGV*`` calls AUTOMATICALLY under fast-math + an
-      AVX ``-march`` (no compile flag); clang/icx via ``-fveclib=libmvec``. Resolved by glibc's ``libmvec``.
-    * ``sleef``   (portable, from source): the SAME ``_ZGV*`` emission (gcc autovec / ``-fveclib=libmvec``),
-      but LINKED against ``libsleefgnuabi`` -- SLEEF's GNU-ABI library, which exports those very symbols --
-      instead of glibc libmvec. So SLEEF works on gcc AND clang AND icx. (``-fveclib=SLEEF`` does not exist
-      on x86; see :data:`_CLANG_VECLIB`.)
-    * ``svml``    (Intel): clang/icx via ``-fveclib=SVML`` -> ``__svml_*`` calls, linked against ``libsvml``.
-      NOT available on gcc: gcc only ever emits ``_ZGV*``, never ``__svml_*`` (``-mveclibabi=svml`` is a
-      no-op on modern gcc), and libsvml does not export the ``_ZGV*`` names, so gcc cannot use it.
-
-    Note: the vectorizer only SUBSTITUTES these calls when the FP mode relaxes math semantics -- that
-    fast-math FP-mode axis is kept separate from this library selection.
-    """
+    """SIMD elementary-math library (sin/exp/...) an autovectorized loop calls instead of scalarizing.
+    x86_64 model, verified:
+    * ``libmvec`` (glibc): gcc emits ``_ZGV*`` under fast-math + AVX (no flag); clang/icx ``-fveclib=libmvec``.
+    * ``sleef``: SAME ``_ZGV*`` emission, but linked against ``libsleefgnuabi`` -- so it works on gcc/clang/icx
+      (there is no ``-fveclib=SLEEF`` on x86; see :data:`_CLANG_VECLIB`).
+    * ``svml``: clang/icx ``-fveclib=SVML`` -> ``__svml_*``, linked ``libsvml``. Not gcc (it emits only ``_ZGV*``).
+    Packed calls appear only under a fast-math FP mode (a separate axis)."""
     name: str  # libmvec | sleef | svml
     soname: Optional[str]  # -l<soname> for the vector symbols (None: toolchain/glibc provides)
     lib_dir: Optional[str] = None  # explicit -L override; when None the dir is resolved via veclib_lib_dir
@@ -411,14 +389,8 @@ class VectorMathLib:
         libdir = self.lib_dir or veclib_lib_dir(self.soname, compiler)
         search = [f"-L{libdir}", f"-Wl,-rpath,{libdir}"] if libdir else []
         if self.name == "svml":
-            # libsvml pulls libintlc.so.5 (its own dependency, same dir). A plain -Wl,-rpath emits
-            # DT_RUNPATH, which the loader does NOT consult for a dependency's OWN dependencies, so libintlc
-            # goes unresolved at dlopen. --disable-new-dtags makes it DT_RPATH, which IS searched
-            # transitively -- so the single -L/-rpath covers libsvml and its libintlc together.
-            search.append("-Wl,--disable-new-dtags")
-        # Pin the library NEEDED regardless of its position on the link line: a veclib -l can precede the
-        # object under --as-needed and be dropped (exactly as an OpenMP -l can); --pop-state restores
-        # --as-needed so nothing else is over-linked. Mirrors openmp_runtime_flags' gnu handling.
+            search.append("-Wl,--disable-new-dtags")  # libsvml's own libintlc needs DT_RPATH (transitive), not RUNPATH
+        # pin NEEDED regardless of link-line position (a veclib -l before the object drops under --as-needed)
         return [*search, f"-Wl,--push-state,--no-as-needed,-l{self.soname},--pop-state"]
 
 
