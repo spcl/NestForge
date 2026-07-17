@@ -1,28 +1,22 @@
 # nest-forge dev/test dependencies.
 #
-# DaCe MUST be the `extended` branch, installed EDITABLE from the sibling checkout (the PyPI `dace` wheel
-# lacks the extended-only passes nest-forge relies on, e.g. dace.transformation.interstate.
-# expand_nested_sdfg_inputs -- without it the nested-SDFG / WCR corpus tests self-skip). The relative path
-# assumes the documented sibling layout (../dace next to ./nest-forge); adjust if yours differs.
+# This file exists for the two deps pip cannot resolve by NAME -- both are installed EDITABLE from the
+# documented sibling layout (../dace and ../optarena next to ./nest-forge; adjust if yours differs).
+# Everything else lives in pyproject.toml and is pulled in by the `-e .[dev]` below, so the tool list
+# is stated once rather than drifting between two files.
 #
-#   git -C ../dace switch extended          # track the extended branch
-#   pip install -r requirements-dev.txt      # installs the editable dace below + the rest
+#   git -C ../dace switch extended           # nest-forge needs the extended branch, not PyPI's dace
+#   pip install -r requirements-dev.txt
+#
+# DaCe MUST be the `extended` branch: PyPI's `dace` tops out at 1.0.2 and lacks the extended-only passes
+# nest-forge calls (e.g. dace.transformation.interstate.expand_nested_sdfg_inputs -- without it the
+# nested-SDFG / WCR corpus tests self-skip). This editable install is what pins that.
 -e ../dace
 
-# OptArena is not on PyPI -- installed EDITABLE from the sibling checkout (../optarena next to
-# ./nest-forge, the documented layout; adjust if yours differs). See pyproject.toml.
+# OptArena is not published to PyPI at all, so there is no name for pip to resolve -- only this checkout.
 -e ../optarena
 
-numpy
-pyyaml
-pytest
-pytest-timeout
-pytest-xdist
-sympy
-# perf/plot_*.py render the driver JSON to PNG/CSV (Agg backend, headless)
-matplotlib
-# formatters (also the CI format gate): yapf (python, 120) + clang-format (C/C++, 160). yapf is PINNED:
-# its wrapping heuristics change between releases, so an unpinned yapf makes the format gate fail on a
-# machine whose yapf differs from the one the tree was formatted with.
-yapf==0.43.0
-clang-format
+# nest-forge itself, editable, plus the [dev] extra from pyproject.toml (pytest, xdist, matplotlib,
+# yapf, ruff, clang-format). Its runtime deps (numpy, pyyaml, sympy) come with it. Listed LAST so the
+# two editable checkouts above are already installed and nothing tries to resolve `dace` from PyPI.
+-e .[dev]
