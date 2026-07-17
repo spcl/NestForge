@@ -76,10 +76,13 @@ jobs:
           pip_retry -e ./.deps/optarena
           # Two deps that only a CLEAN environment exposes -- both are present on the dev box, so nothing
           # local ever needed them declared:
-          #   sqlmodel   -- imported by optarena (frameworks/schema.py, frameworks/test.py) but declared in
-          #                 neither its requirements.txt nor its setup.py, so `pip install -e` cannot pull
-          #                 it; ~38 tests died with ModuleNotFoundError. Drop this once optarena declares it.
-          #   matplotlib -- the perf/plot_*.py scripts import it, and the plot smokes run them as a
+          #   sqlmodel   -- imported by optarena (frameworks/schema.py, frameworks/test.py). optarena's
+          #                 setup.py used to declare NO dependencies at all, so `pip install -e` above
+          #                 resolved none of them and ~38 tests died with ModuleNotFoundError. Fixed
+          #                 upstream in OptArena 610c1c7e (install_requires), which `-e ./.deps/optarena`
+          #                 now pulls. Kept explicit so a regression in that declaration turns into a
+          #                 packaging bug for optarena to fix, not ~38 red tests here.
+          #   matplotlib -- nest-forge's OWN perf/plot_*.py import it, and the plot smokes run them as a
           #                 SUBPROCESS, so a missing import surfaces only as "exit status 1" from 4 tests.
           pip_retry numpy pytest pytest-timeout pytest-xdist sympy sqlmodel matplotlib
           # the checkouts must not shadow the packages they provide (see Phase 1a)

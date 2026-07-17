@@ -75,6 +75,20 @@ def test_owned_build_jacobi_matches_oracle():
     owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d")
 
 
+def without_search_paths(flags):
+    """``flags`` minus any ``-L`` discovery path, i.e. WHICH runtime is selected without WHERE it was
+    found. The two are separate concerns and only the first is host-independent: whether a ``-L`` is
+    needed depends on where this box's distro put the library (Ubuntu's libomp-18-dev hides it under
+    /usr/lib/llvm-18/lib, libomp-21-dev does not), so an exact-list assertion on link_flags passes on
+    the dev box and fails on the CI runner for a difference the axis does not care about. The ``-L``
+    itself is covered, host-independently, by the discovery tests below.
+
+    The position varies by family (gnu emits ``-L`` before ``-l<soname>``, the others after their
+    ``-fopenmp=``/``-qopenmp``/``-mp`` selector), so filter rather than index.
+    """
+    return [f for f in flags if not f.startswith("-L")]
+
+
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
     """The OpenMP runtime is one configurable knob that maps to the right flag PER COMPILER, so a set of
     node libraries built with different compilers all target the SAME runtime -- the mixed-compiler
@@ -87,12 +101,14 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
     assert rt.compile_flags("clang++") == ["-fopenmp=libomp"]
     assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
     # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
-    assert rt.compile_flags("g++") == ["-fopenmp"] and rt.link_flags("g++") == ["-lomp"]
+    assert rt.compile_flags("g++") == ["-fopenmp"] and without_search_paths(rt.link_flags("g++")) == ["-lomp"]
     # intel-classic and nvidia link ONLY their native runtimes (icc -qopenmp -> libiomp5, nvc -mp ->
     # libnvomp), so libomp is not compatible with either -- their spellings are checked on those runtimes.
     from nestforge.build import LIBIOMP5
-    assert LIBIOMP5.compile_flags("icc") == ["-qopenmp"] and LIBIOMP5.link_flags("icc") == ["-qopenmp"]
-    assert LIBNVOMP.compile_flags("nvc") == ["-mp"] and LIBNVOMP.link_flags("nvc") == ["-mp"]
+    assert LIBIOMP5.compile_flags("icc") == ["-qopenmp"]
+    assert without_search_paths(LIBIOMP5.link_flags("icc")) == ["-qopenmp"]
+    assert LIBNVOMP.compile_flags("nvc") == ["-mp"]
+    assert without_search_paths(LIBNVOMP.link_flags("nvc")) == ["-mp"]
     # a lib_dir threads onto the link line.
     assert "-L/opt/omp/lib" in OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
 
@@ -102,8 +118,9 @@ def test_openmp_runtime_registry_covers_the_popular_runtimes():
     compatible with libomp), libnvomp (NVIDIA HPC, via nvc -mp only)."""
     from nestforge.build import OPENMP_RUNTIMES, LIBGOMP, LIBIOMP5
     assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5", "libnvomp"}
-    assert LIBIOMP5.link_flags("g++") == ["-liomp5"]  # gcc object on Intel's runtime (has GOMP compat)
-    assert LIBGOMP.link_flags("g++") == ["-lgomp"]
+    # gcc object on Intel's runtime (has GOMP compat). Search paths filtered: see without_search_paths.
+    assert without_search_paths(LIBIOMP5.link_flags("g++")) == ["-liomp5"]
+    assert without_search_paths(LIBGOMP.link_flags("g++")) == ["-lgomp"]
 
 
 def test_openmp_abi_compatibility_is_enforced():
