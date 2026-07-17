@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from nestforge.perf import flags
-from nestforge.isolation import OMP_PAUSE_MODES, OMP_PAUSE_SOFT, pause_openmp_pools, run_isolated
+from nestforge.isolation import OMP_PAUSE_MODES, OMP_PAUSE_SOFT, OMP_RUNTIME_SONAMES, pause_openmp_pools, run_isolated
 
 OMP_SRC = """#include <omp.h>
 void kern(double *a, int n) {
@@ -61,8 +61,9 @@ def build(tmp_path, runtime):
     rather than a bare ``gcc -print-file-name``. That is not a nicety: on the CI runner gcc does not know
     where libomp lives (libomp-18-dev puts it under /usr/lib/llvm-18/lib, off gcc's path -- the exact
     split runtime_dir exists to bridge), so the bare probe returns "libomp.so" and a hand-rolled check
-    either wrongly skips or wrongly fails. If runtime_dir cannot find it either, the runtime genuinely is
-    not installed and the test skips -- an absent toolchain is a skip, never a red test."""
+    either wrongly skips or wrongly fails. If runtime_dir cannot find it AND gcc cannot link it, the
+    runtime genuinely is not installed -- a hard requirement missing, which ASSERTS (a red test), never a
+    silent skip (the unit set runs under NESTFORGE_CI_NO_SKIP, where a skip fails the session anyway)."""
     assert shutil.which("gcc"), "gcc is required to build the OpenMP kernel this file's regression needs"
     src = tmp_path / "k.c"
     src.write_text(OMP_SRC)
@@ -70,8 +71,10 @@ def build(tmp_path, runtime):
     extra = []
     if runtime != "gomp":  # gcc's default IS libgomp; anything else must be pinned at link
         lib_dir = flags.runtime_dir(runtime, "gcc")
-        if lib_dir is None and not flags.lib_linkable(runtime, "gcc"):
-            pytest.skip(f"lib{runtime}.so is not installed / linkable by gcc here")
+        assert lib_dir is not None or flags.lib_linkable(runtime, "gcc"), (
+            f"lib{runtime}.so is a hard requirement of this regression but is not installed / linkable by "
+            f"gcc here -- install it (e.g. libomp-dev); an absent second runtime is a broken env to surface "
+            f"loudly, not a skip to hide behind (the unit set runs under NESTFORGE_CI_NO_SKIP anyway)")
         search = [f"-L{lib_dir}", f"-Wl,-rpath,{lib_dir}"] if lib_dir else []
         extra = [*search, f"-Wl,--push-state,--no-as-needed,-l{runtime},--pop-state"]
     proc = subprocess.run(
@@ -126,8 +129,10 @@ def test_the_parent_can_still_use_openmp_after_pausing(tmp_path, runtime, mode):
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
 @pytest.mark.parametrize("mode", sorted(OMP_PAUSE_MODES))
 def test_both_teardown_modes_make_the_fork_safe(tmp_path, runtime, mode):
-    """BOTH omp_pause_resource_t options must buy fork safety -- the pool goes either way; they differ
-    only in what else is freed (hard also discards threadprivate data, soft keeps it).
+    """BOTH omp_pause_resource_t options must buy fork safety -- but NOT always by tearing the pool down:
+    libgomp drops it under either mode, whereas libomp's SOFT pause leaves the whole pool up (see
+    TEARS_DOWN_POOL) and the child runs anyway on libomp's pthread_atfork handler. Where a pause DOES tear
+    down, the modes differ only in what else is freed (hard also discards threadprivate data, soft keeps it).
 
     Tested explicitly because the default is the WEAKER one: soft is chosen so pausing cannot destroy
     state a caller expected to keep, which is only defensible if soft genuinely tears the pool down.
@@ -155,8 +160,8 @@ def test_both_teardown_modes_make_the_fork_safe(tmp_path, runtime, mode):
     if not ready:
         os.kill(pid, 9)
     os.waitpid(pid, 0)
-    assert got == b"ok", (f"lib{runtime} + omp_pause_{mode}: child "
-                          f"{'HUNG (pool survived the pause)' if not got else 'computed ' + got.decode()}")
+    why = "produced nothing (hung on its parallel region, then was killed)" if not got else f"computed {got.decode()}"
+    assert got == b"ok", f"lib{runtime} + omp_pause_{mode}: child {why}"
 
 
 def test_pausing_is_safe_when_no_openmp_runtime_is_loaded():
@@ -173,3 +178,47 @@ def mapped_omp():
     with open("/proc/self/maps") as fh:
         maps = fh.read()
     return sorted({n for n in ("libgomp", "libomp", "libiomp5", "libnvomp") if n + ".so" in maps})
+
+
+def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
+    """The DIRECT observable of tear-down -- not the weaker inference 'a forked child did not hang'. After
+    a poisoning parallel region libgomp holds a thread per core; pause_openmp_pools() must DROP that count
+    (pool torn down), where doing nothing leaves it up. This is the default cell (gomp, soft), which
+    TEARS_DOWN_POOL records as a genuine tear-down and on which the whole guarantee rests; the count comes
+    straight from /proc/self/task. The libomp+soft outlier (pool left fully up, yet forks safely via its
+    atfork handler) is deliberately NOT asserted here: with both runtimes mapped in one interpreter its
+    survival cannot be isolated from libgomp's drop, so TEARS_DOWN_POOL only documents it."""
+    assert TEARS_DOWN_POOL[("gomp", "soft")], "the default cell must be a genuine tear-down"
+    so = build(tmp_path, "gomp")
+    call_kernel(so)  # poison: libgomp's pool is now a thread per core
+    busy = thread_count()
+    assert thread_count() == busy, "the thread count moved with no pause -- the measurement is not stable"
+    pause_openmp_pools()  # default mode is soft (asserted separately)
+    assert thread_count() < busy, f"(gomp, soft): pool NOT torn down, thread count stayed at {busy}"
+
+
+def test_the_default_pause_mode_is_soft():
+    """SOFT is the DEFAULT on purpose: the weakest reset that still buys fork safety, because it KEEPS
+    threadprivate data where hard destroys it. Assert the default ITSELF -- not merely that soft works
+    when asked for explicitly -- so a silent flip of the default to hard (which would discard caller state
+    on every fork) is caught here, not later in some caller's lost threadprivate buffer."""
+    default = inspect.signature(pause_openmp_pools).parameters["mode"].default
+    assert default == OMP_PAUSE_SOFT, (
+        f"pause_openmp_pools default mode is {default!r}, expected soft ({OMP_PAUSE_SOFT}) -- soft is the "
+        f"weakest reset that still buys fork safety and must remain the default")
+
+
+def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypatch):
+    """The best-effort skip must be VISIBLE. Simulate a runtime that is mapped but predates OpenMP 5.0 (no
+    omp_pause_resource_all): pause_openmp_pools must WARN that it left that runtime's pool up, never pass
+    over it in silence -- a silent skip hides exactly the condition under which a forked child deadlocks.
+    A plain object() stands in for the mapped-but-symbol-less library."""
+
+    def fake_cdll(name, mode=0):
+        if name == OMP_RUNTIME_SONAMES[0]:
+            return object()  # mapped, but no omp_pause_resource_all attribute -> the AttributeError branch
+        raise OSError("not loaded in this process")
+
+    monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
+    with pytest.warns(UserWarning, match="omp_pause_resource_all"):
+        pause_openmp_pools()

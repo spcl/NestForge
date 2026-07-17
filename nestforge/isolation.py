@@ -16,6 +16,7 @@ import os
 import select
 import signal
 import time
+import warnings
 from typing import Callable, Dict
 
 #: OpenMP runtimes whose thread pool must be torn down before a fork (see :func:`pause_openmp_pools`).
@@ -52,12 +53,14 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
     ``mode`` values (see :data:`OMP_PAUSE_MODES`), and the parent's own next region simply spins the
     pool back up. The pool is a cache, so tearing it down costs a re-spin, not correctness.
 
-    Best effort by construction:
+    Best effort by construction, but never SILENT:
       * ``RTLD_NOLOAD`` -- only ever ask a runtime that is ALREADY mapped. Plain ``CDLL`` would LOAD it,
         which would both add a runtime this process never needed and defeat the purpose.
       * a runtime without the OMP_5.0 symbol (or that refuses -- the call is invalid from inside a
-        parallel region, and returns non-zero) is skipped: pausing is a hardening step, and a failure
-        here must not break a fork that would otherwise have been fine.
+        parallel region, and returns non-zero) is passed over rather than raising: pausing is a hardening
+        step, and a failure here must not break a fork that would otherwise have been fine. But it is
+        WARNED, not swallowed -- an unhardened fork is a real hazard (a libgomp child deadlocks), so the
+        skip has to be visible to whoever reads the logs, not an invisible no-op.
     """
     for soname in OMP_RUNTIME_SONAMES:
         try:
@@ -67,13 +70,15 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
         try:
             pause = lib.omp_pause_resource_all
         except AttributeError:
-            continue  # pre-OpenMP-5.0 runtime: no way to ask
+            warnings.warn(f"{soname}: no omp_pause_resource_all (pre-OpenMP-5.0 runtime); its thread pool "
+                          f"was NOT torn down before the fork -- fork safety for this runtime now rests on "
+                          f"its own pthread_atfork handler, if it installs one (libgomp installs none).")
+            continue  # best effort, but no longer SILENT: the caller can see the fork was left unhardened
         pause.argtypes = [ctypes.c_int]
         pause.restype = ctypes.c_int
-        try:
-            pause(mode)
-        except OSError:
-            pass
+        if pause(mode) != 0:  # e.g. called from within a parallel region: the pool was NOT torn down
+            warnings.warn(f"{soname}: omp_pause_resource_all(mode={mode}) returned non-zero; its thread "
+                          f"pool was NOT torn down before the fork.")
 
 
 def quiet_fatal_signals() -> None:
