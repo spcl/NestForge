@@ -43,9 +43,9 @@ def build(tmp_path, runtime):
         if not libdir.startswith("/"):
             pytest.skip(f"lib{runtime}.so not linkable by gcc here")
         extra = [f"-L{libdir.rsplit('/', 1)[0]}", f"-Wl,--push-state,--no-as-needed,-l{runtime},--pop-state"]
-    proc = subprocess.run(["gcc", "-O2", "-fPIC", "-shared", "-fopenmp", *extra, str(src), "-o", str(so)],
-                          capture_output=True,
-                          text=True)
+    proc = subprocess.run(
+        ["gcc", "-O2", "-fPIC", "-shared", "-fopenmp", *extra,
+         str(src), "-o", str(so)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr[-800:]
     needed = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True).stdout
     assert f"[lib{runtime}.so" in needed, f"expected lib{runtime} in DT_NEEDED, got:\n{needed}"
