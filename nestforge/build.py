@@ -207,20 +207,39 @@ def env_library_dirs() -> List[str]:
     return dirs
 
 
-def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
-    """True if ``compiler`` already resolves ``-l<soname>`` with no ``-L``.
+#: Drivers to ask where a runtime lives when the target compiler cannot find it. Each SHIPS one (clang ->
+#: libomp, gcc -> libgomp), so it knows its own libdir whatever prefix it was installed under -- which
+#: beats guessing paths. Ordered clang-first because libomp is the mandated runtime.
+_LIB_PROBE_DRIVERS = ("clang++", "clang", "g++", "gcc")
 
-    Asks the driver itself (``-print-file-name``), which is the only authority: it echoes the name back
-    unchanged when it cannot find the file. ``ldconfig``/``find_library`` answer a DIFFERENT question --
-    what the LOADER can find at run time -- and the two disagree exactly where this matters (see
-    :func:`linkable_lib_dir`).
+
+def driver_lib_path(soname: str, compiler: str) -> Optional[Path]:
+    """Where ``compiler`` resolves ``lib<soname>.so``, or ``None`` if it cannot find it.
+
+    ``-print-file-name`` is the only authority on what a driver itself resolves: it returns a full path, or
+    echoes the name back unchanged when there is nothing to find. ``ldconfig`` / ``ctypes.util.find_library``
+    answer a DIFFERENT question -- what the LOADER can find at run time -- and the two disagree exactly
+    where it matters (see :func:`linkable_lib_dir`).
     """
     try:
         out = subprocess.run([compiler, f"-print-file-name=lib{soname}.so"], capture_output=True,
                              text=True).stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        return False
-    return out != f"lib{soname}.so" and Path(out).exists()
+        return None
+    if not out or out == f"lib{soname}.so":
+        return None
+    # Normalise LEXICALLY, never resolve(): gcc answers with an unnormalised path
+    # (``/usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libomp.so``) which has to be cleaned
+    # up, but resolve() would also follow the symlink -- and ``libomp.so`` is precisely a symlink, often
+    # to a ``libomp.so.5`` in a DIFFERENT directory. Its target's directory is the wrong answer: ``-L``
+    # there would find no ``libomp.so`` and the link would fail again, for a second subtle reason.
+    path = Path(os.path.normpath(out))
+    return path if path.exists() else None
+
+
+def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
+    """True if ``compiler`` already resolves ``-l<soname>`` with no ``-L``."""
+    return driver_lib_path(soname, compiler) is not None
 
 
 @functools.lru_cache(maxsize=None)
@@ -237,16 +256,28 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
 
     Returns ``None`` when no ``-L`` is needed, so a box with the library on the default path keeps linking
     exactly as before -- and never silently swaps in some other LLVM version's copy.
+
+    Found by ASKING, in order: an explicit loader path (``LD_LIBRARY_PATH`` -- a spack/module runtime, and
+    deliberate, so it wins); then the drivers that ship these runtimes (clang knows where its libomp is,
+    whatever prefix it was installed under -- on the CI runner clang-18 answers ``/usr/lib/llvm-18/lib``);
+    only then a guess at LLVM's layout, for a box with the -dev files but no matching clang.
     """
     if shutil.which(compiler) is None:
         return None  # cannot ask a linker that is not here, and a guessed -L for it would be worse than none
     if linker_finds(soname, compiler):
         return None
-    # Newest LLVM first: when several are installed, an older libomp is the less likely intent.
-    llvm_dirs = sorted((str(d) for d in Path("/usr/lib").glob("llvm-*/lib")), reverse=True)
-    for d in env_library_dirs() + llvm_dirs:
+    for d in env_library_dirs():  # explicit intent (spack/module) outranks anything inferred
         p = Path(d)
         if (p / f"lib{soname}.so").exists() or (p / f"lib{soname}.a").exists() or (p / f"lib{soname}.dylib").exists():
+            return d
+    for probe in _LIB_PROBE_DRIVERS:
+        if probe != compiler and shutil.which(probe):
+            found = driver_lib_path(soname, probe)
+            if found is not None:
+                return str(found.parent)
+    # Newest LLVM first: when several are installed, an older libomp is the less likely intent.
+    for d in sorted((str(x) for x in Path("/usr/lib").glob("llvm-*/lib")), reverse=True):
+        if (Path(d) / f"lib{soname}.so").exists():
             return d
     return None
 

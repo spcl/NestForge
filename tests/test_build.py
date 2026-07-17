@@ -25,10 +25,10 @@ from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from dace.sdfg import nodes
-from nestforge.build import (build_sdfg, dace_runtime_include, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
-                             compare_link_modes, LinkTimings, available_linkers, fastest_linker, linker_supported,
-                             VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions, set_fast_libnodes,
-                             runtime_installed, config_has, codegen_impls_available, codegen_config,
+from nestforge.build import (build_sdfg, dace_runtime_include, driver_lib_path, OpenMPRuntime, compiler_family, LIBOMP,
+                             LIBNVOMP, compare_link_modes, LinkTimings, available_linkers, fastest_linker,
+                             linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions,
+                             set_fast_libnodes, runtime_installed, config_has, codegen_impls_available, codegen_config,
                              default_codegen_impl, CODEGEN_IMPLS, parse_params)
 
 
@@ -204,6 +204,29 @@ def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime
     build_mod.linkable_lib_dir.cache_clear()
     assert OpenMPRuntime().link_flags("g++") == ["-lomp"]
     build_mod.linkable_lib_dir.cache_clear()
+
+
+def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
+    """``libomp.so`` IS a symlink (-> ``libomp.so.5``), and the two can sit in different directories.
+
+    So the answer must be normalised two ways at once: gcc replies with an unnormalised path full of
+    ``..`` segments, which has to be cleaned up -- but ``resolve()`` would ALSO follow the symlink and hand
+    back the TARGET's directory, which holds no ``libomp.so``. ``-L`` there finds nothing and the link
+    fails again, for a second and subtler reason. Lexical normalisation gives both.
+    """
+    link_dir, target_dir = tmp_path / "linkdir", tmp_path / "targetdir"
+    link_dir.mkdir()
+    target_dir.mkdir()
+    (target_dir / "libsplit.so.5").write_bytes(b"")
+    (link_dir / "libsplit.so").symlink_to(target_dir / "libsplit.so.5")  # the real distro layout
+
+    fake_cc = tmp_path / "fake-cc"  # a driver that answers the way gcc does: full of ".." segments
+    fake_cc.write_text(f'#!/bin/sh\necho "{link_dir}/../linkdir/libsplit.so"\n')
+    fake_cc.chmod(0o755)
+
+    got = driver_lib_path("split", str(fake_cc))
+    assert got == link_dir / "libsplit.so", f"expected the symlink itself, got {got}"
+    assert got.parent == link_dir, "the -L must be the symlink's own dir, never its target's"
 
 
 def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch):
