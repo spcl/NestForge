@@ -31,10 +31,9 @@ Compile-only (cheap, no execution, no data), parse the optimization reports, ran
 
 ### (B) Predictive numerical safety — when is fast-math dangerous, offline
 
-The user's intuitions match the literature exactly: **reductions** (reassociation-sensitive, error
-grows ~ε·n naively), **compensated summation** (Kahan — reassociation *deletes* the correction,
-compiling it to naive summation), and **solvers** (conditioning + catastrophic cancellation) are the
-dangerous patterns. Two more the literature flags as the top real-world bugs: **`-ffinite-math-only`**
+Matches the literature: **reductions** (reassociation-sensitive, error grows ~ε·n naively),
+**compensated summation** (Kahan — reassociation *deletes* the correction, compiling it to naive
+summation), and **solvers** (conditioning + catastrophic cancellation) are the dangerous patterns. Two more the literature flags as the top real-world bugs: **`-ffinite-math-only`**
 silently removes `isnan`/`isinf`/`x==x` checks (the single most common fast-math bug report), and
 **flush-to-zero** (via `-funsafe-math`) breaks Sterbenz' lemma AND is non-local (leaks into code not
 compiled with fast-math, even other shared libs).

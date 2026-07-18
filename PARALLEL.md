@@ -1,13 +1,10 @@
 # nest-forge — parallel-region handling, linking, and stability under parallelism
 
-An extracted nest is not just a computation; it carries a **schedule**. When the arena compiles a nest
-and links the winners into one program, the parallelism of each nest and of its call context decides
-what is legal to emit, whether the linked program even runs, and whether the result is reproducible.
-This document specifies (1) the parallelism descriptor a nest must carry, (2) the compile-intent it
-implies, (3) what happens when several parallel static libraries are linked into one driver, and (4)
-how parallelism enters the numerical-stability metric. It is the CPU analogue of the host/device
-schedule cut already noted in the plan, and it is deliberately co-designed with `docs/FP_RISK.md`,
-because a parallel reduction is a reassociation event.
+An extracted nest is not just a computation; it carries a **schedule**. When the arena links winners
+into one program, the parallelism of each nest and its call context decides what is legal to emit,
+whether the linked program runs, and whether the result is reproducible. It is the CPU analogue of the
+host/device schedule cut already noted in the plan, co-designed with `docs/FP_RISK.md` — a parallel
+reduction is a reassociation event.
 
 ## 1. The parallelism descriptor
 
@@ -20,8 +17,8 @@ arbitrary dependences). So the nest's own parallelism is read directly off the e
 - `MapEntry`, `schedule == Sequential`  -> **sequential**.
 - `LoopRegion`                          -> **sequential**.
 
-But the nest's own parallelism is not enough. What matters for codegen is whether the nest is extracted
-*inside* something already parallel. Walk the ancestors of the extraction point:
+But codegen also needs whether the nest is extracted *inside* something already parallel — walk the
+ancestors of the extraction point:
 
 - `parent_is_parallel` = any enclosing scope (an outer `MapEntry` we did not extract, or — at
   link time — the driver's own `#pragma omp parallel`) is a parallel region.
@@ -49,11 +46,10 @@ The two fields give a three-way decision on how the arena is allowed to compile 
 | `False` | `sequential` | **single-thread** | no `omp parallel`; `#pragma omp simd` / auto-vec only; thread count is not an axis |
 | `True`  | *any*        | **single-thread, per-thread body** | the caller already owns the threads; emit **no** `omp parallel` (nested parallelism — see §3); SIMD only. The nest is the body each outer thread runs |
 
-The third row is the case the user flagged: "if the parent-map is a parallel region we must compile
-single-thread aim." Emitting a second `omp parallel` inside an already-parallel region is nested
-parallelism, which by default runs serially anyway (wasted pragma) and, if nesting is enabled,
-oversubscribes. So a nest with `parent_is_parallel` is compiled with thread-parallelism off, keeping
-only vectorization — which is always safe to stack under an outer parallel region.
+The third row: emitting a second `omp parallel` inside an already-parallel region is nested
+parallelism, which runs serially by default (wasted pragma) and, if nesting is enabled, oversubscribes.
+So a nest with `parent_is_parallel` compiles with thread-parallelism off, vectorization only — always
+safe to stack under an outer parallel region.
 
 This is a schedule-domain cut, the same shape as the host-wrapper / GPU-device cut: the strategy
 decides *where* the parallel boundary is, and every nest below it is compiled as a sequential
@@ -61,9 +57,8 @@ per-thread kernel.
 
 ## 3. Linking several parallel static libraries into one driver
 
-The whole-program step links each nest's winner `.a` into one driver. If two (or more) of those `.a`
-contain OpenMP parallel regions, the behaviour of the linked program depends on three independent
-things. This is the "two `.a` with OpenMP, one driver" question, answered in full.
+The whole-program step links each nest's winner `.a` into one driver. If two or more of those `.a`
+contain OpenMP parallel regions, the linked program's behaviour depends on three independent things.
 
 ### 3.1 Which OpenMP runtime each library was built with — the dominant factor
 
@@ -169,10 +164,9 @@ This is what makes the single-runtime guarantee (§3.1) observable at run time a
 
 ## 4. Numerical stability under parallelism
 
-"Numerically stable" here means: **the relative error of a variant, measured against the ieee-strict
-*sequential* baseline, does not explode.** The baseline is sequential on purpose — sequential
-ieee-strict is the reproducible reference, and every source of divergence is measured as departure from
-it.
+"Numerically stable" means: **the relative error of a variant, vs the ieee-strict *sequential*
+baseline, does not explode.** Sequential ieee-strict is the reproducible reference by design; every
+source of divergence is measured as departure from it.
 
 Thread-parallelism is such a source, in the same class as `-ffast-math`:
 

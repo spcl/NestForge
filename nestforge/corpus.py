@@ -1,11 +1,11 @@
 """Load real npbench/polybench kernels from the installed ``optarena`` package as SDFGs.
 
-optarena ships each kernel as ``<name>_numpy.py`` (oracle) + ``<name>.yaml`` (BenchSpec) and, for
-the HPC/ML tracks, a ``<name>_dace.py`` holding a ``@dace.program`` -- import it, ``to_sdfg`` it, feed
-it to the lowering pass. The numpy oracle + yaml double as a correctness reference.
+optarena ships each kernel as ``<name>_numpy.py`` (oracle) + ``<name>.yaml`` (BenchSpec) and, for the
+HPC/ML tracks, a ``<name>_dace.py`` holding a ``@dace.program`` -- import it, ``to_sdfg`` it, feed it
+to the lowering pass.
 
-Kernels bind optarena's ``dc_float`` precision global at import time (``from ... import``), so it must
-be stamped to fp64 before any kernel module imports.
+Kernels bind optarena's ``dc_float`` precision global at import time, so it must be stamped to fp64
+before any kernel module imports.
 """
 from __future__ import annotations
 
@@ -20,9 +20,8 @@ import dace
 from optarena import autogen
 from optarena.spec import KERNELS, BenchSpec
 
-#: Tracks whose ``_dace.py`` optarena generates ON DEMAND (gitignored, never committed -- see
-#: optarena.autogen). foundation (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it
-#: is never dace-materialized here (and materialising its 213 kernels would be wasted work).
+#: Tracks whose ``_dace.py`` optarena generates on demand (gitignored, never committed). foundation
+#: (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it's never materialized here.
 DACE_TRACKS = ("hpc", "ml")
 
 
@@ -45,8 +44,7 @@ class CorpusKernel:
         """Import the kernel's ``_dace.py`` by file path.
 
         Loading by path (not ``import_module``) sidesteps ``optarena.benchmarks`` namespace-package
-        resolution, which can non-deterministically bind to a stray/duplicate ``benchmarks/`` root
-        lacking the kernel's subpackage.
+        resolution, which can non-deterministically bind to a stray duplicate ``benchmarks/`` root.
         """
         if self.module_path in sys.modules:
             return sys.modules[self.module_path]
@@ -59,8 +57,8 @@ class CorpusKernel:
     def program(self):
         """The kernel's *entry* ``@dace.program``, selected by the manifest's ``func_name``.
 
-        A module often defines helper programs before the kernel and a ``*_gpu`` variant after it, so
-        neither "first" nor "last" is reliable; ``func_name`` mirrors optarena's own ``_import_kernel``.
+        A module often defines helper programs before it and a ``*_gpu`` variant after, so neither
+        "first" nor "last" is reliable; mirrors optarena's own ``_import_kernel``.
         """
         set_precision_fp64()
         module = self.module()
@@ -103,10 +101,10 @@ def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
 
 
 def materialize_dace_corpus(track: Optional[str] = None) -> None:
-    """Generate every missing ``_dace.py`` for the dace-bearing tracks up front. optarena ships these as
-    gitignored, regenerated-on-demand artifacts, so a fresh checkout has none. Safe to call repeatedly (a
-    present file is a no-op). Call ONCE, serially, before a parallel test run: :func:`autogen.ensure`
-    writes the file non-atomically, so concurrent xdist workers must not both materialise the same kernel."""
+    """Generate every missing ``_dace.py`` for the dace-bearing tracks up front (gitignored, so a fresh
+    checkout has none). Safe to call repeatedly. Call ONCE, serially, before a parallel test run:
+    :func:`autogen.ensure` writes non-atomically, so concurrent xdist workers must not race the same
+    kernel."""
     for short_name in KERNELS:
         if short_name.split("/", 1)[0] not in DACE_TRACKS:
             continue

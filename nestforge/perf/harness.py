@@ -1,11 +1,8 @@
 """Shared arena infrastructure: rank partitioning, bounded compiles, ABI binding, and result IO.
 
-Every perf driver (``tsvc_arena``, ``tsvc_full``, ``crosslang_xl``, ``calloverhead``,
-``staticlib_overhead``) and every ``perf/plot_*.py`` script needs the same handful of primitives. They
-used to live inside ``tsvc_arena`` -- a *driver* -- so the other four drivers imported it for infra and
-the plot scripts carried their own byte-identical copies (10x ``geomean``, 7x ``finite``, 6x
-``load_results``, 3x the ABI-order reader). This module is that infra, relocated: the functions are
-unchanged, they simply have one home now.
+Every perf driver and every ``perf/plot_*.py`` script needs these same primitives. They used to live
+inside ``tsvc_arena`` and get copy-pasted (10x ``geomean``, 7x ``finite``, 6x ``load_results``); this
+module is that infra relocated to one home, functions unchanged.
 """
 from __future__ import annotations
 
@@ -24,25 +21,20 @@ import numpy as np
 
 from nestforge.arena import CTYPE, scalar_ctype
 
-#: Per-compile wall-clock ceiling (seconds). The phase-1 sweep runs compiles inside a
-#: ThreadPoolExecutor; an untimed compiler spinning on a pathological kernel would hang the worker
-#: thread, block ``pool.map``, freeze the whole sweep rank and leave srun waiting on it -- the 19h
-#: "job timed out" stall. On timeout we return a normal (failed, err) result so only that one cell is
-#: lost. Override with ``NF_COMPILE_TIMEOUT``.
+#: Per-compile wall-clock ceiling (seconds). Compiles run in a ThreadPoolExecutor; an untimed compiler
+#: spinning on a pathological kernel would hang the pool and freeze the whole sweep rank (the 19h "job
+#: timed out" stall). On timeout we return a normal failed result. Override with ``NF_COMPILE_TIMEOUT``.
 COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 
 #: Per-kernel *execution* wall-clock ceiling (seconds), distinct from the compile ceiling above. A
-#: validated timing cell runs the compiled kernel forked (``run_isolated``); a runaway kernel (a bad
-#: unroll, a pathological size) would otherwise hold the fork open for the whole job. Override with
-#: ``NF_RUN_TIMEOUT``. Default 1800 -- a full median-of-N run at the XL profiling size stays well under it.
+#: runaway kernel would otherwise hold the fork open for the whole job. Override with ``NF_RUN_TIMEOUT``.
 RUN_TIMEOUT_S: float = float(os.environ.get("NF_RUN_TIMEOUT", "1800"))
 
 #: base C-type name -> ctypes type, for binding a native baseline signature.
 C_BASE = {"double": ctypes.c_double, "float": ctypes.c_float, "int64_t": ctypes.c_int64, "int": ctypes.c_int}
 
-#: rank / size environment variables, most specific launcher first: SLURM (srun), then OpenMPI, then
-#: MPICH/Hydra (mpirun). Whichever the job was launched with wins, so a driver self-partitions the same
-#: under ``srun`` on daint and under a local ``mpirun`` in a test.
+#: rank / size env vars, most specific launcher first (SLURM, then OpenMPI, then MPICH/Hydra), so a
+#: driver self-partitions the same under any launcher.
 RANK_VARS = ("SLURM_PROCID", "OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK")
 SIZE_VARS = ("SLURM_NTASKS", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE")
 
@@ -54,13 +46,10 @@ def my_slice(items: List, procid: int, ntasks: int) -> List:
 
 
 def rank_and_size() -> Tuple[int, int]:
-    """``(rank, nranks)`` from the launcher's environment (SLURM or an MPI runtime), defaulting to
-    ``(0, 1)`` for a plain single-process run. Every rank sees the same total, so the round-robin
-    partition is disjoint and covers every kernel exactly once.
+    """``(rank, nranks)`` from the launcher env, defaulting to ``(0, 1)`` for a single process.
 
-    Fails loud on an asymmetric environment -- a launcher that sets a rank variable but no recognized
-    size variable -- because silently defaulting the size to 1 would make EVERY rank process the whole
-    list (N-fold duplicated work + concurrent writes to the same per-kernel result file)."""
+    Fails loud on an asymmetric environment (rank var set, no size var) -- silently defaulting size to 1
+    would make every rank process the whole list, N-fold duplicated work with concurrent result writes."""
     rank_var = next((v for v in RANK_VARS if os.environ.get(v)), None)
     size_var = next((v for v in SIZE_VARS if os.environ.get(v)), None)
     if rank_var is not None and size_var is None:
@@ -68,10 +57,8 @@ def rank_and_size() -> Tuple[int, int]:
                            f"({list(SIZE_VARS)}); cannot partition safely -- every rank would run the whole list. Set "
                            "the matching size env var, or run without a launcher for a single process.")
     if size_var is not None and rank_var is None:
-        # The mirror asymmetry, and the quieter one: defaulting the rank to 0 keeps a size of N, so this
-        # single process takes only slice 0 -- 1/N of the corpus -- and the run publishes a geomean over a
-        # fraction of the kernels with nothing to notice. `sbatch --ntasks=4` running the module directly
-        # (no srun) sets SLURM_NTASKS without SLURM_PROCID and lands exactly here.
+        # the quieter mirror asymmetry: defaulting rank to 0 with size N silently processes only 1/N of
+        # the corpus. `sbatch --ntasks=4` without srun sets SLURM_NTASKS without SLURM_PROCID here.
         raise RuntimeError(f"launcher set a size ({size_var}={os.environ[size_var]}) but no recognized rank variable "
                            f"({list(RANK_VARS)}); cannot partition safely -- this process would measure only "
                            f"1/{os.environ[size_var]} of the list and report it as the whole. Set the matching rank "
@@ -98,14 +85,12 @@ def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
 def signature_order(text: str, symbol: str, lang: str = "c") -> List[str]:
     """Parameter names of the kernel entry, in declaration order, for the language's syntax.
 
-    numpyto orders the C parameters canonically (sorted arrays, then symbols), which is NOT the manifest
-    ``input_args`` order -- so args must be bound to the *actual* signature, or a size lands in a pointer
-    slot (garbage index -> a runaway loop). An empty / ``void`` parameter list yields ``[]`` (a zero-arg
-    kernel), never an IndexError.
+    numpyto's C parameter order (sorted arrays, then symbols) is NOT the manifest ``input_args`` order,
+    so args must bind to the actual signature or a size lands in a pointer slot. An empty/``void`` list
+    yields ``[]``, never an IndexError.
 
-    A long Fortran argument list wraps across lines with ``&`` free-form continuations
-    (``arg1, &\\n  & arg2``); those markers are stripped before splitting, or an arg name would carry a
-    stray ``&``/newline (``&\\n&aa_slice`` -> a bogus name -> KeyError at the call)."""
+    Fortran's ``&`` line-continuation markers are stripped before splitting, or an arg name would carry
+    a stray ``&``/newline."""
     if lang == "fortran":
         m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
         if not m:
@@ -118,9 +103,8 @@ def signature_order(text: str, symbol: str, lang: str = "c") -> List[str]:
 
 
 def c_argtypes(order: List[str], boundary) -> list:
-    """ctypes type per C parameter: an array name -> pointer-to-its-dtype, a size / index symbol -> int64,
-    a value scalar (a staged ``a_index = a[i]`` read) -> its SDFG dtype (``c_double``), matching the
-    translator's ``double`` signature so the value is neither truncated nor mis-passed."""
+    """ctypes type per C parameter: array name -> pointer-to-dtype, size/index symbol -> int64, value
+    scalar -> its SDFG dtype, matching the translator's signature."""
     sdfg = boundary.standalone_sdfg
     return [
         ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
@@ -138,14 +122,11 @@ def call_c(so: Path,
            reps: int,
            copy_outputs: bool = True):
     """Bind by the C signature order, run once for correctness (snapshotting outputs), then time ``reps``
-    bare-ctypes calls on the same buffers. Runs the kernel IN PLACE on ``inputs``; every caller invokes it
-    inside a forked child, so the COW-inherited buffers are mutated without touching the parent -- this
-    avoids a full per-cell copy of the (time-size) input set. The one correctness run precedes any mutation
-    from timing, so validation still sees fresh inputs.
+    bare-ctypes calls on the same buffers, mutating ``inputs`` in place. Callers run this in a forked
+    child, so the COW-inherited buffers mutate without touching the parent.
 
-    ``copy_outputs=False`` returns ``None`` instead of the snapshot: a pure-timing caller never reads the
-    outputs, and at the profiling size one output is GBs -- snapshotting it would double the child's peak
-    RSS (an OOM kill recorded as a spurious cell error) to build a dict that is discarded."""
+    ``copy_outputs=False`` skips the snapshot for a pure-timing caller -- at the profiling size an output
+    can be GBs, and snapshotting it would double the child's peak RSS."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
 
@@ -177,9 +158,9 @@ def native_symbol(text: str, expected: str) -> str:
 
 
 def native_setup(so: Path, symbol: str, sig, kernel, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
-    """Bind ``_original.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``. The native bounds are
-    independent of the nest buffers, so an OOB here is real -- run through
-    :func:`nestforge.isolation.run_isolated`. Raises on an unresolved arg."""
+    """Bind ``_original.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``. Native bounds are
+    independent of nest buffers, so an OOB here is real -- run via :func:`nestforge.isolation.run_isolated`.
+    Raises on an unresolved arg."""
     pool = {"iterations": 1, "vlen": 8}
     pool.update({s.lower(): int(v) for s, v in sizes.items()})
     pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
@@ -206,14 +187,12 @@ def native_setup(so: Path, symbol: str, sig, kernel, buffers: Dict[str, np.ndarr
 
 # --- numbers + result IO ----------------------------------------------------------------------------
 def finite(x) -> bool:
-    """True only for a real, usable numeric time: a finite int/float. Rejects ``None`` (a non-finite value
-    mapped away by :func:`jsonable` on write) as well as ``inf`` / ``nan``."""
+    """True only for a real, usable numeric time: a finite int/float. Rejects ``None``, ``inf``, ``nan``."""
     return isinstance(x, (int, float)) and math.isfinite(x)
 
 
 def median(xs: List[float]) -> float:
-    """Median of a non-empty sample (``statistics.median``, so it interpolates the two central values on
-    an even-length list)."""
+    """Median of a non-empty sample (interpolates the two central values on an even-length list)."""
     return float(statistics.median(xs))
 
 
@@ -231,8 +210,8 @@ def fmt_us(x) -> str:
 
 
 def jsonable(obj):
-    """Recursively map non-finite floats (``inf``/``nan``) to ``None`` so ``json.dumps`` emits standard JSON
-    (which has no ``Infinity``/``NaN`` literals). Dict/list structure is otherwise preserved."""
+    """Recursively map non-finite floats to ``None`` so ``json.dumps`` emits standard JSON. Dict/list
+    structure otherwise preserved."""
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
     if isinstance(obj, dict):

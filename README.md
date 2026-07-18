@@ -1,9 +1,9 @@
 # nest-forge
 
 Extract loop-/map-nests from a DaCe SDFG, re-emit each as a standalone numpy reference + YAML config,
-farm them out to OptArena's translator to produce C / C++ / Fortran variants, compile each across a
-compiler × flag × FP-mode matrix, benchmark against generated data, pick the best per nest, link winners
-into the full program, and compare against baselines. A DaCe backend competes in the same arena.
+farm them out to OptArena's translator for C/C++/Fortran variants, compile across a compiler × flag ×
+FP-mode matrix, benchmark, pick the best per nest, link winners into the full program, and compare
+against baselines. A DaCe backend competes in the same arena.
 
 Everything lives here and plugs into DaCe through its external-transformation registry; DaCe itself
 stays unmodified.

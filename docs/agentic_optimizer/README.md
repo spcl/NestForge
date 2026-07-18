@@ -18,15 +18,15 @@ P1 is fixed. P2–P4 are the agent. The comparison baseline is P1 + heuristic of
 
 ### Phase 1 — normalize + fuse (deterministic, no agent)
 
-**What.** DaCe normalizes the loops and fuses as much as it can with its default heuristics. Loop normalization + `LoopToMap` + `LoopFusion` / `MapFusion` (fuse everything legal). No agent.
+**What.** Loop normalization + `LoopToMap` + `LoopFusion` / `MapFusion` — fuse everything legal, via DaCe's default heuristics. No agent.
 
-**Out.** A maximally-fused baseline SDFG. This is the starting granularity the agent adjusts from.
+**Out.** A maximally-fused baseline SDFG — the starting granularity the agent adjusts from.
 
 **Barriers.** An unsupported libnode (MPI/pblas, sparse, no emitter) is a hard fusion barrier — `nestforge.split_unsupported` isolates it into its own state; fusion never crosses it.
 
 ### Phase 2 — agent adjusts granularity (dace transformations)
 
-**What.** The agent runs DaCe transformations to change the granularity: **fuse** (`FuseLoops`, `MapFusionVertical`, `MapFusionHorizontal`), **fission** (`LoopFission`, `MapExpansion`), or directly manipulate the SDFG. Starting from the P1 max-fused baseline, it can split coarse nests apart or re-fuse differently.
+**What.** The agent runs DaCe transformations to change granularity: **fuse** (`FuseLoops`, `MapFusionVertical`, `MapFusionHorizontal`), **fission** (`LoopFission`, `MapExpansion`), or direct SDFG edits — splitting coarse nests apart or re-fusing differently from the P1 max-fused baseline.
 
 **Why fission matters here.** P1 already fused maximally, so the agent's main lever is fission — carve the coarse program into the kernel granularity that actually optimizes best. Fuse is for cases the heuristics missed.
 
@@ -59,7 +59,7 @@ P1 is fixed. P2–P4 are the agent. The comparison baseline is P1 + heuristic of
 
 **What.** Given the P3 kernel results, the agent requests a *different* fuse/fission (Phase-2 transforms on the post-optimization SDFG), then re-runs **Phase 3 for the changed loopnests only** — incremental, not a full redo.
 
-**Agent integration.** Same surface as Phase 2, but the state now carries real P3 measured per-kernel times, so the fuse/fission decision is driven by measurement, not estimate. Only the nests touched by the new fuse/fission are re-optimized in P3. Bounded rounds; stop when a round yields no improvement. This is why the arms are single-pair transformations *with inverses*.
+**Agent integration.** Same surface as Phase 2, but the state now carries real P3 measured per-kernel times, so the fuse/fission decision is driven by measurement, not estimate — only nests touched by the new fuse/fission are re-optimized in P3. Bounded rounds; stop when a round yields no improvement. This is why the arms are single-pair transformations *with inverses*.
 
 ## The agent contract (P2–P4)
 

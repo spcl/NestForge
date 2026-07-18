@@ -3,15 +3,14 @@
 nest-forge's **predictive-compiling** mode (see `PREDICTIVE.md` §2A) ranks compiler×flag combinations
 *without running the binary*: compile-only, parse each compiler's optimization report, score each loop
 by whether it vectorized, at what width, with what interleave/unroll, and why it was refused, then only
-*profile* the top-k. nest-forge's edge over a generic model is that it **extracted the nest**, so it
-knows the iteration space (trip counts from the size symbols) — a cheap explainable score
-`Σ_loops (vector_width · trip_count / latency)`, penalized by missed-vec / spills / remainder loops,
-ranks compilers before any run.
+*profile* the top-k. Edge over a generic model: nest-forge **extracted the nest**, so it knows the
+iteration space (trip counts from the size symbols) — a cheap explainable score
+`Σ_loops (vector_width · trip_count / latency)`, penalized by missed-vec / spills / remainder loops.
 
-This document is the implementation reference for emitting and machine-parsing those reports across the
-four toolchains. LLVM/Clang and Intel icx/ifx offer the richest **structured** record (YAML /
-bitstream); GCC has a structured record too (gzip-JSON, GCC 9+, experimental) but its stable contract is
-the **text** `-fopt-info` lines; NVIDIA and classic Intel are text only and need line regexes.
+Implementation reference for emitting and machine-parsing those reports across the four toolchains.
+LLVM/Clang and Intel icx/ifx offer the richest **structured** record (YAML / bitstream); GCC has a
+structured record too (gzip-JSON, GCC 9+, experimental) but its stable contract is the **text**
+`-fopt-info` lines; NVIDIA and classic Intel are text-only, need line regexes.
 
 ## Normalized schema
 
@@ -31,7 +30,7 @@ only).
 
 ## GCC (gcc / g++ / gfortran) — text (stable) + gzip-JSON (GCC 9+)
 
-Two interfaces: the stable **text** `-fopt-info` lines, and a structured **gzip-JSON** record
+Two interfaces: stable **text** `-fopt-info` lines, and structured **gzip-JSON**
 (`-fsave-optimization-record`, GCC 9+, self-described as experimental).
 
 **Text.** `-fopt-info[-<type>][-<group>][=<file>]` — order-free, so `-fopt-info-vec-missed` ==
@@ -70,8 +69,8 @@ Facts for the parser:
 - Nothing is reported without the pass running: the vectorizer needs `-ftree-vectorize` (on at `-O3`
   always, and at `-O2` since **GCC 12** with the very-cheap cost model; before GCC 12, `-O2` did not
   auto-vectorize). The unroller needs `-funroll-loops` (off by default even at `-O3`).
-- **GCC text lines do not name the pass** — recover it from the requested `-fopt-info-<group>`, from
-  keyword-matching the message, or from the JSON record. LLVM always names the pass; GCC text never does.
+- **GCC text lines do not name the pass** (LLVM always does) — recover it from the requested
+  `-fopt-info-<group>`, keyword-matching the message, or the JSON record.
 - `-march=native` changes which loops vectorize and the reported width (`16`/`32`/`64` byte vectors ↔
   SSE/AVX/AVX-512). Text source locations do **not** require `-g` (unlike LLVM).
 - GCC reports **byte** width ("32 byte vectors"); LLVM reports element **lanes** (`VectorizationFactor:
@@ -123,7 +122,7 @@ Args:
 ```
 
 - **Document tags (remark type):** `!Passed`, `!Missed`, `!Analysis`, `!AnalysisFPCommute`,
-  `!AnalysisAliasing`, `!Failure`. (`!AnalysisFPCommute` is precisely the FP-reassociation-legality
+  `!AnalysisAliasing`, `!Failure`. (`!AnalysisFPCommute` is the FP-reassociation-legality
   analysis — relevant to `fp_risk`.) `!Failure` is emitted by pass **`transform-warning`** (not
   `loop-vectorize`) when an explicit `#pragma` couldn't be honored — filtering on `Pass:
   loop-vectorize` alone misses it.
@@ -144,7 +143,7 @@ Parsing tooling (reuse, don't reinvent):
   nest-forge's parser on it; the hardened fork **OfekShilon/optview2** filters to actionable misses.
 - **`llvm-opt-report file.opt.yaml`** reduces the YAML to source-annotated `I`/`U`/`V` markers
   (`V4,1` = vectorized width 4 interleave 1; `U16` = unrolled ×16; `I` = inlined) — a ready-made
-  oracle for exactly the facts the ranker wants.
+  oracle for the facts the ranker wants.
 - **`llvm-remarkutil bitstream2yaml`** converts the compact bitstream form; `libRemarks` C API
   (`LLVMRemarkParserGetNext`) reads either format without PyYAML.
 
@@ -194,11 +193,11 @@ Parse regex:
 `LOOP BEGIN/END` stack for nest depth. Numbers are stable across versions; the trailing text carries the
 operands.
 
-**icx/ifx caveat:** LLVM-based, so `-qopt-report` also (historically) emitted an **LLVM `.opt.yaml`**
-(the same schema as the LLVM section) — but **since oneAPI 2025.0 the YAML is no longer auto-emitted**;
+**icx/ifx caveat:** LLVM-based, so `-qopt-report` historically also emitted an **LLVM `.opt.yaml`**
+(same schema as the LLVM section) — but **since oneAPI 2025.0 the YAML is no longer auto-emitted**;
 request it with `-fsave-optimization-record`. The icx **text** `.optrpt` uses the same `remark #NNNNN`
-taxonomy but a **sparser subset** (fewer `#15475–#15488` cost lines). So for icx, prefer the LLVM YAML
-path (`-fsave-optimization-record`, parsed as in the LLVM section) and treat "cost block absent" as a
+taxonomy but a **sparser subset** (fewer `#15475–#15488` cost lines). For icx, prefer the LLVM YAML path
+(`-fsave-optimization-record`, parsed as in the LLVM section) and treat "cost block absent" as a
 distinct feature rather than zero.
 
 ## NVIDIA HPC SDK (nvc / nvc++ / nvfortran, formerly PGI)
@@ -230,7 +229,7 @@ matchers: `Generated vector simd code`, `Generated vector sse code` (older), `Lo
 only `-Mneginfo`): any `not vectorized|not parallelized|not fused|prevents|dependence` substring, e.g.
 `Loop not vectorized/parallelized: contains call`, `Loop not vectorized: mixed data types`,
 `Complex loop carried dependence of <var> prevents parallelization`. Always compile with
-`-Minfo=all -Mneginfo=all`. No `estimated speedup` and no `col` — line only.
+`-Minfo=all -Mneginfo=all`. No estimated-speedup field; no `col` — line only.
 
 ## Synthesis
 
@@ -245,13 +244,13 @@ only `-Mneginfo`): any `not vectorized|not parallelized|not fused|prevents|depen
 | parse strategy | line regex | YAML load, key `(Pass,Name)` | remark# regex + LOOP stack | remark# regex + LOOP stack | 3-line state machine |
 
 Two parse strategies cover all four: **YAML load** for the structured emitters (LLVM, icx via
-`-fsave-optimization-record`) — robust, version-stable, use the structured `Args`; and **line regex**
+`-fsave-optimization-record`) — robust, version-stable, uses the structured `Args`; and **line regex**
 for the text emitters (GCC `file:line:col: kind:`, Intel classic `remark #NNNNN` + LOOP-stack, NVIDIA
-`function:`/`line,` indent). Prefer structured keys over prose everywhere (LLVM prose and Intel's `#15301`
-string both drift between versions).
+`function:`/`line,` indent). Prefer structured keys over prose everywhere — LLVM prose and Intel's
+`#15301` string both drift between versions.
 
 Cross-compiler feature set for the ranker (reliably present everywhere): **vectorized yes/no** and
-**source location**. Where available, add: vector **width** (GCC bytes→elements, LLVM
+**source location**. Where available: vector **width** (GCC bytes→elements, LLVM
 `VectorizationFactor`, Intel `vector length`), **interleave/unroll** (LLVM `InterleaveCount`/`UnrollCount`,
 Intel `#15399`/`#25438`, NVIDIA `unrolled N times`), **missed-reason class** (dependence / cost-model /
 call / unsupported), and Intel's **`estimated potential speedup`** as a direct label. Combine with

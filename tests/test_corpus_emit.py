@@ -45,7 +45,9 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
         desc = sized.arrays[name]
         shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
         dt = np.dtype(desc.dtype.type)
-        call[name] = inputs[name].astype(dt) if name in inputs else np.zeros(shape, dt)
+        # reshape inputs to the descriptor shape: a kernel may declare a param 2-D (nbody's mass is
+        # [N,1]) while the caller supplies the flat (N,) array; sizes match, so reshape aligns them.
+        call[name] = inputs[name].astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
     ns[fn_name](**call)
     return call, src
 
@@ -277,9 +279,11 @@ def test_nbody_nested_where_emits_and_computes():
         acc = getAcc(pos, mass, G, soft)
         vel += acc * dt / 2.0
         KE[i + 1], PE[i + 1] = getEnergy(pos, vel, mass, G)
-    got = [call[k] for k in sorted(k for k in call if k.startswith("__return"))]
-    for ref in (KE, PE):  # KE and PE are the two returns (order-independent match)
-        assert any(np.allclose(g, ref) for g in got), f"no return matches ref {ref}"
+    # functional->in-place: nbody's ``return KE, PE`` lowers to the named ``KE``/``PE`` output buffers
+    # (like atax's ``out``), not a DaCe ``__return`` -- validate those. Scalar reduction loops reassociate
+    # vs numpy's pairwise ``np.sum``/``@``, so allow the default allclose tolerance.
+    np.testing.assert_allclose(call["KE"], KE, rtol=1e-5, atol=1e-8)
+    np.testing.assert_allclose(call["PE"], PE, rtol=1e-5, atol=1e-8)
 
 
 def test_nbody_xfail_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):

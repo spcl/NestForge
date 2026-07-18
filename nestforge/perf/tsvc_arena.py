@@ -1,18 +1,12 @@
-"""TSVC compiler-arena driver: run every TSVC kernel of the selected corpora (``tsvc2`` + ``tsvc2_5``)
-through the ``skip-taskloops`` strategy and, for each kernel x each discovered compiler, report three
-runtime columns:
+"""TSVC compiler-arena driver: run every kernel of tsvc2 + tsvc2_5 through the ``skip-taskloops``
+strategy and, for each kernel x compiler, report three runtime columns: 1) native baseline (the
+original ``_original.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,
+same compiler/flags -- isolates translation overhead), 3) flag-matrix winner (swept over FP-mode x
+vectorizer cost-model; fastest cell that still validates against the numpy oracle).
 
-  1. **native baseline** -- the original ``_original.cpp`` loop at default flags (the compiler's own
-     auto-vectorization of the reference),
-  2. **default-flags**   -- the extracted nest translated to C, same compiler/flags (isolates translation
-     overhead vs the baseline),
-  3. **flag-matrix winner** -- the same nest swept over the flag matrix (FP-mode x vectorizer cost-model);
-     the fastest cell that still validates against the numpy oracle.
-
-Sizes are sampled with a fixed seed so every compiler sees identical data. Ranks self-partition the
-kernel list via ``SLURM_PROCID`` / ``SLURM_NTASKS``; results land per kernel as JSON. ``--tables-only``
-merges them into markdown; ``--link`` archives each winning cell and links them into one whole-TSVC
-library for the aggregate whole-program comparison.
+Sizes sampled with a fixed seed so every compiler sees identical data. Ranks self-partition via
+``SLURM_PROCID``/``SLURM_NTASKS``; results land per kernel as JSON. ``--tables-only`` merges them into
+markdown; ``--link`` archives each winning cell into one whole-TSVC library for the aggregate compare.
 
 Usage::
 
@@ -72,9 +66,8 @@ class Toolchain:
 
     @property
     def fp_family(self) -> str:
-        """The flag-matrix FP family. Intel (icx/icpx) is its own FP family even though it is clang-based
-        (``compiler_family`` calls it ``llvm``), because it defaults to ``-fp-model=fast`` and needs
-        explicit ``-fp-model`` flags; gcc/clang/nvhpc coincide with :attr:`family`."""
+        """Flag-matrix FP family. Intel (icx/icpx) is its own family despite being clang-based -- it
+        defaults to ``-fp-model=fast`` and needs explicit flags; gcc/clang/nvhpc coincide with :attr:`family`."""
         return "intel" if self.name == "intel" else self.family
 
 
@@ -116,11 +109,9 @@ def spack_bin_dirs() -> List[Path]:
 
 
 def spack_compiler_bin_dirs() -> List[Path]:
-    """``bin`` dirs of every compiler spack has REGISTERED (``spack compiler list`` + ``spack compiler
-    info``) -- distinct from :func:`spack_bin_dirs`, which enumerates spack-INSTALLED packages. On a
-    spack-default host (e.g. daint) a usable compiler is often registered but not ``spack load``ed onto
-    PATH; its ``cc``/``cxx`` path from ``spack compiler info`` recovers its bin dir. Best-effort, never
-    fatal, bounded (spack start-up is slow): capped specs + short per-call timeout."""
+    """``bin`` dirs of every compiler spack has REGISTERED -- distinct from :func:`spack_bin_dirs`, which
+    enumerates spack-INSTALLED packages. On a spack-default host a usable compiler is often registered
+    but not ``spack load``ed onto PATH. Best-effort, bounded: capped specs + short per-call timeout."""
     if not shutil.which("spack"):
         return []
     try:
@@ -152,30 +143,24 @@ def spack_compiler_bin_dirs() -> List[Path]:
 
 
 #: Default install roots of the two vendor toolchains that ship OFF PATH, newest-version-first globs.
-#: Intel oneAPI and NVIDIA HPC put their compilers under a versioned tree and expect a ``setvars.sh`` /
-#: module to add them to PATH -- which a plain CI job or a fresh shell has not sourced. NF_EXTRA_COMPILER_DIRS
-#: (colon-separated) is prepended so a site can point at a non-default prefix without code change.
+#: Intel oneAPI / NVIDIA HPC install off PATH under a versioned tree, expecting a setvars.sh/module a
+#: fresh shell hasn't sourced. NF_EXTRA_COMPILER_DIRS (colon-separated) prepends a site's own prefix.
 _VENDOR_COMPILER_GLOBS = (
-    "/opt/intel/oneapi/compiler/*/bin",  # icx / icpx / ifx (NOT the 'latest' symlink -- it can point at an
-    # older version that ships only ifx; the glob + version sort finds icx)
+    "/opt/intel/oneapi/compiler/*/bin",  # icx/icpx/ifx; NOT 'latest' -- can point at an ifx-only version
     "/opt/nvidia/hpc_sdk/Linux_x86_64/*/compilers/bin",  # nvc / nvc++ / nvfortran
 )
 
 
 def vendor_compiler_bin_dirs() -> List[Path]:
-    """``bin`` dirs of vendor toolchains installed at their DEFAULT location but not on PATH -- Intel
-    oneAPI (icx/icpx/ifx) and NVIDIA HPC (nvc/nvc++/nvfortran). Both expect a ``setvars.sh`` / module to
-    put them on PATH, which a fresh shell or CI job has not sourced.
+    """``bin`` dirs of vendor toolchains at their default location but not on PATH (Intel oneAPI, NVIDIA
+    HPC) -- both expect a setvars.sh/module a fresh shell hasn't sourced.
 
-    Sourcing setvars is deliberately NOT done: it mutates the environment of a shell, whereas the arena
-    dlopens node libraries IN-PROCESS, so an LD_LIBRARY_PATH set at shell start does not help the loader
-    here (:func:`nestforge.perf.flags.support_rpath_flags` bakes the rpath instead). All this needs is the
-    directory holding the exe; the driver itself then answers for its own runtime libs.
+    setvars is deliberately not sourced: it mutates a shell's env, but the arena dlopens libraries
+    in-process, so LD_LIBRARY_PATH at shell start wouldn't help the loader anyway (rpath is baked
+    instead, see :func:`nestforge.perf.flags.support_rpath_flags`).
 
-    Newest version first (reverse-sorted): when several oneAPI versions coexist, the latest is the intended
-    one, and -- critically -- an older dir may ship only ``ifx`` with no ``icx`` (measured on this box), so
-    an unsorted first-match could hide a compiler that exists one directory over. ``NF_EXTRA_COMPILER_DIRS``
-    (colon-separated absolute dirs) is honoured first, for a site whose install is not at the default root.
+    Newest version first: an older oneAPI dir may ship only ``ifx`` with no ``icx`` (measured on this
+    box), so an unsorted first-match could hide the real compiler. ``NF_EXTRA_COMPILER_DIRS`` honoured first.
     """
     dirs: List[Path] = []
     for d in os.environ.get("NF_EXTRA_COMPILER_DIRS", "").split(os.pathsep):
@@ -214,8 +199,8 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
             warnings.warn(f"unknown compiler token {t!r}; known: {sorted(_ALIASES)}")
         elif fam not in families:
             families.append(fam)
-    # PATH first (via which_on_path), then spack: installed packages AND registered compilers. On a
-    # spack-default host the compiler may be in neither PATH nor a `spack find` prefix, only registered.
+    # PATH first, then spack (installed + registered): a spack-default host may have the compiler
+    # registered but not in a `spack find` prefix.
     extra_dirs = spack_bin_dirs()
     for d in spack_compiler_bin_dirs() + vendor_compiler_bin_dirs():
         if d not in extra_dirs:
@@ -259,9 +244,8 @@ class Cell:
 class NestUnit:
     """One extracted nest of a kernel, with everything a cell needs to compile + validate + time it.
 
-    A single-nest kernel has one :class:`NestUnit` whose ``name``/``symbol`` are the plain ``<key>`` /
-    ``<key>_fp64`` (unchanged from the old path); a multi-nest kernel has one per nest with distinct
-    ``<key>_n<idx>`` names, so each binds its own entry point."""
+    A single-nest kernel has one :class:`NestUnit` named ``<key>``/``<key>_fp64``; a multi-nest kernel
+    has one per nest named ``<key>_n<idx>``, each binding its own entry point."""
     idx: int
     name: str
     symbol: str
@@ -296,11 +280,9 @@ def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List
 
 def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: int, atol: float, family: str,
                        label: str, workdir: Path) -> Cell:
-    """One (compiler, flags) cell SUMMED over every nest of the kernel: compile + time each nest's own
-    source at ``cflags`` (each nest a distinct symbol), then aggregate into a single :class:`Cell` whose
-    ``time_us`` / ``compile_us`` are the sums, ``ok`` iff every nest validated, and ``maxdiff`` the max
-    over nests. A single-nest kernel returns exactly the old single measurement (a sum of one), so the
-    148 single-nest kernels' cells are byte-identical to before."""
+    """One (compiler, flags) cell summed over every nest: compile + time each nest's own source, then
+    aggregate into a :class:`Cell` whose ``time_us``/``compile_us`` are sums, ``ok`` iff every nest
+    validated, ``maxdiff`` the max over nests. A single-nest kernel is a sum of one (unchanged)."""
     per = [
         measure_nest(cc, u.csrc, cflags, u.symbol, u.order, u.argtypes, u.boundary, u.inputs, u.sizes, u.oracle, reps,
                      atol, family, label, workdir) for u in units
@@ -317,9 +299,9 @@ def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: 
 
 # --- native baseline (item e) -----------------------------------------------------------------------
 def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, oracle, reps: int) -> Dict:
-    """Bind + validate + time the native baseline; runs inside the forked child
-    (:func:`nestforge.isolation.run_isolated`), so an out-of-bounds access in the original C (its bounds
-    are independent of the nest-sized buffers) segfaults only the child. Raises on an unresolved arg."""
+    """Bind + validate + time the native baseline in the forked child, so an OOB access in the original C
+    (its bounds are independent of the nest-sized buffers) segfaults only the child. Raises on an
+    unresolved arg."""
     pool = {"iterations": 1, "vlen": 8}
     pool.update({s.lower(): int(v) for s, v in sizes.items()})
     pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
@@ -383,8 +365,8 @@ def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes,
     res = run_isolated(lambda: native_work(so, symbol, sig, kernel, boundary, inputs, sizes, oracle, reps))
     if "error" in res:
         return Cell(family, "native", nat, False, float("inf"), float("inf"), compile_us, error=res["error"])
-    # An unvalidatable native lane carries its reason: this cell is the speedup DENOMINATOR, so publishing
-    # it as a pass would fabricate a bit-exact baseline nothing was ever compared against.
+    # Unvalidatable native lane carries its reason: it's the speedup denominator, so a silent pass would
+    # fabricate a baseline nothing was compared against.
     unchecked = "native outputs resolve to no pointer arg; nothing validated" if res.get("unchecked") else None
     return Cell(family, "native", nat, res["ok"], res["maxdiff"], res["time_us"], compile_us, error=unchecked)
 
@@ -398,11 +380,9 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
                reps: int, random_sizes: bool, workdir: Path) -> Dict:
     """Run one kernel through all three columns for every toolchain; return the JSON-able result dict.
 
-    A kernel may split into several compute nests (its work is the SUM of its nests): every ``default`` /
-    flag-matrix cell compiles + times its (source, flags) for EACH nest and sums the per-nest times, so a
-    cell just aggregates its nests and the result/row schema is unchanged. The whole-kernel native
-    ``.cpp`` baseline stays a single measurement (it already covers all the kernel's work); it borrows the
-    first nest's buffers for sizing, mirroring ``tsvc_full.build_opt_context``."""
+    A kernel may split into several compute nests (its work is the SUM of its nests): every cell compiles
+    + times each nest and sums the per-nest times (schema unchanged). The whole-kernel native ``.cpp``
+    baseline stays a single measurement, borrowing the first nest's buffers for sizing."""
     result: Dict = {
         "key": kernel.key,
         "corpus": kernel.corpus,  # the --link read-back must re-resolve the key from ITS OWN corpus
@@ -419,8 +399,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
             sizes = tsvc.sample_sizes(kernel, boundary, seed=seed, random_sizes=random_sizes)
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=sizes)
-            # SEEDED fills for the manifest's index arrays: the oracle and every cell must see the same
-            # subscripts, and without them a gather/scatter kernel is measured degenerate (all-zero ip).
+            # seeded index-array fills: without them a gather/scatter kernel measures degenerate (all-zero ip).
             inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))
             oracle = run_oracle(prep, boundary, inputs, sizes)
             csrc = select_c_source(emit_sources(prep, nest_dir))
@@ -430,8 +409,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
     except Exception as e:
         return {**result, "skipped": f"{type(e).__name__}: {str(e)[:160]}"}
 
-    # union of per-nest sizes (a shared shape symbol resolves to the same value in every nest; leaked
-    # indices are 0). For a single-nest kernel this is exactly that nest's sizes (schema unchanged).
+    # union of per-nest sizes; a single-nest kernel gets exactly that nest's sizes (schema unchanged).
     merged: Dict[str, int] = {}
     for u in units:
         merged.update(u.sizes)
@@ -495,8 +473,7 @@ def render_tables(out: Path, seed: int) -> str:
             best_us = win["time_us"] if win else None
             best_lbl = win["label"] if win else "—"
             md = f"{win['maxdiff']:g}" if win else "—"
-            # `nat_us is not None` (not truthiness) so a legitimately-measured 0.00us is not dropped;
-            # `best_us` stays a truthiness guard to avoid a divide-by-zero.
+            # `is not None`, not truthiness, so a legitimate 0.00us isn't dropped; best_us stays a divide-by-zero guard.
             sp = (nat_us / best_us) if (nat_us is not None and best_us) else None
             if sp is not None and math.isfinite(sp):
                 speedups.append(sp)
@@ -552,9 +529,8 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
             notes.append(f"`{k['key']}` — no correct winner cell; excluded from the linked program")
             continue
         tc = by_name.get(win["compiler"]) or next(iter(toolchains), None)
-        # A kernel may split into several nests; the winning flags apply to all of them (the winner cell
-        # is one flag set summed over nests). Compile EACH nest's winning-flags object and archive them all
-        # into one lib<key>.a; the whole-program verify then checks every nest symbol.
+        # Winning flags apply to every nest of the kernel; compile each nest's object and archive them
+        # all into one lib<key>.a so the whole-program verify checks every nest symbol.
         try:
             kernel = tsvc.iter_tsvc_kernels(only=[k["key"]], corpus=k.get("corpus", "tsvc2"))[0]
             nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
@@ -685,8 +661,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     for t in toolchains))
 
     procid, ntasks = rank_and_size()
-    # kernels of every selected corpus, then self-partitioned across ranks as ONE combined list (mirrors
-    # crosslang_xl / tsvc_full). The two corpora's keys are disjoint, so per-kernel JSON stays unique.
+    # kernels of every selected corpus, self-partitioned as one combined list; corpora keys are disjoint.
     kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
     mine = my_slice(kernels, procid, ntasks)
     if args.limit:

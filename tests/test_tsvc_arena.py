@@ -40,6 +40,24 @@ def test_normalize_rewrites_qualified_math_to_numpy():
     assert normalize_casts("dace.float64(v)") == "np.float64(v)"
 
 
+def test_normalize_rewrites_bare_dtype_cast_in_subscript():
+    # symbolic.symstr renders a DaCe typecast inside an array subscript as a BARE call (no dace./np.
+    # prefix), so the emitted index would raise ``NameError: name 'int64' is not defined`` (xsbench).
+    assert normalize_casts("g[(int64(mats_index)), k]") == "g[(np.int64(mats_index)), k]"
+    assert normalize_casts("uint32(i) + int64(j)") == "np.uint32(i) + np.int64(j)"
+    # every dtype in the map -- not just int64 -- is a bare cast the subscript path can render.
+    assert normalize_casts("bool(m)") == "np.bool_(m)"  # bool -> np.bool_ (np.bool removed in NumPy 2)
+    assert normalize_casts("complex128(z) + complex64(w)") == "np.complex128(z) + np.complex64(w)"
+    assert normalize_casts("uint8(b)") == "np.uint8(b)"
+    # an already-qualified cast is not double-prefixed; the word-boundary lookbehind leaves a dtype
+    # name embedded in a longer identifier or attribute alone (no spurious rewrite of ``uint8`` in
+    # ``__ruint8`` or the ``int8`` inside ``uint8`` / ``point8``).
+    assert normalize_casts("np.int64(x)") == "np.int64(x)"
+    assert normalize_casts("dace.int64(x)") == "np.int64(x)"
+    assert normalize_casts("nuclide_grid_1_0_index") == "nuclide_grid_1_0_index"
+    assert normalize_casts("point8(q)") == "point8(q)"  # 'int8' inside 'point8' must NOT match
+
+
 # --- adapter ------------------------------------------------------------------------------------------
 def test_iter_and_filter_kernels():
     only = tsvc.iter_tsvc_kernels(only=["s000", "s112"])
@@ -47,6 +65,18 @@ def test_iter_and_filter_kernels():
     s000 = only[0] if only[0].key == "s000" else only[1]
     assert s000.native_cpp is not None and s000.native_cpp.exists()  # foundation ships the native baseline
     assert s000.native_symbol == "s000_d"
+
+
+def test_manifest_resolves_from_per_kernel_subfolder():
+    # OptArena keeps each foundation kernel in its own ``foundation/<stem>/`` subfolder, so a flat
+    # directory lookup silently returns None for every kernel but the first -- the manifest fill then
+    # degenerates to all-zeros (see tests/test_index_fills.py). Resolve via the KERNELS registry instead.
+    vag = tsvc.iter_tsvc_kernels(only=["vag"], corpus="tsvc2")[0]  # tsvc2: tsvc_2_<key> stem
+    assert vag.yaml_path is not None and vag.yaml_path.exists()
+    assert vag.optarena_name == "tsvc_2_vag"
+    assert vag.native_cpp is not None and vag.native_cpp.name == "tsvc_2_vag_original.cpp"
+    reroll = tsvc.iter_tsvc_kernels(only=["reroll_gather"], corpus="tsvc2_5")[0]  # tsvc2_5: bare <key> stem
+    assert reroll.yaml_path is not None and reroll.optarena_name == "reroll_gather"
 
 
 def test_sample_sizes_indices_zero_shapes_sized():

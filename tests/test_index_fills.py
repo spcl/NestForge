@@ -75,13 +75,17 @@ def test_index_fills_are_seeded_so_oracle_and_candidate_agree(corpus, key, index
     assert np.array_equal(a[index_array], b[index_array])
 
 
-def test_index_fills_only_covers_manifest_declared_integer_arrays():
+@pytest.mark.parametrize("corpus,key,index_array", GATHER_KERNELS)
+def test_index_fills_only_covers_manifest_declared_integer_arrays(corpus, key, index_array):
     # an integer array is not automatically a subscript; only what the manifest declares gets a fill.
-    kernel = load("tsvc2", "vag")
+    # Parametrized over BOTH corpora: the tsvc2_5 bare-stem path (foundation/<key>/<key>) resolves
+    # through a different registry key than tsvc2's tsvc_2_<key>, so a per-corpus resolution regression
+    # (the subfolder-restructure bug) is caught here, not only on the first tsvc2 kernel.
+    kernel = load(corpus, key)
     boundary = first_nest(kernel)
     sizes = sample_sizes(kernel, boundary, seed=0, preset="S")
     fills = index_fills(kernel, boundary, sizes)
-    assert set(fills) == {"ip"}  # not the float a/b, and not the __sym_out_* output scalars
+    assert set(fills) == {index_array}  # not the float data arrays, and not the __sym_out_* output scalars
 
 
 def test_index_fills_empty_for_a_kernel_without_a_manifest():

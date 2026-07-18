@@ -1,7 +1,7 @@
-"""Shared compile-flag matrix for the arena: an **FP-precision level** axis crossed with a
-**vectorizer cost-model** axis, per compiler family, for both C and Fortran (see
-``docs/FP_PRECISION_LEVELS.md``). ``intel`` is split from ``llvm`` because icx/icpx/ifx default to
-``-fp-model=fast``, so a bare ``-ffp-contract=off`` would leave reassociation/FTZ on.
+"""Shared compile-flag matrix for the arena: **FP-precision level** axis crossed with a **vectorizer
+cost-model** axis, per compiler family, for C and Fortran (see ``docs/FP_PRECISION_LEVELS.md``).
+``intel`` is split from ``llvm`` because icx/icpx/ifx default to ``-fp-model=fast``, so a bare
+``-ffp-contract=off`` would leave reassociation/FTZ on.
 """
 from __future__ import annotations
 
@@ -15,15 +15,15 @@ from typing import Dict, List, Optional, Tuple
 from nestforge.build import LIBOMP, OpenMPRuntime, compiler_family, driver_lib_path, lib_linkable, linkable_lib_dir
 
 #: The ONE OpenMP runtime every lane links unless a cell names another. libomp because both gcc and
-#: clang can link it (LLVM selects it by name; it carries a GOMP_* compat layer for gcc objects), so
-#: gcc- and clang-built node libraries share one runtime/thread pool. Same class as the DaCe lane's
-#: :class:`~nestforge.build.OpenMPRuntime` -- one runtime GLOBALLY, honoured by every lane.
+#: clang can link it (LLVM selects it by name; carries a GOMP_* compat layer for gcc objects), so
+#: gcc- and clang-built node libraries share one runtime/thread pool -- one runtime GLOBALLY, honoured
+#: by every lane (same class as the DaCe lane's :class:`~nestforge.build.OpenMPRuntime`).
 DEFAULT_OPENMP_RUNTIME = LIBOMP
 
 #: FP-precision levels, strictest first; the index is the ladder rung.
 FP_LEVELS: Tuple[str, ...] = ("strict-ieee", "contract-fma", "assume-finite", "fast-math")
 
-#: Validation tolerance vs the numpy fp64 oracle. The oracle itself isn't bit-reproducible (pairwise
+#: Validation tolerance vs the numpy fp64 oracle. The oracle isn't bit-reproducible itself (pairwise
 #: np.sum, BLAS dot, non-correctly-rounded libm), so even ``strict-ieee`` isn't atol 0.
 FP_ATOL: Dict[str, float] = {
     "strict-ieee": 1e-14,
@@ -51,7 +51,7 @@ _FP: Dict[str, Dict[str, List[str]]] = {
         "fast-math": ["-ffast-math", "-mrecip"],
     },
     "nvidia": {
-        # nvc has only whole-model FP knobs: `assume-finite` collapses to `contract-fma` (deduped below)
+        # nvc has only whole-model FP knobs: assume-finite collapses to contract-fma (deduped below)
         "strict-ieee": ["-Kieee", "-Mnofma"],
         "contract-fma": ["-Kieee", "-Mfma"],
         "assume-finite": ["-Kieee", "-Mfma"],
@@ -90,8 +90,8 @@ def base_flags(family: str) -> List[str]:
 
 def fortran_fp_flags(family: str, level: str) -> List[str]:
     """FP-mode flags for a family's **Fortran** frontend. gfortran needs ``-fno-frontend-optimize`` (it
-    reassociates at ``-O`` even under ``-ffp-contract=off``); drops ``-fno-math-errno`` and
-    ``-fexcess-precision=standard``, which gfortran/ifx reject (``f951: sorry, unimplemented``)."""
+    reassociates at ``-O`` even under ``-ffp-contract=off``); drops flags gfortran/ifx reject
+    (``f951: sorry, unimplemented``)."""
     drop = {"-fno-math-errno", "-fexcess-precision=standard"}  # C-family flags the Fortran frontends reject
     flags = [f for f in _FP[family][level] if f not in drop]
     if family == "gnu":
@@ -122,8 +122,8 @@ def cost_flags(family: str, model: str) -> List[str]:
 
 
 def flag_matrix(family: str, lang: str = "c") -> List[Tuple[str, str, List[str]]]:
-    """``[(fp_level, cost_model, full_flags), ...]`` for a family/language, deduped so combinations that
-    collapse to the same flags (nvidia assume-finite==contract-fma) produce one compile, not two."""
+    """``[(fp_level, cost_model, full_flags), ...]`` for a family/language, deduped so a collapse
+    (nvidia assume-finite==contract-fma) produces one compile, not two."""
     matrix: List[Tuple[str, str, List[str]]] = []
     seen = set()
     base = base_flags(family)
@@ -143,10 +143,9 @@ def flag_matrix(family: str, lang: str = "c") -> List[Tuple[str, str, List[str]]
 # ``strict-ieee`` as a bit-exact correctness GATE and the DaCe-cpp speedup baseline.
 
 #: The two REDUCED FP rungs the full-matrix timing sweep uses:
-#:  * ``default-fp``    -- compiler's own default FP at ``-O3`` (no FP flag; vendor-dependent, not a
-#:    fixed numeric guarantee -- e.g. intel defaults to ``-fp-model=fast``).
-#:  * ``no-fast-errno`` -- FMA contraction + ``-fno-math-errno``, no reassociation/fast-math: the
-#:    "fast but still ordered" middle rung.
+#:  * ``default-fp``    -- compiler's own default FP at ``-O3`` (no flag; vendor-dependent, e.g. intel
+#:    defaults to ``-fp-model=fast``).
+#:  * ``no-fast-errno`` -- FMA contraction + ``-fno-math-errno``, no reassociation: "fast but ordered".
 REDUCED_FP_MODES: Tuple[str, ...] = ("default-fp", "no-fast-errno")
 
 #: FP-mode flags per (family, reduced-mode) -- C spellings; Fortran deltas via :func:`reduced_fp_flags`.
@@ -178,8 +177,7 @@ REDUCED_FP_ATOL: Dict[str, float] = {"default-fp": 1e-6, "no-fast-errno": 1e-12}
 #: The parallelization axis of the full-matrix job.
 #:  * ``sequential`` -- the sequential emit, no parallel flags.
 #:  * ``auto-par``   -- compiler's OWN auto-parallelizer, POLYHEDRAL by default (gcc Graphite, clang
-#:    Polly, nvc -Mconcur, icx -parallel). Optional back ends yield a recorded skip if absent (see
-#:    :func:`autopar_flags`).
+#:    Polly, nvc -Mconcur, icx -parallel); an absent back end is a recorded skip (:func:`autopar_flags`).
 #:  * ``omp-emit``   -- OUR ``#pragma omp parallel for`` source + bare ``-fopenmp``. Works for EVERY
 #:    family, only for nests DaCe marks parallel AND numpyto can soundly parallelize.
 PARALLEL_MODES: Tuple[str, ...] = ("sequential", "auto-par", "omp-emit")
@@ -201,8 +199,8 @@ def reduced_fp_flags(family: str, mode: str, lang: str = "c") -> List[str]:
 @functools.lru_cache(maxsize=None)
 def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``compiler`` accepts ``probe_flags`` on a trivial COMPILE-ONLY invocation. NECESSARY but
-    not sufficient -- detects a rejected flag, not a back end that accepts it and does nothing (see
-    :func:`autopar_fires`). ``-c`` keeps a missing OpenMP runtime from confounding the probe."""
+    not sufficient -- a back end can accept a flag and do nothing (see :func:`autopar_fires`). ``-c``
+    keeps a missing OpenMP runtime from confounding the probe."""
     src = "void f(double *a, int n){for (int i = 0; i < n; i++) a[i] *= 2.0;}\n"
     try:
         proc = subprocess.run([compiler, "-x", "c", "-", "-c", "-O3", "-o", os.devnull, *probe_flags],
@@ -223,9 +221,9 @@ _AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
 @functools.lru_cache(maxsize=None)
 def autopar_fires(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``probe_flags`` make ``compiler`` actually EMIT a parallel loop, not merely accept it.
-    Necessary because Ubuntu clang 21 parses ``-mllvm -polly`` cleanly but schedules no Polly passes,
-    silently running sequential; gcc's ``-floop-nest-optimize`` is similarly inert alone. Probes
-    functionally: compiles to an object and greps for the runtime fork call (``nm -u``)."""
+    Necessary because Ubuntu clang 21 parses ``-mllvm -polly`` cleanly but schedules no Polly passes
+    (silently sequential); gcc's ``-floop-nest-optimize`` is similarly inert alone. Probes functionally:
+    compiles to an object and greps for the runtime fork call (``nm -u``)."""
     src = "void f(double *restrict a, const double *restrict b, int n){\n" \
           "  for (int i = 0; i < n; i++) a[i] = b[i] * 2.0 + 1.0;\n}\n"
     with tempfile.TemporaryDirectory() as d:
@@ -249,9 +247,9 @@ def autopar_flags(family: str,
                   compiler: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
     """Compiler AUTO-PARALLELIZER flags for a family, or ``(None, reason)`` when it has none or its
     polyhedral back end is absent. Polyhedral by default: gcc Graphite (``-fgraphite-identity`` forces
-    SCoP detection; ``-floop-parallelize-all`` or gcc parallelizes no symbolic-bound loop), clang Polly,
-    nvidia ``-Mconcur``, intel ``-qopenmp -parallel``. Not passed: flags forcing a back end past its own
-    cost model (the arena's timing is the final cost model). An absent back end is probed
+    SCoP detection; gcc parallelizes no symbolic-bound loop without it), clang Polly, nvidia
+    ``-Mconcur``, intel ``-qopenmp -parallel``. Not passed: flags forcing a back end past its own cost
+    model (the arena's timing IS the final cost model). An absent back end is probed
     (:func:`compiler_accepts`) and returned as a recorded skip, never a crash; unprobed if ``compiler``
     is ``None`` (pure composition, for tests/figures)."""
     if family == "gnu":
@@ -293,9 +291,9 @@ SUPPORT_LIB_PROBE = "svml"
 @functools.lru_cache(maxsize=None)
 def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
     """``-Wl,-rpath`` for the compiler's own auto-linked support libraries, or ``()`` when it has none.
-    NOT the same directory as the OpenMP runtime -- an icx cell rpathing only the default libomp dir
-    (no libsvml there) links but dies at ``dlopen``. Needed since the arena dlopens node libraries
-    IN-PROCESS, so ``LD_LIBRARY_PATH`` set before interpreter start isn't an option."""
+    NOT the OpenMP runtime's directory -- an icx cell rpathing only the default libomp dir (no libsvml
+    there) links but dies at ``dlopen``. Needed since the arena dlopens node libraries IN-PROCESS, so
+    ``LD_LIBRARY_PATH`` set before interpreter start isn't an option."""
     found = driver_lib_path(SUPPORT_LIB_PROBE, compiler)
     return ("-Wl,-rpath,%s" % found.parent, ) if found else ()
 
@@ -303,7 +301,7 @@ def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
 @functools.lru_cache(maxsize=None)
 def runtime_dir(soname: str, compiler: str) -> Optional[str]:
     """Directory for BOTH ``-L`` and ``-Wl,-rpath``, or ``None`` when neither is needed. Checking
-    availability and resolving ``-L`` via two different helpers is a real bug, not a nicety: it is how
+    availability and resolving ``-L`` via two different helpers is a real bug, not a nicety: that's how
     CI broke, when one asked a sibling driver (yes) and the other asked the compiler itself (None),
     emitting a bare ``-lomp`` with no ``-L``. Asks the linking compiler FIRST, widening only if it doesn't know."""
     found = driver_lib_path(soname, compiler)
@@ -316,8 +314,8 @@ def openmp_runtime_flags(compiler: Optional[str], family: str,
                          runtime: OpenMPRuntime) -> Tuple[Optional[List[str]], Optional[str]]:
     """Pin this cell to EXACTLY ONE OpenMP runtime, or ``(None, reason)`` when this compiler can't link
     it. Bare ``-fopenmp`` would let each family link its own default (gcc->libgomp, clang->libomp),
-    putting TWO runtimes/thread pools in one process the moment a sweep spans compilers. ``llvm`` selects
-    by name; ``gnu`` has no such switch, so ``--push-state,--no-as-needed`` pins the runtime NEEDED
+    putting TWO runtimes/thread pools in one process once a sweep spans compilers. ``llvm`` selects by
+    name; ``gnu`` has no such switch, so ``--push-state,--no-as-needed`` pins the runtime NEEDED
     regardless of link position (else the driver's trailing ``-lgomp`` silently wins instead);
     ``intel-classic``/``nvidia`` hard-link their own. ``-L``/``-rpath`` let the ``.so`` load without
     ``LD_LIBRARY_PATH`` (clang's libomp lives off the default loader path)."""
@@ -325,10 +323,10 @@ def openmp_runtime_flags(compiler: Optional[str], family: str,
         return [], None  # pure composition (tests / figures): no driver to ask, no cell to build
     if not runtime.compatible(compiler):
         return None, f"{Path(compiler).name} cannot link {runtime.name} (single-runtime contract)"
-    # compatible() checks ABI only; libnvomp ships solely with NVIDIA HPC SDK, so gcc+libnvomp passes
-    # ABI and dies at link -- confirm -l<soname> actually resolves before emitting an unbuildable cell.
-    # icx/ifx are 'intel' in the FP matrix (default -fp-model=fast) but clang-based for RUNTIME selection,
-    # so ask compiler_family() here or icx would wrongly take the gnu -l branch.
+    # compatible() checks ABI only; libnvomp ships solely with the NVIDIA HPC SDK, so gcc+libnvomp
+    # passes ABI and dies at link -- confirm -l<soname> resolves before emitting an unbuildable cell.
+    # icx/ifx are 'intel' in the FP matrix but clang-based for RUNTIME selection, so ask
+    # compiler_family() here or icx would wrongly take the gnu -l branch.
     omp_family = compiler_family(compiler)
     if omp_family not in ("intel-classic", "nvidia") and not lib_linkable(runtime.soname, compiler):
         return None, f"{runtime.name} is not linkable by {Path(compiler).name} (runtime not installed for it)"
@@ -345,7 +343,7 @@ def openmp_runtime_flags(compiler: Optional[str], family: str,
 
 def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
     """Flags to compile the numpyto-emitted **C** source as C++ (no distinct C++ target). ``-x c++``
-    retargets it; ``-Drestrict=__restrict__`` covers C++'s missing ``restrict``; gnu additionally lacks
+    retargets it; ``-Drestrict=__restrict__`` covers C++'s missing ``restrict``; gnu also lacks
     ``__builtin_complex`` in C++ mode, so a compound-literal shim is defined for it only."""
     flags = ["-x", "c++", "-std=" + cxx_std, "-Drestrict=__restrict__"]
     if family == "gnu":
@@ -356,7 +354,7 @@ def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
 def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
     """Compile+link flags for a vector-math library on an external lane, or ``(None, reason)`` when
     incompatible/unknown/requested without a compiler. Per-family spelling delegates to
-    :class:`build.VectorMathLib`, imported lazily so this module stays dace-free."""
+    :class:`build.VectorMathLib`, imported lazily to keep this module dace-free."""
     if not veclib or veclib == "none":
         # icx auto-links libsvml/libimf into every object, so even the scalar baseline needs the support rpath
         return (list(support_rpath_flags(compiler)) if compiler else []), None

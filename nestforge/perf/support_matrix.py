@@ -1,7 +1,7 @@
 """Empirical cross-compiler / single-runtime support matrix: TRIES every (compilers, ONE runtime) combo --
 compile, link, load, run -- rather than reasoning from ABI tables, which miss real corners (a runtime that
-won't load, an inert backend, a runtime islanded to its own compiler). Off the hot arena path; each probe
-runs forked via :func:`~nestforge.isolation.run_isolated`."""
+won't load, an inert backend, one islanded to its own compiler). Off the hot arena path; each probe runs
+forked via :func:`~nestforge.isolation.run_isolated`."""
 from __future__ import annotations
 
 import ctypes
@@ -33,7 +33,7 @@ VECLIB_SONAMES = ("svml", "sleef", "mvec")
 @dataclass(frozen=True)
 class ToolPaths:
     """Absolute paths for one compiler family: driver, locatable OpenMP runtimes, locatable veclibs --
-    resolved by asking the driver itself (``-print-file-name``), not by guessing filesystem layout."""
+    resolved by asking the driver (``-print-file-name``), not by guessing filesystem layout."""
     family: str  # OpenMP family: gnu | llvm | intel-classic | nvidia
     compiler: str  # absolute path to the C driver
     openmp: Dict[str, str] = field(default_factory=dict)  # runtime name -> absolute lib dir
@@ -41,8 +41,8 @@ class ToolPaths:
 
 
 def resolve_tool_paths(tc: Toolchain) -> ToolPaths:
-    """Resolve the OpenMP-runtime and veclib paths ``tc`` can actually link, by asking its own driver; one
-    it cannot locate is simply absent from the dict."""
+    """Resolve the OpenMP-runtime and veclib paths ``tc`` can actually link, by asking its own driver;
+    one it can't locate is simply absent from the dict."""
     fam = compiler_family(tc.cc)
     omp: Dict[str, str] = {}
     for name, rt in OPENMP_RUNTIMES.items():
@@ -98,10 +98,9 @@ class MatrixCell:
 
 
 def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: Path) -> MatrixCell:
-    """Compile each nest with its assigned compiler, link all against ONE runtime, load and run -- the whole
-    experiment; link flags come from the FIRST compiler that can supply the runtime path. Every failing
-    stage is recorded, so the cell says WHERE it failed, not just pass/fail.
-    """
+    """Compile each nest with its assigned compiler, link all against ONE runtime, load and run -- the
+    whole experiment; link flags come from the FIRST compiler that can supply the runtime path. Every
+    failing stage is recorded, so the cell says WHERE it failed, not just pass/fail."""
     families = tuple(compiler_family(t.cc) for t in nests_by)
     label = tuple(t.name for t in nests_by)
     objs: List[str] = []
@@ -180,9 +179,8 @@ def build_support_matrix(toolchains: Optional[List[Toolchain]] = None,
     """Populate the support matrix by trying every (compiler-tuple, runtime) that could share a runtime.
 
     A cell SURVIVES when it links, loads, parallelises and runs correct. If none survive for any runtime,
-    families in ``drop_on_empty`` are dropped and retried once, so an islanding compiler (nvc, libnvomp-only)
-    can't empty the matrix for everyone else. Returns ``(surviving_cells, notes)``.
-    """
+    families in ``drop_on_empty`` are dropped and retried once, so an islanding compiler (nvc,
+    libnvomp-only) can't empty the matrix for everyone else. Returns ``(surviving_cells, notes)``."""
     if toolchains is None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -215,8 +213,8 @@ def build_support_matrix(toolchains: Optional[List[Toolchain]] = None,
 
 
 def surviving_runtimes(cells: List[MatrixCell]) -> List[str]:
-    """Runtimes supporting >=1 working cross-compiler combination, best first: ranked by combo count, ties
-    broken toward the portable default (libomp) over an ABI-symlinked equivalent (libiomp5) so the
+    """Runtimes supporting >=1 working cross-compiler combination, best first: ranked by combo count,
+    ties broken toward the portable default (libomp) over an ABI-symlinked equivalent (libiomp5) so the
     alphabetically-first name doesn't win by accident."""
     by_rt: Dict[str, int] = {}
     for c in cells:
@@ -246,8 +244,8 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
 @dataclass
 class VeclibCell:
     """One (compiler-family, veclib) attempt: does a ``sin`` loop compile+link, does the object actually
-    CALL the packed ``sin`` (not scalar), and does it match ``numpy.sin``? Veclib analogue of
-    :class:`MatrixCell` -- a ``-fveclib=`` flag can be accepted while the vectorizer leaves the call scalar."""
+    CALL the packed ``sin`` (not scalar), and match ``numpy.sin``? Veclib analogue of :class:`MatrixCell`
+    -- a ``-fveclib=`` flag can be accepted while the vectorizer leaves the call scalar."""
     veclib: str
     compiler: str  # compiler-family label (gnu | llvm | intel-classic | nvidia)
     ok: bool  # compiled AND linked
@@ -294,12 +292,11 @@ def vectorized_via(veclib: str, obj_path: str) -> bool:
 
 
 def try_veclib(tc: Toolchain, veclib: str, workdir: Path) -> VeclibCell:
-    """Compile a ``sin`` loop with ``tc`` against ``veclib``, prove the object CALLS the packed routine, link
-    it, and run it FORKED against ``numpy.sin`` -- veclib analogue of :func:`try_combination`.
+    """Compile a ``sin`` loop with ``tc`` against ``veclib``, prove the object CALLS the packed routine,
+    link it, and run it FORKED against ``numpy.sin`` -- veclib analogue of :func:`try_combination`.
 
-    The ``none`` baseline OMITS ``-ffast-math``: WITH it, gcc emits libmvec calls this cell never links, so
-    the scalar baseline would fail to load. Each failing stage forces later stages False, recording WHERE it
-    failed."""
+    The ``none`` baseline OMITS ``-ffast-math``: WITH it, gcc emits libmvec calls this cell never links,
+    so the scalar baseline would fail to load. Each failing stage forces later stages False."""
     fam = compiler_family(tc.cc)
     vec, reason = flags.veclib_flags(tc.cc, veclib)
     if vec is None:
@@ -344,7 +341,7 @@ def try_veclib(tc: Toolchain, veclib: str, workdir: Path) -> VeclibCell:
 
 def probe_vector_libs(toolchains: List[Toolchain]) -> List[VeclibCell]:
     """Probe every (toolchain, veclib) empirically: compile+link+run a ``sin`` loop forked against
-    ``numpy.sin``. ``none`` is the scalar baseline proving the harness itself works (veclib analogue of
+    ``numpy.sin``. ``none`` is the scalar baseline proving the harness works (veclib analogue of
     :func:`build_support_matrix`)."""
     cells: List[VeclibCell] = []
     for tc in toolchains:
@@ -357,8 +354,7 @@ def probe_vector_libs(toolchains: List[Toolchain]) -> List[VeclibCell]:
 class MachineCompat:
     """Queryable view of the discovered support matrix -- what THIS machine actually supports, for a sweep
     to prune against instead of the static ABI table (:meth:`OpenMPRuntime.compatible`, which answers only
-    what's possible in principle). Built from a :func:`machine_config` dict (the cache), read once per sweep.
-    """
+    what's possible in principle). Built from a :func:`machine_config` dict (the cache), read once per sweep."""
 
     def __init__(self, config: Dict):
         self.config = config
@@ -366,8 +362,8 @@ class MachineCompat:
         self._veclib_cells = config.get("veclib_matrix", [])
 
     def default_runtime(self) -> OpenMPRuntime:
-        """The runtime to standardise on: the empirically-best cross-compiler survivor, or LIBOMP if nothing
-        was discovered (no cache)."""
+        """The runtime to standardise on: the empirically-best cross-compiler survivor, or LIBOMP if
+        nothing was discovered (no cache)."""
         name = self.config.get("default_openmp_runtime") or flags.DEFAULT_OPENMP_RUNTIME.name
         return OPENMP_RUNTIMES.get(name, flags.DEFAULT_OPENMP_RUNTIME)
 
@@ -378,8 +374,8 @@ class MachineCompat:
                    for c in self._cells)
 
     def supported_runtimes(self, compiler_family: str) -> List[str]:
-        """Runtimes ``compiler_family`` can use here, ranked with the machine default first (so a fallback
-        picks the most-portable working runtime, not an arbitrary one)."""
+        """Runtimes ``compiler_family`` can use here, ranked with the machine default first, so a
+        fallback picks the most-portable working runtime, not an arbitrary one."""
         order = self.config.get("surviving_runtimes", []) + list(OPENMP_RUNTIMES)
         seen, out = set(), []
         for rt in order:
@@ -389,8 +385,8 @@ class MachineCompat:
         return out
 
     def supported_compilers(self, runtime_name: str) -> List[str]:
-        """Compiler families that can target ``runtime_name`` here -- who may join a sweep standardised on
-        that one runtime."""
+        """Compiler families that can target ``runtime_name`` here -- who may join a sweep standardised
+        on that one runtime."""
         fams = {
             f
             for c in self._cells if c["runtime"] == runtime_name and c["correct"] and c["parallel"]
@@ -399,8 +395,8 @@ class MachineCompat:
         return sorted(fams)
 
     def runtime_for(self, compiler_family: str) -> Optional[OpenMPRuntime]:
-        """The runtime to build ``compiler_family``'s cells with: the machine default if supported (keeps the
-        sweep on ONE runtime), else its own best runtime, else None if it can't parallelise here at all."""
+        """The runtime to build ``compiler_family``'s cells with: the machine default if supported (keeps
+        the sweep on ONE runtime), else its own best runtime, else None if it can't parallelise here."""
         default = self.default_runtime()
         if self.is_supported(compiler_family, default.name):
             return default
@@ -408,13 +404,13 @@ class MachineCompat:
         return OPENMP_RUNTIMES.get(own[0]) if own else None
 
     def supported_veclibs(self, compiler_family: str) -> List[str]:
-        """Veclibs ``compiler_family`` ran correctly here (``none`` included -- always a valid axis choice).
+        """Veclibs ``compiler_family`` ran correctly here (``none`` included -- always a valid choice).
         From the empirical probe (``supported_veclibs`` config field), not the ABI table."""
         return list(self.config.get("supported_veclibs", {}).get(compiler_family, []))
 
     def veclib_vectorizes(self, compiler_family: str, veclib: str) -> bool:
-        """Did ``compiler_family`` x ``veclib`` emit a packed vector ``sin`` AND match numpy here? Separates a
-        veclib that really vectorises from one whose flag was accepted but stayed scalar (or diverged)."""
+        """Did ``compiler_family`` x ``veclib`` emit a packed vector ``sin`` AND match numpy here?
+        Separates a veclib that really vectorises from one whose flag was accepted but stayed scalar."""
         return any(c["compiler"] == compiler_family and c["veclib"] == veclib and c["vectorized"] and c["correct"]
                    for c in self._veclib_cells)
 
@@ -427,8 +423,8 @@ def machine_compat(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Machin
 def cached_default_runtime(cache: Path = DEFAULT_CACHE) -> OpenMPRuntime:
     """The machine's discovered default OpenMP runtime if a cache exists, else the static default.
 
-    NEVER probes (unlike :func:`machine_compat`) -- safe to call from the sweep hot path, since discovery
-    must stay an explicit once-per-machine step, never a surprise mid-sweep."""
+    NEVER probes (unlike :func:`machine_compat`) -- safe on the sweep hot path, since discovery must
+    stay an explicit once-per-machine step, never a surprise mid-sweep."""
     if cache.exists():
         try:
             return MachineCompat(json.loads(cache.read_text())).default_runtime()
@@ -438,10 +434,9 @@ def cached_default_runtime(cache: Path = DEFAULT_CACHE) -> OpenMPRuntime:
 
 
 def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
-    """The discovered toolchain config for this machine: absolute compiler/runtime/veclib paths + surviving
-    cross-compiler runtimes. Probed ONCE and cached as human-readable JSON; loaded verbatim thereafter until
-    the cache is deleted or ``refresh=True`` forces a re-probe.
-    """
+    """The discovered toolchain config for this machine: absolute compiler/runtime/veclib paths +
+    surviving cross-compiler runtimes. Probed ONCE and cached as human-readable JSON; loaded verbatim
+    thereafter until the cache is deleted or ``refresh=True`` forces a re-probe."""
     if cache.exists() and not refresh:
         try:
             return json.loads(cache.read_text())

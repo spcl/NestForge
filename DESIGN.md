@@ -10,7 +10,7 @@
 
 ## 2. The general model — orthogonal concerns, one abstraction each
 
-The emitter has exactly four cross-cutting concerns. Each should be owned by **one** function. Today three of them are re-decided at multiple sites with divergent mechanisms, and that divergence is the entire live bug surface.
+Four cross-cutting concerns, each owned by exactly **one** function. Today three are re-decided at multiple sites with divergent mechanisms — that divergence is the entire live bug surface.
 
 **(a) Access rendering — the size-1-array vs scalar duality.**
 A `(name, subset)` becomes a python string in one canonical place:

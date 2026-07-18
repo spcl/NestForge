@@ -3,23 +3,21 @@
 `fp_risk(kernel) -> {subflag: risk_score, explanation}` is nest-forge's static classifier: given an
 extracted nest as a typed SDFG (elementwise tasklets, reduction/WCR nodes, library nodes like
 Cholesky/solve/eigh/matmul, loops with known trip counts), it predicts — *before running anything* —
-whether enabling fast-math, a specific fast-math sub-flag, or a parallel reduction will change the
-answer dangerously. It **prunes** the arena's compile matrix (do not even build a variant a nest is
-classified unsafe for) and **explains** each verdict, while the empirical max-diff-vs-oracle gate stays
-the hard safety net.
+whether fast-math (wholesale, a specific sub-flag, or a parallel reduction) will corrupt the answer. It
+**prunes** the arena's compile matrix (skips building variants classified unsafe) and **explains** each
+verdict; the empirical max-diff-vs-oracle gate stays the hard safety net.
 
 Central thesis: **fast-math is not one transformation but ~7 semantically distinct sub-flags**, each
-with a different failure mechanism, a different detectable structural signature, and a different piece
-of numerical-analysis theory behind it. `fp_risk` reasons per-sub-flag, not about "fast-math"
-monolithically — so it can green-light the safe fast ones (often `reassoc` on same-sign reductions,
-`contract` on dot-products) while surgically disabling only the dangerous ones, instead of the
-all-or-nothing `-ffast-math`/`-fno-fast-math` choice.
+with its own failure mechanism, structural signature, and numerical-analysis theory. `fp_risk` reasons
+per-sub-flag, not "fast-math" monolithically — green-lighting the safe ones (often `reassoc` on
+same-sign reductions, `contract` on dot-products) while disabling only the dangerous ones, instead of
+the all-or-nothing `-ffast-math`/`-fno-fast-math` choice.
 
-Two axes are treated as the same risk class and share this analysis: **fast-math flags** and
-**parallel reductions** (a thread-parallel or SIMD-lane reduction reorders the sum exactly as
-`-fassociative-math` does — see `PARALLEL.md` §4). A separate, *orthogonal* correctness axis —
-cross-language **operator semantics** (`mod`, integer division, `**`, NaN in min/max) — is covered in
-§6; it is not an FP-rounding effect and must not be conflated with one.
+Two axes share this analysis as the same risk class: **fast-math flags** and **parallel reductions** (a
+thread-parallel or SIMD-lane reduction reorders the sum exactly as `-fassociative-math` does — see
+`PARALLEL.md` §4). A separate, orthogonal axis — cross-language **operator semantics** (`mod`, integer
+division, `**`, NaN in min/max) — is covered in §6; it's not an FP-rounding effect, don't conflate the
+two.
 
 ## 0. Empirical anchor — gramschmidt
 
@@ -34,12 +32,12 @@ baseline:
 
 The result validates and *sharpens* the intuition that "fast-math is dangerous for reductions/solvers":
 
-- **FMA contraction alone is bit-exact** here (and can even help accuracy). The dangerous sub-flag is
-  `reassoc`, which reorders the dot-product accumulation — not `contract`.
-- The danger is **gated by the condition number**. Well-conditioned: reassociation shuffles only
+- **FMA contraction alone is bit-exact** here (can even help accuracy). The danger is `reassoc` —
+  it reorders the dot-product accumulation — not `contract`.
+- Danger is **gated by the condition number**. Well-conditioned: reassociation shuffles only
   `O(nε)` benign noise (`κ≈1`), rel-err stays at machine epsilon. Ill-conditioned: a near-zero pivot
   `R[k,k]` divides `A[:,k]`, amplifying the reassociated-dot difference by `~1/R[k,k]` — rel-err ≈
-  cond·ε ≈ 1e-3. Same kernel, same flag; the danger appears only because the input is ill-conditioned.
+  cond·ε ≈ 1e-3. Same kernel, same flag — danger comes purely from input conditioning.
 
 This is the whole theory in one experiment: risk ∝ (reduction reassociability) × (condition number).
 Both are readable off the SDFG — the reduction node type, its trip count, and the sign/κ of its inputs.
@@ -240,8 +238,8 @@ Key facts for nest-forge:
 | R15 | dot-product / matmul / Horner accumulation, no sign predicate | contract | **LOW** | FMA usually *improves* accuracy | §1.5 |
 | **R16** | **parallel reduction** (`reduction(+:s)` / WCR partial-sum tree) | reassoc (parallel) | **= R2/R3** | thread-count-dependent sum reorder | `PARALLEL.md` §4 |
 
-R16 is the parallelism bridge: a parallel reduction is scored exactly like R2/R3 (same-sign → LOW,
-cancelling → HIGH), because it is a reassociation whose ordering depends on the thread count.
+R16 is the parallelism bridge: a parallel reduction scores exactly like R2/R3 (same-sign → LOW,
+cancelling → HIGH) — it's a reassociation whose order depends on thread count.
 
 ### 4.2 Detecting the compensated-summation / EFT idiom structurally
 
@@ -316,8 +314,7 @@ fp_risk(kernel) -> {
 }
 ```
 
-The `recommended_flags` line is the payoff: per-sub-flag reasoning green-lights the safe/fast ones and
-surgically disables only the dangerous ones, instead of all-or-nothing `-ffast-math`.
+The `recommended_flags` line is the payoff: per-sub-flag reasoning, not all-or-nothing `-ffast-math`.
 
 ## 5. Parallelism is a reassociation event
 
@@ -355,12 +352,12 @@ Design consequence: **the operator's intended semantics travel with the SDFG nod
 frontend that produced it — numpy-origin or Fortran-origin), and **each backend lowering realizes that
 semantics in the target language, not the target language's default.** An SDFG `mod` meaning
 numpy-floored must emit Fortran `MODULO` (never `MOD`) and a corrected C expression (never bare `%`); an
-SDFG `**` with an integer exponent must lower to an exact `ipow`, not `pow(x, (double)e)`. The C helpers
-already present in the translator (`__npb_fmax`/`__npb_fmin` for NaN-propagating min/max, `__npb_sign`,
-`__npb_conj`) are exactly this pattern — per-operator shims that make C reproduce numpy semantics rather
-than assuming the languages agree. The same discipline is required for `mod`, integer `//`, and integer
-`**` across C **and** Fortran, and the arena must classify an operator-semantics mismatch (huge, discrete
-max-diff, insensitive to FP mode) distinctly from an FP-rounding divergence (small, FP-mode-sensitive).
+SDFG `**` with an integer exponent must lower to an exact `ipow`, not `pow(x, (double)e)`. The
+translator's existing C helpers (`__npb_fmax`/`__npb_fmin` for NaN-propagating min/max, `__npb_sign`,
+`__npb_conj`) are exactly this pattern — per-operator shims making C reproduce numpy semantics instead of
+assuming the languages agree. Same discipline for `mod`, integer `//`, and integer `**` across C **and**
+Fortran; the arena must classify an operator-semantics mismatch (huge, discrete max-diff, insensitive to
+FP mode) distinctly from an FP-rounding divergence (small, FP-mode-sensitive).
 
 ## Sources
 

@@ -1,19 +1,15 @@
 """Generate the arena's configuration-space figure FROM the axis definitions, so it cannot drift.
 
-The axes are not a separate registry -- they already ARE module constants (``tsvc.OPT_MODES``,
-``flags.COST_MODELS`` / ``PARALLEL_MODES`` / ``REDUCED_FP_MODES`` / ``VECLIBS``, ``build.CODEGEN_IMPLS``).
-This module imports those tuples and walks them into a Mermaid ``graph TD`` -- a **lane-rooted tree**,
-because the axes are lane-dependent (codegen applies only to the DaCe lane; language/compiler only to the
-external lanes), so a flat product would mislead. Each lane node is annotated with the cell count its axes
-contribute (the product of the axis sizes shown).
+The axes already ARE module constants (``tsvc.OPT_MODES``, ``flags.COST_MODELS``/``PARALLEL_MODES``/
+``REDUCED_FP_MODES``/``VECLIBS``, ``build.CODEGEN_IMPLS``). This module walks them into a Mermaid
+``graph TD`` -- a lane-rooted tree, since axes are lane-dependent (codegen applies only to the DaCe
+lane), so a flat product would mislead. Each lane node shows the cell count its axes contribute.
 
-Mermaid renders natively on GitHub with no binary or build step and diffs as text, so the committed figure
-stays reviewable. :func:`write_readme` splices the block between ``<!-- AXES:BEGIN -->`` /
-``<!-- AXES:END -->`` in ``README.md``; a unit test regenerates and compares, so the figure is kept honest
-by that test, not by discipline.
+:func:`write_readme` splices the block between ``<!-- AXES:BEGIN -->``/``<!-- AXES:END -->`` in
+``README.md``; a unit test regenerates and compares, so the figure can't drift by neglect.
 
-Run ``python -m nestforge.perf.render_axes --write`` to regenerate the README block, or ``--check`` to
-print the block and exit non-zero if it differs from what is committed."""
+Run ``python -m nestforge.perf.render_axes --write`` to regenerate, or ``--check`` to diff against
+what's committed."""
 from __future__ import annotations
 
 import argparse
@@ -29,8 +25,8 @@ from nestforge.perf import flags
 BEGIN = "<!-- AXES:BEGIN -->"
 END = "<!-- AXES:END -->"
 
-#: Languages / compiler families the external lanes sweep (representative labels; the actual compiler set
-#: is whatever ``discover_toolchains`` finds on PATH). Kept here so the figure lists them explicitly.
+#: Languages / compiler families the external lanes sweep (representative labels; the actual set comes
+#: from ``discover_toolchains``).
 LANGUAGES: Tuple[str, ...] = ("c", "c++", "fortran")
 COMPILERS: Tuple[str, ...] = ("gcc", "clang", "nvhpc", "intel")
 
@@ -58,15 +54,13 @@ class Lane:
 
 
 def lanes() -> List[Lane]:
-    """The lane/axis spec, built from the live axis constants -- add a value to a tuple (or a new Axis) and
-    both the arena and this figure change together. ``veclib`` and ``vectorization`` show per-device
-    symbolic leaves (``none`` + the characterized winner; the ISA x width x strategy staged-select) because
-    their concrete values are chosen per device by ``device_profile``, not fixed in the committed figure.
+    """The lane/axis spec, built from the live axis constants -- add a value to a tuple and both the
+    arena and this figure change together. ``veclib``/``vectorization`` show per-device symbolic leaves
+    since their concrete values are chosen per device by ``device_profile``, not fixed in the figure.
 
-    The native lane is deliberately NOT fanned over compiler/cost-model/fp: ``tsvc_full.measure_native_lane``
-    compiles ``_original.cpp`` exactly ONCE, with the first discovered toolchain that has a C++ frontend and
-    with ``flags.base_flags`` only (``-O3`` + arch tuning; no ``cost_flags``, no ``reduced_fp_flags``). It is
-    a single fixed reference point, so it must render as one cell -- see the lane's symbolic leaves."""
+    The native lane is deliberately NOT fanned over compiler/cost-model/fp:
+    ``tsvc_full.measure_native_lane`` compiles ``_original.cpp`` exactly once with base flags only -- a
+    single fixed reference point, rendered as one cell."""
     return [
         Lane("native", "native original.cpp reference", [
             Axis("language", ("c++", )),

@@ -23,12 +23,17 @@ class UnsupportedLibraryNode(Exception):
 # ----- operand resolution -------------------------------------------------------------------------
 
 
-def index_str(subset: dace.subsets.Range) -> str:
-    """Format a subset as a numpy index/slice string (end-inclusive DaCe range -> ``beg:end+1``)."""
+def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
+    """Format a subset as a numpy index/slice string (end-inclusive DaCe range -> ``beg:end+1``).
+
+    A singleton range ``(k, k, 1)`` renders as the scalar ``k`` (drops the dim, for a tasklet's scalar
+    operand); ``keep_singleton`` renders it ``k:k+1`` instead so an array copy/slice preserves the dim
+    per numpy semantics (a ``[N,1]`` slice stays ``[N,1]``, not ``[N]``)."""
     parts = []
     for (beg, end, step) in subset.ranges:
         if str(beg) == str(end):
-            parts.append(symbolic.symstr(beg))
+            parts.append(
+                f"{symbolic.symstr(beg)}:{symbolic.symstr(beg + 1)}" if keep_singleton else symbolic.symstr(beg))
         elif str(step) == "1":
             parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(end + 1)}")
         else:
@@ -57,11 +62,12 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     return desc.transient and is_scalar(desc)
 
 
-def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> str:
+def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], keep_singleton: bool = False) -> str:
     """Read expression for ``name[subset]``: scalar-transient variable, whole array, or slice.
 
     Each array's data name doubles as its python variable (no connector renaming). ``None`` subset
-    means the whole array.
+    means the whole array. ``keep_singleton`` preserves a length-1 dim as ``k:k+1`` (see
+    :func:`index_str`) -- set only when the counterpart of a copy keeps that dim.
     """
     if scalar_local(sdfg, name):
         return name
@@ -74,13 +80,13 @@ def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) 
         return f"{name}[0]"
     if subset is None or covers_whole(subset, desc):
         return name
-    return f"{name}[{index_str(subset)}]"
+    return f"{name}[{index_str(subset, keep_singleton=keep_singleton)}]"
 
 
-def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> str:
+def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], keep_singleton: bool = False) -> str:
     """Write target for ``name[subset]``. Arrays are written *in place* (``name[:]`` / ``name[slice]``)
     to fill the pre-allocated buffer rather than rebind it; scalar transients are plain assignments.
-    ``None`` subset means the whole array."""
+    ``None`` subset means the whole array. ``keep_singleton`` as in :func:`read_expr`."""
     if scalar_local(sdfg, name):
         return name
     desc = sdfg.arrays[name]
@@ -91,17 +97,19 @@ def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) 
         return f"{name}[0]"
     if subset is None or covers_whole(subset, desc):
         return f"{name}[:]"
-    return f"{name}[{index_str(subset)}]"
+    return f"{name}[{index_str(subset, keep_singleton=keep_singleton)}]"
 
 
 def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
-    """Read expression for a memlet's data (see :func:`read_expr`)."""
-    return read_expr(sdfg, memlet.data, memlet.subset)
+    """Read expression for a memlet's data (see :func:`read_expr`). A library-node operand keeps its
+    length-1 dims so its shape matches the numpy op (a ``[N,1]`` column stays 2-D)."""
+    return read_expr(sdfg, memlet.data, memlet.subset, keep_singleton=True)
 
 
 def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
-    """Write target for a memlet's data (see :func:`write_lhs`)."""
-    return write_lhs(sdfg, memlet.data, memlet.subset)
+    """Write target for a memlet's data (see :func:`write_lhs`). Keeps length-1 dims so the target
+    shape matches the numpy op's result (``acc[0:N, 0:1] = A @ mass`` for an ``[N,1]`` product)."""
+    return write_lhs(sdfg, memlet.data, memlet.subset, keep_singleton=True)
 
 
 def in_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:

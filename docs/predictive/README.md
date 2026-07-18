@@ -2,14 +2,17 @@
 
 ## High-level design
 
-Pick the optimizer that wins WITHOUT building them all. The arena sweeps every variant; predictive mode ranks them and builds only the top pick. The arena still validates that pick, so a wrong prediction costs time, never correctness.
+Pick the winning optimizer WITHOUT building them all. The arena sweeps every variant; predictive
+mode ranks them and builds only the top pick. The arena still validates that pick, so a wrong
+prediction costs time, never correctness.
 
 ```
 nest --> Predictor.rank(nest, optimizers) --> [(optimizer, score, reason)]  (no compile)
      --> choose top --> arena builds + validates + times it
 ```
 
-One contract: `Predictor.rank(nest, optimizers) -> List[Prediction]`. Every predictor -- the hardcoded strategy now, the cost model later -- implements it, so swapping the policy changes no caller.
+One contract: `Predictor.rank(nest, optimizers) -> List[Prediction]`. Every predictor -- hardcoded
+strategy now, cost model later -- implements it, so swapping the policy changes no caller.
 
 ## Now: hardcoded strategy (`nestforge/predictive.py::HardcodedStrategy`)
 
@@ -24,24 +27,39 @@ Deterministic; ties break on optimizer name. This is a deliberate baseline, not 
 
 ## Planned: the real cost model
 
-`HardcodedStrategy` is a placeholder for a predictor that uses any available static signal. Each becomes a scoring term under the same `Predictor` contract; none requires running the kernel.
+`HardcodedStrategy` is a placeholder for a predictor using any available static signal. Each
+becomes a scoring term under the same `Predictor` contract; none requires running the kernel.
 
 ### 1. Numerical stability
-Analyze the nest for FP risk (reduction depth, catastrophic cancellation, magnitude spread from the OptArena input spec) and let the predicted FP rung follow the risk: a stable kernel tolerates `fast-math`; a cancellation-prone one is pinned `strict-ieee`. Feeds the FP clause instead of hardcoding it.
+Analyze the nest for FP risk (reduction depth, catastrophic cancellation, magnitude spread from
+the OptArena input spec); let the predicted FP rung follow the risk -- stable kernel tolerates
+`fast-math`, cancellation-prone one pinned `strict-ieee`. Feeds the FP clause instead of hardcoding it.
 
 ### 2. Opt-report diffing
-Compile-`-fopt-info` / `-Rpass=loop-vectorize` (gcc/clang) and `-qopt-report` (icx) emit what the compiler actually did -- which loops vectorized, at what width, why one did not. Diff the reports ACROSS variants of the same nest: the variant whose hot loop vectorized at the widest width, with no "not vectorized: ..." on the hot path, is the predicted winner. This is a cheap probe (compile only, no run), so it is a middle tier between the free static score and the full timed sweep.
+Compile-`-fopt-info` / `-Rpass=loop-vectorize` (gcc/clang) and `-qopt-report` (icx) emit what the
+compiler actually did -- which loops vectorized, at what width, why one didn't. Diff the reports
+ACROSS variants of the same nest: the variant whose hot loop vectorized at the widest width, no
+"not vectorized: ..." on the hot path, is the predicted winner. Cheap probe (compile only, no run)
+-- a middle tier between the free static score and the full timed sweep.
 
 ### 3. Instruction scanning (per hardware)
 Disassemble each variant's hot object (`objdump -d`) and count what matters on THIS hardware:
-- **gather/scatter intrinsics** (`vgather*`/`vscatter*`) -- present iff the compiler vectorized an indirect access; their cost varies wildly by microarch, so the count is scored against a per-hardware table.
-- **cache-line / alignment ops** -- aligned vs unaligned move forms (`vmovaps` vs `vmovups`), software prefetch (`prefetcht*`), streaming stores (`vmovntps`) -- signal whether the layout the variant produced is cache-friendly.
-- **ISA level actually emitted** -- AVX-512 vs AVX2 vs scalar, matched against the host (see `nestforge/device_profile.py::detect_host_isa`); a variant emitting an ISA the host lacks is a mis-target, not a win.
+- **gather/scatter intrinsics** (`vgather*`/`vscatter*`) -- present iff the compiler vectorized an
+  indirect access; cost varies wildly by microarch, scored against a per-hardware table.
+- **cache-line / alignment ops** -- aligned vs unaligned move forms (`vmovaps` vs `vmovups`),
+  software prefetch (`prefetcht*`), streaming stores (`vmovntps`) -- signal whether the layout is
+  cache-friendly.
+- **ISA level actually emitted** -- AVX-512 vs AVX2 vs scalar, matched against the host (see
+  `nestforge/device_profile.py::detect_host_isa`); an ISA the host lacks is a mis-target, not a win.
 
-Scan is per-hardware because the same instruction stream ranks differently on different cores. Reuses the device profile the vectorizer already characterizes.
+Per-hardware because the same instruction stream ranks differently on different cores. Reuses the
+device profile the vectorizer already characterizes.
 
 ### 4. Learned term (last)
-Once the static terms exist, a small model over (nest features, variant features) -> measured time, trained on the arena's own sweep results, can replace the hand-weighted sum. It is the LAST tier -- the static terms above are interpretable and need no training data; the learned model only refines their weighting.
+Once the static terms exist, a small model over (nest features, variant features) -> measured
+time, trained on the arena's own sweep results, can replace the hand-weighted sum. LAST tier --
+the static terms above are interpretable and need no training data; the learned model only refines
+their weighting.
 
 ## How to use
 

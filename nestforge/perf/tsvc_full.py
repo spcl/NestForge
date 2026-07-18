@@ -1,62 +1,44 @@
-"""The comprehensive TSVC full-matrix job: for every kernel of BOTH corpora (``tsvc2`` + ``tsvc2_5``),
-measure three lanes and a large sweep, with MEDIAN-of-N timing at a memory-bound profiling size.
+"""TSVC full-matrix job: every kernel of tsvc2 + tsvc2_5, three lanes, MEDIAN-of-N timing at a
+memory-bound profiling size.
 
-Lanes / columns per kernel
---------------------------
-1. **native original.cpp** -- the ``<key>_original.cpp`` scalar reference loop at ``-O3 -march=native``
-   (one C++ compiler). The classic "how well does the compiler auto-vectorize the reference" column.
-2. **DaCe-cpp baseline** -- DaCe's OWN C++ codegen of the EXTRACTED-NEST standalone SDFG (owned
-   direct-compile via ``build.build_sdfg`` -- NO cmake), a SINGLE C++ compiler, default cost model,
-   ``-O3`` + **strict-ieee** FP (``-ffp-contract=off``). Fanned over the codegen-implementation axis:
-   ``experimental`` (the readable constexpr-index-fn codegen, nest-forge's DEFAULT and the speedup
-   denominator) plus ``legacy`` where the DaCe build has it (a measured variant). THIS default codegen is
-   the baseline every nest-forge cell divides by; the standalone nest (not the whole kernel) does the SAME
-   work the nest-forge lanes do, so the time is apples-to-apples even for kernels peeled to an inner nest.
-   The median time is reported always; the strict cross-check bit-matches for most kernels
-   (loop-carried-state recurrences are flagged in the tables -- see the lane-2 section comment).
-3. **nest-forge external-nest** -- the extracted nest translated by numpyto and compiled, swept over the
-   full axis matrix below.
+Lanes
+-----
+1. **native original.cpp** -- the ``<key>_original.cpp`` scalar reference at ``-O3 -march=native``:
+   how well the compiler auto-vectorizes the reference.
+2. **DaCe-cpp baseline** -- DaCe's own C++ codegen of the EXTRACTED-NEST standalone SDFG (owned
+   direct-compile via ``build.build_sdfg``, no cmake), strict-ieee FP. Fanned over codegen impl
+   (``experimental`` = default/denominator, ``legacy`` where available). This is the speedup
+   denominator; it runs the standalone nest, not the whole kernel, so it stays apples-to-apples even
+   for kernels peeled to an inner nest (loop-carried recurrences are flagged non-bit-exact in tables).
+3. **nest-forge external-nest** -- the extracted nest translated by numpyto and compiled, swept over
+   the axis matrix below.
 
-The axis matrix (lane 3), per kernel
-------------------------------------
-  * **opt-mode**      : ``simplify-parallel`` | ``canonicalize`` | ``auto-opt`` (the pre-split SDFG
-    optimization; changes the emitted source, so it is an emit-time axis, not just a flag).
-  * **language**      : ``c`` | ``c++`` | ``fortran``. numpyto has NO C++ target, so **C++ = the emitted
-    C source recompiled by a C++ frontend** (``-x c++`` + a ``restrict`` / ``__builtin_complex`` shim;
-    see :func:`nestforge.perf.flags.cxx_source_flags`).
-  * **parallelization**: ``sequential`` | ``auto-par`` (the compiler's plain-loop auto-parallelizer:
-    gcc ``-ftree-parallelize-loops -fopenmp``, nvc ``-Mconcur``, icx ``-qopenmp -parallel``; clang/flang
-    have none -> recorded unsupported, not dropped).
-  * **compiler**      : every discovered family (gcc / clang / nvhpc / intel).
-  * **cost-model**    : ``default`` | ``cheap`` | ``no-vec`` (the shared vectorizer cost axis).
-  * **FP mode**       : a REDUCED two-rung axis ``default-fp`` | ``no-fast-errno`` for timing, PLUS a
-    ``strict-ieee`` correctness GATE cell (sequential, default cost) that must be BIT-EXACT vs the numpy
-    oracle. (See :data:`flags.REDUCED_FP_MODES`.)
+Axis matrix (lane 3)
+---------------------
+  * **opt-mode**: ``simplify-parallel`` | ``canonicalize`` | ``auto-opt`` (changes emitted source).
+  * **language**: ``c`` | ``c++`` | ``fortran``. numpyto has no C++ target, so C++ recompiles the
+    emitted C via ``-x c++`` + a shim (:func:`nestforge.perf.flags.cxx_source_flags`).
+  * **parallelization**: ``sequential`` | ``auto-par`` (gcc/nvc/icx auto-parallelizers; clang/flang
+    have none -> unsupported).
+  * **compiler**: every discovered family (gcc / clang / nvhpc / intel).
+  * **cost-model**: ``default`` | ``cheap`` | ``no-vec``.
+  * **FP mode**: ``default-fp`` | ``no-fast-errno`` for timing, plus a ``strict-ieee`` bit-exact gate
+    cell (see :data:`flags.REDUCED_FP_MODES`).
 
 Sizing
 ------
-  * **validate** at a small preset (cap ``M``) -- the pure-Python O(N) oracle is slow, and the compiled
-    ``.so`` is size-agnostic (LEN is a runtime arg), so validating small and timing large exercises the
-    same code correctly and fast.
-  * **profile/time** at the ``PROF`` preset -- sized so one fp64 array (>=128 MiB) clearly exceeds the
-    GH200 Grace L3 (~114 MB/socket), i.e. the realistic memory-bound regime, but smaller than ``XL``
-    (whose alloc/first-touch dominates). Pass ``--profile-preset XL`` (or the sbatch ``RUN_XL=1`` block)
-    for the big confirmation run.
+  * validate at ``M`` -- the .so is size-agnostic but the pure-Python oracle is slow at scale.
+  * time at ``PROF`` (one fp64 array clears GH200 L3, ~114MB/socket); ``--profile-preset XL`` for the
+    big confirmation run.
 
-Timing method / speed
----------------------
-  * **median of N** individually-timed reps (plus min / p25 / p75 / mean) -- robust to OS jitter.
-  * Each cell is compiled ONCE and its ``.so`` reused for validate + all timing reps.
-  * Identical flag sets are **deduped** to one compile; per-cell compiles run through a bounded thread
-    pool (``--compile-jobs``) since compilation, not the timed run, is the bottleneck.
-  * A fast **VALIDATE** pass (compile + one small run) precedes the **TIMING** pass; only cells that
-    validate are timed, so broken cells never waste timing budget.
-  * A language/kernel whose numpyto emit fails is skipped (no wasted compiles).
+Timing
+------
+  * median of N reps (+ min/p25/p75/mean). Each cell compiles once; identical flag sets dedupe to one
+    compile through a bounded ``--compile-jobs`` pool. A fast VALIDATE pass gates the TIMING pass.
 
-Every compiled-kernel execution runs in a forked child (:func:`nestforge.isolation.run_isolated`) so a
-segfault / OOM / runaway in freshly-compiled code kills only the child, never the sweep rank. Kernels
-self-partition across ranks (SLURM ``srun`` or MPI) via :func:`rank_and_size` + :func:`my_slice`.
-``--tables-only`` merges the per-kernel JSON into markdown.
+Every kernel execution runs in a forked child (:func:`nestforge.isolation.run_isolated`) so a
+segfault/OOM kills only the child. Kernels self-partition across ranks (SLURM/MPI) via
+:func:`rank_and_size` + :func:`my_slice`. ``--tables-only`` merges per-kernel JSON into markdown.
 
 Usage::
 
@@ -99,29 +81,21 @@ from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
-#: numpyto emit target + source suffix per language. C and C++ share the C target (numpyto has no C++
-#: target); C++ just recompiles the emitted ``.c`` with a C++ frontend.
+#: numpyto emit target + suffix per language; C++ just recompiles the C target with a C++ frontend.
 _EMIT = {"c": ("c", ".c"), "c++": ("c", ".c"), "fortran": ("fortran", ".f90")}
-#: presets that are too large for the O(N) pure-Python oracle -> validate at ``M`` instead.
+#: presets too large for the O(N) pure-Python oracle -> validate at ``M`` instead.
 _VALIDATE_CAP = "M"
 
 
 def validate_cap(profile_preset: str) -> str:
-    """The preset to VALIDATE at for a given timing preset: the timing preset itself when it is already
-    small (``S``/``M``), else ``M`` (``L``/``PROF``/``XL`` would make the pure-Python oracle take
-    minutes). The ``.so`` is size-agnostic, so small-validate + large-time exercises the same code."""
+    """Preset to VALIDATE at: the timing preset itself if small (S/M), else M (L/PROF/XL would make
+    the pure-Python oracle take minutes; the .so is size-agnostic so this is safe)."""
     return profile_preset if profile_preset in ("S", _VALIDATE_CAP) else _VALIDATE_CAP
 
 
 def physical_cores(cpus) -> int:
-    """How many PHYSICAL cores the logical CPU ids ``cpus`` cover, collapsing SMT siblings.
-
-    A hyperthread is not a core: two threads on one core share its execution units, so sizing an
-    auto-par team by logical CPUs oversubscribes it ~2x and the extra "threads" contend rather than
-    compute. Linux exposes the grouping per CPU as ``topology/thread_siblings_list``; CPUs whose
-    sibling list is unreadable (a kernel without the file) each count as their own core, which
-    degrades to the logical count rather than to zero.
-    """
+    """Physical cores the logical CPU ids ``cpus`` cover, collapsing SMT siblings -- sizing an auto-par
+    team by logical CPUs oversubscribes ~2x. Unreadable sibling list -> counts as its own core."""
     groups = set()
     for c in cpus:
         try:
@@ -132,26 +106,17 @@ def physical_cores(cpus) -> int:
 
 
 def default_threads() -> int:
-    """Default auto-par thread count: the physical cores THIS process may actually use.
-
-    ``os.cpu_count()`` is the wrong answer on every machine that matters -- it reports the whole node.
-    Under one rank of a 4-rank job on a 288-CPU node it says 288 where the rank owns 72, so an auto-par
-    team is sized 4x the cores it has and the ranks fight each other. Asked in order of authority:
-
-    1. ``OMP_NUM_THREADS`` -- explicit intent, so it wins. It may be a NESTED list (``72,8``): the first
-       level is the outer team size, which is what an auto-par loop gets. The old code passed the whole
-       string to ``int()``, took the ValueError, and fell back to the node's CPU count -- turning the
-       most explicit possible request into the worst possible answer.
-    2. ``SLURM_CPUS_PER_TASK`` / ``SLURM_CPUS_ON_NODE`` -- the rank's share, which no CPU count can see.
-    3. the affinity mask -- what ``srun --cpu-bind`` / ``taskset`` / a cgroup actually permits, collapsed
-       to physical cores. This is what makes an un-hinted container or pinned rank come out right.
-    """
+    """Default auto-par thread count: physical cores this process may actually use, not
+    ``os.cpu_count()`` (reports the whole node -- a 288-CPU node's 4-rank job oversubscribes 4x).
+    Priority: OMP_NUM_THREADS (may be nested list "72,8", first level is the team size) ->
+    SLURM_CPUS_PER_TASK/ON_NODE (the rank's share) -> affinity mask collapsed to physical cores
+    (what srun --cpu-bind/taskset/cgroup actually permits)."""
     env = (os.environ.get("OMP_NUM_THREADS") or "").strip()
     if env:
         try:
             return max(1, int(env.split(",")[0]))
         except ValueError:
-            pass  # unparseable: fall through to the machine rather than guess at the intent
+            pass  # unparseable -> fall through to the machine
     for var in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
         val = (os.environ.get(var) or "").strip()
         if val:
@@ -160,7 +125,7 @@ def default_threads() -> int:
             except ValueError:
                 pass
     try:
-        cpus = os.sched_getaffinity(0)  # honours cgroups / taskset / srun --cpu-bind; cpu_count() does not
+        cpus = os.sched_getaffinity(0)  # honours cgroups/taskset/srun --cpu-bind; cpu_count() does not
     except (AttributeError, OSError):
         cpus = set(range(os.cpu_count() or 4))
     return max(1, physical_cores(cpus))
@@ -213,8 +178,7 @@ def collect_samples(fn, cargs, reps: int) -> List[float]:
 def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], sizes: Dict[str, int]) -> list:
     """ctypes arguments for the emitted kernel, in C-signature order: an array -> its buffer pointer, a
     size symbol -> an int64 by value."""
-    # ``t(...)`` -- NOT a hardcoded c_int64: c_argtypes types a leaked FLOAT value-scalar as c_double, and
-    # passing it an int64 raises once fn.argtypes is set, dropping every timing cell for that nest.
+    # t(...) not hardcoded c_int64: a leaked FLOAT scalar is typed c_double by c_argtypes; int64 would raise.
     return [work[a].ctypes.data_as(t) if a in work else t(sizes[a]) for a, t in zip(order, argtypes)]
 
 
@@ -236,10 +200,8 @@ def nest_validate_work(so: Path,
 
 
 def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inputs, time_sizes, reps: int) -> Dict:
-    """Median-of-N timing at the PROFILING preset. ``time_inputs`` is the context's pre-allocated time-size
-    buffer set, allocated ONCE per opt-mode and reused across every timing cell: the fork hands this child
-    its own COW copy, so it times in place without disturbing the parent or siblings (timing does not
-    validate output, so buffer freshness is not required)."""
+    """Median-of-N timing at the PROFILING preset. ``time_inputs`` is allocated once per opt-mode and
+    reused across every timing cell -- the fork gets its own COW copy, so it times in place safely."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
     cargs = c_call_args(order, argtypes, time_inputs, time_sizes)
@@ -309,15 +271,11 @@ def measure_native_lane(cxx: str,
 
 
 # --- lane 2: DaCe-cpp baseline (owned direct-compile of the EXTRACTED-NEST standalone SDFG) -----------
-# The speedup baseline must do the SAME work as the nest-forge lanes, so it is DaCe's own codegen of the
-# EXACT extracted nest (``boundary.standalone_sdfg``), not the whole-kernel SDFG. That matters for the
-# many multi-level kernels the strategy peels to an INNER nest (a leaked outer index fixed to 0, e.g.
-# s1115): the whole-kernel SDFG would compute ALL rows -- ~LEN more work -- and its time would inflate the
-# speedup meaninglessly, whereas the standalone nest does the same one-row work the nest-forge lanes do.
-# The median time is ALWAYS reported (same iteration space -> a fair baseline). Validation vs the numpy
-# oracle is a recorded cross-check: it is bit-exact for most kernels, but DaCe's raw codegen and numpyto
-# lower the boundary contract for PROMOTED loop-carried state (s111/s112 recurrences) differently, so
-# those show a non-bit-exact baseline (flagged in the tables) while their timing stays representative.
+# Baseline must do the SAME work as the nest-forge lanes: DaCe's codegen of the exact extracted nest, not
+# the whole-kernel SDFG (a multi-level kernel like s1115 peels to an inner nest; whole-kernel would do
+# ~LEN more work and inflate the speedup). Median time always reported; validation vs the numpy oracle is
+# a cross-check that non-bit-exact for PROMOTED loop-carried state (s111/s112, DaCe vs numpyto boundary
+# semantics differ) while timing stays representative.
 def dace_run_work(built,
                   boundary,
                   validate_sizes,
@@ -327,22 +285,20 @@ def dace_run_work(built,
                   atol: float,
                   reps: int,
                   given=None) -> Dict:
-    """Validate@small then time@prof DaCe's own codegen, in the forked child. ``built`` (its ``CDLL``) and
-    ``time_inputs`` are shared copy-on-write across the fork, so a large time-size run OOM-kills only the
-    child. Validation uses a fresh small buffer; timing reuses the context's pre-allocated time buffer."""
-    vbuf = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (validation runs in place)
+    """Validate@small then time@prof DaCe's own codegen, in the forked child. ``built``/``time_inputs``
+    are shared COW across the fork, so a large time-size run OOM-kills only the child."""
+    vbuf = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh buffer (validation runs in place)
     built.run(vbuf, validate_sizes)  # init -> program -> close
     outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
     if outs:
         md = float(maxdiff({o: oracle[o] for o in outs}, outs))
         verdict = {"ok": bool(md <= atol), "maxdiff": md}
-    else:  # nothing to compare against -> UNCHECKED, never report 0.0/ok for an unvalidatable lane
+    else:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
         verdict = {"ok": False, "maxdiff": float("inf"), "unchecked": True}
     tbuf = time_inputs
     built.init(time_sizes)
     try:
-        # bind once, then time the bare ctypes call in the rep loop -- matches the native/nest bare-ctypes
-        # timing (no per-rep numpy->ctypes marshaling).
+        # bind once, time the bare ctypes call -- matches native/nest timing (no per-rep marshaling)
         fn, cargs = built.bind_program(tbuf, time_sizes)
         fn(*cargs)  # warm
         samples: List[float] = []
@@ -367,13 +323,11 @@ def measure_dace_cpp_lane(tc: Toolchain,
                           codegen_impl: Optional[str] = None,
                           validate_fills=None) -> Dict:
     """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee, one C++
-    compiler. The owned build (``build.build_sdfg``) compiles DIRECTLY (no cmake) into ``workdir`` -- a
-    per-kernel mkdtemp, so concurrent ranks never share a build dir (the cmake-deadlock trap does not
-    apply). The median time is reported whether or not the run bit-matches (see the section comment).
+    compiler. ``build.build_sdfg`` compiles directly (no cmake) into a per-kernel ``workdir`` mkdtemp, so
+    concurrent ranks never share a build dir. Median time reported regardless of bit-match (see above).
 
-    ``codegen_impl`` selects the DaCe CPU codegen (``experimental`` -- the default -- | ``legacy``); ``None``
-    -> :func:`build.default_codegen_impl`. The new codegen is the speedup denominator; ``legacy`` is the
-    measured variant. It is stamped into the returned dict so the reporter can group by codegen impl."""
+    ``codegen_impl``: ``experimental`` (default, the speedup denominator) | ``legacy``; ``None`` ->
+    :func:`build.default_codegen_impl`. Stamped into the result so the reporter groups by codegen impl."""
     codegen_impl = codegen_impl or default_codegen_impl()
     if tc.cxx is None:
         return {
@@ -439,13 +393,11 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                                  codegen_impl: Optional[str] = None,
                                  rounds: int = 2,
                                  validate_fills=None) -> Dict:
-    """The DaCe lane WITH the multi-dim tile-op vectorizer: a coordinate-descent search over
-    ``VectorizeConfig`` variants (``build_sdfg(vectorize=cfg)`` then a forked run) for the fastest config
-    that still VALIDATES against the numpy oracle on this nest. Each candidate is validated on the
-    ``contract-fma`` tolerance (FMA is a swept knob), so a mis-vectorization is caught, not timed. Returns
-    the winning vectorized cell (``vectorized=True`` + the ``vec_variant`` name), or an error cell when no
-    config validated (a non-vectorizable nest). The search's compiles are reused -- the winner's full timing
-    is looked up from the descent, not re-measured."""
+    """DaCe lane with the multi-dim tile-op vectorizer: coordinate-descent over ``VectorizeConfig``
+    variants for the fastest config that still validates against the oracle at ``contract-fma``
+    tolerance (catches mis-vectorization instead of timing it). Returns the winning cell or an error
+    when no config validated (non-vectorizable nest). Winner's timing is looked up from the descent,
+    not re-measured."""
     if tc.cxx is None:
         return {
             "ok": False,
@@ -559,17 +511,13 @@ def emit_lang_sources(prep,
                       parallel: bool = False) -> Dict[str, Tuple[Path, List[str], list]]:
     """Emit the numpyto sources for the requested languages and parse each signature.
 
-    Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the PER-NEST base name
-    (``<key>_n<idx>``); the emitted symbol is ``<name>_fp64`` so every nest of a kernel binds a distinct
-    entry point. C and C++ share one emitted ``.c`` (numpyto has no C++ target); the C++ lane compiles a
-    tiny generated wrapper ``.cpp`` that ``#include``s the ``.c`` inside ``extern "C" {}`` -- without it the
-    C++ frontend name-mangles ``<name>_fp64`` and ctypes cannot bind it. A language whose emit/parse fails
-    is omitted (its cells are skipped, not compiled).
+    Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the per-nest base name; the emitted
+    symbol is ``<name>_fp64``. C and C++ share one emitted ``.c``; the C++ lane wraps it in a generated
+    ``.cpp`` with ``extern "C" {}``, else the C++ frontend name-mangles the symbol and ctypes can't bind
+    it. A language whose emit/parse fails is omitted (skipped, not compiled).
 
-    ``parallel=True`` requests the OpenMP variant (numpyto ``c_omp`` / ``fortran_omp`` -- a drop-in
-    ``<base>_omp.{c,f90}`` with the SAME symbol/signature, ``#pragma omp parallel for``). numpyto RAISES
-    (nonzero exit -> :class:`RuntimeError`) for a nest with no sound parallel form, so the caller emits into
-    a distinct ``omp`` subdir and treats a raise as "no OpenMP lane for this nest"."""
+    ``parallel=True`` emits the OpenMP variant (numpyto ``c_omp``/``fortran_omp``, same symbol/signature).
+    numpyto raises for a nest with no sound parallel form -- caller treats that as "no OpenMP lane"."""
     symbol = f"{name}_fp64"
     names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
     c_target = "c_omp" if parallel else "c"
@@ -603,14 +551,12 @@ def emit_lang_sources(prep,
 # --- per-kernel run ----------------------------------------------------------------------------------
 def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str, languages: List[str],
                       workdir: Path) -> List[Dict]:
-    """Everything a lane-3 sweep needs for ONE opt-mode: EVERY extracted nest, each with its own sizes,
-    numpy oracle, and per-language emitted sources. Returns a LIST of per-nest context dicts (one per
-    compute nest the strategy found). Raises on a skip condition (no nest, emit failure).
+    """Everything a lane-3 sweep needs for ONE opt-mode: every extracted nest, each with its own sizes,
+    oracle, and per-language emitted sources. Raises on a skip condition (no nest, emit failure).
 
-    MUTATION HAZARD: :func:`extract_nest_to_sdfg` mutates the parent SDFG in place, so a ``(parent, node)``
-    ref captured up front goes stale after the first extraction. Rebuild a fresh SDFG + strategy refs per
-    nest (both are deterministic, so ``refs_i`` aligns positionally with the initial ``refs``) and extract
-    the idx-th nest from its own untouched copy."""
+    MUTATION HAZARD: :func:`extract_nest_to_sdfg` mutates the parent SDFG in place, so a captured
+    ``(parent, node)`` goes stale after the first extraction -- rebuild a fresh SDFG + strategy refs per
+    nest (deterministic, so ``refs_i`` aligns with the initial ``refs``)."""
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     refs = get_strategy(strategy)(sdfg)
     if not refs:
@@ -626,18 +572,15 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
         nest_dir = workdir / f"n{idx}"
         time_sizes = tsvc.sample_sizes(kernel, boundary, preset=profile_preset)
         validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_cap(profile_preset))
-        # The manifest-declared index arrays, once per nest and SEEDED: the oracle and every cell that
-        # validates against it must see the SAME subscripts, so the fill cannot be drawn per call.
+        # index-array fills, seeded once per nest so the oracle and every validating cell see the same subscripts.
         validate_fills = tsvc.index_fills(kernel, boundary, validate_sizes)
         time_fills = tsvc.index_fills(kernel, boundary, time_sizes)
         prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
         oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0, given=validate_fills),
                             validate_sizes)
         lang_src = emit_lang_sources(prep, boundary, nest_dir, languages, validate_sizes, name)
-        # A DaCe-parallel nest ALSO gets the OpenMP ``omp-emit`` sources (numpyto c_omp/fortran_omp). numpyto
-        # refuses a nest it cannot soundly parallelize (colliding scatter) -> RuntimeError; that nest simply
-        # runs no omp-emit lane (never fatal). Emitted into an ``omp`` subdir so its ``_omp.c`` never shadows
-        # the sequential ``.c`` glob.
+        # A DaCe-parallel nest also gets the OpenMP omp-emit sources; numpyto refuses an unsound-to-parallelize
+        # nest (RuntimeError, not fatal -- just no omp-emit lane). Own subdir so _omp.c never shadows the .c glob.
         omp_src: Dict[str, Tuple[Path, List[str], list]] = {}
         if parallel:
             try:
@@ -656,10 +599,8 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             for lang, (src, _o, _a) in lang_src.items() if lang != "c++"
         }
         if "c++" in lang_src:
-            # C++ compiles the SAME emitted C source (its own path is just an ``extern "C"`` #include wrapper
-            # with no math calls of its own), so its gate is that .c file's math content. Read the .c from disk
-            # rather than inheriting ``has_math["c"]``: ``c`` need not have been requested (emit_lang_sources
-            # emits the .c for a c++-only run too), and an absent entry would silently gate the axis OFF.
+            # C++ compiles the same emitted .c (its own file is just an extern "C" wrapper), so its math
+            # gate reads that .c from disk rather than has_math["c"] -- "c" may not have been requested.
             c_src = next(s for s in nest_dir.glob("*.c") if "pluto" not in s.name)
             has_math["c++"] = source_has_math(c_src.read_text())
         ctxs.append({
@@ -682,43 +623,33 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
 
 
 def cost_models_for(parallel: str, cost_models: List[str], matrix_preset: str) -> List[str]:
-    """The vectorizer cost models to sweep for a given ``parallel`` mode under a ``matrix_preset``.
-
-    The ``cost`` axis (``default`` / ``cheap`` / ``no-vec``) is a **single-core vectorization** question:
-    scalar floor vs the compiler's vectorizer. Once a lane is threaded (``auto-par`` / ``omp-emit``) the
-    story is threading, not the scalar/vector floor, so the extra cost points there are low value and
-    multiply the matrix. Presets:
-
-      * ``full`` -- sweep every requested cost model on every parallel mode (the exhaustive matrix).
-      * ``lean`` -- sweep the full cost axis ONLY on the ``sequential`` (single-core) lane -- exactly the
-        data :mod:`perf.plot_vectorization` reads -- and collapse ``auto-par`` / ``omp-emit`` to the
-        compiler default. This roughly halves the timing cells while losing NO single-core vec data.
-
-    An unknown preset behaves like ``full`` (fail open -- never silently drop cells)."""
+    """Vectorizer cost models to sweep for a ``parallel`` mode under a ``matrix_preset``. The cost axis
+    is a single-core question (scalar floor vs vectorizer); once threaded, cost points add little value.
+    ``full`` sweeps every cost model on every parallel mode; ``lean`` sweeps the full axis only on
+    ``sequential`` and collapses ``auto-par``/``omp-emit`` to the compiler default (roughly halves timing
+    cells, keeps all single-core vec data). Unknown preset -> behaves like ``full`` (fail open)."""
     if matrix_preset == "lean" and parallel != "sequential":
         return ["default"] if "default" in cost_models else list(cost_models[:1])
     return list(cost_models)
 
 
-#: libm transcendentals a vector-math library (``-fveclib``) can accelerate in the emitted source. A nest
-#: whose source calls none of these gets no veclib axis (the library is inert for it) -- the plan's prune.
+#: libm transcendentals a vector-math library (``-fveclib``) can accelerate; a nest calling none of these
+#: gets no veclib axis (the library would be inert for it).
 _MATH_CALLS = ("sin", "cos", "exp", "log", "pow", "tan", "asin", "acos", "atan", "atan2", "hypot", "sinh", "cosh",
                "tanh", "cbrt", "expm1", "log1p")
 
 
 def source_has_math(text: str) -> bool:
-    """True when the emitted source calls a libm transcendental a veclib could vectorize (a plain ``name(``
-    scan of the numpyto output). Cheap gate so a math-free nest skips the veclib axis entirely."""
+    """True if the emitted source calls a libm transcendental a veclib could vectorize (plain ``name(``
+    scan). Cheap gate so a math-free nest skips the veclib axis."""
     return any(f"{fn}(" in text for fn in _MATH_CALLS)
 
 
 def veclibs_for(has_math: bool, veclibs: Sequence[str], compiler: Optional[str]) -> Tuple[str, ...]:
-    """The veclib values to actually sweep for one (nest-lang, compiler): always ``none``; a candidate is
-    added only when the nest HAS a libm call (``has_math``, precomputed per-lang in the ctx by
-    :func:`source_has_math` -- see :func:`build_opt_context`) AND the veclib is compatible with the compiler
-    (an incompatible one is dropped here, never turned into an error cell). Taking the precomputed flag (not
-    the source text) keeps :func:`enumerate_cells` free of source I/O and lets the C++ lane inherit the C
-    source's math content instead of scanning its ``#include``-only wrapper."""
+    """Veclib values to sweep for one (nest-lang, compiler): always ``none``, plus a candidate only when
+    the nest has a libm call and the veclib is compatible with the compiler (incompatible ones are
+    dropped here, never turned into an error cell). Takes the precomputed ``has_math`` flag so
+    :func:`enumerate_cells` stays I/O-free."""
     out = ["none"]
     if has_math:
         for vl in veclibs:
@@ -739,13 +670,10 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
     pendings: List[Pending] = []
     jobs: Dict[Tuple, Dict] = {}
     opt_mode = axes["opt_mode"]
-    nest_idx = opt_ctx.get("nest_idx", 0)  # dict.get (not getattr): a synthetic ctx may omit it -> nest 0
-    # Dedup identical TIMING cells: two axis points whose (exe, flags, src) collapse to the same compile
-    # (e.g. clang/icx/nvc `cheap` == `default`, nvc `assume-finite` == `contract-fma`) are the SAME
-    # measurement -- previously they were timed once PER label (same .so, run N times) and produced N
-    # duplicate rows. Keep the FIRST (canonical `default`-cost label wins, iteration order) and skip the
-    # rest, so the family that has no such knob contributes one cell, not three. Gate cells are exempt
-    # (different FP flags; never collide with a timing cell) so the bit-exact gate always runs.
+    nest_idx = opt_ctx.get("nest_idx", 0)  # dict.get: a synthetic ctx may omit it -> nest 0
+    # Dedup identical TIMING cells: axis points whose (exe, flags, src) collapse to the same compile (e.g.
+    # clang/icx/nvc `cheap` == `default`) are the same measurement -- keep the first, skip the rest. Gate
+    # cells are exempt (different FP flags, never collide) so the bit-exact gate always runs.
     seen_timing: set = set()
 
     def add(cell: Cell, exe: str, cflags: List[str], src: Path, atol: float, symbol, order, argtypes, ctx_key):
@@ -794,8 +722,7 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
             # TODO(machine-compat prune): skip cells MachineCompat.is_supported rejects, keyed on
             # compiler_family(exe) not tc.fp_family (icx: 'llvm' vs 'intel' -- must not conflate).
             for parallel in axes["parallelism"]:
-                # omp-emit uses OUR ``#pragma omp`` source (numpyto c_omp/fortran_omp); it exists only for
-                # a nest the DaCe schedule marked parallel AND numpyto could soundly parallelize.
+                # omp-emit uses our #pragma omp source; exists only for a DaCe-parallel, soundly-parallelizable nest.
                 psrc = src
                 if parallel == "omp-emit":
                     omp = opt_ctx.get("omp_src", {}).get(lang)
@@ -846,12 +773,10 @@ def enumerate_cells(opt_ctx: Dict, toolchains: List[Toolchain], fortran_by_famil
 
 
 # --- Pluto polyhedral lane (opt-in --pluto): polycc transform of the emitted scop -------------------
-# A distinct polyhedral TOOLCHAIN (not a compiler flag): polycc tiles + auto-parallelizes the emitted
-# ``<base>_pluto_input.c`` scop offline into a different C source we then compile. The transformed function
-# keeps a VLA-parameter signature (size symbols FIRST) that signature_order cannot parse, so the ABI comes
-# from the authoritative ``_pluto_binding.json`` (see nestforge.perf.pluto_lane). At the C ABI a VLA array
-# param decays to a pointer, so ``call_c`` marshals it unchanged given the pluto (size-first) order. polycc
-# is almost always ABSENT off the optarena container -> the lane records a skip reason, never a crash.
+# Distinct polyhedral TOOLCHAIN, not a flag: polycc tiles + auto-parallelizes the emitted scop offline into
+# a new C source. Its VLA-parameter signature (size symbols first) can't be parsed by signature_order, so
+# the ABI comes from ``_pluto_binding.json`` instead (see nestforge.perf.pluto_lane). polycc is almost
+# always absent off the optarena container -> the lane records a skip reason, never a crash.
 def pluto_validate_work(so: Path,
                         symbol: str,
                         order: List[str],
@@ -861,9 +786,9 @@ def pluto_validate_work(so: Path,
                         oracle,
                         given=None) -> Dict:
     """Fresh-buffer correctness run of the compiled Pluto ``.so`` vs the numpy oracle, in the forked child.
-    Marshals with the Pluto (size-symbols-first) ``order`` -- the VLA params decay to pointers, so the same
+    Marshals with the Pluto (size-symbols-first) ``order``; the VLA params decay to pointers, so the same
     ``call_c`` the C lane uses binds them correctly once the order is right."""
-    inputs = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (the call runs in place)
+    inputs = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh buffer (the call runs in place)
     outputs, _ = call_c(so, symbol, order, argtypes, boundary, inputs, validate_sizes, 1)
     outs = {o: outputs[o] for o in boundary.outputs if o in outputs}
     if not outs:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
@@ -891,8 +816,8 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
         return {**label, "skip": "skip:unsupported:no-binding", **summarize_times([])}
     symbol, order = pluto_lane.binding_symbol_and_order(binding)
     boundary = nc["boundary"]
-    # ABI guard (never trust the manifest -- the plan's Pluto risk): every binding arg must be a real
-    # boundary array or size symbol, else the reordered VLA marshaling would land a size in a pointer slot.
+    # ABI guard: every binding arg must be a real boundary array/size symbol, else reordered VLA
+    # marshaling would land a size in a pointer slot.
     known = set(boundary.standalone_sdfg.arrays) | set(nc["validate_sizes"])
     unknown = [a for a in order if a not in known]
     if unknown:
@@ -902,9 +827,8 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
     if not ok:
         return {**label, "skip": pre, **summarize_times([])}
     so = workdir / f"pluto_n{nc['nest_idx']}.so"
-    # PLUTO_EXTRA_FLAGS carries -fopenmp (polycc emits the pragmas), which would link gcc's DEFAULT
-    # libgomp -- a second runtime beside the one every other lane links. Pin the machine's runtime (the one
-    # discovery found works cross-compiler here), falling back to the portable default when uncharacterised.
+    # PLUTO_EXTRA_FLAGS carries -fopenmp; pin the machine's discovered runtime so it doesn't link a second
+    # (gcc default) libgomp beside the one every other lane uses.
     omp_rt, omp_reason = flags.openmp_runtime_flags(cc, "gnu", support_matrix.cached_default_runtime())
     if omp_rt is None:
         return {**label, "skip": omp_reason, **summarize_times([])}
@@ -942,8 +866,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         "profile_preset": profile_preset
     }
 
-    # per-opt-mode context: EVERY extracted nest, as a LIST of per-nest ctxs. A failing opt-mode is noted,
-    # not fatal.
+    # per-opt-mode context: every extracted nest as a list of per-nest ctxs. A failing opt-mode is noted, not fatal.
     contexts: Dict[str, List[Dict]] = {}
     opt_notes: Dict[str, str] = {}
     for opt_mode in axes["opt_modes"]:
@@ -958,10 +881,9 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
     base_key = "simplify-parallel" if "simplify-parallel" in contexts else next(iter(contexts))
     base_ctxs = contexts[base_key]  # the base opt-mode's per-nest ctxs (what lanes 1/2 measure against)
     result["baseline_opt"] = base_key  # which opt-mode's nests lanes 1/2 used (may not be 'simplify-parallel')
-    # lane 1 (native): ONE whole-kernel measurement stamped nest=-1 -- it is compared against the SUM over
-    # nests, not any single nest, so it borrows the base opt-mode's FIRST nest only for buffer sizing / the
-    # oracle cross-check. lane 2 (DaCe-cpp): runs PER NEST (each cell carries its nest idx); the speedup
-    # denominator is the SUM over nests. A single C++ toolchain (first with cxx) drives both.
+    # lane 1 (native): one whole-kernel measurement (nest=-1), borrows the base opt-mode's first nest for
+    # buffer sizing since it's compared against the SUM over nests. lane 2 (DaCe-cpp): runs per nest,
+    # denominator is the sum. One C++ toolchain (first with cxx) drives both.
     cxx_tc = next((tc for tc in toolchains if tc.cxx is not None), toolchains[0] if toolchains else None)
     if cxx_tc is not None:
         nat0 = base_ctxs[0]
@@ -971,9 +893,8 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
         if native is not None:
             native["nest"] = -1  # whole-kernel sentinel: not a single-nest measurement
         result["native"] = native
-        # The DaCe lane fans out over the codegen-implementation axis: 'legacy' (the speedup denominator)
-        # plus 'experimental' when this DaCe build has it. Each cell carries its nest idx + codegen_impl;
-        # the reporter sums only the legacy cells for the denominator and geomeans experimental against it.
+        # DaCe lane fans out over codegen impl: 'legacy' + 'experimental' where available. Each cell carries
+        # nest idx + codegen_impl; the reporter sums legacy for the denominator, geomeans experimental against it.
         dace_cpp_cells: List[Dict] = []
         for nc in base_ctxs:
             for impl in codegen_impls_available():
@@ -1012,8 +933,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
             result["dace_cpp_vec"] = dace_vec_cells
 
     # Optional Pluto polyhedral lane: polycc transform of the emitted scop, one cell per nest. Opt-in
-    # (--pluto) and a distinct toolchain -- almost always ABSENT off the optarena container, so each nest
-    # records a skip reason. Uses a GNU C compiler (the transformed output is plain C).
+    # (--pluto); polycc almost always absent off the optarena container -> each nest records a skip reason.
     if axes.get("pluto"):
         gnu_cc = next((tc.cc for tc in toolchains if tc.fp_family == "gnu" and tc.cc is not None), None)
         pluto_cells: List[Dict] = []
@@ -1022,8 +942,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
             pluto_cells.append(pcell)
         result["pluto"] = pluto_cells
 
-    # lane 3: enumerate + dedup-compile + validate + time. Each opt-mode holds a LIST of per-nest ctxs; every
-    # nest is enumerated independently (its own emitted sources + boundary/oracle/sizes + symbol).
+    # lane 3: enumerate + dedup-compile + validate + time. Each nest is enumerated independently.
     all_pending: List[Pending] = []
     all_jobs: Dict[Tuple, Dict] = {}
     ctx_by_key: Dict[Tuple, Dict] = {}
@@ -1106,12 +1025,10 @@ def kernel_winner(cells: List[Dict],
                   lang: str,
                   compiler: str,
                   nest: Optional[int] = None) -> Optional[Dict]:
-    """Fastest VALIDATED timing cell (min median) for one (opt, lang, compiler[, nest]) group, or None.
+    """Fastest validated timing cell (min median) for one (opt, lang, compiler[, nest]) group, or None.
 
-    ``nest`` restricts the search to one extracted nest; ``None`` (the default) matches any nest. A kernel's
-    offloaded time is the SUM over nests of the per-nest winner, so :func:`render_tables` passes an explicit
-    nest per call and sums the results. ``c.get("nest", 0)`` (dict.get, not getattr) tolerates a legacy or
-    synthetic cell that predates the ``nest`` field -> treated as the single nest 0."""
+    ``nest=None`` matches any nest; :func:`render_tables` passes an explicit nest and sums per-nest
+    winners for the kernel's offloaded time. ``c.get("nest", 0)`` tolerates a cell predating the field."""
     grp = [
         c for c in cells if c["role"] == "timing" and c["ok"] and c["opt_mode"] == opt_mode and c["language"] == lang
         and c["compiler"] == compiler and (nest is None or c.get("nest", 0) == nest) and finite(c["median_us"])
@@ -1133,9 +1050,8 @@ def render_tables(out: Path) -> str:
         "",
     ]
 
-    # strict-ieee gate: the gate cell must VALIDATE within the strict tolerance vs the oracle. strict-ieee is
-    # NOT atol-0 (reductions/transcendentals differ ~1e-15 from numpy pairwise sum), so the gate agrees with
-    # the cell's own ``ok`` verdict (validated at FP_ATOL["strict-ieee"]) rather than demanding maxdiff == 0.
+    # strict-ieee gate must validate within the strict tolerance, not maxdiff==0 (reductions/transcendentals
+    # differ ~1e-15 from numpy's pairwise sum), so it agrees with the cell's own FP_ATOL["strict-ieee"] verdict.
     gate_fail = []
     for k in done:
         for c in k["cells"]:
@@ -1171,15 +1087,13 @@ def render_tables(out: Path) -> str:
     pluto_skips: Dict[str, int] = {}  # skip-reason -> count, so an absent polycc is reported, not hidden
     novalidate = 0
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
-        # dace_cpp is a LIST of per-nest cells (older JSON: single-dict / empty tolerated), now also fanned
-        # over the codegen-impl axis. The DENOMINATOR is the legacy cells only (a cell with no codegen_impl
-        # predates the axis -> treated as legacy), summed over nests, defined only when every nest timed.
+        # dace_cpp is a list of per-nest cells (older JSON: single-dict/empty tolerated), fanned over codegen
+        # impl; a cell with no codegen_impl predates the axis -> treated as legacy.
         dcpp_raw = k.get("dace_cpp")
         dcpp_list = dcpp_raw if isinstance(dcpp_raw, list) else ([dcpp_raw] if dcpp_raw else [])
         legacy_cells = [d for d in dcpp_list if d.get("codegen_impl", "legacy") == "legacy"]
         exp_cells = [d for d in dcpp_list if d.get("codegen_impl") == "experimental"]
-        # Denominator = the NEW (experimental) codegen when the run produced it (nest-forge's default),
-        # else legacy. A cell with no codegen_impl predates the axis -> counts as legacy.
+        # Denominator = experimental when produced (nest-forge's default), else legacy.
         primary_cells = exp_cells if exp_cells else legacy_cells
         dace_meds = [d.get("median_us") for d in primary_cells]
         dace_us = sum(dace_meds) if (dace_meds and all(finite(m) for m in dace_meds)) else None
@@ -1274,7 +1188,7 @@ def render_tables(out: Path) -> str:
             "representative (identical iteration space)."
         ]
 
-    # unsupported / error summary (auto-par on clang, missing Fortran compilers, ...).
+    # unsupported/error summary (auto-par on clang, missing Fortran compilers, ...)
     reasons: Dict[str, int] = {}
     for k in done:
         for c in k["cells"]:
@@ -1284,7 +1198,7 @@ def render_tables(out: Path) -> str:
         lines += ["", "## unsupported / skipped cells (recorded, not silently dropped)", ""]
         lines += [f"- {n}x — {r}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1])]
 
-    # real compile / validation failures -- NOT the expected unsupported/missing-compiler cells above.
+    # real compile/validation failures, not the expected unsupported/missing-compiler cells above.
     failures: Dict[str, int] = {}
     for k in done:
         for c in k["cells"]:
@@ -1306,10 +1220,9 @@ def render_tables(out: Path) -> str:
 
 # --- CLI ---------------------------------------------------------------------------------------------
 def resolve_veclibs(spec: List[str], compiler: str = "gcc") -> Tuple[str, ...]:
-    """Resolve the ``--veclibs`` spec to the axis values. ``'auto'`` -> ``('none',)`` plus the per-device
-    characterized winner (``device_profile.rank_veclibs`` -- compiles tiny probes once); ``'none'`` ->
-    ``('none',)``; an explicit list is used verbatim with ``none`` ensured present. A box with no installed
-    veclib resolves to ``('none',)``, so the axis silently disappears rather than erroring."""
+    """Resolve ``--veclibs`` to axis values. ``'auto'`` -> none + the per-device characterized winner
+    (compiles tiny probes once); ``'none'`` -> just none; an explicit list is used verbatim with none
+    ensured present. No installed veclib -> resolves to ``('none',)`` rather than erroring."""
     if list(spec) == ["auto"]:
         from nestforge.device_profile import rank_veclibs
         ranked = [p for p in rank_veclibs(compiler) if p.ok]

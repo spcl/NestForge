@@ -1,15 +1,14 @@
 """Static-library overhead job.
 
-For each TSVC kernel, own-build the DaCe SDFG (compile DaCe's C++ ourselves -- no CMake) BOTH ways and
-time only the post-codegen toolchain work:
+For each TSVC kernel, own-build the DaCe SDFG both ways and time only the post-codegen toolchain work:
 
   * **monolithic** -- one translation unit (the compiler inlines freely);
   * **external**   -- compile to an object, ``ar`` it into a static ``.a``, link the ``.so`` from that
     archive -- the assembly path the arena uses to link per-kernel winners into a whole program.
 
-The ratio ``external / monolithic`` is the per-kernel static-lib assembly overhead. Codegen is done once
-and shared, so only compile/link differs. Kernels are self-partitioned across ranks (SLURM or MPI);
-``--tables-only`` merges the per-kernel JSON into markdown.
+The ratio ``external / monolithic`` is the per-kernel overhead. Codegen is done once and shared, so
+only compile/link differs. Kernels self-partition across ranks; ``--tables-only`` merges the per-kernel
+JSON.
 
 Usage::
 
@@ -27,7 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a cwd stub)
+import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 
 from nestforge import tsvc
 from nestforge.arena import discover_blas_libraries

@@ -84,6 +84,11 @@ _DACE_DTYPES = {
     "complex128": "np.complex128",
 }
 _DACE_CAST = re.compile(r"\bdace\.(" + "|".join(_DACE_DTYPES) + r")\b")
+#: a BARE dtype cast (``int64(mats_index)``) as ``symbolic.symstr`` renders a DaCe typecast inside an
+#: array subscript -- no ``dace.``/``np.`` prefix, so :data:`_DACE_CAST` never sees it and the emitted
+#: index would raise ``NameError: name 'int64' is not defined``. The lookbehind skips a qualified
+#: ``np.int64(`` / ``dace.int64(`` and any ``x.int64(`` attribute, matching only the standalone call.
+_BARE_CAST = re.compile(r"(?<![\w.])(" + "|".join(_DACE_DTYPES) + r")\s*\(")
 
 #: bare math intrinsic (as DaCe exposes it in tasklet code) -> the numpy function that computes it.
 _MATH_INTRINSICS = {
@@ -208,6 +213,7 @@ def normalize_casts(code: str) -> str:
     """
     code = _DECLTYPE_CAST.sub("", code)
     code = _DACE_CAST.sub(lambda m: _DACE_DTYPES[m.group(1)], code)
+    code = _BARE_CAST.sub(lambda m: f"{_DACE_DTYPES[m.group(1)]}(", code)
     code = rewrite_math_prefix(code)
     code = _INTRINSIC_CALL.sub(lambda m: _MATH_INTRINSICS[m.group(1)], code)
     return rewrite_userfuncs(code)
@@ -258,6 +264,22 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
     return lines + [normalize_casts(u) for u in wcr_updates]
 
 
+def copy_side(sdfg: dace.SDFG, name: str, subset) -> str:
+    """One side of a memlet copy, rendered as a squeezed view. A scalar local stays bare and a size-1
+    buffer reads its element; every other array drops its length-1 axes, so both sides reduce to the
+    same packed shape (``(N, 1)`` and ``(1, N)`` both become the ``(N,)`` view ``a[:, 0]`` / ``a[0, :]``).
+    A DaCe memlet copy moves elements in volume order -- exactly this squeezed vector-to-vector copy --
+    which keeps a reshape (``(N,1)`` buffer) and a transpose (``q[:, 0] = v[0, :]``) both correct."""
+    if scalar_local(sdfg, name):
+        return name
+    desc = sdfg.arrays[name]
+    if is_scalar(desc):
+        return f"{name}[0]"
+    if subset is None:
+        subset = dace.subsets.Range.from_array(desc)
+    return f"{name}[{index_str(subset)}]"  # keep_singleton default: length-1 axes collapse away
+
+
 def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) -> List[str]:
     """Emit ``dst[..] = src[..]`` for each memlet copy feeding ``dst`` from an access node or a map entry.
 
@@ -295,12 +317,17 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             # so it never reaches a silent overwrite here either.
             continue
         if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst.data].shape):
-            # Same-rank copy: a ``None`` other-side subset means "the same range as the named side";
-            # mirror it so a partial copy is not silently widened to the whole array.
-            src_sub = src_sub if src_sub is not None else dst_sub
-            dst_sub = dst_sub if dst_sub is not None else src_sub
-            lhs, rhs = write_lhs(sdfg, dst.data, dst_sub), read_expr(sdfg, src_name, src_sub)
-            dst_read = read_expr(sdfg, dst.data, dst_sub)
+            # A ``None`` other-side subset means "the same range as the named side" -- mirror it so a
+            # partial copy is not silently widened. Only when the two arrays share a shape, though: a
+            # same-rank reshape (``pos[:, 1:2]`` -> an ``[N, 1]`` buffer) must NOT mirror the source's
+            # column onto the differently-shaped destination (writing ``__y[:, 1]`` of an ``[N, 1]``
+            # array is an out-of-bounds no-op) -- each side keeps its own subset, a ``None`` meaning
+            # that side's whole array.
+            if sdfg.arrays[src_name].shape == sdfg.arrays[dst.data].shape:
+                src_sub = src_sub if src_sub is not None else dst_sub
+                dst_sub = dst_sub if dst_sub is not None else src_sub
+            lhs, rhs = copy_side(sdfg, dst.data, dst_sub), copy_side(sdfg, src_name, src_sub)
+            dst_read = copy_side(sdfg, dst.data, dst_sub)
         else:
             # Reshape/rank-changing copy (``(N,) <-> (N, 1)``, or an array element -> scalar staging): a
             # scalar-local side stays bare; the reshaping side keeps its subset explicit so a point
@@ -454,9 +481,12 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
         if src_name == dst_name:  # a self-edge moves nothing out of the map
             continue
         if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst_name].shape):
-            src_sub = src_sub if src_sub is not None else dst_sub
-            lhs, rhs = write_lhs(sdfg, dst_name, dst_sub), read_expr(sdfg, src_name, src_sub)
-            dst_read = read_expr(sdfg, dst_name, dst_sub)
+            # mirror a None subset only between same-shaped arrays (see copy_lines); a same-rank
+            # reshape keeps each side's own subset so a column is not written out of bounds.
+            if sdfg.arrays[src_name].shape == sdfg.arrays[dst_name].shape:
+                src_sub = src_sub if src_sub is not None else dst_sub
+            lhs, rhs = copy_side(sdfg, dst_name, dst_sub), copy_side(sdfg, src_name, src_sub)
+            dst_read = copy_side(sdfg, dst_name, dst_sub)
         else:
             lhs = reshape_side(sdfg, dst_name, dst_sub, write=True)
             rhs = reshape_side(sdfg, src_name, src_sub, write=False)

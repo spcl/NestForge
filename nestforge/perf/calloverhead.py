@@ -1,21 +1,18 @@
 """Runtime call-overhead job: what does it cost to call an emitted loop-nest from an external static
 ``.a`` instead of inlining it, and does LTO recover that cost?
 
-The emitted numpyto kernels are STATELESS (``extern "C" void <key>_fp64(double* a, ...)`` -- pure over
-their buffer arguments, no static/global/TLS state, no init/exit), so they can always be inlined back.
-For each kernel we build a tiny compiled trampoline ``run_<key>(<kernel args>, nreps)`` that calls the
-kernel ``nreps`` times in a loop -- so the rep loop is COMPILED C where inlining is visible (a Python/
-ctypes rep loop would call across the boundary every iteration regardless) -- three ways:
+Emitted kernels are stateless, so they can always be inlined back. For each kernel we build a compiled
+trampoline ``run_<key>(<args>, nreps)`` looping ``nreps`` calls -- so inlining happens in compiled C,
+not across a Python/ctypes boundary -- three ways:
 
-  * **inline**       -- ``#include`` the kernel source into the trampoline TU; the compiler inlines it;
-  * **external-lto** -- kernel compiled to a FAT-LTO object, ``ar``'d into a ``.a``, linked ``-flto``;
-    the LTO plugin inlines the kernel out of the archive across the TU boundary;
-  * **external**     -- kernel in a plain ``.a`` (no LTO); an ordinary out-of-line call each iteration.
+  * **inline**       -- ``#include`` the kernel into the trampoline TU; the compiler inlines it;
+  * **external-lto** -- kernel as a FAT-LTO object in a ``.a``, linked ``-flto``; LTO inlines across
+    the archive boundary;
+  * **external**     -- kernel in a plain ``.a``; an ordinary out-of-line call each iteration.
 
-We time ONE ctypes call to the trampoline (amortizing the single Python->C crossing over ``nreps`` inner
-calls) and report per-call microseconds. Ratios ``external / inline`` (the call overhead) and
-``external-lto / inline`` (how much LTO recovers) are the result. Kernels self-partition across ranks;
-``--tables-only`` merges the per-kernel JSON into markdown.
+We time one ctypes call to the trampoline (amortizing the Python->C crossing over ``nreps`` inner
+calls). Ratios ``external / inline`` and ``external-lto / inline`` are the result. Kernels
+self-partition across ranks; ``--tables-only`` merges the per-kernel JSON.
 
 Usage::
 
@@ -39,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a cwd stub)
+import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 
 from nestforge import tsvc
 from nestforge.arena import make_inputs
@@ -62,9 +59,8 @@ def signature_params(csrc: str, symbol: str) -> str:
 
 
 def runner_source(symbol: str, params: str, argnames: List[str], kernel_c: Optional[Path]) -> str:
-    """A trampoline TU: ``run_<symbol>(<params>, nreps)`` looping ``nreps`` calls to the kernel. When
-    ``kernel_c`` is given the kernel is ``#include``d (inline build); otherwise it is declared ``extern``
-    (external build, resolved from the linked ``.a``)."""
+    """A trampoline TU: ``run_<symbol>(<params>, nreps)`` looping ``nreps`` kernel calls. ``kernel_c``
+    given -> ``#include``d (inline build); otherwise declared ``extern`` (external build)."""
     forward = ", ".join(argnames)
     head = f'#include "{kernel_c.resolve()}"\n' if kernel_c is not None else f"extern void {symbol}({params});\n"
     return (f"#include <stdint.h>\n{head}"
@@ -74,8 +70,7 @@ def runner_source(symbol: str, params: str, argnames: List[str], kernel_c: Optio
 
 
 def run_compile(cmd: List[str]) -> None:
-    # Bound each compile so a pathological build can't hang the rank forever (see build.run /
-    # NF_COMPILE_TIMEOUT); a timeout surfaces as a normal build failure for this cell.
+    # bound each compile so a pathological build can't hang the rank; timeout -> normal build failure.
     try:
         r = subprocess.run(cmd,
                            capture_output=True,
@@ -101,11 +96,10 @@ def build_inline(cc: str, cflags: List[str], kernel_c: Path, symbol: str, params
 def build_external(cc: str, cflags: List[str], kernel_c: Path, symbol: str, params: str, argnames: List[str],
                    workdir: Path, lto: bool) -> Path:
     """Kernel compiled to an object, ``ar``'d into a ``.a``, linked into the trampoline ``.so``. With
-    ``lto`` the object is a FAT-LTO object and the link is ``-flto`` (the linker inlines from the archive);
-    without it the call stays out-of-line."""
+    ``lto`` the object is FAT-LTO and the link uses ``-flto``; without it the call stays out-of-line."""
     tag = "extlto" if lto else "ext"
     lto_c = fat_lto_flags(cc) if lto else []
-    if lto and not lto_c:  # compiler cannot fat-LTO -> this variant is not measurable for it
+    if lto and not lto_c:  # compiler has no fat-LTO support -> not measurable
         raise RuntimeError(f"{Path(cc).name} has no fat-LTO support; external-lto not measurable")
     obj = workdir / f"{tag}_{symbol}.o"
     run_compile([cc, *cflags, *lto_c, "-fPIC", "-c", str(kernel_c), "-o", str(obj)])
@@ -122,8 +116,8 @@ def build_external(cc: str, cflags: List[str], kernel_c: Path, symbol: str, para
 
 def time_work(so: Path, run_symbol: str, order: List[str], argtypes: list, work: Dict, sizes: Dict[str, int],
               inner: int, reps: int) -> Dict:
-    """Per-call microseconds: warm, then time ``reps`` single calls to the trampoline (each running the
-    kernel ``inner`` times) and divide the median by ``inner``. Runs in a forked child (segfault-safe)."""
+    """Per-call microseconds: warm, then time ``reps`` calls to the trampoline (each running the kernel
+    ``inner`` times), divide the median by ``inner``. Runs in a forked child."""
     fn = ctypes.CDLL(str(so))[run_symbol]
     fn.argtypes, fn.restype = [*argtypes, ctypes.c_int64], None
     cargs = c_call_args(order, argtypes, work, sizes) + [ctypes.c_int64(inner)]
@@ -150,12 +144,11 @@ def build_and_time(cc: str,
                    reps: int,
                    workdir: Path,
                    given=None) -> Dict:
-    """Build the three variants and time each in isolation. A variant that fails to build/run is recorded
-    as ``None`` (never aborts the others).
+    """Build the three variants and time each in isolation. A failed variant is recorded as ``None``,
+    never aborting the others.
 
-    ``given`` is forwarded to :func:`make_inputs` -- the manifest's index-array fills. Without them a
-    gather/scatter kernel is timed with an all-zero index array, i.e. against the wrong memory behaviour,
-    which is precisely what this job claims to measure."""
+    ``given`` forwards the manifest's index-array fills to :func:`make_inputs` -- without them a
+    gather/scatter kernel would time an all-zero index array, the wrong memory behaviour."""
     cflags = flags.base_flags(family)
     builders = {
         "inline": lambda d: build_inline(cc, cflags, kernel_c, symbol, params, argnames, d),
@@ -170,7 +163,7 @@ def build_and_time(cc: str,
             res = run_isolated(
                 lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, work, sizes, inner, reps))
             out[name] = None if "error" in res else res["per_call_us"]
-        except Exception as e:  # noqa: BLE001 -- one variant failing must not sink the others
+        except Exception as e:  # noqa: BLE001 -- a failed variant must not sink the others
             out[name] = None
             out[f"{name}_error"] = f"{type(e).__name__}: {str(e)[:120]}"
     return out
@@ -178,8 +171,8 @@ def build_and_time(cc: str,
 
 @dataclass
 class CoNest:
-    """One extracted nest of a kernel plus its emitted C source and parsed C signature. A single-nest
-    kernel has one (named ``<key>`` / symbol ``<key>_fp64``); a multi-nest kernel one per ``<key>_n<idx>``."""
+    """One extracted nest plus its emitted C source and parsed signature. Single-nest kernels use
+    ``<key>``/``<key>_fp64``; multi-nest kernels one per ``<key>_n<idx>``."""
     idx: int
     name: str
     symbol: str
@@ -197,9 +190,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
                workdir: Path) -> Dict:
     """Emit + build + time one kernel; return per-variant per-call times and the overhead ratios.
 
-    A kernel may split into several compute nests; the call cost of the kernel is the SUM of its nests'
-    calls, so each variant's per-call time (inline / external / external-lto) is summed over nests before
-    the overhead ratios are taken. A single-nest kernel is exactly the old single measurement."""
+    A kernel may split into several nests; each variant's per-call time is summed over nests before the
+    overhead ratios are taken."""
     result = {"key": kernel.key, "corpus": kernel.corpus, "compiler": family, "host": socket.gethostname()}
     try:
         nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), "skip-taskloops", kernel.key)
@@ -220,12 +212,11 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
     except Exception as e:  # noqa: BLE001
         return {**result, "skipped": f"emit: {type(e).__name__}: {str(e)[:150]}"}
 
-    # Time each variant per nest; the kernel's per-variant call cost is the SUM over its nests. A variant
-    # is None for the kernel if ANY nest could not build/time it (a missing part cannot be summed).
+    # time each variant per nest and sum; a variant is None if any nest failed to build/time it.
     per_variant: Dict[str, List[Optional[float]]] = {"inline": [], "external": [], "external_lto": []}
     multi = len(units) > 1
     for u in units:
-        # the trampoline forwards the kernel's parameters by name; abi_order gives exactly those names.
+        # trampoline forwards params by name; abi_order gives exactly those names.
         times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.order, u.argtypes, u.boundary, u.sizes,
                                inner, reps, u.nest_dir, u.given)
         for v in per_variant:

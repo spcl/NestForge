@@ -1,14 +1,11 @@
 """Cross-compiler x cross-language TSVC job at a fixed preset (XL by default).
 
-For every kernel of the ``tsvc2`` + ``tsvc2_5`` corpora, extract the compute nest, translate it to C
-AND Fortran (numpyto's two AOT-compiled targets), and for each language x each discovered compiler
-compile it, run it, and validate it against the numpy oracle -- then time it. Both languages emit the
-same C-ABI ``<key>_fp64`` symbol (C plainly, Fortran via ``bind(c)``), so the run is uniform ctypes
-across languages (only the signature syntax and Fortran's leading-underscore name munge differ). Sizes
-come from the fixed ``--preset`` scale so every language/compiler sees the same problem.
+For every ``tsvc2``/``tsvc2_5`` kernel: extract the compute nest, translate to C and Fortran, compile
+with each discovered compiler, run, validate against the numpy oracle, and time. Both languages emit
+the same C-ABI ``<key>_fp64`` symbol, so the run is uniform ctypes across languages.
 
-Kernels self-partition across ranks (SLURM or MPI); each cell runs in a forked child so an OOB / runaway
-in freshly-compiled code cannot take down the rank. ``--tables-only`` merges the per-kernel JSON.
+Kernels self-partition across ranks; each cell runs in a forked child so a crash can't take down the
+rank. ``--tables-only`` merges the per-kernel JSON.
 
 Usage::
 
@@ -27,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import dace  # noqa: F401 -- ensure the real DaCe package is importable
+import dace  # noqa: F401 -- ensures real dace importable
 
 from nestforge import tsvc
 from nestforge.arena import maxdiff, make_inputs, run_oracle
@@ -38,9 +35,8 @@ from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 from nestforge.perf.harness import c_argtypes, call_c, my_slice, rank_and_size, run_compile, signature_order
 from nestforge.translate import emit_sources, prepare
 
-#: language -> (numpyto target, source suffix, per-family compiler-exe candidates). numpyto has no
-#: distinct C++ AOT target; C and Fortran both emit the SAME C-ABI ``<key>_fp64`` symbol (Fortran via
-#: ``bind(c)``), so the ctypes run is uniform across languages.
+#: language -> (numpyto target, suffix, compiler-exe candidates per family). C and Fortran both emit
+#: the same C-ABI ``<key>_fp64`` symbol (Fortran via ``bind(c)``), so ctypes calls are uniform.
 _LANGS = {
     "c": {
         "target": "c",
@@ -62,20 +58,19 @@ _LANGS = {
         }
     },
 }
-# C-language compiler exes gain the Intel entry too (the family label -> exe map above is per language).
+# add the Intel entry for C (map above is per language).
 _LANGS["c"]["exes"]["intel"] = ["icx"]
 
 
 def lang_compilers(languages: List[str], toolchains: List[Toolchain]) -> Dict[str, Dict[str, str]]:
-    """``{language: {family: compiler_path}}`` -- the compiler for each discovered family in each
-    requested language (e.g. the gcc family compiles C with ``gcc`` and Fortran with ``gfortran``; the
-    clang family uses ``flang``/``flang-new``). A family with no compiler for a language is absent."""
+    """``{language: {family: compiler_path}}`` for each discovered family x requested language (e.g.
+    gcc compiles C with ``gcc``, Fortran with ``gfortran``). A family missing a compiler is absent."""
     out: Dict[str, Dict[str, str]] = {}
     for lang in languages:
         spec = _LANGS[lang]
         per_family: Dict[str, str] = {}
         for tc in toolchains:
-            for exe in spec["exes"].get(tc.name, []):  # exes keyed by the family LABEL (gcc/clang/nvhpc)
+            for exe in spec["exes"].get(tc.name, []):  # keyed by family label (gcc/clang/nvhpc)
                 path = shutil.which(exe)
                 if path:
                     per_family[tc.name] = path
@@ -85,18 +80,16 @@ def lang_compilers(languages: List[str], toolchains: List[Toolchain]) -> Dict[st
 
 
 def fortran_unmunge(order: List[str], names: List[str]) -> List[str]:
-    """Map Fortran arg names back to the SDFG/size names. Fortran forbids a leading underscore, so the
-    translator rewrites a leading ``_`` to ``x`` (``__sym_out_i`` -> ``x_sym_out_i``); reverse that by
-    matching each Fortran name to the original whose munge equals it."""
+    """Map Fortran arg names back to SDFG/size names. Fortran forbids a leading underscore, so the
+    translator rewrites it to ``x`` (``__sym_out_i`` -> ``x_sym_out_i``); reverse via the munge map."""
     munge = {("x" + n[1:] if n.startswith("_") else n): n for n in names}
     return [munge.get(a, a) for a in order]
 
 
-#: preset scale order, so validation can pick the smaller of the requested size and a cheap cap.
+#: preset scale order, for picking min(requested, cheap cap).
 _PRESET_ORDER = ["S", "M", "L", "XL"]
-#: correctness is validated at most at this preset -- the numpy oracle is a pure-Python O(N) loop, so a
-#: 268M-element XL oracle would take minutes/kernel. The .so is size-agnostic (LEN is a runtime arg), so
-#: validating small and timing at the requested (XL) preset measures the same code correctly and fast.
+#: max validation preset -- the numpy oracle is O(N) pure Python, so an XL oracle takes minutes/kernel.
+#: The .so is size-agnostic, so validating small + timing at XL measures the same code, fast.
 _VALIDATE_CAP = "M"
 
 
@@ -116,18 +109,15 @@ def cell_work(so: Path,
               reps: int,
               atol: float,
               given=None) -> Dict:
-    """Runs inside the forked child. Validates correctness at the SMALL ``validate_sizes`` (fresh buffers
-    built here, fast oracle) and times at the large ``time_sizes``. ``time_inputs`` is the pre-built
-    XL buffer set inherited COW from the parent -- timing does not check output, so it needs no per-cell
-    freshness; ``call_c`` runs the kernel in place on that COW copy, whose page-out OOM-kills only this child.
-    ``atol`` is the FP-level tolerance (:data:`flags.FP_ATOL`): ``strict-ieee`` ~bit-exact, ``fast-math``
-    admits reassociation drift."""
+    """Runs inside the forked child. Validates at ``validate_sizes`` (fresh buffers, fast oracle) and
+    times at ``time_sizes``. ``time_inputs`` is COW-inherited from the parent, mutated in place by
+    ``call_c``, so only this child's page-out can OOM. ``atol`` is the FP tolerance
+    (:data:`flags.FP_ATOL`): ``strict-ieee`` ~bit-exact, ``fast-math`` admits reassociation drift."""
     vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
     md = float(maxdiff(oracle, vout))
     del vin, vout
-    # copy_outputs=False: timing checks no output, and at XL one output is ~2 GiB -- snapshotting it would
-    # double this child's peak RSS for a dict thrown away here.
+    # copy_outputs=False: no output check needed here, and at XL snapshotting would double peak RSS.
     _, us = call_c(so, symbol, order, argtypes, boundary, time_inputs, time_sizes, reps, copy_outputs=False)
     return {"ok": bool(md <= atol), "maxdiff": md, "time_us": float(us)}
 
@@ -147,8 +137,8 @@ class Cell:
 
 @dataclass
 class XlNest:
-    """One extracted nest of a kernel plus its per-nest oracle / sizes / timing buffers. The per-language
-    emitted source (which differs per nest) is parsed lazily in :func:`run_kernel`."""
+    """One extracted nest plus its oracle / sizes / timing buffers. Per-language source is parsed
+    lazily in :func:`run_kernel`."""
     idx: int
     name: str
     symbol: str
@@ -159,17 +149,15 @@ class XlNest:
     validate_sizes: Dict[str, int]
     oracle: Dict[str, object]
     time_inputs: Dict[str, object]
-    names: List[str]  # SDFG array + size names, for the Fortran leading-underscore un-munge
+    names: List[str]  # SDFG array + size names, for the Fortran un-munge
     validate_fills: Dict[str, object] = field(default_factory=dict)
 
 
 def measure_xl_cell(cc: str, lang: str, fam_label: str, fp_level: str, cost_model: str, cflags: List[str],
                     units: List[XlNest], per_nest_src: List, reps: int, workdir: Path) -> Cell:
-    """One (language, compiler, FP-level, cost-model) cell SUMMED over every nest of the kernel: compile +
-    validate + time each nest's own source at ``cflags`` and aggregate -- ``time_us`` / ``compile_us`` are
-    the sums, ``ok`` iff every nest validated, ``maxdiff`` the max over nests. A compile/run failure on any
-    nest makes the cell not-ok with an infinite time (the same shape the old single-nest failure cell had).
-    A single-nest kernel returns exactly the old single measurement (a sum of one)."""
+    """One (language, compiler, fp-level, cost-model) cell summed over every nest: compile + validate +
+    time each nest and aggregate. ``time_us``/``compile_us`` are sums, ``ok`` iff every nest validated,
+    ``maxdiff`` the max. A failure on any nest makes the whole cell not-ok with infinite time."""
     atol = flags.FP_ATOL[fp_level]
     tag = f"{fam_label}_{fp_level}_{cost_model}"
     ok_all, md_max, time_sum, compile_sum, err = True, 0.0, 0.0, 0.0, None
@@ -180,8 +168,7 @@ def measure_xl_cell(cc: str, lang: str, fam_label: str, fp_level: str, cost_mode
         if not cok:
             ok_all, md_max, time_sum, err = False, float("inf"), float("inf"), cerr
             break
-        # Generous timeout: an XL timing run (268M elements x reps) is legitimately long; the fork makes an
-        # OOM/segfault kill only the child, and the timeout only catches a genuine runaway.
+        # generous timeout: an XL run is legitimately long; the fork isolates OOM/segfault to the child.
         res = run_isolated(lambda u=u, order=order, argtypes=argtypes, so=so: cell_work(
             so, u.symbol, order, argtypes, u.boundary, u.validate_sizes, u.time_inputs, u.time_sizes, u.oracle, reps,
             atol, u.validate_fills),
@@ -205,9 +192,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
                opt_mode: str = "simplify-parallel") -> Dict:
     """Emit + compile + run + time one kernel across every requested language x compiler.
 
-    A kernel may split into several compute nests (its work is the SUM of its nests): every
-    (language, compiler, FP-level, cost-model) cell compiles + times each nest and sums the per-nest
-    times, so a cell just aggregates its nests and the result/cell schema is unchanged."""
+    A kernel may split into several nests; each cell sums per-nest compile/time, so the result schema
+    stays unchanged."""
     result = {"key": kernel.key, "corpus": kernel.corpus, "preset": preset, "host": socket.gethostname()}
     try:
         nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
@@ -215,18 +201,16 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
             return {**result, "skipped": "no compute nest"}
         units: List[XlNest] = []
         for idx, name, symbol, boundary in nests:
-            # Validate correctness at a SMALL preset (fast pure-Python oracle in the parent); time at the
-            # requested preset. The compiled .so is size-agnostic (LEN is a runtime arg), so both use it.
+            # validate at a small preset (fast oracle); time at the requested one; same size-agnostic .so.
             time_sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
             validate_sizes = tsvc.sample_sizes(kernel, boundary, preset=validate_preset(preset))
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=validate_sizes)
-            # SEEDED once per nest: the oracle and every cell validating against it must see the same subscripts.
+            # seeded once per nest so the oracle and every validating cell see the same subscripts.
             validate_fills = tsvc.index_fills(kernel, boundary, validate_sizes)
             oracle = run_oracle(prep, boundary, make_inputs(boundary, validate_sizes, seed=0, given=validate_fills),
                                 validate_sizes)
-            # Build the large timing buffers ONCE per nest; every cell's fork COW-inherits them (timing does
-            # not validate output, so the same buffers are reused across cells -- no per-cell re-fill).
+            # build timing buffers once per nest; every cell's fork COW-inherits them, no per-cell re-fill.
             time_inputs = make_inputs(boundary,
                                       time_sizes,
                                       seed=0,
@@ -241,8 +225,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
     rows: List[Dict] = []
     for lang in languages:
         spec = _LANGS[lang]
-        # Emit + parse each nest's source for this language up front; any nest failing drops the whole
-        # language (one error cell), mirroring the old single-nest emit-failure path.
+        # emit + parse each nest's source up front; any nest failing drops the whole language.
         try:
             per_nest_src = []
             for u in units:
@@ -258,14 +241,14 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
             continue
         for fam_label, cc in compilers.get(lang, {}).items():
             fam = family_of(fam_label)
-            # Sweep the FP-precision level x vectorizer cost-model matrix for this compiler+language.
+            # sweep the fp-precision level x vectorizer cost-model matrix.
             for fp_level, cost_model, cflags in flags.flag_matrix(fam, lang):
                 rows.append(
                     asdict(
                         measure_xl_cell(cc, lang, fam_label, fp_level, cost_model, cflags, units, per_nest_src, reps,
                                         workdir)))
     result["cells"] = rows
-    # union of per-nest sizes (a shared shape symbol resolves to the same value in every nest).
+    # union of per-nest sizes.
     merged_validate: Dict[str, int] = {}
     merged_time: Dict[str, int] = {}
     for u in units:
@@ -372,7 +355,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[crosslang] no compilers found for any requested language")
         return 1
 
-    # kernels of every corpus, tagged, then self-partitioned across ranks as one combined list.
+    # kernels of every corpus, self-partitioned across ranks.
     kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
     procid, ntasks = rank_and_size()
     mine = my_slice(kernels, procid, ntasks)

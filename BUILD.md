@@ -1,17 +1,17 @@
 # nest-forge — owning the build, the timing, and the linking
 
 nest-forge should not depend on `dace.compile()` for the arena. It should generate code, compile, link,
-time, and call everything itself, with one consistent compiler + flag set across the DaCe-backend
+time, and call everything itself — one consistent compiler + flag set across the DaCe-backend
 competitor and the offloaded nests, so the arena's numbers are a fair codegen-vs-codegen comparison and
-so the static node libraries can be inlined into the driver. This document specifies that owned build
-pipeline. It is the substrate under `PREDICTIVE.md` (the flag/compiler sweep), `PARALLEL.md` (the
-OpenMP link contract), and the overhead baseline (`scripts/overhead_baseline.py`).
+the static node libraries can be inlined into the driver. Substrate under `PREDICTIVE.md` (the
+flag/compiler sweep), `PARALLEL.md` (the OpenMP link contract), and the overhead baseline
+(`scripts/overhead_baseline.py`).
 
 ## 1. Own the compile (don't call `dace.compile`)
 
 `dace.compile()` runs DaCe's own build system and returns a `CompiledSDFG` whose Python `__call__`
-re-marshals every argument (milliseconds of overhead unrelated to the generated code). For the arena we
-want the raw C, built our way. The steps:
+re-marshals every argument (ms of overhead unrelated to the generated code). The arena wants raw C,
+built our way:
 
 1. **Generate the source, not the binary.** `code_objects = sdfg.generate_code()` returns
    `CodeObject`s (the `.cpp`/`.h` DaCe would have compiled). Write them out; do not let DaCe build them.
@@ -88,8 +88,8 @@ with no Python or marshaling in the loop. One `time_kernel(entry, reps)` harness
 
 ## 5. Linking — maximal LTO to inline the static node libs
 
-The whole-program step links each nest's winner `.a` into the driver. To get the best performance, let
-the linker inline the offloaded kernels across the archive boundary:
+The whole-program step links each nest's winner `.a` into the driver. To let the linker inline the
+offloaded kernels across the archive boundary:
 
 - Compile node-lib objects **and** the driver with `-flto`; link with `-flto` so the LTO plugin runs at
   link time and can inline `__program_N` / the extern-C offload entry into the driver.

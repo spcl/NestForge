@@ -24,8 +24,8 @@ sweep, timing at a memory-bound size with **median-of-N** reps.
 It uses the **extracted-nest standalone SDFG**, not the whole-kernel SDFG, so it does the *same work* the
 nest-forge lanes do — apples-to-apples timing. This matters for the many multi-level kernels the strategy
 peels to an **inner** nest (a leaked outer index fixed to 0, e.g. `s1115`): the whole-kernel SDFG would
-compute *all* rows (~`LEN`× more work) and inflate the speedup meaninglessly. The median time is reported
-**always** (identical iteration space = a fair baseline). The strict-ieee cross-check bit-matches for most
+compute *all* rows (~`LEN`× more work) and inflate the speedup meaninglessly, so the median time is
+always reported (identical iteration space = a fair baseline). The strict-ieee cross-check bit-matches for most
 kernels; for **loop-carried-state recurrences** (`s111`/`s112`) DaCe's raw codegen and numpyto lower the
 promoted-state boundary contract differently, so those baselines are **flagged `†`** in the table but
 their *timing* stays representative. (The real correctness guarantee is the lane-3 strict-ieee **gate**,
