@@ -17,6 +17,8 @@ from nestforge.extract import Boundary, extract_nest_to_sdfg
 from nestforge.fusion import (FusionMove, FusionStrategy, apply_fusion, enumerate_fusions, fission_to_statements,
                               fusion_strategy_names, get_fusion_strategy, maximal_fusion, map_fission_moves,
                               register_fusion_strategy)
+from nestforge.feedback import (AgenticOptimizer, FeedbackResult, Outcome, best_outcome, default_fuse_step, improved,
+                                run_agent_loop, run_feedback_loop)
 from nestforge.offload import (DEFAULT_GRANULARITY, OffloadCandidate, OffloadGranularity, label_nest,
                                lower_nests_to_external_call, offload_candidates, strategy_names, whole_program_boundary)
 from nestforge.optimize import (DEFAULT_OPT_MODE, BuildOptions, DaceOptimizer, ExternalOptimizer, Optimizer, Proposal,
@@ -61,6 +63,15 @@ __all__ = [
     "ExternalOptimizer",
     "OPT_MODES",
     "BuildOptions",
+    # Phase 4: measurement feedback loop
+    "run_feedback_loop",
+    "FeedbackResult",
+    "default_fuse_step",
+    "best_outcome",
+    "improved",
+    "Outcome",
+    "AgenticOptimizer",
+    "run_agent_loop",
     # native optarena surfaces
     "translate",
     "BenchSpec",
