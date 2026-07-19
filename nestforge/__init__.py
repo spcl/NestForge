@@ -14,12 +14,27 @@ import dace.transformation.passes  # noqa: F401
 
 from nestforge.corpus import CorpusKernel, dace_kernel_names, iter_dace_kernels
 from nestforge.extract import Boundary, extract_nest_to_sdfg
+from nestforge.fusion import (FusionMove, FusionStrategy, apply_fusion, enumerate_fusions, fission_to_statements,
+                              fusion_strategy_names, get_fusion_strategy, maximal_fusion, map_fission_moves,
+                              register_fusion_strategy)
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
 from nestforge.translator import BenchSpec, translate
 
 __all__ = [
     "Boundary",
     "extract_nest_to_sdfg",
+    # Phase 1: fusion granularity
+    "FusionStrategy",
+    "register_fusion_strategy",
+    "get_fusion_strategy",
+    "fusion_strategy_names",
+    "maximal_fusion",
+    "FusionMove",
+    "enumerate_fusions",
+    "apply_fusion",
+    "fission_to_statements",
+    "map_fission_moves",
+    # Phase 2: offload granularity
     "Strategy",
     "outer",
     "register_strategy",

@@ -31,8 +31,6 @@ import yaml
 import dace
 from dace import symbolic
 from dace.transformation.auto.auto_optimize import auto_optimize
-from dace.transformation.dataflow import MapFusionHorizontal, MapFusionVertical
-from dace.transformation.interstate import LoopToMap
 from dace.transformation.passes.canonicalize import canonicalize
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
@@ -41,6 +39,7 @@ from optarena.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
 from nestforge.extract import trip_count_symbols
+from nestforge.fusion import get_fusion_strategy
 
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
@@ -241,9 +240,7 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
     sdfg = kernel.program.to_sdfg(simplify=True)
     SymbolPropagation().apply_pass(sdfg, {})
     if opt_mode == "simplify-parallel":
-        sdfg.apply_transformations_repeated([LoopToMap])
-        sdfg.apply_transformations_repeated([MapFusionVertical, MapFusionHorizontal])
-        sdfg.simplify()
+        get_fusion_strategy("maximal-fusion")(sdfg)  # Phase 1: fuse everything legal
         return sdfg
     if opt_mode == "canonicalize":
         canonicalize(sdfg, target="cpu")
