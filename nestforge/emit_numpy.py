@@ -564,6 +564,13 @@ def ordered_blocks(region) -> List:
     return list(dfs_topological_sort(region, [region.start_block]))
 
 
+def body_or_pass(lines: List[str]) -> List[str]:
+    """A block body that must be non-empty Python. A region emitting only ``# ...`` provenance
+    comments (an empty state/loop) would leave a ``while``/``if``/``def`` body with no statement --
+    an ``IndentationError`` -- so append ``pass`` when no real statement is present."""
+    return lines if any(not ln.lstrip().startswith("#") for ln in lines) else lines + ["pass"]
+
+
 def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
     """Emit a ``LoopRegion`` as init + ``while`` (do-while when ``inverted``) around its body.
 
@@ -576,7 +583,7 @@ def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
     cond = normalize_casts(loop.loop_condition.as_string.strip())
     init = normalize_casts(loop.init_statement.as_string.strip()) if loop.init_statement is not None else None
     update = normalize_casts(loop.update_statement.as_string.strip()) if loop.update_statement is not None else None
-    body = emit_region(loop, sdfg) or ["pass"]
+    body = body_or_pass(emit_region(loop, sdfg))
     ind = "    "
 
     lines: List[str] = []
@@ -611,10 +618,10 @@ def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str]
     for i, (condition, region) in enumerate(keyed):
         keyword = "if" if i == 0 else "elif"
         lines.append(f"{keyword} {normalize_casts(condition.as_string.strip())}:")
-        lines += [ind + b for b in (emit_region(region, sdfg) or ["pass"])]
+        lines += [ind + b for b in body_or_pass(emit_region(region, sdfg))]
     for region in unconditional:
         lines.append("else:")
-        lines += [ind + b for b in (emit_region(region, sdfg) or ["pass"])]
+        lines += [ind + b for b in body_or_pass(emit_region(region, sdfg))]
     return lines
 
 
@@ -653,15 +660,23 @@ def interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
 
 
 def emit_region(region, sdfg: dace.SDFG) -> List[str]:
-    """Numpy statements for every block of a control-flow region, in execution order."""
+    """Numpy statements for every block of a control-flow region, in execution order.
+
+    Each block is preceded by a ``# <kind> (<label>)`` provenance comment (``# state (S)`` /
+    ``# loop region (L)`` / ``# conditional (C)``) so the emitted source stays anchored to the SDFG
+    region it came from -- readable output, and a handle an agent can grep a subregion by.
+    """
     lines: List[str] = []
     for block in ordered_blocks(region):
         lines.extend(interstate_lines(region, sdfg, block))
         if isinstance(block, dace.SDFGState):
+            lines.append(f"# state ({block.label})")
             lines.extend(state_body(sdfg, block))
         elif isinstance(block, LoopRegion):
+            lines.append(f"# loop region ({block.label})")
             lines.extend(emit_loop(block, sdfg))
         elif isinstance(block, ConditionalBlock):
+            lines.append(f"# conditional ({block.label})")
             lines.extend(emit_conditional(block, sdfg))
         elif isinstance(block, BreakBlock):
             lines.append("break")  # exits the enclosing while (emit_loop); its region-DFS successor is the loop exit
@@ -843,7 +858,7 @@ def reject_nonexternalizable(sdfg: dace.SDFG) -> None:
 
 def render(fn_name: str, args: List[str], body: List[str]) -> str:
     lines = [f"def {fn_name}({', '.join(args)}):"]
-    lines += ["    " + bl for bl in body]
+    lines += ["    " + bl for bl in body_or_pass(body)]
     return "\n".join(lines) + "\n"
 
 

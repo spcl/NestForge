@@ -21,6 +21,20 @@ def kernels():
     return {k.short_name: k for k in iter_dace_kernels()}
 
 
+def test_emit_numpy_labels_regions_and_states():
+    """Emitted numpy carries ``# loop region (label)`` / ``# state (label)`` provenance comments and stays
+    valid python -- a block that emits only a comment (empty state/loop) must still get a ``pass``."""
+    import ast
+
+    from nestforge.emit_numpy import body_or_pass
+    src = sdfg_to_numpy(kernels()["hpc/map_reduce/azimint_hist/azimint_hist"].to_sdfg(simplify=True), "k")
+    ast.parse(src)  # valid python despite the interleaved comments
+    assert "# loop region (" in src
+    assert "# state (" in src
+    assert body_or_pass(["# state (X)"]) == ["# state (X)", "pass"]  # comment-only body gets a pass
+    assert body_or_pass(["x = 1"]) == ["x = 1"]  # a real statement is left untouched
+
+
 def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
     """Emit ``short``, allocate every buffer parameter C-style, run it, return the buffer dict.
 
