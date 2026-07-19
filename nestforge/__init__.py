@@ -17,6 +17,8 @@ from nestforge.extract import Boundary, extract_nest_to_sdfg
 from nestforge.fusion import (FusionMove, FusionStrategy, apply_fusion, enumerate_fusions, fission_to_statements,
                               fusion_strategy_names, get_fusion_strategy, maximal_fusion, map_fission_moves,
                               register_fusion_strategy)
+from nestforge.offload import (DEFAULT_GRANULARITY, OffloadCandidate, OffloadGranularity, label_nest,
+                               lower_nests_to_external_call, offload_candidates, strategy_names, whole_program_boundary)
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
 from nestforge.translator import BenchSpec, translate
 
@@ -35,10 +37,18 @@ __all__ = [
     "fission_to_statements",
     "map_fission_moves",
     # Phase 2: offload granularity
+    "OffloadGranularity",
+    "DEFAULT_GRANULARITY",
+    "OffloadCandidate",
+    "offload_candidates",
+    "label_nest",
     "Strategy",
     "outer",
     "register_strategy",
     "get_strategy",
+    "strategy_names",
+    "lower_nests_to_external_call",
+    "whole_program_boundary",
     # native optarena surfaces
     "translate",
     "BenchSpec",

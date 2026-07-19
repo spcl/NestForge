@@ -30,6 +30,10 @@ def get_strategy(name: str) -> Strategy:
     return _REGISTRY[name]
 
 
+def strategy_names() -> List[str]:
+    return sorted(_REGISTRY)
+
+
 def top_level_map_entries(state: dace.SDFGState) -> List[nodes.MapEntry]:
     """MapEntry nodes at the top of a state's scope tree (not nested inside another map)."""
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
