@@ -24,6 +24,8 @@ from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizont
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.interstate.fuse_loops import FuseLoops
 
+from nestforge.extract import find_state_of_node
+
 
 @dataclass
 class FusionMove:
@@ -110,3 +112,72 @@ def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
     transforms assume a fresh ``can_be_applied`` -- so pass only a move from a CURRENT
     :func:`enumerate_fusions` on this exact SDFG state."""
     move.xform.apply_to(sdfg, verify=True, annotate=False, save=False, **move.where)
+
+
+STATE_BARRIER = ("nests are in different states -- a State boundary is a control-flow dependency (a hard "
+                 "fusion barrier). Maps fuse only within one State; fuse the states first (StateFusion, not "
+                 "yet exposed) before these nests can fuse.")
+
+
+def can_fuse(sdfg: dace.SDFG, first: nodes.Node, second: nodes.Node) -> str:
+    """Diagnose whether ``first`` and ``second`` may fuse: ``"yes"`` if a legal arm applies, else a one-line
+    reason. Same gates as :func:`enumerate_fusions`, so a ``"yes"`` here is exactly a move
+    :func:`apply_fusion` accepts. Shared by the agent and the deterministic path -- the agent reads the
+    reason and picks its next move (fission, align granularity, or fuse the states)."""
+    if isinstance(first, LoopRegion) and isinstance(second, LoopRegion):
+        return fuse_loops_reason(sdfg, first, second)
+    if isinstance(first, nodes.MapEntry) and isinstance(second, nodes.MapEntry):
+        return fuse_maps_reason(sdfg, first, second)
+    return ("cannot fuse a map-nest with a loop-nest directly -- bring both to the same granularity first "
+            "(fission the loop to maps, or keep both as loops).")
+
+
+def fuse_loops_reason(sdfg: dace.SDFG, first: LoopRegion, second: LoopRegion) -> str:
+    if first.parent_graph is not second.parent_graph:
+        return ("loops are in different control-flow regions (a control-flow dependency separates them); "
+                "cannot fuse across the region boundary.")
+    cfg = first.parent_graph
+    out = cfg.out_edges(first)
+    if len(out) != 1 or out[0].dst is not second:
+        return ("loops are not adjacent: they must be joined by exactly one sequencing edge (first -> "
+                "second) with nothing between.")
+    if FuseLoops.can_be_applied_to(sdfg, first=first, second=second):
+        return "yes"
+    return "blocked by FuseLoops: different iteration ranges, or a loop-carried dependency between the two."
+
+
+def fuse_maps_reason(sdfg: dace.SDFG, first: nodes.MapEntry, second: nodes.MapEntry) -> str:
+    state = find_state_of_node(sdfg, first)
+    if find_state_of_node(sdfg, second) is not state:
+        return STATE_BARRIER
+    # Producer -> transient -> consumer is VERTICAL, in whichever order the data flows. A transient path
+    # (even between two top-level maps, which are also scope-siblings) means the pair is not horizontal.
+    vertical = vertical_reason(sdfg, state, first, second) or vertical_reason(sdfg, state, second, first)
+    if vertical is not None:
+        return vertical
+    scope = state.scope_dict()  # no data path -> HORIZONTAL (independent siblings, same range)
+    if scope[first] is not scope[second]:
+        return "maps are in different scopes (one is nested inside the other) with no shared data; not a fusion pair."
+    if MapFusionHorizontal.can_be_applied_to(sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second):
+        return "yes"
+    if first.map.range != second.map.range:
+        return (f"different map ranges: {first.map.range} vs {second.map.range} -- horizontal fusion needs "
+                "the same range.")
+    return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
+
+
+def vertical_reason(sdfg: dace.SDFG, state, producer: nodes.MapEntry, consumer: nodes.MapEntry):
+    """``"yes"``/reason if ``producer`` feeds ``consumer`` through a transient (vertical fusion), else
+    ``None`` when no such data path exists (so the caller can try the other direction, then horizontal)."""
+    exit_p = state.exit_node(producer)
+    for e in state.out_edges(exit_p):
+        arr = e.dst
+        if not isinstance(arr, nodes.AccessNode) or not any(oe.dst is consumer for oe in state.out_edges(arr)):
+            continue
+        if not sdfg.arrays[arr.data].transient:
+            return (f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop a "
+                    "result -- cannot fuse.")
+        if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=exit_p, array=arr, second_map_entry=consumer):
+            return "yes"
+        return f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch on the intermediate."
+    return None

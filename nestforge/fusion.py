@@ -27,7 +27,7 @@ from dace.transformation.dataflow import MapFusionHorizontal, MapFusionVertical
 from dace.transformation.interstate import LoopToMap
 
 from nestforge.fission_arms import fission_to_statements, map_fission_moves
-from nestforge.fusion_arms import FusionMove, apply_fusion, enumerate_fusions
+from nestforge.fusion_arms import FusionMove, apply_fusion, can_fuse, enumerate_fusions
 
 #: A Phase-1 strategy: mutate the SDFG in place to a granularity, returning the step count.
 FusionStrategy = Callable[[dace.SDFG], int]
@@ -75,6 +75,7 @@ __all__ = [
     "FusionMove",
     "enumerate_fusions",
     "apply_fusion",
+    "can_fuse",
     "fission_to_statements",
     "map_fission_moves",
 ]
