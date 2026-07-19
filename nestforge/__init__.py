@@ -19,6 +19,8 @@ from nestforge.fusion import (FusionMove, FusionStrategy, apply_fusion, enumerat
                               register_fusion_strategy)
 from nestforge.offload import (DEFAULT_GRANULARITY, OffloadCandidate, OffloadGranularity, label_nest,
                                lower_nests_to_external_call, offload_candidates, strategy_names, whole_program_boundary)
+from nestforge.optimize import (DEFAULT_OPT_MODE, BuildOptions, DaceOptimizer, ExternalOptimizer, Optimizer, Proposal,
+                                OPT_MODES, optimization_choices, optimize)
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
 from nestforge.translator import BenchSpec, translate
 
@@ -49,6 +51,16 @@ __all__ = [
     "strategy_names",
     "lower_nests_to_external_call",
     "whole_program_boundary",
+    # Phase 3: per-nest optimization
+    "DEFAULT_OPT_MODE",
+    "optimize",
+    "optimization_choices",
+    "Optimizer",
+    "Proposal",
+    "DaceOptimizer",
+    "ExternalOptimizer",
+    "OPT_MODES",
+    "BuildOptions",
     # native optarena surfaces
     "translate",
     "BenchSpec",
