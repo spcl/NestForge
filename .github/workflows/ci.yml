@@ -98,7 +98,11 @@ jobs:
       # run-and-compare (externalize + isolate, and the whole-program lane) is the ONLY proof that the
       # offload analysis is value-preserving, and it is integration-marked, so Phase 3 never runs it.
       # Everything named here needs only g++, which the runner has.
-      - name: Phase 4 -- optimizer loop + whole-program end-to-end (builds + validates)
+      # The static-offload e2e (test_static_offload_e2e.py) belongs here too: it builds the arena winner
+      # as a static lib<name>_nest.a and links it INTO the parent .so (one binary, one libomp), so it
+      # compiles a nest + a parent -- integration-marked, hence skipped by Phase 3. Needs only g++ + ar.
+      - name: Phase 4 -- optimizer loop + whole-program + static-offload end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
-            tests/test_offload_scopes.py tests/test_whole_program_lane.py --timeout=900
+            tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
+            --timeout=900

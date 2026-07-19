@@ -105,8 +105,17 @@ class ExternLibEnv:
     def configure(cls, lib_path: str) -> None:
         import os
         lib = os.path.abspath(lib_path)
-        cls.cmake_libraries = [lib]
-        cls.cmake_link_flags = [f"-Wl,-rpath,{os.path.dirname(lib)}"]
+        if lib.endswith(".a"):
+            # Static offload: the archive is linked (after the objects) into the parent .so itself. The
+            # generated tasklet references the nest's entry symbol, so ld pulls that member in -- no
+            # --whole-archive needed (and dace SORTS env link flags, which would scramble an ordered
+            # --whole-archive/--no-whole-archive pair anyway). No rpath, no separate .so: one binary, and
+            # the parent's OpenMP is the single libomp -- an archive links no runtime of its own.
+            cls.cmake_libraries = [lib]
+            cls.cmake_link_flags = []
+        else:
+            cls.cmake_libraries = [lib]
+            cls.cmake_link_flags = [f"-Wl,-rpath,{os.path.dirname(lib)}"]
 
 
 @dace.library.expansion

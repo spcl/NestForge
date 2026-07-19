@@ -60,6 +60,26 @@ from nestforge.offload import whole_program_boundary
 b = whole_program_boundary(sdfg)               # b.inputs / b.outputs = caller interface (non-transient)
 ```
 
+## Linking the winner: shared vs static
+
+Once Phase 3 has a winner, point the `ExternalCall` at its lib and expand. Two link modes, picked by
+`ExternLibEnv.configure` from the path suffix:
+
+- **`.so`** — the winner runs as a separate shared lib, loaded via rpath. Each `.so` drags its own
+  OpenMP runtime.
+- **`.a`** — `build_winner_archive(win, c_source, name, out_dir)` archives the winner's objects into
+  `lib<name>_nest.a`; the parent `.so` pulls it in at link time. One binary, and **one libomp** — an
+  archive links no runtime of its own, so the parent's is the only one. This is the static-offload
+  path (`tests/test_static_offload_e2e.py`). DaCe emits the same `.a` for a whole SDFG under
+  `compiler.static_archive` (native + cmake).
+
+```python
+ext.implementation = "ExternCall"
+ext.lib_path = str(build_winner_archive(win, c_source, ext.name, out))  # .a -> statically linked in
+ext.symbol, ext.abi_order = win.symbol, win.abi_order
+sdfg.expand_library_nodes()
+```
+
 ## Next
 
 Phase 2 fixes what gets externalized → **Phase 3** optimizes each externalized nest individually

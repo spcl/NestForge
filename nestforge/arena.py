@@ -362,3 +362,23 @@ def run_arena(prep: Prepared,
         if correct:
             result.winners[mode] = min(correct, key=lambda c: c.time_us)
     return result
+
+
+def build_winner_archive(win: Cell, c_source: Path, name: str, out_dir: Path) -> Path:
+    """Materialize a winning cell as a static ``lib<name>_nest.a`` for STATIC offload into a parent SDFG.
+
+    The arena builds each candidate as a ``.so`` to dlopen + time; for offload we instead want the
+    winner's objects, so the parent ``.so`` can pull them in via ``--whole-archive`` (see
+    :meth:`ExternLibEnv.configure`). Recompiles the SAME source with the winner's ``(compiler, fp-mode)``
+    -- the config that won -- to an object and archives it. An archive carries objects only, no linked
+    runtime, so the parent supplies the single libomp instead of every nest ``.so`` dragging its own."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cpath = discover_compilers()[win.compiler]
+    flags = FP_MODES[win.fp_mode]
+    obj = out_dir / f"{name}_nest.o"
+    archive = out_dir / f"lib{name}_nest.a"
+    subprocess.run([cpath, *flags, "-c", str(c_source), "-o", str(obj)], check=True)
+    if archive.exists():
+        archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
+    subprocess.run(["ar", "rcs", str(archive), str(obj)], check=True)
+    return archive

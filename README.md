@@ -209,8 +209,12 @@ perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*
 ## Status
 CPU path is end-to-end: extract → strategy → numpy + OptArena manifest → translate to C/C++/Fortran →
 compile across the compiler × flag × FP-mode matrix → validate vs the numpy oracle (strict-ieee is
-bit-exact) → median-of-N timing (fork-isolated) → winner → `ExternalCall` libnode linking the winning
-`.so` into the whole SDFG → per-nest report. The TSVC compiler-arena (`nestforge/perf`) and its phased
+bit-exact) → median-of-N timing (fork-isolated) → winner → `ExternalCall` libnode linking the winner
+into the whole SDFG → per-nest report. The winner links two ways: a runtime `.so` (rpath) or, via
+`build_winner_archive`, a static `lib<name>_nest.a` pulled INTO the parent `.so` — one binary, and one
+libomp, since an archive carries no runtime of its own (`ExternLibEnv.configure` picks the mode by
+suffix; `tests/test_static_offload_e2e.py` proves it). DaCe emits the same `.a` for a whole SDFG under
+`compiler.static_archive` in both build modes. The TSVC compiler-arena (`nestforge/perf`) and its phased
 daint job exercise this at scale across both TSVC corpora.
 
 Emitter coverage spans C-style pre-allocated buffers, `LoopRegion` + `ConditionalBlock` control flow,
