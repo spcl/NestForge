@@ -67,4 +67,5 @@ optimization can only change *how fast* a nest runs, never its result.
 ## Next
 
 Phase 3 tunes each nest → **Phase 4** feeds the measured `Outcome` back to Phase 1 (re-fuse) or
-Phase 2 (re-granularize) via `run_agent_loop`.
+Phase 2 (re-granularize) — `nestforge.feedback` (`run_feedback_loop`; per-nest inner loop
+`run_agent_loop`).

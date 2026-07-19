@@ -8,6 +8,27 @@ against baselines. A DaCe backend competes in the same arena.
 Everything lives here and plugs into DaCe through its external-transformation registry; DaCe itself
 stays unmodified.
 
+## The 4-phase optimizer API
+
+The optimizer is four **explicit, agent-facing** phases. Each is a module with an *inspect → commit*
+surface (read the choices without mutating, then apply one) and a skill file teaching an agent to drive
+it. Correctness is a hard gate throughout: every move is legality-gated + fuzzed bit-exact, so a phase
+changes only *how fast* a program runs, never its result.
+
+| Phase | Module | Inspect | Commit | Skill |
+|---|---|---|---|---|
+| 1 — fusion granularity | `nestforge.fusion` | `enumerate_fusions` | `apply_fusion` / `fission_to_statements` | `skills/phase1-fusion` |
+| 2 — offload granularity | `nestforge.offload` | `offload_candidates` | `lower_nests_to_external_call` | `skills/phase2-offload` |
+| 3 — per-nest optimization | `nestforge.optimize` | `optimization_choices` | `optimize(nest, knobs)` | `skills/phase3-optimize` |
+| 4 — measurement feedback | `nestforge.feedback` | `best_outcome` / `improved` | `run_feedback_loop` | `skills/phase4-feedback` |
+
+The phases cycle: **P1** fuses/fissions to a granularity → **P2** externalizes the chosen nests as
+`ExternalCall` library calls → **P3** tunes each nest (representation × compiler × flags × DaCe codegen ×
+vectorization) into a build recipe → **P4** reads the measured `Outcome` and requests a different
+fuse/fission, back to P1. An **architectural invariant** ties P1→P2: a nest is externalized *before* any
+tool decides offloadability, so an offload choice can never shift the extraction underneath it. The whole
+API is re-exported from the `nestforge` package top level. The design rationale is `docs/agentic_optimizer/`.
+
 ## Quick start
 
 ```bash
@@ -171,6 +192,8 @@ perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*
   and restoring the `push`/`pull_request` triggers. No key is ever stored in the repo.
 
 ## Design docs
+- `docs/agentic_optimizer/` — the 4-phase optimizer design; each phase maps to a `nestforge.*` module +
+  `skills/phase*/` skill (see the table above).
 - `DESIGN.md` — emitter contract, cross-cutting concerns, refinement plan.
 - `BUILD.md` — nest-forge owning its build (generate + compile + link ourselves, manual init/finalize,
   `<chrono>` timing, maximal-LTO static-lib inlining).

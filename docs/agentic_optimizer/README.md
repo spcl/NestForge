@@ -87,6 +87,24 @@ The agent is only as safe as the transformations + the compile-and-validate gate
 
 **Rule: the pass imports + uses the transformation.** One legality kernel, two front ends -> pass and transformation cannot diverge.
 
+## Implemented phase API
+
+Each phase is now an explicit *inspect → commit* module, re-exported from the `nestforge` package top
+level, with a skill file (`skills/phase*/SKILL.md`) teaching an agent to drive it. Same guardrail
+throughout — every move legality-gated + re-validated bit-exact, so a phase changes only speed.
+
+| Phase | Module | Inspect (non-mutating) | Commit | Skill | Tests |
+|---|---|---|---|---|---|
+| P1 fusion granularity | `nestforge.fusion` | `enumerate_fusions` | `apply_fusion` / `fission_to_statements` | `phase1-fusion` | `tests/test_fusion_strategy.py` |
+| P2 offload granularity | `nestforge.offload` | `offload_candidates` | `lower_nests_to_external_call` | `phase2-offload` | `tests/test_offload_granularity.py` |
+| P3 per-nest optimization | `nestforge.optimize` | `optimization_choices` | `optimize(nest, knobs)` | `phase3-optimize` | `tests/test_optimize.py` |
+| P4 measurement feedback | `nestforge.feedback` | `best_outcome` / `improved` | `run_feedback_loop` | `phase4-feedback` | `tests/test_feedback.py` |
+
+The knob bundle P3 optimizes with IS an `Optimizer` (`nestforge.optimizers`) — "each variant is an
+optimizer, the agent is one more"; the P4 per-nest inner loop is `run_agent_loop`. The invariant tying
+P1→P2: externalize *before* deciding offload (a nest becomes an `ExternalCall` first, each tool decides
+offloadability second). The `How to use` snippets below are the lower-level primitives these facades sit on.
+
 ## How to use
 
 ### P1 deterministic fuse-everything
@@ -133,6 +151,6 @@ pytest tests/test_split_unsupported.py tests/test_whole_program.py -q -n1   # ne
 
 ## Status
 
-**DONE** — `FuseLoops` + pass delegation (dace `5b24a100c`); 45 FuseLoops tests (dace `35b2629ec`); `split_unsupported` + `prepare_regions` (nest-forge).
+**DONE** — `FuseLoops` + pass delegation (dace `5b24a100c`); 45 FuseLoops tests (dace `35b2629ec`); `split_unsupported` + `prepare_regions` (nest-forge). **All four phases now have an explicit inspect→commit API + skill** (`nestforge.fusion` / `offload` / `optimize` / `feedback`; see the table above), each with a bit-exact test suite; the deterministic optimizers + `NoOpAgent` / `StubAgent` + `run_agent_loop` (`nestforge.optimizers`); `WholeProgramOptimizer` baseline lane.
 
-**OPEN** — fuzz harness; `MapFusionVertical`/`Horizontal` + `LoopFission` as P2 arms + harness; the P3 render-all-three-representations + compile-and-validate `.cpp` gate; `measure_whole_program_lane` (deterministic baseline); then the agents (P2 granularity, P3 per-kernel `.cpp`, P4 incremental feedback).
+**OPEN** — fuzz harness; the P3 render-all-three-representations + compile-and-validate hand-written `.cpp` gate (the facade covers axis-selection recipes, not free-form agent-authored C++ yet); a *real* (non-stub) agent behind the `AgenticOptimizer` contract for P2 granularity / P4 incremental feedback.

@@ -62,5 +62,6 @@ b = whole_program_boundary(sdfg)               # b.inputs / b.outputs = caller i
 
 ## Next
 
-Phase 2 fixes what gets externalized → **Phase 3** optimizes each externalized nest individually →
-Phase 4 feeds measurements back to Phase 1 (re-fuse) or Phase 2 (re-granularize).
+Phase 2 fixes what gets externalized → **Phase 3** optimizes each externalized nest individually
+(`nestforge.optimize`) → Phase 4 feeds measurements back to Phase 1 (re-fuse) or Phase 2
+(re-granularize) (`nestforge.feedback`).

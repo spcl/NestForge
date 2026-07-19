@@ -73,5 +73,6 @@ SDFG bit-exact vs the un-fused numpy oracle before it competes on speed.
 
 ## Next
 
-Phase 1 fixes granularity → **Phase 2** decides offload granularity (`nestforge.strategies`) →
-Phase 3 optimizes each nest → Phase 4 feeds measurements back to Phase 1.
+Phase 1 fixes granularity → **Phase 2** decides offload granularity (`nestforge.offload`) →
+Phase 3 optimizes each nest (`nestforge.optimize`) → Phase 4 feeds measurements back to Phase 1
+(`nestforge.feedback`).
