@@ -100,7 +100,9 @@ def test_unknown_id_at_current_epoch_is_not_stale():
 def test_region_tree_exposes_containers_and_their_nests():
     s = make_session()
     tree = s.region_tree()
-    assert tree["type"] == "SDFG" and tree["id"].startswith("e0:region:")
+    # the id is DESCRIPTIVE (region:<label>), not an epoch-stamped handle: region_tree is a read view and
+    # no method resolves a 'region' kind, so minting here only grew the registry with unusable ids.
+    assert tree["type"] == "SDFG" and tree["id"].startswith("region:")
     states = [c for c in tree["children"] if c["type"] == "SDFGState"]
     assert states and states[0]["barrier"] is True  # a state is a barrier container
     assert len(states[0]["nests"]) == 2  # it holds both map-nests

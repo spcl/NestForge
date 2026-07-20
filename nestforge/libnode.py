@@ -10,6 +10,7 @@ properties. Two expansions:
 from __future__ import annotations
 
 import copy
+import os
 from typing import List
 
 import dace
@@ -76,8 +77,17 @@ def proto_and_call(node: "ExternalCall") -> (str, str):
                                  "implementation for this nest")
             c = _CPP_SCALAR[dt]
             const = "" if arg in outputs else "const "
+            conn = connector_for(arg, outputs)
+            if conn not in node.in_connectors and conn not in node.out_connectors:
+                # The compiled signature takes an argument this node has no connector for -- typically a
+                # caller-allocated SCRATCH transient, which the emitted C exposes as a parameter but which
+                # never crosses the ExternalCall boundary. Emitting the call anyway would reference an
+                # undefined identifier in the tasklet (and pass no buffer at all). Refuse instead.
+                raise ValueError(f"ExternalCall {node.name!r}: abi_order names {arg!r}, but the node has no "
+                                 f"{conn!r} connector (a caller-allocated scratch buffer is not passed across "
+                                 "the ExternalCall boundary); keep the DaceReference implementation")
             params.append(f"{const}{c}* {arg}")
-            call_args.append(connector_for(arg, outputs))
+            call_args.append(conn)
         else:
             params.append(f"{_CPP_SCALAR.get(scalar_dtypes.get(arg, 'int64'), 'int64_t')} {arg}")
             call_args.append(arg)
@@ -109,20 +119,30 @@ class ExternLibEnv:
     dependencies = []
 
     @classmethod
+    def reset(cls) -> None:
+        """Drop every accumulated library. Call before expanding a fresh SDFG so libraries from a PREVIOUS
+        build (whose temp directories may already be gone) are not carried onto this link line."""
+        cls.cmake_libraries = []
+        cls.cmake_link_flags = []
+
+    @classmethod
     def configure(cls, lib_path: str) -> None:
-        import os
+        """ACCUMULATE one nest's library. Every ``ExternalCall`` shares this single environment class, so
+        assigning here (rather than appending) kept only the LAST expanded nest's library: on a multi-nest
+        kernel every earlier nest's extern-C symbol was then unresolved at link, or the wrong .so was
+        called. Entries are deduplicated, so nests sharing one backend library add it once.
+
+        A ``.a`` is linked into the parent .so directly; the generated tasklet references the nest's entry
+        symbol, so ld pulls that member in. NOTE a multi-member archive is NOT reliably pulled under DaCe's
+        sorted link flags -- prefer a shared library for a multi-nest swap (see ``arena.link_shared``).
+        A ``.so`` additionally needs an rpath so the built parent resolves it at load."""
         lib = os.path.abspath(lib_path)
-        if lib.endswith(".a"):
-            # Static offload: the archive is linked (after the objects) into the parent .so itself. The
-            # generated tasklet references the nest's entry symbol, so ld pulls that member in -- no
-            # --whole-archive needed (and dace SORTS env link flags, which would scramble an ordered
-            # --whole-archive/--no-whole-archive pair anyway). No rpath, no separate .so: one binary, and
-            # the parent's OpenMP is the single libomp -- an archive links no runtime of its own.
-            cls.cmake_libraries = [lib]
-            cls.cmake_link_flags = []
-        else:
-            cls.cmake_libraries = [lib]
-            cls.cmake_link_flags = [f"-Wl,-rpath,{os.path.dirname(lib)}"]
+        if lib not in cls.cmake_libraries:
+            cls.cmake_libraries = [*cls.cmake_libraries, lib]
+        if not lib.endswith(".a"):
+            rpath = f"-Wl,-rpath,{os.path.dirname(lib)}"
+            if rpath not in cls.cmake_link_flags:
+                cls.cmake_link_flags = [*cls.cmake_link_flags, rpath]
 
 
 @dace.library.expansion

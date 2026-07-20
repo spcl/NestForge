@@ -128,7 +128,11 @@ class OpenMPRuntime:
         fam = compiler_family(compiler)
         # explicit lib_dir wins (pin a spack/module runtime, "" forces bare -l<soname>); else discover it
         pinned = self.lib_dir if self.lib_dir is not None else linkable_lib_dir(self.soname, compiler)
-        libdir = [f"-L{pinned}"] if pinned else []
+        # -L alone only satisfies the LINKER: a runtime off the default loader path (the very case
+        # linkable_lib_dir globs for, e.g. /usr/lib/llvm-18/lib) then leaves DT_NEEDED with no RUNPATH, and
+        # the ctypes.CDLL right after the build dies with "libomp.so.5: cannot open shared object file".
+        # veclib.link_flags pairs -L with -rpath for exactly this reason; match it.
+        libdir = [f"-L{pinned}", f"-Wl,-rpath,{pinned}"] if pinned else []
         if fam == "llvm":
             return [f"-fopenmp={self.name}", *libdir]
         if fam == "intel-classic":

@@ -106,7 +106,10 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
         # oneAPI 2024+ put the libraries directly under lib/; older layouts use lib/intel64.
         for libdir in (Path(mklroot) / "lib", Path(mklroot) / "lib" / "intel64"):
             if (libdir / "libmkl_rt.so").exists():
-                found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", "-lmkl_rt"])
+                # -rpath alongside -L: an MKLROOT install is off the default loader path by definition, so
+                # without it the linked .so needs LD_LIBRARY_PATH to run. Every -L in the tree is paired
+                # with its rpath so a built artifact just runs.
+                found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", f"-Wl,-rpath,{libdir}", "-lmkl_rt"])
                 break
     return found
 
@@ -265,12 +268,24 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
                 out.append(at(sizes[arg]))  # at is the by-value ctype (c_int64 size / c_double value scalar)
         return out
 
-    fn(*build_args())  # correctness run
+    # Bind ONCE: the ctypes pointers stay valid because every rep reuses these same buffers, so per-rep
+    # data_as/scalar construction would time Python marshaling instead of the kernel.
+    args = build_args()
+    fn(*args)  # correctness run
     outputs = {o: work[o].copy() for o in boundary.outputs}
-    t0 = time.perf_counter()  # timing runs
+    # Restore every buffer the kernel WRITES before each timed rep. An in-place nest (a[:] = a[:] * b) would
+    # otherwise see its own previous output, so rep k computes a * b**k -- diverging to Inf/denormals within a
+    # few reps, and denormal arithmetic (not the kernel) would dominate the reported time. The restore is
+    # OUTSIDE the timed region, so it never counts toward the measurement.
+    mutated = [o for o in boundary.outputs if o in work]
+    total = 0.0
     for _ in range(reps):
-        fn(*build_args())
-    elapsed_us = (time.perf_counter() - t0) / reps * 1e6
+        for name in mutated:
+            work[name][...] = inputs[name]
+        t0 = time.perf_counter()
+        fn(*args)
+        total += time.perf_counter() - t0
+    elapsed_us = total / reps * 1e6
     return outputs, elapsed_us
 
 

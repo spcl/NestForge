@@ -262,9 +262,14 @@ def autopar_flags(family: str,
         ap = ["-mllvm", "-polly", "-mllvm", "-polly-parallel", "-fopenmp"]
         absent = "clang built without Polly (-mllvm -polly rejected)"
     elif family == "nvidia":
-        return ["-Mconcur"], None
+        # falls through to the SAME accepts + fires probes as gnu/llvm: an early return here would report
+        # par=(flags, None) even when -Mconcur is accepted but leaves the loop serial, so the matrix would
+        # time a sequential build under the 'auto-par' label and record it as parallel-lane speedup.
+        ap = ["-Mconcur"]
+        absent = "nvc rejected -Mconcur (auto-parallelizer unavailable)"
     elif family == "intel":
-        return ["-qopenmp", "-parallel"], None
+        ap = ["-qopenmp", "-parallel"]
+        absent = "icx/icc rejected -qopenmp -parallel (auto-parallelizer unavailable)"
     else:
         return None, f"no auto-parallelizer known for compiler family {family!r}"
     if compiler is not None:
@@ -390,10 +395,17 @@ def lane_flags(family: str,
     out = base_flags(family)
     if lang == "c++":
         out = out + cxx_source_flags(family, cxx_std)
-    if fp_mode == "strict-ieee":
-        out = out + fp_flags(family, "strict-ieee", fp_lang)
-    else:
+    # Both axes are accepted: a full FP_LEVELS rung (what ExternalOptimizer/Proposal document) and a
+    # REDUCED_FP_MODES rung (what the full-matrix job sweeps). Routing every non-strict-ieee value to
+    # reduced_fp_flags made 'contract-fma'/'assume-finite'/'fast-math' -- all documented FP_LEVELS -- raise
+    # KeyError deep in _REDUCED_FP instead of composing, and an unknown value now declines like any other
+    # unsupported axis combination rather than crashing.
+    if fp_mode in FP_LEVELS:
+        out = out + fp_flags(family, fp_mode, fp_lang)
+    elif fp_mode in REDUCED_FP_MODES:
         out = out + reduced_fp_flags(family, fp_mode, fp_lang)
+    else:
+        return None, f"unknown fp_mode {fp_mode!r} (known: {FP_LEVELS + REDUCED_FP_MODES})"
     out = out + cost_flags(family, cost_model)
     vec, vreason = veclib_flags(compiler, veclib)
     if vec is None:

@@ -24,7 +24,7 @@ from nestforge import build, tsvc
 from nestforge.arena import make_inputs, maxdiff, run_oracle
 from nestforge.extract import whole_program_boundary
 from nestforge.isolation import run_isolated
-from nestforge.libnode import ExternalCall
+from nestforge.libnode import ExternalCall, ExternLibEnv
 from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf import flags
 from nestforge.perf.harness import median
@@ -124,6 +124,7 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
     if missing:
         raise KeyError(f"variants name nests not in this granularity: {sorted(missing)} "
                        f"(present: {sorted(ext.name for ext, _ in calls)})")
+    ExternLibEnv.reset()  # drop libraries accumulated by a previous build (their temp dirs may be gone)
     lowered.expand_library_nodes()
     built = build.build_sdfg(lowered,
                              out_dir / "build",
@@ -143,8 +144,16 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
         try:
             fn, cargs = built.bind_program(tbuf, sizes)
             fn(*cargs)  # warm
+            # Restore every buffer the program WRITES before each timed rep. Without this an in-place nest
+            # (a[:] = a[:] * b) feeds on its own previous output -- rep k computes a * b**k, which reaches
+            # Inf/denormals in a few reps, and denormal arithmetic rather than the kernel dominates the
+            # median. That silently biases the exact quantity E1 compares across granularity rungs. The
+            # restore writes in place (cargs holds these buffers) and sits OUTSIDE the timed region.
+            mutated = [o for o in boundary.outputs if o in tbuf]
             samples: List[float] = []
             for _ in range(reps):
+                for name in mutated:
+                    tbuf[name][...] = inputs[name]
                 t0 = time.perf_counter()
                 fn(*cargs)
                 samples.append((time.perf_counter() - t0) * 1e6)

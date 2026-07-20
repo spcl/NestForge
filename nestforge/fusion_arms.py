@@ -171,14 +171,21 @@ def vertical_reason(sdfg: dace.SDFG, state, producer: nodes.MapEntry, consumer: 
     """``"yes"``/reason if ``producer`` feeds ``consumer`` through a transient (vertical fusion), else
     ``None`` when no such data path exists (so the caller can try the other direction, then horizontal)."""
     exit_p = state.exit_node(producer)
+    # EVERY intermediate is examined, not just the first: ``vertical_map_moves`` offers a move when ANY
+    # transient intermediate applies, so returning on the first one would report "live output" for a pair
+    # that list_fusions still offers via another (transient) array -- can_fuse and enumerate_fusions
+    # disagreeing, and the agent steered away from a legal fusion.
+    reasons: List[str] = []
     for e in state.out_edges(exit_p):
         arr = e.dst
         if not isinstance(arr, nodes.AccessNode) or not any(oe.dst is consumer for oe in state.out_edges(arr)):
             continue
         if not sdfg.arrays[arr.data].transient:
-            return (f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop a "
-                    "result -- cannot fuse.")
+            reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop a result")
+            continue
         if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=exit_p, array=arr, second_map_entry=consumer):
-            return "yes"
-        return f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch on the intermediate."
-    return None
+            return "yes"  # one applicable intermediate is enough -- that IS the move enumerate offers
+        reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
+    if not reasons:
+        return None  # no data path at all: let the caller try the other direction, then horizontal
+    return "; ".join(reasons) + " -- cannot fuse."

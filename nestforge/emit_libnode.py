@@ -62,6 +62,20 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     return desc.transient and is_scalar(desc)
 
 
+def scalar_elem(name: str, desc) -> str:
+    """Index the SOLE element of a size-1 buffer, one index per dimension.
+
+    ``is_scalar`` is rank-agnostic (``total_size == 1``), so a rank>=2 size-1 buffer -- a keepdims full
+    reduction's ``(1, 1)`` output, or a ``(1, 1)`` scalar-value operand -- also lands here. ``name[0]``
+    would select a shape-``(1,)`` SUB-ARRAY rather than the element, silently feeding a 1-D array where a
+    scalar is meant. ``name[0, 0]`` is the element.
+    """
+    rank = len(desc.shape)
+    if rank <= 1:
+        return f"{name}[0]"
+    return f"{name}[{', '.join(['0'] * rank)}]"
+
+
 def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], keep_singleton: bool = False) -> str:
     """Read expression for ``name[subset]``: scalar-transient variable, whole array, or slice.
 
@@ -77,7 +91,7 @@ def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], 
         # Reading the bare name yields the whole (1,) array, so ``s[0] = out`` assigns a length-1 array
         # into a scalar slot -- a NumPy 2 "setting an array element with a sequence" error (and the C
         # translator would see a double* where a double is meant).
-        return f"{name}[0]"
+        return scalar_elem(name, desc)
     if subset is None or covers_whole(subset, desc):
         return name
     return f"{name}[{index_str(subset, keep_singleton=keep_singleton)}]"
@@ -93,8 +107,8 @@ def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], 
     if is_scalar(desc):
         # A size-1 buffer (non-transient, so not a plain local): write its sole element. ``name[:] =
         # scalar`` is valid numpy but the C translator mis-lowers it to ``name = scalar`` (double ->
-        # double*); ``name[0] =`` matches how the element is read back and translates correctly.
-        return f"{name}[0]"
+        # double*); indexing the element matches how it is read back and translates correctly.
+        return scalar_elem(name, desc)
     if subset is None or covers_whole(subset, desc):
         return f"{name}[:]"
     return f"{name}[{index_str(subset, keep_singleton=keep_singleton)}]"

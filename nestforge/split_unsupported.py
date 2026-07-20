@@ -16,6 +16,7 @@ directly externalizable via the same nesting the extractor already uses (:mod:`n
 from __future__ import annotations
 
 import copy
+import re
 from typing import List, Set
 
 import dace
@@ -200,13 +201,30 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
     for state in work.states():
         read, write = state.read_and_write_sets()
         region_used |= read | write
+    # An array can be referenced ONLY on an inter-state edge (a data-dependent index hoisted onto the edge,
+    # e.g. `idx = offsets[k]`); read_and_write_sets is dataflow-only and never reports it, so it would be
+    # deleted below while the edge still assigns from it. Keeping an extra array is harmless; dropping a
+    # referenced one leaves the emitted kernel naming an undefined array.
+    for edge in work.all_interstate_edges():
+        expressions = list(edge.data.assignments.values()) + [str(edge.data.condition.as_string)]
+        for expr in expressions:
+            region_used |= {a for a in work.arrays if re.search(rf"(?<![\w.]){re.escape(a)}\b", expr)}
     for aname in list(work.arrays):
         if aname not in region_used:
             del work.arrays[aname]  # touched only outside the region (after orphan drop, no node references it)
         elif work.arrays[aname].transient and (aname in outside_read or aname in outside_write):
             work.arrays[aname].transient = False  # crosses the region boundary -> a region input / output
 
-    entries = [s for s in work.states() if work.in_degree(s) == 0]
+    # The entry is decided on the ORIGINAL graph: a state entered from outside the region, or the program
+    # start. Using in_degree == 0 on the carved copy instead misses a legitimate single-entry region whose
+    # header carries a BACK-EDGE (a flat state loop of pure-compute states, which whole_program_regions
+    # keeps in one piece) -- its in_degree is >= 1, so no state qualified and a valid region was refused.
+    entry_labels = [
+        s.label for s in sdfg.states()
+        if s.label in region_labels and (sdfg.in_degree(s) == 0 or any(p.label not in region_labels
+                                                                       for p in sdfg.predecessors(s)))
+    ]
+    entries = [s for s in work.states() if s.label in entry_labels]
     if len(entries) != 1:
         raise ValueError(f"region {name} has {len(entries)} entry states; only a single-entry region is "
                          "externalizable (a multi-entry region needs a synthetic join -- not yet handled)")

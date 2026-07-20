@@ -331,10 +331,20 @@ class Session:
 
     # --- region-tree walk (used by region_tree / fuse_regions) ------------------------------------
 
+    def region_id(self, block) -> str:
+        """A STABLE, purely descriptive id for a control-flow container in :meth:`region_tree`.
+
+        Deliberately not a minted handle: ``region_tree`` is a read view, and no method resolves a
+        ``region`` kind. Minting here would grow ``self.handles`` on every inspection call and hand back ids
+        that raise on the kind-guard if an agent tried to use one. The label already names the block
+        uniquely within its SDFG, which is all a tree reader needs.
+        """
+        return f"region:{block.label}"
+
     def region_node(self, cfg) -> dict:
         """One control-flow region as structured data: an id, its label/type, and its child blocks."""
         return {
-            "id": self.mint("region", cfg),
+            "id": self.region_id(cfg),
             "label": cfg.label,
             "type": type(cfg).__name__,
             "children": [self.block_node(block) for block in cfg.nodes()],
@@ -353,7 +363,7 @@ class Session:
                     "writes": writes,
                 })
             return {
-                "id": self.mint("region", block),
+                "id": self.region_id(block),
                 "label": block.label,
                 "type": "SDFGState",
                 "barrier": True,
@@ -365,7 +375,7 @@ class Session:
                 "region": self.region_node(branch),
             } for cond, branch in block.branches]
             return {
-                "id": self.mint("region", block),
+                "id": self.region_id(block),
                 "label": block.label,
                 "type": "ConditionalBlock",
                 "selector": "stays in core SDFG",
@@ -375,7 +385,7 @@ class Session:
             node = self.region_node(block)
             node["sequential"] = isinstance(block, LoopRegion)
             return node
-        return {"id": self.mint("region", block), "label": block.label, "type": type(block).__name__}
+        return {"id": self.region_id(block), "label": block.label, "type": type(block).__name__}
 
 
 def cell_summary(cell: Cell) -> dict:
