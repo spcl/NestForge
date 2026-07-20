@@ -129,9 +129,11 @@ jobs:
       # compiles and swaps exactly as E1 does and belongs in this phase for the same reason. E2
       # (test_experiment_e2.py) measures the whole-program BASELINE the search is divided by -- a real
       # auto-opt build + bit-exact validation + timing, so it needs this phase's toolchain too.
+      # E4 (test_experiment_e4.py) runs BOTH search strategies over a real ladder with real builds --
+      # the cost/quality ledger is only meaningful against measured times, so it belongs here too.
       - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
             tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
-            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py \
+            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py \
             --timeout=900
