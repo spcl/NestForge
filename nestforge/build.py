@@ -194,6 +194,55 @@ def driver_lib_path(soname: str, compiler: str) -> Optional[Path]:
     return path if path.exists() else None
 
 
+def driver_search_dirs(compiler: str) -> List[str]:
+    """Library directories ``compiler`` itself searches (``-print-search-dirs`` -> ``libraries: =a:b:c``).
+    Asked of the driver rather than guessed from distro layout, which varies by distro AND by toolchain
+    version. Complements :func:`driver_lib_path`: that asks about ONE library the driver already resolves,
+    this enumerates where it would look for any."""
+    try:
+        out = subprocess.run([compiler, "-print-search-dirs"], capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    for line in out.splitlines():
+        if line.startswith("libraries:"):
+            raw = line.split(":", 1)[1].strip().lstrip("=")  # "libraries: =/a:/b"
+            return [os.path.normpath(d) for d in raw.split(os.pathsep) if d]
+    return []
+
+
+def ldconfig_dirs(soname: str) -> List[str]:
+    """Directories the LOADER cache lists for ``lib<soname>``, newest-name first. The linker needs the
+    ``-dev`` ``.so`` symlink, which ldconfig does not index -- but it sits in the same directory as the
+    versioned ``.so.N`` that ldconfig DOES index, so this locates the directory to probe."""
+    try:
+        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    dirs: List[str] = []
+    for line in out.splitlines():
+        if f"lib{soname}.so" not in line or "=>" not in line:
+            continue
+        d = os.path.dirname(line.split("=>")[-1].strip())
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+#: Common install layouts, tried ONLY after every driver/loader query came up empty. Hints, not truth:
+#: a dev package can ship the ``.so`` symlink somewhere no driver searches and no ldconfig indexes
+#: (Ubuntu's libomp-N-dev under /usr/lib/llvm-N/lib, reachable only if clang-N is also installed).
+_LIB_DIR_HINT_ROOTS = ("/usr/lib", "/usr/lib64")  # globbed for llvm-<N>/lib*
+_LIB_DIR_HINTS = ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib")
+
+
+def hint_dirs() -> List[str]:
+    """Guessed library directories, newest LLVM first (a box with llvm-16 and llvm-18 should get 18)."""
+    dirs: List[str] = []
+    for root in _LIB_DIR_HINT_ROOTS:
+        dirs += sorted((str(p) for p in Path(root).glob("llvm-*/lib*")), reverse=True)
+    return dirs + list(_LIB_DIR_HINTS)
+
+
 def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
     """True if ``compiler`` already resolves ``-l<soname>`` with no ``-L``."""
     return driver_lib_path(soname, compiler) is not None
@@ -218,12 +267,18 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
             found = driver_lib_path(soname, probe)
             if found is not None:
                 return str(found.parent)
-    # newest LLVM first (older libomp less likely); lib64 too (RHEL/SUSE, vs Debian's lib/<triple>)
-    for root in ("/usr/lib", "/usr/lib64"):
-        for d in sorted((str(x) for x in Path(root).glob("llvm-*/lib*")), reverse=True):
-            if (Path(d) / f"lib{soname}.so").exists():
-                return d
-    for d in ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib"):
+    # Nothing RESOLVED it, so enumerate where the drivers look and where the loader cache says it lives.
+    # Both are host-derived: a hardcoded distro ladder (/usr/lib/llvm-*/lib, /usr/lib64, ...) goes stale
+    # per distro and per toolchain version, and silently picks the wrong LLVM when several are installed.
+    for probe in _LIB_PROBE_DRIVERS:
+        if shutil.which(probe):
+            for d in driver_search_dirs(probe):
+                if (Path(d) / f"lib{soname}.so").exists():
+                    return d
+    for d in ldconfig_dirs(soname):  # the linker's .so symlink sits beside the versioned .so.N
+        if (Path(d) / f"lib{soname}.so").exists():
+            return d
+    for d in hint_dirs():  # last resort: common layouts, only for a runtime NO query above admitted to
         if (Path(d) / f"lib{soname}.so").exists():
             return d
     return None

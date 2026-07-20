@@ -5,6 +5,7 @@ Tests build real corpus nests through :mod:`nestforge.build` and check the owned
 numpy oracle: source-tree layout, the init/program/exit call sequence, and per-parameter ctype marshaling.
 """
 import ctypes.util
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,10 +24,11 @@ from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from dace.sdfg import nodes
-from nestforge.build import (build_sdfg, dace_runtime_include, driver_lib_path, OpenMPRuntime, compiler_family, LIBOMP,
-                             LIBNVOMP, compare_link_modes, LinkTimings, available_linkers, fastest_linker,
-                             linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions,
-                             set_fast_libnodes, runtime_installed, config_has, codegen_impls_available, codegen_config,
+from nestforge.build import (build_sdfg, dace_runtime_include, driver_lib_path, driver_search_dirs, ldconfig_dirs,
+                             hint_dirs, linkable_lib_dir, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
+                             compare_link_modes, LinkTimings, available_linkers, fastest_linker, linker_supported,
+                             VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions, set_fast_libnodes,
+                             runtime_installed, config_has, codegen_impls_available, codegen_config,
                              default_codegen_impl, CODEGEN_IMPLS, parse_params)
 
 
@@ -74,11 +76,27 @@ def test_owned_build_jacobi_matches_oracle():
 
 
 def without_search_paths(flags):
-    """``flags`` minus any ``-L`` discovery path: WHICH runtime is selected, not WHERE it was found (the
-    latter is host-dependent -- e.g. Ubuntu moves libomp-18-dev under /usr/lib/llvm-18/lib). Filter rather
-    than index since the ``-L`` position varies by family.
+    """``flags`` minus any discovery path -- ``-L`` AND the matching ``-Wl,-rpath,``: WHICH runtime is
+    selected, not WHERE it was found (the latter is host-dependent -- e.g. Ubuntu moves libomp-18-dev under
+    /usr/lib/llvm-18/lib, which makes ``link_flags`` emit BOTH). Filter rather than index since the
+    position varies by family.
     """
-    return [f for f in flags if not f.startswith("-L")]
+    return [f for f in flags if not f.startswith("-L") and not f.startswith("-Wl,-rpath")]
+
+
+def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
+    """Where a runtime lives is ASKED (driver ``-print-search-dirs``, then the loader cache), because a
+    hardcoded distro ladder goes stale per distro and per toolchain version. Guessed layouts survive only
+    as a last-resort hint, after every query."""
+    cc = "g++" if shutil.which("g++") else "gcc"
+    dirs = driver_search_dirs(cc)
+    assert dirs and all(os.path.isabs(d) for d in dirs), dirs
+    assert driver_search_dirs("no-such-compiler-42") == []  # a missing driver is empty, never a crash
+    # libc is in the loader cache on every Linux box, so this exercises the parse without pinning a path.
+    assert all(os.path.isabs(d) for d in ldconfig_dirs("c"))
+    assert all(os.path.isabs(d) for d in hint_dirs())
+    # A library nothing provides must resolve to None -- no layer may invent a directory for it.
+    assert linkable_lib_dir("nosuchlib42", cc) is None
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
@@ -98,8 +116,11 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
     assert without_search_paths(LIBIOMP5.link_flags("icc")) == ["-qopenmp"]
     assert LIBNVOMP.compile_flags("nvc") == ["-mp"]
     assert without_search_paths(LIBNVOMP.link_flags("nvc")) == ["-mp"]
-    # a lib_dir threads onto the link line.
-    assert "-L/opt/omp/lib" in OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
+    # a lib_dir threads onto the link line as a -L/-rpath PAIR (so the .so is found at run time too),
+    # and both are discovery, not selection -- without_search_paths must drop both.
+    pinned = OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
+    assert "-L/opt/omp/lib" in pinned and "-Wl,-rpath,/opt/omp/lib" in pinned
+    assert without_search_paths(pinned) == ["-lomp"]
 
 
 def test_openmp_runtime_registry_covers_the_popular_runtimes():
