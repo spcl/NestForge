@@ -101,8 +101,14 @@ jobs:
       # The static-offload e2e (test_static_offload_e2e.py) belongs here too: it builds the arena winner
       # as a static lib<name>_nest.a and links it INTO the parent .so (one binary, one libomp), so it
       # compiles a nest + a parent -- integration-marked, hence skipped by Phase 3. Needs only g++ + ar.
-      - name: Phase 4 -- optimizer loop + whole-program + static-offload end-to-end (builds + validates)
+      # The per-nest DIFFERENTIAL harness (test_differential.py) and the E1 granularity x backend driver
+      # (test_experiment_e1.py) join it: both compile a per-backend variant, swap it into the whole lowered
+      # program, link it, fork-run, and validate bit-exact -- the ONLY proof the extern-swap/link path is
+      # value-preserving, and integration-marked so Phase 3 skips them. They need only gcc/clang + ar (both
+      # on the runner); the E1 driver adapts to whichever compilers discover_compilers() finds.
+      - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
             tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
+            tests/test_differential.py tests/test_experiment_e1.py \
             --timeout=900
