@@ -25,10 +25,10 @@ from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from dace.sdfg import nodes
 from nestforge.build import (build_sdfg, dace_runtime_include, driver_lib_path, driver_search_dirs, ldconfig_dirs,
-                             hint_dirs, linkable_lib_dir, OpenMPRuntime, compiler_family, LIBOMP, LIBNVOMP,
-                             compare_link_modes, LinkTimings, available_linkers, fastest_linker, linker_supported,
-                             VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions, set_fast_libnodes,
-                             runtime_installed, config_has, codegen_impls_available, codegen_config,
+                             hint_dirs, llvm_version, linkable_lib_dir, OpenMPRuntime, compiler_family, LIBOMP,
+                             LIBNVOMP, compare_link_modes, LinkTimings, available_linkers, fastest_linker,
+                             linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions,
+                             set_fast_libnodes, runtime_installed, config_has, codegen_impls_available, codegen_config,
                              default_codegen_impl, CODEGEN_IMPLS, parse_params)
 
 
@@ -93,10 +93,27 @@ def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
     assert dirs and all(os.path.isabs(d) for d in dirs), dirs
     assert driver_search_dirs("no-such-compiler-42") == []  # a missing driver is empty, never a crash
     # libc is in the loader cache on every Linux box, so this exercises the parse without pinning a path.
-    assert all(os.path.isabs(d) for d in ldconfig_dirs("c"))
+    # Assert NON-EMPTY: `all()` over [] passes, which would green-light a layer that found nothing at all
+    # (e.g. ldconfig unreachable because /usr/sbin is off PATH -- the exact failure this must catch).
+    libc_dirs = ldconfig_dirs("c")
+    assert libc_dirs and all(os.path.isabs(d) for d in libc_dirs), libc_dirs
     assert all(os.path.isabs(d) for d in hint_dirs())
     # A library nothing provides must resolve to None -- no layer may invent a directory for it.
     assert linkable_lib_dir("nosuchlib42", cc) is None
+
+
+def test_llvm_hint_dirs_rank_by_version_not_by_string():
+    """llvm-9 must NOT outrank llvm-21. String sorting puts single-digit versions on top, which would hand
+    the linker an ancient libomp for a modern object -- so the rank key is the parsed integer."""
+    assert llvm_version(Path("/usr/lib/llvm-21/lib")) == 21
+    assert llvm_version(Path("/usr/lib/llvm-9/lib")) == 9
+    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == 18  # point releases rank by major
+    assert llvm_version(Path("/usr/lib/x86_64-linux-gnu")) == -1  # not an llvm-N dir at all
+    # and the hint list itself is ordered by that key, newest first, with no duplicates.
+    hints = hint_dirs()
+    assert len(hints) == len(set(hints)), hints
+    versions = [llvm_version(Path(d)) for d in hints if llvm_version(Path(d)) >= 0]
+    assert versions == sorted(versions, reverse=True), versions
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():

@@ -210,13 +210,24 @@ def driver_search_dirs(compiler: str) -> List[str]:
     return []
 
 
+#: ``ldconfig`` by name AND by full path: /usr/sbin is off the default non-root PATH on Debian-family
+#: slim images, where a bare-name spawn would silently drop the whole loader-cache layer.
+_LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
+
+
 def ldconfig_dirs(soname: str) -> List[str]:
-    """Directories the LOADER cache lists for ``lib<soname>``, newest-name first. The linker needs the
+    """Directories the LOADER cache lists for ``lib<soname>``, in cache order. The linker needs the
     ``-dev`` ``.so`` symlink, which ldconfig does not index -- but it sits in the same directory as the
     versioned ``.so.N`` that ldconfig DOES index, so this locates the directory to probe."""
-    try:
-        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
-    except (OSError, subprocess.SubprocessError):
+    out = ""
+    for exe in _LDCONFIG_EXES:  # sbin is off the non-root PATH on slim images, so try it by full path
+        try:
+            out = subprocess.run([exe, "-p"], capture_output=True, text=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out:
+            break
+    if not out:
         return []
     dirs: List[str] = []
     for line in out.splitlines():
@@ -235,12 +246,20 @@ _LIB_DIR_HINT_ROOTS = ("/usr/lib", "/usr/lib64")  # globbed for llvm-<N>/lib*
 _LIB_DIR_HINTS = ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib")
 
 
+def llvm_version(path: Path) -> int:
+    """The ``N`` in an ``llvm-N`` directory, or -1. Sorting these as STRINGS ranks llvm-9 above llvm-21,
+    which would link an ancient libomp against a modern object."""
+    digits = path.parent.name.partition("llvm-")[2].partition(".")[0]
+    return int(digits) if digits.isdigit() else -1
+
+
 def hint_dirs() -> List[str]:
-    """Guessed library directories, newest LLVM first (a box with llvm-16 and llvm-18 should get 18)."""
+    """Guessed library directories, newest LLVM first (a box with llvm-9 and llvm-21 must get 21)."""
     dirs: List[str] = []
     for root in _LIB_DIR_HINT_ROOTS:
-        dirs += sorted((str(p) for p in Path(root).glob("llvm-*/lib*")), reverse=True)
-    return dirs + list(_LIB_DIR_HINTS)
+        found = sorted(Path(root).glob("llvm-*/lib*"), key=lambda p: (llvm_version(p), p.name), reverse=True)
+        dirs += [str(p) for p in found]
+    return dirs + [d for d in _LIB_DIR_HINTS if d not in dirs]
 
 
 def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
