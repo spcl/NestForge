@@ -64,6 +64,14 @@ def test_lowering_each_unit_keeps_the_sdfg_valid():
         sdfg.validate()  # the numpy-reference fallback keeps the lowered SDFG valid
 
 
+def test_lowering_cfg_unit_keeps_the_sdfg_valid():
+    # the cfg lowering path (extract_loop_nest via the unit strategy) -- distinct from map/state.
+    sdfg = recur.to_sdfg(simplify=True)
+    lowered = lower_nests_to_external_call(sdfg, "cfg")
+    assert len(lowered) == 1  # the one LoopRegion externalized
+    sdfg.validate()
+
+
 def test_composes_with_fusion_granularity():
     # a fine (map) offload sees at least as many units at the atoms partition as at maximal fusion.
     atoms = two_map.to_sdfg(simplify=True)

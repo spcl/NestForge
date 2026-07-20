@@ -305,6 +305,8 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
     lines: List[str] = []
     for e in state.in_edges(dst):
         m = e.data
+        if m.is_empty():
+            continue  # an empty memlet is a happens-before/ordering edge (StateFusion sequencing), no data
         if isinstance(e.src, nodes.AccessNode):
             if m.data == e.dst.data:
                 dst_sub, src_sub = m.subset, m.other_subset

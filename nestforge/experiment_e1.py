@@ -128,14 +128,20 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
     out_dir = Path(out_dir)
     backends = backends or discover_compilers()
     cells: List[E1Cell] = []
+    caught = (subprocess.CalledProcessError, OSError, UnsupportedNest, ValueError, KeyError)
     for kernel in kernels:
-        ladder = granularity_ladder(tsvc.build_sdfg(kernel, opt_mode), max_points=max_granularity_points)
+        try:  # a kernel that cannot even canonicalize/build its ladder is a skip, not a sweep-ending crash
+            ladder = granularity_ladder(tsvc.build_sdfg(kernel, opt_mode), max_points=max_granularity_points)
+        except caught as e:
+            for backend_name in backends:
+                cells.append(E1Cell(kernel.key, backend_name, "-", unit, float("inf"), False, repr(e)))
+            continue
         for backend_name, backend_path in backends.items():
             for point in ladder:
                 cell_dir = out_dir / kernel.key / backend_name / point.name
                 try:
                     cells.append(run_e1_cell(kernel, backend_name, backend_path, point, cell_dir, unit, opt_mode, reps))
-                except (subprocess.CalledProcessError, OSError, UnsupportedNest, ValueError, KeyError) as e:
+                except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
     return cells
 

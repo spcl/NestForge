@@ -96,12 +96,14 @@ def unit_refs(sdfg: dace.SDFG, unit: str) -> List[Tuple[dace.SDFG, NestNode]]:
     SDFGs. ``map`` = every top-level map-nest; ``cfg`` = every ``LoopRegion``; ``state`` = every
     compute-bearing state (externalized whole)."""
     if unit == "map":
-        return [(sub, me) for sub in sdfg.all_sdfgs_recursive() for st in sub.states()
+        return [(sub, me) for sub in sdfg.all_sdfgs_recursive() for st in sub.all_states()
                 for me in top_level_map_entries(st)]
     if unit == "cfg":
+        # top-level LoopRegions only: extract_loop_nest needs the loop's parent to BE the SDFG
+        # (SubgraphView(parent_sdfg, [loop])), so a loop nested inside another region is not a cfg unit.
         return [(sub, r) for sub in sdfg.all_sdfgs_recursive() for r in sub.nodes() if isinstance(r, LoopRegion)]
     if unit == "state":
-        return [(sub, st) for sub in sdfg.all_sdfgs_recursive() for st in sub.states() if state_has_compute(st)]
+        return [(sub, st) for sub in sdfg.all_sdfgs_recursive() for st in sub.all_states() if state_has_compute(st)]
     raise ValueError(f"unknown offload unit {unit!r}; known: {OFFLOAD_UNITS}")
 
 

@@ -375,9 +375,14 @@ def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir:
 
 
 def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
-    """Bundle objects into ``lib<name>_nest.a``. ONE archive per parent build (not per nest): ``ExternLibEnv``
-    links a single library (M0), so a multi-nest kernel puts every nest's object in the SAME archive and ld
-    pulls each entry symbol in on demand -- no ``--whole-archive`` needed."""
+    """Bundle objects into ``lib<name>_nest.a`` (single-object offload today: one winning nest per archive).
+
+    WARNING: do NOT put several nests' objects in one archive expecting lazy member-pull to resolve them
+    all. DaCe SORTS the parent's env link flags, which can place the archive BEFORE the parent objects; ld
+    then pulls no member (nothing undefined yet) and later ``.o`` references stay unresolved -> ``undefined
+    symbol`` at ``dlopen``. For a multi-nest swap use :func:`link_shared` (a ``.so`` resolves at load,
+    order-independent) -- the E1 path does. ``--whole-archive`` would force the members but DaCe's flag
+    sort scrambles the ``--whole-archive``/``--no-whole-archive`` pair, so it is not a reliable fix here."""
     out_dir.mkdir(parents=True, exist_ok=True)
     archive = out_dir / f"lib{name}_nest.a"
     if archive.exists():

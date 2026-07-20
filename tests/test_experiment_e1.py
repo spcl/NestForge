@@ -74,6 +74,20 @@ def test_run_e1_records_a_failed_cell_instead_of_crashing(tmp_path):
     assert best_granularity_per_backend(cells) == {}  # no valid winner from all-failed cells
 
 
+def test_run_e1_records_kernel_ladder_failure_without_crashing(monkeypatch, tmp_path):
+    # a kernel whose ladder build raises must be a recorded skip for every backend, not a sweep-ending
+    # crash (the ladder build sits before the per-cell try, so it needs its own guard). No compile.
+    import nestforge.experiment_e1 as e1
+
+    def boom(*a, **k):
+        raise ValueError("cannot canonicalize")
+
+    monkeypatch.setattr(e1, "granularity_ladder", boom)
+    cells = run_e1([kernel()], tmp_path, backends={"gcc": "gcc", "clang": "clang"}, reps=2)
+    assert len(cells) == 2  # one skip cell per backend
+    assert all(not c.ok and "cannot canonicalize" in c.error for c in cells)
+
+
 @pytest.mark.integration
 def test_run_e1_sweeps_backends_and_granularity_bounded(tmp_path):
     cells = run_e1([kernel()], tmp_path, unit="map", max_granularity_points=2, reps=3)
