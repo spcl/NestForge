@@ -14,6 +14,7 @@ import dace
 
 import nestforge
 
+from nestforge import arena
 from nestforge.build import LIBOMP, OpenMPRuntime
 from nestforge.emit_libnode import scalar_elem
 from nestforge.fusion_arms import can_fuse, enumerate_fusions
@@ -217,3 +218,48 @@ def test_compare_link_modes_forces_the_cache_off():
     from nestforge import build
     src = inspect.getsource(build.compare_link_modes)
     assert src.count("use_ccache=False") == 2  # both the monolithic and external compiles
+
+
+def test_relative_maxdiff_accepts_a_reassociated_reduction_that_absolute_rejects():
+    """A vectorized reduce reassociates: at reduction magnitudes the result lands a few ULP away, which is
+    ORDERS above the 1e-14 ABSOLUTE tolerance but correct to ~1e-15 relative. The absolute gate would mark
+    every reduction kernel wrong and silently drop it from the sweep."""
+    rng = np.random.default_rng(0)
+    a = rng.random(32000)
+    seq = np.array([sum(a.tolist())])
+    vec = np.array([float(a.reshape(-1, 8).sum(axis=0).sum())])
+    atol = flags.FP_ATOL["strict-ieee"]
+
+    assert arena.maxdiff({"s": seq}, {"s": vec}) > atol  # the absolute gate rejects a CORRECT answer
+    assert arena.relative_maxdiff({"s": seq}, {"s": vec}) <= atol
+
+
+def test_relative_maxdiff_still_catches_a_real_miscompile():
+    """Scaling must not become norm_error: a genuinely wrong element still fails, and small-magnitude
+    values keep the strict ABSOLUTE reading because the scale denominator floors at 1.0."""
+    good = np.ones(1000)
+    bad = good.copy()
+    bad[7] = 1.5  # one wrong element among a thousand right ones
+    atol = flags.FP_ATOL["strict-ieee"]
+    assert arena.relative_maxdiff({"x": good}, {"x": bad}) > atol
+
+    tiny = np.full(4, 1e-9)
+    off = tiny + 1e-13  # absolute 1e-13: huge RELATIVE to 1e-9, but the floor keeps it an absolute call
+    assert arena.relative_maxdiff({"x": tiny}, {"x": off}) > atol
+
+
+def test_relative_maxdiff_fails_on_nan_and_inf():
+    """NaN/Inf must not sneak through the division."""
+    atol = flags.FP_ATOL["strict-ieee"]
+    ok = np.array([1.0, 2.0])
+    assert not (arena.relative_maxdiff({"x": ok}, {"x": np.array([1.0, np.nan])}) <= atol)
+    assert not (arena.relative_maxdiff({"x": ok}, {"x": np.array([1.0, np.inf])}) <= atol)
+
+
+def test_maxdiff_does_not_swallow_a_nan_in_a_later_output():
+    """Builtin max drops a NaN that is not the first item, so a NaN-poisoned second output used to report
+    0.0 -- a PERFECT match -- and could be crowned the arena winner."""
+    ref = {"x": np.array([1.0]), "y": np.array([1.0])}
+    got = {"x": np.array([1.0]), "y": np.array([np.nan])}
+    assert arena.maxdiff(ref, got) == float("inf")
+    assert arena.maxdiff(ref, ref) == 0.0

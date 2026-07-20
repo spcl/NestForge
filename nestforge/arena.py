@@ -290,7 +290,53 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
 
 
 def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
-    return max((float(np.max(np.abs(a[k] - b[k]))) if a[k].size else 0.0) for k in a)
+    """Largest absolute elementwise difference; ``inf`` if any difference is non-finite.
+
+    The non-finite mapping is load-bearing, not defensive. Builtin ``max`` DROPS a NaN that is not the
+    first item (``nan > x`` is False), so a NaN in any output but the first used to report 0.0 -- a
+    perfect match -- and a NaN-poisoned kernel could be crowned the arena winner.
+    """
+    worst = 0.0
+    for k in a:
+        if not a[k].size:
+            continue
+        d = float(np.max(np.abs(a[k] - b[k])))
+        if not np.isfinite(d):
+            return float("inf")
+        worst = max(worst, d)
+    return worst
+
+
+def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
+    """Largest elementwise difference SCALED by the magnitude of the values it is between.
+
+    An ABSOLUTE tolerance is a magnitude-dependent gate, and for a reduction it is an impossible one:
+    summing 32000 order-1 elements lands near 1.6e4, where a single fp64 ULP is already 1.8e-12 -- 180x
+    the 1e-14 absolute tolerance the differential harness defaults to. A vectorized reduce reassociates
+    and lands ~14 ULP away (2.5e-11 absolute), so an absolute gate rejects an answer that is correct to
+    1.6e-15 relative. That does not fail loudly: the sweep records the cell as WRONG and drops it, so a
+    whole class of kernels would silently vanish from the corpus.
+
+    Scaling by ``max(|a|, |b|)`` makes the tolerance mean "correct to N relative", which is the quantity
+    fp64 actually promises. Elements at or below 1.0 keep the ABSOLUTE reading (the denominator floors at
+    1.0), so this never loosens the gate for values a strict comparison can legitimately hold to -- it
+    only stops demanding more precision than the format has. A real miscompile moves the result by far
+    more than a few ULP and is still caught; this is not :func:`norm_error`, which averages a discrepancy
+    away across an array. NaN/Inf propagate through the subtraction and fail the comparison, as before.
+    """
+    worst = 0.0
+    for k in a:
+        if not a[k].size:
+            continue
+        scale = np.maximum(np.maximum(np.abs(a[k]), np.abs(b[k])), 1.0)
+        with np.errstate(invalid="ignore"):  # inf/inf -> nan, which is a FAILURE, not a warning
+            d = float(np.max(np.abs(a[k] - b[k]) / scale))
+        # NaN must not be swallowed: builtin max(0.0, nan) returns 0.0 (nan > 0.0 is False), which would
+        # report a NaN-poisoned result as a PERFECT match. Map any non-finite difference to inf.
+        if not np.isfinite(d):
+            return float("inf")
+        worst = max(worst, d)
+    return worst
 
 
 @dataclass

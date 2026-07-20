@@ -5,6 +5,8 @@ with zero skips. Locally the env var is unset, so skips behave normally.
 """
 import os
 
+import pytest
+
 
 def pytest_configure(config):
     """Materialise the corpus's gitignored ``_dace.py`` ONCE, before collection. optarena regenerates
@@ -34,3 +36,18 @@ def pytest_sessionfinish(session, exitstatus):
     for report in skipped:
         reporter.write_line(f"  SKIPPED {report.nodeid}")
     session.exitstatus = 1
+
+
+@pytest.fixture(autouse=True)
+def reset_extern_lib_env():
+    """``ExternLibEnv`` is a PROCESS-GLOBAL class (DaCe resolves library environments by module-level
+    name), so its accumulated link line survives from one test into the next. Without this reset the
+    static-offload e2e passes or fails purely on FILE ORDER: run after a test that swapped in a shared
+    variant, it inherits that test's ``-rpath`` and its "statically in, not loaded" assertion fails.
+    CI's ordering happened to be a safe one -- luck, not a guarantee, and any reordering or shuffle
+    would have broken it.
+    """
+    from nestforge.libnode import ExternLibEnv
+    ExternLibEnv.reset()
+    yield
+    ExternLibEnv.reset()

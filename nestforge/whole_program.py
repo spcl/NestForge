@@ -22,7 +22,7 @@ from typing import Callable, List, Optional, Tuple
 import dace
 
 from nestforge import build, tsvc
-from nestforge.arena import make_inputs, maxdiff, run_oracle
+from nestforge.arena import make_inputs, maxdiff, relative_maxdiff, run_oracle
 from nestforge.extract import Boundary, find_state_of_node, whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall
@@ -92,8 +92,11 @@ def measure_whole_program(optimizer: Optimizer,
         built.run(vbuf, sizes)
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
         if outs:
-            md = float(maxdiff({o: oracle[o] for o in outs}, outs))
-            verdict = {"ok": bool(md <= atol), "maxdiff": md}
+            ref = {o: oracle[o] for o in outs}
+            # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff) -- an
+            # absolute tolerance is unreachable at reduction magnitudes.
+            md = float(maxdiff(ref, outs))
+            verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
         else:
             verdict = {"ok": False, "maxdiff": float("inf")}
         # Time: init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling).

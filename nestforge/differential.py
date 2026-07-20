@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from nestforge import build, tsvc
-from nestforge.arena import make_inputs, maxdiff, run_oracle
+from nestforge.arena import make_inputs, maxdiff, relative_maxdiff, run_oracle
 from nestforge.extract import whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall, ExternLibEnv
@@ -140,8 +140,12 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
         built.run(vbuf, sizes)
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
         if outs:
-            md = float(maxdiff({o: oracle[o] for o in outs}, outs))
-            verdict = {"ok": bool(md <= atol), "maxdiff": md}
+            ref = {o: oracle[o] for o in outs}
+            # Report the ABSOLUTE difference (that is what a reader of ContextResult.maxdiff expects), but
+            # GATE on the scaled one -- an absolute gate is unreachable for a reduction, see
+            # arena.relative_maxdiff.
+            md = float(maxdiff(ref, outs))
+            verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
         else:
             verdict = {"ok": False, "maxdiff": float("inf")}
         tbuf = {k: v.copy() for k, v in inputs.items()}
