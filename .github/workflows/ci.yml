@@ -124,10 +124,12 @@ jobs:
       # (test_experiment_e1.py) join it: both compile a per-backend variant, swap it into the whole lowered
       # program, link it, fork-run, and validate bit-exact -- the ONLY proof the extern-swap/link path is
       # value-preserving, and integration-marked so Phase 3 skips them. They need only gcc/clang + ar (both
-      # on the runner); the E1 driver adapts to whichever compilers discover_compilers() finds.
+      # on the runner); the E1 driver adapts to whichever compilers discover_compilers() finds. E3
+      # (test_experiment_e3.py) sweeps the OFFLOAD-unit axis through that same measurement path, so it
+      # compiles and swaps exactly as E1 does and belongs in this phase for the same reason.
       - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
             tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
-            tests/test_differential.py tests/test_experiment_e1.py \
+            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py \
             --timeout=900
