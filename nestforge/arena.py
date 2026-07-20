@@ -364,21 +364,46 @@ def run_arena(prep: Prepared,
     return result
 
 
+def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir: Path) -> Path:
+    """Compile one emitted C source to a ``.o`` with a chosen ``(compiler, fp-mode)`` -- the shared step
+    both the winner-archive and the per-backend E1 variant build on. ``-fPIC`` (in every ``FP_MODES``
+    entry) makes the object linkable into the parent ``.so``."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    obj = out_dir / f"{name}_nest.o"
+    subprocess.run([cpath, *FP_MODES[fp_mode], "-c", str(c_source), "-o", str(obj)], check=True)
+    return obj
+
+
+def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
+    """Bundle objects into ``lib<name>_nest.a``. ONE archive per parent build (not per nest): ``ExternLibEnv``
+    links a single library (M0), so a multi-nest kernel puts every nest's object in the SAME archive and ld
+    pulls each entry symbol in on demand -- no ``--whole-archive`` needed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    archive = out_dir / f"lib{name}_nest.a"
+    if archive.exists():
+        archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
+    subprocess.run(["ar", "rcs", str(archive), *[str(o) for o in objs]], check=True)
+    return archive
+
+
+def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str) -> Path:
+    """Link objects into ``lib<name>_nest.so``. Unlike a static archive, a shared lib exports its symbols
+    and is resolved at ``dlopen`` time -- order-independent, so it survives dace SORTING the parent's link
+    flags (which reorders the library ahead of the parent objects and would leave a static archive's later
+    members un-pulled). The parent links it with an rpath (see :meth:`ExternLibEnv.configure`)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    so = out_dir / f"lib{name}_nest.so"
+    subprocess.run([cpath, "-shared", "-fPIC", *[str(o) for o in objs], "-o", str(so)], check=True)
+    return so
+
+
 def build_winner_archive(win: Cell, c_source: Path, name: str, out_dir: Path) -> Path:
     """Materialize a winning cell as a static ``lib<name>_nest.a`` for STATIC offload into a parent SDFG.
 
     The arena builds each candidate as a ``.so`` to dlopen + time; for offload we instead want the
-    winner's objects, so the parent ``.so`` can pull them in via ``--whole-archive`` (see
-    :meth:`ExternLibEnv.configure`). Recompiles the SAME source with the winner's ``(compiler, fp-mode)``
-    -- the config that won -- to an object and archives it. An archive carries objects only, no linked
-    runtime, so the parent supplies the single libomp instead of every nest ``.so`` dragging its own."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cpath = discover_compilers()[win.compiler]
-    flags = FP_MODES[win.fp_mode]
-    obj = out_dir / f"{name}_nest.o"
-    archive = out_dir / f"lib{name}_nest.a"
-    subprocess.run([cpath, *flags, "-c", str(c_source), "-o", str(obj)], check=True)
-    if archive.exists():
-        archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
-    subprocess.run(["ar", "rcs", str(archive), str(obj)], check=True)
-    return archive
+    winner's objects, so the parent ``.so`` can pull them in (see :meth:`ExternLibEnv.configure`).
+    Recompiles the SAME source with the winner's ``(compiler, fp-mode)`` -- the config that won -- to an
+    object and archives it. An archive carries objects only, no linked runtime, so the parent supplies the
+    single libomp instead of every nest ``.so`` dragging its own."""
+    obj = compile_object(discover_compilers()[win.compiler], win.fp_mode, c_source, name, out_dir)
+    return archive_objects([obj], name, out_dir)

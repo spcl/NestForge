@@ -14,13 +14,55 @@ The **same API drives the deterministic (non-agent) path** — `deterministic_op
 `AgenticOptimizer` are both just `Optimizer` subclasses proposing over these calls. Nothing here is
 agent-only.
 
-## Three units you manipulate
+## Three units — and DO NOT confuse region with nest
 
-| unit | what it is | phase | key type |
-|---|---|---|---|
-| **region** | a fusion unit: a maximal loop/map-nest (recursive — a `ConditionalBlock`'s branches are separate regions) | 1 | `LoopRegion` / `MapEntry` |
-| **nest** | a region externalized as a library call | 2 | `ExternalCall` + `Boundary` |
-| **variant** | a compiled kernel for a nest (a `(language, compiler, flags, fp-mode)` build) | 3 | `Cell` / prebuilt lib |
+| unit | what it is | key type |
+|---|---|---|
+| **region** | a control-flow **container** — a `State`, `LoopRegion`, `ConditionalBlock`, or `ControlFlowRegion`. The box a nest lives in. A `State` is a fusion barrier. | `SDFGState` / `LoopRegion` / ... |
+| **nest** | a compute unit that **fuses** — a map-nest or a loop-nest | `MapEntry` / `LoopRegion` |
+| **external nest / variant** | a nest externalized as a library call, then a compiled kernel `(language, compiler, flags, fp-mode)` | `ExternalCall`+`Boundary` / `Cell` |
+
+A `LoopRegion` is **both** a region (it contains blocks) and a nest (it fuses) — which is exactly why
+merging two loop-regions *is* fusing the enclosing loops (see below).
+
+**Three independent decisions, do not conflate them:**
+1. **Region structure** (which containers merge) — Level 1.
+2. **Nest fusion** (how maps/loops fuse) — Level 2.
+3. **Offload granularity** (which nests externalize) — Phase 2.
+
+## The `Session` — the wire-safe entrypoint
+
+You never hold a live node. `nestforge.session.Session` owns the SDFG server-side; you name graph
+objects only by **epoch-stamped string ids** it returns, and every call gives back plain JSON, never a node.
+
+```python
+from nestforge.session import Session
+s = Session(sdfg)
+s.region_tree()                             # L1 — the container tree (states=barriers, ids per region)
+nests = s.list_nests()                      # L2 — [{id:'e0:nest:0', reads, writes, parallel}, ...]
+s.can_fuse(nests[0]["id"], nests[1]["id"])  # "yes" | reason  (any pair, legal or not)
+s.fuse(s.list_fusions()[0]["id"])           # commit one nest fusion -> epoch bumps to e1
+```
+
+**The merge-first rule (your structural constraint):** two nests fuse only *inside one region*. If
+`can_fuse` says they are in different states, you must **merge the regions first**:
+
+```python
+s.can_fuse(mapA, mapB)                       # "different states ... merge the enclosing regions first"
+s.fuse_regions(s.list_region_fusions()[0]["id"])   # StateFusion merges the states -> epoch bumps
+# re-list (ids from before the bump are now stale), then the maps are siblings and fuse
+s.fuse(s.list_fusions()[0]["id"])
+```
+For **loops** the "region" is the enclosing loop, so merging = fusing the outer loops first (already a
+`list_fusions` move); fuse outer, then inner.
+
+**The rule that keeps you correct:** any mutation (`fuse` / `fuse_regions` / `fission_all` /
+`fission_map` / `externalize`) bumps the epoch and invalidates every id. Reusing an `e0:` id raises
+`StaleHandle` — "re-list and retry". Tools by axis: **L1** `region_tree`/`list_region_fusions`/
+`fuse_regions`; **L2** `list_nests`/`can_fuse`/`list_fusions`/`fuse`/`fission_all`/`list_map_fissions`/
+`fission_map`; **P2** `list_offload_candidates`/`externalize`; **P3** `nest_boundary`/`emit_reference`/
+`emit_variant`/`set_kernel` (Mode A)/`sweep` (Mode B); **P4** `feedback`. The raw functions below are
+what these wrap — call them directly for the deterministic path, `Session` for an agent.
 
 ## Step 0 — see the graph (read-only, safe anytime)
 
@@ -50,10 +92,11 @@ states as a control-flow dependency, and the arms respect it:
 - **map fusion** (vertical/horizontal) is **state-local** — never crosses a state.
 - **loop fusion** may cross a state boundary via the CFG (two adjacent `LoopRegion`s in one region).
 
-So to fuse compute that currently sits in two different states, the states must first merge. **State
-fusion is not yet exposed in nest-forge** (roadmap below) — today, treat a cross-state pair as
-un-fusable and reshape granularity another way (fission both to a common level, or fuse at the loop
-level). `can_fuse` tells you exactly when a state barrier is the blocker.
+So to fuse compute that currently sits in two different states, the states must first merge — and that
+merge is a **separate, explicit decision** (Level 1) from fusing the nests: `list_region_fusions` +
+`fuse_regions` (`StateFusion`). `can_fuse` tells you exactly when a state barrier is the blocker, and
+its reason points you at the region merge. This is deliberate: each granularity level stays your choice
+— nothing auto-merges a region behind a fuse.
 
 ## Phase 1 — change granularity (fuse / fission)
 
@@ -172,8 +215,9 @@ it stops when a round stops paying off. Deeper: `skills/phase4-feedback`.
 
 ## Not yet exposed (roadmap — do not call)
 
-- **State fusion across a barrier** — no transform surfaced; a cross-state pair is un-fusable today.
 - **python-callback kernels** — the pipeline is compiled-lib-only (`extern "C"` + `ctypes`); a `.a` that
   trampolines back into python is a design goal, not a current path.
 - **Region memoization in Phase 4** — feedback re-measures coarsely; per-region dirty-tracking (re-optimize
   only the regions a re-fuse changed) is planned.
+- **Region fission (splitting a container)** — `list_region_fusions`/`fuse_regions` merge states today;
+  the inverse (splitting a state/region) rides `fission_all` at the nest level, not a region-level split.

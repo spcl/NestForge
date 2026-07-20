@@ -115,8 +115,8 @@ def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
 
 
 STATE_BARRIER = ("nests are in different states -- a State boundary is a control-flow dependency (a hard "
-                 "fusion barrier). Maps fuse only within one State; fuse the states first (StateFusion, not "
-                 "yet exposed) before these nests can fuse.")
+                 "fusion barrier). Maps fuse only within one State; merge the enclosing regions first "
+                 "(fuse_regions / list_region_fusions, i.e. StateFusion) before these nests can fuse.")
 
 
 def can_fuse(sdfg: dace.SDFG, first: nodes.Node, second: nodes.Node) -> str:
@@ -135,7 +135,8 @@ def can_fuse(sdfg: dace.SDFG, first: nodes.Node, second: nodes.Node) -> str:
 def fuse_loops_reason(sdfg: dace.SDFG, first: LoopRegion, second: LoopRegion) -> str:
     if first.parent_graph is not second.parent_graph:
         return ("loops are in different control-flow regions (a control-flow dependency separates them); "
-                "cannot fuse across the region boundary.")
+                "fuse the ENCLOSING loops first (a fuse-loops move one level up), then these become "
+                "siblings -- cannot fuse across the region boundary directly.")
     cfg = first.parent_graph
     out = cfg.out_edges(first)
     if len(out) != 1 or out[0].dst is not second:

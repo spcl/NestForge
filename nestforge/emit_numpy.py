@@ -26,6 +26,14 @@ from dace.sdfg import nodes
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion, ReturnBlock
 from dace.sdfg.utils import dfs_topological_sort
 
+try:
+    from dace.transformation.passes.canonicalize.assume_symbols_nonnegative import is_assumption_guard_block
+except ImportError:  # a dace without the canonicalize assumption-guard pass
+
+    def is_assumption_guard_block(block) -> bool:
+        return False
+
+
 from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
                                     scalar_local, write_lhs)
 from nestforge.extract import Boundary
@@ -670,6 +678,8 @@ def emit_region(region, sdfg: dace.SDFG) -> List[str]:
     for block in ordered_blocks(region):
         lines.extend(interstate_lines(region, sdfg, block))
         if isinstance(block, dace.SDFGState):
+            if is_assumption_guard_block(block):
+                continue  # canonicalize's soundness trap: reads only symbols, touches no data -- inert in numpy
             lines.append(f"# state ({block.label})")
             lines.extend(state_body(sdfg, block))
         elif isinstance(block, LoopRegion):

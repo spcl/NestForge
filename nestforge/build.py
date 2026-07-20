@@ -678,6 +678,11 @@ class BuildOptions:
     # DaCe multi-dim tile-op vectorizer config applied before codegen; None = no vectorization. Typed as
     # object to keep the vectorizer import lazy.
     vectorize: Optional[object] = None
+    # Extra link arguments appended AFTER the frame object -- the extern nest-variant libs (absolute .so
+    # path + its -Wl,-rpath) for the differential swap path. nest-forge compiles the generated frame
+    # directly (bypassing DaCe's CMake), so ``ExternLibEnv``'s libraries are NOT auto-linked; the caller
+    # passes them here instead. Placed after the frame so ld resolves the extern-C entry symbols.
+    extra_link: Optional[List[str]] = None
 
     def resolved_flags(self) -> List[str]:
         return list(self.flags if self.flags is not None else DEFAULT_FLAGS)
@@ -703,6 +708,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     vec_c = opts.veclib.compile_flags(compiler) if opts.veclib else []
     vec_l = opts.veclib.link_flags(compiler) if opts.veclib else []
     blas_l = list(opts.blas_link or [])  # link the chosen BLAS (fast_libnodes)
+    extra_l = list(opts.extra_link or [])  # extern nest-variant libs (differential swap), after the frame
     so = folder / f"lib{name}.so"
     cflags = [f for f in flags if f != "-shared"]  # -shared is a link-only flag; drop it for any -c step
     obj = folder / f"{name}.o"
@@ -711,13 +717,13 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     if not opts.link_external and not opts.openmp:
         # no mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in)
         # libs go AFTER the source: ld resolves left-to-right, a -l before the object contributes nothing
-        cmd = [compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l]
+        cmd = [compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l, *extra_l]
         t0 = time.perf_counter()
         run(cmd)
     elif not opts.link_external:
         # mandated runtime: split compile from link so ONLY that runtime is linked (gnu dual-runtime trap)
         compile_cmd = [compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
-        link_cmd = [compiler, "-shared", *cflags, *lto_f, str(obj), *omp_l, *vec_l, *blas_l, "-o", str(so)]
+        link_cmd = [compiler, "-shared", *cflags, *lto_f, str(obj), *omp_l, *vec_l, *blas_l, *extra_l, "-o", str(so)]
         t0 = time.perf_counter()
         run(compile_cmd)
         run(link_cmd)
@@ -735,7 +741,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
         # link from the object's REAL code (NOT -flto) so the entry points survive + export
         link_cmd = [
             compiler, "-shared", *cflags, *ld, "-Wl,--export-dynamic", "-Wl,--whole-archive",
-            str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, *blas_l, "-o",
+            str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, *blas_l, *extra_l, "-o",
             str(so)
         ]
         t0 = time.perf_counter()

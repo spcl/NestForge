@@ -19,7 +19,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 from dace.transformation import helpers
 
-NestNode = Union[nodes.MapEntry, LoopRegion]
+NestNode = Union[nodes.MapEntry, LoopRegion, SDFGState]
 
 
 @dataclass
@@ -74,6 +74,17 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: Op
     """
     state = find_state_of_node(parent_sdfg, map_entry)
     subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
+    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
+    return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
+
+
+def extract_state_nest(parent_sdfg: dace.SDFG, state: SDFGState, name: Optional[str] = None) -> Boundary:
+    """Outline a WHOLE state (all its maps/tasklets as one unit) into a standalone SDFG -- the ``state``
+    offloading granularity (coarser than one map, finer than a control-flow region). ``full_data=True``
+    nests entire boundary arrays so the emitted C signature is not shrunk to accessed sub-ranges (same
+    reason as :func:`extract_map_nest`)."""
+    from dace.sdfg.graph import SubgraphView
+    subgraph = SubgraphView(state, state.nodes())
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
     return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
 
@@ -149,7 +160,9 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: Optional[
         return extract_map_nest(parent_sdfg, node, name=name)
     if isinstance(node, LoopRegion):
         return extract_loop_nest(parent_sdfg, node, name=name)
-    raise TypeError(f"cannot extract node of type {type(node).__name__}; expected MapEntry or LoopRegion")
+    if isinstance(node, SDFGState):
+        return extract_state_nest(parent_sdfg, node, name=name)
+    raise TypeError(f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion or SDFGState")
 
 
 def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
