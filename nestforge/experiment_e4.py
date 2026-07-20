@@ -117,29 +117,50 @@ def run_e4(kernels: Sequence[tsvc.TsvcKernel],
                 except caught as e:
                     rows.append(E4Row(kernel.key, backend_name, name, "-", float("inf"), 0.0, 0, 0, False, repr(e)))
             oracle_us = results[ORACLE].best_us if ORACLE in results else float("inf")
+            # An absent oracle is a fact about the REFERENCE, not about the strategies measured against it.
+            # Saying "no valid rung measured" on a strategy that measured plenty attributes the loss to the
+            # wrong component and hides that the reference lane is what failed.
+            no_ref = None if ORACLE in results else f"no {ORACLE!r} reference for this kernel/backend"
             for name, res in results.items():
-                rows.append(score(kernel.key, backend_name, name, res, oracle_us))
+                rows.append(score(kernel.key, backend_name, name, res, oracle_us, no_ref))
     return rows
 
 
-def score(kernel: str, backend: str, strategy: str, result, oracle_us: float) -> E4Row:
+def score(kernel: str,
+          backend: str,
+          strategy: str,
+          result,
+          oracle_us: float,
+          no_reference: Optional[str] = None) -> E4Row:
     """One row from a finished search. Quality needs BOTH the strategy's time and the oracle's to be finite
     -- when every rung failed to build there is no optimum to be near, and reporting 1.0 there would claim
-    the strategy matched an oracle that itself found nothing."""
+    the strategy matched an oracle that itself found nothing.
+
+    ``no_reference`` distinguishes the two ways quality can be unavailable: this strategy measured nothing,
+    versus the oracle it would be scored against is missing. Both give quality 0.0; only the reasons differ,
+    and the difference is what tells a reader which lane to go fix."""
     best_us = result.best_us
-    usable = 0.0 < best_us < float("inf") and 0.0 < oracle_us < float("inf")
+    measured = 0.0 < best_us < float("inf")
+    usable = measured and 0.0 < oracle_us < float("inf")
     quality = oracle_us / best_us if usable else 0.0
-    error = None if usable else "no valid rung measured"
+    error = None if usable else (no_reference if measured else "no valid rung measured")
     return E4Row(kernel, backend, strategy, result.best, best_us, quality, result.ledger.measurements,
                  result.ledger.tokens, usable, error)
 
 
 def cost_quality_table(rows: Sequence[E4Row]) -> Dict[str, Dict[str, float]]:
-    """The E4 figure: strategy -> mean quality and mean measurements over the valid rows. The C4 claim is
-    read here -- an agent whose ``quality`` is near 1.0 at a fraction of ``measurements``."""
+    """The E4 figure: strategy -> mean quality and mean measurements over the runs EVERY strategy completed.
+
+    Averaged over the shared (kernel, backend) set rather than each strategy's own valid rows: a strategy
+    whose path happens to dodge the rungs that fail to build would otherwise be averaged over an easier
+    population than the oracle, and C4's "near-oracle quality at a fraction of the cost" would be read off
+    two unpaired numbers. ``runs`` is that shared count, identical for every strategy by construction."""
+    strategies = sorted({r.strategy for r in rows})
+    ok_runs = {s: {(r.kernel, r.backend) for r in rows if r.strategy == s and r.ok} for s in strategies}
+    shared = set.intersection(*ok_runs.values()) if ok_runs else set()
     table: Dict[str, Dict[str, float]] = {}
-    for strategy in sorted({r.strategy for r in rows}):
-        valid = [r for r in rows if r.strategy == strategy and r.ok]
+    for strategy in strategies:
+        valid = [r for r in rows if r.strategy == strategy and r.ok and (r.kernel, r.backend) in shared]
         if not valid:
             continue
         table[strategy] = {

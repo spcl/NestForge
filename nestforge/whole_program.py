@@ -105,8 +105,17 @@ def measure_whole_program(optimizer: Optimizer,
         try:
             fn, cargs = built.bind_program(tbuf, sizes)
             fn(*cargs)  # warm
+            # Restore every buffer the program WRITES before each timed rep -- the same discipline the
+            # per-nest side applies (differential.measure_in_context). Without it an in-place program
+            # (a[:] = a[:] * b) feeds on its own previous output: rep k computes a * b**k, which reaches
+            # Inf/denormals within a few reps, and denormal arithmetic rather than the kernel dominates the
+            # median. E2 divides this median BY the per-nest one, so leaving it out inflates every speedup
+            # by an artifact that grows with reps. The restore writes in place and sits OUTSIDE the timing.
+            mutated = [o for o in boundary.outputs if o in tbuf]
             samples: List[float] = []
             for _ in range(reps):
+                for name in mutated:
+                    tbuf[name][...] = inputs[name]
                 t0 = time.perf_counter()
                 fn(*cargs)
                 samples.append((time.perf_counter() - t0) * 1e6)

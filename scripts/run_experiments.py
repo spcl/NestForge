@@ -36,15 +36,21 @@ from nestforge.experiment_e5 import non_affine_findings, run_e5  # noqa: E402
 EXPERIMENTS = ("e1", "e2", "e3", "e4", "e5")
 
 
-def jsonable(value):
+def to_json_value(value):
     """Tables are keyed by tuples (kernel, backend), which JSON cannot express -- join them so the file
-    stays readable instead of silently losing the backend half of the key."""
+    stays readable instead of silently losing the backend half of the key.
+
+    Deliberately NOT ``nestforge.perf.harness.jsonable``, and deliberately not named the same: that one
+    maps non-finite floats to ``null``, which makes a failed measurement indistinguishable from one that
+    was never attempted. These tables keep "inf"/"nan" visible as strings, and carry tuple keys and
+    dataclass rows that the harness helper does not handle.
+    """
     if isinstance(value, dict):
-        return {(" | ".join(k) if isinstance(k, tuple) else str(k)): jsonable(v) for k, v in value.items()}
+        return {(" | ".join(k) if isinstance(k, tuple) else str(k)): to_json_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [jsonable(v) for v in value]
+        return [to_json_value(v) for v in value]
     if dataclasses.is_dataclass(value):
-        return jsonable(dataclasses.asdict(value))
+        return to_json_value(dataclasses.asdict(value))
     if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
         return str(value)  # inf/nan are not JSON; keep them visible rather than coercing to null
     return value
@@ -52,7 +58,7 @@ def jsonable(value):
 
 def write(out_dir: Path, name: str, rows, tables: Dict) -> Path:
     path = out_dir / f"{name}.json"
-    path.write_text(json.dumps({"rows": jsonable(rows), **jsonable(tables)}, indent=2, sort_keys=True))
+    path.write_text(json.dumps({"rows": to_json_value(rows), **to_json_value(tables)}, indent=2, sort_keys=True))
     return path
 
 
@@ -88,6 +94,7 @@ def main(argv: List[str]) -> int:
     # E1/E3 cells feed E2, so they are kept even when E2 alone was requested -- E2 without them would have
     # no search side to divide by, and reporting the baseline alone is not the experiment.
     cells = []
+    fed_by: List[str] = []  # which axes fed E2's search side -- see the provenance note where e2 is written
     if "e1" in names:
         rows = run_e1(kernels,
                       args.out / "e1",
@@ -95,10 +102,12 @@ def main(argv: List[str]) -> int:
                       max_granularity_points=args.granularity_points,
                       **shared)
         cells += rows
+        fed_by.append("e1")
         print("e1 ->", write(args.out, "e1", rows, {"best_granularity": best_granularity_per_backend(rows)}))
     if "e3" in names:
         rows = run_e3(kernels, args.out / "e3", **shared)
         cells += rows
+        fed_by.append("e3")
         print("e3 ->",
               write(args.out, "e3", rows, {
                   "curve": granularity_curve(rows),
@@ -106,13 +115,29 @@ def main(argv: List[str]) -> int:
               }))
     if "e2" in names:
         if not cells:  # E2 needs a search side; measure the E1 axis for it rather than reporting half a table
+            fed_by.append("e1-fallback")
             cells = run_e1(kernels,
                            args.out / "e2-search",
                            unit=args.unit,
                            max_granularity_points=args.granularity_points,
                            **shared)
-        rows = run_e2(kernels, cells, args.out / "e2", preset=args.preset, reps=args.reps, seed=args.seed)
-        print("e2 ->", write(args.out, "e2", rows, {"speedup": speedup_table(rows), "skipped": skipped_lanes(rows)}))
+        rows = run_e2(kernels,
+                      cells,
+                      args.out / "e2",
+                      preset=args.preset,
+                      reps=args.reps,
+                      seed=args.seed,
+                      backends=backends)
+        # Record WHICH axes fed the search side: search_best takes a min over whatever cells it is
+        # handed, so `--experiments e2` divides by a smaller candidate set than `e1,e2,e3` does.
+        # Without this field two runs report different speedups with nothing to explain the gap.
+        print(
+            "e2 ->",
+            write(args.out, "e2", rows, {
+                "speedup": speedup_table(rows),
+                "skipped": skipped_lanes(rows),
+                "search_cells_from": fed_by,
+            }))
     if "e4" in names:
         rows = run_e4(kernels,
                       args.out / "e4",

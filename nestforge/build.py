@@ -246,20 +246,27 @@ _LIB_DIR_HINT_ROOTS = ("/usr/lib", "/usr/lib64")  # globbed for llvm-<N>/lib*
 _LIB_DIR_HINTS = ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib")
 
 
-def llvm_version(path: Path) -> int:
-    """The ``N`` in an ``llvm-N`` directory, or -1. Sorting these as STRINGS ranks llvm-9 above llvm-21,
-    which would link an ancient libomp against a modern object."""
-    digits = path.parent.name.partition("llvm-")[2].partition(".")[0]
-    return int(digits) if digits.isdigit() else -1
+def llvm_version(path: Path) -> Tuple[int, ...]:
+    """The version tuple of an ``llvm-N[.M]`` directory, or ``(-1,)``. Sorting these as STRINGS ranks
+    llvm-9 above llvm-21, which would link an ancient libomp against a modern object; comparing the parts
+    as INTEGERS also keeps llvm-18.1 above llvm-18 instead of tying them."""
+    parts = path.parent.name.partition("llvm-")[2].split(".")
+    if not parts or not parts[0].isdigit():
+        return (-1, )
+    return tuple(int(p) for p in parts if p.isdigit())
 
 
 def hint_dirs() -> List[str]:
-    """Guessed library directories, newest LLVM first (a box with llvm-9 and llvm-21 must get 21)."""
-    dirs: List[str] = []
-    for root in _LIB_DIR_HINT_ROOTS:
-        found = sorted(Path(root).glob("llvm-*/lib*"), key=lambda p: (llvm_version(p), p.name), reverse=True)
-        dirs += [str(p) for p in found]
-    return dirs + [d for d in _LIB_DIR_HINTS if d not in dirs]
+    """Guessed library directories, newest LLVM first (a box with llvm-9 and llvm-21 must get 21).
+
+    Ranked ACROSS roots, not within each: /usr/lib and /usr/lib64 both hold llvm-* trees on mixed
+    installs, and sorting per root then concatenating yields /usr/lib/llvm-14 ahead of /usr/lib64/llvm-18.
+    The path is the sort tiebreaker so the order is total -- Path.glob returns raw directory order, which
+    varies with inode layout, and an unstable hint order picks a different libomp on identical machines.
+    """
+    found = [p for root in _LIB_DIR_HINT_ROOTS for p in Path(root).glob("llvm-*/lib*")]
+    ranked = sorted({str(p) for p in found}, key=lambda d: (llvm_version(Path(d)), d), reverse=True)
+    return ranked + [d for d in _LIB_DIR_HINTS if d not in ranked]
 
 
 def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
@@ -294,7 +301,10 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
             for d in driver_search_dirs(probe):
                 if (Path(d) / f"lib{soname}.so").exists():
                     return d
-    for d in ldconfig_dirs(soname):  # the linker's .so symlink sits beside the versioned .so.N
+    # The loader cache lists dirs in ITS order, which is not version order -- so rank the candidates the
+    # same way hint_dirs does before taking the first hit. Without this the version ranking below is
+    # unreachable whenever ldconfig knows any llvm-* dir at all, and an llvm-14 libomp wins over llvm-18.
+    for d in sorted(ldconfig_dirs(soname), key=lambda d: (llvm_version(Path(d)), d), reverse=True):
         if (Path(d) / f"lib{soname}.so").exists():
             return d
     for d in hint_dirs():  # last resort: common layouts, only for a runtime NO query above admitted to

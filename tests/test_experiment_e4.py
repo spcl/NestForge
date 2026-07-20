@@ -26,6 +26,20 @@ def kernel():
     return TsvcKernel(key="two_map", program=two_map, regime="1d", params={}, corpus="tsvc2")
 
 
+def test_a_missing_oracle_is_reported_as_a_missing_REFERENCE():
+    """When the oracle raises (or a custom strategies dict omits it), a strategy that measured real rungs
+    and found a real winner must not be labelled "no valid rung measured" -- that attributes the failure to
+    the wrong lane and hides that the reference is what broke."""
+    measured = SearchResult("mid", 5.0, MeasureLedger(measurements=3))
+    row = score("k", "gcc", "hillclimb", measured, float("inf"), no_reference="no 'exhaustive' reference")
+    assert not row.ok and row.quality == 0.0
+    assert "reference" in row.error and "no valid rung" not in row.error
+    assert row.best_us == 5.0 and row.measurements == 3  # its own measurements survive on the row
+    # and a strategy that genuinely measured nothing still says so
+    dead = SearchResult("x", float("inf"), MeasureLedger(measurements=2))
+    assert "no valid rung measured" in score("k", "gcc", "hillclimb", dead, 5.0).error
+
+
 def test_quality_is_relative_to_the_oracle_and_cost_is_the_ledger():
     res = SearchResult("mid", 5.0, MeasureLedger(measurements=2, tokens=17))
     matched = score("k", "gcc", "hillclimb", res, oracle_us=5.0)
@@ -64,6 +78,23 @@ def test_table_reports_quality_and_cost_together():
     assert table["hillclimb"]["quality"] == 0.8 and table["hillclimb"]["measurements"] == 3.0
     assert table["hillclimb"]["runs"] == 1.0  # the failed row is excluded, not averaged in as a zero
     assert table[ORACLE]["quality"] == 1.0
+
+
+def test_strategies_are_averaged_over_the_SAME_runs():
+    """C4 compares two averages side by side, so they must cover the same population. A strategy whose
+    path dodges the rungs that fail to build would otherwise be averaged over an easier subset than the
+    oracle, and "near-oracle quality at a fraction of the cost" would be read off unpaired numbers."""
+    rows = [
+        # k1: both completed -> the shared run
+        E4Row("k1", "gcc", ORACLE, "a", 4.0, 1.0, 10, 0, True),
+        E4Row("k1", "gcc", "hillclimb", "a", 4.0, 1.0, 4, 0, True),
+        # k2: ONLY hillclimb completed -- an easy run the oracle never scored
+        E4Row("k2", "gcc", ORACLE, "-", float("inf"), 0.0, 6, 0, False, "no valid rung measured"),
+        E4Row("k2", "gcc", "hillclimb", "a", 1.0, 1.0, 1, 0, True),
+    ]
+    table = cost_quality_table(rows)
+    assert table[ORACLE]["runs"] == table["hillclimb"]["runs"] == 1.0  # k2 excluded from BOTH
+    assert table["hillclimb"]["measurements"] == 4.0  # not (4+1)/2 = 2.5 from the unpaired average
 
 
 def test_both_strategies_drive_the_same_surface_with_different_cost():

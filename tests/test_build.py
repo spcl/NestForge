@@ -15,6 +15,8 @@ import pytest
 
 import dace
 
+import nestforge.build as build_mod
+
 pytest.importorskip("optarena")
 pytestmark = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not on PATH")
 
@@ -102,18 +104,64 @@ def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
     assert linkable_lib_dir("nosuchlib42", cc) is None
 
 
-def test_llvm_hint_dirs_rank_by_version_not_by_string():
-    """llvm-9 must NOT outrank llvm-21. String sorting puts single-digit versions on top, which would hand
-    the linker an ancient libomp for a modern object -- so the rank key is the parsed integer."""
-    assert llvm_version(Path("/usr/lib/llvm-21/lib")) == 21
-    assert llvm_version(Path("/usr/lib/llvm-9/lib")) == 9
-    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == 18  # point releases rank by major
-    assert llvm_version(Path("/usr/lib/x86_64-linux-gnu")) == -1  # not an llvm-N dir at all
-    # and the hint list itself is ordered by that key, newest first, with no duplicates.
+def test_llvm_version_parses_the_number_not_the_string():
+    assert llvm_version(Path("/usr/lib/llvm-21/lib")) == (21, )
+    assert llvm_version(Path("/usr/lib/llvm-9/lib")) == (9, )
+    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == (18, 1)  # point release ranks ABOVE bare 18
+    assert llvm_version(Path("/usr/lib/llvm-18/lib")) < llvm_version(Path("/usr/lib/llvm-18.1/lib"))
+    assert llvm_version(Path("/usr/lib/x86_64-linux-gnu")) == (-1, )  # not an llvm-N dir at all
+
+
+def test_hint_dirs_rank_by_version_across_all_roots(tmp_path, monkeypatch):
+    """The ranking must be GLOBAL, not per root.
+
+    Two traps this pins, both of which shipped: sorting the glob as strings puts llvm-9 above llvm-21, and
+    sorting within each root then concatenating puts /usr/lib's llvm-14 above /usr/lib64's llvm-18 -- the
+    normal mixed-install layout. Real directories on disk, because the previous version of this test called
+    hint_dirs() on the host and passed identically with the buggy sort: the box simply had no single-digit
+    LLVM, so the assertion never discriminated.
+    """
+    lib, lib64 = tmp_path / "lib", tmp_path / "lib64"
+    for root, versions in ((lib, ("llvm-9", "llvm-21")), (lib64, ("llvm-14", "llvm-18"))):
+        for v in versions:
+            (root / v / "lib").mkdir(parents=True)
+    monkeypatch.setattr(build_mod, "_LIB_DIR_HINT_ROOTS", (str(lib), str(lib64)))
+    monkeypatch.setattr(build_mod, "_LIB_DIR_HINTS", ())
+
     hints = hint_dirs()
-    assert len(hints) == len(set(hints)), hints
-    versions = [llvm_version(Path(d)) for d in hints if llvm_version(Path(d)) >= 0]
-    assert versions == sorted(versions, reverse=True), versions
+    assert [Path(d).parent.name for d in hints] == ["llvm-21", "llvm-18", "llvm-14", "llvm-9"]
+    assert len(hints) == len(set(hints)), hints  # and no duplicates across roots
+
+
+def test_hint_dirs_is_a_total_order_so_two_identical_boxes_agree(tmp_path, monkeypatch):
+    """Equal versions must still order deterministically. Path.glob returns raw directory order, which
+    varies with inode layout, so a tie left to glob order resolves libomp differently on machines built
+    from the same image."""
+    root = tmp_path / "lib"
+    for name in ("llvm-18", "llvm-18.1"):
+        (root / name / "lib").mkdir(parents=True)
+    (root / "llvm-18" / "lib64").mkdir()  # same version, two dirs -> the tiebreaker has to decide
+    monkeypatch.setattr(build_mod, "_LIB_DIR_HINT_ROOTS", (str(root), ))
+    monkeypatch.setattr(build_mod, "_LIB_DIR_HINTS", ())
+
+    assert hint_dirs() == hint_dirs()  # stable across calls
+    assert hint_dirs()[0].endswith("llvm-18.1/lib")  # newest first, ties broken by path
+
+
+def test_ldconfig_candidates_are_version_ranked_before_first_match(monkeypatch):
+    """The loader cache lists dirs in ITS order, and linkable_lib_dir returns the FIRST hit -- so without
+    ranking, the version fix in hint_dirs is unreachable whenever ldconfig knows any llvm dir at all."""
+    monkeypatch.setattr(build_mod, "linker_finds", lambda soname, compiler: False)
+    monkeypatch.setattr(build_mod, "env_library_dirs", lambda: [])
+    monkeypatch.setattr(build_mod, "driver_lib_path", lambda soname, compiler: None)
+    monkeypatch.setattr(build_mod, "driver_search_dirs", lambda compiler: [])
+    # cache order is deliberately oldest-first, the order that used to win
+    monkeypatch.setattr(build_mod, "ldconfig_dirs", lambda soname: ["/opt/llvm-14/lib", "/opt/llvm-18/lib"])
+    monkeypatch.setattr(build_mod.Path, "exists", lambda self: "llvm-" in str(self))
+
+    linkable_lib_dir.cache_clear()
+    assert linkable_lib_dir("omp", "g++") == "/opt/llvm-18/lib"
+    linkable_lib_dir.cache_clear()
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():

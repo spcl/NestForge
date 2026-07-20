@@ -21,12 +21,12 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import sympy
 
 import dace
-from dace.sdfg import nodes
+from dace.sdfg.analysis.polyhedral_isl import to_isl
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
@@ -46,78 +46,76 @@ def subset_indices(memlet) -> List[sympy.Expr]:
     return exprs
 
 
-def partial_volume(memlet) -> bool:
-    """Whether a memlet spans a region but touches strictly less of it than the region holds.
+#: DaCe names the symbol carrying a loaded value ``__sym_<array>``, which is how an indirection survives
+#: into a nested SDFG's subset (``A[idx[i]]`` -> ``__tmp_r[__sym___tmp_idx]``). Matching the bare array name
+#: alone misses that spelling entirely.
+VALUE_SYMBOL_PREFIX = "__sym_"
 
-    This is how DaCe spells an indirection: ``A[idx[i]]`` passes the WHOLE array (``subset=0:N``) with
-    ``volume=1``, because which element is read is known only at run time. A plain affine access carries
-    ``volume == num_elements`` for the region it names. Conditional and dynamic writes land here too, and
-    they are equally outside the affine fragment, so the over-approximation points the safe way.
+
+def data_dependent_on(expr: sympy.Expr, arrays: Set[str]) -> Optional[str]:
+    """The array whose VALUE ``expr`` indexes through, or ``None`` when it indexes only symbols.
+
+    Compares by NAME, never by symbol identity: a dace ``symbolic.symbol`` carries assumptions, so a
+    same-name ``sympy.Symbol`` is a distinct object with a different hash and set operations between the
+    two are silently empty (dace's own ``is_linear_in_param`` documents this trap).
     """
-    if memlet.subset is None:
+    for sym in expr.free_symbols:
+        name = str(sym)
+        base = name[len(VALUE_SYMBOL_PREFIX):] if name.startswith(VALUE_SYMBOL_PREFIX) else name
+        if base in arrays:
+            return base
+    return None
+
+
+def quasi_affine(expr: sympy.Expr) -> bool:
+    """Whether ISL can represent ``expr`` exactly -- affine plus integer floor/ceil/mod.
+
+    Delegates to dace's :func:`~dace.sdfg.analysis.polyhedral_isl.to_isl`, which raises on a nonlinear
+    term, a non-integer coefficient, or a symbolic divisor. Using it rather than a degree test is what
+    keeps TILED and STRIDED domains (``int_floor(N, 8)``) inside the affine fragment where they belong --
+    a strict degree<=1 test rejects them, which would push ordinary tiled kernels into the case study.
+    """
+    try:
+        to_isl(expr)
+    except (ValueError, TypeError, AttributeError, NotImplementedError):
         return False
-    try:
-        surplus = sympy.simplify(sympy.sympify(memlet.subset.num_elements()) - sympy.sympify(memlet.volume))
-    except (TypeError, ValueError, AttributeError, sympy.SympifyError):
-        return True  # an unanalyzable volume is not a proof of affinity
-    # Test for "provably EQUAL", not for "provably greater": with N carrying no positivity assumption,
-    # `(N - 1).is_positive` is None, and a None read as False would pass every indirection through as
-    # affine. An affine access gives exactly 0 here; anything else is unproven and treated as indirect.
-    return surplus.is_zero is not True
-
-
-def iterator_degree(expr: sympy.Expr, iterator: sympy.Symbol) -> Optional[int]:
-    """Degree of ``expr`` in one loop iterator, or ``None`` when it is not a polynomial in it (``A[i//k]``,
-    ``A[f(i)]``). ``None`` means "cannot prove affine", which the caller must treat as non-affine rather
-    than as degree 0."""
-    try:
-        return int(sympy.Poly(expr, iterator).degree())
-    except (sympy.PolynomialError, sympy.GeneratorsNeeded, TypeError, ValueError):
-        return None
+    return True
 
 
 def polyhedral_schedulable(sdfg: dace.SDFG) -> Tuple[bool, str]:
     """Whether a polyhedral scheduler could certainly build a schedule for ``sdfg``.
 
-    Three disqualifiers, each fatal to the polyhedral model:
-      * **indirection** -- a memlet that names a region but touches less of it than the region holds
-        (:func:`partial_volume`), which is how ``A[idx[i]]`` survives lowering: the subset is the whole
-        array and the volume is one element, because the position is a run-time value;
-      * **data-dependent subscripts** -- an index whose free symbols include an ARRAY name, the same thing
-        spelled directly in a subset;
-      * **nonlinear subscripts** -- an index of degree > 1 in the iterators (``A[i*j]``, ``A[i*i]``), which
-        is outside the affine fragment.
+    Two disqualifiers, each fatal to the polyhedral model:
+      * **data-dependent subscripts** -- an index that reads an array's VALUE (``A[idx[i]]``), directly or
+        through dace's ``__sym_<array>`` spelling inside a nested SDFG;
+      * **non-quasi-affine subscripts** -- an index ISL cannot represent exactly (``A[i*j]``, ``A[i*i]``).
 
-    Returns ``(True, "")`` or ``(False, reason)``. Conservative by design: an index it cannot analyze is
+    Returns ``(True, "")`` or ``(False, reason)``. Conservative: an index that cannot be analyzed is
     reported as non-affine with that as the reason.
+
+    Memlet VOLUME is deliberately not consulted. Volume counts total accesses across enclosing iterations,
+    not distinct elements, so an ordinary affine read inside a loop reports a volume far LARGER than its
+    subset spans (``a[j] = b[j] + 1`` over ``0:N`` carries volume ``N**2``). Testing subset-vs-volume
+    therefore classifies every ordinary kernel as an indirection, which is why this reads the subscripts.
     """
-    arrays = set(sdfg.arrays)
     for sub in sdfg.all_sdfgs_recursive():
+        arrays = set(sub.arrays)  # per-SDFG: a nested indirection indexes through that SDFG's own arrays
         for state in sub.all_states():
-            iterators = {p for n in state.nodes() if isinstance(n, nodes.MapEntry) for p in n.map.params}
-            symbols = {sympy.Symbol(i) for i in iterators}
             for edge in state.edges():
                 if edge.data is None or edge.data.data is None:
                     continue
-                if partial_volume(edge.data):
-                    return False, (f"indirection on {edge.data.data!r}: memlet spans {edge.data.subset} but "
-                                   f"touches volume {edge.data.volume} -- the position is a run-time value")
                 try:
                     exprs = subset_indices(edge.data)
                 except (TypeError, ValueError, AttributeError, sympy.SympifyError) as e:
                     return False, f"subset of {edge.data.data!r} is not analyzable: {e!r}"
                 for expr in exprs:
-                    names = {str(s) for s in expr.free_symbols}
-                    dependent = names & arrays
-                    if dependent:
+                    dependent = data_dependent_on(expr, arrays)
+                    if dependent is not None:
                         return False, (f"data-dependent subscript on {edge.data.data!r}: index {expr} reads "
-                                       f"{sorted(dependent)}")
-                    for it in sorted(symbols & expr.free_symbols, key=str):
-                        degree = iterator_degree(expr, it)
-                        if degree is None:
-                            return False, (f"subscript on {edge.data.data!r} is not polynomial in {it}: {expr}")
-                        if degree > 1:
-                            return False, f"nonlinear subscript on {edge.data.data!r}: index {expr} in {it}"
+                                       f"the value of {dependent!r}")
+                    if not quasi_affine(expr):
+                        return False, (f"non-affine subscript on {edge.data.data!r}: index {expr} is outside "
+                                       f"the affine fragment ISL can schedule")
     return True, ""
 
 
@@ -195,7 +193,10 @@ def run_e5(kernels: Sequence[tsvc.TsvcKernel],
                                     seed=seed))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
-            rows.append(summarize(kernel.key, backend_name, schedulable, reason, ladder[0].name, cells))
+            # ladder[-1], NOT ladder[0]: granularity_ladder runs k = 0 (atoms, the FINEST partition) up to
+            # k = depth (maximal). "What you get if you do not search" is maximal fusion -- what a compiler
+            # picks blindly -- so dividing by ladder[0] would divide by the fully-fissioned program instead.
+            rows.append(summarize(kernel.key, backend_name, schedulable, reason, ladder[-1].name, cells))
     return rows
 
 
@@ -215,7 +216,11 @@ def summarize(kernel: str, backend: str, schedulable: bool, reason: str, coarses
     return E5Row(kernel, backend, schedulable, reason, best, valid[best], coarsest, base_us, speedup, usable, error)
 
 
-def non_affine_findings(rows: Sequence[E5Row]) -> Dict[str, float]:
-    """The C2 read-off: kernel -> speedup, over rows that are BOTH non-affine and measured. These are the
-    kernels where no polyhedral scheduler could have found the win."""
-    return {r.kernel: r.speedup for r in rows if r.ok and not r.schedulable}
+def non_affine_findings(rows: Sequence[E5Row]) -> Dict[Tuple[str, str], float]:
+    """The C2 read-off: (kernel, backend) -> speedup, over rows that are BOTH non-affine and measured.
+    These are the kernels where no polyhedral scheduler could have found the win.
+
+    Keyed by BACKEND too, like E1's and E3's read-offs: one row per (kernel, backend) is emitted, so a
+    kernel-only key would silently publish whichever backend iterated last -- a headline number that
+    changes when a compiler is installed or removed."""
+    return {(r.kernel, r.backend): r.speedup for r in rows if r.ok and not r.schedulable}
