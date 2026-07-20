@@ -29,7 +29,9 @@ def run_e3(kernels: Sequence[tsvc.TsvcKernel],
            units: Sequence[str] = OFFLOAD_UNITS,
            opt_mode: str = "canonicalize",
            backends: Optional[Dict[str, str]] = None,
-           reps: int = 7) -> List[E1Cell]:
+           reps: int = 7,
+           preset: str = "S",
+           seed: int = 0) -> List[E1Cell]:
     """The bounded E3 sweep: every (kernel, backend, offloading unit) at ONE fixed granularity rung.
 
     The rung is the ladder's coarsest point, held constant so the unit is the only axis moving -- a curve
@@ -69,7 +71,9 @@ def run_e3(kernels: Sequence[tsvc.TsvcKernel],
                                     unit,
                                     opt_mode,
                                     reps,
-                                    canonical=copy.deepcopy(canonical)))
+                                    canonical=copy.deepcopy(canonical),
+                                    preset=preset,
+                                    seed=seed))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
     return cells

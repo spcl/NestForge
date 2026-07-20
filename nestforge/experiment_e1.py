@@ -86,7 +86,9 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
                 unit: str = "map",
                 opt_mode: str = "canonicalize",
                 reps: int = 7,
-                canonical: Optional["object"] = None) -> E1Cell:
+                canonical: Optional["object"] = None,
+                preset: str = "S",
+                seed: int = 0) -> E1Cell:
     """Measure one (kernel, backend, granularity) heatmap cell.
 
     Lowers the granularity-applied canonical program to find its nests (deterministic, so the nest names
@@ -114,7 +116,12 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
         granularity=unit,
         opt_mode=opt_mode,
         sdfg=sdfg,  # already canonical + granularity-applied above; do not rebuild it
-        reps=reps)
+        reps=reps,
+        # Pinned, not defaulted: E2 divides these times by a baseline measured through a DIFFERENT entry
+        # point (measure_whole_program), and two independent defaults drifting apart would silently
+        # produce a speedup ratio between runs at different problem sizes.
+        preset=preset,
+        seed=seed)
     return E1Cell(kernel.key, backend_name, point.name, unit, res.median_us, res.ok, res.error)
 
 
@@ -124,7 +131,9 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
            max_granularity_points: int = 3,
            opt_mode: str = "canonicalize",
            backends: Optional[Dict[str, str]] = None,
-           reps: int = 7) -> List[E1Cell]:
+           reps: int = 7,
+           preset: str = "S",
+           seed: int = 0) -> List[E1Cell]:
     """The bounded E1 sweep: every (kernel, backend, granularity rung) at a fixed offloading ``unit``.
 
     ``backends`` defaults to the compilers on PATH; the granularity ladder is subsampled to
@@ -164,7 +173,9 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
                                     unit,
                                     opt_mode,
                                     reps,
-                                    canonical=canonical))
+                                    canonical=canonical,
+                                    preset=preset,
+                                    seed=seed))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
     return cells
