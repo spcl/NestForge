@@ -23,7 +23,6 @@ where fast-math moves accuracy (that is the arena's FP axis, orthogonal here).
 from __future__ import annotations
 
 import copy
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -31,7 +30,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from nestforge import tsvc
 from nestforge.arena import compile_object, discover_compilers, link_shared
 from nestforge.differential import NestVariant, measure_in_context
-from nestforge.emit_numpy import UnsupportedNest
 from nestforge.granularity import GranularityPoint, granularity_ladder
 from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf.harness import signature_order
@@ -98,6 +96,12 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
     point.apply(sdfg)  # P1: mutate to this partition
     sdfg.validate()
     calls = lower_nests_to_external_call(copy.deepcopy(sdfg), unit)
+    if not calls:
+        # No nest at this unit (e.g. unit='cfg' on a kernel with no LoopRegion). Measuring anyway would time
+        # the all-reference program under a backend label -- identical for every backend, because no backend
+        # compiled anything -- fabricating "backend-independent" heatmap data. Record it as a skip instead.
+        return E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False,
+                      f"no {unit!r} nest to offload at granularity {point.name!r}")
     variants = build_backend_variants(calls, backend_name, backend_path, out_dir / "variants")
     res = measure_in_context(kernel,
                              out_dir / "ctx",
@@ -128,7 +132,12 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
     out_dir = Path(out_dir)
     backends = backends or discover_compilers()
     cells: List[E1Cell] = []
-    caught = (subprocess.CalledProcessError, OSError, UnsupportedNest, ValueError, KeyError)
+    # Every per-cell failure is RECORDED (repr(e) on the cell), never silenced -- so the catch is broad on
+    # purpose: a corpus sweep meets dace InvalidSDFGError from validate(), TypeError from extract,
+    # ZeroDivisionError from a degenerate ladder, and more. Enumerating them invites the next unlisted
+    # exception to discard every remaining kernel. KeyboardInterrupt/SystemExit are not Exception, so an
+    # operator can still stop the run.
+    caught = Exception
     for kernel in kernels:
         try:  # a kernel that cannot even canonicalize/build its ladder is a skip, not a sweep-ending crash
             ladder = granularity_ladder(tsvc.build_sdfg(kernel, opt_mode), max_points=max_granularity_points)

@@ -103,6 +103,11 @@ def granularity_ladder(sdfg: dace.SDFG, max_points: int = 0) -> List[Granularity
     depth = fusion_depth(sdfg)
     if depth == 0:  # nothing fuses: atoms IS maximal, one point
         return [GranularityPoint("atoms", fuse_first_k(0))]
+    if max_points == 1:
+        # a one-point budget cannot hold both endpoints; take the coarsest (what a compiler picks blindly),
+        # so the single rung is the meaningful comparison point. Special-cased because the even-subsample
+        # below divides by (max_points - 1).
+        return [GranularityPoint(name_for(depth, depth), fuse_first_k(depth))]
     ks = list(range(depth + 1))  # 0 (atoms) .. depth (maximal)
     if max_points and max_points < len(ks):
         ks = sorted({round(i * depth / (max_points - 1)) for i in range(max_points)})

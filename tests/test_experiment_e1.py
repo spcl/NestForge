@@ -96,3 +96,14 @@ def test_run_e1_sweeps_backends_and_granularity_bounded(tmp_path):
     assert all(c.ok and c.error is None for c in cells), [c.error for c in cells if not c.ok]
     best = best_granularity_per_backend(cells)
     assert set(b for _k, b in best) == set(discover_compilers())  # every backend produced a winner
+
+
+def test_unit_with_no_nest_is_a_skip_not_fabricated_data(tmp_path):
+    # unit='cfg' on a flat kernel selects zero nests. Measuring anyway would time the ALL-REFERENCE program
+    # under a backend label -- identical for every backend because no backend compiled anything -- which
+    # fabricates "backend-independent" heatmap data. It must be a skip-with-reason instead. No compile.
+    atoms = GranularityPoint("atoms", fuse_first_k(0))
+    cell = run_e1_cell(kernel(), "gcc", "gcc", atoms, tmp_path, unit="cfg", reps=2)
+    assert not cell.ok and cell.median_us == float("inf")
+    assert "cfg" in cell.error and "no" in cell.error.lower()
+    assert best_granularity_per_backend([cell]) == {}  # never enters the heatmap

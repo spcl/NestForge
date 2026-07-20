@@ -179,3 +179,25 @@ def test_emit_reference_writes_numpy_oracle(tmp_path):
     assert path.endswith(".py")
     with open(path) as f:
         assert "def " in f.read()
+
+
+def test_malformed_id_is_not_reported_as_stale():
+    # a garbage id reported as StaleHandle sends the agent into a re-list/retry loop that can never succeed;
+    # it must be flagged as a caller bug instead.
+    session = Session(vertical_pair.to_sdfg(simplify=True))
+    with pytest.raises(KeyError, match="malformed id"):
+        session.resolve("not-an-id")
+    with pytest.raises(KeyError, match="malformed id"):
+        session.resolve("x:move:0")
+
+
+def test_noop_externalize_does_not_strand_handles():
+    # externalize with a granularity that selects NO nest changes nothing, so it must not bump the epoch --
+    # bumping would silently invalidate every move id the agent had already enumerated.
+    session = Session(vertical_pair.to_sdfg(simplify=True))
+    moves = session.list_fusions()
+    epoch_before = session.epoch
+    assert session.externalize("cfg") == []  # a flat kernel has no LoopRegion to externalize
+    assert session.epoch == epoch_before
+    if moves:
+        session.resolve(moves[0]["id"], "move")  # the agent's ids survive a no-op

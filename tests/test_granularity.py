@@ -81,3 +81,19 @@ def test_apply_is_idempotent_wrt_starting_granularity():
     fuse_first_k(99)(already_coarsened)  # fully fuse first
     fuse_first_k(2)(already_coarsened)  # then request the same rung
     assert count_nests(from_frontend) == count_nests(already_coarsened)
+
+
+def test_single_point_ladder_does_not_divide_by_zero():
+    # a one-point budget (NF_SWEEP_GRAN_POINTS=1) is a legitimate minimal sweep. The even-subsample divides
+    # by (max_points - 1), so max_points=1 used to raise ZeroDivisionError and kill the whole sweep.
+    ladder = granularity_ladder(chain3.to_sdfg(simplify=True), max_points=1)
+    assert len(ladder) == 1
+    assert ladder[0].name == "maximal"  # the coarsest rung: what a compiler picks blindly
+
+
+def test_single_point_ladder_is_applicable():
+    # the one rung must still be a usable point, not just a name
+    sdfg = chain3.to_sdfg(simplify=True)
+    ladder = granularity_ladder(sdfg, max_points=1)
+    ladder[0].apply(sdfg)
+    assert count_nests(sdfg) >= 1

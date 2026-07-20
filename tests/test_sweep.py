@@ -1,10 +1,12 @@
 """The sweep matrix stays BOUNDED (the guard against a runaway experiment) and the measurement ledger
 counts search cost. Unit set, no compile: cell counts and caps only."""
 import numpy as np
+import pytest
 import dace
 
-from nestforge.sweep import (DEFAULT_GRANULARITY_POINTS, MeasureLedger, SweepCell, bounded_kernels, sweep_cells,
-                             sweep_upper_bound)
+from nestforge.offload import OFFLOAD_UNITS
+from nestforge.sweep import (DEFAULT_GRANULARITY_POINTS, MeasureLedger, SweepCell, bounded_kernels, parse_units,
+                             sweep_cells, sweep_upper_bound)
 from nestforge.tsvc import TsvcKernel
 
 N = dace.symbol('N')
@@ -57,3 +59,16 @@ def test_ledger_counts_every_measurement():
 
 def test_default_points_constant_is_small():
     assert DEFAULT_GRANULARITY_POINTS <= 5  # a sane default cap
+
+
+def test_parse_units_drops_blank_entries():
+    # a trailing comma / empty env value used to yield a phantom '' unit that inflated the upper bound and
+    # only failed later as get_strategy('') deep inside the sweep.
+    assert parse_units("map,") == ("map", )
+    assert parse_units(" map , state ") == ("map", "state")
+    assert parse_units("") == OFFLOAD_UNITS  # empty falls back to the full axis, never an empty matrix
+
+
+def test_parse_units_rejects_an_unknown_unit_up_front():
+    with pytest.raises(ValueError, match="unknown offload unit"):
+        parse_units("map,bogus")

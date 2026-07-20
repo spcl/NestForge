@@ -21,6 +21,7 @@ deterministic path -- a strategy is just a scripted policy over ``list_fusions``
 """
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -80,7 +81,12 @@ class Session:
         """The object ``hid`` names, or raise. A past-epoch id is a :class:`StaleHandle` (re-list); a
         wrong-``kind`` id is a plain error (the agent mixed a move id with a region id)."""
         if hid not in self.handles:
+            # Only a WELL-FORMED past-epoch id is stale ("re-list and retry" is then the right advice).
+            # A malformed id is a caller bug, and reporting it as stale would send the agent into a
+            # re-list/retry loop that can never succeed.
             stamp = hid.split(":", 1)[0] if ":" in hid else ""
+            if not re.fullmatch(r"e\d+", stamp):
+                raise KeyError(f"malformed id {hid!r}; expected 'e<epoch>:<kind>:<n>' from a list_* call")
             if stamp != f"e{self.epoch}":
                 raise StaleHandle(f"id {hid!r} is from a past epoch (now e{self.epoch}); re-list and retry")
             raise KeyError(f"unknown id {hid!r}")
@@ -224,7 +230,8 @@ class Session:
         the new epoch -- each carrying the boundary's read (``inputs``) / write (``outputs``) sets, the
         interface Phase 3 compiles against."""
         lowered = lower_nests_to_external_call(self.sdfg, granularity)
-        self.bump()
+        if lowered:
+            self.bump()  # only a REAL change costs the agent its handles; a no-op must not strand them
         out: List[dict] = []
         for ext, boundary in lowered:
             hid = self.mint("extnest", (ext, boundary))
@@ -291,7 +298,11 @@ class Session:
         ext, boundary = self.resolve(nest_id, "extnest")
         prep = self.prepare_nest(nest_id)
         gen = self.work_dir / prep.name / "c"
-        c_source = next(Path(p) for p in emit_sources(prep, gen, target="c") if str(p).endswith(".c"))
+        sources = emit_sources(prep, gen, target="c")
+        c_source = next((Path(p) for p in sources if str(p).endswith(".c")), None)
+        if c_source is None:  # bare StopIteration here would surface as an opaque tool error
+            raise ValueError(f"emitting {prep.name!r} as C produced no .c source (got {[str(p) for p in sources]}); "
+                             "nothing to sweep")
         res = run_arena(prep, boundary, c_source, self.work_dir / prep.name / "arena", sizes, reps=reps, seed=seed)
         return {fp: cell_summary(cell) for fp, cell in res.winners.items()}
 

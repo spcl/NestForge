@@ -129,11 +129,19 @@ _INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?
 #: DaCe sympy user-functions -- ``symstr`` renders a subset index / map bound in function form because
 #: sympy has no operator for them -> the numpy/python expression computing the same integer value.
 #: ``int_ceil`` uses ``-((-a) // b)`` (sign-robust, ``== (a+b-1)//b`` for ``b > 0``).
+#: ``Max``/``Min`` are VARIADIC in sympy and render as scalar index/bound expressions, so the Python
+#: builtins are the right target: they keep exact integer semantics (a numpy scalar would leak into
+#: ``range()`` and array subscripts). ``apply_call`` passes every parsed argument, so ``*a`` handles any
+#: arity. ``__builtins__`` is always present in the exec namespace ``run_oracle`` builds, so ``max``/
+#: ``min``/``abs`` resolve without importing anything.
 _USERFUNC_REWRITES = {
     "int_floor": lambda a, b: f"(({a}) // ({b}))",
     "int_ceil": lambda a, b: f"(-((-({a})) // ({b})))",
     "ipow": lambda a, b: f"(({a}) ** ({b}))",
     "Mod": lambda a, b: f"(({a}) % ({b}))",
+    "Max": lambda *a: f"max({', '.join(a)})",
+    "Min": lambda *a: f"min({', '.join(a)})",
+    "Abs": lambda a: f"abs({a})",
 }
 
 #: ``(dace.)?math.<fn>`` (a qualified intrinsic the bare-name rewrite deliberately skips) -> its numpy
@@ -488,7 +496,10 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
         m = e.data
         dst_name, dst_sub, src_sub = m.data, m.subset, m.other_subset
         src_name = e.src.data
-        if src_name == dst_name:  # a self-edge moves nothing out of the map
+        if src_name == dst_name and m.wcr is None:
+            # a plain self-edge moves nothing out of the map. A self-edge carrying a WCR is NOT a no-op:
+            # it is an in-place reduction (accumulator and outer array share a name), and skipping it
+            # would silently emit the reduction as nothing -- fall through to the accumulate below.
             continue
         if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst_name].shape):
             # mirror a None subset only between same-shaped arrays (see copy_lines); a same-rank
@@ -660,10 +671,22 @@ def interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
     assignments, rather than silently emitting the successor blocks as if the branch were always taken.
     """
     lines: List[str] = []
+    carrying = []
     for e in region.in_edges(block):
         if not e.data.is_unconditional():
             raise UnsupportedNest(
                 f"conditional inter-state edge into {block.label} (unstructured goto/branch) is not emitted")
+        if e.data.assignments:
+            carrying.append(e)
+    if len(carrying) > 1:
+        # Straight-line emission runs every predecessor's assignments in sequence, but at runtime only ONE
+        # predecessor executes. Emitting both double-applies them (two edges carrying `k = k + 1` increment
+        # twice) and mixes values from a path not taken. Refuse, same as the conditional-edge case above,
+        # rather than emit a wrong kernel.
+        raise UnsupportedNest(
+            f"{len(carrying)} inter-state edges into {block.label} carry assignments (an unstructured join); "
+            "straight-line emission would apply every predecessor's assignments -- not emittable as numpy")
+    for e in carrying:
         for lhs, rhs in e.data.assignments.items():
             lines.append(f"{lhs} = {strip_scalar_local_subscript(normalize_casts(rhs), sdfg)}")
     return lines

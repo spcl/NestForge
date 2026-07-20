@@ -112,15 +112,27 @@ def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
     return write_lhs(sdfg, memlet.data, memlet.subset, keep_singleton=True)
 
 
+def data_edge(edges: list, node: nodes.Node, kind: str):
+    """The first edge that actually carries DATA. An empty memlet (``data is None``) is a happens-before /
+    ordering edge -- DaCe's StateFusion adds them to sequence nodes without merging -- not an operand. Taking
+    ``edges[0]`` blindly picks such an edge whenever it sorts first, and then ``sdfg.arrays[None]`` raises a
+    bare KeyError mid-emission. Every connector-less (``conn is None``) operand lookup goes through here."""
+    for e in edges:
+        if not e.data.is_empty():
+            return e
+    raise UnsupportedLibraryNode(f"{type(node).__name__} has no data-carrying {kind} edge (only empty "
+                                 "ordering edges); not emittable as numpy")
+
+
 def in_expr(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
     edges = list(state.in_edges(node))
-    edge = edges[0] if conn is None else next(e for e in edges if e.dst_conn == conn)
+    edge = data_edge(edges, node, "input") if conn is None else next(e for e in edges if e.dst_conn == conn)
     return memlet_expr(edge.data, sdfg)
 
 
 def out_lhs(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: dace.SDFG) -> str:
     edges = list(state.out_edges(node))
-    edge = edges[0] if conn is None else next(e for e in edges if e.src_conn == conn)
+    edge = data_edge(edges, node, "output") if conn is None else next(e for e in edges if e.src_conn == conn)
     if edge.data.wcr is not None:
         # No library-node emitter applies an output-edge WCR: every one writes via write_lhs (a plain
         # ``name[..] = rhs``), so a reduction accumulating the node's result into an existing buffer would
@@ -493,8 +505,8 @@ def emit_reduce(node, state, sdfg) -> str:
     axis = None if node.axes is None else tuple(node.axes)
     # keepdims when the output keeps the reduced axis as a size-1 dimension (a numpy ``keepdims=True``
     # reduction, e.g. softmax's ``np.max(x, axis=-1, keepdims=True)``); detected by equal rank.
-    in_desc = sdfg.arrays[next(iter(state.in_edges(node))).data.data]
-    out_desc = sdfg.arrays[next(iter(state.out_edges(node))).data.data]
+    in_desc = sdfg.arrays[data_edge(list(state.in_edges(node)), node, "input").data.data]
+    out_desc = sdfg.arrays[data_edge(list(state.out_edges(node)), node, "output").data.data]
     keepdims = axis is not None and len(out_desc.shape) == len(in_desc.shape)
     kd = ", keepdims=True" if keepdims else ""
     return f"{out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis}{kd})"

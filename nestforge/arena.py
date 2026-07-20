@@ -364,13 +364,29 @@ def run_arena(prep: Prepared,
     return result
 
 
+#: Wall-clock cap on one toolchain invocation here. A pathological kernel can send ``-O3 -march=native``
+#: into a runaway inliner/register allocator; without a deadline the sweep would hang forever on one cell.
+COMPILE_TIMEOUT = float(os.environ.get("NF_COMPILE_TIMEOUT", "600"))
+
+
+def run_tool(cmd: List[str], what: str) -> None:
+    """Run one toolchain command with a deadline and CAPTURED stderr, so a failure raises with the compiler's
+    actual diagnostic instead of dumping it to the console and raising a bare CalledProcessError."""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{what} exceeded {COMPILE_TIMEOUT}s: {' '.join(cmd)}") from None
+    if done.returncode != 0:
+        raise RuntimeError(f"{what} failed ({done.returncode}): {' '.join(cmd)}\n{done.stderr[-2000:]}")
+
+
 def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir: Path) -> Path:
     """Compile one emitted C source to a ``.o`` with a chosen ``(compiler, fp-mode)`` -- the shared step
     both the winner-archive and the per-backend E1 variant build on. ``-fPIC`` (in every ``FP_MODES``
     entry) makes the object linkable into the parent ``.so``."""
     out_dir.mkdir(parents=True, exist_ok=True)
     obj = out_dir / f"{name}_nest.o"
-    subprocess.run([cpath, *FP_MODES[fp_mode], "-c", str(c_source), "-o", str(obj)], check=True)
+    run_tool([cpath, *FP_MODES[fp_mode], "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
     return obj
 
 
@@ -387,7 +403,7 @@ def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
     archive = out_dir / f"lib{name}_nest.a"
     if archive.exists():
         archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
-    subprocess.run(["ar", "rcs", str(archive), *[str(o) for o in objs]], check=True)
+    run_tool(["ar", "rcs", str(archive), *[str(o) for o in objs]], f"archiving {name}")
     return archive
 
 
@@ -398,7 +414,7 @@ def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str) -> Path:
     members un-pulled). The parent links it with an rpath (see :meth:`ExternLibEnv.configure`)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     so = out_dir / f"lib{name}_nest.so"
-    subprocess.run([cpath, "-shared", "-fPIC", *[str(o) for o in objs], "-o", str(so)], check=True)
+    run_tool([cpath, "-shared", "-fPIC", *[str(o) for o in objs], "-o", str(so)], f"linking lib{name}_nest.so")
     return so
 
 

@@ -24,7 +24,20 @@ from nestforge.offload import OFFLOAD_UNITS
 #: experiment/test runnable in seconds, not hours.
 DEFAULT_KERNEL_LIMIT = int(os.environ.get("NF_SWEEP_KERNELS", "3"))
 DEFAULT_GRANULARITY_POINTS = int(os.environ.get("NF_SWEEP_GRAN_POINTS", "3"))
-DEFAULT_UNITS: Tuple[str, ...] = tuple(os.environ.get("NF_SWEEP_UNITS", ",".join(OFFLOAD_UNITS)).split(","))
+
+
+def parse_units(raw: str) -> Tuple[str, ...]:
+    """Parse the ``NF_SWEEP_UNITS`` list, dropping blanks (a trailing comma or an empty value) and REJECTING
+    an unknown unit up front. Without this an empty entry becomes a phantom unit that inflates
+    :func:`sweep_upper_bound` and only fails later, deep in the sweep, as a ``get_strategy('')`` KeyError."""
+    units = tuple(u.strip() for u in raw.split(",") if u.strip())
+    unknown = [u for u in units if u not in OFFLOAD_UNITS]
+    if unknown:
+        raise ValueError(f"unknown offload unit(s) {unknown} in NF_SWEEP_UNITS={raw!r}; known: {OFFLOAD_UNITS}")
+    return units or OFFLOAD_UNITS
+
+
+DEFAULT_UNITS: Tuple[str, ...] = parse_units(os.environ.get("NF_SWEEP_UNITS", ",".join(OFFLOAD_UNITS)))
 
 
 @dataclass(frozen=True)

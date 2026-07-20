@@ -67,7 +67,14 @@ def proto_and_call(node: "ExternalCall") -> (str, str):
     call_args: List[str] = []
     for arg in order:
         if arg in arrays:
-            c = _CPP_SCALAR[dtypes_map[arg]]
+            dt = dtypes_map[arg]
+            if dt not in _CPP_SCALAR:
+                # A dtype with no C spelling here (complex, float16, unsigned, ...) would otherwise KeyError
+                # mid-codegen. Refuse with the name + dtype so the caller can keep the DaceReference variant.
+                raise ValueError(f"ExternalCall {node.name!r}: array {arg!r} has dtype {dt!r}, which has no "
+                                 f"extern-C spelling (known: {sorted(_CPP_SCALAR)}); keep the DaceReference "
+                                 "implementation for this nest")
+            c = _CPP_SCALAR[dt]
             const = "" if arg in outputs else "const "
             params.append(f"{const}{c}* {arg}")
             call_args.append(connector_for(arg, outputs))
