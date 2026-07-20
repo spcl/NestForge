@@ -131,9 +131,11 @@ jobs:
       # auto-opt build + bit-exact validation + timing, so it needs this phase's toolchain too.
       # E4 (test_experiment_e4.py) runs BOTH search strategies over a real ladder with real builds --
       # the cost/quality ledger is only meaningful against measured times, so it belongs here too.
+      # E5 (test_experiment_e5.py) sweeps granularity on a kernel the polyhedral model rejects, so its
+      # case-study row is a real measured build too; the classifier half runs in Phase 3.
       - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
             tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
-            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py \
+            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py tests/test_experiment_e5.py \
             --timeout=900
