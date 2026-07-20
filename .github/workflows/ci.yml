@@ -48,6 +48,25 @@ jobs:
       - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
+      # ccache: the suites compile the same generated kernels many times (per arena cell, per sweep rung),
+      # and ccache keys on PREPROCESSED SOURCE, so identical generated C hits even from a fresh temp dir.
+      # A runner starts with an EMPTY cache, so persisting it across runs is what actually makes it pay.
+      # Putting /usr/lib/ccache first on PATH makes gcc/g++/clang resolve to the shims for every phase.
+      # This job never asserts on compile TIME (that is perf/staticlib_overhead + arena compile_us, which
+      # are not run here), so cache hits cannot corrupt a measurement.
+      - name: Phase 1b -- ccache (restore + enable)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+      - name: Phase 1c -- put ccache on PATH
+        run: |
+          ccache --max-size=1G
+          ccache --zero-stats
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
       - name: Phase 2 -- DaCe (extended) + OptArena + nest-forge[dev], editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }

@@ -642,6 +642,30 @@ def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
 _FAST_LINKERS = ("mold", "lld", "gold")
 
 
+@functools.lru_cache(maxsize=None)
+def ccache_available() -> bool:
+    """Whether a compiler cache is installed and not disabled.
+
+    ``ccache`` keys on PREPROCESSED SOURCE, not on the path, so the same generated kernel recompiled from a
+    fresh temp directory (every arena cell, every sweep rung) is a cache hit. ``NF_NO_CCACHE=1`` forces it
+    off. Probed once per process."""
+    if os.environ.get("NF_NO_CCACHE"):
+        return False
+    return shutil.which("ccache") is not None
+
+
+def ccache_prefix(use_ccache: Optional[bool]) -> List[str]:
+    """Launcher prefix for a compiler invocation: ``["ccache"]`` or ``[]``.
+
+    ``None`` means AUTO -- use the cache when it is installed. Pass ``False`` from any path that MEASURES
+    compile time: a cache hit returns in ~0s, which would make the post-optimization toolchain cost
+    (``Cell.compile_us``, :class:`LinkTimings`) meaningless rather than merely faster.
+    """
+    if use_ccache is False:
+        return []
+    return ["ccache"] if ccache_available() else []
+
+
 def available_linkers() -> Dict[str, str]:
     """Fast alternative linkers installed, fastest first: name -> backing binary path. Default ``bfd``
     is not listed (always the fallback)."""
@@ -687,6 +711,9 @@ class BuildOptions:
     # directly (bypassing DaCe's CMake), so ``ExternLibEnv``'s libraries are NOT auto-linked; the caller
     # passes them here instead. Placed after the frame so ld resolves the extern-C entry symbols.
     extra_link: Optional[List[str]] = None
+    # Compiler cache: None = AUTO (use ccache when installed), False = never. Set False for any build whose
+    # compile_seconds is reported as a measurement -- a cache hit reports ~0s (see ccache_prefix).
+    use_ccache: Optional[bool] = None
 
     def resolved_flags(self) -> List[str]:
         return list(self.flags if self.flags is not None else DEFAULT_FLAGS)
@@ -713,6 +740,9 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     vec_l = opts.veclib.link_flags(compiler) if opts.veclib else []
     blas_l = list(opts.blas_link or [])  # link the chosen BLAS (fast_libnodes)
     extra_l = list(opts.extra_link or [])  # extern nest-variant libs (differential swap), after the frame
+    # AUTO-detected compiler cache. Only the COMPILE steps are cached (a link is not cacheable), and any
+    # path that reports compile_seconds as a measurement passes use_ccache=False.
+    cc = ccache_prefix(opts.use_ccache)
     so = folder / f"lib{name}.so"
     cflags = [f for f in flags if f != "-shared"]  # -shared is a link-only flag; drop it for any -c step
     obj = folder / f"{name}.o"
@@ -721,12 +751,12 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     if not opts.link_external and not opts.openmp:
         # no mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in)
         # libs go AFTER the source: ld resolves left-to-right, a -l before the object contributes nothing
-        cmd = [compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l, *extra_l]
+        cmd = [*cc, compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l, *extra_l]
         t0 = time.perf_counter()
         run(cmd)
     elif not opts.link_external:
         # mandated runtime: split compile from link so ONLY that runtime is linked (gnu dual-runtime trap)
-        compile_cmd = [compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
+        compile_cmd = [*cc, compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
         link_cmd = [compiler, "-shared", *cflags, *lto_f, str(obj), *omp_l, *vec_l, *blas_l, *extra_l, "-o", str(so)]
         t0 = time.perf_counter()
         run(compile_cmd)
@@ -740,7 +770,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
         archive = folder / f"lib{name}_nest.a"
         if archive.exists():
             archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
-        compile_cmd = [compiler, *cflags, *lto_c, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
+        compile_cmd = [*cc, compiler, *cflags, *lto_c, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
         ar_cmd = [ar, "rcs", str(archive), str(obj)]
         # link from the object's REAL code (NOT -flto) so the entry points survive + export
         link_cmd = [
@@ -819,6 +849,8 @@ def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptio
     frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
     folder = frame.parent.parent.parent
     codegen_seconds = time.perf_counter() - t_opt
-    _, mono = compile(frame, folder, name, replace(opts, link_external=False))
-    _, ext = compile(frame, folder, name, replace(opts, link_external=True))
+    # compile time IS the result here, so the cache is forced OFF: a hit would report ~0s and make the
+    # monolithic-vs-external comparison meaningless.
+    _, mono = compile(frame, folder, name, replace(opts, link_external=False, use_ccache=False))
+    _, ext = compile(frame, folder, name, replace(opts, link_external=True, use_ccache=False))
     return LinkTimings(codegen_seconds=codegen_seconds, compile_seconds_monolithic=mono, compile_seconds_external=ext)

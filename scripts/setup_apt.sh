@@ -109,6 +109,16 @@ log "core build + python tooling"
 apt_install build-essential cmake ninja-build git pkg-config ca-certificates curl wget gnupg \
             python3 python3-pip python3-venv python3-dev
 
+# ccache: the test suites recompile the same generated kernels repeatedly (per arena cell, per sweep
+# rung), and ccache hashes PREPROCESSED SOURCE, not the path, so identical generated C hits the cache
+# even from a fresh temp directory. Installing it does NOT enable it -- the shims live in
+# /usr/lib/ccache and are used only if that directory is put on PATH (CI does; see .github/workflows).
+# WARNING: never put it on PATH for a job that MEASURES compile time (arena Cell.compile_us,
+# ArenaResult.optimization_seconds, perf/staticlib_overhead) -- a cache hit reports ~0s and the
+# post-optimization toolchain cost becomes meaningless.
+log "compiler cache (ccache): opt-in via PATH, never for compile-time measurement jobs"
+apt_install ccache
+
 log "compilers: gcc/g++/gfortran, clang/llvm, flang"
 apt_install gcc g++ gfortran clang clang-tools llvm llvm-dev
 apt_install flang        # optional: LLVM Fortran, not on every release

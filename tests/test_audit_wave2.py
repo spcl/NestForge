@@ -192,3 +192,28 @@ def test_every_link_search_path_is_paired_with_an_rpath():
             if "rpath" not in window:
                 offenders.append(f"{path.name}:{num + 1}: {line.strip()}")
     assert not offenders, "a -L without a paired -Wl,-rpath:\n" + "\n".join(offenders)
+
+
+def test_ccache_is_auto_detected_but_never_used_where_time_is_measured():
+    """The native build pipeline picks up a compiler cache when installed, EXCEPT where compile time is the
+    reported measurement -- a cache hit returns in ~0s and would make that number meaningless."""
+    from nestforge.build import ccache_available, ccache_prefix
+    auto = ccache_prefix(None)
+    assert auto == (["ccache"] if ccache_available() else [])  # AUTO follows availability
+    assert ccache_prefix(False) == []  # measurement paths opt out unconditionally
+
+
+def test_ccache_can_be_disabled_by_env(monkeypatch):
+    from nestforge import build
+    monkeypatch.setenv("NF_NO_CCACHE", "1")
+    build.ccache_available.cache_clear()
+    assert build.ccache_available() is False
+    build.ccache_available.cache_clear()  # leave the probe clean for other tests
+
+
+def test_compare_link_modes_forces_the_cache_off():
+    # the two compile_seconds it returns ARE the comparison, so it must not be served from a cache.
+    import inspect
+    from nestforge import build
+    src = inspect.getsource(build.compare_link_modes)
+    assert src.count("use_ccache=False") == 2  # both the monolithic and external compiles
