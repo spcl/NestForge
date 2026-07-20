@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 import dace  # noqa: F401 -- ensures real dace importable
 
 from nestforge import tsvc
-from nestforge.arena import maxdiff, make_inputs, run_oracle
+from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
@@ -115,11 +115,12 @@ def cell_work(so: Path,
     (:data:`flags.FP_ATOL`): ``strict-ieee`` ~bit-exact, ``fast-math`` admits reassociation drift."""
     vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
-    md = float(maxdiff(oracle, vout))
+    md = float(maxdiff(oracle, vout))  # absolute is REPORTED, scaled is the gate
+    ok = relative_maxdiff(oracle, vout) <= atol
     del vin, vout
     # copy_outputs=False: no output check needed here, and at XL snapshotting would double peak RSS.
     _, us = call_c(so, symbol, order, argtypes, boundary, time_inputs, time_sizes, reps, copy_outputs=False)
-    return {"ok": bool(md <= atol), "maxdiff": md, "time_us": float(us)}
+    return {"ok": bool(ok), "maxdiff": md, "time_us": float(us)}
 
 
 @dataclass

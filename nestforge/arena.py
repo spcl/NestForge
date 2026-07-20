@@ -398,8 +398,11 @@ def run_arena(prep: Prepared,
             # ``mode`` are default args to dodge late-binding-closure capture of the loop variables.
             def work(so=so, mode=mode):
                 outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
+                # Report the ABSOLUTE difference, gate on the scaled one: at reduction magnitude one
+                # fp64 ULP already exceeds a strict absolute atol, so an absolute gate is unreachable.
                 md = float(maxdiff(oracle, outs))
-                return {"ok": bool(md <= MODE_ATOL[mode]), "maxdiff": md, "time_us": float(us)}
+                ok = relative_maxdiff(oracle, outs) <= MODE_ATOL[mode]
+                return {"ok": bool(ok), "maxdiff": md, "time_us": float(us)}
 
             res = run_isolated(work)
             if "error" in res:

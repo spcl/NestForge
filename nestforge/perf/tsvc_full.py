@@ -68,7 +68,7 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a cwd stub)
 
 from nestforge import tsvc
-from nestforge.arena import maxdiff, make_inputs, run_oracle
+from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.extract import extract_nest_to_sdfg
@@ -195,8 +195,9 @@ def nest_validate_work(so: Path,
     """Correctness at the SMALL preset: bind, run once, maxdiff vs the oracle. Fast (small buffers)."""
     vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
+    # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff).
     md = float(maxdiff(oracle, vout))
-    return {"ok": bool(md <= atol), "maxdiff": md}
+    return {"ok": bool(relative_maxdiff(oracle, vout) <= atol), "maxdiff": md}
 
 
 def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inputs, time_sizes, reps: int) -> Dict:
@@ -291,8 +292,9 @@ def dace_run_work(built,
     built.run(vbuf, validate_sizes)  # init -> program -> close
     outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
     if outs:
-        md = float(maxdiff({o: oracle[o] for o in outs}, outs))
-        verdict = {"ok": bool(md <= atol), "maxdiff": md}
+        ref = {o: oracle[o] for o in outs}
+        md = float(maxdiff(ref, outs))  # absolute is REPORTED, scaled is the gate
+        verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
     else:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
         verdict = {"ok": False, "maxdiff": float("inf"), "unchecked": True}
     tbuf = time_inputs

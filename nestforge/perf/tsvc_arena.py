@@ -38,7 +38,7 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the DaCe package (not a cwd-shadowing stub) is importable
 
 from nestforge import tsvc
-from nestforge.arena import maxdiff, make_inputs, run_oracle
+from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.build import compiler_family, compiler_version
 from nestforge.perf import flags
 from nestforge.perf.harness import (C_BASE, c_argtypes, call_c, fmt_us, geomean, my_slice, native_symbol, rank_and_size,
@@ -269,8 +269,9 @@ def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List
 
     def work():
         outs, us = call_c(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
+        # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff).
         md = maxdiff(oracle, outs)
-        return {"ok": bool(md <= atol), "maxdiff": float(md), "time_us": float(us)}
+        return {"ok": bool(relative_maxdiff(oracle, outs) <= atol), "maxdiff": float(md), "time_us": float(us)}
 
     res = run_isolated(work)
     if "error" in res:
