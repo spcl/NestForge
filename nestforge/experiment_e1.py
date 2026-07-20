@@ -85,14 +85,18 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
                 out_dir,
                 unit: str = "map",
                 opt_mode: str = "canonicalize",
-                reps: int = 7) -> E1Cell:
+                reps: int = 7,
+                canonical: Optional["object"] = None) -> E1Cell:
     """Measure one (kernel, backend, granularity) heatmap cell.
 
     Lowers the granularity-applied canonical program to find its nests (deterministic, so the nest names
     match the copy :func:`measure_in_context` lowers internally), builds a per-backend archive for them, and
     swaps every nest to that backend before timing the whole program in context."""
     out_dir = Path(out_dir)
-    sdfg = tsvc.build_sdfg(kernel, opt_mode)  # the canonical P0 program
+    # ``canonical`` is the kernel's P0 program, built ONCE by the sweep and shared across its cells. Each
+    # cell mutates its own copy (point.apply), and a deepcopy is ~195x cheaper than re-canonicalizing
+    # (1.5 ms vs 299 ms measured), so rebuilding per cell was almost pure waste.
+    sdfg = copy.deepcopy(canonical) if canonical is not None else tsvc.build_sdfg(kernel, opt_mode)
     point.apply(sdfg)  # P1: mutate to this partition
     sdfg.validate()
     calls = lower_nests_to_external_call(copy.deepcopy(sdfg), unit)
@@ -103,13 +107,14 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
         return E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False,
                       f"no {unit!r} nest to offload at granularity {point.name!r}")
     variants = build_backend_variants(calls, backend_name, backend_path, out_dir / "variants")
-    res = measure_in_context(kernel,
-                             out_dir / "ctx",
-                             variants=variants,
-                             granularity=unit,
-                             opt_mode=opt_mode,
-                             apply_granularity=point.apply,
-                             reps=reps)
+    res = measure_in_context(
+        kernel,
+        out_dir / "ctx",
+        variants=variants,
+        granularity=unit,
+        opt_mode=opt_mode,
+        sdfg=sdfg,  # already canonical + granularity-applied above; do not rebuild it
+        reps=reps)
     return E1Cell(kernel.key, backend_name, point.name, unit, res.median_us, res.ok, res.error)
 
 
@@ -140,7 +145,8 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
     caught = Exception
     for kernel in kernels:
         try:  # a kernel that cannot even canonicalize/build its ladder is a skip, not a sweep-ending crash
-            ladder = granularity_ladder(tsvc.build_sdfg(kernel, opt_mode), max_points=max_granularity_points)
+            canonical = tsvc.build_sdfg(kernel, opt_mode)  # built ONCE per kernel, shared by every cell
+            ladder = granularity_ladder(canonical, max_points=max_granularity_points)
         except caught as e:
             for backend_name in backends:
                 cells.append(E1Cell(kernel.key, backend_name, "-", unit, float("inf"), False, repr(e)))
@@ -149,7 +155,16 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
             for point in ladder:
                 cell_dir = out_dir / kernel.key / backend_name / point.name
                 try:
-                    cells.append(run_e1_cell(kernel, backend_name, backend_path, point, cell_dir, unit, opt_mode, reps))
+                    cells.append(
+                        run_e1_cell(kernel,
+                                    backend_name,
+                                    backend_path,
+                                    point,
+                                    cell_dir,
+                                    unit,
+                                    opt_mode,
+                                    reps,
+                                    canonical=canonical))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
     return cells

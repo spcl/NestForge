@@ -144,7 +144,6 @@ def test_both_teardown_modes_make_the_fork_safe(tmp_path, runtime, mode):
 
     # fork by hand: run_isolated pauses internally, which would mask whether THIS mode did the work.
     import os
-    import select
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:

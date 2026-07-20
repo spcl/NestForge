@@ -19,11 +19,9 @@ Nothing here mutates DaCe or emits an SDFG; it reads host capabilities and compi
 from __future__ import annotations
 
 import functools
-import os
 import platform
 import subprocess
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple

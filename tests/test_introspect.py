@@ -3,7 +3,6 @@ can_fuse ("yes" or a reason). can_fuse shares the exact gates of enumerate_fusio
 move apply_fusion would accept and a reason marks a pair that never appears in enumerate_fusions.
 """
 import numpy as np
-import pytest
 import dace
 
 from nestforge.introspect import describe_graph, nest_reads_writes

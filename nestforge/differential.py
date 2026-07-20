@@ -82,6 +82,7 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
                        granularity: str = "skip-taskloops",
                        opt_mode: str = "canonicalize",
                        apply_granularity: Optional[Callable[["object"], None]] = None,
+                       sdfg: Optional["object"] = None,
                        preset: str = "S",
                        reps: int = 7,
                        seed: int = 0,
@@ -103,10 +104,14 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
     out_dir.mkdir(parents=True, exist_ok=True)
     atol = flags.FP_ATOL["strict-ieee"] if atol is None else atol
 
-    sdfg = tsvc.build_sdfg(kernel, opt_mode)  # the canonical P0 program
-    if apply_granularity is not None:
-        apply_granularity(sdfg)  # P1: mutate to a chosen partition (a granularity.GranularityPoint.apply);
-        sdfg.validate()  # value-preserving, so the oracle emitted below still matches
+    if sdfg is None:
+        sdfg = tsvc.build_sdfg(kernel, opt_mode)  # the canonical P0 program
+        if apply_granularity is not None:
+            apply_granularity(sdfg)  # P1: mutate to a chosen partition (a granularity.GranularityPoint.apply);
+            sdfg.validate()  # value-preserving, so the oracle emitted below still matches
+    # else: the caller already built the canonical program AND applied its granularity -- reuse it rather
+    # than repeat a canonicalize (~0.5s warm, ~2.9s cold) that is pure duplicated work per sweep cell. The
+    # SDFG is only READ here (the lowering runs on a deepcopy), so the caller's copy stays pristine.
     boundary = whole_program_boundary(sdfg)
     sizes = tsvc.sample_sizes(kernel, boundary, preset=preset)
     inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))

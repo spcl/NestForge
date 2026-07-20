@@ -7,8 +7,6 @@ import numpy as np
 import pytest
 
 import dace
-from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
 from dace.transformation.interstate.state_fusion import StateFusion
 
 from nestforge.fusion_arms import (FusionMove, apply_fusion, enumerate_fusions, horizontal_map_moves, loop_fusion_moves,

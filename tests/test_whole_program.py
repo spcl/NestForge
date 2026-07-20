@@ -3,7 +3,6 @@ whole-program prepare path. These build a tiny two-nest SDFG inline (fast ``to_s
 the corpus or numpyto/gcc, so they stay light; the end-to-end compile+time is exercised by the arena on a
 quiet box."""
 import numpy as np
-import pytest
 
 import dace
 

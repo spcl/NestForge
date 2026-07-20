@@ -11,7 +11,6 @@ ctypes cannot catch it: the kernel writes through the wrong pointer, silently.
 `harness.signature_order` exists precisely to parse the real emitted signature. These tests pin that the
 binding follows it.
 """
-import numpy as np
 import pytest
 
 import dace

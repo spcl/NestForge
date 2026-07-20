@@ -101,7 +101,6 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
     """Compile each nest with its assigned compiler, link all against ONE runtime, load and run -- the
     whole experiment; link flags come from the FIRST compiler that can supply the runtime path. Every
     failing stage is recorded, so the cell says WHERE it failed, not just pass/fail."""
-    families = tuple(compiler_family(t.cc) for t in nests_by)
     label = tuple(t.name for t in nests_by)
     objs: List[str] = []
     parallel = True

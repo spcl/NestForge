@@ -5,7 +5,6 @@ current iteration. That is a genuine dependence, and it is exactly the one a car
 classifier reports no offset for -- there is no iterator in either subset to carry.
 """
 import numpy as np
-import pytest
 
 import dace
 

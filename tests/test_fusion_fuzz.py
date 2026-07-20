@@ -18,7 +18,6 @@ import importlib.util
 import numpy as np
 import pytest
 
-import dace
 from dace.transformation.interstate.state_fusion import StateFusion
 
 from nestforge.fission_arms import fission_to_statements
