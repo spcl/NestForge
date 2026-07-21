@@ -155,3 +155,26 @@ def test_unspellable_array_dtype_is_refused_not_keyerror():
     # actionable refusal naming the array and dtype so the caller can keep the DaceReference variant.
     with pytest.raises(ValueError, match="complex128"):
         proto_and_call(*extern_call_with_dtype("complex128"))
+
+
+@pytest.mark.parametrize("expr, want", [
+    ("int_floor(a[i, j], 2)", "((a[i, j]) // (2))"),
+    ("int_floor(aa[i, j] + b[k, l], 2)", "((aa[i, j] + b[k, l]) // (2))"),
+    ("int_floor(x, 2)", "((x) // (2))"),
+])
+def test_a_subscript_comma_does_not_split_an_argument(expr, want):
+    """``apply_call`` counted parens only, so the comma inside ``a[i, j]`` was read as an argument
+    separator: the rewrite got the wrong arity and the pieces spliced back with unmatched brackets.
+    That emitted C which would not parse (TSVC s1111/s1113), and where the arity raised, the call was
+    left unrewritten and leaked into C as an unresolved function (s111's ``int_ceil``)."""
+    from nestforge.emit_numpy import apply_call
+    assert apply_call(expr, "int_floor", lambda a, b: f"(({a}) // ({b}))") == want
+
+
+def test_multidim_subscript_survives_the_userfunc_fixpoint():
+    """End to end through rewrite_userfuncs, where the real emitter routes it."""
+    from nestforge.emit_numpy import rewrite_userfuncs
+    out = rewrite_userfuncs("d[int_floor(aa[i, j], 2)] = b[int_ceil(c[k, l], 4)]")
+    assert out.count("[") == out.count("]"), out
+    assert out.count("(") == out.count(")"), out
+    assert "int_floor" not in out and "int_ceil" not in out, out

@@ -152,7 +152,7 @@ def apply_call(code: str, name: str, fn) -> str:
         m = pat.search(code)
         if not m:
             return code
-        i, depth, cur, args = m.end(), 1, "", []
+        i, depth, bracket, cur, args = m.end(), 1, 0, "", []
         while i < len(code) and depth > 0:
             ch = code[i]
             if ch == "(":
@@ -163,7 +163,17 @@ def apply_call(code: str, name: str, fn) -> str:
                 if depth == 0:
                     break
                 cur += ch
-            elif ch == "," and depth == 1:
+            elif ch in "[{":
+                bracket += 1
+                cur += ch
+            elif ch in "]}":
+                bracket -= 1
+                cur += ch
+            elif ch == "," and depth == 1 and bracket == 0:
+                # Only a TOP-LEVEL comma separates arguments. A subscript's comma (``a[i, j]``) is
+                # part of one argument: splitting there hands the rewrite the wrong arity, and the
+                # pieces splice back with unmatched brackets -- the emitted C then failed to parse
+                # (TSVC s1111/s1113) or left the call unrewritten to leak into C (s111's int_ceil).
                 args.append(cur)
                 cur = ""
             else:
