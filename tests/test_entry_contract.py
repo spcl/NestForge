@@ -4,8 +4,8 @@ import itertools
 import pytest
 
 from nestforge.entry import (CODEGEN_AXES, CODEGEN_PINNED, COMPILABLE_SUFFIXES, CORE_CODEGEN_AXES, CORE_UNCERTAIN,
-                             FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS, PROVIDED_SOURCE_KINDS, InputKind, SearchSpace,
-                             classify_input, lower_to_sdfg, plan_search)
+                             FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS, PROVIDED_SOURCE_KINDS, VARIANT_BUDGET,
+                             InputKind, SearchSpace, broad_codegen_axes, classify_input, lower_to_sdfg, plan_search)
 
 
 class Agent:
@@ -92,11 +92,12 @@ def test_parsed_input_with_agent_searches_codegen(kind):
 
 
 @pytest.mark.parametrize('kind', sorted(k.value for k in PARSED_KINDS))
-def test_parsed_input_without_agent_sweeps_everything(kind):
-    """Case C: nothing to steer the search, so sweep all variants."""
+def test_parsed_input_without_agent_sweeps_broadly(kind):
+    """Case C: nothing to steer the search, so widen beyond core -- but stay within budget."""
     plan = plan_search('kernel.src', kind=kind, agent=None)
     assert plan.space is SearchSpace.ALL
     assert set(plan.axes) == set(FLAG_AXES) | set(CODEGEN_AXES)
+    assert plan.variant_count() <= VARIANT_BUDGET
 
 
 def test_every_kind_is_dispatched():
@@ -129,10 +130,24 @@ def test_needs_parse(kind, expected):
 
 
 def test_flag_axes_cover_what_the_contract_names():
-    """The contract names vectorizer, cost-model and fp flags explicitly."""
-    assert {'vectorizer', 'cost_model', 'fp'} <= set(FLAG_AXES)
+    """The contract names the vectorizer and fp axes explicitly."""
+    assert {'vectorize', 'fp'} <= set(FLAG_AXES)
     for values in FLAG_AXES.values():
         assert len(values) >= 2, 'an axis with one value is not a search axis'
+
+
+def test_fp_axis_matches_the_arena_that_owns_the_flags():
+    """arena.FP_MODES owns the real flag lists and the per-mode tolerance. Restating the names here
+    keeps planning import-light, so this guards the two from drifting apart."""
+    from nestforge.arena import FP_MODES
+    assert tuple(FP_MODES) == tuple(FLAG_AXES['fp'])
+
+
+def test_vectorize_is_one_axis_not_a_degenerate_cross():
+    """A vectorizer switch crossed with a cost model emitted the same variant three times over: with
+    vectorization off, the cost model has nothing to decide."""
+    assert 'cost_model' not in FLAG_AXES
+    assert FLAG_AXES['vectorize'] == ('none', 'cheap', 'auto')
 
 
 def test_codegen_axes_include_the_old_new_switch():
@@ -162,6 +177,33 @@ def test_all_space_is_at_least_as_large_as_codegen():
     assert everything.variant_count() >= directed.variant_count()
 
 
+def test_every_plan_stays_within_budget():
+    """A sweep nobody can afford to run is not a sweep. The arena then multiplies each plan by the
+    discovered compilers, so this bound is per-compiler."""
+    for kind in InputKind:
+        for agent in (None, Agent()):
+            plan = plan_search('kernel.src', kind=kind.value, agent=agent)
+            assert plan.variant_count() <= VARIANT_BUDGET, f'{kind.value}/{agent} blew the budget'
+
+
+def test_broad_sweep_opens_knobs_in_priority_order():
+    """Widening is greedy over BROAD_PRIORITY, so what gets opened is deliberate, not incidental."""
+    from nestforge.entry import BROAD_PRIORITY
+    axes = broad_codegen_axes()
+    opened = [n for n in BROAD_PRIORITY if len(axes[n]) > 1]
+    assert opened, 'a broad sweep that opens nothing is just the core sweep'
+    assert opened == [n for n in BROAD_PRIORITY if n in opened], 'opened out of priority order'
+
+
+def test_broad_budget_is_honoured_for_any_budget():
+    for budget in (4, 8, 16, 72, 1000):
+        axes = broad_codegen_axes(budget)
+        total = 1
+        for values in (*axes.values(), *FLAG_AXES.values()):
+            total *= len(values)
+        assert total <= max(budget, 36), f'budget {budget} overshot at {total}'
+
+
 def test_flags_space_is_smaller_than_parsed_space():
     """Handing us finished source genuinely costs search space -- that is the point of the contract."""
     provided = plan_search('kernel.c')
@@ -178,8 +220,8 @@ def test_plan_is_immutable():
 def test_axes_are_copied_not_aliased():
     """Mutating a plan's axes must not corrupt the module-level axis table."""
     plan = plan_search('kernel.c')
-    plan.axes['vectorizer'] = ('bogus', )
-    assert FLAG_AXES['vectorizer'] != ('bogus', )
+    plan.axes['vectorize'] = ('bogus', )
+    assert FLAG_AXES['vectorize'] != ('bogus', )
 
 
 def test_suffix_tables_do_not_overlap_except_fortran():
@@ -241,23 +283,38 @@ def test_index_function_is_always_constexpr():
     assert CODEGEN_PINNED['index_fn_qualifier'] == 'inline_constexpr'
 
 
+def test_loop_bound_uses_the_safe_comparison():
+    """A soundness pin: `ne` only matches `lt` when the stride divides the trip count exactly."""
+    assert CODEGEN_PINNED['loop_bound_cmp'] == 'lt'
+    assert 'loop_bound_cmp' not in CORE_UNCERTAIN
+
+
+def test_gpu_translation_unit_split_is_off():
+    """CPU contract, and offloading loops means the shape it keys on should not arise."""
+    assert CODEGEN_PINNED['external_translation_units'] is False
+
+
 def test_one_index_width_everywhere():
     """64-bit index arithmetic is native on modern hardware; nothing to buy by varying it."""
     assert CODEGEN_PINNED['loop_index_type'] == 'int64_t'
     assert CODEGEN_PINNED['index_ctype'] == 'int64_t'
 
 
-def test_core_is_dramatically_smaller_than_exhaustive():
+def test_core_is_smaller_than_the_broad_sweep():
+    """Core is the targeted subset; the broad sweep widens it -- both inside the budget."""
     core = plan_search('kernel.py', agent=Agent())
-    everything = plan_search('kernel.py', agent=None)
-    assert core.variant_count() < everything.variant_count()
-    assert everything.variant_count() / core.variant_count() > 10
+    broad = plan_search('kernel.py', agent=None)
+    assert core.variant_count() < broad.variant_count() <= VARIANT_BUDGET
 
 
-def test_exhaustive_opens_every_pinned_knob():
-    everything = plan_search('kernel.py', agent=None)
-    for name in CODEGEN_PINNED:
-        assert len(everything.axes[name]) == len(CODEGEN_AXES[name])
+def test_broad_opens_some_pinned_knobs_but_not_all():
+    """Deliberately partial: opening every pinned knob is six figures of builds. The budget decides
+    how many get opened, and BROAD_PRIORITY decides which."""
+    broad = plan_search('kernel.py', agent=None)
+    opened = [n for n in CODEGEN_PINNED if len(broad.axes[n]) > 1]
+    still_pinned = [n for n in CODEGEN_PINNED if len(broad.axes[n]) == 1]
+    assert opened, 'a broad sweep must widen something beyond core'
+    assert still_pinned, 'opening everything would blow the budget by orders of magnitude'
 
 
 def test_every_axis_value_set_is_non_empty():

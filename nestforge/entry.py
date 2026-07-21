@@ -61,12 +61,20 @@ PROVIDED_SOURCE_KINDS = frozenset({InputKind.C_SOURCE, InputKind.CPP_SOURCE, Inp
 #: Kinds we lower to an SDFG ourselves.
 PARSED_KINDS = frozenset({InputKind.NUMPY, InputKind.FORTRAN_PARSE, InputKind.SDFG})
 
-#: Compiler-invocation axes. Values are resolved against the discovered toolchain at execution time;
-#: naming them here keeps the contract inspectable without a compiler present.
+#: Compiler-invocation axes. Values are resolved to per-compiler flags at execution time; naming them
+#: here keeps the contract inspectable without a compiler present.
+#:
+#: `vectorize` is ONE axis, not a vectorizer switch crossed with a cost model. Those two are not
+#: independent: with vectorization off the cost model has nothing to decide, so the crossed form
+#: emitted the same variant three times over. The three values are the distinct outcomes -- do not
+#: vectorize, vectorize only where it is cheaply profitable, vectorize wherever the compiler will.
+#:
+#: `fp` mirrors :data:`nestforge.arena.FP_MODES`, which owns the actual flag lists and the matching
+#: comparison tolerance per mode (bit-exact for ieee-strict, looser as the mode relaxes). Restated
+#: here so planning stays free of heavy imports; a test asserts the two never drift apart.
 FLAG_AXES: Dict[str, Sequence[str]] = {
-    'vectorizer': ('none', 'auto', 'auto+width', 'slp'),
-    'cost_model': ('default', 'unlimited', 'cheap'),
-    'fp': ('strict', 'fast', 'associative'),
+    'vectorize': ('none', 'cheap', 'auto'),
+    'fp': ('ieee-strict', 'fast-but-ieee', 'fast-math'),
 }
 
 #: Every DaCe CPU codegen axis, with the values verified against dace `extended` config_schema.yml.
@@ -82,13 +90,14 @@ CODEGEN_AXES: Dict[str, Sequence] = {
     'loop_bound_cmp': ('lt', 'le', 'ne'),
     'inline_full_array_nsdfg': (False, True),
     'split_nsdfg_translation_units': (False, True),
+    'external_translation_units': (False, True),
     'scalar_emission_type': ('scalar', 'keep'),
     'explicit_copy': ('on', 'off'),
 }
 
 #: Knobs whose best value we genuinely do NOT know, so a core sweep must measure them.
 #: Anything absent from here is pinned to :data:`CODEGEN_PINNED` instead of being searched.
-CORE_UNCERTAIN = ('implementation', 'const_scalar_abi', 'loop_bound_cmp')
+CORE_UNCERTAIN = ('implementation', 'const_scalar_abi')
 
 #: Knobs with a value that is right nearly always, pinned in a core sweep and only opened up in an
 #: exhaustive one. Each entry records WHY, so a surprising exhaustive result can be traced back to a
@@ -116,6 +125,15 @@ CODEGEN_PINNED: Dict[str, object] = {
     # Splitting translation units was MEASURED to lose on small nests (0.37x on 16 tiny nests) and win
     # only on heavy ones (1.14x on 6); off is the right default, exhaustive can still try it.
     'split_nsdfg_translation_units': False,
+    # The GPU analogue of the above: lifts each top-level GPU nest into a standalone SDFG with its own
+    # .cu. Off -- this contract targets CPU, and because we OFFLOAD loops the shape it keys on should
+    # not arise here at all. Named rather than omitted so a caller can see the axis exists.
+    'external_translation_units': False,
+    # `i < N` rather than `i != N`. This is a SOUNDNESS pin, not a speed one: `ne` is equivalent only
+    # when the stride divides the trip count exactly, and otherwise the loop overshoots its bound and
+    # runs away. That is a per-loop property and this knob is global, so the safe form is the only one
+    # that can be set globally.
+    'loop_bound_cmp': 'lt',
 }
 
 #: The reduced codegen sweep: uncertain knobs searched, the rest pinned to a known-good value.
@@ -129,6 +147,48 @@ CORE_CODEGEN_AXES: Dict[str, Sequence] = {
         for name in CORE_UNCERTAIN
     },
 }
+
+#: Ceiling on the variants ONE plan may enumerate. The arena then builds each variant once per
+#: discovered compiler, so with the usual two this is ~144 compilations -- a sweep that finishes.
+#: The full cartesian product of every knob is six figures, which is not a sweep anyone runs.
+VARIANT_BUDGET = 72
+
+#: Which pinned knobs a broad sweep re-opens first, most likely to matter first. A broad sweep walks
+#: this list and opens knobs while the budget allows, so the bound is respected by construction
+#: rather than by hoping the product stays small.
+BROAD_PRIORITY = (
+    'scalar_emission_type',
+    'explicit_copy',
+    'inline_full_array_nsdfg',
+    'split_nsdfg_translation_units',
+    'index_ctype',
+    'index_fn_qualifier',
+    'loop_index_type',
+    'heap_ptr_restrict',
+    'loop_bound_cmp',
+    'external_translation_units',
+)
+
+
+def broad_codegen_axes(budget: int = VARIANT_BUDGET) -> Dict[str, Sequence]:
+    """Core axes widened by re-opening pinned knobs in :data:`BROAD_PRIORITY` order, within ``budget``.
+
+    Used when no agent is steering: with nothing to direct a targeted search the sweep should cover
+    more ground than core, but "everything" is six figures of builds, so it is bounded here instead.
+    """
+    axes = dict(CORE_CODEGEN_AXES)
+    # Count the flag axes too: they multiply every codegen combination, so a budget applied to the
+    # codegen axes alone would be overshot by exactly that factor once the plan is assembled.
+    total = 1
+    for values in (*axes.values(), *FLAG_AXES.values()):
+        total *= len(values)
+    for name in BROAD_PRIORITY:
+        widened = CODEGEN_AXES[name]
+        if total * len(widened) > budget:
+            continue
+        axes[name] = widened
+        total *= len(widened)
+    return axes
 
 
 @dataclass(frozen=True)
@@ -206,10 +266,11 @@ def plan_search(source: Union[str, Path], kind: Optional[str] = None, agent: Opt
                           space=SearchSpace.ALL,
                           axes={
                               **FLAG_AXES,
-                              **CODEGEN_AXES
+                              **broad_codegen_axes()
                           },
                           needs_parse=resolved is not InputKind.SDFG,
-                          reason='no agent to steer the search, so every variant is swept')
+                          reason='no agent to steer the search, so the sweep is widened beyond core -- '
+                          f'bounded at {VARIANT_BUDGET} variants per compiler, not the full product')
 
     return SearchPlan(kind=resolved,
                       space=SearchSpace.CODEGEN,
