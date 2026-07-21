@@ -108,9 +108,12 @@ def test_single_predecessor_assignment_still_emits():
     assert "k = k + 1" in sdfg_to_numpy(sdfg, fn_name="chain")
 
 
-def extern_call_with_dtype(dtype_name: str):
-    """A minimal ExternalCall whose manifest declares one array of ``dtype_name`` -- enough for
-    ``proto_and_call`` to build the extern-C prototype."""
+DTYPES = {"float64": dace.float64, "complex128": dace.complex128}
+
+
+def extern_call_with_dtype(dtype_name: str, shape=(8, )):
+    """An ExternalCall wired into a real state: ``proto_and_call`` reads the memlets to tell a pointer
+    connector from a value one, so a node without edges cannot answer the question it is asked."""
     manifest = {
         "array_args": ["A"],
         "output_args": [],
@@ -125,16 +128,30 @@ def extern_call_with_dtype(dtype_name: str):
     }
     node = ExternalCall("k", inputs={"_in_A"}, outputs=set(), config=manifest)
     node.symbol, node.abi_order = "k_fp64", ["A"]
-    return node
+    sdfg = dace.SDFG("host")
+    sdfg.add_array("A", list(shape), DTYPES[dtype_name])
+    state = sdfg.add_state()
+    state.add_edge(state.add_read("A"), None, node, "_in_A", dace.Memlet.from_array("A", sdfg.arrays["A"]))
+    return node, state
 
 
 def test_extern_c_prototype_builds_for_a_known_dtype():
-    proto, call = proto_and_call(extern_call_with_dtype("float64"))
+    proto, call = proto_and_call(*extern_call_with_dtype("float64"))
     assert "const double* A" in proto and "k_fp64(_in_A);" == call
+
+
+def test_a_one_element_connector_is_passed_by_address():
+    """DaCe defines a one-element memlet as a VALUE, but the compiled signature always takes a pointer:
+    passing it directly is "cannot convert double to double*" at compile time (E3: s114/s115/s116)."""
+    _, state = extern_call_with_dtype("float64", shape=(1, ))
+    node = next(n for n in state.nodes() if isinstance(n, ExternalCall))
+    proto, call = proto_and_call(node, state)
+    assert "const double* A" in proto
+    assert call == "k_fp64(&_in_A);"
 
 
 def test_unspellable_array_dtype_is_refused_not_keyerror():
     # a complex/fp16/unsigned array used to raise a bare KeyError from _CPP_SCALAR mid-codegen; it must be an
     # actionable refusal naming the array and dtype so the caller can keep the DaceReference variant.
     with pytest.raises(ValueError, match="complex128"):
-        proto_and_call(extern_call_with_dtype("complex128"))
+        proto_and_call(*extern_call_with_dtype("complex128"))

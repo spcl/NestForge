@@ -1,0 +1,1624 @@
+{
+  "rows": [
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.3419999618236034,
+      "error": null,
+      "kernel": "s000",
+      "ok": true,
+      "search_us": 1.4720000081069884,
+      "speedup": 0.9116847516525718
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.4720000081069884,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.4720000081069884,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.4720000081069884,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.4720000081069884,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.4720000081069884,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.291999979002867,
+      "error": null,
+      "kernel": "s000",
+      "ok": true,
+      "search_us": 1.2720000199806236,
+      "speedup": 1.0157232379780528
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.2720000199806236,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.2720000199806236,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.2720000199806236,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.2720000199806236,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s000",
+      "ok": false,
+      "search_us": 1.2720000199806236,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 2.1029999857091752,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.7130000173892768,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s111",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 4.697000008491159,
+      "error": null,
+      "kernel": "s1111",
+      "ok": true,
+      "search_us": 1.9130000055156415,
+      "speedup": 2.455305799764021
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9130000055156415,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9130000055156415,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9130000055156415,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9130000055156415,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9130000055156415,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.8929999896499794,
+      "error": null,
+      "kernel": "s1111",
+      "ok": true,
+      "search_us": 1.9930000121348712,
+      "speedup": 0.9498243743722945
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9930000121348712,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9930000121348712,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9930000121348712,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9930000121348712,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1111",
+      "ok": false,
+      "search_us": 1.9930000121348712,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.7730000081428443,
+      "error": null,
+      "kernel": "s1112",
+      "ok": true,
+      "search_us": 1.3419999902453128,
+      "speedup": 1.321162459784181
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.3419999902453128,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.3419999902453128,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.3419999902453128,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.3419999902453128,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.3419999902453128,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.3419999618236034,
+      "error": null,
+      "kernel": "s1112",
+      "ok": true,
+      "search_us": 1.9940000015594705,
+      "speedup": 0.6730190374995235
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.9940000015594705,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.9940000015594705,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.9940000015594705,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.9940000015594705,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1112",
+      "ok": false,
+      "search_us": 1.9940000015594705,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.612999994904385,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.4620000001741573,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1113",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 3.7759999713671277,
+      "error": null,
+      "kernel": "s1115",
+      "ok": true,
+      "search_us": 3.595999999106425,
+      "speedup": 1.0500556096511209
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.595999999106425,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.595999999106425,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.595999999106425,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.595999999106425,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.595999999106425,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 3.404999972644873,
+      "error": null,
+      "kernel": "s1115",
+      "ok": true,
+      "search_us": 3.6760000057256548,
+      "speedup": 0.9262785547718504
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.6760000057256548,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.6760000057256548,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.6760000057256548,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.6760000057256548,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1115",
+      "ok": false,
+      "search_us": 3.6760000057256548,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 21.682999999939057,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 8.17299996924703,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s1119",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.7030000094564457,
+      "error": null,
+      "kernel": "s112",
+      "ok": true,
+      "search_us": 1.5720000021701708,
+      "speedup": 1.0833333378533252
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.5720000021701708,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.5720000021701708,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.5720000021701708,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.5720000021701708,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.5720000021701708,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.301999986935698,
+      "error": null,
+      "kernel": "s112",
+      "ok": true,
+      "search_us": 1.6120000054797856,
+      "speedup": 0.8076922968422564
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.6120000054797856,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.6120000054797856,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.6120000054797856,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.6120000054797856,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s112",
+      "ok": false,
+      "search_us": 1.6120000054797856,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.3719999856220966,
+      "error": null,
+      "kernel": "s113",
+      "ok": true,
+      "search_us": 1.5619999942373397,
+      "speedup": 0.8783610695798931
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.5619999942373397,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.5619999942373397,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.5619999942373397,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.5619999942373397,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.5619999942373397,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.401999952577171,
+      "error": null,
+      "kernel": "s113",
+      "ok": true,
+      "search_us": 1.9530000088252564,
+      "speedup": 0.7178699161504275
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.9530000088252564,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.9530000088252564,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.9530000088252564,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.9530000088252564,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s113",
+      "ok": false,
+      "search_us": 1.9530000088252564,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.4120000173534208,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.4319999763756641,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s114",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 2.193000000261236,
+      "error": null,
+      "kernel": "s115",
+      "ok": true,
+      "search_us": 17.09599999344391,
+      "speedup": 0.12827562009254928
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 17.09599999344391,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 17.09599999344391,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 17.09599999344391,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 17.09599999344391,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 17.09599999344391,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 2.744000028087612,
+      "error": null,
+      "kernel": "s115",
+      "ok": true,
+      "search_us": 18.597999996927683,
+      "speedup": 0.1475427480665077
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 18.597999996927683,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 18.597999996927683,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 18.597999996927683,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 18.597999996927683,
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s115",
+      "ok": false,
+      "search_us": 18.597999996927683,
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "whole-program",
+      "baseline_us": 1.291999979002867,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "gcc",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "whole-program",
+      "baseline_us": 1.1719999974957318,
+      "error": "no valid search cell for this kernel/backend",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "pluto",
+      "baseline_us": "inf",
+      "error": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "gcc-O3",
+      "baseline_us": "inf",
+      "error": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "llvm-O3",
+      "baseline_us": "inf",
+      "error": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "graphite",
+      "baseline_us": "inf",
+      "error": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    },
+    {
+      "backend": "clang",
+      "baseline": "polly",
+      "baseline_us": "inf",
+      "error": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+      "kernel": "s116",
+      "ok": false,
+      "search_us": "inf",
+      "speedup": "nan"
+    }
+  ],
+  "search_cells_from": [
+    "e1",
+    "e3"
+  ],
+  "skipped": {
+    "s000 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s000 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s000 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s000 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s111 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | clang | whole-program": "no valid search cell for this kernel/backend",
+    "s111 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s111 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s111 | gcc | whole-program": "no valid search cell for this kernel/backend",
+    "s1111 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1111 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1111 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1111 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1112 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1112 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1112 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1113 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | clang | whole-program": "no valid search cell for this kernel/backend",
+    "s1113 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1113 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1113 | gcc | whole-program": "no valid search cell for this kernel/backend",
+    "s1115 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1115 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1115 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1115 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1119 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | clang | whole-program": "no valid search cell for this kernel/backend",
+    "s1119 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s1119 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s1119 | gcc | whole-program": "no valid search cell for this kernel/backend",
+    "s112 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s112 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s112 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s112 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s113 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s113 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s113 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s114 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | clang | whole-program": "no valid search cell for this kernel/backend",
+    "s114 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s114 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s114 | gcc | whole-program": "no valid search cell for this kernel/backend",
+    "s115 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s115 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s115 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s115 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | clang | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | clang | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | clang | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | clang | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s116 | clang | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | clang | whole-program": "no valid search cell for this kernel/backend",
+    "s116 | gcc | gcc-O3": "gcc-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | gcc | graphite": "graphite optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | gcc | llvm-O3": "llvm-O3 optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | gcc | pluto": "pluto unavailable: 'polycc' not on PATH (containerized in optarena)",
+    "s116 | gcc | polly": "polly optimizes one emitted nest; the external WHOLE-program lane is future work",
+    "s116 | gcc | whole-program": "no valid search cell for this kernel/backend"
+  },
+  "speedup": {
+    "s000 | clang": {
+      "whole-program": 1.0157232379780528
+    },
+    "s000 | gcc": {
+      "whole-program": 0.9116847516525718
+    },
+    "s1111 | clang": {
+      "whole-program": 0.9498243743722945
+    },
+    "s1111 | gcc": {
+      "whole-program": 2.455305799764021
+    },
+    "s1112 | clang": {
+      "whole-program": 0.6730190374995235
+    },
+    "s1112 | gcc": {
+      "whole-program": 1.321162459784181
+    },
+    "s1115 | clang": {
+      "whole-program": 0.9262785547718504
+    },
+    "s1115 | gcc": {
+      "whole-program": 1.0500556096511209
+    },
+    "s112 | clang": {
+      "whole-program": 0.8076922968422564
+    },
+    "s112 | gcc": {
+      "whole-program": 1.0833333378533252
+    },
+    "s113 | clang": {
+      "whole-program": 0.7178699161504275
+    },
+    "s113 | gcc": {
+      "whole-program": 0.8783610695798931
+    },
+    "s115 | clang": {
+      "whole-program": 0.1475427480665077
+    },
+    "s115 | gcc": {
+      "whole-program": 0.12827562009254928
+    }
+  }
+}

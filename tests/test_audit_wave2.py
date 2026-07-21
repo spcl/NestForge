@@ -151,14 +151,21 @@ def extern_call(abi_order, inputs):
     }
     node = ExternalCall("k", inputs=set(inputs), outputs=set(), config=manifest)
     node.symbol, node.abi_order = "k_fp64", list(abi_order)
-    return node
+    sdfg = dace.SDFG("host")
+    state = sdfg.add_state()
+    state.add_node(node)
+    for conn in inputs:
+        name = conn[len("_in_"):]
+        sdfg.add_array(name, [8], dace.float64)
+        state.add_edge(state.add_read(name), None, node, conn, dace.Memlet.from_array(name, sdfg.arrays[name]))
+    return node, state
 
 
 def test_abi_arg_without_a_connector_is_refused():
     # the compiled signature exposes a caller-allocated scratch buffer that never crosses the ExternalCall
     # boundary; emitting the call anyway referenced an undefined identifier in the tasklet.
     with pytest.raises(ValueError, match="no '_in_scratch' connector"):
-        proto_and_call(extern_call(["A", "scratch"], inputs=["_in_A"]))
+        proto_and_call(*extern_call(["A", "scratch"], inputs=["_in_A"]))
 
 
 def test_extern_lib_env_accumulates_every_nest_library():

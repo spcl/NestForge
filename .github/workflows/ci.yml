@@ -136,9 +136,12 @@ jobs:
       # The RUNNER (test_run_experiments.py) closes the last gap: Phase 4 proved each driver in
       # isolation, but nothing proved the pipeline that actually produces the paper's tables.
       # Its bounded run exercises all five end to end and asserts each wrote rows.
+      # test_experiment_tables.py holds the tables to their contract: the RECORDED tables from the
+      # experiments workflow are checked in Phase 3 (pure data), and its live bounded run -- checked
+      # against the same contract, plus every already-fixed error class -- runs here.
       - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
         run: |
           python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
             tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
-            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py tests/test_experiment_e5.py tests/test_run_experiments.py \
+            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py tests/test_experiment_e5.py tests/test_run_experiments.py tests/test_experiment_tables.py \
             --timeout=900

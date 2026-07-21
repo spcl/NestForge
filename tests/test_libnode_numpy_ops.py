@@ -346,7 +346,7 @@ def test_argreduce(op, argfn, valfn):
                                          ("MIN", np.minimum.accumulate)])
 def test_scan_inclusive(scanop, ref):
     from dace.libraries.standard.nodes.scan import Scan, ScanOp
-    sdfg = build("sc", Scan("sc", op=getattr(ScanOp, scanop)), {
+    sdfg = build("sc", Scan("sc", op=ScanOp[scanop]), {
         "si": ((N, ), F),
         "so": ((N, ), F)
     }, [("_scan_in", "si")], [("_scan_out", "so")])

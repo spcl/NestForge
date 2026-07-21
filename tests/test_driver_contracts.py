@@ -103,7 +103,12 @@ def make_inputs_calls_without_given():
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
-            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+            if isinstance(fn, ast.Attribute):
+                name = fn.attr
+            elif isinstance(fn, ast.Name):
+                name = fn.id
+            else:
+                continue  # a call on an expression (subscript, lambda, ...) names no function here
             if name != "make_inputs":
                 continue
             if not any(k.arg == "given" for k in node.keywords):

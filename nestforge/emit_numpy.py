@@ -26,14 +26,6 @@ from dace.sdfg import nodes
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion, ReturnBlock
 from dace.sdfg.utils import dfs_topological_sort
 
-try:
-    from dace.transformation.passes.canonicalize.assume_symbols_nonnegative import is_assumption_guard_block
-except ImportError:  # a dace without the canonicalize assumption-guard pass
-
-    def is_assumption_guard_block(block) -> bool:
-        return False
-
-
 from nestforge.emit_libnode import (UnsupportedLibraryNode, emit_library_node, index_str, is_scalar, read_expr,
                                     scalar_local, write_lhs)
 from nestforge.extract import Boundary
@@ -235,6 +227,37 @@ def normalize_casts(code: str) -> str:
     return rewrite_userfuncs(code)
 
 
+#: Every DaCe precondition trap is a connectorless CPP tasklet holding this. Two passes emit it
+#: (canonicalize's symbol assumptions, the scatter-conflict guard), so match the shape, not a label.
+_TRAP_GUARD = re.compile(r"^\s*if\s*\((?P<cond>.+)\)\s*\{\s*__builtin_trap\s*\(\s*\)\s*;?\s*\}\s*;?\s*$", re.DOTALL)
+
+#: C spellings with a Python equivalent. ``!`` needs the lookahead so ``!=`` survives intact.
+_C_TO_PYTHON = ((re.compile(r"&&"), " and "), (re.compile(r"\|\|"), " or "), (re.compile(r"!(?!=)"), " not "),
+                (re.compile(r"\btrue\b"), "True"), (re.compile(r"\bfalse\b"), "False"))
+
+
+def trap_guard_lines(tasklet: nodes.Tasklet) -> List[str] | None:
+    """Python equivalent of a C trap guard, or ``None`` if this tasklet is not one.
+
+    ``__builtin_trap()`` aborts on a violated precondition, so an oracle that drops the guard is a
+    different program from the kernel it validates. The condition is ``sym2cpp`` output; the rewrites
+    below plus :func:`normalize_casts` cover it.
+    """
+    matched = _TRAP_GUARD.match(tasklet.code.as_string)
+    if matched is None:
+        return None
+    cond = matched.group("cond")
+    for pattern, replacement in _C_TO_PYTHON:
+        cond = pattern.sub(replacement, cond)
+    cond = re.sub(r"\s+", " ", normalize_casts(cond)).strip()  # eval-mode parse rejects a leading space
+    try:
+        ast.parse(cond, mode="eval")
+    except SyntaxError as exc:
+        raise UnsupportedNest(f"trap guard {tasklet.label} has a condition that is not translatable to "
+                              f"python: {cond!r}") from exc
+    return [f"if {cond}:", f"    raise AssertionError({f'violated assumption in {tasklet.label}'!r})"]
+
+
 #: reduction type -> ``(accumulator, term) -> combined expression`` for a WCR (augmented) write.
 _WCR_BINOP = {
     dace.dtypes.ReductionType.Sum: lambda acc, t: f"{acc} + {t}",
@@ -253,6 +276,10 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
     Sum, ``np.maximum`` for Max, ...). Sequential emission keeps this correct when several iterations
     hit the same target element (the whole point of the WCR).
     """
+    if not tasklet.in_connectors and not tasklet.out_connectors:
+        # No connectors -> no data effect, whatever the language. The one meaningful case is the
+        # precondition trap; anything else contributes nothing but provenance.
+        return trap_guard_lines(tasklet) or [f"# no-op tasklet ({tasklet.label}): no connectors, no data effect"]
     if tasklet.code.language != dace.dtypes.Language.Python:
         raise UnsupportedNest(f"tasklet {tasklet.label} is not Python ({tasklet.code.language})")
     conn_expr: Dict[str, str] = {}
@@ -703,8 +730,6 @@ def emit_region(region, sdfg: dace.SDFG) -> List[str]:
     for block in ordered_blocks(region):
         lines.extend(interstate_lines(region, sdfg, block))
         if isinstance(block, dace.SDFGState):
-            if is_assumption_guard_block(block):
-                continue  # canonicalize's soundness trap: reads only symbols, touches no data -- inert in numpy
             lines.append(f"# state ({block.label})")
             lines.extend(state_body(sdfg, block))
         elif isinstance(block, LoopRegion):

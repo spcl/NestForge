@@ -95,8 +95,9 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
     one rung of the fusion-granularity ladder (Axis 1) before measuring -- this is how E1 sweeps granularity.
     ``granularity`` is the P2 offloading unit; ``opt_mode`` builds the canonical P0 base.
     Default is ``"canonicalize"`` -- the canonical P0 start (the same start point for every kernel). Its
-    soundness-guard state (``check_assumption`` CPP traps) is inert and skipped by the numpy oracle emitter
-    (:func:`nestforge.emit_numpy.is_assumption_guard_block`). With ``variants`` empty this measures the
+    soundness-guard state (``check_assumption`` CPP traps) is translated into the equivalent python
+    assertion by the numpy oracle emitter (:func:`nestforge.emit_numpy.trap_guard_lines`), so the oracle
+    holds the kernel to the same preconditions. With ``variants`` empty this measures the
     all-reference lowered program -- the differential baseline point every swapped variant is compared to.
     """
     variants = variants or {}

@@ -1,0 +1,754 @@
+{
+  "best_unit": {
+    "s000 | clang": "map",
+    "s000 | gcc": "map",
+    "s1111 | clang": "map",
+    "s1111 | gcc": "map",
+    "s1112 | clang": "map",
+    "s1112 | gcc": "map",
+    "s1115 | clang": "map",
+    "s1115 | gcc": "map",
+    "s112 | clang": "map",
+    "s112 | gcc": "map",
+    "s113 | clang": "map",
+    "s113 | gcc": "map",
+    "s115 | clang": "map",
+    "s115 | gcc": "map"
+  },
+  "curve": {
+    "s000 | clang": [
+      [
+        "map",
+        1.4620000001741573
+      ]
+    ],
+    "s000 | gcc": [
+      [
+        "map",
+        1.4720000081069884
+      ]
+    ],
+    "s1111 | clang": [
+      [
+        "map",
+        2.2340000214171596
+      ]
+    ],
+    "s1111 | gcc": [
+      [
+        "map",
+        2.6439999771810108
+      ]
+    ],
+    "s1112 | clang": [
+      [
+        "map",
+        1.9940000015594705
+      ]
+    ],
+    "s1112 | gcc": [
+      [
+        "map",
+        1.6719999962333532
+      ]
+    ],
+    "s1115 | clang": [
+      [
+        "map",
+        3.6760000057256548
+      ]
+    ],
+    "s1115 | gcc": [
+      [
+        "map",
+        3.696000021591317
+      ]
+    ],
+    "s112 | clang": [
+      [
+        "map",
+        1.651999980367691
+      ]
+    ],
+    "s112 | gcc": [
+      [
+        "map",
+        2.113000050485425
+      ]
+    ],
+    "s113 | clang": [
+      [
+        "map",
+        2.073000018754101
+      ]
+    ],
+    "s113 | gcc": [
+      [
+        "map",
+        1.9429999724707159
+      ]
+    ],
+    "s115 | clang": [
+      [
+        "map",
+        18.597999996927683
+      ]
+    ],
+    "s115 | gcc": [
+      [
+        "map",
+        18.366999995578226
+      ]
+    ]
+  },
+  "rows": [
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": 1.4720000081069884,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s000",
+      "median_us": 1.4620000001741573,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": "RuntimeError('compiling extcall_0 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e3/s111/gcc/map/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e3/s111/gcc/map/variants/extcall_0/extcall_0_nest.o\\n/home/runner/work/_temp/results/e3/s111/gcc/map/variants/extcall_0/extcall_0_fp64.c: In function \u2018extcall_0_fp64\u2019:\\n/home/runner/work/_temp/results/e3/s111/gcc/map/variants/extcall_0/extcall_0_fp64.c:142:31: error: array subscript is not an integer\\n  142 |           a_slice_plus_b_slice[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = (__map_fusion_a_index + b[_loop_it_0]);\\n      |                               ^\\n')",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": "RuntimeError(\"compiling extcall_0 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e3/s111/clang/map/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e3/s111/clang/map/variants/extcall_0/extcall_0_nest.o\\nclang: warning: argument unused during compilation: '-shared' [-Wunused-command-line-argument]\\n/home/runner/work/_temp/results/e3/s111/clang/map/variants/extcall_0/extcall_0_fp64.c:142:31: error: array subscript is not an integer\\n  142 |           a_slice_plus_b_slice[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = (__map_fusion_a_index + b[_loop_it_0]);\\n      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\\n1 error generated.\\n\")",
+      "granularity": "maximal",
+      "kernel": "s111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": 2.6439999771810108,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s1111",
+      "median_us": 2.2340000214171596,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": 1.6719999962333532,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s1112",
+      "median_us": 1.9940000015594705,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": "RuntimeError('compiling extcall_0 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_nest.o\\n/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:52: error: expected \u2018]\u2019 before \u2018)\u2019 token\\n  143 |             a_slice_plus_b_slice_0[(_loop_it_1)*(2))) + (si1)] = (__map_fusion_a_index_0 + b[_loop_it_1]);\\n      |                                                    ^\\n      |                                                    ]\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:52: error: expected \u2018;\u2019 before \u2018)\u2019 token\\n  143 |             a_slice_plus_b_slice_0[(_loop_it_1)*(2))) + (si1)] = (__map_fusion_a_index_0 + b[_loop_it_1]);\\n      |                                                    ^\\n      |                                                    ;\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:52: error: expected statement before \u2018)\u2019 token\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:53: error: expected statement before \u2018)\u2019 token\\n  143 |             a_slice_plus_b_slice_0[(_loop_it_1)*(2))) + (si1)] = (__map_fusion_a_index_0 + b[_loop_it_1]);\\n      |                                                     ^\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:62: error: expected \u2018;\u2019 before \u2018]\u2019 token\\n  143 |             a_slice_plus_b_slice_0[(_loop_it_1)*(2))) + (si1)] = (__map_fusion_a_index_0 + b[_loop_it_1]);\\n      |                                                              ^\\n      |                                                              ;\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:62: error: expected statement before \u2018]\u2019 token\\n/home/runner/work/_temp/results/e3/s1113/gcc/map/variants/extcall_0/extcall_0_fp64.c:143:64: error: expected expression before \u2018=\u2019 token\\n  143 |             a_slice_plus_b_slice_0[(_loop_it_1)*(2))) + (si1)] = (__map_fusion_a_index_0 + b[_loop_it_1]);\\n      |                                                                ^\\n')",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": "RuntimeError(\"compiling extcall_0 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_nest.o\\nclang: warning: argument unused during compilation: '-shared' [-Wunused-command-line-argument]\\n/home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c:142:40: error: expected ';' in 'for' statement specifier\\n  142 |           for (int64_t si1 = 0; si1 < 2)); ++si1) {\\n      |                                        ^\\n/home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c:142:41: error: expected expression\\n  142 |           for (int64_t si1 = 0; si1 < 2)); ++si1) {\\n      |                                         ^\\n/home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c:142:49: error: expected ';' after expression\\n  142 |           for (int64_t si1 = 0; si1 < 2)); ++si1) {\\n      |                                                 ^\\n      |                                                 ;\\n/home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c:142:46: error: use of undeclared identifier 'si1'\\n  142 |           for (int64_t si1 = 0; si1 < 2)); ++si1) {\\n      |                                              ^\\n/home/runner/work/_temp/results/e3/s1113/clang/map/variants/extcall_0/extcall_0_fp64.c:142:49: error: expected expression\\n  142 |           for (int64_t si1 = 0; si1 < 2)); ++si1) {\\n      |                                                 ^\\n5 errors generated.\\n\")",
+      "granularity": "maximal",
+      "kernel": "s1113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": 3.696000021591317,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s1115",
+      "median_us": 3.6760000057256548,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": "StopIteration()",
+      "granularity": "-",
+      "kernel": "s1119",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": 2.113000050485425,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "atoms",
+      "kernel": "s112",
+      "median_us": 1.651999980367691,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": 1.9429999724707159,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'cfg' nest to offload at granularity 'maximal'",
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s113",
+      "median_us": 2.073000018754101,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n               |\\n      |                            int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s114/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:43:55: error: invalid conversion from \u2018int64_t\u2019 {aka \u2018long int\u2019} to \u2018int64_t*\u2019 {aka \u2018long int*\u2019} [-fpermissive]\\n   43 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out___sym_out__loop_it_1, _out_aa, _out_aa_index, _out_aa_slice_plus_bb_slice, _in_bb, LEN_2D, _loop_it_0, _loop_it_1);\\n      |                                                       ^~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                                                       |\\n      |                                                       int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s114/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:43:91: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   43 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out___sym_out__loop_it_1, _out_aa, _out_aa_index, _out_aa_slice_plus_bb_slice, _in_bb, LEN_2D, _loop_it_0, _loop_it_1);\\n      |                                                                                           ^~~~~~~~~~~~~\\n      |                                                                                           |\\n      |                                                                                           double\\n/home/runner/work/_temp/results/e3/s114/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:9:114: note:   initializing argument 4 of \u2018void extcall_0_fp64(int64_t*, int64_t*, double*, double*, double*, const double*, int64_t, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(int64_t* __sym_out__loop_it_0, int64_t* __sym_out__loop_it_1, double* aa, double* aa_index, double* aa_slice_plus_bb_slice, const double* bb, int64_t LEN_2D, int64_t _loop_it_0, int64_t _loop_it_1);\\n      |                                                                                                          ~~~~~~~~^~~~~~~~\\n')",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'map' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n         |\\n      |                            int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s114/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:43:55: error: invalid conversion from \u2018int64_t\u2019 {aka \u2018long int\u2019} to \u2018int64_t*\u2019 {aka \u2018long int*\u2019} [-fpermissive]\\n   43 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out___sym_out__loop_it_1, _out_aa, _out_aa_index, _out_aa_slice_plus_bb_slice, _in_bb, LEN_2D, _loop_it_0, _loop_it_1);\\n      |                                                       ^~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                                                       |\\n      |                                                       int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s114/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:43:91: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   43 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out___sym_out__loop_it_1, _out_aa, _out_aa_index, _out_aa_slice_plus_bb_slice, _in_bb, LEN_2D, _loop_it_0, _loop_it_1);\\n      |                                                                                           ^~~~~~~~~~~~~\\n      |                                                                                           |\\n      |                                                                                           double\\n/home/runner/work/_temp/results/e3/s114/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s114_d_single.cpp:9:114: note:   initializing argument 4 of \u2018void extcall_0_fp64(int64_t*, int64_t*, double*, double*, double*, const double*, int64_t, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(int64_t* __sym_out__loop_it_0, int64_t* __sym_out__loop_it_1, double* aa, double* aa_index, double* aa_slice_plus_bb_slice, const double* bb, int64_t LEN_2D, int64_t _loop_it_0, int64_t _loop_it_1);\\n      |                                                                                                          ~~~~~~~~^~~~~~~~\\n')",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'map' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s114",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n/home/runner/work/_temp/results/e3/s115/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp: In function \u2018void __program_nestforge_tsvc2_corpus_s115_d_single_internal(nestforge_tsvc2_corpus_s115_d_single_state_t*, double*, double*, int, int64_t)\u2019:\\n/home/runner/work/_temp/results/e3/s115/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp:47:28: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   47 |             extcall_0_fp64(_out___map_fusion_a_index_0, _out___map_fusion_aa_slice_times_a_slice, _out___sym_out__loop_it_0, _out__wcr_priv__Sub____out, _out_a, _in_aa, LEN_2D, _loop_it_0);\\n      |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                            |\\n      |                            double\\n/home/runner/work/_temp/results/e3/s115/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp:9:40: note:   initializing argument 1 of \u2018void extcall_0_fp64(double*, double*, int64_t*, double*, double*, const double*, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(double* __map_fusion_a_index_0, double* __map_fusion_aa_slice_times_a_slice, int64_t* __sym_out__loop_it_0, double* _wcr_priv__Sub____out, double* a, const double* aa, int64_t LEN_2D, int64_t _loop_it_0);\\n      |                                ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~\\n')",
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": 18.366999995578226,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n/home/runner/work/_temp/results/e3/s115/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp: In function \u2018void __program_nestforge_tsvc2_corpus_s115_d_single_internal(nestforge_tsvc2_corpus_s115_d_single_state_t*, double*, double*, int, int64_t)\u2019:\\n/home/runner/work/_temp/results/e3/s115/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp:47:28: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   47 |             extcall_0_fp64(_out___map_fusion_a_index_0, _out___map_fusion_aa_slice_times_a_slice, _out___sym_out__loop_it_0, _out__wcr_priv__Sub____out, _out_a, _in_aa, LEN_2D, _loop_it_0);\\n      |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                            |\\n      |                            double\\n/home/runner/work/_temp/results/e3/s115/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s115_d_single.cpp:9:40: note:   initializing argument 1 of \u2018void extcall_0_fp64(double*, double*, int64_t*, double*, double*, const double*, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(double* __map_fusion_a_index_0, double* __map_fusion_aa_slice_times_a_slice, int64_t* __sym_out__loop_it_0, double* _wcr_priv__Sub____out, double* a, const double* aa, int64_t LEN_2D, int64_t _loop_it_0);\\n      |                                ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~\\n')",
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": null,
+      "granularity": "maximal",
+      "kernel": "s115",
+      "median_us": 18.597999996927683,
+      "ok": true,
+      "unit": "map"
+    },
+    {
+      "backend": "gcc",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n16_d_single.cpp:68:28: error: invalid conversion from \u2018int64_t\u2019 {aka \u2018long int\u2019} to \u2018int64_t*\u2019 {aka \u2018long int*\u2019} [-fpermissive]\\n   68 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out__wcr_priv__Mult____out, _out__wcr_priv__Mult____out_0, _out__wcr_priv__Mult____out_1, _out__wcr_priv__Mult____out_2, _out_a, _out_a_index, _out_a_index_1, _out_a_index_3, _out_a_index_5, _in_a_split_snap, LEN_1D, _loop_it_0);\\n      |                            ^~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                            |\\n      |                            int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s116/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s116_d_single.cpp:68:55: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   68 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out__wcr_priv__Mult____out, _out__wcr_priv__Mult____out_0, _out__wcr_priv__Mult____out_1, _out__wcr_priv__Mult____out_2, _out_a, _out_a_index, _out_a_index_1, _out_a_index_3, _out_a_index_5, _in_a_split_snap, LEN_1D, _loop_it_0);\\n      |                                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                                                       |\\n      |                                                       double\\n/home/runner/work/_temp/results/e3/s116/gcc/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s116_d_single.cpp:9:71: note:   initializing argument 2 of \u2018void extcall_0_fp64(int64_t*, double*, double*, double*, double*, double*, double*, double*, double*, double*, const double*, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(int64_t* __sym_out__loop_it_0, double* _wcr_priv__Mult____out, double* _wcr_priv__Mult____out_0, double* _wcr_priv__Mult____out_1, double* _wcr_priv__Mult____out_2, double* a, double* a_index, double* a_index_1, double* a_index_3, double* a_index_5, const double* a_split_snap, int64_t LEN_1D, int64_t _loop_it_0);\\n      |                                                               ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~\\n')",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "gcc",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "gcc",
+      "error": "no 'map' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    },
+    {
+      "backend": "clang",
+      "error": "RuntimeError('command failed: ccache g++ ...\\n_single.cpp:68:28: error: invalid conversion from \u2018int64_t\u2019 {aka \u2018long int\u2019} to \u2018int64_t*\u2019 {aka \u2018long int*\u2019} [-fpermissive]\\n   68 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out__wcr_priv__Mult____out, _out__wcr_priv__Mult____out_0, _out__wcr_priv__Mult____out_1, _out__wcr_priv__Mult____out_2, _out_a, _out_a_index, _out_a_index_1, _out_a_index_3, _out_a_index_5, _in_a_split_snap, LEN_1D, _loop_it_0);\\n      |                            ^~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                            |\\n      |                            int64_t {aka long int}\\n/home/runner/work/_temp/results/e3/s116/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s116_d_single.cpp:68:55: error: cannot convert \u2018double\u2019 to \u2018double*\u2019\\n   68 |             extcall_0_fp64(_out___sym_out__loop_it_0, _out__wcr_priv__Mult____out, _out__wcr_priv__Mult____out_0, _out__wcr_priv__Mult____out_1, _out__wcr_priv__Mult____out_2, _out_a, _out_a_index, _out_a_index_1, _out_a_index_3, _out_a_index_5, _in_a_split_snap, LEN_1D, _loop_it_0);\\n      |                                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~\\n      |                                                       |\\n      |                                                       double\\n/home/runner/work/_temp/results/e3/s116/clang/cfg/ctx/build/src/cpu/nestforge_tsvc2_corpus_s116_d_single.cpp:9:71: note:   initializing argument 2 of \u2018void extcall_0_fp64(int64_t*, double*, double*, double*, double*, double*, double*, double*, double*, double*, const double*, int64_t, int64_t)\u2019\\n    9 | extern \"C\" void extcall_0_fp64(int64_t* __sym_out__loop_it_0, double* _wcr_priv__Mult____out, double* _wcr_priv__Mult____out_0, double* _wcr_priv__Mult____out_1, double* _wcr_priv__Mult____out_2, double* a, double* a_index, double* a_index_1, double* a_index_3, double* a_index_5, const double* a_split_snap, int64_t LEN_1D, int64_t _loop_it_0);\\n      |                                                               ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~\\n')",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "cfg"
+    },
+    {
+      "backend": "clang",
+      "error": "UnsupportedNest('tasklet check_assumption_0 is not Python (Language.CPP)')",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "state"
+    },
+    {
+      "backend": "clang",
+      "error": "no 'map' nest to offload at granularity 'atoms'",
+      "granularity": "atoms",
+      "kernel": "s116",
+      "median_us": "inf",
+      "ok": false,
+      "unit": "map"
+    }
+  ]
+}

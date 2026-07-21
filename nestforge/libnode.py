@@ -37,7 +37,28 @@ def connector_for(arg: str, outputs: set) -> str:
     return out_conn(arg) if arg in outputs else in_conn(arg)
 
 
-def proto_and_call(node: "ExternalCall") -> (str, str):
+def value_connectors(node, state) -> set:
+    """Connectors DaCe defines as a VALUE, not a pointer: those whose memlet covers one element.
+
+    A ``double x`` passed where the compiled signature wants ``double*`` is a compile error, and every
+    scalar transient crossing the boundary (symbol write-backs, fused index/reduction scalars) is exactly
+    this case -- so the call must take their address.
+    """
+    single = set()
+    for edge in state.in_edges(node):
+        if edge.dst_conn is not None and bool(edge.data.subset) and edge.data.subset.num_elements() == 1:
+            single.add(edge.dst_conn)
+    for edge in state.out_edges(node):
+        # dace.sdfg.infer_types adds the dynamic clause on the OUT side only; a dynamic non-WCR output
+        # stays a pointer, and taking its address would be wrong.
+        dynamic_pointer = edge.data.dynamic and edge.data.wcr is None
+        if (edge.src_conn is not None and bool(edge.data.subset) and edge.data.subset.num_elements() == 1
+                and not dynamic_pointer):
+            single.add(edge.src_conn)
+    return single
+
+
+def proto_and_call(node: "ExternalCall", state) -> (str, str):
     """Build the ``extern "C"`` prototype and the call expression for the linked kernel.
 
     Array args are passed by their connector variable (``_in_X`` / ``_out_Y``); size symbols are
@@ -59,6 +80,7 @@ def proto_and_call(node: "ExternalCall") -> (str, str):
     outputs = set(manifest["output_args"])
     dtypes_map = {a: v["dtype"] for a, v in manifest["init"]["arrays"].items()}
     scalar_dtypes = {n: v["dtype"] for n, v in (manifest["init"].get("scalars") or {}).items() if isinstance(v, dict)}
+    by_value = value_connectors(node, state)
     order = list(node.abi_order or [])
     if not order:
         raise ValueError(f"ExternalCall {node.name!r} has no abi_order: the extern-call expansion must declare the "
@@ -87,7 +109,7 @@ def proto_and_call(node: "ExternalCall") -> (str, str):
                                  f"{conn!r} connector (a caller-allocated scratch buffer is not passed across "
                                  "the ExternalCall boundary); keep the DaceReference implementation")
             params.append(f"{const}{c}* {arg}")
-            call_args.append(conn)
+            call_args.append(f"&{conn}" if conn in by_value else conn)
         else:
             params.append(f"{_CPP_SCALAR.get(scalar_dtypes.get(arg, 'int64'), 'int64_t')} {arg}")
             call_args.append(arg)
@@ -166,7 +188,7 @@ class ExpandExternCall(ExpandTransformation):
     def expansion(node, parent_state, parent_sdfg):
         if not node.lib_path or not node.symbol:
             raise ValueError(f"ExternalCall {node.name} needs lib_path + symbol for ExpandExternCall")
-        proto, call = proto_and_call(node)
+        proto, call = proto_and_call(node, parent_state)
         ExternLibEnv.configure(node.lib_path)
         ExpandExternCall.environments = [ExternLibEnv]
         tasklet = nodes.Tasklet(node.name,
