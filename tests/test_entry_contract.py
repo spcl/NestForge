@@ -3,15 +3,13 @@ import itertools
 
 import pytest
 
-from nestforge.entry import (CODEGEN_AXES, CODEGEN_PINNED, COMPILABLE_SUFFIXES, CORE_CODEGEN_AXES, CORE_UNCERTAIN,
-                             FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS, PROVIDED_SOURCE_KINDS, VARIANT_BUDGET,
-                             InputKind, SearchSpace, broad_codegen_axes, classify_input, lower_to_sdfg, plan_search)
+from nestforge.entry import (AgentMode, CODEGEN_AXES, CODEGEN_PINNED, COMPILABLE_SUFFIXES, CORE_CODEGEN_AXES,
+                             CORE_UNCERTAIN, FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS, PROVIDED_SOURCE_KINDS,
+                             VARIANT_BUDGET, AgentVariant, InputKind, SearchSpace, broad_codegen_axes, classify_input,
+                             lower_to_sdfg, plan_search)
 
-
-class Agent:
-    """Stand-in for a driving optimizer -- plan_search only checks presence, never calls it."""
-    name = 'stub'
-
+#: A candidate an agent hands over directly -- the only way an agent enters a plan.
+AGENT = (AgentVariant('agent-pick', flags=('-O3', '-march=native')), )
 
 # ---------------------------------------------------------------- classification
 
@@ -72,10 +70,10 @@ def test_error_message_lists_known_suffixes():
 
 
 @pytest.mark.parametrize('kind', sorted(k.value for k in PROVIDED_SOURCE_KINDS))
-@pytest.mark.parametrize('agent', [None, Agent()])
+@pytest.mark.parametrize('agent', [(), AGENT])
 def test_provided_source_is_flags_only_regardless_of_agent(kind, agent):
     """Case A: the code is fixed, so no agent can unlock the codegen axes."""
-    plan = plan_search(f'kernel.src', kind=kind, agent=agent)
+    plan = plan_search('kernel.src', kind=kind, agent_variants=agent)
     assert plan.space is SearchSpace.FLAGS
     assert not plan.needs_parse
     assert set(plan.axes) == set(FLAG_AXES)
@@ -85,25 +83,27 @@ def test_provided_source_is_flags_only_regardless_of_agent(kind, agent):
 @pytest.mark.parametrize('kind', sorted(k.value for k in PARSED_KINDS))
 def test_parsed_input_with_agent_searches_codegen(kind):
     """Case B: we generate the C++, so old-vs-new codegen is in play."""
-    plan = plan_search('kernel.src', kind=kind, agent=Agent())
+    plan = plan_search('kernel.src', kind=kind, agent_variants=AGENT)
     assert plan.space is SearchSpace.CODEGEN
     assert 'implementation' in plan.axes
     assert set(plan.axes) >= set(FLAG_AXES)
 
 
 @pytest.mark.parametrize('kind', sorted(k.value for k in PARSED_KINDS))
-def test_parsed_input_without_agent_sweeps_broadly(kind):
-    """Case C: nothing to steer the search, so widen beyond core -- but stay within budget."""
-    plan = plan_search('kernel.src', kind=kind, agent=None)
-    assert plan.space is SearchSpace.ALL
-    assert set(plan.axes) == set(FLAG_AXES) | set(CODEGEN_AXES)
-    assert plan.variant_count() <= VARIANT_BUDGET
+def test_parsed_input_sweeps_the_same_space_with_or_without_an_agent(kind):
+    """The agent contributes candidates; it never widens or narrows the sweep."""
+    steered = plan_search('kernel.src', kind=kind, agent_variants=AGENT)
+    unsteered = plan_search('kernel.src', kind=kind, agent_variants=())
+    assert steered.space is unsteered.space is SearchSpace.CODEGEN
+    assert steered.axes == unsteered.axes
+    assert steered.variant_count() == unsteered.variant_count() <= VARIANT_BUDGET
+    assert steered.total_count() == unsteered.total_count() + len(AGENT)
 
 
 def test_every_kind_is_dispatched():
     """No InputKind may fall through the contract unhandled."""
-    for kind, agent in itertools.product(InputKind, [None, Agent()]):
-        plan = plan_search('kernel.src', kind=kind.value, agent=agent)
+    for kind, agent in itertools.product(InputKind, [(), AGENT]):
+        plan = plan_search('kernel.src', kind=kind.value, agent_variants=agent)
         assert plan.space in SearchSpace
         assert plan.reason
 
@@ -123,7 +123,7 @@ def test_partition_is_total_and_disjoint():
     (InputKind.C_SOURCE, False),
 ])
 def test_needs_parse(kind, expected):
-    assert plan_search('kernel.src', kind=kind.value, agent=Agent()).needs_parse is expected
+    assert plan_search('kernel.src', kind=kind.value, agent_variants=AGENT).needs_parse is expected
 
 
 # ---------------------------------------------------------------- the axes themselves
@@ -162,7 +162,7 @@ def test_codegen_axis_values_are_distinct():
 
 
 def test_variant_count_is_the_cartesian_product():
-    plan = plan_search('kernel.py', agent=Agent())
+    plan = plan_search('kernel.py', agent_variants=AGENT)
     expected = 1
     for values in plan.axes.values():
         expected *= len(values)
@@ -170,19 +170,17 @@ def test_variant_count_is_the_cartesian_product():
     assert plan.variant_count() > 1
 
 
-def test_all_space_is_at_least_as_large_as_codegen():
-    """Case C must never search less than case B."""
-    everything = plan_search('kernel.py', agent=None)
-    directed = plan_search('kernel.py', agent=Agent())
-    assert everything.variant_count() >= directed.variant_count()
+def test_only_two_search_spaces_exist():
+    """An agent-specific space would make steered and unsteered runs incomparable."""
+    assert {s.value for s in SearchSpace} == {'flags', 'codegen'}
 
 
 def test_every_plan_stays_within_budget():
     """A sweep nobody can afford to run is not a sweep. The arena then multiplies each plan by the
     discovered compilers, so this bound is per-compiler."""
     for kind in InputKind:
-        for agent in (None, Agent()):
-            plan = plan_search('kernel.src', kind=kind.value, agent=agent)
+        for agent in ((), AGENT):
+            plan = plan_search('kernel.src', kind=kind.value, agent_variants=agent)
             assert plan.variant_count() <= VARIANT_BUDGET, f'{kind.value}/{agent} blew the budget'
 
 
@@ -245,16 +243,17 @@ def test_pinned_values_are_legal_values_of_their_axis():
         assert value in CODEGEN_AXES[name], f'{name} pinned to {value!r}, not one of {CODEGEN_AXES[name]}'
 
 
-def test_core_pins_the_knobs_we_are_confident_about():
-    core = plan_search('kernel.py', agent=Agent())
-    for name in CODEGEN_PINNED:
-        assert len(core.axes[name]) == 1, f'{name} should be pinned in a core sweep'
+def test_the_sweep_still_pins_most_confident_knobs():
+    """The budget opens only the top of BROAD_PRIORITY; the rest stay at their known-good value."""
+    plan = plan_search('kernel.py')
+    pinned = [n for n in CODEGEN_PINNED if len(plan.axes[n]) == 1]
+    assert len(pinned) >= len(CODEGEN_PINNED) - 2, 'the budget should leave most knobs pinned'
 
 
-def test_core_searches_the_knobs_we_are_unsure_about():
-    core = plan_search('kernel.py', agent=Agent())
+def test_the_sweep_always_measures_the_uncertain_knobs():
+    plan = plan_search('kernel.py')
     for name in CORE_UNCERTAIN:
-        assert len(core.axes[name]) > 1, f'{name} is uncertain, a core sweep must measure it'
+        assert len(plan.axes[name]) > 1, f'{name} is uncertain, the sweep must measure it'
 
 
 def test_scalar_beats_len1_array_so_it_is_pinned():
@@ -300,17 +299,16 @@ def test_one_index_width_everywhere():
     assert CODEGEN_PINNED['index_ctype'] == 'int64_t'
 
 
-def test_core_is_smaller_than_the_broad_sweep():
-    """Core is the targeted subset; the broad sweep widens it -- both inside the budget."""
-    core = plan_search('kernel.py', agent=Agent())
-    broad = plan_search('kernel.py', agent=None)
-    assert core.variant_count() < broad.variant_count() <= VARIANT_BUDGET
+def test_agent_adds_candidates_without_changing_the_sweep():
+    plan = plan_search('kernel.py', agent_variants=AGENT)
+    assert plan.variant_count() <= VARIANT_BUDGET
+    assert plan.total_count() == plan.variant_count() + len(AGENT)
 
 
 def test_broad_opens_some_pinned_knobs_but_not_all():
     """Deliberately partial: opening every pinned knob is six figures of builds. The budget decides
     how many get opened, and BROAD_PRIORITY decides which."""
-    broad = plan_search('kernel.py', agent=None)
+    broad = plan_search('kernel.py', agent_variants=())
     opened = [n for n in CODEGEN_PINNED if len(broad.axes[n]) > 1]
     still_pinned = [n for n in CODEGEN_PINNED if len(broad.axes[n]) == 1]
     assert opened, 'a broad sweep must widen something beyond core'
@@ -335,3 +333,51 @@ def test_numpy_lowering_reports_the_gap_loudly():
     """Better an explicit NotImplementedError than a silently wrong answer."""
     with pytest.raises(NotImplementedError):
         lower_to_sdfg('kernel.py', InputKind.NUMPY)
+
+
+# ---------------------------------------------------------------- agent contributions
+
+
+def test_exact_candidate_costs_one_build():
+    """The agent has already decided; do not explore around it."""
+    exact = AgentVariant('decided', mode=AgentMode.EXACT, flags=('-O2', ))
+    plan = plan_search('kernel.py', agent_variants=[exact])
+    assert plan.total_count() == plan.variant_count() + 1
+
+
+def test_search_candidate_explores_what_it_left_open():
+    """The agent fixes part of the config and we sweep the remainder around that point."""
+    seeded = AgentVariant('seed', mode=AgentMode.SEARCH, axes={'implementation': 'experimental_readable'})
+    plan = plan_search('kernel.py', agent_variants=[seeded])
+    open_axes = {n: v for n, v in plan.axes.items() if n != 'implementation'}
+    expected = 1
+    for values in open_axes.values():
+        expected *= len(values)
+    assert seeded.span(plan.axes) == expected
+
+
+def test_search_candidate_fixing_everything_is_one_build():
+    fixed = {n: v[0] for n, v in plan_search('kernel.py').axes.items()}
+    seeded = AgentVariant('all-fixed', mode=AgentMode.SEARCH, axes=fixed)
+    assert seeded.span(plan_search('kernel.py').axes) == 1
+
+
+def test_agent_may_supply_code_flags_or_both():
+    code = AgentVariant('code', source='void k(){}')
+    flags = AgentVariant('flags', flags=('-O3', ))
+    both = AgentVariant('both', source='void k(){}', flags=('-O3', ))
+    assert code.supplies_code() and not code.supplies_flags()
+    assert flags.supplies_flags() and not flags.supplies_code()
+    assert both.supplies_code() and both.supplies_flags()
+
+
+def test_agent_default_mode_is_exact():
+    """Defaulting to EXACT means a bare candidate costs one build, never a hidden sweep."""
+    assert AgentVariant('x').mode is AgentMode.EXACT
+
+
+def test_agent_candidates_reach_provided_source_plans_too():
+    """An agent can hand over flags for a C file just as much as for a generated one."""
+    plan = plan_search('kernel.c', agent_variants=AGENT)
+    assert plan.space is SearchSpace.FLAGS
+    assert plan.total_count() == plan.variant_count() + len(AGENT)

@@ -3,16 +3,21 @@
 
 The premise is that language- and compiler-defined semantics are not to be trusted: whether a
 vectorizer flag, an fp mode or a codegen path is faster is decided by compiling and timing it, never
-by assuming. What we are ALLOWED to vary depends on what the caller gave us, so the input kind
-selects the search space:
+by assuming. What we are ALLOWED to vary depends only on what the caller gave us:
 
-===============================  ===========================  ==================================
-input                            what we can still change     search space
-===============================  ===========================  ==================================
-C / C++ / Fortran SOURCE         only how it is compiled      vectorizer x cost-model x fp x cc
-NumPy / Fortran to be PARSED     the generated code too       codegen combos x flags x cc
-anything, with no agent driving  everything                   every variant, exhaustively
-===============================  ===========================  ==================================
+=============================  =========================  ====================================
+input                          what we can still change   search space
+=============================  =========================  ====================================
+C / C++ / Fortran SOURCE       only how it is compiled    vectorize x fp                    (9)
+NumPy / Fortran / SDFG         the generated code too     + codegen knobs, budgeted        (72)
+=============================  =========================  ====================================
+
+per compiler; the arena builds each variant once per discovered toolchain.
+
+An agent does NOT change the space. It CONTRIBUTES: an :class:`AgentVariant` may carry finished
+source, an exact flag set, or both, and is measured on the same footing as every enumerated variant.
+Keeping the space fixed is deliberate -- a steered run and an unsteered run then cover identical
+ground, so the agent's contribution is what the difference in outcome actually measures.
 
 Planning is pure: :func:`plan_search` inspects the input and returns a :class:`SearchPlan` without
 touching a compiler, so the contract is testable on a machine with no toolchain. Execution lives in
@@ -21,7 +26,7 @@ touching a compiler, so the contract is testable on a machine with no toolchain.
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 #: Suffixes that name a source we can hand STRAIGHT to a compiler (case A).
 COMPILABLE_SUFFIXES = {
@@ -50,10 +55,15 @@ class InputKind(enum.Enum):
 
 
 class SearchSpace(enum.Enum):
-    """Which axes the sweep is allowed to move."""
-    FLAGS = 'flags'  # case A -- the code is fixed, only the compiler invocation varies
-    CODEGEN = 'codegen'  # case B -- we generate the C++, so codegen varies too
-    ALL = 'all'  # case C -- no agent, so everything varies exhaustively
+    """Which axes the sweep is allowed to move.
+
+    There are only two, and an agent does not change which one applies: the input decides what we may
+    vary, and an agent CONTRIBUTES candidates (its own code, its own flags) on top of that. A steered
+    run and an unsteered run therefore sweep exactly the same space, which is what makes their
+    results comparable.
+    """
+    FLAGS = 'flags'  # the code is fixed, only the compiler invocation varies
+    CODEGEN = 'codegen'  # we generate the C++, so codegen varies too
 
 
 #: Kinds that arrive as finished source. These can never reach the codegen axes.
@@ -191,6 +201,62 @@ def broad_codegen_axes(budget: int = VARIANT_BUDGET) -> Dict[str, Sequence]:
     return axes
 
 
+class AgentMode(enum.Enum):
+    """What an agent is asking us to do with its candidate."""
+    #: The agent fixes part of the configuration; we sweep whatever it left open, around that point.
+    SEARCH = 'search'
+    #: The agent has already decided. Build exactly this, measure it, do not explore around it.
+    EXACT = 'exact'
+
+
+@dataclass(frozen=True)
+class AgentVariant:
+    """A candidate an agent supplies directly, rather than one the sweep enumerates.
+
+    An agent is not restricted to steering knobs: it may hand over finished source, a flag set, or
+    both. Either way the candidate is measured on the same footing as every enumerated variant --
+    same validation against the oracle, same timing -- so an agent's idea has to win on measurement
+    rather than on being the agent's idea.
+
+    The two modes answer different questions. ``SEARCH`` says "start here and explore what I left
+    unspecified", which is how an agent narrows a space it does not fully understand. ``EXACT`` says
+    "I have decided", which is how an agent that has already done the reasoning avoids paying for a
+    sweep it does not need.
+
+    :param label: name for the candidate in the report.
+    :param mode: whether we explore around this point or build exactly it.
+    :param source: replacement source to compile, or ``None`` to use the sweep's generated source.
+    :param flags: exact compiler flags, or ``None`` to take them from ``axes``.
+    :param axes: axis settings this candidate fixes; under ``SEARCH`` the rest stay open.
+    """
+    label: str
+    mode: AgentMode = AgentMode.EXACT
+    source: Optional[Union[str, Path]] = None
+    flags: Optional[Sequence[str]] = None
+    axes: Optional[Dict[str, object]] = None
+
+    def supplies_code(self) -> bool:
+        return self.source is not None
+
+    def supplies_flags(self) -> bool:
+        return self.flags is not None
+
+    def span(self, sweep_axes: Dict[str, Sequence]) -> int:
+        """How many builds this candidate costs.
+
+        ``EXACT`` is one. ``SEARCH`` is the product of every axis the agent left open -- it pins what
+        it named and we explore the remainder.
+        """
+        if self.mode is AgentMode.EXACT:
+            return 1
+        fixed = set(self.axes or ())
+        total = 1
+        for name, values in sweep_axes.items():
+            if name not in fixed:
+                total *= len(values)
+        return total
+
+
 @dataclass(frozen=True)
 class SearchPlan:
     """The decision, before anything is compiled.
@@ -206,13 +272,22 @@ class SearchPlan:
     axes: Dict[str, Sequence] = field(default_factory=dict)
     needs_parse: bool = False
     reason: str = ''
+    agent_variants: Tuple[AgentVariant, ...] = ()
 
     def variant_count(self) -> int:
-        """Size of the cartesian product -- the number of variants a full sweep will build."""
+        """Variants the sweep enumerates, before any agent contribution."""
         total = 1
         for values in self.axes.values():
             total *= len(values)
         return total
+
+    def total_count(self) -> int:
+        """Everything that will be built: the enumerated sweep plus what each agent candidate costs.
+
+        An EXACT candidate costs one build; a SEARCH candidate costs the product of the axes it left
+        open, since we explore around the point it fixed.
+        """
+        return self.variant_count() + sum(v.span(self.axes) for v in self.agent_variants)
 
 
 def classify_input(source: Union[str, Path], kind: Optional[str] = None) -> InputKind:
@@ -245,42 +320,37 @@ def classify_input(source: Union[str, Path], kind: Optional[str] = None) -> Inpu
                      f'Known suffixes: {known}. Pass kind= to state it explicitly.')
 
 
-def plan_search(source: Union[str, Path], kind: Optional[str] = None, agent: Optional[object] = None) -> SearchPlan:
+def plan_search(source: Union[str, Path],
+                kind: Optional[str] = None,
+                agent_variants: Sequence[AgentVariant] = ()) -> SearchPlan:
     """Choose the search space for ``source``. Pure -- no toolchain, no filesystem beyond the suffix.
 
-    :param agent: the driving optimizer, or ``None``. With no agent there is nothing to steer a
-                  targeted search, so the contract falls back to sweeping every variant.
+    :param agent_variants: candidates an agent supplies directly (finished code, exact flags, or
+                           both). They are ADDED to the sweep; they never change which axes it moves,
+                           so a steered and an unsteered run cover the same space and stay comparable.
     """
     resolved = classify_input(source, kind)
+    extra = tuple(agent_variants)
 
     if resolved in PROVIDED_SOURCE_KINDS:
         return SearchPlan(kind=resolved,
                           space=SearchSpace.FLAGS,
                           axes=dict(FLAG_AXES),
                           needs_parse=False,
+                          agent_variants=extra,
                           reason=f'{resolved.value} is finished source: the code is fixed, so only the '
                           'compiler invocation can vary')
-
-    if agent is None:
-        return SearchPlan(kind=resolved,
-                          space=SearchSpace.ALL,
-                          axes={
-                              **FLAG_AXES,
-                              **broad_codegen_axes()
-                          },
-                          needs_parse=resolved is not InputKind.SDFG,
-                          reason='no agent to steer the search, so the sweep is widened beyond core -- '
-                          f'bounded at {VARIANT_BUDGET} variants per compiler, not the full product')
 
     return SearchPlan(kind=resolved,
                       space=SearchSpace.CODEGEN,
                       axes={
                           **FLAG_AXES,
-                          **CORE_CODEGEN_AXES
+                          **broad_codegen_axes()
                       },
                       needs_parse=resolved is not InputKind.SDFG,
+                      agent_variants=extra,
                       reason=f'{resolved.value} is lowered to an SDFG, so the generated code varies too; '
-                      'core knobs only -- knobs with a known-good value are pinned')
+                      f'bounded at {VARIANT_BUDGET} variants per compiler')
 
 
 def lower_to_sdfg(source: Union[str, Path], kind: InputKind):
