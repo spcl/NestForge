@@ -17,6 +17,7 @@ import copy
 import re
 from typing import Dict, List
 
+import numpy
 import sympy
 
 import dace
@@ -120,21 +121,40 @@ _INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?
 
 #: DaCe sympy user-functions -- ``symstr`` renders a subset index / map bound in function form because
 #: sympy has no operator for them -> the numpy/python expression computing the same integer value.
-#: ``int_ceil`` uses ``-((-a) // b)`` (sign-robust, ``== (a+b-1)//b`` for ``b > 0``).
+#: ``int_floor``/``int_ceil`` are deliberately ABSENT: they are already the exact spelling both ends
+#: want, and expanding them to ``//`` loses that. The C translator lowers a ``//`` back to ``int_floor``
+#: anyway (and has no ``//`` for ceil at all, so the expansion had to be open-coded), while dace itself
+#: reads a ``//`` back as ``sympy.floor``, which distributes over a sum and truncates each term on its
+#: own. Left as calls, both are resolved by name: :func:`nestforge.arena.run_oracle` binds them in the
+#: exec namespace, and the C prelude defines them as type-dispatching macros.
 #: ``Max``/``Min`` are VARIADIC in sympy and render as scalar index/bound expressions, so the Python
 #: builtins are the right target: they keep exact integer semantics (a numpy scalar would leak into
 #: ``range()`` and array subscripts). ``apply_call`` passes every parsed argument, so ``*a`` handles any
 #: arity. ``__builtins__`` is always present in the exec namespace ``run_oracle`` builds, so ``max``/
 #: ``min``/``abs`` resolve without importing anything.
 _USERFUNC_REWRITES = {
-    "int_floor": lambda a, b: f"(({a}) // ({b}))",
-    "int_ceil": lambda a, b: f"(-((-({a})) // ({b})))",
     "ipow": lambda a, b: f"(({a}) ** ({b}))",
     "Mod": lambda a, b: f"(({a}) % ({b}))",
     "Max": lambda *a: f"max({', '.join(a)})",
     "Min": lambda *a: f"min({', '.join(a)})",
     "Abs": lambda a: f"abs({a})",
 }
+
+
+def int_floor(a, b):
+    """``floor(a / b)`` -- python ``//`` is already floored for both signs."""
+    return a // b
+
+
+def int_ceil(a, b):
+    """``ceil(a / b)``, sign-robust (``== (a + b - 1) // b`` for ``b > 0``)."""
+    return -((-a) // b)
+
+
+#: The names an emitted kernel calls but does not define -- every exec of an emitted module must bind
+#: them: ``np`` for the casts/intrinsics, the two integer divisions for index/bound arithmetic (kept as
+#: calls, see :data:`_USERFUNC_REWRITES`). The C prelude defines the same names by other means.
+EMITTED_BUILTINS = {"np": numpy, "int_floor": int_floor, "int_ceil": int_ceil}
 
 #: ``(dace.)?math.<fn>`` (a qualified intrinsic the bare-name rewrite deliberately skips) -> its numpy
 #: form. Extra numpy-verbatim names beyond :data:`_MATH_INTRINSICS` that a TSVC/HPC tasklet may spell
@@ -187,7 +207,7 @@ def apply_call(code: str, name: str, fn) -> str:
 
 def rewrite_userfuncs(code: str) -> str:
     """Rewrite DaCe sympy user-functions (:data:`_USERFUNC_REWRITES`) to numpy/python, to a fixpoint so
-    cross-function nesting (``int_ceil`` inside an ``int_floor`` argument) fully resolves."""
+    cross-function nesting (``ipow`` inside a ``Max`` argument) fully resolves."""
     for _ in range(16):  # bounded: every rewrite strictly removes one user-function call
         new = code
         for name, fn in _USERFUNC_REWRITES.items():

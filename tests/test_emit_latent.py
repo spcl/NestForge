@@ -172,9 +172,12 @@ def test_a_subscript_comma_does_not_split_an_argument(expr, want):
 
 
 def test_multidim_subscript_survives_the_userfunc_fixpoint():
-    """End to end through rewrite_userfuncs, where the real emitter routes it."""
+    """End to end through rewrite_userfuncs, where the real emitter routes it. ``int_floor``/``int_ceil``
+    are NOT in the rewrite table -- they stay calls for both back ends -- so a rewritten function
+    (variadic ``Max``) carries the subscript-comma case here."""
     from nestforge.emit_numpy import rewrite_userfuncs
-    out = rewrite_userfuncs("d[int_floor(aa[i, j], 2)] = b[int_ceil(c[k, l], 4)]")
+    out = rewrite_userfuncs("d[Max(aa[i, j], 2)] = b[int_ceil(Min(c[k, l], 4), 4)]")
     assert out.count("[") == out.count("]"), out
     assert out.count("(") == out.count(")"), out
-    assert "int_floor" not in out and "int_ceil" not in out, out
+    assert "Max" not in out and "Min" not in out, out
+    assert out == "d[max(aa[i, j], 2)] = b[int_ceil(min(c[k, l], 4), 4)]", out

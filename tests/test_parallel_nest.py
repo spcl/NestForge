@@ -11,7 +11,7 @@ from dace.sdfg.state import LoopRegion
 
 from nestforge import tsvc
 from nestforge.extract import extract_nest_to_sdfg
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, sdfg_to_numpy
 from nestforge.strategies import get_strategy, is_parallel_nest
 
 
@@ -55,7 +55,7 @@ def test_s2275_nested_map_emits_and_computes():
     assert src.count("for ") >= 2  # nested for-loops emitted, not the old UnsupportedNest raise
 
     scope: dict = {}
-    exec(compile(src, "<s2275>", "exec"), {"np": np}, scope)
+    exec(compile(src, "<s2275>", "exec"), dict(EMITTED_BUILTINS), scope)
     kernel = scope["s2275"]
 
     n = 6

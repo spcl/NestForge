@@ -14,7 +14,7 @@ import pytest
 import dace
 
 from nestforge import tsvc
-from nestforge.emit_numpy import normalize_casts
+from nestforge.emit_numpy import EMITTED_BUILTINS, normalize_casts
 from nestforge.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbols, trip_count_symbols
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
@@ -23,12 +23,21 @@ from nestforge.strategies import get_strategy
 
 
 # --- emitter: sympy user-function + qualified-math rewrites (the arena's translation depends on these) ---
-def test_normalize_rewrites_int_floor_and_ceil():
-    # int_floor / int_ceil are sympy user-functions (no operator); they must lower to python integer ops.
-    assert normalize_casts("a[int_floor(LEN_1D, 2)]") == "a[((LEN_1D) // (2))]"
-    assert normalize_casts("int_ceil(N, 4)") == "(-((-(N)) // (4)))"
-    # nested user-functions resolve to a fixpoint.
-    assert normalize_casts("int_floor(int_ceil(N, 2), 3)") == "(((-((-(N)) // (2)))) // (3))"
+def test_normalize_keeps_int_floor_and_ceil_as_calls():
+    # int_floor / int_ceil are the spelling BOTH ends want: expanding them to `//` throws away the ceil
+    # form entirely and hands dace back a `sympy.floor` that distributes over a sum. Left alone, they are
+    # resolved by name -- EMITTED_BUILTINS in python, the translator's prelude macros in C.
+    assert normalize_casts("a[int_floor(LEN_1D, 2)]") == "a[int_floor(LEN_1D, 2)]"
+    assert normalize_casts("int_ceil(N, 4)") == "int_ceil(N, 4)"
+    assert normalize_casts("int_floor(int_ceil(N, 2), 3)") == "int_floor(int_ceil(N, 2), 3)"
+    assert "//" not in normalize_casts("int_floor(int_ceil(N, 2), 3)")
+
+
+def test_emitted_builtins_match_python_semantics():
+    # the exec-namespace definitions must agree with `//` on both signs, or the oracle drifts from C.
+    for a, b in ((7, 2), (-7, 2), (7, -2), (-7, -2), (8, 4), (-8, 4)):
+        assert EMITTED_BUILTINS["int_floor"](a, b) == a // b
+        assert EMITTED_BUILTINS["int_ceil"](a, b) == -((-a) // b)
 
 
 def test_normalize_rewrites_qualified_math_to_numpy():

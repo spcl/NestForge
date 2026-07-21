@@ -20,7 +20,7 @@ pytest.importorskip("optarena")
 
 from nestforge import tsvc
 from nestforge.extract import extract_nest_to_sdfg
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, sdfg_to_numpy
 from nestforge.strategies import get_strategy
 
 
@@ -43,7 +43,7 @@ def emit_and_call(key: str, sizes: dict, inputs: dict, opt_mode: str = "simplify
     assert len(refs) == 1, f"{key}/{opt_mode}: expected one compute nest, got {len(refs)}"
     boundary = extract_nest_to_sdfg(refs[0][0], refs[0][1], name=kernel.key)
     src = sdfg_to_numpy(boundary.standalone_sdfg, kernel.key)
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     fn = ns[kernel.key]
     call = {}

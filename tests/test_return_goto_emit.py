@@ -18,7 +18,8 @@ import dace as dc
 
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowRegion, LoopRegion, ReturnBlock
 
-from nestforge.emit_numpy import UnsupportedNest, nest_to_numpy, reject_nonexternalizable, sdfg_to_numpy
+from nestforge.emit_numpy import (EMITTED_BUILTINS, UnsupportedNest, nest_to_numpy, reject_nonexternalizable,
+                                  sdfg_to_numpy)
 from nestforge.extract import Boundary
 
 N = dc.symbol("N", dtype=dc.int64)
@@ -51,7 +52,7 @@ def build_early_return():
 def test_early_return_whole_sdfg_emits_and_short_circuits():
     src = sdfg_to_numpy(build_early_return(), "earlyret")
     assert "return" in src
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     fn = ns["earlyret"]
     a = np.arange(5.0)
