@@ -7,8 +7,8 @@
       "tokens": 0.0
     },
     "hillclimb": {
-      "measurements": 2.0,
-      "quality": 1.0,
+      "measurements": 1.8333333333333333,
+      "quality": 0.9687754377988714,
       "runs": 12.0,
       "tokens": 0.0
     }
@@ -17,7 +17,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 1.4720000081069884,
+      "best_us": 1.403000055688608,
       "error": null,
       "kernel": "s000",
       "measurements": 1,
@@ -29,7 +29,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 1.4720000081069884,
+      "best_us": 1.403000055688608,
       "error": null,
       "kernel": "s000",
       "measurements": 1,
@@ -41,7 +41,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 1.2809999816454365,
+      "best_us": 1.6430000187028782,
       "error": null,
       "kernel": "s000",
       "measurements": 1,
@@ -53,7 +53,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 1.2809999816454365,
+      "best_us": 1.6430000187028782,
       "error": null,
       "kernel": "s000",
       "measurements": 1,
@@ -66,7 +66,7 @@
       "backend": "gcc",
       "best": "-",
       "best_us": "inf",
-      "error": "RuntimeError('compiling extcall_0 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_nest.o\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c: In function \u2018extcall_0_fp64\u2019:\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c:140:18: error: array subscript is not an integer\\n  140 |           a_index[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = a[(_loop_it_0 - 1)];\\n      |                  ^\\n')",
+      "error": "RuntimeError('compiling extcall_1 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c -o /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_nest.o\\n+ (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                 ^\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected \u2018;\u2019 before \u2018]\u2019 token\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                           ^\\n      |                                                                                                                                                                                           ;\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected statement before \u2018]\u2019 token\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:204: error: expected \u2018;\u2019 before \u2018)\u2019 token\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                                            ^\\n      |                                                                                                                                                                                                            ;\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:204: error: expected statement before \u2018)\u2019 token\\n')",
       "kernel": "s111",
       "measurements": 0,
       "ok": false,
@@ -78,7 +78,7 @@
       "backend": "gcc",
       "best": "-",
       "best_us": "inf",
-      "error": "RuntimeError('compiling extcall_0 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_nest.o\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c: In function \u2018extcall_0_fp64\u2019:\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_0/extcall_0_fp64.c:140:18: error: array subscript is not an integer\\n  140 |           a_index[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = a[(_loop_it_0 - 1)];\\n      |                  ^\\n')",
+      "error": "RuntimeError('compiling extcall_1 with /usr/lib/ccache/gcc failed (1): /usr/lib/ccache/gcc -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c -o /home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_nest.o\\n+ (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                 ^\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected \u2018;\u2019 before \u2018]\u2019 token\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                           ^\\n      |                                                                                                                                                                                           ;\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected statement before \u2018]\u2019 token\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:204: error: expected \u2018;\u2019 before \u2018)\u2019 token\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                                            ^\\n      |                                                                                                                                                                                                            ;\\n/home/runner/work/_temp/results/e4/s111/gcc/atoms/variants/extcall_1/extcall_1_fp64.c:142:204: error: expected statement before \u2018)\u2019 token\\n')",
       "kernel": "s111",
       "measurements": 0,
       "ok": false,
@@ -90,7 +90,7 @@
       "backend": "clang",
       "best": "-",
       "best_us": "inf",
-      "error": "RuntimeError(\"compiling extcall_0 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_nest.o\\nclang: warning: argument unused during compilation: '-shared' [-Wunused-command-line-argument]\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_fp64.c:140:18: error: array subscript is not an integer\\n  140 |           a_index[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = a[(_loop_it_0 - 1)];\\n      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\\n1 error generated.\\n\")",
+      "error": "RuntimeError(\"compiling extcall_1 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c -o /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_nest.o\\nmp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:57: error: expected ';' after expression\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                         ^\\n      |                                                         ;\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:53: error: use of undeclared identifier '__w0'\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                     ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:57: error: expected expression\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                         ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected expression\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                           ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:47: warning: expression result unused [-Wunused-value]\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                            ~~~^~\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:145:9: error: extraneous closing brace ('}')\\n  145 |         }\\n      |         ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:146:1: error: extraneous closing brace ('}')\\n  146 | }\\n      | ^\\n1 warning and 7 errors generated.\\n\")",
       "kernel": "s111",
       "measurements": 0,
       "ok": false,
@@ -102,7 +102,7 @@
       "backend": "clang",
       "best": "-",
       "best_us": "inf",
-      "error": "RuntimeError(\"compiling extcall_0 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_fp64.c -o /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_nest.o\\nclang: warning: argument unused during compilation: '-shared' [-Wunused-command-line-argument]\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_0/extcall_0_fp64.c:140:18: error: array subscript is not an integer\\n  140 |           a_index[(int_floor(_loop_it_0, 2) - (((double)(1)) / 2))] = a[(_loop_it_0 - 1)];\\n      |                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\\n1 error generated.\\n\")",
+      "error": "RuntimeError(\"compiling extcall_1 with /usr/lib/ccache/clang failed (1): /usr/lib/ccache/clang -O3 -march=native -fPIC -shared -ffp-contract=off -c /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c -o /home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_nest.o\\nmp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:57: error: expected ';' after expression\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                         ^\\n      |                                                         ;\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:53: error: use of undeclared identifier '__w0'\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                     ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:57: error: expected expression\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                                         ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:142:187: error: expected expression\\n  142 |               a_slice_plus_b_slice[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] = (a_index[((int_floor((_loop_it_0 - 1), 2))*(2) - 1/2) + (__w0))*(1))) + (__w1)] + b[_loop_it_0]);\\n      |                                                                                                                                                                                           ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:140:47: warning: expression result unused [-Wunused-value]\\n  140 |           for (int64_t __w0 = 0; __w0 < 2) - 1/2; ++__w0) {\\n      |                                            ~~~^~\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:145:9: error: extraneous closing brace ('}')\\n  145 |         }\\n      |         ^\\n/home/runner/work/_temp/results/e4/s111/clang/atoms/variants/extcall_1/extcall_1_fp64.c:146:1: error: extraneous closing brace ('}')\\n  146 | }\\n      | ^\\n1 warning and 7 errors generated.\\n\")",
       "kernel": "s111",
       "measurements": 0,
       "ok": false,
@@ -161,7 +161,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 1.4919999671292317,
+      "best_us": 1.734000079522957,
       "error": null,
       "kernel": "s1112",
       "measurements": 1,
@@ -173,7 +173,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 1.4919999671292317,
+      "best_us": 1.734000079522957,
       "error": null,
       "kernel": "s1112",
       "measurements": 1,
@@ -185,7 +185,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 1.6320000213454477,
+      "best_us": 1.6829999367473647,
       "error": null,
       "kernel": "s1112",
       "measurements": 1,
@@ -197,7 +197,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 1.6320000213454477,
+      "best_us": 1.6829999367473647,
       "error": null,
       "kernel": "s1112",
       "measurements": 1,
@@ -257,7 +257,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 3.724999999121792,
+      "best_us": 4.2579999899317045,
       "error": null,
       "kernel": "s1115",
       "measurements": 4,
@@ -269,7 +269,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 3.724999999121792,
+      "best_us": 4.2579999899317045,
       "error": null,
       "kernel": "s1115",
       "measurements": 4,
@@ -281,7 +281,7 @@
     {
       "backend": "clang",
       "best": "maximal",
-      "best_us": 4.125999964799121,
+      "best_us": 4.096999987268646,
       "error": null,
       "kernel": "s1115",
       "measurements": 4,
@@ -292,13 +292,13 @@
     },
     {
       "backend": "clang",
-      "best": "maximal",
-      "best_us": 4.125999964799121,
+      "best": "atoms",
+      "best_us": 6.551999945259013,
       "error": null,
       "kernel": "s1115",
-      "measurements": 4,
+      "measurements": 2,
       "ok": true,
-      "quality": 1.0,
+      "quality": 0.6253052535864579,
       "strategy": "hillclimb",
       "tokens": 0
     },
@@ -306,7 +306,7 @@
       "backend": "gcc",
       "best": "-",
       "best_us": "inf",
-      "error": "StopIteration()",
+      "error": "RecursionError('maximum recursion depth exceeded')",
       "kernel": "s1119",
       "measurements": 0,
       "ok": false,
@@ -318,7 +318,7 @@
       "backend": "gcc",
       "best": "-",
       "best_us": "inf",
-      "error": "StopIteration()",
+      "error": "RecursionError('maximum recursion depth exceeded')",
       "kernel": "s1119",
       "measurements": 0,
       "ok": false,
@@ -330,7 +330,7 @@
       "backend": "clang",
       "best": "-",
       "best_us": "inf",
-      "error": "StopIteration()",
+      "error": "RecursionError('maximum recursion depth exceeded')",
       "kernel": "s1119",
       "measurements": 0,
       "ok": false,
@@ -342,7 +342,7 @@
       "backend": "clang",
       "best": "-",
       "best_us": "inf",
-      "error": "StopIteration()",
+      "error": "RecursionError('maximum recursion depth exceeded')",
       "kernel": "s1119",
       "measurements": 0,
       "ok": false,
@@ -353,7 +353,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 2.4630000439174182,
+      "best_us": 3.256000013607263,
       "error": null,
       "kernel": "s112",
       "measurements": 1,
@@ -365,7 +365,7 @@
     {
       "backend": "gcc",
       "best": "atoms",
-      "best_us": 2.4630000439174182,
+      "best_us": 3.256000013607263,
       "error": null,
       "kernel": "s112",
       "measurements": 1,
@@ -377,7 +377,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 2.193000000261236,
+      "best_us": 2.023999968514545,
       "error": null,
       "kernel": "s112",
       "measurements": 1,
@@ -389,7 +389,7 @@
     {
       "backend": "clang",
       "best": "atoms",
-      "best_us": 2.193000000261236,
+      "best_us": 2.023999968514545,
       "error": null,
       "kernel": "s112",
       "measurements": 1,
@@ -401,7 +401,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 1.6719999962333532,
+      "best_us": 1.8929999896499794,
       "error": null,
       "kernel": "s113",
       "measurements": 2,
@@ -413,7 +413,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 1.6719999962333532,
+      "best_us": 1.8929999896499794,
       "error": null,
       "kernel": "s113",
       "measurements": 2,
@@ -425,7 +425,7 @@
     {
       "backend": "clang",
       "best": "maximal",
-      "best_us": 1.6120000054797856,
+      "best_us": 2.043999984380207,
       "error": null,
       "kernel": "s113",
       "measurements": 2,
@@ -437,7 +437,7 @@
     {
       "backend": "clang",
       "best": "maximal",
-      "best_us": 1.6120000054797856,
+      "best_us": 2.043999984380207,
       "error": null,
       "kernel": "s113",
       "measurements": 2,
@@ -497,7 +497,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 24.446999987048912,
+      "best_us": 28.39299997958733,
       "error": null,
       "kernel": "s115",
       "measurements": 3,
@@ -509,7 +509,7 @@
     {
       "backend": "gcc",
       "best": "maximal",
-      "best_us": 24.446999987048912,
+      "best_us": 28.39299997958733,
       "error": null,
       "kernel": "s115",
       "measurements": 3,
@@ -521,7 +521,7 @@
     {
       "backend": "clang",
       "best": "maximal",
-      "best_us": 25.128000004315254,
+      "best_us": 32.660999977451866,
       "error": null,
       "kernel": "s115",
       "measurements": 3,
@@ -533,7 +533,7 @@
     {
       "backend": "clang",
       "best": "maximal",
-      "best_us": 25.128000004315254,
+      "best_us": 32.660999977451866,
       "error": null,
       "kernel": "s115",
       "measurements": 3,
@@ -593,6 +593,6 @@
   ],
   "savings": {
     "exhaustive": 1.0,
-    "hillclimb": 1.0
+    "hillclimb": 0.9583333333333334
   }
 }

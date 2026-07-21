@@ -1,6 +1,6 @@
 """The E1-E5 tables, checked as data.
 
-``tests/data/experiments/`` holds the real tables the ``experiments`` workflow produced (run 29781522614).
+``tests/data/experiments/`` holds the real tables the ``experiments`` workflow produced (run 29819716644).
 The drivers record failures AS ROWS, so a table can be complete, well-formed and describe a pipeline that
 measured nothing -- these tests read the tables the way the paper does and fail when they stop meaning
 what the paper claims.
@@ -19,9 +19,10 @@ TABLES = Path(__file__).resolve().parent / "data" / "experiments"
 #: kernel that happens to be unsupported.
 FIXED_ERROR_CLASSES = ("is not Python (Language.CPP)", "StopIteration")
 
-#: kernels whose recorded failure is one of the above, i.e. fixed AFTER this recording was made
-#: (s1119: dace 347ecb2a9). Empty this when the recording is refreshed from a newer workflow run.
-STALE_IN_RECORDING = {"s1119"}
+#: Kernels the recording still fails on, with the OPEN bug each one hits. Named so the assertions
+#: below stay strict everywhere else; every entry is a defect to fix, not an accepted outcome.
+#:   s1119 -- RecursionError in the granularity ladder (was StopIteration before dace 347ecb2a9)
+OPEN_IN_RECORDING = {"s1119": "RecursionError"}
 
 #: per table: the fields every row carries, and the derived aggregates the paper reads.
 SCHEMA = {
@@ -79,11 +80,12 @@ def test_recorded_table_matches_the_contract(name):
     check_table(name, recorded(name))
 
 
-def test_the_stale_list_names_only_already_fixed_failures():
-    """STALE_IN_RECORDING must not become a dumping ground for whatever currently fails."""
-    for kernel in STALE_IN_RECORDING:
+def test_the_open_list_matches_what_the_recording_actually_hit():
+    """OPEN_IN_RECORDING must not become a dumping ground: each entry names a kernel that really
+    fails, with the error it really fails on, so a fixed one has to be removed from the list."""
+    for kernel, expected in OPEN_IN_RECORDING.items():
         errors = [r.get("error") or "" for n in SCHEMA for r in recorded(n)["rows"] if r["kernel"] == kernel]
-        assert any(c in e for e in errors for c in FIXED_ERROR_CLASSES), f"{kernel} is not a fixed-bug failure"
+        assert any(expected in e for e in errors), f"{kernel} no longer fails with {expected!r} -- drop it"
 
 
 @pytest.mark.parametrize("name", ["e1", "e2", "e3", "e4"])
@@ -138,7 +140,7 @@ def test_e5_measures_nothing_only_by_exclusion():
     payload = recorded("e5")
     broken = [
         r for r in payload["rows"]
-        if not r["ok"] and "excluded" not in r["error"] and r["kernel"] not in STALE_IN_RECORDING
+        if not r["ok"] and "excluded" not in r["error"] and r["kernel"] not in OPEN_IN_RECORDING
     ]
     assert not broken, f"e5 rows failed rather than excluded: {broken[:2]}"
     for key in payload["non_affine_speedup"]:

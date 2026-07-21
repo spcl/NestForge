@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Callable, List
 
 import dace
+from dace.transformation.passes.canonicalize.normalize_floor_division import NormalizeFloorDivision
 from dace.sdfg.state import LoopRegion
 
 from nestforge.fission_arms import fission_to_statements
@@ -75,6 +76,10 @@ def fuse_first_k(k: int) -> Callable[[dace.SDFG], None]:
             if not moves:
                 break
             apply_fusion(sdfg, moves[0])
+        # Forced: fission/fusion build indices with python `//` on sympy expressions, which is
+        # sympy floor() -- distributed by sympy and printed without the floor, so the index
+        # truncates term by term. Every rung is normalized before anything measures it.
+        NormalizeFloorDivision().apply_pass(sdfg, {})
 
     return apply
 

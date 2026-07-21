@@ -29,6 +29,7 @@ import numpy as np
 import yaml
 
 import dace
+from dace.transformation.passes.canonicalize.normalize_floor_division import NormalizeFloorDivision
 from dace import symbolic
 from dace.transformation.auto.auto_optimize import auto_optimize
 from dace.transformation.passes.canonicalize import canonicalize
@@ -241,14 +242,16 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
     SymbolPropagation().apply_pass(sdfg, {})
     if opt_mode == "simplify-parallel":
         get_fusion_strategy("maximal-fusion")(sdfg)  # Phase 1: fuse everything legal
-        return sdfg
-    if opt_mode == "canonicalize":
+    elif opt_mode == "canonicalize":
         canonicalize(sdfg, target="cpu")
-        return sdfg
-    if opt_mode == "auto-opt":
+    elif opt_mode == "auto-opt":
         auto_optimize(sdfg, dace.DeviceType.CPU)
-        return sdfg
-    raise ValueError(f"unknown opt_mode {opt_mode!r}; expected one of {OPT_MODES}")
+    else:
+        raise ValueError(f"unknown opt_mode {opt_mode!r}; expected one of {OPT_MODES}")
+    # Forced for EVERY mode: only `canonicalize` runs it internally, and a residual sympy floor()
+    # reaches codegen as an index that truncates term by term.
+    NormalizeFloorDivision().apply_pass(sdfg, {})
+    return sdfg
 
 
 def yaml_presets(kernel: TsvcKernel) -> Dict[str, List[int]]:
