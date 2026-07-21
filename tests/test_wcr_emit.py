@@ -14,7 +14,7 @@ pytest.importorskip("dace")
 import dace as dc
 from dace.sdfg import nodes
 
-from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 M = dc.symbol("M", dtype=dc.int64)
@@ -35,7 +35,7 @@ def hist_scatter(idx: dc.int64[N], w: dc.float64[N], hist: dc.float64[M]):
 
 def run(program, fn_name, sizes, inputs):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     call = dict(inputs)
     for p in inspect.signature(ns[fn_name]).parameters:
@@ -154,7 +154,7 @@ def test_tasklet_wcr_combine_ops_at_map_exit(wcr, seed, reduce_fn, token):
     map exit must accumulate across the whole range, not overwrite -- exercises every _WCR_BINOP entry."""
     src = sdfg_to_numpy(tasklet_wcr_at_exit("combine", wcr), "combine")
     assert token in src  # augmented assignment for this op, not a plain overwrite
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     rng = np.random.default_rng(3)
     a = rng.random(16)
@@ -180,8 +180,12 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
     st.add_memlet_path(t, mx, o, src_conn="res", memlet=dc.Memlet("out[int_floor(i, 2)]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "pairsum")
-    assert "int_floor" not in src  # sympy spelling must not reach the emitted python
-    ns = {"np": np}
+    # int_floor stays a CALL in the emitted python: EMITTED_BUILTINS binds it here, and the C
+    # translator lowers it to its own type-dispatching macro. Expanding it to `//` threw the
+    # spelling away and handed dace back a sympy.floor that distributes over a sum.
+    assert "int_floor(i, 2)" in src
+    assert "//" not in src
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     rng = np.random.default_rng(11)
     a = rng.random(16)
@@ -211,7 +215,7 @@ def test_two_distinct_wcr_out_edges_from_one_tasklet():
     st.add_memlet_path(t, mx, m, src_conn="rm", memlet=dc.Memlet("omax[0]", wcr="lambda x, y: max(x, y)"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "multi")
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     rng = np.random.default_rng(5)
     a = rng.random(20)
@@ -241,7 +245,7 @@ def test_inscope_accumulator_wcr_at_map_exit_accumulates():
     st.add_memlet_path(acc, mx, o, memlet=dc.Memlet("out[0]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "inscope_acc")
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     rng = np.random.default_rng(7)
     a = rng.random(16)
@@ -264,7 +268,7 @@ def test_copy_edge_wcr_accumulates():
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "cp")
     assert "dst[0] + src[0]" in src
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     dst = np.array([10.0])
     ns["cp"](src=np.array([5.0]), dst=dst)

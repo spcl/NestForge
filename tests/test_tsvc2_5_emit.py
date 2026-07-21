@@ -74,7 +74,12 @@ def test_ext_break_find_first_emits_break_and_stops():
             break
         ref[i] = ref[i] + b[i] * c[i]
     np.testing.assert_allclose(call["a"], ref, rtol=1e-12, atol=1e-12)
-    assert int(call["__sym_out_i"][0]) == 17  # stopped exactly at the negative element
+    # The break lands at the right index, checked through the DATA: everything up to 17 is
+    # accumulated and everything from 17 on is untouched. A loop counter whose final value no
+    # block of the SDFG reads is scoped to its loop and not exported, so there is no
+    # ``__sym_out_i`` scalar to read it out of -- and the numerics pin the stop point anyway.
+    assert not np.allclose(call["a"][:17], a[:17])  # accumulated before the break
+    np.testing.assert_allclose(call["a"][17:], a[17:], rtol=1e-12, atol=1e-12)  # untouched after
 
 
 @pytest.mark.parametrize("opt_mode", ["simplify-parallel", "canonicalize", "auto-opt"])

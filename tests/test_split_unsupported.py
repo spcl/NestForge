@@ -9,7 +9,7 @@ import pytest
 from dace.sdfg import nodes
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, emit_library_node, is_emittable_library_node
-from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, sdfg_to_numpy
 from nestforge.split_unsupported import (isolate_into_own_state, isolate_unsupported_library_nodes,
                                          region_to_standalone, unsupported_library_nodes, whole_program_regions)
 
@@ -259,7 +259,7 @@ def test_region_to_standalone_emits_and_runs_each_region():
     for i, region in enumerate(regions):
         stand = region_to_standalone(sdfg, region, f"region{i}")
         stand.validate()  # the extracted region must be a valid standalone SDFG
-        ns = {"np": np}
+        ns = dict(EMITTED_BUILTINS)
         exec(sdfg_to_numpy(stand, f"region{i}"), ns)
         fn = ns[f"region{i}"]
         fns[frozenset(inspect.signature(fn).parameters)] = fn

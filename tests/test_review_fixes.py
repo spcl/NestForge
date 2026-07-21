@@ -5,7 +5,7 @@ import dace
 from dace.sdfg.state import LoopRegion
 
 from nestforge.arena import make_inputs, scratch_names
-from nestforge.emit_numpy import maxsize_loop_scratch, nest_to_numpy, sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, maxsize_loop_scratch, nest_to_numpy, sdfg_to_numpy
 from nestforge.extract import Boundary
 from nestforge.pass_lower import lower_nests_to_external_call
 
@@ -32,7 +32,7 @@ def test_corpus_module_path_independent_of_namespace_path():
 
 # ----- C-style emission: pre-allocated buffers, no internal allocation ----------------------------
 def run(src, fn, **buffers):
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     ns[fn](**buffers)
 
@@ -101,7 +101,7 @@ def test_nested_map_in_map_emits_nested_for_loops():
     n = 6
     rng = np.random.default_rng(0)
     A, B = rng.random((n, n)), np.zeros((n, n))
-    ns = {"np": np}
+    ns = dict(EMITTED_BUILTINS)
     exec(src, ns)
     ns["k"](A, B, n)
     assert np.allclose(B, A * 2.0)
