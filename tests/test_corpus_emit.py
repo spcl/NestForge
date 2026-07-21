@@ -14,7 +14,7 @@ pytest.importorskip("optarena")
 from dace import symbolic
 
 from nestforge.corpus import dace_kernel_names, iter_dace_kernels
-from nestforge.emit_numpy import maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 
 
 def kernels():
@@ -44,15 +44,14 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
     if sdfg is None:
         sdfg = kernels()[short].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, fn_name)
-    ns = {"np": np}
-    exec(src, ns)
+    kernel = vars(load_emitted(src, fn_name))[fn_name]
     # size loop-shaped scratch exactly as the emitter widened it (a decreasing extent like M-i-1
     # widens to its i=0 value, not to a naive max) so buffers match the emitted signature.
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     sized = maxsize_loop_scratch(sdfg, symbols)
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     call = {}
-    for name in inspect.signature(ns[fn_name]).parameters:
+    for name in inspect.signature(kernel).parameters:
         if name in sizes:
             call[name] = sizes[name]
             continue
@@ -62,7 +61,7 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
         # reshape inputs to the descriptor shape: a kernel may declare a param 2-D (nbody's mass is
         # [N,1]) while the caller supplies the flat (N,) array; sizes match, so reshape aligns them.
         call[name] = inputs[name].astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
-    ns[fn_name](**call)
+    kernel(**call)
     return call, src
 
 
@@ -171,11 +170,10 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
     sdfg = kernels()["hpc/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, "mandelbrot")
-    ns = {"np": np}
-    exec(src, ns)
+    mod = load_emitted(src, "mandelbrot")
     env = {symbolic.symbol("xn"): XN, symbolic.symbol("yn"): YN}
     call = {}
-    for name in inspect.signature(ns["mandelbrot"]).parameters:
+    for name in inspect.signature(mod.mandelbrot).parameters:
         if name in ("xn", "yn"):
             call[name] = {"xn": XN, "yn": YN}[name]
         elif name in scal:
@@ -185,7 +183,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
             d = sdfg.arrays[name]
             shape = tuple(int(symbolic.evaluate(x, env)) for x in d.shape)
             call[name] = np.zeros(shape, np.dtype(d.dtype.type))
-    ns["mandelbrot"](**call)
+    mod.mandelbrot(**call)
 
     X = scal["xmin"] + np.arange(XN) * ((scal["xmax"] - scal["xmin"]) / (XN - 1))
     Y = scal["ymin"] + np.arange(YN) * ((scal["ymax"] - scal["ymin"]) / (YN - 1))

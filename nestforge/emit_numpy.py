@@ -13,8 +13,16 @@ array's data name doubles as its python variable. Unsupported constructs raise
 from __future__ import annotations
 
 import ast
+import atexit
 import copy
+import functools
+import importlib.util
+import itertools
 import re
+import shutil
+import tempfile
+from pathlib import Path
+from types import ModuleType
 from typing import Dict, List
 
 import numpy
@@ -125,13 +133,13 @@ _INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?
 #: want, and expanding them to ``//`` loses that. The C translator lowers a ``//`` back to ``int_floor``
 #: anyway (and has no ``//`` for ceil at all, so the expansion had to be open-coded), while dace itself
 #: reads a ``//`` back as ``sympy.floor``, which distributes over a sum and truncates each term on its
-#: own. Left as calls, both are resolved by name: :func:`nestforge.arena.run_oracle` binds them in the
-#: exec namespace, and the C prelude defines them as type-dispatching macros.
+#: own. Left as calls, both are resolved by name: :func:`load_emitted` binds them in the emitted module's
+#: namespace, and the C prelude defines them as type-dispatching macros.
 #: ``Max``/``Min`` are VARIADIC in sympy and render as scalar index/bound expressions, so the Python
 #: builtins are the right target: they keep exact integer semantics (a numpy scalar would leak into
 #: ``range()`` and array subscripts). ``apply_call`` passes every parsed argument, so ``*a`` handles any
-#: arity. ``__builtins__`` is always present in the exec namespace ``run_oracle`` builds, so ``max``/
-#: ``min``/``abs`` resolve without importing anything.
+#: arity. ``__builtins__`` is always present in a module namespace, so ``max``/``min``/``abs`` resolve
+#: without importing anything.
 _USERFUNC_REWRITES = {
     "ipow": lambda a, b: f"(({a}) ** ({b}))",
     "Mod": lambda a, b: f"(({a}) % ({b}))",
@@ -151,10 +159,46 @@ def int_ceil(a, b):
     return -((-a) // b)
 
 
-#: The names an emitted kernel calls but does not define -- every exec of an emitted module must bind
+#: The names an emitted kernel calls but does not define -- every load of an emitted module must bind
 #: them: ``np`` for the casts/intrinsics, the two integer divisions for index/bound arithmetic (kept as
 #: calls, see :data:`_USERFUNC_REWRITES`). The C prelude defines the same names by other means.
+#: Never build this namespace by hand at a call site -- use :func:`load_emitted`, which is the one place
+#: that knows the full set (a hand-rolled ``{"np": np}`` is how ``int_floor`` went missing in CI).
 EMITTED_BUILTINS = {"np": numpy, "int_floor": int_floor, "int_ceil": int_ceil}
+
+#: Serial number keeping two loads of the same kernel name on distinct files/modules.
+_EMITTED_SERIAL = itertools.count()
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def emitted_dir() -> Path:
+    """Process-lifetime directory holding the emitted kernel sources handed to the import machinery.
+
+    The files must OUTLIVE the modules loaded from them: ``linecache`` reads the source lazily, so a
+    deleted file turns every frame of an emitted kernel into a blank line in the traceback -- exactly the
+    frames worth reading when an oracle disagrees with a compiled variant. ``/tmp`` is tmpfs here, so the
+    sources cost RAM rather than disk I/O, and the whole tree goes at interpreter exit.
+    """
+    path = Path(tempfile.mkdtemp(prefix="nestforge-emitted-"))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
+def load_emitted(source: str, name: str) -> ModuleType:
+    """Import emitted numpy kernel ``source`` as a real module, with :data:`EMITTED_BUILTINS` pre-bound.
+
+    The source becomes a file and goes through the normal import machinery, so the kernel gets a genuine
+    module namespace (``__name__``, ``__file__``, a source-backed traceback) instead of a bare dict. Pull
+    the kernel out with ``vars(module)[name]``; ``name`` only labels the module and its file.
+    """
+    path = emitted_dir() / f"{name}_{next(_EMITTED_SERIAL)}.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(f"nestforge_emitted.{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    module.__dict__.update(EMITTED_BUILTINS)  # bound BEFORE exec: the source references them at call time
+    spec.loader.exec_module(module)
+    return module
+
 
 #: ``(dace.)?math.<fn>`` (a qualified intrinsic the bare-name rewrite deliberately skips) -> its numpy
 #: form. Extra numpy-verbatim names beyond :data:`_MATH_INTRINSICS` that a TSVC/HPC tasklet may spell

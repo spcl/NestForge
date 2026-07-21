@@ -3,7 +3,7 @@ import dace
 
 from nestforge.strategies import outer
 from nestforge.extract import extract_nest_to_sdfg
-from nestforge.emit_numpy import EMITTED_BUILTINS, nest_to_numpy
+from nestforge.emit_numpy import load_emitted, nest_to_numpy
 from nestforge.translate import prepare, emit_sources
 
 N = dace.symbol('N')
@@ -24,12 +24,11 @@ def boundary():
 def test_numpy_emit_runs():
     b = boundary()
     src = nest_to_numpy(b, fn_name="vadd")
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "vadd")
     A = np.random.default_rng(0).random(32)
     B = np.random.default_rng(1).random(32)
     C = np.zeros(32)
-    ns["vadd"](A=A, B=B, C=C, N=32)
+    mod.vadd(A=A, B=B, C=C, N=32)
     np.testing.assert_allclose(C, A + B)
 
 

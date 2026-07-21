@@ -14,7 +14,7 @@ pytest.importorskip("dace")
 import dace as dc
 from dace.sdfg import nodes
 
-from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, sdfg_to_numpy
+from nestforge.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 M = dc.symbol("M", dtype=dc.int64)
@@ -35,13 +35,13 @@ def hist_scatter(idx: dc.int64[N], w: dc.float64[N], hist: dc.float64[M]):
 
 def run(program, fn_name, sizes, inputs):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, fn_name)
+    kernel = vars(mod)[fn_name]
     call = dict(inputs)
-    for p in inspect.signature(ns[fn_name]).parameters:
+    for p in inspect.signature(kernel).parameters:
         if p not in call:
             call[p] = sizes.get(p)
-    ns[fn_name](**call)
+    kernel(**call)
     return call, src
 
 
@@ -154,12 +154,11 @@ def test_tasklet_wcr_combine_ops_at_map_exit(wcr, seed, reduce_fn, token):
     map exit must accumulate across the whole range, not overwrite -- exercises every _WCR_BINOP entry."""
     src = sdfg_to_numpy(tasklet_wcr_at_exit("combine", wcr), "combine")
     assert token in src  # augmented assignment for this op, not a plain overwrite
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "combine")
     rng = np.random.default_rng(3)
     a = rng.random(16)
     out = np.full(1, seed)
-    ns["combine"](A=a.copy(), out=out, N=16)
+    mod.combine(A=a.copy(), out=out, N=16)
     np.testing.assert_allclose(out[0], reduce_fn(a))
 
 
@@ -180,20 +179,19 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
     st.add_memlet_path(t, mx, o, src_conn="res", memlet=dc.Memlet("out[int_floor(i, 2)]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "pairsum")
-    # int_floor stays a CALL in the emitted python: EMITTED_BUILTINS binds it here, and the C
+    # int_floor stays a CALL in the emitted python: load_emitted binds it here, and the C
     # translator lowers it to its own type-dispatching macro. Expanding it to `//` threw the
     # spelling away and handed dace back a sympy.floor that distributes over a sum.
     assert "int_floor(i, 2)" in src
     assert "//" not in src
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "pairsum")
     rng = np.random.default_rng(11)
     a = rng.random(16)
     out = np.zeros(8)
     # M sizes `out` and nothing else, so DaCe's arglist leaves it out and the emitted signature is
     # (A, out, N) -- the passed array already carries its own shape. Passing M= would be a TypeError.
     assert "M" not in sdfg.arglist() and "M" in {str(s) for s in sdfg.free_symbols}
-    ns["pairsum"](A=a.copy(), out=out, N=16)
+    mod.pairsum(A=a.copy(), out=out, N=16)
     np.testing.assert_allclose(out, a.reshape(8, 2).sum(axis=1))
 
 
@@ -215,13 +213,12 @@ def test_two_distinct_wcr_out_edges_from_one_tasklet():
     st.add_memlet_path(t, mx, m, src_conn="rm", memlet=dc.Memlet("omax[0]", wcr="lambda x, y: max(x, y)"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "multi")
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "multi")
     rng = np.random.default_rng(5)
     a = rng.random(20)
     osum = np.zeros(1)
     omax = np.full(1, -np.inf)
-    ns["multi"](A=a.copy(), osum=osum, omax=omax, N=20)
+    mod.multi(A=a.copy(), osum=osum, omax=omax, N=20)
     np.testing.assert_allclose(osum[0], a.sum())
     np.testing.assert_allclose(omax[0], a.max())
 
@@ -245,12 +242,11 @@ def test_inscope_accumulator_wcr_at_map_exit_accumulates():
     st.add_memlet_path(acc, mx, o, memlet=dc.Memlet("out[0]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "inscope_acc")
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "inscope_acc")
     rng = np.random.default_rng(7)
     a = rng.random(16)
     out = np.zeros(1)
-    ns["inscope_acc"](A=a.copy(), out=out, N=16)
+    mod.inscope_acc(A=a.copy(), out=out, N=16)
     np.testing.assert_allclose(out[0], a.sum())
 
 
@@ -268,10 +264,9 @@ def test_copy_edge_wcr_accumulates():
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "cp")
     assert "dst[0] + src[0]" in src
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "cp")
     dst = np.array([10.0])
-    ns["cp"](src=np.array([5.0]), dst=dst)
+    mod.cp(src=np.array([5.0]), dst=dst)
     np.testing.assert_allclose(dst[0], 15.0)
 
 

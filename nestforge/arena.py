@@ -19,7 +19,7 @@ import numpy as np
 
 from dace import symbolic
 
-from nestforge.emit_numpy import EMITTED_BUILTINS, maxsize_loop_scratch, scratch_arrays
+from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.extract import Boundary
 from nestforge.isolation import run_isolated
 from nestforge.translate import Prepared
@@ -189,11 +189,10 @@ def run_oracle(prep: Prepared, boundary: Boundary, inputs: Dict[str, np.ndarray]
     if missing:
         raise KeyError(f"no value for boundary symbol(s) {missing} (e.g. a loop index carried into an "
                        f"extracted nest); pass them in `sizes`")
-    ns: Dict[str, object] = dict(EMITTED_BUILTINS)  # the names the emitted module calls but never defines
-    exec(prep.numpy_source, ns)
+    module = load_emitted(prep.numpy_source, prep.name)
     args = {k: v.copy() for k, v in inputs.items()}
     call = {**args, **{s: int(sizes[s]) for s in boundary.symbols}}
-    ns[prep.name](**call)
+    vars(module)[prep.name](**call)
     return {o: args[o] for o in boundary.outputs}
 
 

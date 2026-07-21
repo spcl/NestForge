@@ -12,7 +12,7 @@ from dace.sdfg import nodes
 from dace.transformation.passes.canonicalize.assume_symbols_nonnegative import (collect_assumptions,
                                                                                 insert_assumption_guards)
 
-from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy, trap_guard_lines
+from nestforge.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy, trap_guard_lines
 
 N = dace.symbol("N")
 
@@ -24,10 +24,8 @@ def scaled(a: dace.float64[N], b: dace.float64[N]):
 
 
 def compiled(src, name):
-    """exec the emitted source and hand back the callable, as the differential harness does."""
-    namespace = {"np": np}
-    exec(compile(src, "<emitted>", "exec"), namespace)
-    return namespace[name]
+    """Import the emitted source and hand back the callable, as the differential harness does."""
+    return vars(load_emitted(src, name))[name]
 
 
 def guard_tasklets(sdfg):

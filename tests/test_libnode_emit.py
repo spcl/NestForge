@@ -11,7 +11,7 @@ pytest.importorskip("dace")
 
 import dace as dc
 
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import load_emitted, sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 
@@ -28,9 +28,7 @@ def ttrans(X: dc.float64[2, 3, 4], Y: dc.float64[3, 2, 4]):
 
 def emit(program, fn_name):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
-    ns = {"np": np}
-    exec(src, ns)
-    return ns[fn_name], src
+    return vars(load_emitted(src, fn_name))[fn_name], src
 
 
 def test_cholesky_libnode_emits_np_linalg_cholesky():

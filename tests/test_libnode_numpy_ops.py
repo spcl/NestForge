@@ -19,7 +19,7 @@ pytest.importorskip("dace")
 import dace as dc
 from dace import Memlet
 
-from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy
+from nestforge.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy
 
 N, M, K = (dc.symbol(s, dtype=dc.int64) for s in "NMK")
 F = dc.float64
@@ -47,13 +47,12 @@ def build(name, node, arrays, in_wiring, out_wiring):
 
 
 def run(sdfg, fn, buffers, sizes):
-    """Emit ``sdfg`` as ``def fn(...)``, exec it, and call it with the buffers/sizes it actually takes
+    """Emit ``sdfg`` as ``def fn(...)``, import it, and call it with the buffers/sizes it actually takes
     (a size symbol absent from every shape is not in the signature). Returns the (mutated) buffers."""
     src = sdfg_to_numpy(sdfg, fn)
-    ns = {"np": np}
-    exec(src, ns)
-    params = set(inspect.signature(ns[fn]).parameters)
-    ns[fn](**{k: v for k, v in {**buffers, **sizes}.items() if k in params})
+    kernel = vars(load_emitted(src, fn))[fn]
+    params = set(inspect.signature(kernel).parameters)
+    kernel(**{k: v for k, v in {**buffers, **sizes}.items() if k in params})
     return buffers, src
 
 

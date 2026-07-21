@@ -33,7 +33,7 @@ from dace import symbolic
 from nestforge import tsvc
 from nestforge.build import BuildOptions, build_sdfg
 from nestforge.corpus import iter_dace_kernels
-from nestforge.emit_numpy import EMITTED_BUILTINS, maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.isolation import run_isolated
 
 ATOL = 1e-8
@@ -166,12 +166,11 @@ def _run_emitted_numpy(make_sdfg, sizes, base):
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     sdfg = make_sdfg()
     src = sdfg_to_numpy(sdfg, "k")
-    ns = dict(EMITTED_BUILTINS)
-    exec(src, ns)
+    mod = load_emitted(src, "k")
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     sized = maxsize_loop_scratch(sdfg, symbols)
     call = {}
-    for name in inspect.signature(ns["k"]).parameters:
+    for name in inspect.signature(mod.k).parameters:
         if name in sizes:
             call[name] = sizes[name]
         elif name in base:
@@ -180,7 +179,7 @@ def _run_emitted_numpy(make_sdfg, sizes, base):
             desc = sized.arrays[name]
             shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
             call[name] = np.zeros(shape, np.dtype(desc.dtype.type))
-    ns["k"](**call)
+    mod.k(**call)
     return call
 
 

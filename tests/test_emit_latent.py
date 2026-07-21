@@ -9,14 +9,13 @@ Each test fails without its fix:
 """
 from dataclasses import dataclass
 
-import numpy as np
 import pytest
 import sympy
 import dace
 from dace import symbolic
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, data_edge
-from nestforge.emit_numpy import UnsupportedNest, normalize_casts, sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, normalize_casts, sdfg_to_numpy
 from nestforge.libnode import ExternalCall, proto_and_call
 
 I = sympy.Symbol('i')
@@ -25,10 +24,10 @@ N = sympy.Symbol('N')
 
 def evaluated(expr, **env):
     """symstr the sympy expression the way a subset/bound reaches the emitter, normalize it, and evaluate
-    the emitted text in the SAME namespace the oracle runs in (builtins + np only)."""
+    the emitted text in the SAME namespace the oracle runs in (python builtins + EMITTED_BUILTINS)."""
     code = normalize_casts(symbolic.symstr(expr))
     assert "Max(" not in code and "Min(" not in code and "Abs(" not in code, f"un-rewritten sympy func: {code}"
-    return eval(code, {"np": np}, dict(env))
+    return eval(code, dict(EMITTED_BUILTINS), dict(env))
 
 
 def test_clamped_index_exprs_are_emittable_and_exact():

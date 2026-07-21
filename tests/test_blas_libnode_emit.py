@@ -3,7 +3,7 @@
 form (MPI/pblas communication, sparse, FPGA-stream, LAPACK factorizations that output pivots).
 
 Each BLAS case builds a one-node SDFG, runs it two ways -- the DaCe ``pure`` expansion (the reference,
-compiled + run FORKED via :func:`run_isolated`) and the emitted numpy (``sdfg_to_numpy`` + ``exec``) -- and
+compiled + run FORKED via :func:`run_isolated`) and the emitted numpy (``sdfg_to_numpy`` + ``load_emitted``) -- and
 asserts they agree to machine precision. Inputs are deliberately NON-symmetric so the uplo-triangle write
 (Syrk/Syr2k preserve the opposite triangle) and the full-symmetric reconstruction (Symm) are exercised.
 """
@@ -17,18 +17,17 @@ from dace.libraries.blas.nodes.syr2k import Syr2k
 from dace.libraries.lapack.nodes.potrf import Potrf
 
 from nestforge.emit_libnode import LIBNODE_EMITTERS, REFUSED_LIBRARY_NODES, UnsupportedLibraryNode, emit_library_node
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import load_emitted, sdfg_to_numpy
 from nestforge.isolation import run_isolated
 
 DT = dace.float64
 
 
 def emit_run(build, inputs):
-    """Emit the SDFG as numpy, exec it, and run it on copies of ``inputs``; return the mutated buffers."""
-    ns = {"np": np}
-    exec(sdfg_to_numpy(build(), "k"), ns)
+    """Emit the SDFG as numpy, import it, and run it on copies of ``inputs``; return the mutated buffers."""
+    mod = load_emitted(sdfg_to_numpy(build(), "k"), "k")
     call = {k: v.copy() for k, v in inputs.items()}
-    ns["k"](**call)
+    mod.k(**call)
     return call
 
 

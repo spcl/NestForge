@@ -16,7 +16,7 @@ import dace as dc
 
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
 
-from nestforge.emit_numpy import sdfg_to_numpy
+from nestforge.emit_numpy import load_emitted, sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 
@@ -91,9 +91,7 @@ def build_switch(name, branches):
 def emit(sdfg, fn_name):
     assert any(isinstance(b, ConditionalBlock) for b in sdfg.all_control_flow_blocks())
     src = sdfg_to_numpy(sdfg, fn_name)
-    ns = {"np": np}
-    exec(src, ns)
-    return ns[fn_name], src
+    return vars(load_emitted(src, fn_name))[fn_name], src
 
 
 def test_if_else_both_branches():
