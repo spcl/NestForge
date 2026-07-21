@@ -20,6 +20,12 @@
 # OptArena is not published to PyPI at all, so there is no name for pip to resolve -- only this checkout.
 -e ../optarena
 
+# dace-fortran lowers a Fortran input to an SDFG (nestforge.entry, InputKind.FORTRAN_PARSE). Its own
+# pyproject pins `dace @ ...@FaCe`; FaCe is a SUBSET of extended, so this editable install resolves
+# against the extended checkout above rather than dragging in a second dace. Listed AFTER ../dace for
+# that reason -- installing it first would let pip fetch the FaCe pin on its own.
+-e ../dace-fortran
+
 # nest-forge itself, editable, plus the [dev] extra from pyproject.toml (pytest, xdist, matplotlib,
 # yapf, ruff, clang-format). Its runtime deps (numpy, pyyaml, sympy) come with it, and optarena's own
 # install_requires brings sqlmodel. Listed LAST so the two editable checkouts above are already

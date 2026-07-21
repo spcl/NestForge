@@ -91,6 +91,10 @@ jobs:
           # import)". $RUNNER_TEMP cannot collide with an importable name at all.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=optarena"
+          # dace-fortran lowers Fortran inputs to an SDFG (nestforge.entry, InputKind.FORTRAN_PARSE).
+          # Installed AFTER dace: its pyproject pins dace @ FaCe, a SUBSET of extended, so with extended
+          # already resolved pip keeps it rather than fetching a second dace over the top.
+          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace-fortran.git#egg=dace-fortran"
           # nest-forge + its [dev] extra: pytest/pytest-timeout/pytest-xdist/matplotlib/yapf/ruff/
           # clang-format, and the runtime deps (numpy, pyyaml, sympy) via [project].dependencies. This
           # installing at all is itself a regression test -- `pip install -e .` used to fail outright on

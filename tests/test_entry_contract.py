@@ -4,8 +4,8 @@ import itertools
 import pytest
 
 from nestforge.entry import (CODEGEN_AXES, CODEGEN_PINNED, COMPILABLE_SUFFIXES, CORE_CODEGEN_AXES, CORE_UNCERTAIN,
-                             FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS,
-                             PROVIDED_SOURCE_KINDS, InputKind, SearchSpace, classify_input, lower_to_sdfg, plan_search)
+                             FLAG_AXES, PARSEABLE_SUFFIXES, PARSED_KINDS, PROVIDED_SOURCE_KINDS, InputKind, SearchSpace,
+                             classify_input, lower_to_sdfg, plan_search)
 
 
 class Agent:
@@ -189,7 +189,6 @@ def test_suffix_tables_do_not_overlap_except_fortran():
 
 # ---------------------------------------------------------------- lowering
 
-
 # ---------------------------------------------------------------- core vs exhaustive knobs
 
 
@@ -229,6 +228,23 @@ def test_const_scalar_abi_is_searched_because_we_do_not_know():
 
 def test_old_vs_new_codegen_is_always_searched():
     assert 'implementation' in CORE_UNCERTAIN
+
+
+def test_restrict_is_always_emitted():
+    """Emitting restrict is never a pessimisation, so it is a pin and never a search axis."""
+    assert CODEGEN_PINNED['heap_ptr_restrict'] == 'restrict'
+    assert 'heap_ptr_restrict' not in CORE_UNCERTAIN
+
+
+def test_index_function_is_always_constexpr():
+    """We compile as C++20, so the index function always folds at compile time."""
+    assert CODEGEN_PINNED['index_fn_qualifier'] == 'inline_constexpr'
+
+
+def test_one_index_width_everywhere():
+    """64-bit index arithmetic is native on modern hardware; nothing to buy by varying it."""
+    assert CODEGEN_PINNED['loop_index_type'] == 'int64_t'
+    assert CODEGEN_PINNED['index_ctype'] == 'int64_t'
 
 
 def test_core_is_dramatically_smaller_than_exhaustive():

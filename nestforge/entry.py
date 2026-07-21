@@ -88,7 +88,7 @@ CODEGEN_AXES: Dict[str, Sequence] = {
 
 #: Knobs whose best value we genuinely do NOT know, so a core sweep must measure them.
 #: Anything absent from here is pinned to :data:`CODEGEN_PINNED` instead of being searched.
-CORE_UNCERTAIN = ('implementation', 'const_scalar_abi', 'heap_ptr_restrict', 'loop_bound_cmp')
+CORE_UNCERTAIN = ('implementation', 'const_scalar_abi', 'loop_bound_cmp')
 
 #: Knobs with a value that is right nearly always, pinned in a core sweep and only opened up in an
 #: exhaustive one. Each entry records WHY, so a surprising exhaustive result can be traced back to a
@@ -101,10 +101,16 @@ CODEGEN_PINNED: Dict[str, object] = {
     'explicit_copy': 'on',
     # 64-bit indices avoid overflow on real shapes; narrowing is a niche win and a correctness risk.
     'index_ctype': 'int64_t',
-    # `auto` already picks the narrowest type the loop bound proves safe -- better than forcing one.
-    'loop_index_type': 'auto',
-    # constexpr index functions fold at compile time; the other qualifiers only relax that.
+    # One index width everywhere on modern 64-bit hardware, rather than a per-loop `auto` decision:
+    # 64-bit index arithmetic is native, so there is nothing to buy by varying it.
+    'loop_index_type': 'int64_t',
+    # We compile as C++20, so the index function is always constexpr -- it folds at compile time and
+    # the other qualifiers only relax that. (`consteval` would be stronger still, forcing the fold,
+    # but DaCe's schema offers no such value; inline_constexpr is the strongest available.)
     'index_fn_qualifier': 'inline_constexpr',
+    # `restrict` on the heap pointers is never a pessimisation: it only ever tells the optimizer the
+    # buffers do not alias, which is a fact of how DaCe allocates them.
+    'heap_ptr_restrict': 'restrict',
     # Inlining a fully-passed array nested SDFG removes a call boundary the optimizer cannot see past.
     'inline_full_array_nsdfg': True,
     # Splitting translation units was MEASURED to lose on small nests (0.37x on 16 tiny nests) and win
@@ -114,10 +120,14 @@ CODEGEN_PINNED: Dict[str, object] = {
 
 #: The reduced codegen sweep: uncertain knobs searched, the rest pinned to a known-good value.
 CORE_CODEGEN_AXES: Dict[str, Sequence] = {
-    **{name: (value, )
-       for name, value in CODEGEN_PINNED.items()},
-    **{name: CODEGEN_AXES[name]
-       for name in CORE_UNCERTAIN},
+    **{
+        name: (value, )
+        for name, value in CODEGEN_PINNED.items()
+    },
+    **{
+        name: CODEGEN_AXES[name]
+        for name in CORE_UNCERTAIN
+    },
 }
 
 
@@ -229,9 +239,10 @@ def lower_to_sdfg(source: Union[str, Path], kind: InputKind):
         try:
             from dace_fortran.build import make_builder
         except ImportError as exc:
-            raise ImportError('parsing Fortran needs the dace-fortran frontend. Install it as a sibling '
-                              'editable checkout (see requirements-dev.txt); pip must NOT resolve its own '
-                              'dace pin, which names a different branch than the one nest-forge uses.') from exc
+            raise ImportError('parsing Fortran needs the dace-fortran frontend: install it editable '
+                              '(see requirements-dev.txt). Its pyproject pins dace @ FaCe, which is a '
+                              'subset of extended, so an editable install resolves against the extended '
+                              'checkout nest-forge already uses.') from exc
         return make_builder(path.read_text(), name=path.stem).build()
 
     if kind is InputKind.NUMPY:
