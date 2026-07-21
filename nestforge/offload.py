@@ -86,9 +86,20 @@ OFFLOAD_UNITS = ("cfg", "state", "map")
 
 def state_has_compute(state: dace.SDFGState) -> bool:
     """Whether a state holds real compute (a map, tasklet, library node, or nested SDFG) -- not a bare
-    copy/access-only state, which there is nothing to externalize."""
-    return any(
-        isinstance(n, (nodes.MapEntry, nodes.Tasklet, nodes.LibraryNode, nodes.NestedSDFG)) for n in state.nodes())
+    copy/access-only state, which there is nothing to externalize.
+
+    A tasklet counts only if it has connectors. DaCe's precondition traps (canonicalize's
+    ``check_assumption_*``, the scatter-conflict guard) are connectorless CPP tasklets in their own
+    state: they read and write nothing, so the state crosses no data and externalizing it yields a
+    ``void f(void)`` nest -- an extern call that computes nothing but still links and times.
+    """
+    for node in state.nodes():
+        if isinstance(node, nodes.Tasklet):
+            if node.in_connectors or node.out_connectors:
+                return True
+        elif isinstance(node, (nodes.MapEntry, nodes.LibraryNode, nodes.NestedSDFG)):
+            return True
+    return False
 
 
 def unit_refs(sdfg: dace.SDFG, unit: str) -> List[Tuple[dace.SDFG, NestNode]]:

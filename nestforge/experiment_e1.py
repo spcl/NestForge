@@ -72,6 +72,15 @@ def build_backend_variants(calls,
         c_source = next(p for p in emit_sources(prep, vdir, target="c") if p.suffix == ".c")
         symbol = f"{ext.name}_fp64"
         order = signature_order(c_source.read_text(), symbol)
+        if not order:
+            # An empty order reaches the extern-call expansion as "has no abi_order", which reads as
+            # "the arena never recorded it" and sends the reader to the wrong place -- the order WAS
+            # recorded, the emitted entry simply takes no parameters. A nest that crosses no data
+            # computes nothing observable, so say that here, with what the boundary thinks it carries.
+            raise ValueError(f"nest {ext.name!r} emitted the zero-argument entry 'void {symbol}(void)': it "
+                             f"crosses no data, so an extern call to it is a no-op. Boundary inputs="
+                             f"{sorted(boundary.inputs)}, outputs={sorted(boundary.outputs)}, "
+                             f"symbols={sorted(boundary.symbols)}; source={c_source}")
         objs.append(compile_object(backend_path, fp_mode, c_source, ext.name, vdir))
         metas.append((ext.name, symbol, order))
     lib = link_shared(objs, backend_name, out_dir, backend_path)

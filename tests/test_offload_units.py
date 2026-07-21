@@ -79,3 +79,39 @@ def test_composes_with_fusion_granularity():
     maximal = two_map.to_sdfg(simplify=True)
     fuse_first_k(99)(maximal)
     assert len(offload_candidates(atoms, "map")) >= len(offload_candidates(maximal, "map"))
+
+
+def test_a_precondition_guard_state_is_not_an_offload_unit():
+    """DaCe's traps (``check_assumption_*``) are connectorless CPP tasklets in their own state: they
+    read and write nothing. Counting them as compute externalized the guard state as a nest crossing
+    no data, which emits ``void extcall_N_fp64(void)`` -- an extern call that computes nothing yet
+    still links and gets timed, so it would have entered the tables as a measurement."""
+    from dace.transformation.passes.canonicalize.assume_symbols_nonnegative import insert_assumption_guards
+    from nestforge.offload import state_has_compute, unit_refs
+
+    @dace.program
+    def scaled(a: dace.float64[N], b: dace.float64[N]):
+        for i in dace.map[0:N]:
+            b[i] = a[i] * 2.0
+
+    sdfg = scaled.to_sdfg(simplify=True)
+    assert insert_assumption_guards(sdfg) == 1, "test is vacuous without a guard state"
+    guard = next(s for s in sdfg.states() if s.label == "_assume_nonneg_syms")
+    assert guard.number_of_nodes() == 1, guard.nodes()
+
+    assert not state_has_compute(guard), "a connectorless trap tasklet is not compute"
+    assert guard not in [st for _sub, st in unit_refs(sdfg, "state")]
+    assert [st for _sub, st in unit_refs(sdfg, "state")], "the real compute state must still be a unit"
+
+
+def test_a_tasklet_with_connectors_still_counts_as_compute():
+    """The narrowing must not swallow ordinary single-tasklet states."""
+    from nestforge.offload import state_has_compute
+
+    sdfg = dace.SDFG("plain")
+    sdfg.add_array("a", [N], dace.float64)
+    state = sdfg.add_state()
+    tasklet = state.add_tasklet("t", {"inp"}, {"out"}, "out = inp + 1.0")
+    state.add_edge(state.add_read("a"), None, tasklet, "inp", dace.Memlet("a[0]"))
+    state.add_edge(tasklet, "out", state.add_write("a"), None, dace.Memlet("a[0]"))
+    assert state_has_compute(state)

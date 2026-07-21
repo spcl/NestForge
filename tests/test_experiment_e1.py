@@ -107,3 +107,24 @@ def test_unit_with_no_nest_is_a_skip_not_fabricated_data(tmp_path):
     assert not cell.ok and cell.median_us == float("inf")
     assert "cfg" in cell.error and "no" in cell.error.lower()
     assert best_granularity_per_backend([cell]) == {}  # never enters the heatmap
+
+
+def test_a_zero_argument_nest_is_reported_where_it_happens(tmp_path, monkeypatch):
+    """An empty ABI order used to surface at expansion as "has no abi_order", which names the arena --
+    the wrong place to look. It must fail where the empty signature is read, naming the nest's boundary."""
+    from nestforge import experiment_e1
+
+    class FakeBoundary:
+        inputs, outputs, symbols = (), (), ()
+
+    class FakeExt:
+        name = "extcall_1"
+
+    (tmp_path / "extcall_1").mkdir(parents=True)
+    (tmp_path / "extcall_1" / "k.c").write_text("void extcall_1_fp64(void) {}\n")
+    monkeypatch.setattr(experiment_e1, "prepare", lambda boundary, name, vdir: None)
+    monkeypatch.setattr(experiment_e1, "emit_sources", lambda prep, vdir, target: [vdir / "k.c"])
+    monkeypatch.setattr(experiment_e1, "signature_order", lambda text, symbol: [])
+
+    with pytest.raises(ValueError, match="crosses no data"):
+        experiment_e1.build_backend_variants([(FakeExt(), FakeBoundary())], "gcc", "/usr/bin/gcc", tmp_path)
