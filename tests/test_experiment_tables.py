@@ -26,8 +26,8 @@ STALE_IN_RECORDING = {"s1119"}
 #: per table: the fields every row carries, and the derived aggregates the paper reads.
 SCHEMA = {
     "e1": (("kernel", "backend", "granularity", "unit", "median_us", "ok"), ("best_granularity", )),
-    "e2": (("kernel", "backend", "baseline", "baseline_us", "search_us", "speedup", "ok"),
-           ("speedup", "skipped", "search_cells_from")),
+    "e2": (("kernel", "backend", "baseline", "baseline_us", "search_us", "speedup", "ok"), ("speedup", "skipped",
+                                                                                            "search_cells_from")),
     "e3": (("kernel", "backend", "granularity", "unit", "median_us", "ok"), ("curve", "best_unit")),
     "e4": (("kernel", "backend", "strategy", "best", "best_us", "measurements", "tokens", "quality", "ok"),
            ("cost_quality", "savings")),

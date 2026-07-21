@@ -162,3 +162,18 @@ def test_c_call_args_honors_the_declared_ctype():
     assert isinstance(args[2], ctypes.c_double), (
         f"float value-scalar built as {type(args[2]).__name__}, not c_double -- c_call_args ignored the "
         "declared argtype and hardcoded c_int64")
+
+
+def test_ci_format_gate_pins_the_same_yapf_as_the_dev_extra():
+    """yapf's wrapping changes between releases, so a gate installing an unpinned yapf rejects a tree
+    formatted with the pinned one -- CI red on style alone, with no local reproduction."""
+    import re
+    import tomllib
+
+    dev = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["optional-dependencies"]["dev"]
+    pinned = next(d for d in dev if d.startswith("yapf"))
+    gate = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+    installed = re.findall(r"pip install (yapf[^\s]*)", gate)
+    assert installed, "the format gate installs no yapf"
+    for spec in installed:
+        assert spec == pinned, f"format gate installs {spec}, [dev] pins {pinned}"

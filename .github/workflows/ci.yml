@@ -37,11 +37,14 @@ jobs:
           python-version: '3.12'
 
       # Phase 0 -- format gate BEFORE the heavy setup, so a style slip fails in seconds. yapf +
-      # clang-format ship as pip wheels (the clang-format wheel bundles the binary).
+      # clang-format ship as pip wheels (the clang-format wheel bundles the binary). yapf is PINNED to
+      # the same version as pyproject's [dev] extra: its wrapping heuristics change between releases,
+      # so an unpinned gate rejects a tree formatted with the pinned one (test_driver_contracts.py
+      # keeps the two in sync).
       - name: Phase 0 -- format (yapf 120 + clang-format 160)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install yapf clang-format
+          python -m pip install yapf==0.43.0 clang-format
           bash scripts/format.sh --check
 
       # Toolchain via the repo's own apt script (idempotent; missing-on-runner packages warn + skip).

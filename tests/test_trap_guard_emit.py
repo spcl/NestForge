@@ -31,8 +31,10 @@ def compiled(src, name):
 
 
 def guard_tasklets(sdfg):
-    return [n for s in sdfg.states() for n in s.nodes() if isinstance(n, nodes.Tasklet) and not n.in_connectors
-            and not n.out_connectors]
+    return [
+        n for s in sdfg.states() for n in s.nodes()
+        if isinstance(n, nodes.Tasklet) and not n.in_connectors and not n.out_connectors
+    ]
 
 
 def test_canonicalize_assumption_guard_is_emitted_as_a_python_assertion():
@@ -69,7 +71,8 @@ def test_a_guard_outside_the_canonicalize_guard_state_is_translated_too():
     sdfg.add_array("a", [N], dace.float64)
     sdfg.add_symbol("overlap", dace.int64)
     trap_state = sdfg.add_state("_scatter_guard_trap_a", is_start_block=True)
-    trap = trap_state.add_tasklet("check_assumption_a", {}, {}, "if ((overlap > 0)) { __builtin_trap(); }",
+    trap = trap_state.add_tasklet("check_assumption_a", {}, {},
+                                  "if ((overlap > 0)) { __builtin_trap(); }",
                                   language=dace.dtypes.Language.CPP)
     trap.side_effects = True
     work = sdfg.add_state_after(trap_state, "work")
@@ -98,7 +101,8 @@ def test_a_guard_outside_the_canonicalize_guard_state_is_translated_too():
 def test_c_operators_become_python_operators(c_cond, py_cond):
     """``!=`` must survive the ``!`` rewrite; ``not =`` would be a SyntaxError."""
     state = dace.SDFG("g").add_state()
-    trap = state.add_tasklet("check_assumption_0", {}, {}, f"if ({c_cond}) {{ __builtin_trap(); }}",
+    trap = state.add_tasklet("check_assumption_0", {}, {},
+                             f"if ({c_cond}) {{ __builtin_trap(); }}",
                              language=dace.dtypes.Language.CPP)
     assert trap_guard_lines(trap)[0] == f"if {py_cond}:"
 
@@ -115,7 +119,8 @@ def test_a_connectorless_tasklet_that_is_not_a_guard_emits_no_statement():
 def test_an_untranslatable_guard_condition_is_refused():
     """Fail at emission, where the tasklet name is still known."""
     state = dace.SDFG("g").add_state()
-    trap = state.add_tasklet("check_assumption_0", {}, {}, "if (a ? b : c) { __builtin_trap(); }",
+    trap = state.add_tasklet("check_assumption_0", {}, {},
+                             "if (a ? b : c) { __builtin_trap(); }",
                              language=dace.dtypes.Language.CPP)
     with pytest.raises(UnsupportedNest, match="not translatable to python"):
         trap_guard_lines(trap)
