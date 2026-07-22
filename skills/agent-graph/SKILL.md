@@ -18,7 +18,7 @@ agent-only.
 
 | unit | what it is | key type |
 |---|---|---|
-| **region** | a control-flow **container** — a `State`, `LoopRegion`, `ConditionalBlock`, or `ControlFlowRegion`. The box a nest lives in. A `State` is a fusion barrier. | `SDFGState` / `LoopRegion` / ... |
+| **region** | a control-flow **container** — a `State`, `LoopRegion`, `ConditionalBlock`, or `ControlFlowRegion`. The box a nest lives in. Map fusion never crosses a `State`, but `fuse_regions` merges two. | `SDFGState` / `LoopRegion` / ... |
 | **nest** | a compute unit that **fuses** — a map-nest or a loop-nest | `MapEntry` / `LoopRegion` |
 | **external nest / variant** | a nest externalized as a library call, then a compiled kernel `(language, compiler, flags, fp-mode)` | `ExternalCall`+`Boundary` / `Cell` |
 
@@ -73,19 +73,21 @@ print(describe_graph(sdfg))
 ```
 ```
 SDFG 'two_maps'
-  state 'MapState'  [fusion barrier]
-    map map[i] over 0:N  PARALLEL  reads=['A', 'B'] writes=['T']
-    map map[i] over 0:N  PARALLEL  reads=['T'] writes=['C']
+`- state0_0  [merge to fuse across]
+   |- kernel1_0  PARALLEL  [i0=0:N]  reads=['A', 'B'] writes=['T']
+   `- kernel1_1  PARALLEL  [i0=0:N]  reads=['T'] writes=['C']
 ```
 
-Indentation is control-flow nesting. Each `state` is a **fusion barrier** (see next section). Each nest
-line carries its parallel/sequential nature and its **read and write array sets** — what the loop-nest
+The guides show control-flow nesting, and a line's depth is the level in its own name (`kernel1_0` sits
+at depth 1). Each `state` bounds map fusion until it is merged (see next section). Each nest
+line carries its schedule -- `PARALLEL`, `SEQUENTIAL`, or `SCALAR` for a single-iteration wrap map --
+its iteration domain, and its **read and write array sets** — what the loop-nest
 actually does, without outlining it. `nest_reads_writes(state, node)` returns `(reads, writes)` for one
 nest. After a nest is externalized, the same sets live on `Boundary.inputs` / `Boundary.outputs`.
 
-## States are control-flow dependencies — the fusion barrier
+## States are control-flow dependencies — the boundary map fusion cannot cross
 
-You cannot fuse everything. **A DaCe `State` is a hard sequencing boundary**: everything in a state runs,
+You cannot fuse everything *directly*. **A DaCe `State` is a sequencing boundary**: everything in a state runs,
 then the next state runs. Two map-nests fuse only if they live in the *same* state; the graph orders
 states as a control-flow dependency, and the arms respect it:
 

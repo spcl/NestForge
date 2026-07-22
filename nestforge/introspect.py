@@ -1,8 +1,8 @@
 """Read-only structure inspection for the agent (and the deterministic path).
 
 Two views, both non-mutating -- safe to call at any point in a session:
-  * :func:`describe_graph` -- the SDFG as an ASCII TREE: nested regions/loops/conditionals, each State
-    (a fusion barrier), each map-nest with its normalized iteration domain and read/write arrays.
+  * :func:`describe_graph` -- the SDFG as an ASCII TREE: nested regions/loops/conditionals, each State,
+    each map-nest with its normalized iteration domain and read/write arrays.
   * :func:`nest_reads_writes` -- the arrays a single nest reads and writes, without extracting it.
 
 The tree is the agent's whole view of the program, so it is projected from the normal form
@@ -11,9 +11,10 @@ The tree is the agent's whole view of the program, so it is projected from the n
 to also stamp each actionable line with a session id, so READING the tree and ACTING on it use one
 vocabulary rather than two views the agent has to join by eyeballing labels.
 
-Sibling States are a control-flow dependency: maps in different States cannot fuse (see
-:func:`nestforge.fusion_arms.can_fuse`). The tree makes that structure visible so the agent knows which
-nests are even fusion candidates before it asks.
+Sibling States are a control-flow dependency: map fusion never crosses one, so two nests in different
+States cannot fuse *directly* (see :func:`nestforge.fusion_arms.can_fuse`). That is a boundary, not a
+barrier -- ``fuse_regions`` merges adjacent States and the nests inside then become fusable siblings,
+which is why the line says ``[merge to fuse across]`` rather than calling the State a dead end.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, Contro
                              SDFGState)
 from dace.transformation.passes.analysis import loop_analysis
 
-from nestforge.normalize import in_order
+from nestforge.normalize import WRAP_PARAM, in_order
 from nestforge.strategies import is_parallel_nest
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
@@ -140,7 +141,7 @@ def block_line(block) -> str:
         domain = loop_domain(block)
         return f"{block.label}  {domain}" if domain else block.label
     if isinstance(block, SDFGState):
-        return f"{block.label}  [fusion barrier]"
+        return f"{block.label}  [merge to fuse across]"
     if isinstance(block, ConditionalBlock):
         return f"{block.label}  [selector stays in core SDFG]"
     if isinstance(block, (BreakBlock, ContinueBlock, ReturnBlock)):
@@ -155,5 +156,8 @@ def kernel_line(state: SDFGState, node: nodes.Node) -> str:
         writes = sorted({e.data.data for e in state.out_edges(node) if e.data is not None and e.data.data})
         return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
     reads, writes = nest_reads_writes(state, node)
-    kind = "PARALLEL" if is_parallel_nest(node) else "SEQUENTIAL"
+    # A wrap map runs exactly once, so neither PARALLEL nor SEQUENTIAL describes it: it has no
+    # iteration space to spread and no carried dependence to serialize. Its Sequential SCHEDULE only
+    # keeps codegen from opening an OpenMP region around one iteration.
+    kind = "SCALAR" if WRAP_PARAM in node.map.params else ("PARALLEL" if is_parallel_nest(node) else "SEQUENTIAL")
     return f"{node.map.label}  {kind}  [{map_domain(node)}]  reads={reads} writes={writes}"

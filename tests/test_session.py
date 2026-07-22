@@ -44,7 +44,7 @@ def barred_session():
 
 def test_list_nests_is_plain_data():
     s = make_session()
-    assert "[fusion barrier]" in s.describe()
+    assert "[merge to fuse across]" in s.describe()
     nests = s.list_nests()
     assert len(nests) == 2
     # epoch-0 stamped nest ids. Not pinned to :0/:1 -- describe() mints the same handles onto its

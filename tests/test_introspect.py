@@ -44,7 +44,7 @@ def map_entries(sdfg):
 def test_describe_graph_lists_nests_with_read_write_sets():
     sdfg = vertical_pair.to_sdfg(simplify=True)
     text = describe_graph(sdfg)
-    assert "[fusion barrier]" in text  # every state is marked a barrier
+    assert "[merge to fuse across]" in text  # every state names the move that lets fusion cross it
     assert "PARALLEL" in text  # both maps are parallel
     assert "reads=['A', 'B'] writes=['T']" in text  # producer nest
     assert "reads=['T'] writes=['C']" in text  # consumer nest

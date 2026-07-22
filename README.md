@@ -47,7 +47,7 @@ An SDFG is a graph; an agent reasons badly about graphs and well about text. So 
 design rests on two projections, and the agent only ever touches these:
 
 1. **Structure → a string tree.** `introspect.describe_graph(sdfg)` renders the control-flow region tree
-   as indented text — regions, states (marked as fusion barriers), loops, conditionals, and the nests
+   as an ASCII tree — regions, states (each marked with the merge that lets fusion cross it), loops, conditionals, and the nests
    inside each. `Session.describe()` serves it live and `Session.region_tree()` is the same tree as
    structured data. This is the map the agent operates on: it decides *where* to act by reading the tree.
 2. **Bodies → numpy.** Each nest's body is re-emitted as a standalone numpy kernel

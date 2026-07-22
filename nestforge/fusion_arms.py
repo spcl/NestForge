@@ -114,9 +114,9 @@ def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
     move.xform.apply_to(sdfg, verify=True, annotate=False, save=False, **move.where)
 
 
-STATE_BARRIER = ("nests are in different states -- a State boundary is a control-flow dependency (a hard "
-                 "fusion barrier). Maps fuse only within one State; merge the enclosing regions first "
-                 "(fuse_regions / list_region_fusions, i.e. StateFusion) before these nests can fuse.")
+STATE_BARRIER = ("nests are in different states -- a State boundary is a control-flow dependency, and map "
+                 "fusion never crosses one. It is not permanent: merge the enclosing regions first "
+                 "(fuse_regions / list_region_fusions, i.e. StateFusion) and these nests become fusable.")
 
 
 def can_fuse(sdfg: dace.SDFG, first: nodes.Node, second: nodes.Node) -> str:
