@@ -12,7 +12,8 @@ pytest.importorskip("dace")
 
 import dace as dc
 
-from nestforge.introspect import describe_graph, interstate_definitions, resolve_scalars
+from nestforge import introspect
+from nestforge.introspect import describe_graph, interstate_definitions, kernel_body, resolve_scalars
 from nestforge.normalize import normalize_for_tree
 from nestforge.session import Session
 
@@ -142,3 +143,69 @@ def test_resolution_follows_a_chain_to_the_array():
 
 def test_an_unparsable_condition_is_passed_through():
     assert resolve_scalars("this is not python", {}) == "this is not python"
+
+
+# --- bodies: what each kernel computes -------------------------------------------------------------
+
+
+@dc.program
+def nested_maps(A: dc.float64[8, 4], B: dc.float64[8, 4]):
+    """An outer kernel whose body is another kernel."""
+    for i in dc.map[0:8]:
+        for j in dc.map[0:4]:
+            B[i, j] = A[i, j] * 2.0
+
+
+def with_bodies(program) -> str:
+    sdfg = program.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    return describe_graph(sdfg, bodies=True)
+
+
+def test_bodies_are_off_by_default():
+    """An emit per kernel is not free, and the structure alone is what a fusion decision needs."""
+    assert not [line for line in tree_of(shaped).splitlines() if introspect.BODY in line]
+    assert [line for line in with_bodies(shaped).splitlines() if introspect.BODY in line], "nothing to be off"
+
+
+def test_a_leaf_kernel_prints_what_it_computes():
+    tree = with_bodies(shaped)
+    assert f"{introspect.BODY}B[i0] = " in tree, tree
+    for line in tree.splitlines():
+        if introspect.BODY in line:
+            assert line.split(introspect.BODY, 1)[0].strip("| `") == "", "a body line must sit under its kernel"
+
+
+def test_a_body_does_not_repeat_its_headers():
+    """The kernel line already shows the domain those `for` headers iterate."""
+    for line in with_bodies(shaped).splitlines():
+        if introspect.BODY in line:
+            assert not line.split(introspect.BODY, 1)[1].startswith("for "), line
+
+
+def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
+    """`map_lines` recurses, so emitting here too would print the inner kernel twice -- once in the
+    outer kernel's body and once as its own row."""
+    sdfg = nested_maps.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    nested = [(st, n) for st in sdfg.all_states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry) and any(
+        isinstance(c, dc.sdfg.nodes.MapEntry) for c in st.scope_children()[n])]
+    assert nested, "fixture no longer nests one kernel inside another"
+    for state, entry in nested:
+        assert kernel_body(state, sdfg, entry) == []
+    # and the inner one, which is a leaf, does carry the statement
+    inner = [(st, n) for st in sdfg.all_states() for n in st.nodes()
+             if isinstance(n, dc.sdfg.nodes.MapEntry) and st.entry_node(n) is not None]
+    assert any(kernel_body(st, sdfg, n) for st, n in inner), "the inner kernel printed nothing either"
+
+
+def test_an_emitter_refusal_is_reported_on_the_line_not_raised(monkeypatch):
+    """The tree is a read-only view. A nest the numpy projection cannot express is exactly what the
+    agent needs to be told about, so it must not take the whole tree down."""
+
+    def refuse(state, sdfg, entry):
+        raise introspect.UnsupportedNest("no emitter for this")
+
+    monkeypatch.setattr(introspect, "map_lines", refuse)
+    tree = with_bodies(shaped)
+    assert "<not emitted: no emitter for this>" in tree

@@ -68,17 +68,17 @@ nothing else; each nest is then optimized by TRANSLATION to Fortran/C/C++ and me
 That makes the string tree a core API surface, not a debugging aid — it is the agent's only view of
 the program. Today it renders, but an agent cannot act on what it reads:
 
-- [ ] **B1** **The text tree carries no handles.** `describe_graph` prints `loop 'for_10'`, while the
+- [x] **B1** **The text tree carries no handles.** `describe_graph` prints `loop 'for_10'`, while the
       actionable ids come from a separate `Session.list_nests()` / `region_tree()` call with a
       different shape. The agent must join two views by eyeballing labels. Put the epoch-scoped id on
       the line it belongs to, so reading and acting use one vocabulary.
-- [ ] **B2** -> B1. **The tree shows containers, not bodies.** It lists regions, states and nests but
+- [x] **B2** -> B1. **The tree shows containers, not bodies.** It lists regions, states and nests but
       never the numpy the agent is reasoning about. Render each nest's body (or a bounded excerpt of
       it) inline, or give the line an id that fetches it, so one view answers both "where" and "what".
-- [ ] **B3** **Labels are frontend-generated and unstable** (`for_10`, `slice_A_vals_15` — the source
+- [x] **B3** **Labels are frontend-generated and unstable** (`for_10`, `slice_A_vals_15` — the source
       LINE NUMBER is in the name). Re-parsing the same program after an edit renames every node, so an
       agent's notes across rounds silently refer to different nests. Decide a stable naming scheme.
-- [ ] **B4** **Pin the format.** The tree is a prompt: a silent format change breaks every agent
+- [x] **B4** **Pin the format.** The tree is a prompt: a silent format change breaks every agent
       reading it, and nothing tests the rendering today. Add a golden-tree test the way
       `tests/test_phase_api_contract.py` pins the skill surface.
 

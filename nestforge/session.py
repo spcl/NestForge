@@ -104,15 +104,18 @@ class Session:
 
     # --- Phase 0: see the graph -------------------------------------------------------------------
 
-    def describe(self) -> str:
+    def describe(self, bodies: bool = False) -> str:
         """The SDFG as a TEXT tree, every line stamped with the id that acts on it. Read-only; safe at
         any epoch. See :meth:`region_tree` for the same tree as structured data.
+
+        ``bodies=True`` also prints what each leaf kernel COMPUTES, as numpy -- the second projection
+        of the same SDFG, for when a fusion choice turns on the arithmetic and not just the shape.
 
         The ids on the nest lines are the SAME handles :meth:`can_fuse` and :meth:`fuse` resolve, so the
         agent reads a line and acts on it without joining this view against a separate
         :meth:`list_nests` call by eyeballing labels.
         """
-        return describe_graph(self.sdfg, handle=self.tree_handle)
+        return describe_graph(self.sdfg, handle=self.tree_handle, bodies=bodies)
 
     def tree_handle(self, kind: str, obj: object) -> str:
         """The id :meth:`describe` stamps on one line. A nest gets a real minted handle, because the

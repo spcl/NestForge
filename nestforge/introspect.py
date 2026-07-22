@@ -32,10 +32,15 @@ from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, Contro
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
+from nestforge.emit_libnode import UnsupportedLibraryNode
+from nestforge.emit_numpy import UnsupportedNest, map_lines
 from nestforge.normalize import in_order
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
+
+#: Marks a numpy body line, so a statement is never mistaken for a tree row.
+BODY = ": "
 
 #: What a ``Handle`` is asked to name. ``region`` covers every control-flow block, ``nest`` every map.
 Handle = Callable[[str, object], str]
@@ -105,6 +110,27 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
     return ast.fix_missing_locations(tree)
 
 
+def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
+    """The numpy statements one kernel computes, without its ``for`` headers -- the kernel line already
+    shows the domain those headers iterate.
+
+    Only a LEAF kernel gets a body. A kernel containing another is rendered with that one as its own
+    child row, and ``map_lines`` recurses, so emitting here too would print the inner kernel twice.
+
+    An emitter refusal is reported on the line rather than raised: the tree is a read-only view, and a
+    nest the numpy projection cannot express is exactly what the agent needs to be told about.
+    """
+    children = state.scope_children()
+    if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
+        return []
+    try:
+        lines = map_lines(state, sdfg, entry)
+    except (UnsupportedNest, UnsupportedLibraryNode) as exc:
+        return [f"<not emitted: {exc}>"]
+    headers = len(entry.map.params)
+    return [line[4 * headers:] for line in lines[headers:]]
+
+
 def nest_reads_writes(container: SDFGState, node: nodes.Node) -> Tuple[List[str], List[str]]:
     """Arrays a nest reads and writes (the interface arrays), without outlining it. ``container`` is the
     ``SDFGState`` holding a ``MapEntry``; ignored for a ``LoopRegion`` (which carries its own states)."""
@@ -145,11 +171,16 @@ def render_range(rng) -> str:
     return text if step == 1 else f"{text}:{step}"
 
 
-def describe_graph(sdfg: dace.SDFG, handle: Optional[Handle] = None) -> str:
+def describe_graph(sdfg: dace.SDFG, handle: Optional[Handle] = None, bodies: bool = False) -> str:
     """The SDFG as an ASCII tree for the agent. Each line is one block or kernel; the guides show
-    nesting. ``handle(kind, obj)``, when given, returns the session id to stamp on that line."""
+    nesting. ``handle(kind, obj)``, when given, returns the session id to stamp on that line.
+
+    ``bodies=True`` prints what each leaf kernel COMPUTES, as numpy, under its line -- the second
+    projection of the same SDFG. It is off by default because it costs an emit per kernel, and the
+    structure alone is what a fusion decision needs.
+    """
     lines: List[str] = [f"SDFG '{sdfg.label}'"]
-    walk_regions(sdfg, "", lines, handle, interstate_definitions(sdfg))
+    walk_regions(sdfg, "", lines, handle, interstate_definitions(sdfg), bodies)
     return "\n".join(lines)
 
 
@@ -158,7 +189,8 @@ def stamp(text: str, handle: Optional[Handle], kind: str, obj: object) -> str:
     return f"[{handle(kind, obj)}] {text}" if handle is not None else text
 
 
-def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle], defs: Dict[str, str]) -> None:
+def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle], defs: Dict[str, str],
+                 bodies: bool) -> None:
     """Render one CFG's blocks under ``prefix``, recursing. ``prefix`` carries the guides of every
     ancestor, so a child knows whether to draw a pipe or a blank beneath each of them."""
     blocks = in_order(cfg)
@@ -167,15 +199,15 @@ def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle], d
         lines.append(prefix + (ELBOW if last else TEE) + stamp(block_line(block, defs), handle, "region", block))
         below = prefix + (BLANK if last else PIPE)
         if isinstance(block, SDFGState):
-            walk_state(block, below, lines, handle)
+            walk_state(block, below, lines, handle, bodies)
         elif isinstance(block, ConditionalBlock):
-            walk_branches(block, below, lines, handle, defs)
+            walk_branches(block, below, lines, handle, defs, bodies)
         elif isinstance(block, ControlFlowRegion):
-            walk_regions(block, below, lines, handle, defs)
+            walk_regions(block, below, lines, handle, defs, bodies)
 
 
 def walk_branches(block: ConditionalBlock, prefix: str, lines: List[str], handle: Optional[Handle],
-                  defs: Dict[str, str]) -> None:
+                  defs: Dict[str, str], bodies: bool) -> None:
     """A conditional's branches. They are held in ``branches``, not as graph nodes, and the FIRST
     matching one wins -- so they are rendered in stored order, which is execution order."""
     for index, (condition, branch) in enumerate(block.branches):
@@ -183,10 +215,10 @@ def walk_branches(block: ConditionalBlock, prefix: str, lines: List[str], handle
         tag = "else" if condition is None else f"when {resolve_scalars(condition.as_string, defs)}"
         body = stamp(f"{branch.label}  {tag}", handle, "region", branch)
         lines.append(prefix + (ELBOW if last else TEE) + body)
-        walk_regions(branch, prefix + (BLANK if last else PIPE), lines, handle, defs)
+        walk_regions(branch, prefix + (BLANK if last else PIPE), lines, handle, defs, bodies)
 
 
-def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional[Handle]) -> None:
+def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional[Handle], bodies: bool) -> None:
     """A state's kernels: every map nest, plus any library node (which is a kernel that never became a
     map). Nested scopes recurse, so an inner map is shown under the map that encloses it."""
     children = state.scope_children()
@@ -199,9 +231,12 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
         ]
         for index, node in enumerate(kernels):
             last = index == len(kernels) - 1
+            below = pad + (BLANK if last else PIPE)
             lines.append(pad + (ELBOW if last else TEE) + stamp(kernel_line(state, node), handle, "nest", node))
             if isinstance(node, nodes.MapEntry):
-                descend(node, pad + (BLANK if last else PIPE))
+                if bodies:
+                    lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node))
+                descend(node, below)
 
     descend(None, prefix)
 
