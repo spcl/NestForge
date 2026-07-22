@@ -166,6 +166,30 @@ def int_ceil(a, b):
 #: that knows the full set (a hand-rolled ``{"np": np}`` is how ``int_floor`` went missing in CI).
 EMITTED_BUILTINS = {"np": numpy, "int_floor": int_floor, "int_ceil": int_ceil}
 
+#: The same three names as SOURCE, so an emitted kernel can be a SELF-CONTAINED module instead of one
+#: that only runs under :func:`load_emitted`'s injected namespace. A representation handed to an agent
+#: has to be numpy it can paste into a file and run, and that a translator can read without being told
+#: what ``int_floor`` means -- an injected builtin is neither. Kept byte-identical in behaviour to the
+#: functions above; :func:`nestforge.emit_numpy.standalone_source` is what puts them in front of a body.
+STANDALONE_PREAMBLE = """import numpy as np
+
+
+def int_floor(a, b):
+    \"\"\"``floor(a / b)`` -- python ``//`` is already floored for both signs.\"\"\"
+    return a // b
+
+
+def int_ceil(a, b):
+    \"\"\"``ceil(a / b)``, sign-robust (``== (a + b - 1) // b`` for ``b > 0``).\"\"\"
+    return -((-a) // b)
+"""
+
+
+def standalone_source(fn_name: str, args: List[str], body: List[str]) -> str:
+    """A rendered kernel plus the preamble that makes it importable on its own -- pure numpy, no
+    injected namespace."""
+    return f"{STANDALONE_PREAMBLE}\n\n{render(fn_name, args, body)}"
+
 
 @functools.lru_cache(maxsize=None, typed=True)
 def emitted_dir() -> Path:

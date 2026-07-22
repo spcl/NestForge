@@ -37,7 +37,7 @@ from nestforge.arena import Cell, run_arena
 from nestforge.extract import find_state_of_node
 from nestforge.feedback import run_feedback_loop
 from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements, map_fission_moves
-from nestforge.introspect import describe_graph, kernel_body, nest_reads_writes
+from nestforge.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes
 from nestforge.offload import DEFAULT_GRANULARITY, label_nest, lower_nests_to_external_call, offload_candidates
 from nestforge.region_arms import RegionMove, apply_region_fusion, enumerate_region_fusions
 from nestforge.strategies import is_parallel_nest, top_level_map_entries
@@ -170,12 +170,35 @@ class Session:
         """
         if form != "point":
             raise ValueError(f"form={form!r} is not built yet; only 'point' exists (slice form is BK4)")
+        state, nest = self.map_nest(nest_id)
+        return kernel_body(state, self.sdfg, nest, state.scope_children())
+
+    def kernel_source(self, nest_id: str, lang: str = "python") -> str:
+        """ONE kernel as a complete, RUNNABLE module -- its representation, not an excerpt.
+
+        ``kernel_body`` returns the statements the tree prints under a line; those reference loop
+        variables that exist only inside their headers, so they are a fragment. This returns the whole
+        thing: preamble, ``def`` with a real signature, the loop nest. Pure numpy -- no injected
+        namespace -- so it runs where it is pasted and a translator can read it without being told what
+        ``int_floor`` means.
+
+        ``lang`` other than ``"python"`` goes through the numpy translator (not wired yet) rather than
+        through a second emitter, so C and C++ are this same numpy, lowered.
+        """
+        if lang != "python":
+            raise ValueError(f"lang={lang!r} is not wired yet; C/C++/Fortran come from lowering the "
+                             "python form through the numpy translator, which is BK5")
+        state, nest = self.map_nest(nest_id)
+        return kernel_source(state, self.sdfg, nest)
+
+    def map_nest(self, nest_id: str) -> Tuple[SDFGState, nodes.MapEntry]:
+        """Resolve a nest id to ``(state, MapEntry)``, or refuse. A ``LoopRegion`` has no map body: it
+        is a loop the parallelizer left alone, and its kernels are the nests inside it."""
         nest = self.resolve(nest_id, "nest")
         if not isinstance(nest, nodes.MapEntry):
             raise TypeError(f"{nest_id} is a {type(nest).__name__}, which has no map body; "
                             "its kernels are the nests inside it")
-        state = find_state_of_node(self.sdfg, nest)
-        return kernel_body(state, self.sdfg, nest, state.scope_children())
+        return find_state_of_node(self.sdfg, nest), nest
 
     # --- Level 2: nest fusion (fuse maps / loops within a region) ----------------------------------
 

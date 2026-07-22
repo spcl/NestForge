@@ -192,10 +192,34 @@ kernel2_0  [i0=0:N, i1=0:M]  reduce=(+ over i1 -> C)  reads=['A','B'] writes=['C
 If numpyto later fuses a reduction into its slice-fusion nest, `declared` becomes free and the default
 should be revisited. That is a numpyto change, not a nest-forge one.
 
+## The representation is pure, runnable numpy -- or it does not count
+
+A kernel handed to an agent is **a complete numpy module it can paste in a file and run**, or **C /
+C++ generated from that same numpy by the translator**. Nothing else is a representation.
+
+Two things failed that bar and are fixed:
+
+- **A body without its headers is a fragment.** `kernel_body` returns the statements the tree prints
+  under a line, and they reference loop variables that exist only inside the headers it stripped.
+  Useful as an excerpt, not runnable. `kernel_source` is the representation: preamble, `def` with a
+  real signature, the loop nest.
+- **The emitted numpy had no imports.** `np`, `int_floor` and `int_ceil` were supplied by
+  `EMITTED_BUILTINS` at load time, so the source only ran inside `load_emitted`'s namespace -- and a
+  translator reading it would meet three undefined names. `STANDALONE_PREAMBLE` now emits them as
+  source, verified to match the injected helpers on every sign combination of both divisions.
+
+Being runnable is also what makes "correct" checkable rather than asserted: emit the kernel, `exec` it
+in a BARE dict, run it, and compare against what the SDFG computes. A representation nothing can
+execute cannot be shown to be correct. That test exists.
+
+And C/C++ are not a second emitter. They are this numpy, lowered by numpyto -- one waist, so a
+backend can never disagree with the oracle about what the kernel means.
+
 ## The API
 
 ```python
-Session.kernel_body(nest_id, form="point", lang="python") -> str
+Session.kernel_source(nest_id, lang="python") -> str   # the REPRESENTATION: a runnable module
+Session.kernel_body(nest_id, form="point") -> List[str]  # the excerpt the tree prints
 ```
 
 - `form`: `"point"` | `"slice"`

@@ -35,7 +35,7 @@ from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.emit_libnode import UnsupportedLibraryNode
-from nestforge.emit_numpy import UnsupportedNest, map_body_lines
+from nestforge.emit_numpy import UnsupportedNest, map_body_lines, map_lines, standalone_source
 from nestforge.normalize import in_order
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
@@ -135,6 +135,30 @@ def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, childr
         return map_body_lines(state, sdfg, entry)
     except (UnsupportedNest, UnsupportedLibraryNode) as exc:
         return [f"<not emitted: {exc}>"]
+
+
+def kernel_args(state: SDFGState, entry: nodes.MapEntry) -> List[str]:
+    """One kernel's parameters: the arrays it touches, then the symbols its domain needs. Sorted, so
+    two runs over one kernel produce the same signature."""
+    reads, writes = nest_reads_writes(state, entry)
+    arrays = sorted(set(reads) | set(writes))
+    symbols = sorted({str(sym) for sym in entry.map.range.free_symbols} - set(arrays))
+    return arrays + symbols
+
+
+def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
+    """ONE kernel as a complete, runnable numpy module.
+
+    This is the kernel's REPRESENTATION, as against :func:`kernel_body`, which is the compact excerpt
+    the tree prints under a line. The difference matters: a body alone references loop variables that
+    do not exist outside their headers, so it is a fragment -- not something an agent can run, and not
+    something a translator can read. This returns the loop nest inside a ``def`` with a real signature,
+    on top of a preamble that defines everything the body calls. Paste it in a file and it runs.
+
+    That it RUNS is also what makes it checkable: emit, execute, compare against the SDFG. A
+    representation nothing can execute cannot be shown to be correct.
+    """
+    return standalone_source(entry.map.label, kernel_args(state, entry), map_lines(state, sdfg, entry))
 
 
 #: ``ReductionType`` -> how the tree spells it. Anything absent renders its enum name lowercased, so

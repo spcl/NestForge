@@ -6,6 +6,8 @@ to be made deliberately rather than drifting out of an unrelated edit.
 """
 import re
 
+import numpy as np
+
 import pytest
 
 pytest.importorskip("dace")
@@ -314,3 +316,56 @@ def test_a_stale_id_does_not_silently_return_someone_elses_body():
     session.bump()
     with pytest.raises(KeyError):
         session.kernel_body(nest_id)
+
+
+# --- a kernel's REPRESENTATION: pure, runnable numpy -------------------------------------------------
+
+
+def source_of_first_kernel(program):
+    sdfg = program.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    return sdfg, session, session.kernel_source(nest_id)
+
+
+def test_a_kernel_source_is_a_whole_module_not_a_fragment():
+    """`kernel_body` is the excerpt the tree prints; its statements reference loop variables that only
+    exist inside their headers. The REPRESENTATION has to be something an agent can run."""
+    _, _, source = source_of_first_kernel(shaped)
+    assert source.startswith("import numpy as np")
+    assert "\ndef kernel" in source
+    compile(source, "<kernel>", "exec")  # syntactically a module, not a snippet
+
+
+def test_a_kernel_source_runs_with_NOTHING_injected():
+    """No EMITTED_BUILTINS, no `np` handed in -- pure numpy or it does not count."""
+    _, _, source = source_of_first_kernel(matvec)
+    namespace = {}
+    exec(source, namespace)  # a bare dict: only what the source itself defines
+    assert "int_floor" in namespace and "np" in namespace
+
+
+def test_a_kernel_source_computes_what_the_sdfg_computes():
+    """The point of it being runnable: emit, execute, compare. A representation nothing can execute
+    cannot be shown to be correct."""
+    sdfg, session, source = source_of_first_kernel(matvec)
+    namespace = {}
+    exec(source, namespace)
+    kernel = next(v for k, v in namespace.items() if k.startswith("kernel") and callable(v))
+
+    A = np.linspace(0.5, 4.0, 32).reshape(8, 4).copy()
+    B = np.linspace(1.0, 2.0, 4).copy()
+    from_source = np.zeros(8)
+    kernel(A, B, from_source)
+
+    from_sdfg = np.zeros(8)
+    sdfg(A=A.copy(), B=B.copy(), C=from_sdfg)
+    assert np.array_equal(from_source, from_sdfg), (from_source, from_sdfg)
+
+
+def test_an_unwired_language_is_refused_by_name():
+    _, session, _ = source_of_first_kernel(shaped)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    with pytest.raises(ValueError, match="translator"):
+        session.kernel_source(nest_id, lang="cpp")
