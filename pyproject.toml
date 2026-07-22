@@ -21,8 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-# Every PyPI-resolvable module-level import of `nestforge`. `dace` and `optarena` are deliberately
-# ABSENT although nestforge imports both: optarena is not on PyPI at all (listing it makes `pip install
+# Every PyPI-resolvable module-level import of `nestforge`. `dace` and `hpcagent_bench` are deliberately
+# ABSENT although nestforge imports both: hpcagent_bench is not on PyPI at all (listing it makes `pip install
 # -e .` fail), and PyPI's `dace` tops out at 1.0.2 while nest-forge needs the `extended` branch. Both
 # come from requirements-dev.txt as editable sibling checkouts. A PEP 508 git URL is worse than omitting
 # them -- pip treats it as unsatisfied by a local editable and reinstalls over the checkout.

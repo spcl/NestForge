@@ -1,8 +1,8 @@
 """Drive the numpy translator: extracted nest -> numpy + manifest -> C/C++/Fortran sources.
 
 The translation step goes through :mod:`nestforge.translator` (nest-forge's native surface over
-optarena's ``numpyto`` driver), not optarena directly, so the kernel need not be registered in
-optarena's benchmark registry.
+hpcagent_bench's ``numpyto`` driver), not optarena directly, so the kernel need not be registered in
+hpcagent_bench's benchmark registry.
 """
 from __future__ import annotations
 

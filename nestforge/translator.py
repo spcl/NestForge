@@ -1,5 +1,5 @@
-"""Native surface for optarena's **numpy translator**: turn a ``*_numpy.py`` kernel plus its
-``BenchSpec`` manifest into C / C++ / Fortran source via optarena's ``numpyto`` driver.
+"""Native surface for hpcagent_bench's **numpy translator**: turn a ``*_numpy.py`` kernel plus its
+``BenchSpec`` manifest into C / C++ / Fortran source via hpcagent_bench's ``numpyto`` driver.
 
 Wrapping it here (alongside :mod:`nestforge.corpus`) keeps the rest of nest-forge depending on
 ``nestforge.*`` rather than reaching into the optarena dependency directly.
@@ -13,10 +13,10 @@ from typing import List
 
 from nestforge.build import COMPILE_TIMEOUT_S
 
-from optarena import emit_bridge
-from optarena.spec import BenchSpec
+from hpcagent_bench import emit_bridge
+from hpcagent_bench.spec import BenchSpec
 
-#: optarena's numpy -> {C, C++, Fortran} translator CLI entry point.
+#: hpcagent_bench's numpy -> {C, C++, Fortran} translator CLI entry point.
 DRIVER = "numpyto_common.cli"
 
 __all__ = ["BenchSpec", "DRIVER", "translate"]

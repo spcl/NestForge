@@ -82,10 +82,10 @@ def test_manifest_resolves_from_per_kernel_subfolder():
     # degenerates to all-zeros (see tests/test_index_fills.py). Resolve via the KERNELS registry instead.
     vag = tsvc.iter_tsvc_kernels(only=["vag"], corpus="tsvc2")[0]  # tsvc2: tsvc_2_<key> stem
     assert vag.yaml_path is not None and vag.yaml_path.exists()
-    assert vag.optarena_name == "tsvc_2_vag"
+    assert vag.bench_name == "tsvc_2_vag"
     assert vag.native_cpp is not None and vag.native_cpp.name == "tsvc_2_vag_original.cpp"
     reroll = tsvc.iter_tsvc_kernels(only=["reroll_gather"], corpus="tsvc2_5")[0]  # tsvc2_5: bare <key> stem
-    assert reroll.yaml_path is not None and reroll.optarena_name == "reroll_gather"
+    assert reroll.yaml_path is not None and reroll.bench_name == "reroll_gather"
 
 
 def test_sample_sizes_indices_zero_shapes_sized():

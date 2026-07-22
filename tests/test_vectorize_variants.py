@@ -10,7 +10,7 @@ import dace
 from nestforge import vectorize_variants as vv
 from dace.transformation.passes.vectorization.config import VectorizeConfig
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 N = dace.symbol("N")
 

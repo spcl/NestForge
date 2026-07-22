@@ -5,7 +5,7 @@ Two upstreams, joined per kernel by its short name (``s000``, ``vpv``, ...):
 
   * **SDFG source** -- DaCe's ``performance_regression_jobs/tsvc_corpus.py`` (151 typed
     ``@dace.program`` kernels), loaded by file path since it is a script, not a package; overridable
-    with ``NESTFORGE_TSVC_CORPUS``. OptArena's ``foundation`` track ships no ``_dace.py``.
+    with ``NESTFORGE_TSVC_CORPUS``. hpcagent_bench's ``foundation`` track ships no ``_dace.py``.
   * **native baseline** -- ``foundation/tsvc_2_<key>_original.cpp``, symbol ``<key>_d``: the arena's
     "how well does this compiler auto-vectorize the reference loop" column.
 
@@ -32,8 +32,8 @@ from dace.transformation.auto.auto_optimize import auto_optimize
 from dace.transformation.passes.canonicalize import canonicalize
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
-from optarena.initialize import fill_index_array
-from optarena.spec import KERNELS, BenchSpec
+from hpcagent_bench.initialize import fill_index_array
+from hpcagent_bench.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
 from nestforge.extract import trip_count_symbols
@@ -75,7 +75,7 @@ _SYM_RANGE = {"LEN_1D": (4096, 131072), "LEN_2D": (64, 512)}
 #: Fixed size per shape symbol when ``--random-sizes`` is off (the OptArena ``M`` preset for
 #: ``LEN_1D``; a moderate square for ``LEN_2D``).
 _SYM_FIXED = {"LEN_1D": 32768, "LEN_2D": 256}
-#: Preset names never sampled: OptArena's ``XL`` ``LEN_1D`` is 268435455 (~2 GiB fp64), impractical.
+#: Preset names never sampled: hpcagent_bench's ``XL`` ``LEN_1D`` is 268435455 (~2 GiB fp64), impractical.
 _SKIP_PRESETS = frozenset({"XL"})
 
 #: corpus name -> the DaCe ``performance_regression_jobs`` script that defines its ``@dace.program`` s.
@@ -171,7 +171,7 @@ class TsvcKernel:
         return entry if entry is not None and entry.exists() else None
 
     @property
-    def optarena_name(self) -> Optional[str]:
+    def bench_name(self) -> Optional[str]:
         """The kernel's OptArena short name (the manifest stem), or ``None`` when it has no manifest."""
         return self.yaml_path.stem if self.yaml_path is not None else None
 
@@ -344,7 +344,7 @@ def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optio
     ``(LEN_2D,LEN_2D)`` fp64 buffer is 2 GiB at ``XL``), at the SDFG descriptor's dtype -- the width the
     compiled code reads across the ABI. ``seed=None`` draws fresh entropy (fuzz); an int pins the fill.
     """
-    return index_fills_for_manifest(kernel.optarena_name, boundary, sizes, seed=seed)
+    return index_fills_for_manifest(kernel.bench_name, boundary, sizes, seed=seed)
 
 
 def index_fills_for_manifest(manifest_name: Optional[str],

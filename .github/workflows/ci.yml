@@ -1,6 +1,6 @@
 name: CI
 
-# One CPU runner: format gate -> toolchain via scripts/setup_apt.sh -> DaCe(extended)+OptArena editable
+# One CPU runner: format gate -> toolchain via scripts/setup_apt.sh -> DaCe(extended)+hpcagent_bench editable
 # from GitHub -> pytest. nvc++/icpx are absent here, so vendor-compiler + heavy-launcher tests are
 # @pytest.mark.integration and excluded; g++/clang++ + libomp cover the OpenMP matrix.
 # Must stay credential-free: a dep needing a secret stops CI running on fork PRs.
@@ -56,7 +56,7 @@ jobs:
           ccache --zero-stats
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
-      - name: Phase 2 -- DaCe (extended) + OptArena + nest-forge[dev], editable
+      - name: Phase 2 -- DaCe (extended) + hpcagent_bench + nest-forge[dev], editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
           # Editable from GitHub over HTTPS: both repos are public, so no key/token, which keeps this
@@ -66,14 +66,18 @@ jobs:
           # --src keeps clones OUT of the workspace -- pytest puts the repo root on sys.path, so a ./dace
           # directory would shadow the `dace` package.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
-          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=optarena"
+          # The PACKAGE is now `hpcagent_bench` (renamed from `optarena`); the GitHub REPO is still
+          # spcl/OptArena, so the URL keeps the old name until the repo itself is renamed. This step
+          # fails until the rename is pushed upstream -- that is expected and is the whole cost of
+          # flipping the imports before the push.
+          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=hpcagent_bench"
           # AFTER dace: dace-fortran pins dace @ FaCe (a subset of extended), so with extended already
           # resolved pip keeps it rather than fetching a second dace over the top.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace-fortran.git#egg=dace-fortran"
           # nest-forge + [dev]. matplotlib is required: the plot smokes run perf/plot_*.py as a
           # SUBPROCESS, where a missing import surfaces only as "exit status 1".
           pip_retry -e ".[dev]"
-          python -c "import dace, optarena; print('dace', dace.__file__); print('optarena', optarena.__file__)"
+          python -c "import dace, hpcagent_bench; print('dace', dace.__file__); print('bench', hpcagent_bench.__file__)"
 
       # Unit set only. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the session if any remaining test
       # skips -- the unit set must run with zero skips.

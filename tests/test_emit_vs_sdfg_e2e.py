@@ -1,6 +1,6 @@
 """End-to-end: nest-forge's emitted code reproduces the DaCe SDFG, on the most complex corpus kernels.
 
-nest-forge lowers a DaCe SDFG to standalone numpy (:func:`sdfg_to_numpy`), which OptArena's ``numpyto``
+nest-forge lowers a DaCe SDFG to standalone numpy (:func:`sdfg_to_numpy`), which hpcagent_bench's ``numpyto``
 then turns into C / C++ / Fortran. This suite checks that whole pipeline is a FAITHFUL translation of the
 SDFG, on the hardest TSVC + level-3 corpus kernels (control flow, reductions, recurrences, multi-nest,
 linear algebra).
@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 from dace import symbolic
 

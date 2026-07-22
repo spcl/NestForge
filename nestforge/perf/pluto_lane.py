@@ -18,14 +18,14 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from optarena.pluto_affine import scop_nonaffine_reason
+from hpcagent_bench.pluto_affine import scop_nonaffine_reason
 
 #: The polyhedral compiler driver. A shell wrapper that execs the pluto solver + isl + a C compiler.
 POLYCC = "polycc"
 
 #: Pluto's transformed output is built with these ON TOP of the C base flags: ``_POSIX_C_SOURCE`` is
 #: re-supplied because clan/pet drops the source's leading define, and ``-fopenmp`` turns on the
-#: parallelization polycc emitted (mirrors optarena's ``_PLUTO_EXTRA_FLAGS``).
+#: parallelization polycc emitted (mirrors hpcagent_bench's ``_PLUTO_EXTRA_FLAGS``).
 PLUTO_EXTRA_FLAGS: Tuple[str, ...] = ("-D_POSIX_C_SOURCE=199309L", "-fopenmp")
 
 

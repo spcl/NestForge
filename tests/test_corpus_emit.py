@@ -9,7 +9,7 @@ import inspect
 import numpy as np
 import pytest
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 from dace import symbolic
 

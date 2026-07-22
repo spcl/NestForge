@@ -1,7 +1,7 @@
 # nest-forge
 
 Extract loop-/map-nests from a DaCe SDFG, re-emit each as a standalone numpy reference + YAML config,
-farm them out to OptArena's translator for C/C++/Fortran variants, compile across a compiler × flag ×
+farm them out to hpcagent_bench's translator for C/C++/Fortran variants, compile across a compiler × flag ×
 FP-mode matrix, benchmark, pick the best per nest, link winners into the full program, and compare
 against baselines. A DaCe backend competes in the same arena.
 
@@ -59,7 +59,7 @@ granularity, and nothing else.** Every move is legality-gated, so the graph it h
 same values. Choosing *how fast* those values are computed is the framework's job, not the agent's.
 
 From there each loop nest is optimized by translation, not by rewriting: the numpy body goes through
-OptArena's translator to **Fortran / C / C++** (and a Fortran or C source can be the *input* instead —
+hpcagent_bench's translator to **Fortran / C / C++** (and a Fortran or C source can be the *input* instead —
 see the entry contract above), and the arena compiles the variants and measures them. So one nest is
 optimized in every language and toolchain that can express it, and the winner is decided by measurement.
 

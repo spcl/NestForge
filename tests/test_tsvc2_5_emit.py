@@ -16,7 +16,7 @@ import inspect
 import numpy as np
 import pytest
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 from nestforge import tsvc
 from nestforge.extract import extract_nest_to_sdfg

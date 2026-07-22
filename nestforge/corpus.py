@@ -1,10 +1,10 @@
-"""Load real npbench/polybench kernels from the installed ``optarena`` package as SDFGs.
+"""Load real npbench/polybench kernels from the installed ``hpcagent_bench`` package as SDFGs.
 
 optarena ships each kernel as ``<name>_numpy.py`` (oracle) + ``<name>.yaml`` (BenchSpec) and, for the
 HPC/ML tracks, a ``<name>_dace.py`` holding a ``@dace.program`` -- import it, ``to_sdfg`` it, feed it
 to the lowering pass.
 
-Kernels bind optarena's ``dc_float`` precision global at import time, so it must be stamped to fp64
+Kernels bind hpcagent_bench's ``dc_float`` precision global at import time, so it must be stamped to fp64
 before any kernel module imports.
 """
 from __future__ import annotations
@@ -17,8 +17,8 @@ from typing import Iterator, List, Optional
 
 import dace
 
-from optarena import autogen
-from optarena.spec import KERNELS, BenchSpec
+from hpcagent_bench import autogen
+from hpcagent_bench.spec import KERNELS, BenchSpec
 
 #: Tracks whose ``_dace.py`` optarena generates on demand (gitignored, never committed). foundation
 #: (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it's never materialized here.
@@ -26,8 +26,8 @@ DACE_TRACKS = ("hpc", "ml")
 
 
 def set_precision_fp64() -> None:
-    """Fix optarena's kernel dtype global to float64 before kernel modules import it."""
-    import optarena.frameworks.dace_framework as dfw
+    """Fix hpcagent_bench's kernel dtype global to float64 before kernel modules import it."""
+    import hpcagent_bench.frameworks.dace_framework as dfw
     dfw.dc_float = dace.float64
     dfw.dc_complex_float = dace.complex128
 
@@ -43,7 +43,7 @@ class CorpusKernel:
     def module(self):
         """Import the kernel's ``_dace.py`` by file path.
 
-        Loading by path (not ``import_module``) sidesteps ``optarena.benchmarks`` namespace-package
+        Loading by path (not ``import_module``) sidesteps ``hpcagent_bench.benchmarks`` namespace-package
         resolution, which can non-deterministically bind to a stray duplicate ``benchmarks/`` root.
         """
         if self.module_path in sys.modules:
@@ -58,7 +58,7 @@ class CorpusKernel:
         """The kernel's *entry* ``@dace.program``, selected by the manifest's ``func_name``.
 
         A module often defines helper programs before it and a ``*_gpu`` variant after, so neither
-        "first" nor "last" is reliable; mirrors optarena's own ``_import_kernel``.
+        "first" nor "last" is reliable; mirrors hpcagent_bench's own ``_import_kernel``.
         """
         set_precision_fp64()
         module = self.module()
@@ -77,7 +77,7 @@ class CorpusKernel:
 def module_path(short_name: str) -> str:
     """Canonical dotted name for a kernel's ``_dace.py`` (a stable sys.modules cache key)."""
     *dirs, module_name = short_name.split("/")
-    return f"optarena.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
+    return f"hpcagent_bench.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
 
 
 def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
@@ -91,7 +91,7 @@ def iter_dace_kernels(track: Optional[str] = None) -> Iterator[CorpusKernel]:
         module_name = short_name.rsplit("/", 1)[-1]
         dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
         if not dace_file.exists() and short_name.split("/", 1)[0] in DACE_TRACKS:
-            autogen.ensure(short_name, ("dace", ))  # regenerate optarena's gitignored _dace.py on demand
+            autogen.ensure(short_name, ("dace", ))  # regenerate hpcagent_bench's gitignored _dace.py on demand
         if not dace_file.exists():
             continue
         yield CorpusKernel(short_name=short_name,

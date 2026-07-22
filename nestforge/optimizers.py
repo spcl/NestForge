@@ -9,7 +9,7 @@ whole loop (propose -> build -> validate -> time) runs in CI with no model and n
 
 This mirrors ``optarena.harness.optimizers`` (its ``NoOpOptimizer`` / ``StubAgent``): the same "each
 variant is an optimizer, the agent is just another one" philosophy, expressed over nest-forge's own
-``nest`` / :class:`~nestforge.build.BuildOptions` / measure model rather than optarena's Task/Binding.
+``nest`` / :class:`~nestforge.build.BuildOptions` / measure model rather than hpcagent_bench's Task/Binding.
 
 A :class:`Proposal` is only a RECIPE -- what the existing arena measure path already consumes. Nothing here
 compiles or validates; that stays in :mod:`nestforge.perf.tsvc_full` / :mod:`nestforge.arena`. Predicting

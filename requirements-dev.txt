@@ -1,4 +1,4 @@
-# nest-forge dev/test deps for a LOCAL box: sibling checkouts ../dace, ../optarena, ../dace-fortran
+# nest-forge dev/test deps for a LOCAL box: sibling checkouts ../dace, ../optarena (the hpcagent_bench package), ../dace-fortran
 # installed editable. Run `git -C ../dace switch extended` first. CI does not use this file -- it
 # installs the same three editable from GitHub (see .github/workflows/ci.yml, Phase 2).
 

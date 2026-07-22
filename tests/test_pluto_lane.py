@@ -106,7 +106,7 @@ def _fake_identity_polycc(dirpath: Path) -> str:
     identity 'transform'. Since the emitted ``_pluto_input.c`` is already a valid sequential C kernel with
     the VLA/size-first signature, compiling+running the copy exercises the WHOLE marshaling path (binding ->
     size-first order -> c_argtypes -> call_c) against the oracle, without needing a real Pluto install. Only
-    the polyhedral RESCHEDULE (a perf transform) is unexercised -- that is validated in optarena's oracle."""
+    the polyhedral RESCHEDULE (a perf transform) is unexercised -- that is validated in hpcagent_bench's oracle."""
     p = dirpath / "polycc"
     p.write_text('#!/bin/sh\n# args: --pet <src> -o <out>\ncp "$2" "$4"\n')
     p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

@@ -3,7 +3,7 @@
 
 The case under test is the integer index array. The default uniform float fill cast to an integer dtype
 collapses to ALL-ZEROS, which silently degrades a gather ``a[i] = b[ip[i]]`` into a single cached read of
-``b[0]`` and inverts a scatter ``a[ip[i]] = ...`` from OptArena's guaranteed conflict-FREE permutation into
+``b[0]`` and inverts a scatter ``a[ip[i]] = ...`` from hpcagent_bench's guaranteed conflict-FREE permutation into
 a maximal write conflict on ``a[0]``. Both are invisible to validation -- the oracle reads the same
 degenerate ``ip`` -- so only an explicit test pins the property.
 """
@@ -93,7 +93,7 @@ def test_index_fills_empty_for_a_kernel_without_a_manifest():
     boundary = first_nest(kernel)
     sizes = sample_sizes(kernel, boundary, seed=0, preset="S")
     kernel.key = "no_such_kernel_anywhere"  # -> no manifest
-    assert kernel.optarena_name is None
+    assert kernel.bench_name is None
     assert index_fills(kernel, boundary, sizes) == {}
 
 

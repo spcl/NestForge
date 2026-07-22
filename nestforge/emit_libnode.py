@@ -1,6 +1,6 @@
 """Emit numpy operations for DaCe library nodes (BLAS / LinAlg / reductions / FFT).
 
-Re-emitting a library node as the equivalent numpy op keeps the reference dense so OptArena's
+Re-emitting a library node as the equivalent numpy op keeps the reference dense so hpcagent_bench's
 translators recover an idiomatic kernel; only a nest with *no* library node falls back to explicit
 ``for`` loops (see :mod:`nestforge.emit_numpy`). Operand resolution lives here so the registry stays a
 flat class-name -> statement-builder table.

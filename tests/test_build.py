@@ -17,7 +17,7 @@ import dace
 
 import nestforge.build as build_mod
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 pytestmark = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not on PATH")
 
 from nestforge.corpus import iter_dace_kernels

@@ -70,7 +70,7 @@ P1 is fixed. P2–P4 are the agent. The comparison baseline is P1 + heuristic of
 | **Guardrail** | legality-gated + re-validated bit-exact vs oracle. The agent can only change speed, never correctness. |
 | **Reward** | measured performance; cost-model proxy between real runs. Warm start from the heuristics. |
 
-Agent kind: LLM with the transformations / codegen as tools and the oracle as verifier (fits optarena's agent infra). **Never run real inference on the dev box — scripted/stub only.**
+Agent kind: LLM with the transformations / codegen as tools and the oracle as verifier (fits hpcagent_bench's agent infra). **Never run real inference on the dev box — scripted/stub only.**
 
 ## Verification (precedes any agent)
 

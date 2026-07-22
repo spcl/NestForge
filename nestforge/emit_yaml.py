@@ -1,6 +1,6 @@
 """Emit an OptArena ``BenchSpec`` manifest (symbols, array shapes, dtypes) for an extracted nest.
 
-The manifest mirrors the fields OptArena's translator needs (verified against its ``gemm`` /
+The manifest mirrors the fields hpcagent_bench's translator needs (verified against its ``gemm`` /
 ``vsumr`` kernels):
   * ``input_args``  -- the FULL positional signature of the numpy kernel (arrays -- inputs, outputs and
     scratch transients alike, every one caller-allocated -- then symbols),

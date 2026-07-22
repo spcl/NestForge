@@ -7,7 +7,7 @@ import pytest
 
 from nestforge import device_profile as dp
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 
 @pytest.mark.parametrize("detected,expected", [

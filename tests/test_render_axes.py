@@ -7,7 +7,7 @@ from nestforge import tsvc
 from nestforge.build import CODEGEN_IMPLS
 from nestforge.perf import flags, render_axes
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 
 def test_readme_figure_is_current():

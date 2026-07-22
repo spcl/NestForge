@@ -1,7 +1,7 @@
 """Detection strategies: skip-taskloops (default), innermost maps, innermost loops."""
 import pytest
 
-pytest.importorskip("optarena")
+pytest.importorskip("hpcagent_bench")
 
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
