@@ -18,8 +18,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.normalize import (WRAP_PARAM, block_kind, free_tasklets, in_order, inline_top_level_nsdfgs,
-                                 normalize_for_tree, normalize_labels, top_level_nsdfgs, wrap_free_tasklets,
-                                 wrap_groups)
+                                 normalize_for_tree, rename_map_params, rename_transient_arrays, top_level_nsdfgs,
+                                 wrap_free_tasklets, wrap_groups)
 
 LABEL = re.compile(r"^(state|for|while|if|block|continue|break|return)(\d+)_(\d+)$")
 KERNEL = re.compile(r"^kernel(\d+)_(\d+)$")
@@ -339,3 +339,63 @@ def test_normalization_preserves_the_result_of_a_descending_loop():
     B = np.zeros(20)
     sdfg(A=A, B=B)
     assert np.array_equal(B, A * 2.0)
+
+
+# --- canonical data names --------------------------------------------------------------------------
+
+
+def test_transient_arrays_are_renamed_but_the_interface_is_not():
+    """A frontend qualifies a transient with its whole module path, which is most of the width of a
+    tree line and names nothing the agent can act on. Non-transients are the program's interface --
+    the boundary, the manifest and the emitted numpy signature all name them -- so they stay."""
+    sdfg = nested_call.to_sdfg(simplify=False)
+    interface = {n for n, desc in sdfg.arrays.items() if not desc.transient}
+    normalize_for_tree(sdfg)
+    assert interface <= set(sdfg.arrays), "a non-transient was renamed"
+    transients = [n for n, d in sdfg.arrays.items() if d.transient and not isinstance(d, dc.data.Scalar)]
+    assert all(re.fullmatch(r"t\d+", n) for n in transients), f"uncanonical transient in {transients}"
+
+
+def test_renaming_never_collides_with_a_name_that_survives():
+    """A survivor already called ``t0`` would be clobbered by whatever is renamed to ``t0``."""
+
+    @dc.program
+    def collide(t0: dc.float64[20], B: dc.float64[20]):
+        tmp = t0 * 2.0
+        B[:] = tmp + 1.0
+
+    sdfg = collide.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    assert "t0" in sdfg.arrays and not sdfg.arrays["t0"].transient, "the interface array t0 was overwritten"
+
+
+def test_map_params_are_canonical():
+    sdfg = branchy.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    for entry in all_maps(sdfg):
+        if WRAP_PARAM in entry.map.params:
+            continue
+        assert entry.map.params == [f"i{axis}" for axis in range(len(entry.map.params))]
+
+
+def test_renaming_nothing_changes_nothing():
+    sdfg = branchy.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    before = sdfg.to_json()
+    assert rename_transient_arrays(sdfg) == {}
+    rename_map_params(sdfg)
+    assert sdfg.to_json() == before
+
+
+@pytest.mark.e2e
+def test_renaming_preserves_the_result():
+    """The renames touch every memlet that names a transient, so this is the check that matters."""
+    sdfg = two_maps.to_sdfg(simplify=True)
+    A = np.linspace(1.0, 3.0, 20).copy()
+    expected = A + 1.0
+    expected = expected + expected[0] * 2.0
+    normalize_for_tree(sdfg)
+    sdfg.validate()
+    got = np.zeros(20)
+    sdfg(A=A, B=got)
+    assert np.array_equal(got, expected)

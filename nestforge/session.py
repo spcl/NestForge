@@ -10,7 +10,9 @@ The contract:
   * A ``list_*`` call mints ids at the session's current epoch and returns plain data (labels, read/write
     sets, reasons) -- never a node.
   * A mutating call (:meth:`fuse`, :meth:`fission_all`, :meth:`fission_map`, :meth:`externalize`) bumps the
-    epoch and clears every handle, then returns the fresh graph.
+    epoch and clears every handle, then returns the fresh graph. The tree it returns carries ids again --
+    minted at the NEW epoch by :meth:`describe` -- so the agent can act on what it was just handed
+    without a re-list; it is only the ids it held from BEFORE the call that are now stale.
   * An id from a past epoch no longer resolves: :meth:`resolve` raises :class:`StaleHandle` telling the
     agent to re-list. That is the safety net -- the "enumerate -> apply one -> re-enumerate" discipline the
     arms require, enforced by the id scheme instead of by the agent remembering to do it.
@@ -103,9 +105,21 @@ class Session:
     # --- Phase 0: see the graph -------------------------------------------------------------------
 
     def describe(self) -> str:
-        """The control-flow-region tree as TEXT, each nest with its parallel/sequential nature and read/write
-        sets. Read-only; safe at any epoch. See :meth:`region_tree` for the same tree as structured data."""
-        return describe_graph(self.sdfg)
+        """The SDFG as a TEXT tree, every line stamped with the id that acts on it. Read-only; safe at
+        any epoch. See :meth:`region_tree` for the same tree as structured data.
+
+        The ids on the nest lines are the SAME handles :meth:`can_fuse` and :meth:`fuse` resolve, so the
+        agent reads a line and acts on it without joining this view against a separate
+        :meth:`list_nests` call by eyeballing labels.
+        """
+        return describe_graph(self.sdfg, handle=self.tree_handle)
+
+    def tree_handle(self, kind: str, obj: object) -> str:
+        """The id :meth:`describe` stamps on one line. A nest gets a real minted handle, because the
+        fusion calls resolve it. A region gets the stable descriptive id :meth:`region_id` hands out --
+        no method resolves a ``region`` kind, so minting one would grow the registry on a read-only
+        call and hand back an id that raises on the kind guard."""
+        return self.mint("nest", obj) if kind == "nest" else self.region_id(obj)
 
     def region_tree(self) -> dict:
         """The control-flow REGION tree as nested data, one id per container. A ``region`` is a control-flow

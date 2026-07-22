@@ -47,7 +47,10 @@ def test_list_nests_is_plain_data():
     assert "[fusion barrier]" in s.describe()
     nests = s.list_nests()
     assert len(nests) == 2
-    assert {n["id"] for n in nests} == {"e0:nest:0", "e0:nest:1"}  # epoch-0 stamped ids
+    # epoch-0 stamped nest ids. Not pinned to :0/:1 -- describe() mints the same handles onto its
+    # tree lines, so the counter's absolute value depends on what was inspected first.
+    assert all(n["id"].startswith("e0:nest:") for n in nests)
+    assert all(s.resolve(n["id"], "nest") is not None for n in nests)
     assert ({"A", "B"}, {"T"}) in [(set(n["reads"]), set(n["writes"])) for n in nests]
     for n in nests:  # JSON-able: only str/bool/list, never a node
         assert isinstance(n["label"], str) and isinstance(n["parallel"], bool)
@@ -73,10 +76,15 @@ def test_fuse_bumps_epoch_and_stales_prior_ids():
 
 def test_fission_all_bumps_epoch():
     s = make_session()
-    s.list_fusions()  # mint some epoch-0 handles
+    stale = [m["id"] for m in s.list_fusions()]  # mint some epoch-0 handles
     s.fission_all()
     assert s.epoch == 1
-    assert s.handles == {}  # all handles dropped on the bump
+    # Every epoch-0 handle is gone. The dict is not EMPTY: fission_all returns the fresh tree, and
+    # describe() stamps live epoch-1 ids on it so the agent can act on what it was just handed.
+    assert not any(hid.startswith("e0:") for hid in s.handles)
+    for hid in stale:
+        with pytest.raises(StaleHandle):
+            s.resolve(hid)
 
 
 def test_resolve_rejects_wrong_kind():

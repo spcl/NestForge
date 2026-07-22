@@ -20,7 +20,10 @@ regardless of which frontend (Fortran, numpy, C, C++) produced it. Four properti
 4. **Canonical labels.** Every control-flow block and every map is renamed ``<kind><level>_<index>``,
    globally unique, so two runs over the same input produce the same names and a tree line names
    something the agent can refer back to. Maps are ``kernel`` -- one map is one kernel, including the
-   wrap maps step 3 just added.
+   wrap maps step 3 just added. Transient ARRAYS and map parameters are renamed here too: the
+   frontend qualifies a transient with its whole module path
+   (``npbench_benchmarks_cavity_flow_cavity_flow_dace_build_up_b___tmp1``), which is most of the
+   width of a tree line and carries nothing the agent can use.
 
 Steps 1-3 act on this SDFG and its control-flow regions only; a ``NestedSDFG`` that survives step 1
 is a kernel body, and the agent fuses kernels, not their insides. Step 4 is the exception and
@@ -30,9 +33,11 @@ from __future__ import annotations
 
 import copy
 import heapq
+import itertools
 from typing import Dict, List, Tuple
 
 import dace
+from dace import data as dt
 from dace.sdfg import nodes
 from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowRegion, LoopRegion, ReturnBlock,
                              SDFGState)
@@ -249,6 +254,48 @@ def relabel_cfg(cfg, level: int, counters: Dict[tuple, int]) -> None:
             relabel_cfg(block, level + 1, counters)
 
 
+def rename_transient_arrays(sdfg: dace.SDFG) -> Dict[str, str]:
+    """Rename transient ARRAYS to ``t<n>``, returning the mapping. Returns ``{}`` and touches nothing
+    when every transient is already canonical.
+
+    Non-transients keep their names: those are the program's interface, and the boundary, the manifest
+    and the emitted numpy signature all name them. Scalars keep theirs too -- they are cheap to read,
+    they carry the operand name the numpy body reads best, and they never appear in a tree line's
+    read/write set as the wide module-qualified strings arrays do.
+
+    Order is the descriptor insertion order, which the frontend fixes, so the mapping is deterministic.
+    """
+    targets = [n for n, desc in sdfg.arrays.items() if desc.transient and not isinstance(desc, dt.Scalar)]
+    # A survivor already called ``t3`` would otherwise be clobbered by whatever is renamed to ``t3``.
+    survivors = {n for n in sdfg.arrays if n not in set(targets)} | set(sdfg.symbols)
+    free = (name for name in (f"t{index}" for index in itertools.count()) if name not in survivors)
+    renames = {old: new for old, new in zip(targets, free) if old != new}
+    if not renames:
+        return {}
+    # ONE replace_dict, not a rename per name: the substitution is simultaneous, so a mapping that
+    # reuses a name another target currently holds (t3 -> t7 while something else becomes t3) still
+    # lands correctly. Renaming one at a time would let the second overwrite the first.
+    sdfg.replace_dict(renames)
+    return renames
+
+
+def rename_map_params(sdfg: dace.SDFG) -> None:
+    """Rename each map's parameters to ``i0, i1, ...`` within its own scope. The frontend's ``__i0`` is
+    the same name with leading underscores; a wrap map keeps :data:`WRAP_PARAM`, which says what it is."""
+    for state in sdfg.all_states():
+        for node in state.nodes():
+            if not isinstance(node, nodes.MapEntry) or WRAP_PARAM in node.map.params:
+                continue
+            wanted = [f"i{axis}" for axis in range(len(node.map.params))]
+            if node.map.params == wanted:
+                continue
+            subgraph = state.scope_subgraph(node)
+            for old, new in zip(list(node.map.params), wanted):
+                if old != new:
+                    subgraph.replace(old, new)
+            node.map.params = wanted
+
+
 def relabel_state(state: SDFGState, level: int, counters: Dict[tuple, int]) -> None:
     """Name every map in ``state`` ``kernel<level>_<index>``, outermost first and one level deeper per
     enclosing map, and descend through any ``NestedSDFG`` into its blocks.
@@ -286,5 +333,8 @@ def normalize_for_tree(sdfg: dace.SDFG) -> None:
     inline_top_level_nsdfgs(sdfg)
     NormalizeLoopsAndMaps().apply_pass(sdfg, {})
     wrap_free_tasklets(sdfg)
-    # Labels LAST: a wrap map is a kernel like any other and has to be numbered with the rest.
+    # Names LAST: a wrap map is a kernel like any other and has to be numbered with the rest, and the
+    # transients the inline lifted out of a nested SDFG have to be numbered with the rest too.
+    rename_transient_arrays(sdfg)
+    rename_map_params(sdfg)
     normalize_labels(sdfg)
