@@ -317,11 +317,14 @@ def lower_to_sdfg(source: Union[str, Path], kind: InputKind):
 
     if kind is InputKind.FORTRAN_PARSE:
         try:
+            # RuntimeError as well as ImportError: dace_fortran.build detects an LLVM/Flang toolchain
+            # AT IMPORT and raises RuntimeError('Cannot find LLVM...') when there is none, so catching
+            # only ImportError lets a missing toolchain surface as a bare traceback from a dependency.
             from dace_fortran.build import make_builder
-        except ImportError as exc:
-            raise ImportError('parsing Fortran needs the dace-fortran frontend: install it editable '
-                              '(see requirements-dev.txt), AFTER dace -- its pyproject pins dace @ FaCe, '
-                              'a subset of extended.') from exc
+        except (ImportError, RuntimeError) as exc:
+            raise ImportError('parsing Fortran needs the dace-fortran frontend AND an LLVM/Flang '
+                              'toolchain it can find: install it editable (see requirements-dev.txt) '
+                              f'after dace, and check the toolchain. Underlying cause: {exc}') from exc
         return make_builder(path.read_text(), name=path.stem).build()
 
     if kind is InputKind.NUMPY:

@@ -93,7 +93,9 @@ jobs:
           python -c "import dace, hpcagent_bench; print('dace', dace.__file__); print('bench', hpcagent_bench.__file__)"
           python -c "import dace.transformation.interstate.fuse_loops" \
             || { echo "::error::the installed dace is not @extended (a pin was resolved over the top)"; exit 1; }
-          python -c "import dace_fortran.build" \
+          # The PACKAGE only. `dace_fortran.build` runs LLVM/Flang toolchain detection at import and
+          # raises on a runner without one -- that is a real absence, not a broken install.
+          python -c "import dace_fortran" \
             || { echo "::error::dace-fortran cannot import -- the --no-deps list above is missing something"; exit 1; }
 
       # Unit set only. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the session if any remaining test
