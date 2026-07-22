@@ -88,17 +88,20 @@ Design: `docs/kernel_surface/README.md`. A kernel is (iteration domain, body fun
 body is reachable only by string-slicing `for` headers off a re-emit, and anything compiled drags
 `dace::math::*` in through `build.include_flags`.
 
-- [ ] **BK1** Add `NormalizeWCR`, `NormalizeWCRSource`, `NestInnermostMapBodyIntoNSDFG` to
-      `normalize_for_tree`, so a kernel body is ONE `NestedSDFG` with a signature. Gate on a
-      corpus-wide check that every map body survives the third, and on the 3.5ms warm normalize not
-      becoming a second.
-- [ ] **BK2** -> BK1. Re-cut `introspect.kernel_body` against that body node; delete the
-      `lines[headers:]` / `line[4 * headers:]` string surgery.
-- [ ] **BK3** One math table -> `nf_math.{hpp,h,f90,py}` under `nestforge/runtime/`; replaces
-      `emit_numpy._MATH_INTRINSICS` rather than sitting beside it. Unknown op refused by name.
+- [ ] **BK1** ONE intrinsic table (`name, arity, numpy, c, cpp, fortran, identity, reducible`)
+      replacing `emit_numpy._MATH_INTRINSICS`. A reduction is an intrinsic applied over axes, so both
+      halves are one table with one extra column.
+- [ ] **BK2** -> BK1. `NormalizeWCR` + `NormalizeWCRSource` into `normalize_for_tree`, plus
+      `reduce=(op over axes -> target)` on the kernel line, so the tree stops hiding a reduction.
+      `detect_reduction_type` -> table row; `ReductionType.Custom` refused by name. Gate on the 3.5ms
+      warm normalize. NOT `NestInnermostMapBodyIntoNSDFG` -- emitting does not need it.
+- [ ] **BK3** -> BK1. `nf_math.{hpp,h,f90,py}` under `nestforge/runtime/` generated from the table;
       `build.include_flags` stops adding the dace include for an agent-authored kernel.
-- [ ] **BK4** -> BK2. `form="slice"` on `Session.kernel_body`, straight-line bodies only.
-- [ ] **BK5** -> BK2, BK3. `lang="c"|"cpp"|"fortran"` through numpyto, point form only.
+- [ ] **BK4** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
+      `line[4 * headers:]` string surgery.
+- [ ] **BK5** -> BK4. `form="slice"` with `nf.reduce`, and the invariant that its argument lowers as
+      an expression and never as a buffer (emitter says so when it cannot fuse).
+- [ ] **BK6** -> BK3, BK4. `lang="c"|"cpp"|"fortran"` through numpyto, point form only.
 
 ## C. Scratchpad allocation pass
 

@@ -24,19 +24,23 @@ string-slicing off the `for` headers.
 dedents by `4 * len(params)`. That is string surgery standing in for an API. It breaks the moment a
 body is not a flat statement list, and it cannot answer "give me this kernel in Fortran".
 
-## Fix 1 — make the body one object, by normalization
+## Fix 1 — normalize the reductions, not the body shape
 
-Three passes, all of which already exist in dace, become part of `normalize_for_tree`:
+Two passes become part of `normalize_for_tree`:
 
 | pass | why |
 |---|---|
 | `NormalizeWCR` | a masked in-body reduction becomes the ordinary seeded-transient + boundary-WCR shape |
-| `NormalizeWCRSource` | every WCR edge sources from an `AccessNode`, so a reduction has one form |
-| `NestInnermostMapBodyIntoNSDFG` | **every innermost map body becomes exactly one `NestedSDFG`** |
+| `NormalizeWCRSource` | every WCR edge sources from an `AccessNode`, so a reduction has ONE form |
 
-The third is the load-bearing one: after it, "the body of kernel K" is a single node with a signature
-(its connectors) and a graph — an object, not a slice of a line range. The first two matter because a
-reduction is the one construct whose body shape varies for reasons the agent should never see.
+That is what makes a reduction *recognizable*: after them, every WCR is the canonical
+`AccessNode -[wcr]-> MapExit` chain, `detect_reduction_type` reads the op off it, and the emitter can
+say what is being reduced rather than emitting whatever the frontend happened to build.
+
+`NestInnermostMapBodyIntoNSDFG` is NOT in this set. It is a good pass and it would make the body a
+single node with a signature, but emitting does not need that — the body is reachable from the scope
+tree either way, and requiring it would drag a vectorization-pipeline pass with its own preconditions
+into the path every tree render takes. Keep it optional, for the phases that want it.
 
 `ExpandNestedSDFGInputs` is already in the pipeline; it stays.
 
@@ -74,14 +78,33 @@ exactly this desugaring, so this is a wiring decision, not new machinery.
 One waist. A backend is added by teaching numpyto a language, never by teaching the tree a second
 lowering path.
 
-## Fix 3 — the agent never sees `dace::`
+## Fix 3 — one table for intrinsics AND reductions
 
-Today a generated nest compiles against `-I<dace runtime include>` (`build.include_flags`). That drags
-`dace::math::min`, `dace::math::ifloor` and the rest into anything an agent writes. An agent asked for
-C++ should not have to know DaCe exists.
+These look like two problems and are one: **the numpy surface has no vocabulary for things the target
+languages have.** `min` is one (numpy spells it `np.minimum`, C `fmin`, Fortran `MIN`, DaCe
+`dace::math::min`). A tree reduction is the other, and a worse one, because numpy has no way to say it
+at all.
 
-Ship a small runtime under `nestforge/runtime/`, one file per language, all generated from **one
-table**:
+The unification: **a reduction is an intrinsic applied over axes.** One table, one namespace `nf`, one
+extra column, and reductions fall out of it.
+
+| column | math op | reducible op |
+|---|---|---|
+| `name` | `nf_min` | `nf_add` |
+| `arity` | 2 | 2 |
+| `numpy` | `np.minimum` | `np.add` |
+| `c` / `cpp` / `fortran` | `fmin` / `nf::min` / `MIN` | `+` |
+| `identity` | — | `0` |
+| `reducible` | no | **yes** |
+
+`emit_numpy._MATH_INTRINSICS` is already two thirds of the math half; the table **replaces** it rather
+than sitting beside it, or the two drift and the C++ says `fmin` while the oracle says `np.minimum`.
+
+The bridge from the SDFG is `detect_reduction_type(wcr)` -> `ReductionType` -> the table row.
+`ReductionType.Custom` is refused BY NAME, exactly like an unknown math op — guessing a per-language
+spelling is how a kernel silently computes something else.
+
+Shipped runtime, under `nestforge/runtime/`, all four generated from that one table:
 
 | | file | form |
 |---|---|---|
@@ -90,18 +113,60 @@ table**:
 | Fortran | `nf_math.f90` | module with a generic interface per op |
 | Python | `nf_math.py` | thin numpy aliases, so the point form runs as the oracle unchanged |
 
-The table is one row per op: `(name, arity, c, cpp, fortran, numpy)`. `emit_numpy._MATH_INTRINSICS` is
-already two thirds of it — the table replaces it rather than sitting beside it, or the two drift and
-the C++ says `fmin` while the oracle says `np.minimum`.
+The agent writes `nf_min(a, b)` in every language: one spelling, four expansions. And
+`build.include_flags` gains `-I<nestforge runtime>` while keeping the dace include **only** for
+DaCe-generated frames — an agent-authored kernel builds without it, which is the check that the
+`dace::` leak is actually closed.
 
-Rules:
+## Fix 4 — tree reductions, without lying to the agent
 
-- The agent writes `nf_min(a, b)` in every language. One spelling, four expansions.
-- An op that is NOT in the table is refused at emit time with its name. Guessing a spelling per
-  language is how a kernel silently computes something else.
-- `build.include_flags` gains `-I<nestforge runtime>`. It keeps the dace include **only** for
-  DaCe-generated frames; an agent-authored kernel is built without it, which is the check that the
-  leak is actually closed.
+Every map WCR is a tree reduction: the map says the iterations are independent, so the accumulation
+order is unspecified and an implementation may fold it as a tree. That is exactly what a real backend
+does — an OpenMP `reduction(+:acc)` clause, a per-lane accumulator, a `#pragma omp simd reduction`.
+
+Numpy cannot say any of that. Left alone, the slice projection of
+
+```
+for i, j:  C[i] += A[i, j] * B[j]
+```
+
+is `C[:] = np.sum(A * B[None, :], axis=1)` — which **materializes the whole `A * B` product** and then
+reduces it. A backend would fuse the two into one loop with a register accumulator and no buffer at
+all. Show the agent the numpy and it optimizes against a cost model that does not exist.
+
+Four rules keep it honest.
+
+**1. The numpy form is the ORACLE, not the performance model.** This is the sentence that matters.
+`nf.reduce` under numpy is allowed to materialize a temporary; the lowered C/C++/Fortran is required
+not to. The agent is told this in the phase skill, in those words, so it never reads "there is a
+buffer here" out of a `np.sum`.
+
+**2. `nf.reduce`'s argument is lowered as an EXPRESSION, never as a buffer.**
+
+```python
+C[:] = nf.reduce(nf_add, A * B[None, :], axis=1)
+```
+
+numpyto's desugar already turns a slice statement into a loop nest; a recognized `nf.reduce` becomes
+the accumulate at the bottom of that nest rather than a second pass over a temporary. Where the
+expression genuinely cannot be fused — it is consumed twice, or it is a library call — the emitter
+**says so** instead of quietly materializing.
+
+**3. The reduction is on the KERNEL LINE, not only in the body.** The structural fact — which axes
+collapse, under which op, into what — belongs where the agent is already looking:
+
+```
+kernel2_0  [i0=0:N, i1=0:M]  reduce=(+ over i1 -> C)  reads=['A','B'] writes=['C']
+```
+
+Reading the body then becomes optional rather than required, which is the whole point of the tree.
+
+**4. Reassociation is a RECORDED decision, never a silent one.** Floating-point `+` is not
+associative: a tree fold and a sequential fold differ in the last bits. So each reduction carries
+`reassociable`, defaulted from where it came from — a WCR the frontend built from a parallel map is
+already order-unspecified, so it is reassociable; one lifted out of a sequential loop is not until
+someone says so. Validation then compares against the SAME order the lowered code uses, so
+bit-exactness stays the gate. A reduction is never the excuse to swap the oracle for a norm.
 
 ## The API
 
@@ -119,21 +184,27 @@ Session.kernel_body(nest_id, form="point", lang="python") -> str
 
 ## Order to build
 
-1. The three passes into `normalize_for_tree`, with the timing check. Nothing else works without a
-   well-defined body.
-2. `kernel_body` re-cut against the body `NestedSDFG` — deletes the string surgery.
-3. The math table + the four runtime files + the refusal path. Independently useful: it closes the
-   `dace::` leak for the paths that exist today.
-4. `form="slice"`.
-5. `lang=` through numpyto.
+1. **The table**, with both halves and the `identity` / `reducible` columns, replacing
+   `_MATH_INTRINSICS`. Everything else reads it.
+2. `NormalizeWCR` + `NormalizeWCRSource` into `normalize_for_tree`, with the timing check, and
+   `reduce=(op over axes -> target)` on the kernel line. This is the part that stops the tree hiding
+   a reduction, and it is useful before any of the language work.
+3. The four runtime files + the refusal path + `build.include_flags`. Closes the `dace::` leak for
+   the paths that exist today.
+4. `kernel_body` re-cut against the scope tree — deletes the `lines[headers:]` string surgery.
+5. `form="slice"`, with `nf.reduce` and the no-materialize invariant.
+6. `lang=` through numpyto.
 
 ## Open
 
-- **Does every map body survive `NestInnermostMapBodyIntoNSDFG`?** It is a vectorization-pipeline pass
-  with its own preconditions. Corpus-wide check before it becomes a default.
+- **A reduction in point form is not a pure function of the point.** `acc += ...` breaks the framing
+  the whole design opens with. Either the carried value joins the body signature, or the domain splits
+  into reduced axes and free axes and the body is a function of the free ones returning a value to
+  fold. The second is closer to what a backend does. Undecided.
+- **`Min_Location` / `Max_Location` / `Exchange`.** Reductions in dace's enum that have no clean numpy
+  spelling and no obvious `nf` signature. Probably refused at first, but they are real (argmin shows
+  up in the corpus).
 - **Slice form for a body with control flow.** An `if` inside a map body has no slice rendering short
-  of `np.where`. Probably: slice form is offered only when the body is straight-line, and the agent is
-  told why not otherwise.
-- **Reduction in point form.** `acc += ...` across the domain is not a pure function of the point. It
-  needs an explicit carried-value in the signature, or the domain is split into the reduced axes and
-  the rest. Undecided, and it is the case most likely to break the "pure function" framing.
+  of `np.where`. Probably: slice form is offered only for a straight-line body, with the reason given.
+- **Where the "cannot fuse this reduction" check lives.** It has to see the whole expression tree, so
+  it is a numpyto-side analysis, not something the tree can decide alone.
