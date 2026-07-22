@@ -179,11 +179,13 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
     st.add_memlet_path(t, mx, o, src_conn="res", memlet=dc.Memlet("out[int_floor(i, 2)]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     src = sdfg_to_numpy(sdfg, "pairsum")
-    # int_floor stays a CALL in the emitted python: load_emitted binds it here, and the C
-    # translator lowers it to its own type-dispatching macro. Expanding it to `//` threw the
-    # spelling away and handed dace back a sympy.floor that distributes over a sum.
-    assert "int_floor(i, 2)" in src
-    assert "//" not in src
+    # The accumulate line goes through the same normalization as the tasklet body, so the derived index
+    # renders as python. `int_floor` becomes `//` -- floored for both signs, and something a translator
+    # reads as `ast.FloorDiv` rather than as an unknown name. (The sympy.floor hazard that made
+    # `int_floor` necessary is about DACE-side expressions; this text is exec'd and translated, never
+    # handed back to dace.) The numeric check below is what proves the spelling did not change meaning.
+    assert "(i) // (2)" in src
+    assert "int_floor" not in src
     mod = load_emitted(src, "pairsum")
     rng = np.random.default_rng(11)
     a = rng.random(16)

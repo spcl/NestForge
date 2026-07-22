@@ -23,14 +23,15 @@ from nestforge.strategies import get_strategy
 
 
 # --- emitter: sympy user-function + qualified-math rewrites (the arena's translation depends on these) ---
-def test_normalize_keeps_int_floor_and_ceil_as_calls():
-    # int_floor / int_ceil are the spelling BOTH ends want: expanding them to `//` throws away the ceil
-    # form entirely and hands dace back a `sympy.floor` that distributes over a sum. Left alone, they are
-    # resolved by name -- EMITTED_BUILTINS in python, the translator's prelude macros in C.
-    assert normalize_casts("a[int_floor(LEN_1D, 2)]") == "a[int_floor(LEN_1D, 2)]"
+def test_normalize_emits_floor_as_the_operator_and_ceil_as_a_call():
+    # `int_floor` exists because sympy mis-simplifies a floor division in a DACE-side expression, not
+    # because python needs a helper -- `//` is already floored for both signs. The EMITTED text is only
+    # exec'd and handed to the translator, never re-parsed by dace, so the operator is safe there and is
+    # strictly better: a translator reads `ast.FloorDiv` and lowers it with its own correct helper,
+    # where a bare call is an unknown name. `int_ceil` has no operator and stays a call.
+    assert normalize_casts("a[int_floor(LEN_1D, 2)]") == "a[((LEN_1D) // (2))]"
     assert normalize_casts("int_ceil(N, 4)") == "int_ceil(N, 4)"
-    assert normalize_casts("int_floor(int_ceil(N, 2), 3)") == "int_floor(int_ceil(N, 2), 3)"
-    assert "//" not in normalize_casts("int_floor(int_ceil(N, 2), 3)")
+    assert normalize_casts("int_floor(int_ceil(N, 2), 3)") == "((int_ceil(N, 2)) // (3))"
 
 
 def test_emitted_builtins_match_python_semantics():

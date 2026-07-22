@@ -141,6 +141,12 @@ _INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(_MATH_INTRINSICS) + r")(?
 #: arity. ``__builtins__`` is always present in a module namespace, so ``max``/``min``/``abs`` resolve
 #: without importing anything.
 _USERFUNC_REWRITES = {
+    # ``int_floor`` exists because sympy mis-simplifies a floor division, NOT because python needs a
+    # helper for it: ``//`` is already floored for both signs. Emitting the operator keeps the numpy
+    # portable -- a translator reads ``ast.FloorDiv`` and lowers it with its own correct helper
+    # (numpyto intercepts it into an ``int_floor`` macro), where a bare CALL would be an unknown name.
+    # ``int_ceil`` has no operator and stays a call.
+    "int_floor": lambda a, b: f"(({a}) // ({b}))",
     "ipow": lambda a, b: f"(({a}) ** ({b}))",
     "Mod": lambda a, b: f"(({a}) % ({b}))",
     "Max": lambda *a: f"max({', '.join(a)})",
@@ -160,8 +166,9 @@ def int_ceil(a, b):
 
 
 #: The names an emitted kernel calls but does not define -- every load of an emitted module must bind
-#: them: ``np`` for the casts/intrinsics, the two integer divisions for index/bound arithmetic (kept as
-#: calls, see :data:`_USERFUNC_REWRITES`). The C prelude defines the same names by other means.
+#: them: ``np`` for the casts/intrinsics and ``int_ceil`` for a ceiling division, which has no python
+#: operator. ``int_floor`` is rewritten to ``//`` (see :data:`_USERFUNC_REWRITES`) and is kept bound
+#: only for a path that renders a bound without going through :func:`normalize_casts`.
 #: Never build this namespace by hand at a call site -- use :func:`load_emitted`, which is the one place
 #: that knows the full set (a hand-rolled ``{"np": np}`` is how ``int_floor`` went missing in CI).
 EMITTED_BUILTINS = {"np": numpy, "int_floor": int_floor, "int_ceil": int_ceil}

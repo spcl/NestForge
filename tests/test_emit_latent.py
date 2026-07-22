@@ -17,7 +17,7 @@ import dace
 from dace import symbolic
 
 from nestforge.emit_libnode import UnsupportedLibraryNode, data_edge
-from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, normalize_casts, sdfg_to_numpy
+from nestforge.emit_numpy import EMITTED_BUILTINS, UnsupportedNest, int_floor, normalize_casts, sdfg_to_numpy
 from nestforge.libnode import ExternalCall, proto_and_call
 
 I = sympy.Symbol('i')
@@ -404,3 +404,20 @@ def test_a_non_final_unconditional_branch_is_refused():
 
     with pytest.raises(UnsupportedNest, match="unconditional branch"):
         emit_conditional(block, sdfg)
+
+
+def test_int_floor_is_emitted_as_the_operator_not_a_call():
+    """``int_floor`` exists because sympy mis-simplifies a floor division, not because python needs a
+    helper: ``//`` is already floored for both signs. Emitting the operator keeps the numpy portable --
+    a translator reads ``ast.FloorDiv``, where a bare call is an unknown name. ``int_ceil`` has no
+    operator and stays a call."""
+    assert normalize_casts("int_floor(a, b)") == "((a) // (b))"
+    assert normalize_casts("A[int_floor(i, 2)]") == "A[((i) // (2))]"
+    assert "int_ceil(" in normalize_casts("int_ceil(n, 4)")
+
+
+@pytest.mark.parametrize("a,b", [(7, 2), (-7, 2), (7, -2), (-7, -2), (8, 4), (-8, 4), (0, 3)])
+def test_the_operator_agrees_with_the_helper_on_both_signs(a, b):
+    """The rewrite is only safe because it is the SAME function; C's `/` is where they part company."""
+    rendered = normalize_casts(f"int_floor({a}, {b})")
+    assert eval(rendered) == int_floor(a, b)  # noqa: S307 -- a literal expression this test built
