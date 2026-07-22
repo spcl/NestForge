@@ -105,8 +105,9 @@ body is reachable only by string-slicing `for` headers off a re-emit, and anythi
 - [ ] **BK4** -> BK2. `form="slice"` for straight-line bodies.
 - [ ] **BK5** -> BK2. `lang="c"|"cpp"|"fortran"` through numpyto, point form only. NO nest-forge
       intrinsic layer -- emit `np.<op>` and let numpyto spell it per language.
-- [ ] **BK6** `build.include_flags` carries the dace runtime include only for DaCe-generated frames,
-      so an agent-authored kernel does not compile against DaCe headers. Independent of the rest.
+- [x] **BK6** DROPPED, not done -- the premise was false. `build.include_flags` has one caller
+      (`build.compile`), which only ever sees a DaCe-generated frame; agent-facing sources compile via
+      `arena.compile_object`, which passes no dace include at all.
 
 ## C. Scratchpad allocation pass
 

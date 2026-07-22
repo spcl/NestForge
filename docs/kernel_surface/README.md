@@ -123,9 +123,13 @@ width.
 That is the whole reason not to hand-roll this: every one of those is a silent wrong answer, not a
 compile error.
 
-What is left on our side is narrow and real: `build.include_flags` adds `-I<dace runtime include>`, so
-an agent-authored kernel still compiles against DaCe's headers. That flag should carry the dace
-include only for DaCe-generated frames. It is a build wiring fix, not an intrinsics design.
+**Correction:** an earlier revision of this document claimed `build.include_flags` drags the dace
+runtime include into anything an agent writes. That is wrong, and checking it costs one grep.
+`include_flags` has exactly one caller, `build.compile`, which is only ever handed a frame from
+`generate_program_folder(sdfg, ...)` -- a DaCe-generated frame, which legitimately needs those
+headers. A translated or agent-authored source compiles through `arena.compile_object`, whose command
+line is the compiler, `FP_MODES[fp_mode]`, `-c`, the source and the output. No dace include, no
+`dace::` anything. So there is nothing to fix here, and the backlog item is dropped.
 
 ## Fix 4 — the reduction gap is real, and it is measured
 

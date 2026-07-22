@@ -699,15 +699,26 @@ def range_stop(end: sympy.Expr, step: sympy.Expr, what: str) -> sympy.Expr:
     return end + sign
 
 
-def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
-    """Emit a map scope as ``for`` loops over pre-allocated buffers (no allocation of its own)."""
+def map_headers(entry: nodes.MapEntry) -> List[str]:
+    """One ``for`` header per map dimension, outermost first, unindented."""
     headers: List[str] = []
     for param, (beg, end, step) in zip(entry.map.params, entry.map.range.ranges):
         stop = range_stop(end, step, f"map parameter {param!r}")
         headers.append(
             normalize_casts(f"for {param} in range({symbolic.symstr(beg)}, {symbolic.symstr(stop)}, "
                             f"{symbolic.symstr(step)}):"))  # a bound may render an int_floor/int_ceil
+    return headers
 
+
+def map_body_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
+    """What one map scope COMPUTES, unindented and without its ``for`` headers.
+
+    Split out of :func:`map_lines` so a caller that already knows the iteration domain -- the agent's
+    tree prints it on the kernel line -- can ask for the body alone instead of re-deriving it by
+    dropping ``len(params)`` lines off the front of the emitted block and dedenting the rest by
+    ``4 * len(params)``. That arithmetic was right only while every header occupied exactly one line
+    and every body line carried the full indent.
+    """
     body: List[str] = []
     scope = state.scope_subgraph(entry, include_entry=False, include_exit=False)
     for node in dfs_topological_sort(scope):
@@ -731,7 +742,13 @@ def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> 
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
 
     body.extend(map_exit_writes(state, sdfg, entry))  # reductions/writes leaving the map via its exit
+    return body
 
+
+def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
+    """Emit a map scope as ``for`` loops over pre-allocated buffers (no allocation of its own)."""
+    headers = map_headers(entry)
+    body = map_body_lines(state, sdfg, entry)
     lines = ["    " * depth + h for depth, h in enumerate(headers)]
     lines += ["    " * len(headers) + bl for bl in (body or ["pass"])]
     return lines

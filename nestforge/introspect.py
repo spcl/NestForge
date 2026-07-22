@@ -35,7 +35,7 @@ from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.emit_libnode import UnsupportedLibraryNode
-from nestforge.emit_numpy import UnsupportedNest, map_lines
+from nestforge.emit_numpy import UnsupportedNest, map_body_lines
 from nestforge.normalize import in_order
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
@@ -132,11 +132,9 @@ def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, childr
     if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
         return []
     try:
-        lines = map_lines(state, sdfg, entry)
+        return map_body_lines(state, sdfg, entry)
     except (UnsupportedNest, UnsupportedLibraryNode) as exc:
         return [f"<not emitted: {exc}>"]
-    headers = len(entry.map.params)
-    return [line[4 * headers:] for line in lines[headers:]]
 
 
 #: ``ReductionType`` -> how the tree spells it. Anything absent renders its enum name lowercased, so

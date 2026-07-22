@@ -184,8 +184,8 @@ def test_a_body_does_not_repeat_its_headers():
 
 
 def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
-    """`map_lines` recurses, so emitting here too would print the inner kernel twice -- once in the
-    outer kernel's body and once as its own row."""
+    """`map_body_lines` recurses into a nested map, and the tree already gives that map its own row,
+    so emitting at both levels would print the inner kernel twice."""
     sdfg = nested_maps.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
     nested = [(st, n) for st in sdfg.all_states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry) and any(
@@ -206,7 +206,7 @@ def test_an_emitter_refusal_is_reported_on_the_line_not_raised(monkeypatch):
     def refuse(state, sdfg, entry):
         raise introspect.UnsupportedNest("no emitter for this")
 
-    monkeypatch.setattr(introspect, "map_lines", refuse)
+    monkeypatch.setattr(introspect, "map_body_lines", refuse)
     tree = with_bodies(shaped)
     assert "<not emitted: no emitter for this>" in tree
 
@@ -251,3 +251,21 @@ def test_the_reduction_op_is_read_off_the_wcr():
     edge = next(e for e in state.in_edges(exit_node) if e.data.wcr is not None)
     edge.data.wcr = "lambda x, y: max(x, y)"
     assert introspect.kernel_reductions(state, entry) == ["max over i1 -> C"]
+
+
+def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
+    """BK2: the body comes from `map_body_lines`, not from dropping len(params) lines off `map_lines`
+    and dedenting by 4 * len(params). That arithmetic held only while every header was exactly one
+    line and every body line carried the full indent."""
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    state, entry = next((st, n) for st in sdfg.all_states() for n in st.nodes()
+                        if isinstance(n, dc.sdfg.nodes.MapEntry) and st.entry_node(n) is None)
+    body = kernel_body(state, sdfg, entry, state.scope_children())
+    assert body, "the fixture kernel emits nothing"
+    for line in body:
+        assert not line.startswith(" "), f"a body line arrived still indented: {line!r}"
+        assert not line.startswith("for "), f"a header leaked into the body: {line!r}"
+    # and it agrees with the full block the emitter produces for the same kernel
+    full = introspect.map_body_lines(state, sdfg, entry)
+    assert body == full
