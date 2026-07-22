@@ -221,6 +221,25 @@ it, or rewrite the doc to say "planned". Do not leave them reading as fact.
       (`tests/test_gramschmidt_fma.py`) asserts only `> 1e-6`. `PREDICTIVE.md:50`'s "gramschmidt:
       17.4 vs 0" has no assertion behind it either. Pin them or drop the numbers.
 
+## K. Fusion foundation audit (user priority — the passes the agent rides on)
+
+The agent's success rides entirely on the quality of the fusion/fission foundation. Deep
+audit + improve, AFTER the active tasks above, BEFORE J. Do not reinvent — the passes exist in
+dace/extended; audit and improve them.
+
+- [ ] **K1** **state-fusion-with-happens-before** — the substrate everything else sits on. Audit the
+      WAR-edge-targets-consumer redesign for missed cases.
+- [ ] **K2** **loop-fusion / loop-fission**, **map-fusion / map-fission**. Ruling: **statement-fission
+      is the canonical floor**, not loop-fission. `fission_to_statements` already reaches statement
+      granularity (SplitStatements → LoopFission → MapFission); LoopFission is only a STEP in that
+      descent, never where we stop. Loop-fission alone is the worse primitive.
+- [ ] **K3** **Fuse MORE than statement granularity.** The lattice runs atoms→maximal; the fusion arms
+      must GROUP many statement-atoms into one kernel, not leave them one-atom-per-nest. Decompose to
+      statements, then re-fuse UP to the chosen granularity.
+- [ ] **K4** **fuse-loops / fuse-maps with close iteration domains** (dace/extended). Audit + expose the
+      granularity choice cleanly. CPU vs GPU have different perf characteristics — the agent LEARNS the
+      tradeoff; the passes must not hardcode it. This is the paper's C1 (backend-dependent optimum).
+
 ## J. Last — mega-kernel
 
 An OFFLOADING STRATEGY, so it comes after everything above is done. Nothing is built.
