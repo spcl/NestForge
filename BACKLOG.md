@@ -97,14 +97,16 @@ body is reachable only by string-slicing `for` headers off a re-emit, and anythi
       tracking saves the ~3ms of scans, not the 32ms -- build it when the scans grow. A state-scoped
       replace measures 9.1ms but hand-rolling a rename risks a silent wrong answer; the right home is
       dace's `replace_dict`.
-- [ ] **BK2** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
+- [x] **BK2** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
       `line[4 * headers:]` string surgery.
-- [ ] **BK3** -> BK1, BK2. Reduction representations the agent picks between: `folded` (explicit
+- [x] **BK3** -> BK1, BK2. Reduction representations the agent picks between: `folded` (explicit
       loop, DEFAULT -- measured to lower with no temp buffer) and `declared` (`np.sum`, reads better,
       today lowers to buffer-then-reduce). Whatever is emitted must be valid runnable numpy.
-- [ ] **BK4** -> BK2. `form="slice"` for straight-line bodies.
-- [ ] **BK5** -> BK2. `lang="c"|"cpp"|"fortran"` through numpyto, point form only. NO nest-forge
-      intrinsic layer -- emit `np.<op>` and let numpyto spell it per language.
+- [ ] **BK4** -> BK2. `form="slice"` for straight-line bodies (where `declared` reductions live).
+- [x] **BK5** -> BK2. `lang="c"|"cpp"|"fortran"` through numpyto, point form only. NO nest-forge
+      intrinsic layer -- emit `np.<op>` and let numpyto spell it. `Session.kernel_source(lang=...)`
+      extracts the nest on a DETACHED copy (projection, no mutation), reuses `prepare` + `emit_sources`.
+      Bare C++ is the `.cpp` of the plain `c` target (one emit -> C-family), not `cpp_omp`.
 
 ## C. Scratchpad allocation pass
 
@@ -208,6 +210,10 @@ it, or rewrite the doc to say "planned". Do not leave them reading as fact.
       does not exist. Decide keep-and-reference or delete.
 - [ ] **H6** `nestforge/report.py` (34 lines) has one consumer, `examples/demo_fma.py`. No test, no
       driver, no CI. Keep only if the example is kept.
+- [ ] **H7** `Session.emit_variant` has zero callers and zero tests, and its docstring advertises
+      `target="numpy"|"cpp"` -- neither is a numpyto `--target` (it would fail argparse `choices`).
+      BK5's `kernel_source(lang=...)` is the tested per-language surface now; either delete
+      `emit_variant` or route it through `LANG_LOWERING` and fix the contract.
 
 ## I. Unverified numbers in docs
 

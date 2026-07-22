@@ -34,7 +34,7 @@ from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.dataflow.map_fission import MapFission
 
 from nestforge.arena import Cell, run_arena
-from nestforge.extract import find_state_of_node
+from nestforge.extract import Boundary, detach, extract_map_nest, find_state_of_node
 from nestforge.feedback import run_feedback_loop
 from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements, map_fission_moves
 from nestforge.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes
@@ -47,6 +47,15 @@ try:
     from dace.sdfg.state import ConditionalBlock
 except ImportError:  # older DaCe without first-class conditional regions
     ConditionalBlock = None
+
+#: kernel_source(lang=...) -> (numpyto --target, generated-source extension). The C backend emits the
+#: WHOLE C-family from ONE ``--target c`` run -- a ``.c`` AND a ``.cpp`` -- so bare C++ is the ``.cpp`` of
+#: the plain ``c`` target, not ``cpp_omp`` (which would inject OpenMP the agent did not ask for).
+LANG_LOWERING = {
+    "c": ("c", ".c"),
+    "cpp": ("c", ".cpp"),
+    "fortran": ("fortran", ".f90"),
+}
 
 
 class StaleHandle(KeyError):
@@ -182,14 +191,47 @@ class Session:
         namespace -- so it runs where it is pasted and a translator can read it without being told what
         ``int_floor`` means.
 
-        ``lang`` other than ``"python"`` goes through the numpy translator (not wired yet) rather than
-        through a second emitter, so C and C++ are this same numpy, lowered.
+        ``lang`` in ``{"c", "cpp", "fortran"}`` lowers that SAME numpy through the numpy translator
+        (``prepare`` -> ``numpyto``) rather than through a second, divergent emitter: C and C++ are one
+        ``--target c`` emit (the ``.c`` and the ``.cpp`` of it), Fortran is ``--target fortran``. The
+        translator, not nest-forge, spells the intrinsics -- nest-forge only hands it ``np.<op>``.
         """
-        if lang != "python":
-            raise ValueError(f"lang={lang!r} is not wired yet; C/C++/Fortran come from lowering the "
-                             "python form through the numpy translator, which is BK5")
-        state, nest = self.map_nest(nest_id)
-        return kernel_source(state, self.sdfg, nest)
+        state, nest = self.map_nest(nest_id)  # cheap + refuses a LoopRegion before any emit work
+        if lang == "python":
+            return kernel_source(state, self.sdfg, nest)
+        if lang not in LANG_LOWERING:
+            raise ValueError(f"lang={lang!r} is not a kernel language; expected one of "
+                             f"'python', {', '.join(repr(k) for k in LANG_LOWERING)}")
+        target, ext = LANG_LOWERING[lang]
+        prep = self.prepare_bare_nest(nest)
+        gen = self.work_dir / prep.name / target
+        sources = emit_sources(prep, gen, target=target)
+        hit = next((p for p in sources if str(p).endswith(ext)), None)
+        if hit is None:  # translator ran but emitted no file for this language -- a real gap, not an excerpt
+            raise RuntimeError(f"numpyto emitted no {ext} source for {prep.name!r} (target={target}); "
+                               f"got {[str(p) for p in sources]}")
+        return Path(hit).read_text()
+
+    def prepare_bare_nest(self, nest: nodes.MapEntry) -> Prepared:
+        """The numpy+yaml package for a NON-externalized nest -- extract it on a DETACHED copy so the
+        live SDFG is unchanged, then reuse the same ``prepare`` (nest_to_numpy + manifest) the Phase-3
+        path uses. Distinct from :meth:`prepare_nest`, which resolves an already-externalized ``extnest``
+        handle; this one takes a bare map so :meth:`kernel_source` can lower a kernel the agent has only
+        looked at, not offloaded."""
+        return prepare(self.nest_boundary_copy(nest), nest.map.label, self.work_dir / nest.map.label)
+
+    def nest_boundary_copy(self, nest: nodes.MapEntry) -> Boundary:
+        """A :class:`Boundary` for ``nest`` extracted on a detached copy of the SDFG. ``extract_map_nest``
+        outlines the map in place, so it must NOT run on the live graph for a read-only projection. The
+        twin map in the copy is found by position (deepcopy preserves state and node order), so this
+        needs no node identity across the copy."""
+        state = find_state_of_node(self.sdfg, nest)
+        state_i = list(self.sdfg.all_states()).index(state)
+        node_i = list(state.nodes()).index(nest)
+        work = detach(self.sdfg)
+        twin_state = list(work.all_states())[state_i]
+        twin = list(twin_state.nodes())[node_i]
+        return extract_map_nest(work, twin, name=nest.map.label)
 
     def map_nest(self, nest_id: str) -> Tuple[SDFGState, nodes.MapEntry]:
         """Resolve a nest id to ``(state, MapEntry)``, or refuse. A ``LoopRegion`` has no map body: it

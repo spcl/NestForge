@@ -364,8 +364,54 @@ def test_a_kernel_source_computes_what_the_sdfg_computes():
     assert np.array_equal(from_source, from_sdfg), (from_source, from_sdfg)
 
 
-def test_an_unwired_language_is_refused_by_name():
-    _, session, _ = source_of_first_kernel(shaped)
+def session_and_first_nest(program):
+    sdfg = program.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
     nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    with pytest.raises(ValueError, match="translator"):
-        session.kernel_source(nest_id, lang="cpp")
+    return sdfg, session, nest_id
+
+
+def test_c_is_the_same_numpy_lowered_by_the_translator():
+    """`lang="c"` runs the point-form numpy through numpyto -- a real C function over the same arrays,
+    not a second hand-written emitter."""
+    _, session, nest_id = session_and_first_nest(matvec)
+    src = session.kernel_source(nest_id, lang="c")
+    assert "double" in src and "for (" in src
+    assert "A" in src and "B" in src and "C" in src  # the boundary arrays survive to the signature
+
+
+def test_cpp_is_the_cpp_half_of_the_one_c_family_emit():
+    """Bare C++ is the `.cpp` of the plain `c` target (one emit produces both), so it carries the C++
+    arithmetic header rather than OpenMP the agent never asked for."""
+    _, session, nest_id = session_and_first_nest(matvec)
+    src = session.kernel_source(nest_id, lang="cpp")
+    assert 'extern "C"' in src and "template" in src  # the templated C++ int_floor/int_ceil header
+    assert "#pragma omp" not in src  # NOT cpp_omp
+
+
+def test_fortran_lowers_through_the_fortran_backend():
+    _, session, nest_id = session_and_first_nest(matvec)
+    src = session.kernel_source(nest_id, lang="fortran")
+    assert "subroutine" in src and "bind(C" in src
+
+
+def test_lowering_a_kernel_does_not_mutate_the_live_sdfg():
+    """kernel_source is a projection: extraction outlines a map in place, so it must run on a COPY.
+    The tree structure and the state count are identical before and after -- and no epoch bump, since
+    a projection is not a mutation. (describe() mints fresh handle ids per call, so compare with those
+    stripped.)"""
+    strip = lambda tree: re.sub(r"\[e\d+:nest:\d+\]", "[nest]", tree)
+    sdfg, session, nest_id = session_and_first_nest(matvec)
+    before, epoch_before = strip(session.describe()), session.epoch
+    states_before = len(list(sdfg.all_states()))
+    session.kernel_source(nest_id, lang="c")
+    assert session.epoch == epoch_before
+    assert len(list(sdfg.all_states())) == states_before
+    assert strip(session.describe()) == before
+
+
+def test_an_unknown_language_is_refused_by_name():
+    _, session, nest_id = session_and_first_nest(shaped)
+    with pytest.raises(ValueError, match="not a kernel language"):
+        session.kernel_source(nest_id, lang="rust")

@@ -239,9 +239,12 @@ Session.kernel_body(nest_id, form="point") -> List[str]  # the excerpt the tree 
    a reduction, and it is useful before any of the language work.
 3. The four runtime files + the refusal path + `build.include_flags`. Closes the `dace::` leak for
    the paths that exist today.
-4. `kernel_body` re-cut against the scope tree — deletes the `lines[headers:]` string surgery.
+4. `kernel_body` re-cut against the scope tree — deletes the `lines[headers:]` string surgery. **done**
 5. `form="slice"`, with `nf.reduce` and the no-materialize invariant.
-6. `lang=` through numpyto.
+6. `lang=` through numpyto. **done** — `kernel_source(lang="c"|"cpp"|"fortran")` extracts the nest on a
+   detached copy (a projection, never a mutation), reuses `prepare` + `emit_sources`. C and C++ are the
+   `.c` and `.cpp` of ONE `--target c` emit; Fortran is `--target fortran`. numpyto spells every
+   intrinsic — nest-forge only hands it `np.<op>`.
 
 ## Open
 
