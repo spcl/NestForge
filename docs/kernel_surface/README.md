@@ -108,17 +108,50 @@ The bridge from the SDFG is `detect_reduction_type(wcr)` -> `ReductionType` -> t
 `ReductionType.Custom` is refused BY NAME, exactly like an unknown math op — guessing a per-language
 spelling is how a kernel silently computes something else.
 
-Shipped runtime, under `nestforge/runtime/`, all four generated from that one table:
+### What the agent actually types
 
-| | file | form |
+Not `nf_min`. A prefixed dialect looks tidy in a table and is wrong in practice: nobody writes
+`nf_min` in C++, so a model that has read a billion lines of `std::min` will write `std::min` anyway,
+and the surface spends its budget fighting that instead of on the optimization. An unfamiliar dialect
+is the last thing an agent-facing surface should be.
+
+**The agent writes the idiomatic name for the language it chose.** The table's job is to know that
+those are the same op:
+
+| op | numpy | C | C++ | Fortran |
+|---|---|---|---|---|
+| min | `np.minimum` | `min`, `fmin`, `fminf` | `std::min`, `min` | `MIN` |
+| sqrt | `np.sqrt` | `sqrt`, `sqrtf` | `std::sqrt`, `sqrt` | `SQRT` |
+
+So each row grows an **alias set per language** — several spellings in, one op out. That is our
+complexity, not the agent's, and `emit_numpy` already does exactly this for its own inputs
+(`_MATH_INTRINSICS` plus `_NP_VERBATIM_MATH` plus the `(dace.)?math.` prefix rewrite all resolve
+`sin`).
+
+The headers then change job. They do not define a dialect; they **close the gaps so the idiomatic
+name is always available and always means the same thing**:
+
+| | file | what it is for |
 |---|---|---|
-| C++ | `nf_math.hpp` | `template <class T> constexpr T nf_min(T, T)` — C++20, `constexpr` where the op allows |
-| C | `nf_math.h` | `static inline` per type + `_Generic` dispatch |
-| Fortran | `nf_math.f90` | module with a generic interface per op |
-| Python | `nf_math.py` | thin numpy aliases, so the point form runs as the oracle unchanged |
+| C | `nf_math.h` | `_Generic` so bare `min`/`max` work on any arithmetic type — C has `fmin` for double and nothing generic |
+| C++ | `nf_math.hpp` | `using std::min; using std::sqrt;` plus `constexpr` overloads where `<cmath>` lacks them |
+| Fortran | `nf_math.f90` | only the ops Fortran has no intrinsic for; `MIN` and `SQRT` need nothing |
+| numpy | — | nothing to ship. `np.minimum` is already idiomatic and already correct |
 
-The agent writes `nf_min(a, b)` in every language: one spelling, four expansions. And
-`build.include_flags` gains `-I<nestforge runtime>` while keeping the dace include **only** for
+An explicit name survives in exactly one place: **an op the language has no idiomatic spelling for
+that means the right thing.** `int_floor` is one — C's `/` truncates toward zero, so floor division
+needs a named function or it is silently wrong for negative operands. `nf.reduce` is the other, since
+no language spells "fold this without materializing it". Everything else uses the name the language
+already has.
+
+The line is: **idiomatic where the language has it, an explicit name only where it does not.**
+
+The part that was actually load-bearing is not the prefix but the **allowed set**. The table is the
+list of ops nest-forge can lower AND validate; anything outside it is refused by name at emit time,
+because guessing a spelling per language is how a kernel silently computes something else. That rule
+is unchanged.
+
+And `build.include_flags` gains `-I<nestforge runtime>` while keeping the dace include **only** for
 DaCe-generated frames — an agent-authored kernel builds without it, which is the check that the
 `dace::` leak is actually closed.
 
