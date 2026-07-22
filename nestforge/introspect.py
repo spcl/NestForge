@@ -80,6 +80,8 @@ def resolve_scalars(expression: str, definitions: Dict[str, str]) -> str:
     (``i = i + 1`` on a back edge is ordinary), and it bounds a chain to the number of definitions
     rather than letting one expand exponentially.
     """
+    if not definitions:
+        return expression  # before the parse: nothing can be folded in, so nothing needs an AST
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:  # a condition the frontend wrote in something other than python
@@ -99,9 +101,10 @@ def resolve_scalars(expression: str, definitions: Dict[str, str]) -> str:
 def simplify_indices(tree: ast.AST) -> ast.AST:
     """Rewrite every subscript index through sympy, so a hoisted read prints ``A[i + 1]`` rather than
     the ``A[(1 + (1 * i))]`` the frontend builds it as."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Subscript):
-            continue
+    subscripts = [node for node in ast.walk(tree) if isinstance(node, ast.Subscript)]
+    if not subscripts:
+        return tree  # the common case: no index to rewrite, so no sympy round-trip and no fixup walk
+    for node in subscripts:
         try:
             simplified = dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(astutils.unparse(node.slice)))
             node.slice = ast.parse(str(simplified), mode="eval").body
@@ -110,7 +113,7 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
     return ast.fix_missing_locations(tree)
 
 
-def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> List[str]:
+def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: Dict) -> List[str]:
     """The numpy statements one kernel computes, without its ``for`` headers -- the kernel line already
     shows the domain those headers iterate.
 
@@ -119,8 +122,11 @@ def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> Lis
 
     An emitter refusal is reported on the line rather than raised: the tree is a read-only view, and a
     nest the numpy projection cannot express is exactly what the agent needs to be told about.
+
+    ``children`` is the caller's ``scope_children()``, passed in rather than rebuilt: this runs once
+    per kernel, and a hundred-kernel state would otherwise construct the same scope tree a hundred
+    times.
     """
-    children = state.scope_children()
     if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
         return []
     try:
@@ -222,6 +228,8 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
     """A state's kernels: every map nest, plus any library node (which is a kernel that never became a
     map). Nested scopes recurse, so an inner map is shown under the map that encloses it."""
     children = state.scope_children()
+    if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
+        return  # a state with no kernels: do not pay for the topological order nobody will read
     rank = {id(n): i for i, n in enumerate(in_order(state))}
 
     def descend(scope, pad: str) -> None:
@@ -235,7 +243,7 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
             lines.append(pad + (ELBOW if last else TEE) + stamp(kernel_line(state, node), handle, "nest", node))
             if isinstance(node, nodes.MapEntry):
                 if bodies:
-                    lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node))
+                    lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node, children))
                 descend(node, below)
 
     descend(None, prefix)

@@ -192,11 +192,11 @@ def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
         isinstance(c, dc.sdfg.nodes.MapEntry) for c in st.scope_children()[n])]
     assert nested, "fixture no longer nests one kernel inside another"
     for state, entry in nested:
-        assert kernel_body(state, sdfg, entry) == []
+        assert kernel_body(state, sdfg, entry, state.scope_children()) == []
     # and the inner one, which is a leaf, does carry the statement
     inner = [(st, n) for st in sdfg.all_states() for n in st.nodes()
              if isinstance(n, dc.sdfg.nodes.MapEntry) and st.entry_node(n) is not None]
-    assert any(kernel_body(st, sdfg, n) for st, n in inner), "the inner kernel printed nothing either"
+    assert any(kernel_body(st, sdfg, n, st.scope_children()) for st, n in inner), "inner printed nothing"
 
 
 def test_an_emitter_refusal_is_reported_on_the_line_not_raised(monkeypatch):

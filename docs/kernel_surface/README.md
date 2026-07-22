@@ -105,7 +105,23 @@ is whatever numpyto lowers — not a table we maintain — and when numpyto refu
 error the agent sees. `emit_numpy._MATH_INTRINSICS` keeps its existing and only job, DaCe tasklet code
 -> numpy; it gains no language columns.
 
-`int_floor` / `int_ceil` and the arithmetic header come from numpyto too (as a string or an include).
+`int_floor` / `int_ceil` come from numpyto too, through an API it exposes for exactly this:
+
+```python
+numpyto_c.arith_header_source(lang)      # the text, include-guarded  (lang: "c" | "cpp")
+numpyto_c.write_arith_header(out_dir, lang)   # ... written next to the kernel, returns the path
+numpyto_c.ARITH_HEADER_NAME               # {"c": "npb_arith.h", "cpp": "npb_arith.hpp"}
+```
+
+It is byte-identical to what the emitter inlines above a kernel body, so an agent-authored kernel
+that includes it computes what the numpy reference does: `min`/`max` propagate NaN as numpy's do
+(libm's suppress it), `int_floor`/`int_ceil` round toward -inf/+inf for BOTH signs (C's `/` truncates
+toward zero, so `-7 / 2` is -3, not -4), and `python_mod` takes the sign of the divisor. Each
+dispatches on operand type -- `_Generic` in C, `if constexpr` in C++ -- so the caller never spells a
+width.
+
+That is the whole reason not to hand-roll this: every one of those is a silent wrong answer, not a
+compile error.
 
 What is left on our side is narrow and real: `build.include_flags` adds `-I<dace runtime include>`, so
 an agent-authored kernel still compiles against DaCe's headers. That flag should carry the dace
