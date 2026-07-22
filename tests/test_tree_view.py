@@ -34,19 +34,19 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 GOLDEN = """\
 SDFG 'shaped'
 |- state0_0  [merge to fuse across]
-|  |- kernel1_0  PARALLEL  [i0=0:20]  reads=['A'] writes=['B']
-|  `- kernel1_1  SCALAR  [__nf_wrap=0:1]  reads=['B_index'] writes=['s']
+|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']
+|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']
 `- for0_0  i=0:19
    |- state1_0  [merge to fuse across]
    `- if1_0  [selector stays in core SDFG]
       |- block2_0  when (A_index > 0.0)
       |  `- state3_0  [merge to fuse across]
-      |     |- kernel4_0  SCALAR  [__nf_wrap=0:1]  reads=['B_index_0', 's'] writes=['out_slice']
-      |     `- kernel4_1  SCALAR  [__nf_wrap=0:1]  reads=['out_slice'] writes=['out']
+      |     |- kernel4_0  [__nf_wrap=0:1]  reads=['s1', 's2'] writes=['s3']
+      |     `- kernel4_1  [__nf_wrap=0:1]  reads=['s3'] writes=['out']
       `- block2_1  else
          `- state3_1  [merge to fuse across]
-            |- kernel4_2  SCALAR  [__nf_wrap=0:1]  reads=['B_index_1'] writes=['out_slice_0']
-            `- kernel4_3  SCALAR  [__nf_wrap=0:1]  reads=['out_slice_0'] writes=['out']
+            |- kernel4_2  [__nf_wrap=0:1]  reads=['s4'] writes=['s5']
+            `- kernel4_3  [__nf_wrap=0:1]  reads=['s5'] writes=['out']
 """
 
 

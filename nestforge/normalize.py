@@ -20,10 +20,10 @@ regardless of which frontend (Fortran, numpy, C, C++) produced it. Four properti
 4. **Canonical labels.** Every control-flow block and every map is renamed ``<kind><level>_<index>``,
    globally unique, so two runs over the same input produce the same names and a tree line names
    something the agent can refer back to. Maps are ``kernel`` -- one map is one kernel, including the
-   wrap maps step 3 just added. Transient ARRAYS and map parameters are renamed here too: the
-   frontend qualifies a transient with its whole module path
-   (``npbench_benchmarks_cavity_flow_cavity_flow_dace_build_up_b___tmp1``), which is most of the
-   width of a tree line and carries nothing the agent can use.
+   wrap maps step 3 just added. Transient DATA and map parameters are renamed here too -- ``t<n>``
+   for arrays, ``s<n>`` for scalars, ``i<n>`` for parameters. The frontend qualifies a transient with
+   its whole module path (``npbench_..._build_up_b___tmp1``), which was most of the width of a tree
+   line and carried nothing the agent can use.
 
 Steps 1-3 act on this SDFG and its control-flow regions only; a ``NestedSDFG`` that survives step 1
 is a kernel body, and the agent fuses kernels, not their insides. Step 4 is the exception and
@@ -148,8 +148,12 @@ def wrap_groups(state: SDFGState) -> List[List[nodes.Tasklet]]:
 
 
 def wrap_group(state: SDFGState, group: List[nodes.Tasklet], name: str) -> None:
-    """Enclose ``group`` in one single-iteration map. The map is ``Sequential``: it runs once, and
-    calling a wrapped scalar statement parallel would advertise a kernel there is no work to spread."""
+    """Enclose ``group`` in one single-iteration map.
+
+    The map is scheduled ``Sequential``, which is a CODEGEN choice and not a claim about the
+    computation: a map is data-parallel by definition, one iteration included. The schedule only stops
+    codegen opening an OpenMP region around a single iteration. Nothing in the tree reports it.
+    """
     entry, exit_node = state.add_map(name, {WRAP_PARAM: "0:1"}, schedule=dace.ScheduleType.Sequential)
     for tasklet in group:
         in_edges = list(state.in_edges(tasklet))
@@ -254,22 +258,26 @@ def relabel_cfg(cfg, level: int, counters: Dict[tuple, int]) -> None:
             relabel_cfg(block, level + 1, counters)
 
 
-def rename_transient_arrays(sdfg: dace.SDFG) -> Dict[str, str]:
-    """Rename transient ARRAYS to ``t<n>``, returning the mapping. Returns ``{}`` and touches nothing
-    when every transient is already canonical.
+def rename_transient_data(sdfg: dace.SDFG) -> Dict[str, str]:
+    """Rename transient data to ``t<n>`` (arrays) and ``s<n>`` (scalars), returning the mapping. Returns
+    ``{}`` and touches nothing when everything transient is already canonical.
 
     Non-transients keep their names: those are the program's interface, and the boundary, the manifest
-    and the emitted numpy signature all name them. Scalars keep theirs too -- they are cheap to read,
-    they carry the operand name the numpy body reads best, and they never appear in a tree line's
-    read/write set as the wide module-qualified strings arrays do.
+    and the emitted numpy signature all name them. So ``dt``, ``dx``, ``rho`` stay readable while
+    ``npbench_benchmarks_cavity_flow_cavity_flow_dace_build_up_b___tmp0`` -- the frontend qualifying an
+    internal temporary with its whole module path -- becomes ``s4``.
 
     Order is the descriptor insertion order, which the frontend fixes, so the mapping is deterministic.
     """
-    targets = [n for n, desc in sdfg.arrays.items() if desc.transient and not isinstance(desc, dt.Scalar)]
+    targets = {n: ("s" if isinstance(desc, dt.Scalar) else "t") for n, desc in sdfg.arrays.items() if desc.transient}
     # A survivor already called ``t3`` would otherwise be clobbered by whatever is renamed to ``t3``.
-    survivors = {n for n in sdfg.arrays if n not in set(targets)} | set(sdfg.symbols)
-    free = (name for name in (f"t{index}" for index in itertools.count()) if name not in survivors)
-    renames = {old: new for old, new in zip(targets, free) if old != new}
+    survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
+    counters = {"t": itertools.count(), "s": itertools.count()}
+    renames = {}
+    for old, prefix in targets.items():
+        new = next(f"{prefix}{i}" for i in counters[prefix] if f"{prefix}{i}" not in survivors)
+        if old != new:
+            renames[old] = new
     if not renames:
         return {}
     # ONE replace_dict, not a rename per name: the substitution is simultaneous, so a mapping that
@@ -335,6 +343,6 @@ def normalize_for_tree(sdfg: dace.SDFG) -> None:
     wrap_free_tasklets(sdfg)
     # Names LAST: a wrap map is a kernel like any other and has to be numbered with the rest, and the
     # transients the inline lifted out of a nested SDFG have to be numbered with the rest too.
-    rename_transient_arrays(sdfg)
+    rename_transient_data(sdfg)
     rename_map_params(sdfg)
     normalize_labels(sdfg)

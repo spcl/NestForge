@@ -18,7 +18,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.normalize import (WRAP_PARAM, block_kind, free_tasklets, in_order, inline_top_level_nsdfgs,
-                                 normalize_for_tree, rename_map_params, rename_transient_arrays, top_level_nsdfgs,
+                                 normalize_for_tree, rename_map_params, rename_transient_data, top_level_nsdfgs,
                                  wrap_free_tasklets, wrap_groups)
 
 LABEL = re.compile(r"^(state|for|while|if|block|continue|break|return)(\d+)_(\d+)$")
@@ -344,7 +344,7 @@ def test_normalization_preserves_the_result_of_a_descending_loop():
 # --- canonical data names --------------------------------------------------------------------------
 
 
-def test_transient_arrays_are_renamed_but_the_interface_is_not():
+def test_transient_data_is_renamed_but_the_interface_is_not():
     """A frontend qualifies a transient with its whole module path, which is most of the width of a
     tree line and names nothing the agent can act on. Non-transients are the program's interface --
     the boundary, the manifest and the emitted numpy signature all name them -- so they stay."""
@@ -352,8 +352,10 @@ def test_transient_arrays_are_renamed_but_the_interface_is_not():
     interface = {n for n, desc in sdfg.arrays.items() if not desc.transient}
     normalize_for_tree(sdfg)
     assert interface <= set(sdfg.arrays), "a non-transient was renamed"
-    transients = [n for n, d in sdfg.arrays.items() if d.transient and not isinstance(d, dc.data.Scalar)]
-    assert all(re.fullmatch(r"t\d+", n) for n in transients), f"uncanonical transient in {transients}"
+    transients = {n: d for n, d in sdfg.arrays.items() if d.transient}
+    for name, desc in transients.items():
+        prefix = "s" if isinstance(desc, dc.data.Scalar) else "t"
+        assert re.fullmatch(rf"{prefix}\d+", name), f"uncanonical transient {name} ({type(desc).__name__})"
 
 
 def test_renaming_never_collides_with_a_name_that_survives():
@@ -382,7 +384,7 @@ def test_renaming_nothing_changes_nothing():
     sdfg = branchy.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
     before = sdfg.to_json()
-    assert rename_transient_arrays(sdfg) == {}
+    assert rename_transient_data(sdfg) == {}
     rename_map_params(sdfg)
     assert sdfg.to_json() == before
 

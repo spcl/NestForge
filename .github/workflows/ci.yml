@@ -65,19 +65,28 @@ jobs:
           # it vendors runtime headers as submodules (external/moodycamel/blockingconcurrentqueue.h).
           # --src keeps clones OUT of the workspace -- pytest puts the repo root on sys.path, so a ./dace
           # directory would shadow the `dace` package.
-          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
           # The PACKAGE is now `hpcagent_bench` (renamed from `optarena`); the GitHub REPO is still
-          # spcl/OptArena, so the URL keeps the old name until the repo itself is renamed. This step
-          # fails until the rename is pushed upstream -- that is expected and is the whole cost of
-          # flipping the imports before the push.
+          # spcl/OptArena, so the URL keeps the old name until the repo itself is renamed.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=hpcagent_bench"
-          # AFTER dace: dace-fortran pins dace @ FaCe (a subset of extended), so with extended already
-          # resolved pip keeps it rather than fetching a second dace over the top.
+          # Everything here must end up running against dace @ extended -- dace-fortran included, which
+          # is fine because extended is a SUPERSET of the FaCe branch its own pyproject pins.
+          #
+          # dace-fortran therefore goes BEFORE dace, not after. pip does NOT leave an already-resolved
+          # editable extended alone: it uninstalls it and puts the FaCe pin over the top ("Attempting
+          # uninstall: dace" in the log). nest-forge then imports a dace missing the extended-only
+          # passes it calls, and every test module fails to collect. Letting dace-fortran fetch FaCe
+          # first and installing extended after makes the LAST word the right one.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace-fortran.git#egg=dace-fortran"
+          pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
           # nest-forge + [dev]. matplotlib is required: the plot smokes run perf/plot_*.py as a
           # SUBPROCESS, where a missing import surfaces only as "exit status 1".
           pip_retry -e ".[dev]"
+          # Assert the dace that SURVIVED is extended, by importing a pass only extended has. Without
+          # this the failure surfaces as ~60 collection errors in Phase 3 that name a missing dace
+          # module, which reads like a nest-forge bug and is not one.
           python -c "import dace, hpcagent_bench; print('dace', dace.__file__); print('bench', hpcagent_bench.__file__)"
+          python -c "import dace.transformation.interstate.fuse_loops" \
+            || { echo "::error::the installed dace is not @extended -- something reinstalled it over the top"; exit 1; }
 
       # Unit set only. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the session if any remaining test
       # skips -- the unit set must run with zero skips.

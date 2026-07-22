@@ -45,7 +45,8 @@ def test_describe_graph_lists_nests_with_read_write_sets():
     sdfg = vertical_pair.to_sdfg(simplify=True)
     text = describe_graph(sdfg)
     assert "[merge to fuse across]" in text  # every state names the move that lets fusion cross it
-    assert "PARALLEL" in text  # both maps are parallel
+    assert "[i=0:N]" in text  # the iteration domain, not a parallel/sequential column: a Map is
+    #                            data-parallel by definition, so the column said the same thing always
     assert "reads=['A', 'B'] writes=['T']" in text  # producer nest
     assert "reads=['T'] writes=['C']" in text  # consumer nest
 

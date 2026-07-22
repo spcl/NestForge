@@ -26,8 +26,7 @@ from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, Contro
                              SDFGState)
 from dace.transformation.passes.analysis import loop_analysis
 
-from nestforge.normalize import WRAP_PARAM, in_order
-from nestforge.strategies import is_parallel_nest
+from nestforge.normalize import in_order
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
@@ -150,14 +149,14 @@ def block_line(block) -> str:
 
 
 def kernel_line(state: SDFGState, node: nodes.Node) -> str:
-    """One kernel's line: label, schedule, iteration domain, and the arrays it reads and writes."""
+    """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     if isinstance(node, nodes.LibraryNode):
         reads = sorted({e.data.data for e in state.in_edges(node) if e.data is not None and e.data.data})
         writes = sorted({e.data.data for e in state.out_edges(node) if e.data is not None and e.data.data})
         return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
     reads, writes = nest_reads_writes(state, node)
-    # A wrap map runs exactly once, so neither PARALLEL nor SEQUENTIAL describes it: it has no
-    # iteration space to spread and no carried dependence to serialize. Its Sequential SCHEDULE only
-    # keeps codegen from opening an OpenMP region around one iteration.
-    kind = "SCALAR" if WRAP_PARAM in node.map.params else ("PARALLEL" if is_parallel_nest(node) else "SEQUENTIAL")
-    return f"{node.map.label}  {kind}  [{map_domain(node)}]  reads={reads} writes={writes}"
+    # No parallel/sequential column: a Map is data-parallel BY DEFINITION -- that is what makes it a
+    # map rather than a loop -- so printing it on every line says the same thing every time, and a
+    # single iteration is no exception. Where execution is genuinely forced sequential the construct
+    # is a LoopRegion, which the tree already renders as `for` / `while`.
+    return f"{node.map.label}  [{map_domain(node)}]  reads={reads} writes={writes}"
