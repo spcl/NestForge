@@ -92,6 +92,11 @@ body is reachable only by string-slicing `for` headers off a re-emit, and anythi
       `reduce=(op over axes -> target)` on the kernel line so the tree stops hiding a reduction.
       `detect_reduction_type` names the op; `ReductionType.Custom` refused by name. Gate on the
       3.5ms warm normalize. NOT `NestInnermostMapBodyIntoNSDFG` -- emitting does not need it.
+- [ ] **BKp** Re-normalize after a move is 37ms on cavity_flow (was 120ms before stable naming), of
+      which 32ms is ONE `sdfg.replace_dict` global walk for a single stale name. Dirty/clean region
+      tracking saves the ~3ms of scans, not the 32ms -- build it when the scans grow. A state-scoped
+      replace measures 9.1ms but hand-rolling a rename risks a silent wrong answer; the right home is
+      dace's `replace_dict`.
 - [ ] **BK2** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
       `line[4 * headers:]` string surgery.
 - [ ] **BK3** -> BK1, BK2. Reduction representations the agent picks between: `folded` (explicit

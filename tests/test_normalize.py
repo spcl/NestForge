@@ -401,3 +401,38 @@ def test_renaming_preserves_the_result():
     got = np.zeros(20)
     sdfg(A=A, B=got)
     assert np.array_equal(got, expected)
+
+
+# --- reductions ------------------------------------------------------------------------------------
+
+
+@dc.program
+def reduce_kernel(A: dc.float64[8, 4], B: dc.float64[4], C: dc.float64[8]):
+    for i, j in dc.map[0:8, 0:4]:
+        C[i] += A[i, j] * B[j]
+
+
+def test_a_reduction_ends_on_an_accessnode_to_mapexit_edge():
+    """`NormalizeWCRSource`'s invariant, and what makes a reduction findable: without it the WCR can
+    source from a tasklet or sit inside a nested SDFG, and there is no single edge to ask what is
+    reduced over which axes."""
+    sdfg = reduce_kernel.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    wcr_edges = [(st, e) for sd in sdfg.all_sdfgs_recursive() for st in sd.all_states() for e in st.edges()
+                 if e.data is not None and e.data.wcr is not None]
+    assert wcr_edges, "the fixture no longer carries a WCR"
+    for state, edge in wcr_edges:
+        assert isinstance(edge.src, nodes.AccessNode), f"WCR sources from {type(edge.src).__name__}"
+        assert isinstance(edge.dst, nodes.MapExit), f"WCR lands on {type(edge.dst).__name__}"
+
+
+@pytest.mark.e2e
+def test_normalizing_a_reduction_preserves_the_result():
+    sdfg = reduce_kernel.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    sdfg.validate()
+    A = np.linspace(0.1, 3.2, 32).reshape(8, 4).copy()
+    B = np.linspace(1.0, 2.0, 4).copy()
+    C = np.zeros(8)
+    sdfg(A=A, B=B, C=C)
+    assert np.allclose(C, A @ B)

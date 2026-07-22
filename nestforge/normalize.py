@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import copy
 import heapq
-import itertools
+import re
 from typing import Dict, List, Tuple
 
 import dace
@@ -44,10 +44,15 @@ from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, Contro
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 from dace.transformation.interstate.multistate_inline import InlineMultistateSDFG
 from dace.transformation.passes.canonicalize.normalize_loops_and_maps import NormalizeLoopsAndMaps
+from dace.transformation.passes.normalize_wcr import NormalizeWCR
+from dace.transformation.passes.normalize_wcr_source import NormalizeWCRSource
 
 #: Iteration variable of a wrap map. One name for every wrap map in the tree: they are all ``0:1``, so
 #: the variable is never read, and a shared name keeps the rendered domain identical everywhere.
 WRAP_PARAM = "__nf_wrap"
+
+#: A transient name that is already canonical: ``t<n>`` for an array, ``s<n>`` for a scalar.
+CANONICAL_DATA = re.compile(r"[ts]\d+")
 
 
 def in_order(graph) -> List:
@@ -267,17 +272,26 @@ def rename_transient_data(sdfg: dace.SDFG) -> Dict[str, str]:
     ``npbench_benchmarks_cavity_flow_cavity_flow_dace_build_up_b___tmp0`` -- the frontend qualifying an
     internal temporary with its whole module path -- becomes ``s4``.
 
-    Order is the descriptor insertion order, which the frontend fixes, so the mapping is deterministic.
+    **A name that is already canonical KEEPS its index.** Renumbering densely from zero would be
+    simpler and is wrong twice over: dropping one transient shifts every later name, so a single
+    fusion move renamed 21 arrays on cavity_flow (106ms of `replace_dict` per move), and -- worse --
+    the id the agent read off the tree would silently point at a different array after any move. The
+    tree is only a vocabulary if its words hold still.
     """
     targets = {n: ("s" if isinstance(desc, dt.Scalar) else "t") for n, desc in sdfg.arrays.items() if desc.transient}
+    settled = {n for n, prefix in targets.items() if CANONICAL_DATA.fullmatch(n) and n[0] == prefix}
+    taken = {prefix: {int(n[1:]) for n in settled if n[0] == prefix} for prefix in ("t", "s")}
     # A survivor already called ``t3`` would otherwise be clobbered by whatever is renamed to ``t3``.
     survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
-    counters = {"t": itertools.count(), "s": itertools.count()}
     renames = {}
     for old, prefix in targets.items():
-        new = next(f"{prefix}{i}" for i in counters[prefix] if f"{prefix}{i}" not in survivors)
-        if old != new:
-            renames[old] = new
+        if old in settled:
+            continue
+        index = 0
+        while index in taken[prefix] or f"{prefix}{index}" in survivors:
+            index += 1
+        taken[prefix].add(index)
+        renames[old] = f"{prefix}{index}"
     if not renames:
         return {}
     # ONE replace_dict, not a rename per name: the substitution is simultaneous, so a mapping that
@@ -331,6 +345,19 @@ def relabel_state(state: SDFGState, level: int, counters: Dict[tuple, int]) -> N
     descend(None, level)
 
 
+def normalize_reductions(sdfg: dace.SDFG) -> None:
+    """Put every reduction in one shape: the accumulation on a body-local transient, and the
+    cross-iteration fold as a WCR on an ``AccessNode -> MapExit`` edge.
+
+    That is what makes a reduction *recognizable* rather than merely present. Left alone, the frontend
+    can put a masked reduction's WCR inside a nested SDFG, or source one from a tasklet, and there is
+    then no single edge to ask what is being reduced over which axes -- so the tree cannot show it and
+    the agent has to read the body to find out a kernel folds.
+    """
+    NormalizeWCR().apply_pass(sdfg, {})
+    NormalizeWCRSource().apply_pass(sdfg, {})
+
+
 # --- the pipeline ----------------------------------------------------------------------------------
 
 
@@ -339,6 +366,7 @@ def normalize_for_tree(sdfg: dace.SDFG) -> None:
     every computation in a map, canonical labels. Idempotent -- running it twice is running it once,
     which matters because the agent re-normalizes after each fusion move."""
     inline_top_level_nsdfgs(sdfg)
+    normalize_reductions(sdfg)
     NormalizeLoopsAndMaps().apply_pass(sdfg, {})
     wrap_free_tasklets(sdfg)
     # Names LAST: a wrap map is a kernel like any other and has to be numbered with the rest, and the

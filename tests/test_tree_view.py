@@ -209,3 +209,45 @@ def test_an_emitter_refusal_is_reported_on_the_line_not_raised(monkeypatch):
     monkeypatch.setattr(introspect, "map_lines", refuse)
     tree = with_bodies(shaped)
     assert "<not emitted: no emitter for this>" in tree
+
+
+# --- reductions on the kernel line -----------------------------------------------------------------
+
+
+@dc.program
+def matvec(A: dc.float64[8, 4], B: dc.float64[4], C: dc.float64[8]):
+    """A WCR over one of two map axes -- the classic tree reduction."""
+    for i, j in dc.map[0:8, 0:4]:
+        C[i] += A[i, j] * B[j]
+
+
+def test_a_reduction_is_named_on_the_kernel_line():
+    """A WCR on a map IS a tree reduction: the map declares its iterations independent, so the fold
+    order is unspecified and a backend may use a register accumulator or an OpenMP clause. That is
+    structural, and the agent should not have to read the body to find it."""
+    tree = tree_of(matvec)
+    assert "reduce=(+ over i1 -> C)" in tree, tree
+
+
+def test_only_the_collapsed_axis_is_reported():
+    """The reduced axes are the map parameters the OUTPUT subset does not mention -- a map over
+    (i0, i1) writing C[i0] has collapsed i1 and only i1."""
+    tree = tree_of(matvec)
+    assert "over i1 ->" in tree and "over i0" not in tree, tree
+
+
+def test_a_kernel_without_a_reduction_says_nothing():
+    assert "reduce=" not in tree_of(shaped)
+
+
+def test_the_reduction_op_is_read_off_the_wcr():
+    sdfg = matvec.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    state, entry = next(
+        (st, n) for st in sdfg.all_states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry))
+    assert introspect.kernel_reductions(state, entry) == ["+ over i1 -> C"]
+    # A different op reads as itself, not as "+".
+    exit_node = state.exit_node(entry)
+    edge = next(e for e in state.in_edges(exit_node) if e.data.wcr is not None)
+    edge.data.wcr = "lambda x, y: max(x, y)"
+    assert introspect.kernel_reductions(state, entry) == ["max over i1 -> C"]

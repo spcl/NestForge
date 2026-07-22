@@ -26,6 +26,8 @@ import ast
 from typing import Callable, Dict, List, Optional, Tuple
 
 import dace
+from dace import dtypes
+from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
 from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowRegion, LoopRegion, ReturnBlock,
                              SDFGState)
@@ -135,6 +137,59 @@ def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, childr
         return [f"<not emitted: {exc}>"]
     headers = len(entry.map.params)
     return [line[4 * headers:] for line in lines[headers:]]
+
+
+#: ``ReductionType`` -> how the tree spells it. Anything absent renders its enum name lowercased, so
+#: an op with no infix spelling (``min_location``) still reads, and ``custom`` still says what it is.
+REDUCTION_SPELLING = {
+    dtypes.ReductionType.Sum: "+",
+    dtypes.ReductionType.Product: "*",
+    dtypes.ReductionType.Min: "min",
+    dtypes.ReductionType.Max: "max",
+    dtypes.ReductionType.Sub: "-",
+    dtypes.ReductionType.Div: "/",
+    dtypes.ReductionType.Logical_And: "and",
+    dtypes.ReductionType.Logical_Or: "or",
+    dtypes.ReductionType.Logical_Xor: "xor",
+    dtypes.ReductionType.Bitwise_And: "&",
+    dtypes.ReductionType.Bitwise_Or: "|",
+    dtypes.ReductionType.Bitwise_Xor: "^",
+}
+
+
+def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> List[str]:
+    """Every reduction leaving this map, as ``<op> over <axes> -> <target>``.
+
+    A WCR on the map's exit IS a tree reduction: the map declares its iterations independent, so the
+    fold order is unspecified and a backend may use a register accumulator or an OpenMP ``reduction``
+    clause. That is a structural fact about the kernel, and the agent should not have to read the body
+    to find it.
+
+    The reduced axes are the map parameters the OUTPUT subset does not mention -- a map over
+    ``(i0, i1)`` writing ``C[i0]`` has collapsed ``i1``. ``normalize.NormalizeWCR`` /
+    ``NormalizeWCRSource`` are what make this readable at all: without them a reduction can sit inside
+    a nested SDFG or source from a tasklet, and there is no single edge to ask.
+    """
+    exit_node = state.exit_node(entry)
+    params = set(entry.map.params)
+    out: List[str] = []
+    # IN-edges of the exit: `NormalizeWCRSource` guarantees a WCR sources from an AccessNode, so the
+    # reduction rides `AccessNode -[wcr]-> MapExit`. The exit's OUT edges are the plain copy onward.
+    for edge in state.in_edges(exit_node):
+        if edge.data is None or edge.data.wcr is None:
+            continue  # cheapest test first: most exit edges carry no WCR at all
+        kind = detect_reduction_type(edge.data.wcr)
+        op = REDUCTION_SPELLING.get(kind, kind.name.lower() if kind is not None else "?")
+        written = {
+            str(s)
+            for r in (edge.data.subset.ranges if edge.data.subset else [])
+            for b in r
+            for s in dace.symbolic.pystr_to_symbolic(b).free_symbols
+        }
+        collapsed = [p for p in entry.map.params if p in params - written]
+        over = ", ".join(collapsed) if collapsed else "-"
+        out.append(f"{op} over {over} -> {edge.data.data}")
+    return out
 
 
 def nest_reads_writes(container: SDFGState, node: nodes.Node) -> Tuple[List[str], List[str]]:
@@ -266,8 +321,10 @@ def kernel_line(state: SDFGState, node: nodes.Node) -> str:
         writes = sorted({e.data.data for e in state.out_edges(node) if e.data is not None and e.data.data})
         return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
     reads, writes = nest_reads_writes(state, node)
+    reductions = kernel_reductions(state, node)
+    folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     # No parallel/sequential column: a Map is data-parallel BY DEFINITION -- that is what makes it a
     # map rather than a loop -- so printing it on every line says the same thing every time, and a
     # single iteration is no exception. Where execution is genuinely forced sequential the construct
     # is a LoopRegion, which the tree already renders as `for` / `while`.
-    return f"{node.map.label}  [{map_domain(node)}]  reads={reads} writes={writes}"
+    return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

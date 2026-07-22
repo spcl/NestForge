@@ -224,3 +224,37 @@ Session.kernel_body(nest_id, form="point", lang="python") -> str
   of `np.where`. Probably: slice form is offered only for a straight-line body, with the reason given.
 - **Where the "cannot fuse this reduction" check lives.** It has to see the whole expression tree, so
   it is a numpyto-side analysis, not something the tree can decide alone.
+
+
+## Re-normalizing after a move — measured, and what dirty-tracking would actually buy
+
+The agent re-normalizes after every fusion. On npbench cavity_flow (99 kernels):
+
+| | cost |
+|---|---|
+| normalize, cold | ~1000 ms (once) |
+| re-normalize, nothing changed | 3.3 ms |
+| re-normalize after one fusion, dense renumbering | 120 ms |
+| re-normalize after one fusion, **stable names** | **37 ms** |
+| the fusion move itself, for scale | 12–22 ms |
+
+The 120 -> 37 ms came from making a canonical name KEEP its index instead of renumbering densely from
+zero. Dense renumbering meant dropping one transient shifted every later name, so a single move
+renamed 21 arrays. The correctness half of that matters more than the speed: an id the agent read off
+the tree must still mean the same array after a move, or the tree is not a vocabulary.
+
+What is left is one call. `sdfg.replace_dict` walks the whole SDFG once regardless of how many names
+it carries, so renaming the single stale transient a fusion leaves behind (`__map_fusion_t57`) costs
+32 ms. Per-stage after a move: rename 32 ms, labels 1.6, reductions 0.6, domains 0.6, everything else
+under 0.3.
+
+**So dirty/clean region tracking would optimize the part that is already cheap.** A move dirties one
+CFG and one state, and skipping the scans over the clean rest saves the ~3 ms those scans cost — not
+the 32 ms, which is one global walk inside dace for one name. Worth building when the scans grow
+(a program much larger than cavity_flow, or a normalize with more passes), not for the current shape.
+
+The measured alternative for the 32 ms is a state-scoped `state.replace` (9.1 ms — 4.3x), valid when
+the name is referenced in exactly one state and in no interstate edge, nested SDFG or symbol mapping.
+Deliberately NOT taken: it is a hand-rolled rename that has to get every reference site right, and
+getting it wrong is a silent wrong answer rather than an error. 23 ms per move does not buy that risk.
+The right home for it is `replace_dict` itself.
