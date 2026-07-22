@@ -6,11 +6,12 @@ Wrapping it here (alongside :mod:`nestforge.corpus`) keeps the rest of nest-forg
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import List
+
+from nestforge.build import COMPILE_TIMEOUT_S
 
 from optarena import emit_bridge
 from optarena.spec import BenchSpec
@@ -46,10 +47,7 @@ def translate(spec: BenchSpec,
         # forever (matches build.run's NF_COMPILE_TIMEOUT ceiling); a timeout is just a translate
         # failure -> caller records the cell as errored and continues.
         try:
-            res = subprocess.run(cmd,
-                                 capture_output=True,
-                                 text=True,
-                                 timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"numpyto timed out for {name} (target={target}) "
                                f"(ceiling is NF_COMPILE_TIMEOUT)")

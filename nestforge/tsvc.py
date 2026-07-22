@@ -3,16 +3,13 @@
 
 Two upstreams, joined per kernel by its short name (``s000``, ``vpv``, ...):
 
-  * **SDFG source** -- DaCe's ``performance_regression_jobs/tsvc_corpus.py`` holds the 151 curated,
-    typed ``@dace.program`` kernels. OptArena's ``foundation`` track ships each kernel's oracle +
-    manifest + original C but no ``_dace.py``, so the SDFG comes from here -- loaded by file path
-    (a script, not a package), overridable with ``NESTFORGE_TSVC_CORPUS``.
-  * **native baseline** -- ``foundation/tsvc_2_<key>_original.cpp`` is the original scalar TSVC loop
-    as a bare ``extern "C"`` kernel, symbol ``<key>_d``: the "how well does this compiler
-    auto-vectorize the reference loop" column of the arena.
+  * **SDFG source** -- DaCe's ``performance_regression_jobs/tsvc_corpus.py`` (151 typed
+    ``@dace.program`` kernels), loaded by file path since it is a script, not a package; overridable
+    with ``NESTFORGE_TSVC_CORPUS``. OptArena's ``foundation`` track ships no ``_dace.py``.
+  * **native baseline** -- ``foundation/tsvc_2_<key>_original.cpp``, symbol ``<key>_d``: the arena's
+    "how well does this compiler auto-vectorize the reference loop" column.
 
-The two need not be in bijection: a kernel with an SDFG but no ``_original.cpp`` still runs the
-extracted-nest columns (no native column); the intersection is what the plan calls "the 135".
+Not a bijection: a kernel with an SDFG but no ``_original.cpp`` runs without the native column.
 """
 from __future__ import annotations
 
@@ -46,11 +43,8 @@ from nestforge.fusion import get_fusion_strategy
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
 _SHAPE_SYMS = ("LEN_1D", "LEN_2D", "LEN_3D")
 #: fixed preset scale per shape symbol (mirrors the OptArena presets; ``XL`` ``LEN_1D`` is ~2 GiB fp64),
-#: used by the cross-language XL job so every compiler/language sees the same size for a preset.
-#: ``PROF`` is the full-matrix job's PROFILING size: chosen so ONE fp64 array clearly exceeds the
-#: GH200 Grace L3 (~114 MB/socket) -- each dim gives ~128 MiB/array -- landing timings in the realistic
-#: memory-bound regime rather than in-cache. Smaller than XL (dominated by alloc/first-touch, too slow
-#: for a huge sweep) but still out of L3. See perf/README_tsvc_full.md for the rationale.
+#: so every compiler/language sees the same size for a preset. ``PROF`` sizes one fp64 array (~128 MiB)
+#: past the GH200 Grace L3 (~114 MB), keeping timings memory-bound; see perf/README_tsvc_full.md.
 _PRESET = {
     "LEN_1D": {
         "S": 512,
@@ -125,15 +119,9 @@ def corpus_symbol_values(corpus: str = "tsvc2") -> Dict[str, int]:
     """Concrete values for a corpus' own SCALAR symbols -- multiplier ``S`` plus tile/offset symbols like
     ``T``/``K``/``SSYM`` -- as the corpus script itself declares them.
 
-    Both spellings are read rather than either assumed: ``tsvc2`` binds a lone ``S_VALUE``, ``tsvc2_5`` a
-    ``SIZES`` dict (``S`` differs between them), so a ``tsvc2_5`` kernel resolves its symbols instead of
-    raising on a missing ``S_VALUE``. The value itself is irrelevant to a reference-vs-candidate
-    comparison (both sides see the same one); it must just be concrete and the corpus' own, since loop
-    bounds are written to stay in range for it.
-
-    ``_SHAPE_SYMS`` are dropped: sizing those is the arena's job (the preset/random sweep IS the size
-    axis), so a corpus' ``LEN_1D`` must never shadow the sampled one. Read via ``vars`` since a corpus
-    script is a module namespace, not an object with an API."""
+    Both spellings are read: ``tsvc2`` binds a lone ``S_VALUE``, ``tsvc2_5`` a ``SIZES`` dict. The value
+    must be the corpus' own since loop bounds are written to stay in range for it. ``_SHAPE_SYMS`` are
+    dropped -- sizing those is the arena's job, so a corpus' ``LEN_1D`` must not shadow the sampled one."""
     namespace = vars(corpus_module(corpus))
     values = dict(namespace.get("SIZES", {}))
     if "S_VALUE" in namespace:
@@ -155,10 +143,8 @@ class TsvcKernel:
     def foundation_entry(self) -> Optional[Path]:
         """This kernel's OptArena manifest path from the registry, or ``None`` with no foundation entry.
 
-        Each kernel keeps its manifest, native baseline and numpy together in a ``foundation/<stem>/``
-        subfolder -- ``tsvc2`` under the ``tsvc_2_<key>`` stem, ``tsvc2_5`` under the bare ``<key>`` -- so
-        both spellings are tried (prefixed first) and a ``tsvc2_5`` kernel reaches its own subfolder
-        instead of silently falling back to defaults."""
+        ``tsvc2`` lives under the ``tsvc_2_<key>`` stem, ``tsvc2_5`` under the bare ``<key>``; both are
+        tried (prefixed first) so a ``tsvc2_5`` kernel does not silently fall back to defaults."""
         for stem in (f"tsvc_2_{self.key}", self.key):
             registry_key = f"foundation/{stem}/{stem}"
             if registry_key in KERNELS:
@@ -231,12 +217,10 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
     - ``"auto-opt"``          -- DaCe's full CPU ``auto_optimize`` pipeline, measured as its own axis
       rather than assumed.
 
-    ``SymbolPropagation`` runs for EVERY mode before the branch: the frontend names a derived loop bound
-    with a fresh symbol on an inter-state edge (s122's ``n1_minus_1 = n1 - 1``), which stays outside the
-    nest when the splitter peels the loop, leaving the DERIVED name as an unbindable free argument.
-    Propagating first rewrites the bound so the real parameter (``n1``) reappears. ``canonicalize``
-    already runs the pass internally (idempotent, so re-running costs nothing); ``simplify-parallel`` and
-    ``auto-opt`` didn't, silently dropping s122/s172/s4114 since DaCe's ``Simplify`` doesn't include it.
+    ``SymbolPropagation`` runs for EVERY mode: the frontend names a derived loop bound with a fresh symbol
+    on an inter-state edge (s122's ``n1_minus_1 = n1 - 1``), which the splitter leaves outside the nest as
+    an unbindable free argument. DaCe's ``Simplify`` does not include the pass, so without this
+    s122/s172/s4114 were silently dropped.
     """
     sdfg = kernel.program.to_sdfg(simplify=True)
     SymbolPropagation().apply_pass(sdfg, {})
@@ -248,8 +232,8 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
         auto_optimize(sdfg, dace.DeviceType.CPU)
     else:
         raise ValueError(f"unknown opt_mode {opt_mode!r}; expected one of {OPT_MODES}")
-    # Forced for EVERY mode: only `canonicalize` runs it internally, and a residual sympy floor()
-    # reaches codegen as an index that truncates term by term.
+    # forced for EVERY mode (only `canonicalize` runs it internally): a residual sympy floor() reaches
+    # codegen as an index that truncates term by term
     NormalizeFloorDivision().apply_pass(sdfg, {})
     return sdfg
 
@@ -297,31 +281,20 @@ def sample_sizes(kernel: TsvcKernel,
     scalar parameter takes its own value; a corpus-bound scalar (``S``, ``T``, ``K``, ...) takes
     :func:`corpus_symbol_values`.
 
-    A leftover symbol takes ``0`` in exactly two proven-safe cases:
+    A leftover symbol takes ``0`` in exactly two proven-safe cases: it is not an argument of the
+    standalone SDFG (unreachable), or it cannot change the TRIP COUNT (absent from
+    :func:`trip_count_symbols` and every shape) -- a leaked outer index (s1115) or induction start
+    (s123) that picks WHICH element is touched, never HOW MUCH work runs. This does not claim 0 is the
+    corpus's real starting value; the lowering is validated, not the kernel's initial state.
 
-    * the standalone SDFG never takes it as an argument -- unreachable, so 0 is as good as anything;
-    * it can't change the nest's TRIP COUNT (absent from :func:`trip_count_symbols` and every array
-      shape) -- it only picks WHICH element is touched, never HOW MUCH work runs, so oracle and
-      candidate still compare real, full-size work. Covers a leaked OUTER INDEX the nest only reads
-      (s1115: ``i`` in ``aa[i, j]``, no bound) and a leaked INDUCTION START it reads+increments
-      (s123/s124/s125/... ``j``/``k``): the corpus inits the counter before the loop and the splitter
-      leaves that init outside the nest, so it enters as an unbindable free argument.
-
-      This does NOT claim 0 is the corpus's real starting value (s123 shifts to ``a[0..]`` instead of
-      ``a[-1..]``) -- the lowering is validated, not the kernel's exact initial state. Resolving the
-      true value from ``boundary.parent_sdfg`` is the proper follow-up.
-
-    Anything else is a symbol the nest reads that CAN change its trip count and that nothing here can
-    value -- raised on, since sizing it 0 would validate vacuously against a degenerate bound. A loud
-    skip beats a silent green.
+    Anything else raises: sizing it 0 would validate vacuously against a degenerate bound.
     """
     rng = np.random.default_rng(seed + key_seed(kernel.key))
     presets = yaml_presets(kernel)
     shape_syms = shape_symbols(boundary.standalone_sdfg)
     corpus_values = corpus_symbol_values(kernel.corpus)
-    # The arguments the nest actually takes, and the symbols that can change how much work it does:
-    # together these say whether a leftover symbol's value can reach -- or degenerate -- the computation
-    # (see the 0-vs-raise below). Shapes join the trip-count set: both size the work.
+    # what the nest takes, and what can change how much work it does -- together these decide the
+    # 0-vs-raise below. Shapes join the trip-count set: both size the work.
     nest_arglist = set(boundary.standalone_sdfg.arglist())
     work_syms = trip_count_symbols(boundary.standalone_sdfg) | shape_syms
     sizes: Dict[str, int] = {}
@@ -342,16 +315,13 @@ def sample_sizes(kernel: TsvcKernel,
                 lo = min(lo, hi)
             sizes[sym] = int(rng.integers(lo, hi + 1)) if random_sizes else min(_SYM_FIXED[sym], hi)
         elif sym in shape_syms:
-            # a shape symbol outside the known 1D/2D pair with no preset (e.g. LEN_3D in the non-preset
-            # path): a small default so a 3D buffer stays modest (LEN_3D is only used by the preset job).
+            # shape symbol outside the known 1D/2D pair with no preset (LEN_3D): small default so a 3D
+            # buffer stays modest
             sizes[sym] = _PRESET.get(sym, {}).get("M", 64)
         elif sym not in nest_arglist:
             sizes[sym] = 0  # never passed to the nest: the value provably cannot reach the computation
         elif sym not in work_syms:
-            # A leaked index -- consumed (s1115's outer `i`) or self-incremented (s123's `j`). It selects
-            # WHICH element the nest touches, never HOW MUCH work it does, so 0 keeps the iteration space
-            # and the buffers full-size and both sides see the same one. See the docstring.
-            sizes[sym] = 0
+            sizes[sym] = 0  # leaked index: selects WHICH element, never HOW MUCH work (see docstring)
         else:
             raise ValueError(f"{kernel.corpus} kernel {kernel.key!r}: boundary symbol {sym!r} is read by the nest and "
                              f"sizes its work (it appears in a loop bound, a map range, an inter-state condition or an "
@@ -366,19 +336,13 @@ def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optio
     """Valid-subscript values for the nest's integer INDEX arrays, as the kernel's OptArena manifest
     declares them. Feed the result to :func:`nestforge.arena.make_inputs` as ``given``.
 
-    The manifest, not a nest-forge guess, says what belongs in a benchmark's own arrays. The case that
-    bites is the index array: the manifest declares e.g. ``ip: int32`` filled with a PERMUTATION of
-    ``[0, N)``, whereas the default uniform-float fill cast to int collapses to ALL-ZEROS -- degrading a
-    gather ``a[i] = b[ip[i]]`` to a cached read of ``b[0]`` and turning OptArena's conflict-FREE scatter
-    permutation into a race on ``a[0]`` once lowered to a ``dace.map``.
+    The manifest declares e.g. ``ip: int32`` as a PERMUTATION of ``[0, N)``, whereas the default
+    uniform-float fill cast to int collapses to ALL-ZEROS -- degrading a gather to a cached read of
+    ``b[0]`` and turning a conflict-free scatter into a race on ``a[0]`` once lowered to a ``dace.map``.
 
-    Only arrays the MANIFEST declares with an integer dtype are filled (an int array isn't automatically
-    a subscript -- the manifest separates index ``ip`` from mask), and only ones the nest actually READS
-    (an unused ``(LEN_2D,LEN_2D)`` fp64 buffer is 2 GiB at ``XL``). The fill takes the SDFG descriptor's
-    dtype, not the manifest's, since that's the width the compiled code reads across the ABI.
-
-    ``seed=None`` draws fresh entropy (fuzz); an int pins the fill. Returns ``{}`` for a kernel with no
-    manifest or whose manifest declares no index array.
+    Only MANIFEST-declared integer arrays the nest actually READS are filled (an unused
+    ``(LEN_2D,LEN_2D)`` fp64 buffer is 2 GiB at ``XL``), at the SDFG descriptor's dtype -- the width the
+    compiled code reads across the ABI. ``seed=None`` draws fresh entropy (fuzz); an int pins the fill.
     """
     return index_fills_for_manifest(kernel.optarena_name, boundary, sizes, seed=seed)
 
@@ -387,12 +351,8 @@ def index_fills_for_manifest(manifest_name: Optional[str],
                              boundary,
                              sizes: Dict[str, int],
                              seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
-    """:func:`index_fills` keyed by the OptArena manifest NAME rather than a :class:`TsvcKernel`.
-
-    Fills depend only on the manifest and the nest, not on anything TSVC-specific, so a caller holding a
-    bare manifest name (iterating OptArena kernels rather than the TSVC corpus) gets the same
-    valid-subscript fills instead of the all-zeros default. ``None`` -> ``{}``.
-    """
+    """:func:`index_fills` keyed by the OptArena manifest NAME rather than a :class:`TsvcKernel`, for a
+    caller iterating OptArena kernels rather than the TSVC corpus. ``None`` -> ``{}``."""
     if manifest_name is None:
         return {}
     spec = BenchSpec.load(manifest_name)

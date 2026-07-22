@@ -2,16 +2,13 @@
 other :data:`~nestforge.emit_libnode.REFUSED_LIBRARY_NODES`) so the whole-program / externalize lane can
 SPLIT AROUND them.
 
-An unsupported node is never offloaded. Instead each one is fissioned into its own state, with the pure
-computation it depends on in a preceding state and everything downstream in a following state -- so the
-lane can externalize the compute *before* and *after* the node independently while the node itself stays
-native. This is the general form of the MPI policy: an MPI collective (or any non-emittable library node)
-is a hard boundary the surrounding computation splits around.
+An unsupported node is never offloaded: it is fissioned into its own state, with its producers in a
+preceding state and everything downstream in a following one, so the lane externalizes the compute before
+and after it while the node stays native. The general form of the MPI policy -- a non-emittable library
+node is a hard boundary the surrounding computation splits around.
 
-The primitive is DaCe's :func:`~dace.transformation.helpers.state_fission`, applied twice: first move the
-node together with its data-flow ancestors into a new top state, then peel the ancestors off so the node
-stands alone. A nested SDFG lowers to a function call, so once a pure-compute state is on its own it is
-directly externalizable via the same nesting the extractor already uses (:mod:`nestforge.extract`).
+The primitive is :func:`~dace.transformation.helpers.state_fission`, applied twice (move the node with its
+ancestors into a new top state, then peel the ancestors off).
 """
 from __future__ import annotations
 
@@ -29,13 +26,9 @@ from nestforge.emit_numpy import UnsupportedNest
 
 
 def unsupported_library_nodes(state: dace.SDFGState) -> List[nodes.LibraryNode]:
-    """Library nodes in ``state`` the numpy emitter will not emit -- MPI/pblas communication, sparse, an
-    explicitly refused node, or one no emitter is registered for. These are exactly the nodes the
-    whole-program lane must split around instead of emit (an emittable node stays in place).
-
-    Uses :func:`~nestforge.emit_libnode.is_emittable_library_node` -- the SAME predicate the emitter uses --
-    so a name collision (an MPI ``Reduce`` shares its class name with the registered standard ``Reduce``)
-    cannot make this pass leave in place a node the emitter would refuse."""
+    """Library nodes in ``state`` the numpy emitter will not emit -- the ones the whole-program lane must
+    split around. Uses the SAME predicate as the emitter, so a name collision (an MPI ``Reduce`` vs the
+    standard ``Reduce``) cannot make this pass keep a node the emitter would refuse."""
     return [n for n in state.nodes() if isinstance(n, nodes.LibraryNode) and not is_emittable_library_node(n)]
 
 
@@ -60,15 +53,10 @@ def mixed_with_other_compute(state: dace.SDFGState, node: nodes.Node) -> bool:
 
 def isolate_into_own_state(sdfg: dace.SDFG, state: dace.SDFGState, node: nodes.Node) -> None:
     """Fission ``state`` so ``node`` ends up alone (with its in/out access nodes) between a producers state
-    (the nodes it depends on) and a consumers state (everything downstream / independent).
+    and a consumers state. A node with no ancestors needs only the first fission.
 
-    Two :func:`state_fission` steps: (1) move ``node`` and its ancestors into a new top state, leaving the
-    rest below; (2) peel the ancestors off that top state so ``node`` stands alone. A node with no
-    ancestors (a pure source) needs only the first step -- it lands at the top with the rest below.
-
-    ``allow_isolated_nodes=False``: a source that fed only ``node`` (e.g. a scalar ``root`` read only by an
-    MPI collective) would otherwise be left as an isolated, dataflow-dead access node on the wrong side of
-    the split -- dropping it keeps each resulting state a clean, independently-extractable region."""
+    ``allow_isolated_nodes=False``: a source feeding only ``node`` would otherwise be left dataflow-dead on
+    the wrong side of the split, breaking independent extraction of that state."""
     top = state_fission(SubgraphView(state, list(upstream_nodes(state, node) | {node})), allow_isolated_nodes=False)
     upstream_in_top = upstream_nodes(top, node)
     if upstream_in_top:
@@ -83,8 +71,8 @@ def isolate_unsupported_library_nodes(sdfg: dace.SDFG) -> int:
     Only top-level nodes are handled; an unsupported node inside a map scope is left in place (state
     fission cannot cut a scope) and surfaces later at emission as an :class:`UnsupportedNest`."""
     isolated = 0
-    # Bound the loop well above any real kernel's unsupported-node count: each fission isolates one node
-    # permanently, so a run that exceeds this signals a fission that failed to separate (surface it).
+    # bounded well above any real count: each fission isolates one node permanently, so exceeding it
+    # means a fission failed to separate
     for _ in range(1000):
         target = None
         for state in sdfg.states():
@@ -106,20 +94,13 @@ def whole_program_regions(sdfg: dace.SDFG):
     """Isolate every unsupported node (in place), then partition ``sdfg``'s states into externalizable
     REGIONS and native ISLANDS -- the split-around-unsupported view of the whole program.
 
-    Returns ``(regions, islands)``. Each *island* is one state holding an unsupported (non-emittable) node,
-    left native. Each *region* is a maximal set of connected pure-compute states -- one externalizable unit
-    the whole-program lane hands to an external tool (nest -> function call -> ExternalCall). Regions are
-    connected components of the state graph with the islands removed, so the partition is CFG-general
-    (branches and loops of pure states stay in one region); an interstate edge between two regions always
-    runs through an island, which is the boundary the compute splits around.
+    Returns ``(regions, islands)``. An *island* is one state holding an unsupported node, left native. A
+    *region* is a connected component of the state graph with the islands removed -- one externalizable
+    unit, CFG-general (branches/loops of pure states stay in one region).
 
-    Only a FLAT program is partitioned: every state must sit directly in ``sdfg``. ``sdfg.states()`` also
-    yields states nested in a control-flow region (a ``LoopRegion``, a ``ConditionalBlock``), but the edges
-    reaching such a region run to the REGION, not to its states -- the union-find below would never join
-    them to their neighbours and would report more (and smaller) regions than really exist, i.e. a wrong
-    extraction. ``region_to_standalone`` likewise addresses states as top-level nodes of ``sdfg``. Refuse.
-
-    Mutates ``sdfg`` (isolation fissions states) -- pass a detached copy if the original must be preserved.
+    Only a FLAT program is partitioned: edges reaching a control-flow region run to the REGION, not to its
+    states, so the union-find below would never join them and would report too many, too small regions.
+    Mutates ``sdfg`` (isolation fissions states) -- pass a detached copy to preserve the original.
     """
     nested = [s for s in sdfg.states() if s.parent_graph is not sdfg]
     if nested:
@@ -131,16 +112,12 @@ def whole_program_regions(sdfg: dace.SDFG):
     islands = [s for s in sdfg.states() if unsupported_library_nodes(s)]
     island_set = set(islands)
 
-    # Union-find over the pure states: union the endpoints of every interstate edge whose BOTH ends are
-    # pure. Each resulting set is one externalizable region.
+    # union-find over the pure states; each resulting set is one externalizable region
     parent = {s: s for s in sdfg.states() if s not in island_set}
 
-    # Every interstate edge must run between states we partition. An endpoint that is NOT a state -- a
-    # control-flow region, or a bare Return/Break/Continue block -- carries connectivity the union-find
-    # cannot see, so its neighbours would be reported as separate regions with no island between them: a
-    # wrong extraction, silently. The nested-state check above does not cover this: a branch region holding
-    # no SDFGState at all (the ordinary ``if (cond) return;`` shape) leaves `nested` empty while its edges
-    # still bypass the partition. Refuse on the CAUSE -- a skipped edge -- not on a proxy for it.
+    # A non-state endpoint (control-flow region, bare Return/Break/Continue block) carries connectivity the
+    # union-find cannot see, so its neighbours would silently be reported as independent regions. Not
+    # covered by the nested-state check: a branch region holding no SDFGState leaves `nested` empty.
     known = set(parent) | island_set
     for edge in sdfg.all_interstate_edges():
         for end in (edge.src, edge.dst):
@@ -173,14 +150,9 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
     """Copy one whole-program region (a set of connected pure-compute states) into a fresh, independently
     compilable SDFG that :func:`~nestforge.emit_numpy.sdfg_to_numpy` can emit on its own.
 
-    The boundary is the crux: a **transient** that is written in the region and used OUTSIDE it (or read in
-    the region and written outside) crosses the region boundary and is promoted to non-transient so it
-    becomes a region input / output -- while a whole-program transient stays internal. Arrays touched only
-    outside the region are dropped. The region's single entry state (no in-region predecessor) becomes the
-    start.
-
-    ``region_states`` are states of ``sdfg`` (as returned by :func:`whole_program_regions`); ``sdfg`` is not
-    mutated (the work is done on a deep copy)."""
+    A transient also used OUTSIDE the region crosses the boundary and is promoted to non-transient (a
+    region input/output); a whole-program transient stays internal. Arrays touched only outside are
+    dropped, and the region's single entry state becomes the start. ``sdfg`` is not mutated."""
     region_labels = {s.label for s in region_states}
     outside_read: Set[str] = set()
     outside_write: Set[str] = set()
@@ -201,10 +173,8 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
     for state in work.states():
         read, write = state.read_and_write_sets()
         region_used |= read | write
-    # An array can be referenced ONLY on an inter-state edge (a data-dependent index hoisted onto the edge,
-    # e.g. `idx = offsets[k]`); read_and_write_sets is dataflow-only and never reports it, so it would be
-    # deleted below while the edge still assigns from it. Keeping an extra array is harmless; dropping a
-    # referenced one leaves the emitted kernel naming an undefined array.
+    # An array may be referenced ONLY on an inter-state edge (`idx = offsets[k]`), which the dataflow-only
+    # read_and_write_sets never reports -- dropping it leaves the kernel naming an undefined array.
     for edge in work.all_interstate_edges():
         expressions = list(edge.data.assignments.values()) + [str(edge.data.condition.as_string)]
         for expr in expressions:
@@ -215,10 +185,8 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
         elif work.arrays[aname].transient and (aname in outside_read or aname in outside_write):
             work.arrays[aname].transient = False  # crosses the region boundary -> a region input / output
 
-    # The entry is decided on the ORIGINAL graph: a state entered from outside the region, or the program
-    # start. Using in_degree == 0 on the carved copy instead misses a legitimate single-entry region whose
-    # header carries a BACK-EDGE (a flat state loop of pure-compute states, which whole_program_regions
-    # keeps in one piece) -- its in_degree is >= 1, so no state qualified and a valid region was refused.
+    # Entry decided on the ORIGINAL graph. in_degree == 0 on the carved copy instead refuses a valid
+    # single-entry region whose header carries a back-edge (a flat pure-state loop).
     entry_labels = [
         s.label for s in sdfg.states()
         if s.label in region_labels and (sdfg.in_degree(s) == 0 or any(p.label not in region_labels

@@ -35,7 +35,7 @@ which is bit-exact for every language.)
 
 | axis | values | notes |
 |------|--------|-------|
-| opt-mode | `baseline`, `canonicalize` | pre-split SDFG optimization; **emit-time** axis (changes the source) |
+| opt-mode | `simplify-parallel`, `canonicalize`, `auto-opt` | pre-split SDFG optimization; **emit-time** axis (changes the source) |
 | language | `c`, `c++`, `fortran` | numpyto has no C++ target → **C++ = the emitted C recompiled by a C++ frontend** |
 | parallelization | `sequential`, `auto-par`, `omp-emit` | single-core; compiler auto-parallelizer of plain loops; OUR `#pragma omp` source |
 | compiler | `gcc`, `clang`, `nvhpc`, `intel` | whatever `discover_toolchains` finds on PATH/spack |
@@ -135,7 +135,7 @@ Phases 1–3 run under `srun --cpu-bind=cores` (kernels self-partition across ra
 
 ```bash
 # 1) pre-flight (1 node, 1 rank, few kernels, gcc, small `S` preset) -- ALWAYS run this first.
-#    Walks ALL FOUR phases in minutes.
+#    Walks ALL FIVE phases in minutes.
 sbatch perf/daint_all_smoke.sh
 
 # 2) the full phased job (4 ranks/node); PHASE 1 is at the profiling size (>L3)
@@ -155,10 +155,10 @@ PYTHONPATH=. python -m nestforge.perf.tsvc_full --tables-only --out perf_results
 
 **Env-var knobs** (`daint_all.sh`, all `${VAR:-default}`):
 
-- **phases:** `RUN_FULL`, `RUN_CROSSLANG`, `RUN_OVERHEAD`, `RUN_PLOTS` (default `1`)
+- **phases:** `RUN_FULL`, `RUN_CROSSLANG`, `RUN_OVERHEAD`, `RUN_CALLOVERHEAD`, `RUN_PLOTS` (default `1`)
 - **shared:** `CORPORA` (`tsvc2 tsvc2_5`), `LANGUAGES` (`c c++ fortran`), `COMPILERS` (`auto`),
-  `DACE_PERF_CXX_STD` (`c++23`)
-- **phase 1:** `PARALLELISM` (`both`), `OPT_MODES` (`baseline canonicalize`), `COST_MODELS`
+  `DACE_PERF_CXX_STD` (`c++20`)
+- **phase 1:** `PARALLELISM` (`both`), `OPT_MODES` (`simplify-parallel canonicalize auto-opt`), `COST_MODELS`
   (`default cheap no-vec`), `FP_MODES` (`default-fp no-fast-errno`), `PROFILE_PRESET` (`PROF`),
   `REPS` (`11`), `COMPILE_JOBS` (`16`), `OUT_FULL` (`perf_results/tsvc_full`)
 - **phase 2:** `XL_PRESET` (`XL`), `XL_REPS` (`20`), `OUT_XL` (`perf_results/crosslang_xl`)

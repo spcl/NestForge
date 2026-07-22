@@ -37,7 +37,14 @@ _C_SCALAR = {
 _C_PTR = {"float": ctypes.c_float, "double": ctypes.c_double, "int32_t": ctypes.c_int32, "int64_t": ctypes.c_int64}
 
 DEFAULT_COMPILER = "g++"
-DEFAULT_FLAGS = ["-O3", "-march=native", "-std=c++20", "-fPIC", "-shared"]
+
+#: The ONE C++ standard the whole tree compiles against -- every lane, every driver, every doc. C++20 is
+#: what the pinned codegen knobs assume (``index_fn_qualifier='inline_constexpr'`` needs constexpr-if and
+#: C++20 constexpr rules), and a single value keeps a nest built by one lane ABI-compatible with a driver
+#: built by another. Override per call only to TEST a standard, never to ship one.
+CXX_STD = "c++20"
+
+DEFAULT_FLAGS = ["-O3", "-march=native", f"-std={CXX_STD}", "-fPIC", "-shared"]
 
 
 def compiler_family(compiler: str) -> str:
@@ -64,8 +71,8 @@ _LLVM_SELECTABLE = frozenset({"libomp", "libgomp", "libiomp5"})
 @dataclass
 class OpenMPRuntime:
     """One OpenMP runtime the whole program links (PARALLEL.md: one runtime for every node library + the
-    driver). ``libomp`` is default: LLVM-selectable by name, ABI-compat with libiomp5, implements GOMP_*
-    too, so gcc- and clang-built libraries share one runtime/thread pool."""
+    driver). ``libomp`` is default -- LLVM-selectable by name and implements GOMP_* too, so gcc- and
+    clang-built libraries share one thread pool."""
     name: str = "libomp"  # selected by name on LLVM (``-fopenmp=<name>``)
     soname: str = "omp"  # ``-l<soname>`` for explicit linking
     #: ``-L`` for the runtime; None -> DISCOVERED via :func:`linkable_lib_dir`. ``""`` forces bare ``-l<soname>``.
@@ -128,10 +135,8 @@ class OpenMPRuntime:
         fam = compiler_family(compiler)
         # explicit lib_dir wins (pin a spack/module runtime, "" forces bare -l<soname>); else discover it
         pinned = self.lib_dir if self.lib_dir is not None else linkable_lib_dir(self.soname, compiler)
-        # -L alone only satisfies the LINKER: a runtime off the default loader path (the very case
-        # linkable_lib_dir globs for, e.g. /usr/lib/llvm-18/lib) then leaves DT_NEEDED with no RUNPATH, and
-        # the ctypes.CDLL right after the build dies with "libomp.so.5: cannot open shared object file".
-        # veclib.link_flags pairs -L with -rpath for exactly this reason; match it.
+        # -L satisfies only the LINKER: without the paired -rpath, a runtime off the loader path leaves
+        # DT_NEEDED with no RUNPATH and the ctypes.CDLL after the build fails to open it.
         libdir = [f"-L{pinned}", f"-Wl,-rpath,{pinned}"] if pinned else []
         if fam == "llvm":
             return [f"-fopenmp={self.name}", *libdir]
@@ -153,15 +158,6 @@ LIBNVOMP = OpenMPRuntime(name="libnvomp", soname="nvomp")  # NVIDIA HPC; kmpc+go
 
 #: name -> runtime, for a config/CLI knob.
 OPENMP_RUNTIMES = {"libomp": LIBOMP, "libgomp": LIBGOMP, "libiomp5": LIBIOMP5, "libnvomp": LIBNVOMP}
-
-
-def resolve_runtime(name: str) -> OpenMPRuntime:
-    """Named runtime as an :class:`OpenMPRuntime`; unknown names fall back to ``lib<soname>`` (gcc-only)."""
-    rt = OPENMP_RUNTIMES.get(name)
-    if rt is not None:
-        return rt
-    soname = name[3:] if name.startswith("lib") else name
-    return OpenMPRuntime(name=name, soname=soname)
 
 
 def env_library_dirs() -> List[str]:
@@ -215,18 +211,24 @@ def driver_search_dirs(compiler: str) -> List[str]:
 _LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
 
 
-def ldconfig_dirs(soname: str) -> List[str]:
-    """Directories the LOADER cache lists for ``lib<soname>``, in cache order. The linker needs the
-    ``-dev`` ``.so`` symlink, which ldconfig does not index -- but it sits in the same directory as the
-    versioned ``.so.N`` that ldconfig DOES index, so this locates the directory to probe."""
-    out = ""
-    for exe in _LDCONFIG_EXES:  # sbin is off the non-root PATH on slim images, so try it by full path
+def ldconfig_output() -> str:
+    """``ldconfig -p``, or ``""``. sbin is off the non-root PATH on slim images, so try the full paths
+    too -- a bare ``ldconfig`` there silently reports an EMPTY loader cache."""
+    for exe in _LDCONFIG_EXES:
         try:
             out = subprocess.run([exe, "-p"], capture_output=True, text=True).stdout
         except (OSError, subprocess.SubprocessError):
             continue
         if out:
-            break
+            return out
+    return ""
+
+
+def ldconfig_dirs(soname: str) -> List[str]:
+    """Directories the LOADER cache lists for ``lib<soname>``, in cache order. The linker needs the
+    ``-dev`` ``.so`` symlink, which ldconfig does not index -- but it sits in the same directory as the
+    versioned ``.so.N`` that ldconfig DOES index, so this locates the directory to probe."""
+    out = ldconfig_output()
     if not out:
         return []
     dirs: List[str] = []
@@ -247,9 +249,8 @@ _LIB_DIR_HINTS = ("/usr/lib64", "/usr/local/lib64", "/usr/local/lib")
 
 
 def llvm_version(path: Path) -> Tuple[int, ...]:
-    """The version tuple of an ``llvm-N[.M]`` directory, or ``(-1,)``. Sorting these as STRINGS ranks
-    llvm-9 above llvm-21, which would link an ancient libomp against a modern object; comparing the parts
-    as INTEGERS also keeps llvm-18.1 above llvm-18 instead of tying them."""
+    """The version tuple of an ``llvm-N[.M]`` directory, or ``(-1,)``. STRING sorting ranks llvm-9 above
+    llvm-21, linking an ancient libomp against a modern object; integer parts also break the 18.1/18 tie."""
     parts = path.parent.name.partition("llvm-")[2].split(".")
     if not parts or not parts[0].isdigit():
         return (-1, )
@@ -259,10 +260,9 @@ def llvm_version(path: Path) -> Tuple[int, ...]:
 def hint_dirs() -> List[str]:
     """Guessed library directories, newest LLVM first (a box with llvm-9 and llvm-21 must get 21).
 
-    Ranked ACROSS roots, not within each: /usr/lib and /usr/lib64 both hold llvm-* trees on mixed
-    installs, and sorting per root then concatenating yields /usr/lib/llvm-14 ahead of /usr/lib64/llvm-18.
-    The path is the sort tiebreaker so the order is total -- Path.glob returns raw directory order, which
-    varies with inode layout, and an unstable hint order picks a different libomp on identical machines.
+    Ranked ACROSS roots (per-root sorting would put /usr/lib/llvm-14 ahead of /usr/lib64/llvm-18), with
+    the path as tiebreaker: Path.glob's order varies with inode layout, and an unstable hint order picks
+    a different libomp on identical machines.
     """
     found = [p for root in _LIB_DIR_HINT_ROOTS for p in Path(root).glob("llvm-*/lib*")]
     ranked = sorted({str(p) for p in found}, key=lambda d: (llvm_version(Path(d)), d), reverse=True)
@@ -293,9 +293,8 @@ def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[
             found = driver_lib_path(soname, probe)
             if found is not None:
                 return str(found.parent)
-    # Nothing RESOLVED it, so enumerate where the drivers look and where the loader cache says it lives.
-    # Both are host-derived: a hardcoded distro ladder (/usr/lib/llvm-*/lib, /usr/lib64, ...) goes stale
-    # per distro and per toolchain version, and silently picks the wrong LLVM when several are installed.
+    # Nothing RESOLVED it: enumerate host-derived locations (driver search dirs, then the loader cache).
+    # A hardcoded distro ladder goes stale and picks the wrong LLVM when several are installed.
     for probe in _LIB_PROBE_DRIVERS:
         if shutil.which(probe):
             for d in driver_search_dirs(probe):

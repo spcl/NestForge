@@ -48,7 +48,7 @@ from nestforge.multinest import extract_all_nests
 from nestforge.translate import emit_sources, prepare
 
 
-# --- compiler discovery (item b: PATH + spack, gcc/clang/nvc++) --------------------------------------
+# --- compiler discovery (PATH + spack + vendor install roots) ---------------------------------------
 @dataclass
 class Toolchain:
     """One discovered toolchain family: its C compiler (for the translated nest) and C++ compiler (for
@@ -66,8 +66,8 @@ class Toolchain:
 
     @property
     def fp_family(self) -> str:
-        """Flag-matrix FP family. Intel (icx/icpx) is its own family despite being clang-based -- it
-        defaults to ``-fp-model=fast`` and needs explicit flags; gcc/clang/nvhpc coincide with :attr:`family`."""
+        """Flag-matrix FP family. Intel is its own despite being clang-based (it defaults to
+        ``-fp-model=fast``); the rest coincide with :attr:`family`."""
         return "intel" if self.name == "intel" else self.family
 
 
@@ -88,9 +88,8 @@ _ALIASES = {
 
 
 def spack_bin_dirs() -> List[Path]:
-    """Best-effort: ``bin`` directories of spack-installed gcc/llvm/nvhpc, so a compiler that is
-    installed but not ``spack load``ed onto PATH is still discoverable. Never fatal (spack absent, a
-    slow/interactive shell, a prompt) -- returns whatever it can within a short timeout."""
+    """``bin`` dirs of spack-INSTALLED gcc/llvm/nvhpc, so a compiler installed but not ``spack load``ed
+    onto PATH is still discoverable. Best-effort: never fatal, bounded by a short timeout."""
     if not shutil.which("spack"):
         return []
     dirs: List[Path] = []
@@ -110,8 +109,7 @@ def spack_bin_dirs() -> List[Path]:
 
 def spack_compiler_bin_dirs() -> List[Path]:
     """``bin`` dirs of every compiler spack has REGISTERED -- distinct from :func:`spack_bin_dirs`, which
-    enumerates spack-INSTALLED packages. On a spack-default host a usable compiler is often registered
-    but not ``spack load``ed onto PATH. Best-effort, bounded: capped specs + short per-call timeout."""
+    enumerates spack-INSTALLED packages. Best-effort, bounded: capped specs + short per-call timeout."""
     if not shutil.which("spack"):
         return []
     try:
@@ -122,7 +120,7 @@ def spack_compiler_bin_dirs() -> List[Path]:
     for line in listing.splitlines():
         line = line.strip()
         if not line or line.startswith("==>") or line.startswith("--"):
-            continue  # skip the banner and the per-family header rules
+            continue  # banner / header rules
         specs += [tok for tok in line.split() if "@" in tok]
     dirs: List[Path] = []
     for spec in specs[:12]:
@@ -142,9 +140,8 @@ def spack_compiler_bin_dirs() -> List[Path]:
     return dirs
 
 
-#: Default install roots of the two vendor toolchains that ship OFF PATH, newest-version-first globs.
-#: Intel oneAPI / NVIDIA HPC install off PATH under a versioned tree, expecting a setvars.sh/module a
-#: fresh shell hasn't sourced. NF_EXTRA_COMPILER_DIRS (colon-separated) prepends a site's own prefix.
+#: Install roots of the vendor toolchains that ship OFF PATH under a versioned tree, newest-first globs.
+#: ``NF_EXTRA_COMPILER_DIRS`` (colon-separated) prepends a site's own prefix.
 _VENDOR_COMPILER_GLOBS = (
     "/opt/intel/oneapi/compiler/*/bin",  # icx/icpx/ifx; NOT 'latest' -- can point at an ifx-only version
     "/opt/nvidia/hpc_sdk/Linux_x86_64/*/compilers/bin",  # nvc / nvc++ / nvfortran
@@ -152,16 +149,13 @@ _VENDOR_COMPILER_GLOBS = (
 
 
 def vendor_compiler_bin_dirs() -> List[Path]:
-    """``bin`` dirs of vendor toolchains at their default location but not on PATH (Intel oneAPI, NVIDIA
-    HPC) -- both expect a setvars.sh/module a fresh shell hasn't sourced.
+    """``bin`` dirs of vendor toolchains at their default location but not on PATH (Intel oneAPI,
+    NVIDIA HPC), ``NF_EXTRA_COMPILER_DIRS`` first.
 
-    setvars is deliberately not sourced: it mutates a shell's env, but the arena dlopens libraries
-    in-process, so LD_LIBRARY_PATH at shell start wouldn't help the loader anyway (rpath is baked
-    instead, see :func:`nestforge.perf.flags.support_rpath_flags`).
-
-    Newest version first: an older oneAPI dir may ship only ``ifx`` with no ``icx`` (measured on this
-    box), so an unsorted first-match could hide the real compiler. ``NF_EXTRA_COMPILER_DIRS`` honoured first.
-    """
+    setvars.sh is deliberately NOT sourced: the arena dlopens libraries in-process, so a shell-start
+    LD_LIBRARY_PATH would not reach the loader (rpath is baked instead, see ``flags.support_rpath_flags``).
+    Newest version first, because an older oneAPI dir may ship ``ifx`` with no ``icx`` and hide the
+    real compiler."""
     dirs: List[Path] = []
     for d in os.environ.get("NF_EXTRA_COMPILER_DIRS", "").split(os.pathsep):
         p = Path(d)
@@ -199,8 +193,8 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
             warnings.warn(f"unknown compiler token {t!r}; known: {sorted(_ALIASES)}")
         elif fam not in families:
             families.append(fam)
-    # PATH first, then spack (installed + registered): a spack-default host may have the compiler
-    # registered but not in a `spack find` prefix.
+    # installed AND registered: a spack-default host may have a compiler registered but not in a
+    # `spack find` prefix
     extra_dirs = spack_bin_dirs()
     for d in spack_compiler_bin_dirs() + vendor_compiler_bin_dirs():
         if d not in extra_dirs:
@@ -221,9 +215,8 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
     return out
 
 
-# The flag matrix (FP-precision level x vectorizer cost-model, per family) is the shared
-# ``nestforge.perf.flags.flag_matrix``; see ``docs/FP_PRECISION_LEVELS.md``. The crosslang job sweeps
-# the same matrix, so the two arenas stay in lock-step on one FP-precision ladder.
+# The flag matrix is the shared ``flags.flag_matrix``; the crosslang job sweeps the same one, so both
+# arenas stay on one FP-precision ladder.
 
 
 # --- a single measured compile cell -----------------------------------------------------------------
@@ -243,9 +236,7 @@ class Cell:
 @dataclass
 class NestUnit:
     """One extracted nest of a kernel, with everything a cell needs to compile + validate + time it.
-
-    A single-nest kernel has one :class:`NestUnit` named ``<key>``/``<key>_fp64``; a multi-nest kernel
-    has one per nest named ``<key>_n<idx>``, each binding its own entry point."""
+    Named ``<key>`` when the kernel has one nest, ``<key>_n<idx>`` when it has several."""
     idx: int
     name: str
     symbol: str
@@ -260,8 +251,8 @@ class NestUnit:
 
 def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List[str], argtypes, boundary, inputs,
                  sizes, oracle, reps: int, atol: float, family: str, label: str, workdir: Path) -> Cell:
-    """Compile the translated-nest C at ``flags``, then validate + time it in a forked child (so an OOB
-    or runaway loop in the compiled kernel cannot take down the sweep rank)."""
+    """Compile the translated-nest C at ``flags``, then validate + time it in a forked child, so an OOB
+    or runaway loop cannot take down the sweep rank."""
     so = workdir / f"{symbol}_{family}_{label.replace('/', '_')}.so"
     ok, compile_us, err = run_compile([cc, *flags, str(csrc), "-o", str(so)])
     if not ok:
@@ -269,7 +260,7 @@ def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List
 
     def work():
         outs, us = call_c(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
-        # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff).
+        # absolute difference is REPORTED; the gate is the scaled one
         md = maxdiff(oracle, outs)
         return {"ok": bool(relative_maxdiff(oracle, outs) <= atol), "maxdiff": float(md), "time_us": float(us)}
 
@@ -281,9 +272,8 @@ def measure_nest(cc: str, csrc: Path, flags: List[str], symbol: str, order: List
 
 def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: int, atol: float, family: str,
                        label: str, workdir: Path) -> Cell:
-    """One (compiler, flags) cell summed over every nest: compile + time each nest's own source, then
-    aggregate into a :class:`Cell` whose ``time_us``/``compile_us`` are sums, ``ok`` iff every nest
-    validated, ``maxdiff`` the max over nests. A single-nest kernel is a sum of one (unchanged)."""
+    """One (compiler, flags) cell over every nest: ``time_us``/``compile_us`` are sums, ``ok`` iff every
+    nest validated, ``maxdiff`` the max over nests."""
     per = [
         measure_nest(cc, u.csrc, cflags, u.symbol, u.order, u.argtypes, u.boundary, u.inputs, u.sizes, u.oracle, reps,
                      atol, family, label, workdir) for u in units
@@ -298,11 +288,12 @@ def measure_over_nests(cc: str, units: List[NestUnit], cflags: List[str], reps: 
                 error=next((c.error for c in per if c.error), None))
 
 
-# --- native baseline (item e) -----------------------------------------------------------------------
+# --- native baseline --------------------------------------------------------------------------------
 def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, oracle, reps: int) -> Dict:
-    """Bind + validate + time the native baseline in the forked child, so an OOB access in the original C
-    (its bounds are independent of the nest-sized buffers) segfaults only the child. Raises on an
-    unresolved arg."""
+    """Bind + validate + time the native baseline in the forked child: the original C's bounds are
+    independent of the nest-sized buffers, so an OOB here segfaults only the child.
+
+    :raises KeyError: on an unresolved pointer or scalar arg."""
     pool = {"iterations": 1, "vlen": 8}
     pool.update({s.lower(): int(v) for s, v in sizes.items()})
     pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
@@ -330,7 +321,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
     fn(*build_args())  # correctness run
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
-    if not outs:  # nothing to compare -> UNCHECKED, never report 0.0/ok for an unvalidatable lane
+    if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "time_us": float("inf"), "unchecked": True}
     md = maxdiff({k: oracle[k] for k in outs}, outs)
     cargs = build_args()
@@ -344,9 +335,8 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
 def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes, oracle, reps: int, family: str,
                    workdir: Path) -> Optional[Cell]:
-    """Compile the ``_original.cpp`` baseline and time it (in a forked child) on the SAME inputs/sizes as
-    the nest columns. Returns ``None`` when this kernel ships no native source or the family has no C++
-    compiler."""
+    """Compile the ``_original.cpp`` baseline and time it (forked) on the SAME inputs/sizes as the nest
+    columns. ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:
         return None
@@ -366,8 +356,7 @@ def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes,
     res = run_isolated(lambda: native_work(so, symbol, sig, kernel, boundary, inputs, sizes, oracle, reps))
     if "error" in res:
         return Cell(family, "native", nat, False, float("inf"), float("inf"), compile_us, error=res["error"])
-    # Unvalidatable native lane carries its reason: it's the speedup denominator, so a silent pass would
-    # fabricate a baseline nothing was compared against.
+    # the native lane is the speedup denominator, so an unvalidatable one must carry its reason
     unchecked = "native outputs resolve to no pointer arg; nothing validated" if res.get("unchecked") else None
     return Cell(family, "native", nat, res["ok"], res["maxdiff"], res["time_us"], compile_us, error=unchecked)
 
@@ -381,9 +370,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
                reps: int, random_sizes: bool, workdir: Path) -> Dict:
     """Run one kernel through all three columns for every toolchain; return the JSON-able result dict.
 
-    A kernel may split into several compute nests (its work is the SUM of its nests): every cell compiles
-    + times each nest and sums the per-nest times (schema unchanged). The whole-kernel native ``.cpp``
-    baseline stays a single measurement, borrowing the first nest's buffers for sizing."""
+    A kernel may split into several nests; every cell sums the per-nest times. The whole-kernel native
+    ``.cpp`` baseline stays one measurement, borrowing the first nest's buffers for sizing."""
     result: Dict = {
         "key": kernel.key,
         "corpus": kernel.corpus,  # the --link read-back must re-resolve the key from ITS OWN corpus
@@ -400,7 +388,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
             sizes = tsvc.sample_sizes(kernel, boundary, seed=seed, random_sizes=random_sizes)
             nest_dir = workdir / f"n{idx}"
             prep = prepare(boundary, name, nest_dir, sizes=sizes)
-            # seeded index-array fills: without them a gather/scatter kernel measures degenerate (all-zero ip).
+            # seeded index fills, else a gather/scatter kernel measures degenerate (all-zero ip)
             inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))
             oracle = run_oracle(prep, boundary, inputs, sizes)
             csrc = select_c_source(emit_sources(prep, nest_dir))
@@ -410,22 +398,22 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
     except Exception as e:
         return {**result, "skipped": f"{type(e).__name__}: {str(e)[:160]}"}
 
-    # union of per-nest sizes; a single-nest kernel gets exactly that nest's sizes (schema unchanged).
+    # union of per-nest sizes
     merged: Dict[str, int] = {}
     for u in units:
         merged.update(u.sizes)
     result["sizes"] = {k: int(v) for k, v in merged.items()}
-    # per-kernel nest roster (name/symbol), so the whole-program link can verify each nest's symbol.
+    # nest roster, so the whole-program link can verify each nest symbol
     result["nests"] = [{"idx": u.idx, "name": u.name, "symbol": u.symbol} for u in units]
     rows: List[Dict] = []
     for tc in toolchains:
-        fam = tc.fp_family  # flag-matrix / FP family (intel != llvm); also the cell's compiler label
+        fam = tc.fp_family  # flag-matrix FP family (intel != llvm); also the cell label
         default = measure_over_nests(tc.cc, units, flags.base_flags(fam), reps, 1e-6, fam, "default", workdir)
         cells = [
             measure_over_nests(tc.cc, units, cflags, reps, flags.FP_ATOL[level], fam, f"{level}/{model}", workdir)
             for level, model, cflags in flags.flag_matrix(fam)
         ]
-        # native is the whole-kernel .cpp -> one measurement on the first nest's buffers (see docstring).
+        # whole-kernel .cpp -> one measurement, on the first nest's buffers
         native = measure_native(tc.cxx, kernel, units[0].boundary, units[0].inputs, units[0].sizes, units[0].oracle,
                                 reps, fam, workdir)
         correct = [c for c in cells if c.ok]
@@ -450,7 +438,7 @@ def ensure_seed_dir(out: Path, seed: int) -> Path:
     return d
 
 
-# --- tables (item g) --------------------------------------------------------------------------------
+# --- tables -----------------------------------------------------------------------------------------
 def render_tables(out: Path, seed: int) -> str:
     """Merge every per-kernel JSON under ``seed<seed>/`` into a markdown report."""
     seed_dir = ensure_seed_dir(out, seed)
@@ -474,7 +462,7 @@ def render_tables(out: Path, seed: int) -> str:
             best_us = win["time_us"] if win else None
             best_lbl = win["label"] if win else "—"
             md = f"{win['maxdiff']:g}" if win else "—"
-            # `is not None`, not truthiness, so a legitimate 0.00us isn't dropped; best_us stays a divide-by-zero guard.
+            # `is not None`, not truthiness, so a legitimate 0.00us survives; best_us guards div-by-zero
             sp = (nat_us / best_us) if (nat_us is not None and best_us) else None
             if sp is not None and math.isfinite(sp):
                 speedups.append(sp)
@@ -497,7 +485,7 @@ def render_tables(out: Path, seed: int) -> str:
     return report
 
 
-# --- whole-program link (item f) --------------------------------------------------------------------
+# --- whole-program link -----------------------------------------------------------------------------
 def global_winner(k: Dict) -> Optional[Dict]:
     """The fastest correct nest cell for a kernel across all toolchains (its winning cell to assemble)."""
     best = None
@@ -509,10 +497,9 @@ def global_winner(k: Dict) -> Optional[Dict]:
 
 
 def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mode: str, strategy: str) -> str:
-    """Assemble each kernel's winning cell as a static ``.a``, link them all into one whole-TSVC ``.so``,
-    verify each kernel symbol loads and computes correctly, and report the aggregate whole-program
-    comparison (Sum winner vs Sum native vs Sum default across the independent kernels). Sizes are read
-    back from the stored sweep JSON (not re-sampled), so the reconstructed nest matches what was timed."""
+    """Assemble each kernel's winning cell as a static ``.a``, link them into one whole-TSVC ``.so``,
+    verify every symbol resolves, and report the aggregate comparison. Sizes are read back from the
+    stored sweep JSON, never re-sampled, so the reconstructed nest matches what was timed."""
     seed_dir = ensure_seed_dir(out, seed)
     kernels = [json.loads(p.read_text()) for p in sorted(seed_dir.glob("*.json")) if p.name != "tables.md"]
     done = [k for k in kernels if "rows" in k]
@@ -520,7 +507,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
     link_dir = seed_dir / "link"
     link_dir.mkdir(exist_ok=True)
 
-    archives: List[Tuple[Path, List[str]]] = []  # (archive, [nest symbol, ...]) -- multi-nest kernels list all
+    archives: List[Tuple[Path, List[str]]] = []  # (archive, [nest symbol, ...])
     verified, failed = 0, 0
     sum_win = sum_nat = sum_dfl = 0.0
     notes: List[str] = []
@@ -530,8 +517,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
             notes.append(f"`{k['key']}` — no correct winner cell; excluded from the linked program")
             continue
         tc = by_name.get(win["compiler"]) or next(iter(toolchains), None)
-        # Winning flags apply to every nest of the kernel; compile each nest's object and archive them
-        # all into one lib<key>.a so the whole-program verify checks every nest symbol.
+        # winning flags apply to EVERY nest; all objects go into one lib<key>.a
         try:
             kernel = tsvc.iter_tsvc_kernels(only=[k["key"]], corpus=k.get("corpus", "tsvc2"))[0]
             nests = extract_all_nests(lambda: tsvc.build_sdfg(kernel, opt_mode=opt_mode), strategy, kernel.key)
@@ -549,7 +535,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
                 csrc = select_c_source(emit_sources(prep, link_dir))
                 obj = link_dir / f"{name}.o"
                 if obj.exists():
-                    obj.unlink()  # never let a stale object from an earlier --link run be archived silently
+                    obj.unlink()  # a stale object from an earlier --link run must not be archived
                 cok, _, cerr = run_compile([tc.cc, *cflags, "-c", str(csrc), "-o", str(obj)])
                 if not cok:
                     compile_note = f"nest {name}: {cerr}"
@@ -574,7 +560,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
         except Exception as e:
             notes.append(f"`{k['key']}` — assemble failed: {type(e).__name__}: {str(e)[:120]}")
             continue
-        # aggregate the measured columns (independent kernels -> whole-program time is their sum)
+        # independent kernels -> whole-program time is their sum
         r0 = k["rows"][0]
         sum_win += win["time_us"]
         if r0["native"] and r0["native"]["ok"]:
@@ -593,7 +579,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
         if ok:
             lib = ctypes.CDLL(str(whole))
             for _, symbols in archives:
-                for symbol in symbols:  # every nest of the kernel must resolve in the whole-program .so
+                for symbol in symbols:  # every nest must resolve in the whole-program .so
                     try:
                         _ = lib[symbol]
                         verified += 1
@@ -662,7 +648,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     for t in toolchains))
 
     procid, ntasks = rank_and_size()
-    # kernels of every selected corpus, self-partitioned as one combined list; corpora keys are disjoint.
+    # one combined list across corpora (keys are disjoint), self-partitioned
     kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
     mine = my_slice(kernels, procid, ntasks)
     if args.limit:

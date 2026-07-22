@@ -21,41 +21,24 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-# Every PyPI-resolvable module-level import of the `nestforge` package. sympy belongs HERE, not in the
-# `dev` extra where it used to sit: nestforge/emit_numpy.py imports it at module level, so it is needed
-# to import the package at all.
-#
-# `dace` and `optarena` are deliberately ABSENT even though nestforge imports both, because a bare name
-# resolves to the wrong thing:
-#   optarena -- never published to PyPI, so listing it made `pip install -e .` fail outright with
-#               "No matching distribution found for optarena". Nothing caught this because CI installs
-#               the two checkouts editable and then runs pytest from the repo root, never `-e .`.
-#   dace     -- nest-forge needs the `extended` branch (2.0.0a4) for the extended-only passes it calls
-#               (e.g. dace.transformation.interstate.expand_nested_sdfg_inputs). PyPI's `dace` tops out
-#               at 1.0.2, so a bare `dace` silently installs a wheel that cannot run this package.
-# Both are installed EDITABLE from their sibling checkouts -- which is also what pins dace to `extended`:
-#   pip install -r requirements-dev.txt
-# A PEP 508 direct reference (`dace @ git+https://github.com/spcl/dace.git@extended`) would resolve, but
-# is worse than omitting it: pip treats a git URL as unsatisfied by a local editable install and would
-# reinstall dace from git over the ../dace checkout that is the whole point of developing against it.
+# Every PyPI-resolvable module-level import of `nestforge`. `dace` and `optarena` are deliberately
+# ABSENT although nestforge imports both: optarena is not on PyPI at all (listing it makes `pip install
+# -e .` fail), and PyPI's `dace` tops out at 1.0.2 while nest-forge needs the `extended` branch. Both
+# come from requirements-dev.txt as editable sibling checkouts. A PEP 508 git URL is worse than omitting
+# them -- pip treats it as unsatisfied by a local editable and reinstalls over the checkout.
 dependencies = ["numpy", "pyyaml", "sympy"]
 
 [project.optional-dependencies]
-# The pip-installable dev/test/format tools -- the single source of truth for them; requirements-dev.txt
-# installs this extra rather than restating it. The editable `dace`/`optarena` checkouts are NOT here
-# (they are paths, not PyPI deps) -- see the comment above and requirements-dev.txt.
+# Single source of truth for the dev/test/format tools; requirements-dev.txt installs this extra.
 dev = [
     "pytest",
     "pytest-timeout",
     "pytest-xdist",
-    # perf/plot_*.py render the driver JSON to PNG/CSV (Agg backend, headless). Test-only: the plot
-    # scripts live outside the nestforge package, so importing nestforge never needs matplotlib.
+    # perf/plot_*.py only -- outside the package, so importing nestforge never needs it
     "matplotlib",
-    # PINNED: yapf's wrapping heuristics change between releases, so an unpinned yapf makes the CI
-    # format gate fail on a machine whose yapf differs from the one the tree was formatted with.
+    # PINNED: yapf's wrapping changes between releases, so an unpinned one fails the CI format gate
     "yapf==0.43.0",
-    # Not part of scripts/format.sh or the CI format gate (both are yapf + clang-format); ruff is the
-    # lint pass, configured under [tool.ruff] below and run pre-commit.
+    # the lint pass ([tool.ruff] below); the format gate is yapf + clang-format only
     "ruff",
     "clang-format",
 ]

@@ -25,7 +25,6 @@ import argparse
 import ctypes
 import json
 import math
-import os
 import re
 import shutil
 import socket
@@ -40,7 +39,7 @@ import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 
 from nestforge import tsvc
 from nestforge.arena import make_inputs
-from nestforge.build import ar_for, fat_lto_flags
+from nestforge.build import COMPILE_TIMEOUT_S, ar_for, fat_lto_flags
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
@@ -72,12 +71,9 @@ def runner_source(symbol: str, params: str, argnames: List[str], kernel_c: Optio
 def run_compile(cmd: List[str]) -> None:
     # bound each compile so a pathological build can't hang the rank; timeout -> normal build failure.
     try:
-        r = subprocess.run(cmd,
-                           capture_output=True,
-                           text=True,
-                           timeout=float(os.environ.get("NF_COMPILE_TIMEOUT", "900")))
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"command timed out ({float(os.environ.get('NF_COMPILE_TIMEOUT', '900')):.0f}s): "
+        raise RuntimeError(f"command timed out ({COMPILE_TIMEOUT_S:.0f}s): "
                            f"{' '.join(cmd[:2])} ... (ceiling is NF_COMPILE_TIMEOUT)")
     if r.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd)}\n{r.stderr[-800:]}")

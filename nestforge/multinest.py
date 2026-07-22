@@ -9,6 +9,7 @@ measure multi-nest kernels; :mod:`nestforge.perf.tsvc_full` has its own equivale
 """
 from __future__ import annotations
 
+import copy
 from typing import Callable, List, Tuple
 
 import dace
@@ -29,11 +30,17 @@ def extract_all_nests(build_fn: Callable[[], dace.SDFG], strategy_name: str,
     strategy found no compute nest (the caller skips the kernel).
     """
     strategy = get_strategy(strategy_name)
-    refs = strategy(build_fn())
+    # Build ONCE and deepcopy per nest. ``build_fn`` runs the DaCe frontend plus canonicalize, which
+    # measured 70-2368 ms against 1.9-37.8 ms to copy the result -- 30-90x typically, up to 1175x --
+    # and it was called once per nest plus once more just to count them. The contract that each
+    # extraction gets a NEW SDFG is what a deepcopy provides; experiment_e1 already does exactly this
+    # substitution for the same reason.
+    master = build_fn()
+    refs = strategy(master)
     single = len(refs) == 1
     out: List[Tuple[int, str, str, Boundary]] = []
     for idx in range(len(refs)):
-        refs_i = strategy(build_fn())  # fresh SDFG per nest: extraction below mutates it in place
+        refs_i = strategy(copy.deepcopy(master))  # fresh SDFG per nest: extraction below mutates it
         parent, node = refs_i[idx]
         name = key if single else f"{key}_n{idx}"
         boundary = extract_nest_to_sdfg(parent, node, name=name)

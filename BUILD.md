@@ -19,7 +19,7 @@ built our way:
    (`dace/runtime/include/...`). Locate it once: `Path(dace.__file__).parent / "runtime" / "include"`
    (and `dace.Config.get('compiler', 'cpu', 'args')` for the flags DaCe itself would use, as a
    reference). Compile with `-I<that>` (plus any library-node environment includes, §5).
-3. **Compile + link ourselves.** `g++ -std=c++14 -O3 -march=native -I<dace-include> ... prog.cpp
+3. **Compile + link ourselves.** `g++ -std=c++20 -O3 -march=native -I<dace-include> ... prog.cpp
    -shared -fPIC -o dace.so` — one compiler + flag set, ours, matching the offloaded-nest build so the
    competition is fair. This is the same `languages.build_kernel_lib_commands` shape optarena already
    uses for the offload C; unify both under one builder in nest-forge.

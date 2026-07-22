@@ -1,21 +1,10 @@
-# Insert clock tasklets around a nest so it can be timed IN SITU, while the whole program runs.
-"""Bracket a nest with timing tasklets.
+"""Bracket a nest with timing tasklets, so it is timed IN SITU while the whole program runs.
 
-Timing a nest by running it standalone answers a different question than timing it inside the
-program it belongs to: standalone loses the cache state, the page mapping and the surrounding
-threads. This module measures the nest *where it lives* -- one clock read before it, one after --
-so the whole program still runs and only the nest is attributed.
-
-Two things make this sound rather than decorative:
-
-* **Dependency edges.** A tasklet with no data dependence on the nest is free to be scheduled
-  anywhere, so a clock read could sink past the code it is supposed to bracket. Every timer is
-  wired to the nest with an explicit edge, so the ordering is a property of the graph rather than
-  an accident of emission order.
-* **The timers are not transients.** A transient scalar nothing reads is dead code, and
-  simplification is entitled to delete it -- which would silently produce a build that measures
-  nothing and reports zero. Making them SDFG arguments keeps them alive by construction and lets
-  the harness read the result.
+Standalone timing loses the cache state, page mapping and surrounding threads, answering a different
+question. Two soundness requirements: timers are wired to the nest by explicit dependency edges (an
+unwired clock read may be scheduled past the code it brackets), and they are SDFG arguments rather
+than transients (a transient nobody reads is dead code simplify may delete, leaving a build that
+measures nothing and reports zero).
 """
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -23,13 +12,12 @@ from typing import Optional, Tuple
 import dace
 from dace import dtypes
 from dace.sdfg import SDFG, SDFGState
-from dace.sdfg.state import ControlFlowRegion, LoopRegion
+from dace.sdfg.state import ControlFlowRegion
 
 #: Monotonic clock, nanoseconds. steady_clock cannot jump backwards the way system_clock can.
 CLOCK_READ = ('__out = static_cast<unsigned long long>('
               'std::chrono::steady_clock::now().time_since_epoch().count());')
 
-#: Emitted once per instrumented SDFG so the tasklets above compile.
 CLOCK_INCLUDE = '#include <chrono>'
 
 
@@ -37,10 +25,10 @@ CLOCK_INCLUDE = '#include <chrono>'
 class NestTimers:
     """Handles to an instrumented nest.
 
-    :param start: name of the scalar holding the clock read taken before the nest.
-    :param stop: name of the scalar holding the clock read taken after it.
-    :param start_state: the state performing the first read.
-    :param stop_state: the state performing the second.
+    :param start: scalar holding the clock read taken before the nest.
+    :param stop: scalar holding the clock read taken after it.
+    :param start_state: state performing the first read.
+    :param stop_state: state performing the second.
     """
     start: str
     stop: str
@@ -78,11 +66,8 @@ def instrument_nest(sdfg: SDFG, nest, name: Optional[str] = None) -> NestTimers:
     suffix = name or nest.label
     start, stop = f'__nf_t0_{suffix}', f'__nf_t1_{suffix}'
     for scalar in (start, stop):
-        # A length-1 ARRAY, not a Scalar: a Scalar argument is passed by value, so the clock reading
-        # would be written and then dropped on the way out. The repo's ABI convention is Scalar for
-        # by-value inputs, length-1 array for anything the caller reads back.
-        # NOT transient either: a transient nobody reads is dead code and simplify may delete it,
-        # leaving a build that silently measures nothing and reports zero.
+        # Length-1 array, not Scalar: a Scalar arg is by-value, so the reading would be dropped on the
+        # way out. Non-transient so simplify cannot delete it as dead.
         sdfg.add_array(scalar, [1], dace.uint64, transient=False)
 
     if CLOCK_INCLUDE not in sdfg.global_code.get('frame', dace.properties.CodeBlock('')).as_string:

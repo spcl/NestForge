@@ -1,15 +1,9 @@
 """Whole-program baseline lane: optimize the ENTIRE un-split program as one unit and measure it.
 
-The per-nest arena extracts each loop nest and tunes it in isolation. That risks crediting a "win" that a
-whole-program optimizer -- DaCe ``auto-opt`` across all nests, or a compiler auto-parallelizing the whole
-emitted source -- already gets for free. This lane is the honest baseline: hand the whole program to ONE
-optimizer, build it, validate it bit-exact, and time it, so a per-nest result has something real to beat.
-
-Any :class:`~nestforge.optimizers.Optimizer` proposing ``scope='whole-program'`` plugs in -- the
-deterministic :class:`~nestforge.optimizers.WholeProgramOptimizer` (auto-opt) now, an agent later ("agent
-or anything"). The build + validate path is the per-nest lane's, pointed at the WHOLE-program boundary
-(:func:`~nestforge.extract.whole_program_boundary`) instead of an extracted nest; the compiled kernel runs
-FORKED (:func:`~nestforge.isolation.run_isolated`) so a crash in fresh code never takes down the caller.
+The baseline a per-nest result must beat -- otherwise a "win" may be something a whole-program optimizer
+gets for free. Any :class:`~nestforge.optimizers.Optimizer` proposing ``scope='whole-program'`` plugs in.
+Build + validate is the per-nest lane's path, pointed at
+:func:`~nestforge.extract.whole_program_boundary`; the kernel runs forked.
 """
 from __future__ import annotations
 
@@ -57,11 +51,9 @@ def measure_whole_program(optimizer: Optimizer,
                           timeout: float = 900.0) -> WholeProgramResult:
     """Build + validate + time ``optimizer``'s whole-program proposal for ``kernel``.
 
-    The proposal must be ``scope='whole-program'``, DaCe lane (the external whole-program lane -- gcc /
-    clang+Polly / gcc+Graphite / pluto over the whole emitted source -- is future work). The optimizer's
-    ``opt_mode`` optimizes the WHOLE kernel SDFG (``auto-opt`` fuses/tiles across nests); the numpy oracle
-    is emitted from that same optimized program, so the check is codegen-vs-emit on identical semantics.
-    ``atol`` defaults to the strict-ieee tolerance.
+    The proposal must be ``scope='whole-program'``, DaCe lane (the external lane is future work). The
+    oracle is emitted from the same optimized SDFG, so the check is codegen-vs-emit on identical
+    semantics. ``atol`` defaults to the strict-ieee tolerance.
     """
     proposal = optimizer.propose()
     if proposal is None:
@@ -85,32 +77,26 @@ def measure_whole_program(optimizer: Optimizer,
     built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
 
     def work():
-        # Validate: one in-place run, compared to the oracle. bind_program binds only the SDFG's own
-        # parameters, so make_inputs' extra scratch buffers (internal transients of the whole program) are
-        # harmlessly ignored.
+        # bind_program binds only the SDFG's own parameters, so make_inputs' extra scratch is ignored.
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
         if outs:
             ref = {o: oracle[o] for o in outs}
-            # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff) -- an
-            # absolute tolerance is unreachable at reduction magnitudes.
+            # absolute diff is REPORTED, the scaled one gates: an absolute atol is unreachable at
+            # reduction magnitudes
             md = float(maxdiff(ref, outs))
             verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
         else:
             verdict = {"ok": False, "maxdiff": float("inf")}
-        # Time: init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling).
+        # init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling)
         tbuf = {k: v.copy() for k, v in inputs.items()}
         built.init(sizes)
         try:
             fn, cargs = built.bind_program(tbuf, sizes)
             fn(*cargs)  # warm
-            # Restore every buffer the program WRITES before each timed rep -- the same discipline the
-            # per-nest side applies (differential.measure_in_context). Without it an in-place program
-            # (a[:] = a[:] * b) feeds on its own previous output: rep k computes a * b**k, which reaches
-            # Inf/denormals within a few reps, and denormal arithmetic rather than the kernel dominates the
-            # median. E2 divides this median BY the per-nest one, so leaving it out inflates every speedup
-            # by an artifact that grows with reps. The restore writes in place and sits OUTSIDE the timing.
+            # Restore every written buffer before each rep (outside the timing): an in-place program
+            # otherwise feeds on its own output, reaching denormals/Inf in a few reps and timing those.
             mutated = [o for o in boundary.outputs if o in tbuf]
             samples: List[float] = []
             for _ in range(reps):
@@ -132,19 +118,14 @@ def measure_whole_program(optimizer: Optimizer,
 
 
 # --- offload analysis: externalize before deciding offload -------------------------------------------
-# Whole-program scope is the full un-split program (`whole_program_boundary`). Offloading works at a FINER
-# scope: each loop nest is externalized into a call first, and only THEN does a tool decide whether that
-# call is offloadable. The order is fixed -- if DaCe offloaded a loop and a polyhedral tool then found the
-# same loop GPU-viable, the offload decision would change underneath us -- so no lane may pre-decide
-# offload before extraction. Each externalized call is put in its OWN state: that isolated state is the
-# scope "between" the call and the host program, where the host<->device transfer lives, so every call
-# decides offload independently.
+# Order is fixed: externalize each nest into a call FIRST, then let a tool decide offloadability. A lane
+# that pre-decides offload would have its decision invalidated by a later extraction. Each call gets its
+# own state -- the scope where the host<->device transfer lives -- so calls decide independently.
 @dataclass
 class OffloadScope:
-    """One externalized call as an INDEPENDENT offload unit -- the scope between the call and the host
-    program. ``inputs`` cross INTO the scope (host->device on offload), ``outputs`` cross OUT
-    (device->host). ``offloadable`` is the per-call decision (a tool's, injected -- see
-    :func:`offload_scopes`); ``reason`` says why not when it is ``False``."""
+    """One externalized call as an INDEPENDENT offload unit. ``inputs`` cross INTO the scope
+    (host->device on offload), ``outputs`` cross OUT; ``offloadable`` is the per-call decision (injected,
+    see :func:`offload_scopes`), ``reason`` says why not."""
     call: str
     inputs: List[str]
     outputs: List[str]
@@ -154,8 +135,7 @@ class OffloadScope:
 
 def default_offloadable(call: ExternalCall, boundary: Boundary) -> Tuple[bool, str]:
     """Default decision: an externalized compute nest may offload. The real per-tool GPU-viability check
-    (polyhedral affinity, data-parallelism, cost) plugs in here -- the analysis provides the scope, the
-    tool provides the verdict."""
+    plugs in here -- the analysis provides the scope, the tool provides the verdict."""
     return True, ""
 
 
@@ -167,12 +147,9 @@ def offload_scopes(
     """Whole-program offload analysis: externalize each nest into a call, then put each call in its OWN
     state so it is an independent offload unit.
 
-    NON-DESTRUCTIVE: works on a deepcopy, so the caller's SDFG is untouched (an analysis that does not
-    commit must not mutate the input). Returns the transformed SDFG (externalized + isolated, still runnable
-    via the ``DaceReference`` expansion) and one :class:`OffloadScope` per call, in extraction order.
-
-    ``offloadable`` is the per-call decision, injected because the invariant is that each TOOL decides
-    independently after extraction; it defaults to :func:`default_offloadable`.
+    NON-DESTRUCTIVE: works on a deepcopy, so the caller's SDFG is untouched. Returns the transformed SDFG
+    (still runnable via the ``DaceReference`` expansion) and one :class:`OffloadScope` per call, in
+    extraction order. ``offloadable`` defaults to :func:`default_offloadable`.
     """
     decide = offloadable or default_offloadable
     work = copy.deepcopy(sdfg)

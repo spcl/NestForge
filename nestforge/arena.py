@@ -19,6 +19,7 @@ import numpy as np
 
 from dace import symbolic
 
+from nestforge.build import COMPILE_TIMEOUT_S, ldconfig_output
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.extract import Boundary
 from nestforge.isolation import run_isolated
@@ -37,9 +38,8 @@ FP_MODES: Dict[str, List[str]] = {
 MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
-# numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is here because a comparison
-# in the kernel (e.g. s13110's ``aa[i, j] > maxv``) materialises a boolean buffer/transient, and DaCe
-# lowers ``dace.bool`` to a 1-byte C ``bool`` (== ctypes.c_bool).
+# numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is needed because a comparison
+# materialises a boolean transient, which DaCe lowers to a 1-byte C ``bool``.
 CTYPE = {
     "float64": ctypes.c_double,
     "float32": ctypes.c_float,
@@ -68,18 +68,14 @@ _BLAS_SONAMES = {
     "blis": ["blis"],
     "atlas": ["tatlas", "satlas"],
     "mkl": ["mkl_rt"],
-    # A generic ``libblas.so`` -- could be reference/netlib OR an alternatives symlink to another
-    # provider (OpenBLAS/ATLAS), so it is labelled by the soname, not assumed to be reference.
+    # generic ``libblas.so``: may be netlib OR an alternatives symlink, so labelled by soname only
     "blas": ["blas"],
 }
 
 
 def ldconfig_sonames() -> set:
     """Base library names (``openblas`` from ``libopenblas.so.0``) known to the dynamic linker."""
-    try:
-        out = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True).stdout
-    except (OSError, subprocess.SubprocessError):
-        return set()
+    out = ldconfig_output()
     names = set()
     for line in out.splitlines():
         token = line.strip().split(" ", 1)[0]
@@ -91,8 +87,8 @@ def ldconfig_sonames() -> set:
 def discover_blas_libraries() -> Dict[str, BlasBackend]:
     """Discover installed BLAS backends (OpenBLAS / MKL / BLIS / ATLAS / netlib) + their link flags.
 
-    Backends become an extra link axis for kernels whose emitted numpy uses ``@``/``np.dot`` (a
-    ``cblas``-calling variant links against each). Probes the dynamic linker cache plus ``MKLROOT``.
+    An extra link axis for kernels whose emitted numpy uses ``@``/``np.dot``. Probes the dynamic linker
+    cache plus ``MKLROOT``.
     """
     sonames = ldconfig_sonames()
     found: Dict[str, BlasBackend] = {}
@@ -106,9 +102,8 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
         # oneAPI 2024+ put the libraries directly under lib/; older layouts use lib/intel64.
         for libdir in (Path(mklroot) / "lib", Path(mklroot) / "lib" / "intel64"):
             if (libdir / "libmkl_rt.so").exists():
-                # -rpath alongside -L: an MKLROOT install is off the default loader path by definition, so
-                # without it the linked .so needs LD_LIBRARY_PATH to run. Every -L in the tree is paired
-                # with its rpath so a built artifact just runs.
+                # -rpath paired with -L: an MKLROOT install is off the loader path, so without it the
+                # linked .so needs LD_LIBRARY_PATH to run
                 found["mkl"] = BlasBackend("mkl", [f"-L{libdir}", f"-Wl,-rpath,{libdir}", "-lmkl_rt"])
                 break
     return found
@@ -123,12 +118,9 @@ def resolve_shape(shape, sizes: Dict[str, int]):
 def emitted_sdfg(boundary: Boundary):
     """The descriptors the EMITTED kernel is written against, not the raw nest's.
 
-    ``nest_to_numpy``/``sdfg_to_numpy`` widen a scratch transient sized by a loop variable to its
-    caller-sizable maximum (``maxsize_loop_scratch``) before rendering, so the kernel indexes that
-    buffer up to the widened extent. Every caller-side allocation must be sized from the SAME widened
-    descriptor -- sizing from ``boundary.standalone_sdfg`` gives a smaller buffer than the kernel
-    writes, which is a heap overflow across the ABI. Reused from the emitter rather than re-derived so
-    the two sizing rules cannot drift apart.
+    The emitter widens a loop-sized scratch transient (``maxsize_loop_scratch``) before rendering, so
+    caller-side allocation must use the SAME widened descriptor -- sizing from
+    ``boundary.standalone_sdfg`` gives a smaller buffer than the kernel writes: a heap overflow.
     """
     return maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)
 
@@ -138,12 +130,9 @@ def scratch_names(boundary: Boundary) -> List[str]:
     return scratch_arrays(emitted_sdfg(boundary))
 
 
-#: Upper bound of the random-input range ``[0, INPUT_HIGH)``. Kept BELOW ``1/4`` so a squaring recurrence
-#: ``x = x*x + b`` (TSVC s232, a triangular in-place nest) stays bounded: ``b < 1/4`` guarantees the map has
-#: an attracting fixed point, so the chain converges instead of overflowing to ``inf`` (which then poisons
-#: the maxdiff with a ``nan`` and spuriously fails validation). Magnitude is otherwise irrelevant to what the
-#: arena measures -- validation is bit-exact at any scale and timing is magnitude-invariant -- and staying
-#: non-negative keeps ``sqrt``/``log`` kernels real (a symmetric range would NaN them).
+#: Upper bound of the random-input range ``[0, INPUT_HIGH)``. Must stay <= 1/4 so a squaring recurrence
+#: ``x = x*x + b`` (TSVC s232) has an attracting fixed point instead of overflowing to inf (nan maxdiff ->
+#: spurious validation failure); non-negative keeps ``sqrt``/``log`` kernels real.
 INPUT_HIGH = 0.25
 
 
@@ -155,11 +144,9 @@ def make_inputs(boundary: Boundary,
 
     Inputs are drawn from ``[0, INPUT_HIGH)`` -- see :data:`INPUT_HIGH` for why the range is conditioned.
 
-    ``given`` supplies ready-made values for named input arrays, for the values a uniform float fill
-    cannot express -- chiefly the manifest-declared index arrays of :func:`nestforge.tsvc.index_fills`,
-    whose entries must be valid subscripts. Every array absent from ``given`` is filled as usual. A
-    ``given`` array is checked against the resolved shape and dtype: it crosses the ABI as the kernel's
-    own buffer, so a mismatch would corrupt memory instead of raising.
+    ``given`` supplies ready-made values a uniform float fill cannot express, chiefly the index arrays of
+    :func:`nestforge.tsvc.index_fills`. It is checked against the resolved shape/dtype: it crosses the ABI
+    as the kernel's own buffer, so a mismatch would corrupt memory instead of raising.
     """
     sdfg = emitted_sdfg(boundary)  # widened scratch: allocate what the kernel indexes, not the raw shape
     rng = np.random.default_rng(seed)
@@ -207,10 +194,9 @@ class Cell:
     compile_us: float = 0.0  # wall time of THIS candidate's compile (the post-optimization toolchain cost)
     so_path: Optional[str] = None
     symbol: Optional[str] = None
-    #: The EMITTED signature's parameter order this .so was compiled with (harness.signature_order). A
-    #: consumer that binds or declares this symbol must use it verbatim: numpyto orders parameters by
-    #: param_order() (arrays sorted, then scalars), not by the manifest's role order, so re-deriving the
-    #: order anywhere else is the drift that silently swaps pointers.
+    #: The EMITTED signature's parameter order (harness.signature_order); use it verbatim. numpyto orders
+    #: by param_order() (arrays sorted, then scalars), not the manifest's role order -- re-deriving it
+    #: elsewhere silently swaps pointers.
     abi_order: Optional[List[str]] = None
     error: Optional[str] = None
 
@@ -218,11 +204,9 @@ class Cell:
 def scalar_ctype(sdfg, name: str):
     """ctypes type of a by-value (non-array) kernel arg, matching the translator's signature.
 
-    A FLOAT value scalar (a staged ``a_index = a[i]`` read that leaked into the boundary) is declared
-    ``double`` by the translator (from ``init.scalars``) -> ``c_double``. EVERY integer sizing / index
-    symbol is emitted ``int64_t`` by the translator regardless of the SDFG's own int width (a 32-bit dace
-    ``int`` still crosses the ABI as ``int64_t``), so it must be ``c_int64`` here -- passing it as a 32-bit
-    ``c_int`` would leave the upper half of the register garbage and blow the loop bound out of range."""
+    A float value scalar is ``double`` -> ``c_double``. EVERY integer symbol is emitted ``int64_t`` by the
+    translator regardless of the SDFG's own int width, so it must be ``c_int64`` here -- a 32-bit
+    ``c_int`` leaves the upper half of the register garbage and blows the loop bound out of range."""
     if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
         return ctypes.c_double
     return ctypes.c_int64
@@ -231,10 +215,9 @@ def scalar_ctype(sdfg, name: str):
 def resolve_argtypes(order: List[str], boundary: Boundary) -> list:
     """ctypes argtypes for the emitted entry, in the order the EMITTED SIGNATURE declares.
 
-    ``order`` must come from parsing the generated source (``harness.signature_order``), NOT from the
-    manifest's ``input_args``: numpyto emits parameters in ``param_order()`` -- arrays sorted, then scalars
-    sorted -- and deliberately ignores ``input_args``, which is a ROLE order (inputs, outputs, symbols).
-    The two coincide only by luck of the alphabet.
+    ``order`` must come from parsing the generated source (``harness.signature_order``), NOT the
+    manifest's ``input_args``: numpyto emits ``param_order()`` (arrays sorted, then scalars), which
+    coincides with the manifest's role order only by luck of the alphabet.
     """
     sdfg = boundary.standalone_sdfg
     types = []
@@ -267,15 +250,12 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
                 out.append(at(sizes[arg]))  # at is the by-value ctype (c_int64 size / c_double value scalar)
         return out
 
-    # Bind ONCE: the ctypes pointers stay valid because every rep reuses these same buffers, so per-rep
-    # data_as/scalar construction would time Python marshaling instead of the kernel.
+    # bind ONCE (every rep reuses these buffers): per-rep data_as would time Python marshaling
     args = build_args()
     fn(*args)  # correctness run
     outputs = {o: work[o].copy() for o in boundary.outputs}
-    # Restore every buffer the kernel WRITES before each timed rep. An in-place nest (a[:] = a[:] * b) would
-    # otherwise see its own previous output, so rep k computes a * b**k -- diverging to Inf/denormals within a
-    # few reps, and denormal arithmetic (not the kernel) would dominate the reported time. The restore is
-    # OUTSIDE the timed region, so it never counts toward the measurement.
+    # Restore every written buffer before each rep (outside the timed region): an in-place nest otherwise
+    # feeds on its own output, reaching denormals/Inf in a few reps and timing those instead.
     mutated = [o for o in boundary.outputs if o in work]
     total = 0.0
     for _ in range(reps):
@@ -291,9 +271,8 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
 def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     """Largest absolute elementwise difference; ``inf`` if any difference is non-finite.
 
-    The non-finite mapping is load-bearing, not defensive. Builtin ``max`` DROPS a NaN that is not the
-    first item (``nan > x`` is False), so a NaN in any output but the first used to report 0.0 -- a
-    perfect match -- and a NaN-poisoned kernel could be crowned the arena winner.
+    The non-finite mapping is load-bearing: builtin ``max`` DROPS a non-first NaN (``nan > x`` is False),
+    so a NaN-poisoned kernel would report 0.0 and win the arena.
     """
     worst = 0.0
     for k in a:
@@ -309,19 +288,11 @@ def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
 def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     """Largest elementwise difference SCALED by the magnitude of the values it is between.
 
-    An ABSOLUTE tolerance is a magnitude-dependent gate, and for a reduction it is an impossible one:
-    summing 32000 order-1 elements lands near 1.6e4, where a single fp64 ULP is already 1.8e-12 -- 180x
-    the 1e-14 absolute tolerance the differential harness defaults to. A vectorized reduce reassociates
-    and lands ~14 ULP away (2.5e-11 absolute), so an absolute gate rejects an answer that is correct to
-    1.6e-15 relative. That does not fail loudly: the sweep records the cell as WRONG and drops it, so a
-    whole class of kernels would silently vanish from the corpus.
-
-    Scaling by ``max(|a|, |b|)`` makes the tolerance mean "correct to N relative", which is the quantity
-    fp64 actually promises. Elements at or below 1.0 keep the ABSOLUTE reading (the denominator floors at
-    1.0), so this never loosens the gate for values a strict comparison can legitimately hold to -- it
-    only stops demanding more precision than the format has. A real miscompile moves the result by far
-    more than a few ULP and is still caught; this is not :func:`norm_error`, which averages a discrepancy
-    away across an array. NaN/Inf propagate through the subtraction and fail the comparison, as before.
+    An absolute gate is unreachable for a reduction: summing 32000 order-1 elements lands near 1.6e4,
+    where one fp64 ULP (1.8e-12) already exceeds the 1e-14 default, so a correct vectorized reduce is
+    recorded WRONG and the kernel silently vanishes from the corpus. The denominator floors at 1.0, so
+    small values keep the absolute reading -- the gate is never loosened below what fp64 promises, and a
+    real miscompile (far more than a few ULP) is still caught. NaN/Inf still fail.
     """
     worst = 0.0
     for k in a:
@@ -330,8 +301,7 @@ def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> floa
         scale = np.maximum(np.maximum(np.abs(a[k]), np.abs(b[k])), 1.0)
         with np.errstate(invalid="ignore"):  # inf/inf -> nan, which is a FAILURE, not a warning
             d = float(np.max(np.abs(a[k] - b[k]) / scale))
-        # NaN must not be swallowed: builtin max(0.0, nan) returns 0.0 (nan > 0.0 is False), which would
-        # report a NaN-poisoned result as a PERFECT match. Map any non-finite difference to inf.
+        # builtin max(0.0, nan) is 0.0, i.e. a PERFECT match for a NaN-poisoned result -- map to inf
         if not np.isfinite(d):
             return float("inf")
         worst = max(worst, d)
@@ -357,15 +327,14 @@ def run_arena(prep: Prepared,
               given: Optional[Dict[str, np.ndarray]] = None) -> ArenaResult:
     """Sweep discovered compilers x FP modes; validate + time each; pick a winner per FP mode.
 
-    ``given`` is forwarded to :func:`make_inputs`: this layer is corpus-agnostic (it never sees a kernel),
-    so a caller measuring a corpus kernel passes ``tsvc.index_fills(...)`` here -- without it a declared
-    integer index array fills to all-zeros and the sweep times a degenerate gather while validating
-    vacuously."""
+    ``given`` is forwarded to :func:`make_inputs`; this layer is corpus-agnostic, so a caller measuring a
+    corpus kernel must pass ``tsvc.index_fills(...)`` -- without it an integer index array fills to
+    all-zeros and the sweep times a degenerate gather while validating vacuously."""
     out_dir.mkdir(parents=True, exist_ok=True)
     compilers = discover_compilers()
     symbol = f"{prep.name}_fp64"
-    # The bind order comes from the REAL emitted signature, never the manifest (see resolve_argtypes).
-    # Imported here, not at module scope: harness imports arena, so a top-level import would cycle.
+    # bind order comes from the REAL emitted signature, never the manifest (see resolve_argtypes).
+    # Imported here because harness imports arena: a top-level import would cycle.
     from nestforge.perf.harness import signature_order
     order = signature_order(c_source.read_text(), symbol)
     argtypes = resolve_argtypes(order, boundary)
@@ -392,13 +361,11 @@ def run_arena(prep: Prepared,
                          error=comp.stderr[-400:]))
                 continue
 
-            # Validate + time in a forked child so a segfault/runaway in the fresh kernel kills only
-            # the child. maxdiff is computed child-side (only the summary crosses the pipe). ``so``/
-            # ``mode`` are default args to dodge late-binding-closure capture of the loop variables.
+            # Forked so a segfault/runaway kills only the child; only the summary crosses the pipe.
+            # ``so``/``mode`` are default args to dodge late-binding capture of the loop variables.
             def work(so=so, mode=mode):
                 outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
-                # Report the ABSOLUTE difference, gate on the scaled one: at reduction magnitude one
-                # fp64 ULP already exceeds a strict absolute atol, so an absolute gate is unreachable.
+                # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff)
                 md = float(maxdiff(oracle, outs))
                 ok = relative_maxdiff(oracle, outs) <= MODE_ATOL[mode]
                 return {"ok": bool(ok), "maxdiff": md, "time_us": float(us)}
@@ -427,26 +394,21 @@ def run_arena(prep: Prepared,
     return result
 
 
-#: Wall-clock cap on one toolchain invocation here. A pathological kernel can send ``-O3 -march=native``
-#: into a runaway inliner/register allocator; without a deadline the sweep would hang forever on one cell.
-COMPILE_TIMEOUT = float(os.environ.get("NF_COMPILE_TIMEOUT", "600"))
-
-
 def run_tool(cmd: List[str], what: str) -> None:
     """Run one toolchain command with a deadline and CAPTURED stderr, so a failure raises with the compiler's
     actual diagnostic instead of dumping it to the console and raising a bare CalledProcessError."""
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT)
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"{what} exceeded {COMPILE_TIMEOUT}s: {' '.join(cmd)}") from None
+        raise RuntimeError(f"{what} exceeded {COMPILE_TIMEOUT_S}s: {' '.join(cmd)}") from None
     if done.returncode != 0:
         raise RuntimeError(f"{what} failed ({done.returncode}): {' '.join(cmd)}\n{done.stderr[-2000:]}")
 
 
 def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir: Path) -> Path:
-    """Compile one emitted C source to a ``.o`` with a chosen ``(compiler, fp-mode)`` -- the shared step
-    both the winner-archive and the per-backend E1 variant build on. ``-fPIC`` (in every ``FP_MODES``
-    entry) makes the object linkable into the parent ``.so``."""
+    """Compile one emitted C source to a ``.o`` with a chosen ``(compiler, fp-mode)`` -- shared by the
+    winner-archive and the per-backend E1 variant. ``-fPIC`` (in every ``FP_MODES`` entry) makes the
+    object linkable into the parent ``.so``."""
     out_dir.mkdir(parents=True, exist_ok=True)
     obj = out_dir / f"{name}_nest.o"
     run_tool([cpath, *FP_MODES[fp_mode], "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
@@ -456,12 +418,10 @@ def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir:
 def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
     """Bundle objects into ``lib<name>_nest.a`` (single-object offload today: one winning nest per archive).
 
-    WARNING: do NOT put several nests' objects in one archive expecting lazy member-pull to resolve them
-    all. DaCe SORTS the parent's env link flags, which can place the archive BEFORE the parent objects; ld
-    then pulls no member (nothing undefined yet) and later ``.o`` references stay unresolved -> ``undefined
-    symbol`` at ``dlopen``. For a multi-nest swap use :func:`link_shared` (a ``.so`` resolves at load,
-    order-independent) -- the E1 path does. ``--whole-archive`` would force the members but DaCe's flag
-    sort scrambles the ``--whole-archive``/``--no-whole-archive`` pair, so it is not a reliable fix here."""
+    WARNING: never put several nests' objects in one archive -- DaCe SORTS the parent's link flags and can
+    place the archive before the parent objects, so ld pulls no member and later references stay
+    unresolved (``undefined symbol`` at ``dlopen``). The sort also scrambles the
+    ``--whole-archive``/``--no-whole-archive`` pair. Use :func:`link_shared` for a multi-nest swap."""
     out_dir.mkdir(parents=True, exist_ok=True)
     archive = out_dir / f"lib{name}_nest.a"
     if archive.exists():
@@ -471,10 +431,9 @@ def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
 
 
 def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str) -> Path:
-    """Link objects into ``lib<name>_nest.so``. Unlike a static archive, a shared lib exports its symbols
-    and is resolved at ``dlopen`` time -- order-independent, so it survives dace SORTING the parent's link
-    flags (which reorders the library ahead of the parent objects and would leave a static archive's later
-    members un-pulled). The parent links it with an rpath (see :meth:`ExternLibEnv.configure`)."""
+    """Link objects into ``lib<name>_nest.so``. Resolved at ``dlopen`` time, hence order-independent, so it
+    survives dace SORTING the parent's link flags (which leaves a static archive's members un-pulled). The
+    parent links it with an rpath (see :meth:`ExternLibEnv.configure`)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     so = out_dir / f"lib{name}_nest.so"
     run_tool([cpath, "-shared", "-fPIC", *[str(o) for o in objs], "-o", str(so)], f"linking lib{name}_nest.so")
@@ -484,10 +443,8 @@ def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str) -> Path:
 def build_winner_archive(win: Cell, c_source: Path, name: str, out_dir: Path) -> Path:
     """Materialize a winning cell as a static ``lib<name>_nest.a`` for STATIC offload into a parent SDFG.
 
-    The arena builds each candidate as a ``.so`` to dlopen + time; for offload we instead want the
-    winner's objects, so the parent ``.so`` can pull them in (see :meth:`ExternLibEnv.configure`).
-    Recompiles the SAME source with the winner's ``(compiler, fp-mode)`` -- the config that won -- to an
-    object and archives it. An archive carries objects only, no linked runtime, so the parent supplies the
-    single libomp instead of every nest ``.so`` dragging its own."""
+    Recompiles the SAME source with the winner's ``(compiler, fp-mode)`` to an object and archives it. An
+    archive carries objects only, no linked runtime, so the parent supplies the single libomp instead of
+    every nest ``.so`` dragging its own."""
     obj = compile_object(discover_compilers()[win.compiler], win.fp_mode, c_source, name, out_dir)
     return archive_objects([obj], name, out_dir)

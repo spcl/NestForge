@@ -1,8 +1,6 @@
 """Render arena results: for each nest and FP mode, the winning compiler x flag, plus the grid."""
 from __future__ import annotations
 
-from typing import Iterable
-
 from nestforge.arena import ArenaResult, FP_MODES
 
 
@@ -28,7 +26,3 @@ def render_markdown(result: ArenaResult) -> str:
         d = "inf" if c.maxdiff == float("inf") else f"{c.maxdiff:g}"
         lines.append(f"| {c.compiler} | {c.fp_mode} | {'yes' if c.ok else 'no'} | {d} | {t} |")
     return "\n".join(lines) + "\n"
-
-
-def render_many(results: Iterable[ArenaResult]) -> str:
-    return "\n".join(render_markdown(r) for r in results)

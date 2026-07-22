@@ -2,6 +2,9 @@
 # the fprettify/yapf 120 python sits alongside). Applies to any C/C++ nest-forge owns or emits into the
 # tree; the transient generated .cpp under a build dir is not tracked and not formatted.
 BasedOnStyle: LLVM
+# Pin the parse standard to the one the tree compiles with (nestforge.build.CXX_STD). Left at Auto,
+# clang-format guesses per file and mis-parses C++20 constructs it decides are C++11.
+Standard: c++20
 ColumnLimit: 160
 IndentWidth: 4
 TabWidth: 4

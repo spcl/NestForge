@@ -163,7 +163,7 @@ def test_enumerate_cells_gates_veclib_cells_by_nest_math(tmp_path):
             },
             "symbol": "m_fp64",
             "nest_idx": 0
-        }, tcs, {}, axes, 4, "c++23", tmp_path)
+        }, tcs, {}, axes, 4, flags.CXX_STD, tmp_path)
     assert {p.cell.veclib for p in pend if p.cell.role == "timing"} == {"none", "libmvec"}
     pend2, _ = tsvc_full.enumerate_cells(
         {
@@ -175,7 +175,7 @@ def test_enumerate_cells_gates_veclib_cells_by_nest_math(tmp_path):
             },
             "symbol": "p_fp64",
             "nest_idx": 0
-        }, tcs, {}, axes, 4, "c++23", tmp_path)
+        }, tcs, {}, axes, 4, flags.CXX_STD, tmp_path)
     assert {p.cell.veclib for p in pend2 if p.cell.role == "timing"} == {"none"}
 
 

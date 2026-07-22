@@ -88,14 +88,14 @@ _VALIDATE_CAP = "M"
 
 
 def validate_cap(profile_preset: str) -> str:
-    """Preset to VALIDATE at: the timing preset itself if small (S/M), else M (L/PROF/XL would make
-    the pure-Python oracle take minutes; the .so is size-agnostic so this is safe)."""
+    """Preset to VALIDATE at: the timing preset if small (S/M), else M. Safe because the .so is
+    size-agnostic, and necessary because the pure-Python oracle takes minutes at L/PROF/XL."""
     return profile_preset if profile_preset in ("S", _VALIDATE_CAP) else _VALIDATE_CAP
 
 
 def physical_cores(cpus) -> int:
-    """Physical cores the logical CPU ids ``cpus`` cover, collapsing SMT siblings -- sizing an auto-par
-    team by logical CPUs oversubscribes ~2x. Unreadable sibling list -> counts as its own core."""
+    """Physical cores the logical CPU ids ``cpus`` cover, collapsing SMT siblings: sizing an auto-par
+    team by logical CPUs oversubscribes ~2x. An unreadable sibling list counts as its own core."""
     groups = set()
     for c in cpus:
         try:
@@ -106,11 +106,11 @@ def physical_cores(cpus) -> int:
 
 
 def default_threads() -> int:
-    """Default auto-par thread count: physical cores this process may actually use, not
-    ``os.cpu_count()`` (reports the whole node -- a 288-CPU node's 4-rank job oversubscribes 4x).
-    Priority: OMP_NUM_THREADS (may be nested list "72,8", first level is the team size) ->
-    SLURM_CPUS_PER_TASK/ON_NODE (the rank's share) -> affinity mask collapsed to physical cores
-    (what srun --cpu-bind/taskset/cgroup actually permits)."""
+    """Default auto-par thread count: physical cores this process may actually use, NOT
+    ``os.cpu_count()``, which reports the whole node (a 288-CPU node's 4-rank job oversubscribes 4x).
+
+    Priority: ``OMP_NUM_THREADS`` (nested list "72,8" -> first level is the team size) ->
+    ``SLURM_CPUS_PER_TASK``/``_ON_NODE`` -> affinity mask collapsed to physical cores."""
     env = (os.environ.get("OMP_NUM_THREADS") or "").strip()
     if env:
         try:
@@ -131,10 +131,10 @@ def default_threads() -> int:
     return max(1, physical_cores(cpus))
 
 
-# --- median-of-N timing (pure functions: unit-tested without a compiler) -----------------------------
+# --- median-of-N timing -----------------------------------------------------------------------------
 def summarize_times(samples: List[float]) -> Dict[str, float]:
-    """Robust summary of per-rep microsecond samples: median (the headline), min (least-perturbed run),
-    p25 / p75 (linear-interpolated quartiles) and mean. Empty input -> all ``inf``."""
+    """Robust summary of per-rep microsecond samples: median (the headline), min, linear-interpolated
+    p25/p75 and mean. Empty input -> all ``inf``."""
     if not samples:
         return {
             "median_us": float("inf"),
@@ -164,8 +164,8 @@ def summarize_times(samples: List[float]) -> Dict[str, float]:
 
 
 def collect_samples(fn, cargs, reps: int) -> List[float]:
-    """Warm once, then time ``reps`` individual calls on the reused args -- one microsecond sample per
-    rep (median-friendly), NOT one mean over the whole loop."""
+    """Warm once, then time ``reps`` individual calls on the reused args: ONE sample per rep, not one
+    mean over the whole loop."""
     fn(*cargs)  # warm
     samples: List[float] = []
     for _ in range(reps):
@@ -176,9 +176,9 @@ def collect_samples(fn, cargs, reps: int) -> List[float]:
 
 
 def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], sizes: Dict[str, int]) -> list:
-    """ctypes arguments for the emitted kernel, in C-signature order: an array -> its buffer pointer, a
-    size symbol -> an int64 by value."""
-    # t(...) not hardcoded c_int64: a leaked FLOAT scalar is typed c_double by c_argtypes; int64 would raise.
+    """ctypes arguments for the emitted kernel, in C-signature order: array -> buffer pointer, size
+    symbol -> scalar by value. Uses each arg's own type, since a leaked FLOAT scalar is typed
+    ``c_double`` by :func:`c_argtypes` and a hardcoded int64 would raise."""
     return [work[a].ctypes.data_as(t) if a in work else t(sizes[a]) for a, t in zip(order, argtypes)]
 
 
@@ -195,14 +195,13 @@ def nest_validate_work(so: Path,
     """Correctness at the SMALL preset: bind, run once, maxdiff vs the oracle. Fast (small buffers)."""
     vin = make_inputs(boundary, validate_sizes, seed=0, given=given)
     vout, _ = call_c(so, symbol, order, argtypes, boundary, vin, validate_sizes, reps=1)
-    # Absolute difference is REPORTED; the gate is the scaled one (arena.relative_maxdiff).
-    md = float(maxdiff(oracle, vout))
+    md = float(maxdiff(oracle, vout))  # absolute is REPORTED, the scaled one is the gate
     return {"ok": bool(relative_maxdiff(oracle, vout) <= atol), "maxdiff": md}
 
 
 def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inputs, time_sizes, reps: int) -> Dict:
     """Median-of-N timing at the PROFILING preset. ``time_inputs`` is allocated once per opt-mode and
-    reused across every timing cell -- the fork gets its own COW copy, so it times in place safely."""
+    reused by every timing cell; the fork gets its own COW copy, so timing in place is safe."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
     cargs = c_call_args(order, argtypes, time_inputs, time_sizes)
@@ -214,7 +213,7 @@ def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, orac
     fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
     fn(*cargs)
     outs = {o: buffers[o] for o in boundary.outputs if o in ptr_names}
-    if not outs:  # nothing to compare -> UNCHECKED, never report 0.0/ok for an unvalidatable lane
+    if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "unchecked": True}
     md = float(maxdiff({k: oracle[k] for k in outs}, outs))
     return {"ok": bool(md <= 1e-6), "maxdiff": md}
@@ -271,12 +270,11 @@ def measure_native_lane(cxx: str,
     }
 
 
-# --- lane 2: DaCe-cpp baseline (owned direct-compile of the EXTRACTED-NEST standalone SDFG) -----------
-# Baseline must do the SAME work as the nest-forge lanes: DaCe's codegen of the exact extracted nest, not
-# the whole-kernel SDFG (a multi-level kernel like s1115 peels to an inner nest; whole-kernel would do
-# ~LEN more work and inflate the speedup). Median time always reported; validation vs the numpy oracle is
-# a cross-check that non-bit-exact for PROMOTED loop-carried state (s111/s112, DaCe vs numpyto boundary
-# semantics differ) while timing stays representative.
+# --- lane 2: DaCe-cpp baseline ----------------------------------------------------------------------
+# Codegen of the EXTRACTED NEST, not the whole-kernel SDFG: a kernel peeled to an inner nest (s1115)
+# would do ~LEN more work as a whole and inflate the speedup. Median time is reported even when
+# validation fails: PROMOTED loop-carried state (s111/s112) is not bit-exact vs numpyto but still
+# representative to time.
 def dace_run_work(built,
                   boundary,
                   validate_sizes,
@@ -287,7 +285,7 @@ def dace_run_work(built,
                   reps: int,
                   given=None) -> Dict:
     """Validate@small then time@prof DaCe's own codegen, in the forked child. ``built``/``time_inputs``
-    are shared COW across the fork, so a large time-size run OOM-kills only the child."""
+    are shared COW, so a large time-size run OOM-kills only the child."""
     vbuf = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh buffer (validation runs in place)
     built.run(vbuf, validate_sizes)  # init -> program -> close
     outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
@@ -295,12 +293,12 @@ def dace_run_work(built,
         ref = {o: oracle[o] for o in outs}
         md = float(maxdiff(ref, outs))  # absolute is REPORTED, scaled is the gate
         verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
-    else:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
+    else:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         verdict = {"ok": False, "maxdiff": float("inf"), "unchecked": True}
     tbuf = time_inputs
     built.init(time_sizes)
     try:
-        # bind once, time the bare ctypes call -- matches native/nest timing (no per-rep marshaling)
+        # bind once, time the bare call: matches native/nest timing, no per-rep marshaling
         fn, cargs = built.bind_program(tbuf, time_sizes)
         fn(*cargs)  # warm
         samples: List[float] = []
@@ -324,12 +322,11 @@ def measure_dace_cpp_lane(tc: Toolchain,
                           workdir: Path,
                           codegen_impl: Optional[str] = None,
                           validate_fills=None) -> Dict:
-    """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee, one C++
-    compiler. ``build.build_sdfg`` compiles directly (no cmake) into a per-kernel ``workdir`` mkdtemp, so
-    concurrent ranks never share a build dir. Median time reported regardless of bit-match (see above).
+    """Lane 2: DaCe's own C++ codegen of the extracted-nest standalone SDFG, ``-O3`` + strict-ieee.
+    Builds into a per-kernel ``workdir``, so concurrent ranks never share a build dir.
 
-    ``codegen_impl``: ``experimental`` (default, the speedup denominator) | ``legacy``; ``None`` ->
-    :func:`build.default_codegen_impl`. Stamped into the result so the reporter groups by codegen impl."""
+    :param codegen_impl: ``experimental`` (default, the speedup denominator) or ``legacy``; ``None``
+        takes :func:`build.default_codegen_impl`. Stamped into the result for the reporter to group on."""
     codegen_impl = codegen_impl or default_codegen_impl()
     if tc.cxx is None:
         return {
@@ -345,7 +342,7 @@ def measure_dace_cpp_lane(tc: Toolchain,
         built = dace_build_sdfg(boundary.standalone_sdfg, workdir,
                                 BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl))
         compile_us = (time.perf_counter() - t0) * 1e6
-    except Exception as e:  # codegen / compile failure must not crash the kernel
+    except Exception as e:  # a codegen/compile failure must not crash the kernel
         return {
             "ok": False,
             "error": f"dace build: {type(e).__name__}: {str(e)[:200]}",
@@ -358,7 +355,7 @@ def measure_dace_cpp_lane(tc: Toolchain,
                                                  reps, validate_fills),
                            timeout=RUN_TIMEOUT_S)
     finally:
-        built.unload()  # parent side: free the dlopen mapping (the child ran in its own COW copy)
+        built.unload()  # parent side: free the dlopen mapping
     if "error" in res:
         return {
             "ok": False,
@@ -395,11 +392,10 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                                  codegen_impl: Optional[str] = None,
                                  rounds: int = 2,
                                  validate_fills=None) -> Dict:
-    """DaCe lane with the multi-dim tile-op vectorizer: coordinate-descent over ``VectorizeConfig``
-    variants for the fastest config that still validates against the oracle at ``contract-fma``
-    tolerance (catches mis-vectorization instead of timing it). Returns the winning cell or an error
-    when no config validated (non-vectorizable nest). Winner's timing is looked up from the descent,
-    not re-measured."""
+    """DaCe lane with the multi-dim tile-op vectorizer: coordinate-descent over ``VectorizeConfig`` for
+    the fastest config that still validates at ``contract-fma`` tolerance, so a mis-vectorization is
+    caught rather than timed. Errors when no config validated. The winner's timing comes from the
+    descent, not a re-measurement."""
     if tc.cxx is None:
         return {
             "ok": False,
@@ -420,7 +416,7 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             built = dace_build_sdfg(
                 boundary.standalone_sdfg, workdir / f"vec{counter['i']}",
                 BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg))
-        except Exception:  # a config the vectorizer / codegen rejects is simply not a candidate
+        except Exception:  # a config the vectorizer/codegen rejects is just not a candidate
             return None
         try:
             res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
@@ -469,8 +465,8 @@ class Cell:
     cost_model: str
     fp_mode: str
     role: str  # "timing" | "gate"
-    nest: int = 0  # which extracted nest this cell belongs to (0-based); -1 = whole-kernel (native lane)
-    veclib: str = "none"  # vector-math library axis: 'none' | the per-device characterized winner
+    nest: int = 0  # 0-based extracted nest; -1 = whole-kernel (native lane)
+    veclib: str = "none"  # 'none' | the per-device characterized winner
     ok: bool = False
     maxdiff: float = float("inf")
     median_us: float = float("inf")
@@ -486,17 +482,16 @@ class Cell:
 class Pending:
     """A cell not yet compiled/run, plus the context it needs (kept off the serialized :class:`Cell`)."""
     cell: Cell
-    compile_key: Optional[Tuple] = None  # (exe, flags-tuple, src) -> dedup identical compiles
+    compile_key: Optional[Tuple] = None  # (exe, flags, src) -> dedup identical compiles
     atol: float = 0.0
     symbol: str = ""
     order: List[str] = field(default_factory=list)
     argtypes: list = field(default_factory=list)
-    opt_ctx_key: Tuple = ()  # (opt_mode, nest_idx, lang) -> the shared per-nest boundary/oracle/sizes
+    opt_ctx_key: Tuple = ()  # (opt_mode, nest_idx, lang) -> shared per-nest boundary/oracle/sizes
 
 
 def compiler_for(lang: str, tc: Toolchain, fortran_by_family: Dict[str, str]) -> Optional[str]:
-    """The compiler executable for a (language, family): C -> the C compiler, C++ -> the C++ frontend,
-    Fortran -> the family's Fortran compiler (gfortran/flang/nvfortran/ifx). ``None`` if absent."""
+    """The compiler executable for a (language, family), or ``None`` if absent."""
     if lang == "c":
         return tc.cc
     if lang == "c++":
@@ -513,13 +508,13 @@ def emit_lang_sources(prep,
                       parallel: bool = False) -> Dict[str, Tuple[Path, List[str], list]]:
     """Emit the numpyto sources for the requested languages and parse each signature.
 
-    Returns ``{lang: (src_path, arg_order, argtypes)}``. ``name`` is the per-nest base name; the emitted
-    symbol is ``<name>_fp64``. C and C++ share one emitted ``.c``; the C++ lane wraps it in a generated
-    ``.cpp`` with ``extern "C" {}``, else the C++ frontend name-mangles the symbol and ctypes can't bind
-    it. A language whose emit/parse fails is omitted (skipped, not compiled).
+    C and C++ share one emitted ``.c``; the C++ lane wraps it in a generated ``.cpp`` with
+    ``extern "C" {}``, else the frontend name-mangles the symbol and ctypes can't bind it.
 
-    ``parallel=True`` emits the OpenMP variant (numpyto ``c_omp``/``fortran_omp``, same symbol/signature).
-    numpyto raises for a nest with no sound parallel form -- caller treats that as "no OpenMP lane"."""
+    :param name: per-nest base name; the emitted symbol is ``<name>_fp64``.
+    :param parallel: emit the OpenMP variant (same symbol/signature). numpyto raises for a nest with no
+        sound parallel form, which the caller reads as "no OpenMP lane".
+    :returns: ``{lang: (src_path, arg_order, argtypes)}``, omitting any language that failed to emit."""
     symbol = f"{name}_fp64"
     names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
     c_target = "c_omp" if parallel else "c"
@@ -553,12 +548,12 @@ def emit_lang_sources(prep,
 # --- per-kernel run ----------------------------------------------------------------------------------
 def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str, languages: List[str],
                       workdir: Path) -> List[Dict]:
-    """Everything a lane-3 sweep needs for ONE opt-mode: every extracted nest, each with its own sizes,
-    oracle, and per-language emitted sources. Raises on a skip condition (no nest, emit failure).
+    """Everything a lane-3 sweep needs for ONE opt-mode: every extracted nest with its own sizes, oracle
+    and per-language sources. Raises on a skip condition (no nest, emit failure).
 
-    MUTATION HAZARD: :func:`extract_nest_to_sdfg` mutates the parent SDFG in place, so a captured
-    ``(parent, node)`` goes stale after the first extraction -- rebuild a fresh SDFG + strategy refs per
-    nest (deterministic, so ``refs_i`` aligns with the initial ``refs``)."""
+    :func:`extract_nest_to_sdfg` mutates the parent SDFG in place, so a captured ``(parent, node)`` goes
+    stale after the first extraction: rebuild a fresh SDFG + refs per nest (deterministic, so ``refs_i``
+    aligns with the initial ``refs``)."""
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     refs = get_strategy(strategy)(sdfg)
     if not refs:

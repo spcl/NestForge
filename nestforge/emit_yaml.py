@@ -15,7 +15,6 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 import numpy as np
-import yaml
 
 from dace import symbolic
 
@@ -120,7 +119,3 @@ def manifest_dict(boundary: Boundary,
             "track": track
         },
     }
-
-
-def manifest_yaml(boundary: Boundary, name: str, **kw) -> str:
-    return yaml.safe_dump(manifest_dict(boundary, name, **kw), sort_keys=False)

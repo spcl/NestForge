@@ -132,7 +132,7 @@ fi
 
 # Multi-rank build hygiene (see the cmake-hang note above).
 export DACE_compiler_use_cache=0
-export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++23}"
+export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++20}"
 
 # --- env-var knobs (all ${VAR:-default}; defaults chosen for the full run) -----
 CORPORA="${CORPORA:-tsvc2 tsvc2_5}"

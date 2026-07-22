@@ -1,12 +1,9 @@
-"""Run a compiled kernel in a forked child, so a **segfault** or a **runaway loop** in freshly-compiled
-code cannot take down the parent (a pytest run or a sweep rank).
+"""Run a compiled kernel in a forked child, so a segfault or runaway loop in freshly-compiled code
+cannot take down the parent (a pytest run or a sweep rank).
 
-Every place that compiles arbitrary code and then calls it via ctypes -- the arena, the TSVC driver,
-any test that builds-and-runs -- routes the call through :func:`run_isolated`. ``os.fork`` shares the
-parent's memory copy-on-write, so no numpy array or ctypes type is pickled; the child ``dlopen``s the
-``.so``, and when it ``_exit``s that mapping is released, so the parent never accumulates library
-handles. ``work_fn`` must return a small JSON-able dict (the summary: ``ok``/``maxdiff``/``time_us``);
-a crash, timeout, or malformed result comes back as an ``{"error": ...}`` sentinel instead.
+``os.fork`` shares memory copy-on-write, so nothing is pickled and the child's ``.so`` mapping is
+released on ``_exit``. ``work_fn`` must return a small JSON-able dict; a crash, timeout or malformed
+result comes back as an ``{"error": ...}`` sentinel.
 """
 from __future__ import annotations
 
@@ -23,13 +20,8 @@ from typing import Callable, Dict
 #: Probed by the sonames a linked node library actually records in DT_NEEDED.
 OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so", "libnvomp.so")
 
-#: ``omp_pause_resource_t`` (OpenMP 5.0). Both tear the thread pool down, which is what makes the fork
-#: safe; they differ in what ELSE is freed:
-#:   * ``soft`` -- the pool goes, the runtime may keep other resources, and threadprivate data SURVIVES.
-#:   * ``hard`` -- everything is freed, including threadprivate data (which the spec says is then lost).
-#: Both were measured to make a forked child's parallel region run where it otherwise hung. ``soft`` is
-#: the default: it is the weaker claim that still buys fork safety, so it cannot destroy state a caller
-#: expected to keep. ``hard`` is available for a caller that wants the runtime fully reset.
+#: ``omp_pause_resource_t`` (OpenMP 5.0). Both tear the pool down (what buys fork safety); ``hard`` also
+#: frees threadprivate data, so ``soft`` is the default.
 OMP_PAUSE_SOFT = 1
 OMP_PAUSE_HARD = 2
 
@@ -40,27 +32,11 @@ OMP_PAUSE_MODES = {"soft": OMP_PAUSE_SOFT, "hard": OMP_PAUSE_HARD}
 def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
     """Tear down the thread pool of every OpenMP runtime ALREADY loaded here, so the coming fork is safe.
 
-    ``fork()`` duplicates only the calling thread, so a child that enters a parallel region while the
-    parent's pool is live blocks forever waiting on pool threads that no longer exist -- libgomp
-    deadlocks exactly this way, and installs no ``pthread_atfork`` handler to recover (LLVM's libomp
-    does, which is the only reason the default runtime survives this at all). Since a node library may
-    legitimately link either -- the runtime is a configurable axis, and libgomp is a valid gnu-only
-    choice -- ``run_isolated`` must not depend on which one happens to be loaded.
-
-    ``omp_pause_resource_all`` is the OpenMP 5.0 API for precisely this: it destroys the pool, leaving
-    the runtime free to re-initialise on the next parallel region -- in the parent or in the child.
-    Measured: with a live libgomp pool the forked child HUNG; after this call it ran, under BOTH
-    ``mode`` values (see :data:`OMP_PAUSE_MODES`), and the parent's own next region simply spins the
-    pool back up. The pool is a cache, so tearing it down costs a re-spin, not correctness.
-
-    Best effort by construction, but never SILENT:
-      * ``RTLD_NOLOAD`` -- only ever ask a runtime that is ALREADY mapped. Plain ``CDLL`` would LOAD it,
-        which would both add a runtime this process never needed and defeat the purpose.
-      * a runtime without the OMP_5.0 symbol (or that refuses -- the call is invalid from inside a
-        parallel region, and returns non-zero) is passed over rather than raising: pausing is a hardening
-        step, and a failure here must not break a fork that would otherwise have been fine. But it is
-        WARNED, not swallowed -- an unhardened fork is a real hazard (a libgomp child deadlocks), so the
-        skip has to be visible to whoever reads the logs, not an invisible no-op.
+    ``fork()`` duplicates only the calling thread, so a child entering a parallel region with the parent's
+    pool live hangs forever; libgomp installs no ``pthread_atfork`` handler to recover (libomp does).
+    ``RTLD_NOLOAD``: only pause a runtime already mapped -- plain ``CDLL`` would LOAD one this process
+    never needed. Best effort but never silent: a missing/refusing symbol warns, since an unhardened fork
+    really does deadlock.
     """
     for soname in OMP_RUNTIME_SONAMES:
         try:
@@ -82,10 +58,8 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
 
 
 def quiet_fatal_signals() -> None:
-    """In the forked child, drop the inherited faulthandler. pytest installs faulthandler, which the child
-    inherits across ``os.fork``; when freshly-compiled code then segfaults, that dumps a Python traceback
-    (misleadingly showing the PARENT's call stack up to the fork) into the captured output. The parent
-    already reports the crash via the child's exit signal, so let the child die quietly instead."""
+    """In the forked child, drop the faulthandler inherited from pytest: on a segfault it dumps the
+    PARENT's stack into the captured output. The parent reports the crash from the child's exit signal."""
     try:
         import faulthandler
         faulthandler.disable()
@@ -97,12 +71,9 @@ def run_isolated(work_fn: Callable[[], Dict], timeout: float = 900.0) -> Dict:
     """Run ``work_fn`` in a forked child and return its dict, or an ``{"error": ...}`` sentinel on
     crash / timeout / malformed output. The parent always survives.
 
-    ``timeout`` guards against a runaway (never-terminating) kernel, so it must comfortably exceed the
-    longest legitimate run: the default is generous, and large-problem jobs (e.g. the XL cross-language
-    job timing 268M-element kernels over many reps) pass an even larger value explicitly."""
-    # An OpenMP pool that is live across the fork deadlocks the child on its first parallel region --
-    # which is every kernel built from a parallel nest. Tear the pools down first (see the function).
-    pause_openmp_pools()
+    ``timeout`` guards a runaway kernel, so it must exceed the longest legitimate run; large-problem jobs
+    pass a larger value explicitly."""
+    pause_openmp_pools()  # a pool live across the fork deadlocks the child's first parallel region
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:  # child

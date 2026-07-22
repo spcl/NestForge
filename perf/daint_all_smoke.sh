@@ -89,7 +89,7 @@ module load nvhpc 2>/dev/null || echo "[all-smoke] nvhpc module not found -- nvc
 source /opt/intel/oneapi/setvars.sh 2>/dev/null || echo "[all-smoke] oneAPI setvars not found -- icx/icpx/ifx skipped"
 
 export DACE_compiler_use_cache=0
-export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++23}"
+export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++20}"
 
 # --- small env-var knobs (SMALL preset -- do NOT run real PROF/XL here) ---------
 ONLY="${ONLY:-s000 s1115}"                 # a handful of kernels only

@@ -40,7 +40,7 @@ source /capstor/scratch/cscs/$USER/aarch64/venvs/myenv/bin/activate
 spack load gcc@16.1.0
 spack load llvm@22.1.5
 export DACE_compiler_use_cache=0
-export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++23}"
+export DACE_PERF_CXX_STD="${DACE_PERF_CXX_STD:-c++20}"
 
 CC="$(command -v clang)"
 LIBOMP="$(clang -print-file-name=libomp.so 2>/dev/null)"
