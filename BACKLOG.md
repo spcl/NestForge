@@ -99,8 +99,11 @@ body is reachable only by string-slicing `for` headers off a re-emit, and anythi
       `build.include_flags` stops adding the dace include for an agent-authored kernel.
 - [ ] **BK4** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
       `line[4 * headers:]` string surgery.
-- [ ] **BK5** -> BK4. `form="slice"` with `nf.reduce`, and the invariant that its argument lowers as
-      an expression and never as a buffer (emitter says so when it cannot fuse).
+- [ ] **BK5** -> BK4. Reduction representations the agent PICKS between -- `folded` (explicit loop,
+      order pinned) and `declared` (`nf.reduce`, order unspecified, tree allowed). The choice IS the
+      reassociation decision, so there is no separate flag. Default from the SDFG: a WCR on a parallel
+      map renders `declared`. `nf.reduce`'s argument lowers as an expression, never a buffer -- the
+      emitter says so when it cannot fuse. Whatever is emitted must be valid runnable numpy.
 - [ ] **BK6** -> BK3, BK4. `lang="c"|"cpp"|"fortran"` through numpyto, point form only.
 
 ## C. Scratchpad allocation pass

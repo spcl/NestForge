@@ -6,6 +6,10 @@ Design. Not built yet. Supersedes the ad-hoc body rendering in `introspect.kerne
 
 **A kernel is a pair: an iteration domain and a body that is a pure function of a point in it.**
 
+A reduction is the one case where that is not literally true — `acc += ...` carries state across
+points. It is handled by splitting the domain into FREE axes and REDUCED axes: the body stays a pure
+function of a free point, and returns the value to fold over the reduced ones. See Fix 4.
+
 ```
 kernel2_0   domain (i0=0:N, i1=0:M)
             body(i0, i1):
@@ -161,12 +165,34 @@ kernel2_0  [i0=0:N, i1=0:M]  reduce=(+ over i1 -> C)  reads=['A','B'] writes=['C
 
 Reading the body then becomes optional rather than required, which is the whole point of the tree.
 
-**4. Reassociation is a RECORDED decision, never a silent one.** Floating-point `+` is not
-associative: a tree fold and a sequential fold differ in the last bits. So each reduction carries
-`reassociable`, defaulted from where it came from — a WCR the frontend built from a parallel map is
-already order-unspecified, so it is reassociable; one lifted out of a sequential loop is not until
-someone says so. Validation then compares against the SAME order the lowered code uses, so
-bit-exactness stays the gate. A reduction is never the excuse to swap the oracle for a norm.
+**4. The agent picks the representation, and the choice IS the reassociation decision.** A reduction
+has two renderings, and both are valid runnable numpy:
+
+```python
+# folded -- order PINNED, bit-reproducible, no tree
+for i0 in range(N):
+    acc = 0.0                              # the table's identity for nf_add
+    for i1 in range(M):
+        acc = acc + A[i0, i1] * B[i1]
+    C[i0] = acc
+
+# declared -- order UNSPECIFIED, a backend may fold it as a tree
+C[:] = nf.reduce(nf_add, A * B[None, :], axis=1)
+```
+
+Floating-point `+` is not associative, so these two do not agree in the last bits — and that is the
+point. Choosing `nf.reduce` is choosing to allow reassociation; choosing the explicit fold is choosing
+to forbid it. There is no separate `reassociable` flag to keep in sync with the code, because the code
+already says it.
+
+The default comes from the SDFG: a WCR on a parallel map is order-unspecified already, so it renders
+`declared`; a reduction lifted out of a sequential loop renders `folded` until someone asks otherwise.
+Validation compares against the order the lowered code actually uses, so bit-exactness stays the gate
+and a reduction is never the excuse to swap the oracle for a norm.
+
+**The emitter's one hard invariant: whatever it emits is valid numpy that reproduces the SDFG.**
+Representation is the agent's choice; validity is not negotiable. A representation that cannot be
+rendered as running numpy for a given kernel is refused by name, not approximated.
 
 ## The API
 
@@ -197,10 +223,6 @@ Session.kernel_body(nest_id, form="point", lang="python") -> str
 
 ## Open
 
-- **A reduction in point form is not a pure function of the point.** `acc += ...` breaks the framing
-  the whole design opens with. Either the carried value joins the body signature, or the domain splits
-  into reduced axes and free axes and the body is a function of the free ones returning a value to
-  fold. The second is closer to what a backend does. Undecided.
 - **`Min_Location` / `Max_Location` / `Exchange`.** Reductions in dace's enum that have no clean numpy
   spelling and no obvious `nf` signature. Probably refused at first, but they are real (argmin shows
   up in the corpus).
