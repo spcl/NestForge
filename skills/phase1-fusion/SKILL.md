@@ -8,8 +8,13 @@ description: Phase 1 of the nest-forge 4-phase optimizer — set loop/map-nest g
 Granularity == fusion state. Phase 1 picks the granularity the later phases optimize at. Default:
 **maximal fusion** (fuse everything legal → coarsest kernels). The agent fissions down from there.
 
-Input: an SDFG normalized by `SymbolPropagation` (bounds rewritten to real parameters). Output: the
-same SDFG mutated in place to the chosen granularity.
+## Preconditions
+
+- **Runs first.** Nothing may have been externalized yet — Phase 2 replaces nests with `ExternalCall`
+  nodes, and a fusion move cannot see inside one.
+- **Input:** an SDFG normalized by `SymbolPropagation` (derived loop bounds rewritten back to the real
+  parameters). Without it a peeled nest carries an unbindable free symbol.
+- **Output:** the SAME SDFG, mutated in place. Deep-copy first if you need the original.
 
 ## One-shot: apply a named strategy
 
@@ -20,9 +25,9 @@ fusion_strategy_names()                       # ['maximal-fusion']
 steps = get_fusion_strategy("maximal-fusion")(sdfg)   # in place; returns step count
 ```
 
-`maximal-fusion` = `LoopToMap` (loops → parallel maps where sound) + `MapFusion` V/H to a fixed
-point + `simplify`. It is the deterministic Phase-1 default and reaches the exact fixed point the
-move-by-move arms below reach.
+`maximal-fusion` = `LoopToMap` (loops → parallel maps where sound) + `MapFusionVertical` /
+`MapFusionHorizontal` to a fixed point + `simplify`. It is the deterministic Phase-1 default and
+reaches the exact fixed point the move-by-move arms below reach.
 
 Add a strategy:
 
@@ -55,21 +60,29 @@ each is gated by the transform's own `can_be_applied_to`.
 Fission — the inverse (`nestforge.fusion.fission_to_statements` / `map_fission_moves`):
 
 ```python
+from dace.transformation.dataflow import MapFission
+
 from nestforge.fusion import fission_to_statements, map_fission_moves
 
 fission_to_statements(sdfg)           # explode whole program to statement granularity
 for map_entry, nsdfg in map_fission_moves(sdfg):   # or fission ONE map at a time
+    # expr_index=1 is the map-with-nested-SDFG pattern; the default 0 rejects exactly these maps.
     MapFission.apply_to(sdfg, expr_index=1, map_entry=map_entry, nested_sdfg=nsdfg)
 ```
 
 Typical agent loop: `fission_to_statements` to reach the finest granularity, then `enumerate_fusions`
 + `apply_fusion` back up to the granularity that optimizes best.
 
-## Correctness
+## Guardrails
 
-Every fuse/fission move is value-preserving (legality-gated + fuzz + bit-exact corpus tested). The
-agent can only change granularity, never correctness. Still: after a move sequence, re-validate the
-SDFG bit-exact vs the un-fused numpy oracle before it competes on speed.
+- **Re-enumerate after every apply.** A committed move stales every other move's node references.
+  Never hold a `FusionMove` list across an `apply_fusion`.
+- **Never hand-apply a transform you did not enumerate.** Enumeration is the legality gate; going
+  around it is how a move becomes a miscompile instead of a refusal.
+- **Deep-copy before speculating.** Moves mutate in place and there is no undo.
+- Every enumerated move is value-preserving (legality-gated + fuzzed + bit-exact corpus tested), so
+  you can only change granularity, never the result. Still re-validate a move SEQUENCE bit-exact
+  against the un-fused numpy oracle before it competes on speed.
 
 ## Next
 

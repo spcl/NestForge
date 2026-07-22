@@ -10,6 +10,13 @@ library calls** — the offload granularity. A granularity is a detection strate
 nests. Default: **top-level compute nests** — the outermost nests, skipping pure map/loop scheduling
 wrappers that carry no compute (`DEFAULT_GRANULARITY == "skip-taskloops"`).
 
+## Preconditions
+
+- **Phase 1 has run.** The fusion granularity is fixed; a fusion move cannot see inside an
+  `ExternalCall`, so re-fusing after this phase means re-running Phase 1 on a fresh SDFG.
+- **Input:** an SDFG at the chosen fusion granularity. `lower_nests_to_external_call` mutates it in
+  place and returns the lowered nests.
+
 ## Architectural invariant — externalize BEFORE deciding offload
 
 A nest is turned into a library call **first**; only **then** does each backend tool decide whether
@@ -43,7 +50,7 @@ still validates and runs bit-exact — externalizing changes *where* compute liv
 ```python
 from nestforge.offload import strategy_names, get_strategy
 
-strategy_names()                               # ['innermost', 'outer', 'skip-taskloops']
+strategy_names()                               # ['cfg', 'innermost', 'map', 'outer', 'skip-taskloops', 'state']
 lower_nests_to_external_call(sdfg, "innermost")   # finer: every leaf nest
 ```
 
@@ -74,11 +81,26 @@ Once Phase 3 has a winner, point the `ExternalCall` at its lib and expand. Two l
   `compiler.static_archive` (native + cmake).
 
 ```python
+from nestforge.arena import build_winner_archive
+
 ext.implementation = "ExternCall"
 ext.lib_path = str(build_winner_archive(win, c_source, ext.name, out))  # .a -> statically linked in
 ext.symbol, ext.abi_order = win.symbol, win.abi_order
 sdfg.expand_library_nodes()
 ```
+
+## Guardrails
+
+- **Never pre-decide offloadability.** Externalize first, let the backend tool decide. Deciding first
+  lets an offload choice shift the extraction underneath it.
+- **Take `abi_order` from the winner, never re-derive it.** The emitted signature orders parameters by
+  `param_order()` (arrays sorted, then scalars), NOT by the manifest's role order. Re-deriving it
+  elsewhere silently swaps pointers across the ABI.
+- **Do not put several nests' objects in one `.a`.** DaCe sorts the parent's link flags and can place
+  the archive before the parent objects, so `ld` pulls no member and the symbols stay unresolved until
+  `dlopen` fails. Use a `.so` for a multi-nest swap.
+- Externalizing changes *where* compute lives, never the result — an un-pointed `ExternalCall` still
+  runs bit-exact through its `DaceReference` expansion.
 
 ## Next
 

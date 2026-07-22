@@ -8,6 +8,64 @@ against baselines. A DaCe backend competes in the same arena.
 Everything lives here and plugs into DaCe through its external-transformation registry; DaCe itself
 stays unmodified.
 
+## Entry contract (`nestforge.entry`)
+
+The premise: language- and compiler-defined semantics are not trusted. Whether a vectorizer flag, an
+fp mode or a codegen path is faster is decided by compiling and timing it. What may vary is decided
+by the input alone:
+
+| input | what can still change | axes | variants |
+|---|---|---|---|
+| `.c` / `.cpp` / `.f90` **as source** | only the compiler invocation | `vectorize` × `fp` | 9 |
+| NumPy / Fortran / `.sdfg` **parsed** | the generated code too | + budgeted codegen knobs | 72 |
+
+per compiler — the arena builds each variant once per discovered toolchain. `plan_search(source)` is
+pure (no compiler, no filesystem beyond the suffix) and returns a `SearchPlan`; `classify_input`
+resolves the kind, with `.f90` defaulting to **parsing** because that space strictly contains the
+compile-as-is one. `VARIANT_BUDGET` caps a plan and `broad_codegen_axes` re-opens pinned knobs in
+`BROAD_PRIORITY` order while the budget allows, so the bound holds by construction.
+
+`CODEGEN_PINNED` records the knobs with a known-right answer and *why* each is pinned; only
+`CORE_UNCERTAIN` (`implementation`, `const_scalar_abi`) is genuinely open. `loop_bound_cmp` is a
+**soundness** pin, not a speed one.
+
+An agent does not choose the space — it contributes an `AgentVariant` carrying finished source, an
+exact flag set, or both, measured on the same footing as an enumerated variant. `AgentMode.EXACT`
+(the default) costs one build; `AgentMode.SEARCH` sweeps whatever axes the agent left open. Fixing
+the space keeps a steered and an unsteered run over identical ground, so their difference measures
+the agent rather than a difference in territory.
+
+`nestforge.instrument` brackets a nest with clock tasklets so it is timed **in situ**, with the whole
+program running: `instrument_nest(sdfg, nest)` → `NestTimers.elapsed_ns(results)`. Timers are wired
+by explicit dependency edges (unwired, a clock read may be scheduled past the code it brackets) and
+are SDFG arguments rather than transients (a transient nobody reads is dead code simplify may delete,
+leaving a build that measures nothing and reports zero).
+
+## The core idea — the agent reads a tree, not a graph
+
+An SDFG is a graph; an agent reasons badly about graphs and well about text. So the whole agent-facing
+design rests on two projections, and the agent only ever touches these:
+
+1. **Structure → a string tree.** `introspect.describe_graph(sdfg)` renders the control-flow region tree
+   as indented text — regions, states (marked as fusion barriers), loops, conditionals, and the nests
+   inside each. `Session.describe()` serves it live and `Session.region_tree()` is the same tree as
+   structured data. This is the map the agent operates on: it decides *where* to act by reading the tree.
+2. **Bodies → numpy.** Each nest's body is re-emitted as a standalone numpy kernel
+   (`emit_numpy.nest_to_numpy`), which is also the correctness oracle. The agent never edits SDFG nodes
+   or memlets; it reads readable numpy.
+
+Given those two, the agent's authority is deliberately narrow: **it controls fusion and fission
+granularity, and nothing else.** Every move is legality-gated, so the graph it hands back computes the
+same values. Choosing *how fast* those values are computed is the framework's job, not the agent's.
+
+From there each loop nest is optimized by translation, not by rewriting: the numpy body goes through
+OptArena's translator to **Fortran / C / C++** (and a Fortran or C source can be the *input* instead —
+see the entry contract above), and the arena compiles the variants and measures them. So one nest is
+optimized in every language and toolchain that can express it, and the winner is decided by measurement.
+
+Keeping the string tree faithful is therefore a core API obligation, not a debugging convenience: it is
+the agent's only view of the program.
+
 ## The 4-phase optimizer API
 
 The optimizer is four **explicit, agent-facing** phases. Each is a module with an *inspect → commit*
@@ -27,20 +85,25 @@ The phases cycle: **P1** fuses/fissions to a granularity → **P2** externalizes
 vectorization) into a build recipe → **P4** reads the measured `Outcome` and requests a different
 fuse/fission, back to P1. An **architectural invariant** ties P1→P2: a nest is externalized *before* any
 tool decides offloadability, so an offload choice can never shift the extraction underneath it. The whole
-API is re-exported from the `nestforge` package top level. The design rationale is `docs/agentic_optimizer/`.
+API is re-exported from the `nestforge` package top level — except phase 3's `optimize`, whose name would
+bind over the `nestforge.optimize` submodule, so reach it as `from nestforge.optimize import optimize`.
+`tests/test_phase_api_contract.py` holds the four skills to this surface: every symbol they import must
+exist, every registry listing they print must match the registry, and each phase must stay reachable as a
+module. The design rationale is `docs/agentic_optimizer/`.
 
 ## Quick start
 
 ```bash
-# 1. clone nest-forge and OptArena as siblings (SSH; needs read access to spcl/OptArena)
-git clone git@github.com:spcl/NestForge.git && cd NestForge
-git clone git@github.com:spcl/OptArena.git ../optarena   # sibling checkout next to ./nest-forge
+# 1. nest-forge plus its three sibling checkouts (all public)
+git clone https://github.com/spcl/NestForge.git && cd NestForge
+git clone https://github.com/spcl/OptArena.git ../optarena
+git clone -b extended https://github.com/spcl/dace.git ../dace   # or: git -C ../dace switch extended
+git clone https://github.com/spcl/dace-fortran.git ../dace-fortran
 
-# 2. DaCe `extended` as a sibling checkout, then the editable deps + test/format tools
-git clone -b extended git@github.com:spcl/dace.git ../dace   # or: git -C ../dace switch extended
-pip install -r requirements-dev.txt               # -e ../dace, -e ../optarena, pytest, yapf, ...
+# 2. the editable deps + test/format tools (install order matters -- see Dependencies)
+pip install -r requirements-dev.txt
 
-# 3. run the unit suite (must pass with zero skips)
+# 3. run the unit suite (must pass with zero skips; e2e is included, integration is not)
 pytest -m "not integration"
 ```
 
@@ -150,51 +213,98 @@ graph TD
 ## Layout
 ```
 nestforge/
+  entry.py        the contract: classify_input / plan_search -> SearchPlan; AgentVariant
+  instrument.py   clock tasklets around a nest -> in-situ timing (NestTimers.elapsed_ns)
+  session.py      Session: the consolidated agent-facing API over the 4 phases
+  introspect.py   read-only structure inspection for the agent and the deterministic path
+
   extract.py      extract_nest_to_sdfg(parent_sdfg, node) -> (standalone_sdfg, Boundary)
+  multinest.py    extract EVERY nest a strategy finds, each from a fresh SDFG
   strategies.py   Strategy = (SDFG) -> [(parent_sdfg, node)]; `outer` default + registry
+  split_unsupported.py  isolate library nodes the emitter cannot externalize (MPI/sparse/...)
+
+  fusion.py       PHASE 1  set granularity by a fusion strategy
+  granularity.py           fusion granularity as a search axis (paper Axis 1)
+  fusion_arms.py           enumerate + apply the legal fusion moves
+  fission_arms.py          explode a max-fused program to statement granularity
+  region_arms.py           merge the control-flow CONTAINERS, the level above nest fusion
+  offload.py      PHASE 2  offload granularity
+  pass_lower.py            LowerNestsToExternalCall(strategy=skip-taskloops)
+  libnode.py               ExternalCall LibraryNode + ExpandDaceReference / ExpandExternCall
+  optimize.py     PHASE 3  optimize each externalized nest individually
+  optimizers.py            every arena variant, and the agent, under one contract
+  vectorize_variants.py    staged screening for the DaCe tile-op vectorization axis
+  feedback.py     PHASE 4  change granularity from MEASUREMENTS, and loop
+
   emit_numpy.py   sdfg_to_numpy / nest_to_numpy -> C-style python/numpy kernel (no allocation)
   emit_libnode.py library-node -> numpy op (MatMul/Dot/Reduce/...), in-place writes
   emit_yaml.py    OptArena BenchSpec manifest (symbols, array shapes/dtypes)
+  translate.py    drive the translator: nest -> numpy + manifest -> C/C++/Fortran sources
   translator.py   NATIVE: numpy -> C/C++/Fortran translator (over the optarena dependency)
   corpus.py       NATIVE: npbench/polybench kernel corpus (over the optarena dependency)
-  libnode.py      ExternalCall LibraryNode + ExpandDaceReference / ExpandExternCall
-  pass_lower.py   LowerNestsToExternalCall(strategy=skip-taskloops)
+
   build.py        owned DaCe build (generate + compile + link ourselves; bind_program timing)
   isolation.py    run_isolated: run a compiled kernel in a forked child (segfault/OOM-safe)
-  arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner + report
+  arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner
+  report.py       render arena results: winning compiler×flag per nest and FP mode, plus the grid
+  device_profile.py  per-device characterization: which SIMD ISAs and veclibs this box has
+  predictive.py   pick the optimizer that will win WITHOUT building them all
+
+  differential.py per-nest full-program differential measurement (swap one nest, run everything)
+  whole_program.py  baseline lane: optimize the ENTIRE un-split program as one unit
+  baselines.py    the traditional-optimizer baseline lanes (paper C1/C2)
+  policy.py       granularity search policies: exhaustive vs a scoped agentic hill-climb (C4)
+  sweep.py        the experiment sweep matrix, kept BOUNDED, plus a measurement-cost ledger
+  experiment_e1..e5.py  the paper's five experiment drivers
+
   perf/
     flags.py            shared flag matrix: FP-precision ladder, cost models, auto-par, C-ABI C++
-    tsvc.py             (nestforge/tsvc.py) TSVC corpus adapter + preset sizing
+    harness.py          compile/run harness shared by the perf jobs
     tsvc_full.py        the full-matrix job (3 lanes + the axis sweep, median-of-N, multi-rank)
     crosslang_xl.py     cross-compiler × cross-language job at a fixed preset
     tsvc_arena.py       per-kernel three-column arena (native / default / flag-matrix winner)
+    pluto_lane.py       the Pluto/PPCG polyhedral baseline lane
+    support_matrix.py   which compiler × flag × language combinations actually work here
+    render_axes.py      regenerate the axis diagram in this README from the live constants
     staticlib_overhead.py   monolithic vs external static-lib COMPILE-time overhead
     calloverhead.py         runtime CALL overhead: inline vs external-LTO-.a vs external-.a (timed)
+  tsvc.py         TSVC corpus adapter + preset sizing
 perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*.py + README
 ```
 
 ## Dependencies
-- **DaCe — the `extended` branch, installed editable** from a sibling checkout (`../dace`). The PyPI
-  `dace` wheel lacks the extended-only passes nest-forge uses (e.g.
-  `dace.transformation.interstate.expand_nested_sdfg_inputs`). `requirements-dev.txt` pins `-e ../dace`.
-- **OptArena — the sibling `../optarena` checkout** (`git@github.com:spcl/OptArena.git`, currently
-  private, cloned over SSH). `git clone git@github.com:spcl/OptArena.git ../optarena` then `pip install -e ../optarena`.
-  nest-forge surfaces exactly two of its pieces as native APIs: `nestforge.translator` (numpy → C/C++/Fortran)
-  and `nestforge.corpus` (the npbench/polybench kernel corpus).
-- **Toolchain** — two idempotent setup scripts (`--help` each): `scripts/setup_apt.sh` (apt system
-  toolchain: gcc/clang/gfortran, libomp/libgomp, linkers, BLAS; `--oneapi`/`--nvhpc` add the vendor repos)
-  and `scripts/setup_spack.sh` (the spack compiler × library matrix, userspace).
+
+Three editable sibling checkouts, installed in this order (`requirements-dev.txt`):
+
+- **DaCe, branch `extended`** (`../dace`) — the PyPI wheel lacks the extended-only passes nest-forge
+  calls (e.g. `dace.transformation.interstate.expand_nested_sdfg_inputs`).
+- **OptArena** (`../optarena`, `spcl/OptArena`) — not on PyPI, so only a checkout resolves it. Two of
+  its pieces are surfaced as native APIs: `nestforge.translator` (numpy → C/C++/Fortran) and
+  `nestforge.corpus` (the npbench/polybench kernel corpus).
+- **dace-fortran** (`../dace-fortran`) — lowers a Fortran input to an SDFG for `InputKind.FORTRAN_PARSE`.
+  Must come **after** dace: its pyproject pins `dace @ FaCe`, a subset of `extended`, so installing it
+  first lets pip fetch that pin instead of reusing the extended checkout.
+
+- **Toolchain** — two idempotent setup scripts (`--help` each): `scripts/setup_apt.sh` (gcc/clang/gfortran,
+  libomp/libgomp, linkers, BLAS; `--oneapi`/`--nvhpc` add the vendor repos) and `scripts/setup_spack.sh`
+  (the spack compiler × library matrix, userspace).
 - **Formatting** — yapf for Python (120 cols) + clang-format for C/C++ (160 cols); `scripts/format.sh`
   rewrites in place, `--check` is the gate.
-- **CI** (`.github/workflows/ci.yml`) — format gate → toolchain → editable DaCe + OptArena → the unit set
-  (`-m "not integration"`) with zero-skip enforcement. **Currently disabled** (manual dispatch only): it
-  needs the private OptArena checkout via an `OPTARENA_DEPLOY_KEY` secret. Re-enable by adding that secret
-  and restoring the `push`/`pull_request` triggers. No key is ever stored in the repo.
+- **CI** (`.github/workflows/ci.yml`) — runs on push to `main`, on every PR, and on dispatch: format gate
+  → toolchain via `scripts/setup_apt.sh` (CI dogfoods it) → the three deps editable from GitHub over
+  HTTPS → `pytest -m "not integration"` with zero-skip enforcement (repo-root `conftest.py` fails the
+  session on any skip). Both `spcl/dace` and `spcl/OptArena` are public, so no secret is involved — and
+  the workflow must stay that way, since secrets are not exposed to fork PRs. `e2e` tests compile and
+  run under g++/clang++, so they are *not* excluded; `integration` (vendor compilers, heavy launchers)
+  is.
 
 ## Design docs
 - `docs/agentic_optimizer/` — the 4-phase optimizer design; each phase maps to a `nestforge.*` module +
   `skills/phase*/` skill (see the table above).
-- `DESIGN.md` — emitter contract, cross-cutting concerns, refinement plan.
+- `docs/PLAN_optimize_contract.md` — the entry contract: input kind → search space, the knob pins.
+- `BACKLOG.md` — every open task, ordered, with dependencies. Start there.
+- `docs/paper/` — the granularity × offloading paper: related work, bibliography, experiment notes.
+- `DESIGN.md` — emitter contract, its invariants, and the open correctness findings against them.
 - `BUILD.md` — nest-forge owning its build (generate + compile + link ourselves, manual init/finalize,
   `<chrono>` timing, maximal-LTO static-lib inlining).
 - `PARALLEL.md` — parallel-region handling: compile intent, the single-runtime + driver-owned-init link
@@ -223,6 +333,12 @@ Cholesky/…), WCR reductions, and loop-variable-sized scratch widened to a call
 emission is read-only and refuses nests it cannot soundly express. `examples/demo_fma.py` shows
 ieee-strict bit-exact vs fast-math FMA rounding.
 
-Next: nested map-in-map; expose hidden layer-config symbols for the ML kernels; SQLite result tracking;
-GPU targets.
-```
+Known gaps, in the order they block work:
+- `nestforge.entry` plans but never executes: `plan_search` returns a `SearchPlan` and nothing hands it
+  to `run_arena`. The `optimize_program` entry point `docs/PLAN_optimize_contract.md` specifies is
+  unwritten.
+- `lower_to_sdfg` raises `NotImplementedError` for `InputKind.NUMPY`; the plan still reports
+  `needs_parse`, so a caller sees the gap rather than a wrong answer.
+- `FLAG_AXES['vectorize']` names its three values but they are not yet mapped to per-compiler flags.
+- Nested map-in-map emission; hidden layer-config symbols for the ML kernels; SQLite result tracking;
+  GPU targets.

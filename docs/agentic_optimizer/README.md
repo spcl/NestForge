@@ -18,7 +18,7 @@ P1 is fixed. P2–P4 are the agent. The comparison baseline is P1 + heuristic of
 
 ### Phase 1 — normalize + fuse (deterministic, no agent)
 
-**What.** Loop normalization + `LoopToMap` + `LoopFusion` / `MapFusion` — fuse everything legal, via DaCe's default heuristics. No agent.
+**What.** Loop normalization + `LoopToMap` + `MapFusionVertical`/`MapFusionHorizontal` to a fixed point, then `simplify` — fuse everything legal, via DaCe's default heuristics. No agent. (`LoopFusion` is a dace canonicalize pass shown below; `nestforge.fusion.maximal_fusion` does not call it.)
 
 **Out.** A maximally-fused baseline SDFG — the starting granularity the agent adjusts from.
 
@@ -145,12 +145,12 @@ emit_sources(prepared[0], out_dir, target="c")        # C / Fortran via numpyto
 ### Tests (shared box: py12, `-n1`, 8GB cap)
 
 ```bash
-pytest tests/transformation/fuse_loops_test.py -q -n1                       # dace: 45 FuseLoops tests
+pytest tests/transformation/fuse_loops_test.py -q -n1                       # dace: 64 FuseLoops tests
 pytest tests/test_split_unsupported.py tests/test_whole_program.py -q -n1   # nest-forge
 ```
 
 ## Status
 
-**DONE** — `FuseLoops` + pass delegation (dace `5b24a100c`); 45 FuseLoops tests (dace `35b2629ec`); `split_unsupported` + `prepare_regions` (nest-forge). **All four phases now have an explicit inspect→commit API + skill** (`nestforge.fusion` / `offload` / `optimize` / `feedback`; see the table above), each with a bit-exact test suite; the deterministic optimizers + `NoOpAgent` / `StubAgent` + `run_agent_loop` (`nestforge.optimizers`); `WholeProgramOptimizer` baseline lane.
+**DONE** — `FuseLoops` + pass delegation (dace `5b24a100c`); 64 FuseLoops tests (dace `35b2629ec`); `split_unsupported` + `prepare_regions` (nest-forge). **All four phases now have an explicit inspect→commit API + skill** (`nestforge.fusion` / `offload` / `optimize` / `feedback`; see the table above), each with a bit-exact test suite; the deterministic optimizers + `NoOpAgent` / `StubAgent` + `run_agent_loop` (`nestforge.optimizers`); `WholeProgramOptimizer` baseline lane.
 
-**OPEN** — fuzz harness; the P3 render-all-three-representations + compile-and-validate hand-written `.cpp` gate (the facade covers axis-selection recipes, not free-form agent-authored C++ yet); a *real* (non-stub) agent behind the `AgenticOptimizer` contract for P2 granularity / P4 incremental feedback.
+**OPEN** — the P3 compile-and-validate gate for a hand-written `.cpp` (the facade covers axis-selection recipes and `Session.set_kernel` takes a PREBUILT lib, but free-form agent-authored C++ has no path); a *real* (non-stub) agent behind the `AgenticOptimizer` contract for P2 granularity / P4 incremental feedback.

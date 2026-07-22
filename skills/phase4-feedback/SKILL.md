@@ -14,6 +14,15 @@ the loop needs to see results: an `Outcome` per round.
 from nestforge.optimizers import Outcome   # proposal, ok (bit-exact), median_us, error
 ```
 
+## Preconditions
+
+- **Phases 1–3 have run at least once**, so there is a granularity to measure and a recipe per nest.
+- **You supply `measure`.** It is `SDFG -> Outcome` and owns build + bit-exact validation + timing.
+  The loop never builds anything itself, which is why CI drives it with a fake measure and no
+  compiler.
+- `run_feedback_loop` mutates the SDFG as it moves granularity; `res.sdfg` is the snapshot taken at
+  each new best.
+
 ## The two rules
 
 ```python
@@ -68,10 +77,17 @@ An `AgenticOptimizer` reads the `Outcome` of the round it just proposed (`observ
 next. `run_agent_loop` enforces the round bound, so a buggy agent that never says `stop` fails a test
 instead of hanging.
 
-## Correctness
+## Guardrails
 
-Every granularity move is value-preserving (legality-gated + fuzzed bit-exact) and `measure`
-re-validates each round, so Phase 4 changes only *how fast* the program runs, never its result.
+- **Always bound the loop.** `max_rounds` (default 8) is the hard stop: a loop that never stalls must
+  still terminate, or a CI job hangs instead of failing. Same for `run_agent_loop` — a buggy agent
+  that never says `stop` must fail a test, not spin.
+- **Never select on speed alone.** `best_outcome` skips every `ok=False` round by construction; do not
+  re-implement the selection with a plain `min` over `median_us`.
+- **One granularity move per round.** Two moves between measurements makes the round's Outcome
+  unattributable, and the stop rule then compares against a granularity you never measured.
+- Every granularity move is value-preserving (legality-gated + fuzzed bit-exact) and `measure`
+  re-validates each round, so Phase 4 changes only *how fast* the program runs, never its result.
 
 ## Done
 

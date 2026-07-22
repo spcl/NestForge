@@ -9,6 +9,15 @@ Phase 1 fixed *fusion* granularity; Phase 2 externalized the chosen nests (each 
 `ExternalCall`). Phase 3 tunes **one nest at a time**: choose a knob bundle, get the build recipe for
 that nest, hand it to the measure path.
 
+## Preconditions
+
+- **Phase 2 has run.** Each nest you tune is already an `ExternalCall`; `optimize` takes that nest,
+  not a raw map or loop.
+- **Nothing compiles here.** This phase is pure: it returns a `Proposal` (a build recipe) that the
+  arena measure path consumes. No toolchain is invoked, so it runs on a machine with no compiler.
+- **Reach it as `from nestforge.optimize import optimize`.** The commit function is deliberately NOT
+  re-exported at package top level, because the name would bind over the `nestforge.optimize` module.
+
 A knob bundle IS an `Optimizer` — the module contract is "each variant is an optimizer". A
 deterministic bundle is one fixed arena cell (a `(opt-mode, codegen, compiler)` DaCe cell, or a
 `(language, compiler, fp, cost)` external cell). The agent is one more optimizer under the same
@@ -58,11 +67,18 @@ ExternalOptimizer("c", "gnu", "gcc", fp_mode="strict-ieee", cost_model="default"
 
 `DEFAULT_OPT_MODE` is the Phase-1 baseline (`simplify-parallel`) — the arena's speedup denominator.
 
-## Correctness
+## Guardrails
 
-A `Proposal` is only a recipe; the measure path builds it, validates it **bit-exact vs the numpy
-oracle**, then times it. A candidate that loses the correctness gate never competes on speed — so
-optimization can only change *how fast* a nest runs, never its result.
+- **Handle `None`.** `optimize` returns `None` when a bundle DECLINES the nest (an unsupported combo,
+  e.g. clang auto-par). That is a variant dropped with a reason, not an error — record it, never
+  substitute a different bundle silently.
+- **Do not compare across FP modes.** Each mode has its own comparison tolerance; a `fast-math` cell
+  that beats a `strict-ieee` one has not been shown to be faster at the same accuracy.
+- **Never re-derive the parameter order** when binding the built kernel — take `abi_order` from the
+  measured cell. See the Phase 2 guardrail.
+- A `Proposal` is only a recipe; the measure path builds it, validates it **bit-exact vs the numpy
+  oracle**, then times it. A candidate that loses the correctness gate never competes on speed — so
+  optimization can only change *how fast* a nest runs, never its result.
 
 ## Next
 

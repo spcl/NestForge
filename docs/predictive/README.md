@@ -50,7 +50,7 @@ Disassemble each variant's hot object (`objdump -d`) and count what matters on T
   software prefetch (`prefetcht*`), streaming stores (`vmovntps`) -- signal whether the layout is
   cache-friendly.
 - **ISA level actually emitted** -- AVX-512 vs AVX2 vs scalar, matched against the host (see
-  `nestforge/device_profile.py::detect_host_isa`); an ISA the host lacks is a mis-target, not a win.
+  `nestforge/device_profile.py::host_isas`, over dace's `detect_host_isa`); an ISA the host lacks is a mis-target, not a win.
 
 Per-hardware because the same instruction stream ranks differently on different cores. Reuses the
 device profile the vectorizer already characterizes.
