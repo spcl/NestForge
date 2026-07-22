@@ -41,20 +41,13 @@ jobs:
       - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
-      # ccache keys on PREPROCESSED SOURCE, so identical generated C hits even from a fresh temp dir;
-      # persisting across runs is what makes it pay. Safe because this job never asserts on compile TIME.
-      - name: Phase 1b -- ccache (restore + enable)
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ runner.os }}-
-      - name: Phase 1c -- put ccache on PATH
-        run: |
-          ccache --max-size=1G
-          ccache --zero-stats
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+      # NO ccache. nest-forge compiles with `-march=native`, and ccache hashes that flag as the
+      # literal string -- it never resolves it to the ISA the compiler actually picked. `ubuntu-latest`
+      # runners are heterogeneous, so a cross-run cache served an object built on a runner with wider
+      # vector support to one without it, and every test that RUNS its compiled kernel died with SIGILL
+      # (signal 4). A build cache that can hand back wrong-ISA objects is not worth the compile time it
+      # saves in a job that never asserts on compile time. `build.ccache_prefix` auto-detects ccache on
+      # PATH, so leaving it uninstalled here is all it takes.
 
       - name: Phase 2 -- DaCe (extended) + hpcagent_bench + nest-forge[dev], editable
         run: |

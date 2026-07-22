@@ -37,7 +37,7 @@ from nestforge.arena import Cell, run_arena
 from nestforge.extract import find_state_of_node
 from nestforge.feedback import run_feedback_loop
 from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements, map_fission_moves
-from nestforge.introspect import describe_graph, nest_reads_writes
+from nestforge.introspect import describe_graph, kernel_body, nest_reads_writes
 from nestforge.offload import DEFAULT_GRANULARITY, label_nest, lower_nests_to_external_call, offload_candidates
 from nestforge.region_arms import RegionMove, apply_region_fusion, enumerate_region_fusions
 from nestforge.strategies import is_parallel_nest, top_level_map_entries
@@ -152,6 +152,30 @@ class Session:
         apply_region_fusion(self.sdfg, move)
         self.bump()
         return self.region_tree()
+
+    def kernel_body(self, nest_id: str, form: str = "point") -> List[str]:
+        """What one kernel COMPUTES, as numpy statements -- the second projection of the SDFG, for a
+        single nest rather than the whole tree.
+
+        ``form="point"`` (the only one built) is scalar and indexed by the kernel's own domain
+        variables, which the tree already prints on the kernel line. A reduction renders FOLDED there
+        by construction -- ``C[i0] = C[i0] + s1`` -- because an explicit accumulate is the only point
+        rendering there is; ``declared`` (``np.sum(...)``) is a whole-array spelling and arrives with
+        the slice form.
+
+        Returns the statements, or a single ``<not emitted: ...>`` line when the numpy projection
+        cannot express the nest -- a fact the agent needs rather than an exception it cannot act on.
+        A ``LoopRegion`` nest has no map body and is refused: it is a loop the parallelizer left
+        alone, and its contents are the kernels inside it.
+        """
+        if form != "point":
+            raise ValueError(f"form={form!r} is not built yet; only 'point' exists (slice form is BK4)")
+        nest = self.resolve(nest_id, "nest")
+        if not isinstance(nest, nodes.MapEntry):
+            raise TypeError(f"{nest_id} is a {type(nest).__name__}, which has no map body; "
+                            "its kernels are the nests inside it")
+        state = find_state_of_node(self.sdfg, nest)
+        return kernel_body(state, self.sdfg, nest, state.scope_children())
 
     # --- Level 2: nest fusion (fuse maps / loops within a region) ----------------------------------
 

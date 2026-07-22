@@ -112,11 +112,14 @@ apt_install build-essential cmake ninja-build git pkg-config ca-certificates cur
 # ccache: the test suites recompile the same generated kernels repeatedly (per arena cell, per sweep
 # rung), and ccache hashes PREPROCESSED SOURCE, not the path, so identical generated C hits the cache
 # even from a fresh temp directory. Installing it does NOT enable it -- the shims live in
-# /usr/lib/ccache and are used only if that directory is put on PATH (CI does; see .github/workflows).
-# WARNING: never put it on PATH for a job that MEASURES compile time (arena Cell.compile_us,
+# /usr/lib/ccache and are used only if that directory is put on PATH. CI deliberately does NOT.
+# WARNING 1: never put it on PATH for a job that MEASURES compile time (arena Cell.compile_us,
 # ArenaResult.optimization_seconds, perf/staticlib_overhead) -- a cache hit reports ~0s and the
 # post-optimization toolchain cost becomes meaningless.
-log "compiler cache (ccache): opt-in via PATH, never for compile-time measurement jobs"
+# WARNING 2: never share a cache ACROSS MACHINES while `-march=native` is in the flags. ccache hashes
+# that flag as a string and never resolves it to the ISA the compiler chose, so an object built on a
+# wider CPU comes back on a narrower one and the kernel dies with SIGILL. This cost CI a red run.
+log "compiler cache (ccache): opt-in via PATH; never for compile-time jobs, never shared across CPUs"
 apt_install ccache
 
 log "compilers: gcc/g++/gfortran, clang/llvm, flang"

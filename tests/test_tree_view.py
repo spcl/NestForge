@@ -269,3 +269,48 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
     # and it agrees with the full block the emitter produces for the same kernel
     full = introspect.map_body_lines(state, sdfg, entry)
     assert body == full
+
+
+# --- one kernel's body, by handle -------------------------------------------------------------------
+
+
+def test_session_hands_back_one_kernel_body_by_its_tree_id():
+    """The id on the tree line is the handle: read a line, ask what that kernel computes."""
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    body = session.kernel_body(nest_id)
+    assert body and all(isinstance(line, str) for line in body)
+    assert not any(line.startswith("for ") for line in body), "headers are on the kernel line already"
+
+
+def test_a_reduction_body_is_folded():
+    """An explicit accumulate is the only POINT rendering of a reduction; `np.sum` is a whole-array
+    spelling that belongs to the slice form."""
+    sdfg = matvec.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    body = "\n".join(session.kernel_body(nest_id))
+    assert "C[i0] = C[i0] +" in body, body
+    assert "np.sum" not in body
+
+
+def test_an_unbuilt_form_is_refused_by_name():
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    with pytest.raises(ValueError, match="slice"):
+        session.kernel_body(nest_id, form="slice")
+
+
+def test_a_stale_id_does_not_silently_return_someone_elses_body():
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    session = Session(sdfg)
+    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
+    session.bump()
+    with pytest.raises(KeyError):
+        session.kernel_body(nest_id)
