@@ -44,7 +44,7 @@ def barred_session():
 
 def test_list_nests_is_plain_data():
     s = make_session()
-    assert "[merge to fuse across]" in s.describe()
+    assert "kernel" in s.describe()  # the tree names the kernels; see test_tree_view for its format
     nests = s.list_nests()
     assert len(nests) == 2
     # epoch-0 stamped nest ids. Not pinned to :0/:1 -- describe() mints the same handles onto its

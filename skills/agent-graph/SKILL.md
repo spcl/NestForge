@@ -73,15 +73,17 @@ print(describe_graph(sdfg))
 ```
 ```
 SDFG 'two_maps'
-`- state0_0  [merge to fuse across]
-   |- kernel1_0  PARALLEL  [i0=0:N]  reads=['A', 'B'] writes=['T']
-   `- kernel1_1  PARALLEL  [i0=0:N]  reads=['T'] writes=['C']
+`- state0_0
+   |- kernel1_0  [i0=0:N]  reads=['A', 'B'] writes=['T']
+   `- kernel1_1  [i0=0:N]  reads=['T'] writes=['C']
 ```
 
 The guides show control-flow nesting, and a line's depth is the level in its own name (`kernel1_0` sits
-at depth 1). Each `state` bounds map fusion until it is merged (see next section). Each nest
-line carries its schedule -- `PARALLEL`, `SEQUENTIAL`, or `SCALAR` for a single-iteration wrap map --
-its iteration domain, and its **read and write array sets** — what the loop-nest
+at depth 1). A line carries only what you act on: a kernel's iteration domain and its **read and write array
+sets**, a loop's domain, a branch's condition. There is no parallel/sequential column -- a Map is
+data-parallel by definition, and where execution is forced sequential the construct is a `for` /
+`while` line. That a `state` bounds map fusion until it is merged holds for every state (see next
+section), so it is stated here once rather than on every row — what the loop-nest
 actually does, without outlining it. `nest_reads_writes(state, node)` returns `(reads, writes)` for one
 nest. After a nest is externalized, the same sets live on `Boundary.inputs` / `Boundary.outputs`.
 

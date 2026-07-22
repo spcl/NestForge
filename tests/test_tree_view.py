@@ -12,7 +12,7 @@ pytest.importorskip("dace")
 
 import dace as dc
 
-from nestforge.introspect import describe_graph
+from nestforge.introspect import describe_graph, interstate_definitions, resolve_scalars
 from nestforge.normalize import normalize_for_tree
 from nestforge.session import Session
 
@@ -33,18 +33,18 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 
 GOLDEN = """\
 SDFG 'shaped'
-|- state0_0  [merge to fuse across]
+|- state0_0
 |  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']
 |  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']
 `- for0_0  i=0:19
-   |- state1_0  [merge to fuse across]
-   `- if1_0  [selector stays in core SDFG]
-      |- block2_0  when (A_index > 0.0)
-      |  `- state3_0  [merge to fuse across]
+   |- state1_0
+   `- if1_0
+      |- block2_0  when A[i + 1] > 0.0
+      |  `- state3_0
       |     |- kernel4_0  [__nf_wrap=0:1]  reads=['s1', 's2'] writes=['s3']
       |     `- kernel4_1  [__nf_wrap=0:1]  reads=['s3'] writes=['out']
       `- block2_1  else
-         `- state3_1  [merge to fuse across]
+         `- state3_1
             |- kernel4_2  [__nf_wrap=0:1]  reads=['s4'] writes=['s5']
             `- kernel4_3  [__nf_wrap=0:1]  reads=['s5'] writes=['out']
 """
@@ -102,3 +102,43 @@ def test_region_lines_carry_the_stable_descriptive_id_not_a_minted_one():
     tree = session.describe()
     assert re.search(r"\[region:state0_0\]", tree), tree
     assert not re.search(r"\[e\d+:region:", tree)
+
+
+# --- conditions read as the arrays they test -------------------------------------------------------
+
+
+def test_a_condition_names_the_array_it_really_reads():
+    """The frontend hoists the scalar read to an interstate assignment (`A_index = A[1 + i]`) and the
+    branch then tests a name that means nothing on its own."""
+    tree = tree_of(shaped)
+    assert "when A[i + 1] > 0.0" in tree, tree
+    assert "A_index" not in tree
+
+
+def test_a_name_with_two_definitions_is_left_alone():
+    """Which definition reaches a block depends on the path taken, so folding either one in would show
+    a condition the program does not always evaluate."""
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_for_tree(sdfg)
+    assert "A_index" in interstate_definitions(sdfg), "fixture no longer hoists the scalar read"
+    # Give the same name a second, different definition on another edge -- as two branches assigning
+    # one variable do.
+    edge = next(e for cfg in sdfg.all_control_flow_regions(recursive=True) for e in cfg.edges()
+                if "A_index" in e.data.assignments)
+    other = next(e for cfg in sdfg.all_control_flow_regions(recursive=True) for e in cfg.edges() if e is not edge)
+    other.data.assignments["A_index"] = "A[0]"
+    assert "A_index" not in interstate_definitions(sdfg)
+    assert "A_index" in describe_graph(sdfg), "an ambiguous name must stay unresolved, not vanish"
+
+
+def test_resolution_terminates_on_a_self_referential_definition():
+    """`i = i + 1` on a back edge is ordinary; substituting it forever is not."""
+    assert resolve_scalars("i < N", {"i": "i + 1"}) == "i + 1 < N"
+
+
+def test_resolution_follows_a_chain_to_the_array():
+    assert resolve_scalars("c > 0", {"c": "b * 2", "b": "A[k]"}) == "A[k] * 2 > 0"
+
+
+def test_an_unparsable_condition_is_passed_through():
+    assert resolve_scalars("this is not python", {}) == "this is not python"

@@ -11,19 +11,25 @@ The tree is the agent's whole view of the program, so it is projected from the n
 to also stamp each actionable line with a session id, so READING the tree and ACTING on it use one
 vocabulary rather than two views the agent has to join by eyeballing labels.
 
-Sibling States are a control-flow dependency: map fusion never crosses one, so two nests in different
-States cannot fuse *directly* (see :func:`nestforge.fusion_arms.can_fuse`). That is a boundary, not a
-barrier -- ``fuse_regions`` merges adjacent States and the nests inside then become fusable siblings,
-which is why the line says ``[merge to fuse across]`` rather than calling the State a dead end.
+Every line carries what the agent needs to act on that line and nothing else. Facts that hold for a
+whole KIND of line -- that map fusion never crosses a State, that a conditional's selector stays in the
+core SDFG -- belong in the phase skills, not repeated on every row of a hundred-kernel tree.
+
+A condition is shown in terms of the ARRAYS it really reads. The frontend hoists a scalar read out to
+an interstate assignment (``A_index = A[1 + i]``) and the branch then tests a name that means nothing
+on its own, so :func:`resolve_scalars` folds those definitions back in until only arrays,
+non-transients and free symbols are left.
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+import ast
+from typing import Callable, Dict, List, Optional, Tuple
 
 import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowRegion, LoopRegion, ReturnBlock,
                              SDFGState)
+from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.normalize import in_order
@@ -33,6 +39,70 @@ TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
 
 #: What a ``Handle`` is asked to name. ``region`` covers every control-flow block, ``nest`` every map.
 Handle = Callable[[str, object], str]
+
+
+class Substitute(ast.NodeTransformer):
+    """Replace each ``Name`` that has a definition with that definition's expression."""
+
+    def __init__(self, definitions: Dict[str, str]):
+        self.definitions = definitions
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        expression = self.definitions.get(node.id)
+        return ast.parse(expression, mode="eval").body if expression is not None else node
+
+
+def interstate_definitions(sdfg: dace.SDFG) -> Dict[str, str]:
+    """``name -> expression`` for every interstate assignment in the SDFG.
+
+    A name assigned more than one DISTINCT expression is dropped: which one reaches a given block
+    depends on the path taken, so folding either into a condition would show something the program
+    does not always evaluate.
+    """
+    assigned: Dict[str, set] = {}
+    for cfg in sdfg.all_control_flow_regions(recursive=True):
+        for edge in cfg.edges():
+            for name, expression in edge.data.assignments.items():
+                assigned.setdefault(name, set()).add(expression)
+    return {name: exprs.pop() for name, exprs in assigned.items() if len(exprs) == 1}
+
+
+def resolve_scalars(expression: str, definitions: Dict[str, str]) -> str:
+    """Fold scalar definitions into ``expression`` until only arrays, non-transients and free symbols
+    are left -- ``A_index > 0.0`` becomes ``A[i + 1] > 0.0``.
+
+    Each name is substituted at most ONCE. That terminates on a self-referential or cyclic definition
+    (``i = i + 1`` on a back edge is ordinary), and it bounds a chain to the number of definitions
+    rather than letting one expand exponentially.
+    """
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:  # a condition the frontend wrote in something other than python
+        return expression
+    remaining = dict(definitions)
+    while remaining:
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & set(remaining)
+        if not used:
+            break
+        tree = Substitute({name: remaining.pop(name) for name in used}).visit(tree)
+    # ast.unparse, not astutils.unparse: this string is for a human/agent to READ, and astutils
+    # parenthesizes defensively (``A[(i + 1)]``) because its output is meant to be re-parsed as
+    # tasklet code. Nothing re-parses a tree line.
+    return ast.unparse(simplify_indices(tree)).strip()
+
+
+def simplify_indices(tree: ast.AST) -> ast.AST:
+    """Rewrite every subscript index through sympy, so a hoisted read prints ``A[i + 1]`` rather than
+    the ``A[(1 + (1 * i))]`` the frontend builds it as."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        try:
+            simplified = dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(astutils.unparse(node.slice)))
+            node.slice = ast.parse(str(simplified), mode="eval").body
+        except (SyntaxError, TypeError, AttributeError):
+            continue  # an index sympy will not take is still perfectly printable as it stands
+    return ast.fix_missing_locations(tree)
 
 
 def nest_reads_writes(container: SDFGState, node: nodes.Node) -> Tuple[List[str], List[str]]:
@@ -55,15 +125,16 @@ def map_domain(entry: nodes.MapEntry) -> str:
     return ", ".join(f"{p}={render_range(r)}" for p, r in zip(entry.map.params, entry.map.range))
 
 
-def loop_domain(loop: LoopRegion) -> str:
-    """A loop's iteration domain in the same shape as a map's, or its raw condition when the loop is not
-    a counted one (a ``while`` has no start/end to show)."""
+def loop_domain(loop: LoopRegion, defs: Dict[str, str]) -> str:
+    """A loop's iteration domain in the same shape as a map's, or its condition when the loop is not a
+    counted one (a ``while`` has no start/end to show). Only the condition goes through
+    :func:`resolve_scalars` -- a domain is not an expression."""
     start = loop_analysis.get_init_assignment(loop)
     end = loop_analysis.get_loop_end(loop)
     stride = loop_analysis.get_loop_stride(loop)
     if loop.loop_variable and start is not None and end is not None:
         return f"{loop.loop_variable}={render_range((start, end, stride if stride is not None else 1))}"
-    return loop.loop_condition.as_string if loop.loop_condition is not None else ""
+    return resolve_scalars(loop.loop_condition.as_string, defs) if loop.loop_condition is not None else ""
 
 
 def render_range(rng) -> str:
@@ -78,7 +149,7 @@ def describe_graph(sdfg: dace.SDFG, handle: Optional[Handle] = None) -> str:
     """The SDFG as an ASCII tree for the agent. Each line is one block or kernel; the guides show
     nesting. ``handle(kind, obj)``, when given, returns the session id to stamp on that line."""
     lines: List[str] = [f"SDFG '{sdfg.label}'"]
-    walk_regions(sdfg, "", lines, handle)
+    walk_regions(sdfg, "", lines, handle, interstate_definitions(sdfg))
     return "\n".join(lines)
 
 
@@ -87,31 +158,32 @@ def stamp(text: str, handle: Optional[Handle], kind: str, obj: object) -> str:
     return f"[{handle(kind, obj)}] {text}" if handle is not None else text
 
 
-def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle]) -> None:
+def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle], defs: Dict[str, str]) -> None:
     """Render one CFG's blocks under ``prefix``, recursing. ``prefix`` carries the guides of every
     ancestor, so a child knows whether to draw a pipe or a blank beneath each of them."""
     blocks = in_order(cfg)
     for index, block in enumerate(blocks):
         last = index == len(blocks) - 1
-        lines.append(prefix + (ELBOW if last else TEE) + stamp(block_line(block), handle, "region", block))
+        lines.append(prefix + (ELBOW if last else TEE) + stamp(block_line(block, defs), handle, "region", block))
         below = prefix + (BLANK if last else PIPE)
         if isinstance(block, SDFGState):
             walk_state(block, below, lines, handle)
         elif isinstance(block, ConditionalBlock):
-            walk_branches(block, below, lines, handle)
+            walk_branches(block, below, lines, handle, defs)
         elif isinstance(block, ControlFlowRegion):
-            walk_regions(block, below, lines, handle)
+            walk_regions(block, below, lines, handle, defs)
 
 
-def walk_branches(block: ConditionalBlock, prefix: str, lines: List[str], handle: Optional[Handle]) -> None:
+def walk_branches(block: ConditionalBlock, prefix: str, lines: List[str], handle: Optional[Handle],
+                  defs: Dict[str, str]) -> None:
     """A conditional's branches. They are held in ``branches``, not as graph nodes, and the FIRST
     matching one wins -- so they are rendered in stored order, which is execution order."""
     for index, (condition, branch) in enumerate(block.branches):
         last = index == len(block.branches) - 1
-        tag = "else" if condition is None else f"when {condition.as_string}"
+        tag = "else" if condition is None else f"when {resolve_scalars(condition.as_string, defs)}"
         body = stamp(f"{branch.label}  {tag}", handle, "region", branch)
         lines.append(prefix + (ELBOW if last else TEE) + body)
-        walk_regions(branch, prefix + (BLANK if last else PIPE), lines, handle)
+        walk_regions(branch, prefix + (BLANK if last else PIPE), lines, handle, defs)
 
 
 def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional[Handle]) -> None:
@@ -134,17 +206,13 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
     descend(None, prefix)
 
 
-def block_line(block) -> str:
-    """One control-flow block's line: its canonical label, then whatever the agent needs to act on it."""
+def block_line(block, defs: Dict[str, str]) -> str:
+    """One control-flow block's line: its canonical label, plus the domain or condition that says what
+    it does. Nothing else -- a fact that holds for every block of a kind belongs in the skills, not on
+    every row."""
     if isinstance(block, LoopRegion):
-        domain = loop_domain(block)
+        domain = loop_domain(block, defs)
         return f"{block.label}  {domain}" if domain else block.label
-    if isinstance(block, SDFGState):
-        return f"{block.label}  [merge to fuse across]"
-    if isinstance(block, ConditionalBlock):
-        return f"{block.label}  [selector stays in core SDFG]"
-    if isinstance(block, (BreakBlock, ContinueBlock, ReturnBlock)):
-        return block.label
     return block.label
 
 
