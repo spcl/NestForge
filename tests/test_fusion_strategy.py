@@ -9,6 +9,7 @@ import dace
 from dace.sdfg import nodes
 from dace.transformation.interstate.state_fusion import StateFusion
 
+from nestforge import fusion
 from nestforge.fusion import (enumerate_fusions, fusion_strategy_names, get_fusion_strategy, maximal_fusion,
                               register_fusion_strategy)
 
@@ -35,7 +36,10 @@ def test_get_unknown_strategy_raises():
         get_fusion_strategy("no-such-strategy")
 
 
-def test_register_roundtrip():
+def test_register_roundtrip(monkeypatch):
+    # Register into a COPY of the registry: it is process-global, so a leaked entry would show up in
+    # every later test that lists the strategies (tests/test_phase_api_contract.py does).
+    monkeypatch.setattr(fusion, "_REGISTRY", dict(fusion._REGISTRY))
     marker = lambda sdfg: 0
     register_fusion_strategy("test-noop-strategy", marker)
     assert get_fusion_strategy("test-noop-strategy") is marker

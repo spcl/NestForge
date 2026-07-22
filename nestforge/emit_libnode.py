@@ -1,10 +1,9 @@
 """Emit numpy operations for DaCe library nodes (BLAS / LinAlg / reductions / FFT).
 
-Re-emitting a library node as the equivalent numpy op (``A @ B``, ``np.add.reduce`` ...) keeps the
-reference dense so OptArena's translators recover an idiomatic kernel; only a nest with *no* library
-node falls back to explicit ``for`` loops (see :mod:`nestforge.emit_numpy`). Operand resolution
-(memlet -> ``name`` or ``name[slice]``) lives here so the registry stays a flat
-class-name -> statement-builder table.
+Re-emitting a library node as the equivalent numpy op keeps the reference dense so OptArena's
+translators recover an idiomatic kernel; only a nest with *no* library node falls back to explicit
+``for`` loops (see :mod:`nestforge.emit_numpy`). Operand resolution lives here so the registry stays a
+flat class-name -> statement-builder table.
 """
 from __future__ import annotations
 
@@ -65,10 +64,8 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
 def scalar_elem(name: str, desc) -> str:
     """Index the SOLE element of a size-1 buffer, one index per dimension.
 
-    ``is_scalar`` is rank-agnostic (``total_size == 1``), so a rank>=2 size-1 buffer -- a keepdims full
-    reduction's ``(1, 1)`` output, or a ``(1, 1)`` scalar-value operand -- also lands here. ``name[0]``
-    would select a shape-``(1,)`` SUB-ARRAY rather than the element, silently feeding a 1-D array where a
-    scalar is meant. ``name[0, 0]`` is the element.
+    ``is_scalar`` is rank-agnostic, so a rank>=2 size-1 buffer lands here too; ``name[0]`` would select a
+    shape-``(1,)`` SUB-ARRAY, silently feeding a 1-D array where a scalar is meant.
     """
     rank = len(desc.shape)
     if rank <= 1:
@@ -87,10 +84,8 @@ def read_expr(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], 
         return name
     desc = sdfg.arrays[name]
     if is_scalar(desc):
-        # A size-1 buffer (non-transient) is a scalar value: read its sole element, mirroring write_lhs.
-        # Reading the bare name yields the whole (1,) array, so ``s[0] = out`` assigns a length-1 array
-        # into a scalar slot -- a NumPy 2 "setting an array element with a sequence" error (and the C
-        # translator would see a double* where a double is meant).
+        # non-transient size-1 buffer: read its element, mirroring write_lhs. The bare name is the whole
+        # (1,) array, so ``s[0] = out`` is a NumPy 2 "array element with a sequence" error.
         return scalar_elem(name, desc)
     if subset is None or covers_whole(subset, desc):
         return name
@@ -105,13 +100,34 @@ def write_lhs(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], 
         return name
     desc = sdfg.arrays[name]
     if is_scalar(desc):
-        # A size-1 buffer (non-transient, so not a plain local): write its sole element. ``name[:] =
-        # scalar`` is valid numpy but the C translator mis-lowers it to ``name = scalar`` (double ->
-        # double*); indexing the element matches how it is read back and translates correctly.
+        # non-transient size-1 buffer: write its element. ``name[:] = scalar`` is valid numpy but the C
+        # translator mis-lowers it to ``name = scalar`` (double -> double*).
         return scalar_elem(name, desc)
     if subset is None or covers_whole(subset, desc):
         return f"{name}[:]"
     return f"{name}[{index_str(subset, keep_singleton=keep_singleton)}]"
+
+
+def operand_rank(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> int:
+    """Rank of the operand AS RENDERED by :func:`read_expr` / :func:`write_lhs` for a library node.
+
+    Not the buffer's rank. The emitted call operates on what the expression denotes, and the three
+    renderings have three different ranks: a scalar-local or size-1 buffer collapses to a 0-d element,
+    a whole-array reference keeps the descriptor's rank, and a slice keeps one axis per subset range
+    (library-node operands render with ``keep_singleton=True``, so a length-1 axis SURVIVES as
+    ``k:k+1``).
+
+    Comparing descriptor ranks instead is what made :func:`emit_reduce` mis-decide ``keepdims``: it
+    asked about the buffers when the call sees the slices.
+    """
+    if scalar_local(sdfg, name):
+        return 0
+    desc = sdfg.arrays[name]
+    if is_scalar(desc):
+        return 0
+    if subset is None or covers_whole(subset, desc):
+        return len(desc.shape)
+    return len(subset.ranges)
 
 
 def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
@@ -127,10 +143,9 @@ def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
 
 
 def data_edge(edges: list, node: nodes.Node, kind: str):
-    """The first edge that actually carries DATA. An empty memlet (``data is None``) is a happens-before /
-    ordering edge -- DaCe's StateFusion adds them to sequence nodes without merging -- not an operand. Taking
-    ``edges[0]`` blindly picks such an edge whenever it sorts first, and then ``sdfg.arrays[None]`` raises a
-    bare KeyError mid-emission. Every connector-less (``conn is None``) operand lookup goes through here."""
+    """The first edge that actually carries DATA. An empty memlet is a happens-before/ordering edge (added
+    by StateFusion), not an operand; taking ``edges[0]`` blindly hits ``sdfg.arrays[None]`` whenever such
+    an edge sorts first. Every connector-less operand lookup goes through here."""
     for e in edges:
         if not e.data.is_empty():
             return e
@@ -148,9 +163,8 @@ def out_lhs(state: dace.SDFGState, node: nodes.Node, conn: Optional[str], sdfg: 
     edges = list(state.out_edges(node))
     edge = data_edge(edges, node, "output") if conn is None else next(e for e in edges if e.src_conn == conn)
     if edge.data.wcr is not None:
-        # No library-node emitter applies an output-edge WCR: every one writes via write_lhs (a plain
-        # ``name[..] = rhs``), so a reduction accumulating the node's result into an existing buffer would
-        # silently become an overwrite. Refuse it so the ExternalCall falls back to the DaCe variant.
+        # No library-node emitter applies an output-edge WCR (all write via write_lhs), so an accumulate
+        # would silently become an overwrite. Refuse -> the ExternalCall falls back to the DaCe variant.
         raise UnsupportedLibraryNode(
             f"{type(node).__name__} output into {edge.data.data} carries a reduction (WCR) that no library-node "
             "emitter applies; not emittable as numpy -- fall back to the DaCe variant")
@@ -240,9 +254,8 @@ def emit_axpy(node, state, sdfg) -> str:
 
 def emit_batched_matmul(node, state, sdfg) -> str:
     """Batched ``A @ B`` (numpy ``@`` contracts the trailing two dims, broadcasting the batch); connectors
-    ``_a``/``_b`` -> ``_c``, with ``transA``/``transB`` swapping the last two axes. The pure DaCe expansion
-    ignores ``beta`` and there is no ``_c`` input connector to accumulate into, so a non-zero ``beta`` is
-    refused rather than silently dropped."""
+    ``_a``/``_b`` -> ``_c``, with ``transA``/``transB`` swapping the last two axes. A non-zero ``beta`` is
+    refused: there is no ``_c`` input connector to accumulate into."""
     if not is_zero(node.beta):
         raise UnsupportedLibraryNode(f"BatchedMatMul with beta={node.beta} has no _c input to accumulate")
     a = in_expr(state, node, "_a", sdfg)
@@ -255,10 +268,9 @@ def emit_batched_matmul(node, state, sdfg) -> str:
 
 
 def emit_einsum(node, state, sdfg) -> str:
-    """``np.einsum(einsum_str, *operands)`` -- operands ordered by connector name (the specialize
-    expansion contracts ``*sorted(inputs)``, and ``LiftEinsum`` builds ``einsum_str`` from the same
-    sorted order, so operand ``i`` of the string is the ``i``-th sorted connector). ``alpha``/``beta`` are
-    the node properties multiplied by any ``_alpha``/``_beta`` runtime-scalar connectors (they compose)."""
+    """``np.einsum(einsum_str, *operands)`` -- operands ordered by connector name, since both the
+    specialize expansion and ``LiftEinsum``'s ``einsum_str`` use that same sorted order.
+    ``alpha``/``beta`` compose the node properties with any runtime-scalar connectors."""
     coeff = {"_alpha": str(node.alpha), "_beta": str(node.beta)}
     operands = []
     for e in state.in_edges(node):
@@ -361,14 +373,10 @@ def emit_scatter_conflict_check(node, state, sdfg) -> List[str]:
     """Count duplicate values in a 1-D integer index array (scatter no-conflict proof); connector
     ``_idx_in`` -> ``_count_out`` (a host int64 scalar, ``0`` iff the index is a permutation).
 
-    Emits the **TAGCOUNT** form -- last-writer-wins ownership then a mismatch count -- rather than the
-    libnode's sort + adjacent-equal scan; both yield ``count = N - #distinct``. The owner buffer is
-    runtime-sized (``max(idx) + 1``) and initialised to ``-1`` so a zero index value cannot be mistaken
-    for an already-claimed owner slot. Temp names are suffixed by the output array so two
-    ScatterConflictCheck nodes in one state don't share the owner / accumulator locals. The internal max
-    / count stay plain scalars; the size-1 ``_count_out`` buffer is written through :func:`out_lhs` like
-    the other scalar outputs. The index is non-empty by construction (a ScatterConflictCheck exists only
-    to guard a real scatter), so ``np.max`` always has an element."""
+    Emits the TAGCOUNT form (last-writer-wins ownership, then a mismatch count) rather than the libnode's
+    sort + adjacent-equal scan; both yield ``count = N - #distinct``. The owner buffer is initialised to
+    ``-1`` so index value 0 is not mistaken for a claimed slot, and temp names are suffixed by the output
+    array so two nodes in one state do not share locals."""
     idx = in_expr(state, node, "_idx_in", sdfg)
     count = out_lhs(state, node, "_count_out", sdfg)
     tag = next(e for e in state.out_edges(node) if e.src_conn == "_count_out").data.data
@@ -397,9 +405,8 @@ def has_in_conn(state: dace.SDFGState, node: nodes.Node, conn: str) -> bool:
 
 
 def reject_runtime_scalars(node, state: dace.SDFGState) -> None:
-    """Refuse a BLAS node with a wired runtime ``_alpha`` / ``_beta`` scalar connector: the emitters
-    below fold only the compile-time ``alpha``/``beta`` properties, so a runtime coefficient would be
-    silently dropped. Uncommon (kernels almost always bake the scalars); refuse rather than mis-scale."""
+    """Refuse a BLAS node with a wired runtime ``_alpha``/``_beta`` scalar connector: the emitters fold
+    only the compile-time properties, so a runtime coefficient would be silently dropped."""
     if has_in_conn(state, node, "_alpha") or has_in_conn(state, node, "_beta"):
         raise UnsupportedLibraryNode(f"{type(node).__name__} has a runtime _alpha/_beta scalar connector; "
                                      "only compile-time alpha/beta are emitted -- fall back to the DaCe variant")
@@ -518,10 +525,15 @@ def emit_reduce(node, state, sdfg) -> str:
     inp = in_expr(state, node, None, sdfg)
     axis = None if node.axes is None else tuple(node.axes)
     # keepdims when the output keeps the reduced axis as a size-1 dimension (a numpy ``keepdims=True``
-    # reduction, e.g. softmax's ``np.max(x, axis=-1, keepdims=True)``); detected by equal rank.
-    in_desc = sdfg.arrays[data_edge(list(state.in_edges(node)), node, "input").data.data]
-    out_desc = sdfg.arrays[data_edge(list(state.out_edges(node)), node, "output").data.data]
-    keepdims = axis is not None and len(out_desc.shape) == len(in_desc.shape)
+    # reduction, e.g. softmax's ``np.max(x, axis=-1, keepdims=True)``): the rendered output has the same
+    # rank as the rendered input. Judged on the OPERANDS the call sees (:func:`operand_rank`), not on the
+    # buffers behind them -- a whole-array read and a sliced write can share a descriptor rank while the
+    # emitted expressions differ by one, and then keepdims produces a shape the target cannot hold.
+    in_memlet = data_edge(list(state.in_edges(node)), node, "input").data
+    out_memlet = data_edge(list(state.out_edges(node)), node, "output").data
+    in_rank = operand_rank(sdfg, in_memlet.data, in_memlet.subset)
+    out_rank = operand_rank(sdfg, out_memlet.data, out_memlet.subset)
+    keepdims = axis is not None and out_rank == in_rank
     kd = ", keepdims=True" if keepdims else ""
     return f"{out_lhs(state, node, None, sdfg)} = {func}.reduce({inp}, axis={axis}{kd})"
 
@@ -555,11 +567,9 @@ LIBNODE_EMITTERS: Dict[str, Callable] = {
     "ScatterConflictCheck": emit_scatter_conflict_check,
 }
 
-#: Library nodes DELIBERATELY not emitted as numpy, each with the reason. Distinct from an *unregistered*
-#: node (a genuine gap): these have no faithful single-process numpy form (sparse formats / FPGA streams /
-#: arbitrary stencil code / LAPACK primitives that output pivots or packed in-place factors). The whole-
-#: program lane must SPLIT AROUND one of these -- isolate it in its own state and externalize the
-#: pure-compute states before/after -- rather than abandon the program (see the MPI policy below).
+#: Library nodes DELIBERATELY not emitted as numpy, each with the reason -- distinct from an
+#: *unregistered* node (a genuine gap). The whole-program lane must SPLIT AROUND one of these rather than
+#: abandon the program (see the MPI policy below).
 REFUSED_LIBRARY_NODES: Dict[str, str] = {
     "CSRMM": "sparse CSR matrix-matrix product; not emitted as dense numpy",
     "CSRMV": "sparse CSR matrix-vector product; not emitted as dense numpy",
@@ -570,26 +580,21 @@ REFUSED_LIBRARY_NODES: Dict[str, str] = {
     "Getrs": "LAPACK solve-from-LU consumes packed LU + pivots; no pure-numpy form",
 }
 
-#: DaCe library subpackages whose nodes are DISTRIBUTED communication (MPI point-to-point / collectives /
-#: redistribution / parallel BLAS). None has a single-process numpy equivalent, and the offload policy is
-#: the same for all: never offload the comm node itself -- place it in its own state and offload only the
-#: pure-compute states before and after it. Matched by module so a name collision (an MPI ``Gather`` vs a
-#: layout ``Gather``) cannot mis-route.
+#: DaCe library subpackages whose nodes are DISTRIBUTED communication. None has a single-process numpy
+#: equivalent; the policy is the same for all -- never offload the comm node, isolate it and offload the
+#: pure-compute states around it. Matched by MODULE so a name collision cannot mis-route.
 _COMM_MODULE_PREFIXES = ("dace.libraries.mpi", "dace.libraries.pblas")
 
 
 def is_comm_node(node: nodes.LibraryNode) -> bool:
-    """True if ``node`` is a distributed-communication library node (dace.libraries.mpi / pblas). Matched by
-    MODULE, not class name, so an MPI ``Reduce`` / ``Gather`` (which collide by name with the registered
-    standard ``Reduce`` and a layout ``Gather``) is correctly identified rather than mis-routed."""
+    """True if ``node`` is a distributed-communication library node (dace.libraries.mpi / pblas). Matched
+    by MODULE, not class name: an MPI ``Reduce``/``Gather`` collides by name with a registered one."""
     return type(node).__module__.startswith(_COMM_MODULE_PREFIXES)
 
 
 def is_emittable_library_node(node: nodes.LibraryNode) -> bool:
-    """True iff :func:`emit_library_node` will actually emit ``node`` -- it is not a communication node, not
-    an explicitly refused class, and has a registered emitter. The single source of truth for "supported",
-    used by both the emitter and the split-around-unsupported pass so a name collision cannot make one
-    treat a node as supported while the other refuses it."""
+    """True iff :func:`emit_library_node` will actually emit ``node``. The single source of truth for
+    "supported", shared with the split-around-unsupported pass so the two cannot disagree."""
     if is_comm_node(node):
         return False
     if type(node).__name__ in REFUSED_LIBRARY_NODES:
@@ -599,12 +604,10 @@ def is_emittable_library_node(node: nodes.LibraryNode) -> bool:
 
 def emit_library_node(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
     """Numpy statement(s) for a library node, or raise if it is a communication node / deliberately
-    unsupported / unregistered. A single-statement emitter returns a ``str`` (wrapped here); a multi-output
-    node (``ArgReduce``, ``Potrf``) returns a list of statements.
+    unsupported / unregistered. A single-statement emitter returns a ``str`` (wrapped here).
 
-    Communication and refusal are checked BEFORE the name registry: an MPI ``Reduce`` shares its class name
-    with the registered standard ``Reduce``, so a name-first lookup would mis-route it to the wrong
-    emitter."""
+    Communication and refusal are checked BEFORE the name registry: an MPI ``Reduce`` shares its class
+    name with the registered standard ``Reduce``, so a name-first lookup would mis-route it."""
     cls = type(node).__name__
     if is_comm_node(node):
         raise UnsupportedLibraryNode(f"{cls} is a distributed communication node (dace.libraries.mpi/pblas); "

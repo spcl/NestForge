@@ -9,8 +9,10 @@ Each test fails without its fix:
 """
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 import sympy
+
 import dace
 from dace import symbolic
 
@@ -180,3 +182,225 @@ def test_multidim_subscript_survives_the_userfunc_fixpoint():
     assert out.count("(") == out.count(")"), out
     assert "Max" not in out and "Min" not in out, out
     assert out == "d[max(aa[i, j], 2)] = b[int_ceil(min(c[k, l], 4), 4)]", out
+
+
+# --- data-dependent scratch extents (the spmv CSR span) -----------------------------------------------
+M_SYM = dace.symbol("M")
+NNZ_SYM = dace.symbol("NNZ")
+
+
+@dace.program
+def spmv_row_scratch(A_indptr: dace.int64[M_SYM + 1], A_vals: dace.float64[NNZ_SYM], x: dace.float64[M_SYM],
+                     y: dace.float64[M_SYM]):
+    """A CSR row loop: the row scratch is sized by a span READ OUT OF the index array."""
+    for i in range(M_SYM):
+        start = A_indptr[i]
+        stop = A_indptr[i + 1]
+        row = np.empty(stop - start, dace.float64)
+        for k in range(stop - start):
+            row[k] = A_vals[start + k] * x[k]
+        y[i] = np.sum(row)
+
+
+@pytest.mark.parametrize(
+    "expr, want",
+    [
+        ("A_indptr[M + 1] - A_indptr[0]", False),  # the spmv span: residual symbols are kernel symbols
+        ("A_indptr[i]", False),
+        ("A_vals", False),  # a bare array NAME used as a value
+        ("M*N", True),
+        ("3", True),
+        ("int_floor(N, 4)", True),  # a math head is not a data read
+        ("Min(M, N)", True),  # Min/Max are not Function atoms at all
+        ("i + 1", False),  # sizable for the other reason: not a kernel symbol
+    ])
+def test_sizable_rejects_a_data_read_however_it_is_spelled(expr, want):
+    """``free_symbols`` is structurally blind to an indexed read: DaCe renders ``A_indptr[i]`` as
+    ``Subscript(A_indptr, i)``, so the ARRAY NAME is the Function head and never appears among the free
+    symbols. The predicate must walk the tree."""
+    from nestforge.emit_numpy import sizable
+    arrays = {"A_indptr": None, "A_vals": None}
+    assert sizable(symbolic.pystr_to_symbolic(expr), {"M", "N"}, arrays) is want
+
+
+def test_data_dependent_scratch_extent_is_refused_not_emitted():
+    """spmv used to EMIT, sizing ``row`` by ``A_indptr[M+1] - A_indptr[0]``.
+
+    ``pystr_to_symbolic("A_indptr[i]")`` succeeds, so ``symbol_ranges`` folded the interstate assignment
+    as a size bound and ``maxsize_loop_scratch`` widened the buffer to that CSR span. The old
+    ``free_symbols - known`` check then accepted it -- the residual was ``{M} - {M} = set()`` -- and the
+    caller was handed a signature whose buffer size only the data knows. Refuse, with a reason.
+    """
+    from nestforge.emit_numpy import UnsupportedNest, sdfg_to_numpy
+    sdfg = spmv_row_scratch.to_sdfg(simplify=True)
+    assert "row" in sdfg.arrays and sdfg.arrays["row"].transient, "fixture no longer has the scratch buffer"
+    with pytest.raises(UnsupportedNest, match="row"):
+        sdfg_to_numpy(sdfg, "spmv")
+
+
+def test_a_data_read_never_becomes_a_size_bound():
+    """The narrow half: ``symbol_ranges`` must not ingest an interstate assignment that reads array data,
+    or every shape it reaches widens to an extent the caller cannot evaluate."""
+    from nestforge.emit_numpy import maxsize_loop_scratch, reads_array_data
+    sdfg = spmv_row_scratch.to_sdfg(simplify=True)
+    widened = maxsize_loop_scratch(sdfg, ["M", "NNZ"])
+    for dim in widened.arrays["row"].shape:
+        assert not reads_array_data(sympy.sympify(dim), widened.arrays), f"widened to a data read: {dim}"
+
+
+# --- copy DIRECTION (the in-place-copy inversion) ------------------------------------------------------
+@dace.program
+def shift_through_a_view(A: dace.float64[M_SYM]):
+    """A slice-to-slice copy of ONE array: DaCe stages it through a view, so the copy edges are the
+    shape `copy_direction` resolves."""
+    A[1:M_SYM] = A[0:M_SYM - 1]
+
+
+@dace.program
+def elementwise_from_a_row(A: dace.float64[M_SYM, M_SYM]):
+    for i in range(M_SYM):
+        A[i, 0] = A[i, M_SYM - 1]
+
+
+@pytest.mark.parametrize("prog", [shift_through_a_view, elementwise_from_a_row], ids=["slice_copy", "element_copy"])
+def test_copy_direction_agrees_with_dace_on_every_real_copy_edge(prog):
+    """The emitter's direction must equal DaCe's OWN resolution on every access-node copy.
+
+    Order was the bug: the destination was tested first, so on a copy whose two endpoints name the same
+    array -- where both tests match -- ``subset`` was read as the destination. DaCe reads it as the
+    source (``Memlet.try_initialize`` prefers ``is_data_src=True`` for that case), so the emitted
+    assignment ran backwards. Every other copy has two distinct names and only one test can match, which
+    is why nothing else caught it.
+
+    Checked against DaCe rather than against a hand-built expectation, so the two cannot drift apart.
+    """
+    from dace.sdfg import nodes as dnodes
+    from nestforge.emit_numpy import copy_direction
+
+    sdfg = prog.to_sdfg(simplify=True)
+    checked = 0
+    for state in sdfg.states():
+        for edge in state.edges():
+            if not (isinstance(edge.src, dnodes.AccessNode) and isinstance(edge.dst, dnodes.AccessNode)):
+                continue
+            if edge.data.is_empty():
+                continue
+            src_name, src_sub, dst_sub = copy_direction(edge)
+            assert src_name == edge.src.data
+            assert src_sub == edge.data.get_src_subset(edge, state), f"src subset disagrees on {edge}"
+            assert dst_sub == edge.data.get_dst_subset(edge, state), f"dst subset disagrees on {edge}"
+            checked += 1
+    assert checked, "fixture produced no access-node copy edge -- it no longer covers copy_direction"
+
+
+def test_copy_direction_reads_subset_as_the_source_when_both_ends_are_one_array():
+    """The in-place case pinned directly, since the frontend stages most copies through a view.
+
+    ``copy_direction`` must return ``memlet.subset`` as the SOURCE range here. Getting it backwards
+    turns ``A[i] = A[j]`` into ``A[j] = A[i]`` -- a wrong answer with no error.
+    """
+    from nestforge.emit_numpy import copy_direction
+
+    sdfg = dace.SDFG("inplace_copy")
+    sdfg.add_array("A", [M_SYM], dace.float64)
+    state = sdfg.add_state()
+    read, write = state.add_read("A"), state.add_write("A")
+    memlet = dace.Memlet(data="A", subset="1:M", other_subset="0:M - 1")
+    state.add_edge(read, None, write, None, memlet)
+
+    src_name, src_sub, dst_sub = copy_direction(state.edges()[0])
+    assert src_name == "A"
+    assert str(src_sub) == "1:M", "memlet.subset indexes memlet.data, which DaCe resolves as the source"
+    assert str(dst_sub) == "0:M - 1"
+
+
+def test_two_kernels_of_equal_length_do_not_share_bytecode():
+    """``load_emitted`` used to name the file by a COUNTER, so two different kernels could land on one
+    path. CPython invalidates ``__pycache__`` on (mtime, size) only, so a same-second rewrite of equal
+    byte length serves the FIRST kernel's bytecode -- the caller then validates and times a kernel it
+    did not emit, silently. Forking made it worse: every child of one process inherited the same next
+    counter value, so `run_isolated` handed every emitted kernel the same file name.
+
+    Two sources of identical length, same name, back to back: each module must be its own kernel.
+    """
+    first = "def k():\n    return 'AAAA'\n"
+    second = "def k():\n    return 'BBBB'\n"
+    assert len(first) == len(second), "the fixture only reproduces the bug at equal byte length"
+    from nestforge.emit_numpy import load_emitted
+    assert load_emitted(first, "k").k() == "AAAA"
+    assert load_emitted(second, "k").k() == "BBBB"
+
+
+@pytest.mark.parametrize("end, step, want_stop", [
+    ("N - 1", "1", "N"),
+    ("N - 1", "-1", "N - 2"),
+    ("0", "-1", "-1"),
+    ("0", "2", "1"),
+])
+def test_range_stop_follows_the_step_sign(end, step, want_stop):
+    """A DaCe range end is INCLUSIVE, so python's exclusive stop is one past the last element IN THE
+    DIRECTION OF TRAVEL. The emitter added 1 unconditionally, so a descending map lost its final
+    iteration: ``range(N-1, 0, -1)`` for a DaCe range ending at 0 never yields 0."""
+    from nestforge.emit_numpy import range_stop
+    got = range_stop(symbolic.pystr_to_symbolic(end), symbolic.pystr_to_symbolic(step), "map parameter 'i'")
+    assert sympy.simplify(got - symbolic.pystr_to_symbolic(want_stop)) == 0, f"{got} != {want_stop}"
+
+
+def test_a_descending_range_covers_its_last_element():
+    """The behaviour the sign fix buys, checked by ENUMERATING rather than by re-deriving the formula."""
+    from nestforge.emit_numpy import range_stop
+    stop = int(range_stop(symbolic.pystr_to_symbolic("0"), symbolic.pystr_to_symbolic("-1"), "x"))
+    assert list(range(7, stop, -1)) == [7, 6, 5, 4, 3, 2, 1, 0], "element 0 must not be dropped"
+
+
+def test_range_stop_refuses_a_step_of_unknown_sign():
+    """No sound stop exists without a direction; guessing one silently drops or over-runs elements."""
+    from nestforge.emit_numpy import UnsupportedNest, range_stop
+    with pytest.raises(UnsupportedNest, match="undecidable sign"):
+        range_stop(symbolic.pystr_to_symbolic("N"), symbolic.pystr_to_symbolic("s"), "map parameter 'i'")
+
+
+# --- nested-SDFG binding + conditional branch order ---------------------------------------------------
+def test_symbol_mapping_binds_simultaneously_when_the_bindings_interfere():
+    """``symbol_mapping`` is a substitution applied all at once. Emitted as ordered assignments, a swap
+    ``{i: j, j: i}`` runs ``i = j`` then ``j = i`` and both end up holding the old ``j``."""
+    from nestforge.emit_numpy import symbol_mapping_lines
+    namespace = {"i": 1, "j": 2}
+    for line in symbol_mapping_lines({"i": "j", "j": "i"}, 7):
+        exec(line, {}, namespace)
+    assert (namespace["i"], namespace["j"]) == (2, 1)
+
+
+def test_symbol_mapping_stays_plain_when_nothing_interferes():
+    """Temps only where they are needed -- the plain form is what the reader and the C translator see."""
+    from nestforge.emit_numpy import symbol_mapping_lines
+    assert symbol_mapping_lines({"a": "N", "b": "M + 1"}, 3) == ["a = N", "b = M + 1"]
+    assert symbol_mapping_lines({"i": "i"}, 3) == [], "an identity binding emits nothing"
+
+
+def test_a_non_final_unconditional_branch_is_refused():
+    """DaCe takes the FIRST branch whose condition holds, and an unconditional branch always holds --
+    so a branch stored after one is unreachable. DaCe does not merely tolerate that shape, its codegen
+    REFUSES it (``Missing branch condition for non-final conditional branch``), so the emitter refuses
+    it too rather than inventing an order.
+
+    The old behaviour hoisted every unconditional branch to a trailing ``else``, which made the
+    unreachable branch live and turned two unconditional branches into two ``else:`` clauses.
+    """
+    from dace.properties import CodeBlock
+    from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
+    from nestforge.emit_numpy import UnsupportedNest, emit_conditional
+
+    sdfg = dace.SDFG("branch_order")
+    sdfg.add_array("out", [2], dace.float64)
+    block = ConditionalBlock("cond", sdfg=sdfg)
+    sdfg.add_node(block, is_start_block=True)
+    for label, condition in (("first", "N > 0"), ("always", None), ("dead", "N < 0")):
+        body = ControlFlowRegion(label, sdfg=sdfg)
+        state = body.add_state(f"{label}_state", is_start_block=True)
+        tasklet = state.add_tasklet(label, {}, {"o"}, "o = 1.0")
+        state.add_edge(tasklet, "o", state.add_write("out"), None, dace.Memlet("out[0]"))
+        block.add_branch(None if condition is None else CodeBlock(condition), body)
+
+    with pytest.raises(UnsupportedNest, match="unconditional branch"):
+        emit_conditional(block, sdfg)

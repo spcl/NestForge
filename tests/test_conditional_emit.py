@@ -132,11 +132,26 @@ def test_branch_condition_is_normalized():
         np.testing.assert_array_equal(out, a + delta)
 
 
-def test_unconditional_branch_reordered_last():
-    """The unconditional (else) branch may be stored before a keyed branch; the emitter must still put
-    ``else`` last so the generated python is valid (`else:` before `if:` is a SyntaxError)."""
-    fn, src = emit(build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)]), "else_first")
-    assert src.index("if ") < src.index("else:")  # if emitted before else despite storage order
+def test_a_non_final_unconditional_branch_is_refused():
+    """An unconditional branch stored before a keyed one is REFUSED, because DaCe refuses it too.
+
+    This test used to assert the opposite -- that the emitter hoists the unconditional branch to a
+    trailing ``else`` -- and that was wrong. DaCe's own codegen raises ``Missing branch condition for
+    non-final conditional branch`` on this SDFG, so it never runs; the reordering therefore compared
+    the emitted kernel against semantics no DaCe build has. Worse, it made a keyed branch stored AFTER
+    the unconditional one live (DaCe takes the first matching branch, and an unconditional one always
+    matches), and two unconditional branches emitted two ``else:`` clauses -- a SyntaxError.
+    """
+    from nestforge.emit_numpy import UnsupportedNest
+    sdfg = build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)])
+    with pytest.raises(UnsupportedNest, match="unconditional branch"):
+        sdfg_to_numpy(sdfg, "else_first")
+
+
+def test_a_final_unconditional_branch_is_the_else():
+    """The legal shape: keyed branches first, the unconditional one last."""
+    fn, src = emit(build_switch("else_last", [("sel == 0", 10.0), (None, 20.0)]), "else_last")
+    assert src.index("if ") < src.index("else:")
     a = np.arange(4, dtype=np.float64)
     for sel, delta in ((0, 10.0), (5, 20.0)):
         out = np.zeros(4)

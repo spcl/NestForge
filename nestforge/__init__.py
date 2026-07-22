@@ -5,11 +5,8 @@ Two pieces of the optarena dependency are surfaced natively: :mod:`nestforge.tra
 corpus). Everything else is nest-forge's own.
 """
 
-# Pre-warm dace's ``passes`` package before any nest-forge submodule pulls ``dace.transformation.
-# interstate``: on the extended branch ``passes.canonicalize -> vectorization -> interstate`` forms an
-# import cycle that only resolves when ``passes`` starts loading first -- importing ``interstate`` first
-# dies on a partially initialized module (``cannot import name 'InlineMultistateSDFG'``). Fixing the
-# order here once covers every entry point (bare ``import nestforge.tsvc``, the perf drivers, tests).
+# Must precede any ``dace.transformation.interstate`` import: extended's
+# passes.canonicalize -> vectorization -> interstate cycle only resolves when ``passes`` loads first.
 import dace.transformation.passes  # noqa: F401
 
 from nestforge.corpus import CorpusKernel, dace_kernel_names, iter_dace_kernels
@@ -21,8 +18,11 @@ from nestforge.feedback import (AgenticOptimizer, FeedbackResult, Outcome, best_
                                 run_agent_loop, run_feedback_loop)
 from nestforge.offload import (DEFAULT_GRANULARITY, OffloadCandidate, OffloadGranularity, label_nest,
                                lower_nests_to_external_call, offload_candidates, strategy_names, whole_program_boundary)
+# `optimize` (the phase-3 commit function) is deliberately NOT re-exported: the name would bind over the
+# `nestforge.optimize` SUBMODULE, so `nestforge.optimize.optimization_choices` would raise AttributeError
+# on a function. Reach it as its three sibling phases are reached -- `from nestforge.optimize import optimize`.
 from nestforge.optimize import (DEFAULT_OPT_MODE, BuildOptions, DaceOptimizer, ExternalOptimizer, Optimizer, Proposal,
-                                OPT_MODES, optimization_choices, optimize)
+                                OPT_MODES, optimization_choices)
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
 from nestforge.translator import BenchSpec, translate
 
@@ -53,9 +53,8 @@ __all__ = [
     "strategy_names",
     "lower_nests_to_external_call",
     "whole_program_boundary",
-    # Phase 3: per-nest optimization
+    # Phase 3: per-nest optimization ("optimize" itself stays module-scoped -- see the import above)
     "DEFAULT_OPT_MODE",
-    "optimize",
     "optimization_choices",
     "Optimizer",
     "Proposal",

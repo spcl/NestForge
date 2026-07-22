@@ -148,6 +148,10 @@ def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[s
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     # find the NestedSDFG node in the state nest_sdfg_subgraph returned.
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
+    # nest_sdfg_subgraph takes no name (unlike nest_state_subgraph), so apply it here: two loop nests
+    # of one kernel would otherwise share DaCe's default label and collide in the build cache.
+    if name:
+        nsdfg_node.sdfg.name = name
     return boundary_from_nsdfg(nsdfg_node, inner_state, parent_sdfg)
 
 
