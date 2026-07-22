@@ -82,6 +82,24 @@ the program. Today it renders, but an agent cannot act on what it reads:
       reading it, and nothing tests the rendering today. Add a golden-tree test the way
       `tests/test_phase_api_contract.py` pins the skill surface.
 
+## BK. The kernel surface — body as a function, and a language the agent chose
+
+Design: `docs/kernel_surface/README.md`. A kernel is (iteration domain, body function); today the
+body is reachable only by string-slicing `for` headers off a re-emit, and anything compiled drags
+`dace::math::*` in through `build.include_flags`.
+
+- [ ] **BK1** Add `NormalizeWCR`, `NormalizeWCRSource`, `NestInnermostMapBodyIntoNSDFG` to
+      `normalize_for_tree`, so a kernel body is ONE `NestedSDFG` with a signature. Gate on a
+      corpus-wide check that every map body survives the third, and on the 3.5ms warm normalize not
+      becoming a second.
+- [ ] **BK2** -> BK1. Re-cut `introspect.kernel_body` against that body node; delete the
+      `lines[headers:]` / `line[4 * headers:]` string surgery.
+- [ ] **BK3** One math table -> `nf_math.{hpp,h,f90,py}` under `nestforge/runtime/`; replaces
+      `emit_numpy._MATH_INTRINSICS` rather than sitting beside it. Unknown op refused by name.
+      `build.include_flags` stops adding the dace include for an agent-authored kernel.
+- [ ] **BK4** -> BK2. `form="slice"` on `Session.kernel_body`, straight-line bodies only.
+- [ ] **BK5** -> BK2, BK3. `lang="c"|"cpp"|"fortran"` through numpyto, point form only.
+
 ## C. Scratchpad allocation pass
 
 Today the C-style contract makes EVERY non-scalar transient a caller-allocated parameter
