@@ -23,10 +23,13 @@ CF="clang-format"; command -v clang-format >/dev/null 2>&1 || CF="python -m clan
 $YAPF --version >/dev/null 2>&1 || { echo "yapf not available (pip install yapf)" >&2; exit 2; }
 $CF --version >/dev/null 2>&1 || { echo "clang-format not available (apt install clang-format / pip install clang-format)" >&2; exit 2; }
 
+# --others --exclude-standard adds files that are new but not gitignored. A bare `git ls-files` lists
+# only TRACKED ones, so a new file passed the gate locally and then failed it in CI on the commit that
+# added it -- which is exactly when the formatting is most likely to be wrong.
 # shellcheck disable=SC2207
-PY=($(git ls-files '*.py'))
+PY=($(git ls-files --cached --others --exclude-standard '*.py'))
 # shellcheck disable=SC2207
-CC=($(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.cu' '*.cuh' '*.h' '*.hpp' '*.hxx'))
+CC=($(git ls-files --cached --others --exclude-standard '*.c' '*.cc' '*.cpp' '*.cxx' '*.cu' '*.cuh' '*.h' '*.hpp' '*.hxx'))
 
 rc=0
 if [ "${#PY[@]}" -gt 0 ]; then

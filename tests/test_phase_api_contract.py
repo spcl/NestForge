@@ -42,8 +42,7 @@ def skill_imports(path: Path):
 
 def test_skills_exist_for_every_phase():
     names = {p.parent.name for p in SKILLS}
-    assert {f"phase{i}-{n}"
-            for i, n in enumerate(("fusion", "offload", "optimize", "feedback"), 1)} <= names
+    assert {f"phase{i}-{n}" for i, n in enumerate(("fusion", "offload", "optimize", "feedback"), 1)} <= names
     assert "agent-graph" in names, "the entry skill an agent reads first"
 
 
@@ -95,8 +94,8 @@ def test_skills_quote_the_real_strategy_names():
         text = (REPO / "skills" / skill_dir / "SKILL.md").read_text()
         shown = re.search(pattern, text)
         assert shown, f"{skill_dir} no longer shows the registry contents"
-        assert ast.literal_eval(shown.group(1)) == list(actual), (
-            f"{skill_dir} shows {shown.group(1)}, registry holds {list(actual)}")
+        assert ast.literal_eval(
+            shown.group(1)) == list(actual), (f"{skill_dir} shows {shown.group(1)}, registry holds {list(actual)}")
 
 
 @pytest.mark.parametrize("skill", PHASE_SKILLS, ids=lambda p: p.parent.name)
