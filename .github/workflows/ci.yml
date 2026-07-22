@@ -1,17 +1,9 @@
 name: CI
 
-# One CPU runner: a format gate, then the toolchain via the repo's
-# own scripts/setup_apt.sh (so CI dogfoods it), then DaCe (branch extended) + OptArena installed editable
-# from GitHub over HTTPS, then pytest. nvc++/icpx/oneAPI are absent on the runner, so the vendor-compiler
-# + heavy-launcher tests are @pytest.mark.integration and excluded; g++/clang++ + libomp cover the
-# cross-compiler OpenMP matrix.
-#
-# spcl/OptArena and spcl/dace are both PUBLIC, so the HTTPS installs in Phase 2 need no key and no token.
-# This workflow must stay credential-free: the moment fetching a dep here needs a secret, CI stops running
-# on fork PRs (secrets are not exposed to them), which is how it ended up dispatch-only before.
-#
-# The pytest phase runs the UNIT set (-m "not integration") and enforces ZERO skips via
-# NESTFORGE_CI_NO_SKIP (repo-root conftest.py fails the session if any remaining test skips).
+# One CPU runner: format gate -> toolchain via scripts/setup_apt.sh -> DaCe(extended)+OptArena editable
+# from GitHub -> pytest. nvc++/icpx are absent here, so vendor-compiler + heavy-launcher tests are
+# @pytest.mark.integration and excluded; g++/clang++ + libomp cover the OpenMP matrix.
+# Must stay credential-free: a dep needing a secret stops CI running on fork PRs.
 on:
   push:
     branches: [main]
@@ -36,11 +28,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Phase 0 -- format gate BEFORE the heavy setup, so a style slip fails in seconds. yapf +
-      # clang-format ship as pip wheels (the clang-format wheel bundles the binary). yapf is PINNED to
-      # the same version as pyproject's [dev] extra: its wrapping heuristics change between releases,
-      # so an unpinned gate rejects a tree formatted with the pinned one (test_driver_contracts.py
-      # keeps the two in sync).
+      # Format gate runs first so a style slip fails in seconds. yapf is PINNED to pyproject's [dev]
+      # version -- its wrapping heuristics change between releases, so an unpinned gate rejects a tree
+      # formatted with the pinned one (test_driver_contracts.py keeps the two in sync).
       - name: Phase 0 -- format (yapf 120 + clang-format 160)
         run: |
           python -m pip install --upgrade pip
@@ -51,12 +41,8 @@ jobs:
       - name: Phase 1 -- system toolchain (scripts/setup_apt.sh)
         run: sudo bash scripts/setup_apt.sh
 
-      # ccache: the suites compile the same generated kernels many times (per arena cell, per sweep rung),
-      # and ccache keys on PREPROCESSED SOURCE, so identical generated C hits even from a fresh temp dir.
-      # A runner starts with an EMPTY cache, so persisting it across runs is what actually makes it pay.
-      # Putting /usr/lib/ccache first on PATH makes gcc/g++/clang resolve to the shims for every phase.
-      # This job never asserts on compile TIME (that is perf/staticlib_overhead + arena compile_us, which
-      # are not run here), so cache hits cannot corrupt a measurement.
+      # ccache keys on PREPROCESSED SOURCE, so identical generated C hits even from a fresh temp dir;
+      # persisting across runs is what makes it pay. Safe because this job never asserts on compile TIME.
       - name: Phase 1b -- ccache (restore + enable)
         uses: actions/cache@v4
         with:
@@ -73,82 +59,39 @@ jobs:
       - name: Phase 2 -- DaCe (extended) + OptArena + nest-forge[dev], editable
         run: |
           pip_retry() { for i in 1 2 3 4 5; do python -m pip install "$@" && return 0; echo "pip attempt $i failed; retry in $((i*5))s"; sleep $((i*5)); done; return 1; }
-          # The two repos nest-forge imports, installed EDITABLE straight from GitHub over HTTPS: both are
-          # public, so no checkout step, no key and no token -- which is what keeps this workflow running
-          # on fork PRs (secrets are not exposed to them). @extended pins DaCe to the branch nest-forge
-          # needs; OptArena tracks its default branch. requirements-dev.txt does the same editable install
-          # from the sibling ../dace + ../optarena checkouts instead -- CI has none, and pulling here means
-          # a run always tests the CURRENT extended rather than a pinned snapshot.
-          #
-          # pip runs `git submodule update --init --recursive` for a git requirement, which DaCe REQUIRES:
-          # it vendors its runtime headers as submodules (external/moodycamel/blockingconcurrentqueue.h,
-          # included by dace/runtime/include/dace/stream.h), and without them the first SDFG build dies
-          # with "fatal error: blockingconcurrentqueue.h: No such file or directory".
-          #
-          # --src keeps the clones OUT of the workspace. pytest puts the repo root on sys.path, so a
-          # directory named ./dace would shadow the `dace` PACKAGE and every test dies with "cannot import
-          # name 'SDFG' from partially initialized module 'dace.sdfg' (most likely due to a circular
-          # import)". $RUNNER_TEMP cannot collide with an importable name at all.
+          # Editable from GitHub over HTTPS: both repos are public, so no key/token, which keeps this
+          # workflow running on fork PRs. @extended pins the DaCe branch nest-forge needs.
+          # A git requirement makes pip run `git submodule update --init --recursive`, which DaCe needs:
+          # it vendors runtime headers as submodules (external/moodycamel/blockingconcurrentqueue.h).
+          # --src keeps clones OUT of the workspace -- pytest puts the repo root on sys.path, so a ./dace
+          # directory would shadow the `dace` package.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace.git@extended#egg=dace"
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/OptArena.git#egg=optarena"
-          # dace-fortran lowers Fortran inputs to an SDFG (nestforge.entry, InputKind.FORTRAN_PARSE).
-          # Installed AFTER dace: its pyproject pins dace @ FaCe, a SUBSET of extended, so with extended
-          # already resolved pip keeps it rather than fetching a second dace over the top.
+          # AFTER dace: dace-fortran pins dace @ FaCe (a subset of extended), so with extended already
+          # resolved pip keeps it rather than fetching a second dace over the top.
           pip_retry --src "$RUNNER_TEMP/src" -e "git+https://github.com/spcl/dace-fortran.git#egg=dace-fortran"
-          # nest-forge + its [dev] extra: pytest/pytest-timeout/pytest-xdist/matplotlib/yapf/ruff/
-          # clang-format, and the runtime deps (numpy, pyyaml, sympy) via [project].dependencies. This
-          # installing at all is itself a regression test -- `pip install -e .` used to fail outright on
-          # "No matching distribution found for optarena". sqlmodel arrives with optarena's own
-          # install_requires (OptArena 610c1c7e); matplotlib is needed because the plot smokes run
-          # perf/plot_*.py as a SUBPROCESS, where a missing import surfaces only as "exit status 1".
+          # nest-forge + [dev]. matplotlib is required: the plot smokes run perf/plot_*.py as a
+          # SUBPROCESS, where a missing import surfaces only as "exit status 1".
           pip_retry -e ".[dev]"
           python -c "import dace, optarena; print('dace', dace.__file__); print('optarena', optarena.__file__)"
 
-      # Unit set only (-m "not integration"): vendor-compiler + heavy-launcher tests are marked
-      # @pytest.mark.integration and excluded here. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the
-      # session if any of the remaining tests skip -- the unit set must run with zero skips. This already
-      # covers the optimizer contract (each variant is an optimizer) and the no-op agent's proposal, which
-      # are pure-config unit tests (no compile).
+      # Unit set only. NESTFORGE_CI_NO_SKIP=1 makes conftest.py fail the session if any remaining test
+      # skips -- the unit set must run with zero skips.
       - name: Phase 3 -- pytest (unit set, 0-skip enforced)
         env:
           NESTFORGE_CI_NO_SKIP: '1'
         run: |
           python -m pytest -q -p no:cacheprovider -m "not integration" -n auto --timeout=900
 
-      # The optimizer loop END TO END: the no-op agent's proposal and the STUB AGENT's whole
-      # propose -> build -> validate bit-exact -> time -> observe -> stop loop, against the real build path.
-      # Those smokes are @pytest.mark.integration (they compile a nest), so the unit phase skips them -- run
-      # them here on their own, where g++ is present on the runner. Phase 3 already covers the loop against
-      # a FAKE measure (no compiler); this is the half that proves an agent's proposal survives a real one.
-      # Neither runs inference -- there is none to run. The whole-program tests join it for the same reason: their
-      # run-and-compare (externalize + isolate, and the whole-program lane) is the ONLY proof that the
-      # offload analysis is value-preserving, and it is integration-marked, so Phase 3 never runs it.
-      # Everything named here needs only g++, which the runner has.
-      # The static-offload e2e (test_static_offload_e2e.py) belongs here too: it builds the arena winner
-      # as a static lib<name>_nest.a and links it INTO the parent .so (one binary, one libomp), so it
-      # compiles a nest + a parent -- integration-marked, hence skipped by Phase 3. Needs only g++ + ar.
-      # The per-nest DIFFERENTIAL harness (test_differential.py) and the E1 granularity x backend driver
-      # (test_experiment_e1.py) join it: both compile a per-backend variant, swap it into the whole lowered
-      # program, link it, fork-run, and validate bit-exact -- the ONLY proof the extern-swap/link path is
-      # value-preserving, and integration-marked so Phase 3 skips them. They need only gcc/clang + ar (both
-      # on the runner); the E1 driver adapts to whichever compilers discover_compilers() finds. E3
-      # (test_experiment_e3.py) sweeps the OFFLOAD-unit axis through that same measurement path, so it
-      # compiles and swaps exactly as E1 does and belongs in this phase for the same reason. E2
-      # (test_experiment_e2.py) measures the whole-program BASELINE the search is divided by -- a real
-      # auto-opt build + bit-exact validation + timing, so it needs this phase's toolchain too.
-      # E4 (test_experiment_e4.py) runs BOTH search strategies over a real ladder with real builds --
-      # the cost/quality ledger is only meaningful against measured times, so it belongs here too.
-      # E5 (test_experiment_e5.py) sweeps granularity on a kernel the polyhedral model rejects, so its
-      # case-study row is a real measured build too; the classifier half runs in Phase 3.
-      # The RUNNER (test_run_experiments.py) closes the last gap: Phase 4 proved each driver in
-      # isolation, but nothing proved the pipeline that actually produces the paper's tables.
-      # Its bounded run exercises all five end to end and asserts each wrote rows.
-      # test_experiment_tables.py holds the tables to their contract: the RECORDED tables from the
-      # experiments workflow are checked in Phase 3 (pure data), and its live bounded run -- checked
-      # against the same contract, plus every already-fixed error class -- runs here.
-      - name: Phase 4 -- optimizer loop + whole-program + static-offload + differential/E1 end-to-end (builds + validates)
+      # The whole integration set, selected by MARKER rather than by a hand-listed set of files -- a list
+      # goes stale silently (a new integration test simply never runs), which is the one failure mode CI
+      # cannot detect for itself. Phase 3 covers the same paths against a FAKE measure; this phase is the
+      # only proof the real build paths are value-preserving: the optimizer loop (propose -> build ->
+      # validate bit-exact -> time -> observe -> stop), the whole-program offload analysis, the static-lib
+      # link into the parent .so, and the extern-swap behind differential + E1..E5.
+      # Nearly all of it needs only g++/clang++ + ar, which the runner has. The few cases that need a
+      # vendor compiler or mpirun probe PATH and skip themselves with a reason -- so this phase does NOT
+      # set NESTFORGE_CI_NO_SKIP (Phase 3 keeps the zero-skip rule for the unit set).
+      - name: Phase 4 -- integration set (builds, runs, validates bit-exact)
         run: |
-          python -m pytest -q -p no:cacheprovider tests/test_optimizers.py tests/test_predictive.py \
-            tests/test_offload_scopes.py tests/test_whole_program_lane.py tests/test_static_offload_e2e.py \
-            tests/test_differential.py tests/test_experiment_e1.py tests/test_experiment_e3.py tests/test_experiment_e2.py tests/test_experiment_e4.py tests/test_experiment_e5.py tests/test_run_experiments.py tests/test_experiment_tables.py \
-            --timeout=900
+          python -m pytest -q -p no:cacheprovider -m integration --timeout=900
