@@ -88,27 +88,20 @@ Design: `docs/kernel_surface/README.md`. A kernel is (iteration domain, body fun
 body is reachable only by string-slicing `for` headers off a re-emit, and anything compiled drags
 `dace::math::*` in through `build.include_flags`.
 
-- [ ] **BK1** ONE intrinsic table replacing `emit_numpy._MATH_INTRINSICS`: per op, an ALIAS SET per
-      language in (`min`/`fmin`/`std::min`/`MIN` are one op) and one canonical spelling out, plus
-      `identity` + `reducible` so a reduction is just an intrinsic applied over axes. The table is the
-      ALLOWED SET -- anything outside it is refused by name.
-- [ ] **BK2** -> BK1. `NormalizeWCR` + `NormalizeWCRSource` into `normalize_for_tree`, plus
-      `reduce=(op over axes -> target)` on the kernel line, so the tree stops hiding a reduction.
-      `detect_reduction_type` -> table row; `ReductionType.Custom` refused by name. Gate on the 3.5ms
-      warm normalize. NOT `NestInnermostMapBodyIntoNSDFG` -- emitting does not need it.
-- [ ] **BK3** -> BK1. Gap-filling headers under `nestforge/runtime/` so the IDIOMATIC name works and
-      means one thing: `_Generic` min/max for C, `using std::` + missing constexpr overloads for C++,
-      only the non-intrinsic ops for Fortran, nothing for numpy. An explicit name (`int_floor`,
-      `nf.reduce`) only where the language has no spelling that is correct.
-      `build.include_flags` stops adding the dace include for an agent-authored kernel.
-- [ ] **BK4** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
+- [ ] **BK1** `NormalizeWCR` + `NormalizeWCRSource` into `normalize_for_tree`, plus
+      `reduce=(op over axes -> target)` on the kernel line so the tree stops hiding a reduction.
+      `detect_reduction_type` names the op; `ReductionType.Custom` refused by name. Gate on the
+      3.5ms warm normalize. NOT `NestInnermostMapBodyIntoNSDFG` -- emitting does not need it.
+- [ ] **BK2** Re-cut `introspect.kernel_body` against the scope tree; delete the `lines[headers:]` /
       `line[4 * headers:]` string surgery.
-- [ ] **BK5** -> BK4. Reduction representations the agent PICKS between -- `folded` (explicit loop,
-      order pinned) and `declared` (`nf.reduce`, order unspecified, tree allowed). The choice IS the
-      reassociation decision, so there is no separate flag. Default from the SDFG: a WCR on a parallel
-      map renders `declared`. `nf.reduce`'s argument lowers as an expression, never a buffer -- the
-      emitter says so when it cannot fuse. Whatever is emitted must be valid runnable numpy.
-- [ ] **BK6** -> BK3, BK4. `lang="c"|"cpp"|"fortran"` through numpyto, point form only.
+- [ ] **BK3** -> BK1, BK2. Reduction representations the agent picks between: `folded` (explicit
+      loop, DEFAULT -- measured to lower with no temp buffer) and `declared` (`np.sum`, reads better,
+      today lowers to buffer-then-reduce). Whatever is emitted must be valid runnable numpy.
+- [ ] **BK4** -> BK2. `form="slice"` for straight-line bodies.
+- [ ] **BK5** -> BK2. `lang="c"|"cpp"|"fortran"` through numpyto, point form only. NO nest-forge
+      intrinsic layer -- emit `np.<op>` and let numpyto spell it per language.
+- [ ] **BK6** `build.include_flags` carries the dace runtime include only for DaCe-generated frames,
+      so an agent-authored kernel does not compile against DaCe headers. Independent of the rest.
 
 ## C. Scratchpad allocation pass
 

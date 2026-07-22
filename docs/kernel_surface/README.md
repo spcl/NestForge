@@ -82,150 +82,95 @@ exactly this desugaring, so this is a wiring decision, not new machinery.
 One waist. A backend is added by teaching numpyto a language, never by teaching the tree a second
 lowering path.
 
-## Fix 3 — one table for intrinsics AND reductions
+## Fix 3 — intrinsics are numpyto's job, not ours
 
-These look like two problems and are one: **the numpy surface has no vocabulary for things the target
-languages have.** `min` is one (numpy spells it `np.minimum`, C `fmin`, Fortran `MIN`, DaCe
-`dace::math::min`). A tree reduction is the other, and a worse one, because numpy has no way to say it
-at all.
+Scrapped: the `nf` namespace, the per-language columns, the four shipped headers. numpyto already owns
+all of it, and duplicating it in nest-forge would have been a second table to drift.
 
-The unification: **a reduction is an intrinsic applied over axes.** One table, one namespace `nf`, one
-extra column, and reductions fall out of it.
+What it already has, read from the source:
 
-| column | math op | reducible op |
-|---|---|---|
-| `name` | `nf_min` | `nf_add` |
-| `arity` | 2 | 2 |
-| `numpy` | `np.minimum` | `np.add` |
-| `c` / `cpp` / `fortran` | `fmin` / `nf::min` / `MIN` | `+` |
-| `identity` | — | `0` |
-| `reducible` | no | **yes** |
+- `numpyto_common/operators.py` — `BINOP` / `CMPOP` / `BOOLOP` per target, `FORTRAN_INTRINSICS`
+  (`sqrt` -> `SQRT`, `fmin` -> `MIN`, `ceil` -> `CEILING`), and `FORTRAN_FN_EXPR` for the ops Fortran
+  has no intrinsic for (`cbrt`, `log2`, `expm1`, ...).
+- `numpyto_common/lowering.py` — `_NP_FUNC_ALIASES` normalizing numpy synonyms (`amax` -> `max`).
+- The generated C carries its own correctness notes we would only have got wrong: `min`/`max` macros
+  that PROPAGATE NaN like numpy rather than like libm, `__npb_fmin` / `__npb_fmax` single-evaluation
+  helpers because libm's SUPPRESS NaN, `__npb_sign` because `(x>0)-(x<0)` gives 0 for NaN and
+  double-evaluates.
+- `FloorDiv` never reaches the operator table — it is intercepted and emitted through an `int_floor`
+  macro, which is the exact trap a hand-rolled header would have fallen into.
 
-`emit_numpy._MATH_INTRINSICS` is already two thirds of the math half; the table **replaces** it rather
-than sitting beside it, or the two drift and the C++ says `fmin` while the oracle says `np.minimum`.
+**So nest-forge's rule is one line: emit correct `np.<op>`, and never invent a name.** The allowed set
+is whatever numpyto lowers — not a table we maintain — and when numpyto refuses, that refusal is the
+error the agent sees. `emit_numpy._MATH_INTRINSICS` keeps its existing and only job, DaCe tasklet code
+-> numpy; it gains no language columns.
 
-The bridge from the SDFG is `detect_reduction_type(wcr)` -> `ReductionType` -> the table row.
-`ReductionType.Custom` is refused BY NAME, exactly like an unknown math op — guessing a per-language
-spelling is how a kernel silently computes something else.
+`int_floor` / `int_ceil` and the arithmetic header come from numpyto too (as a string or an include).
 
-### What the agent actually types
+What is left on our side is narrow and real: `build.include_flags` adds `-I<dace runtime include>`, so
+an agent-authored kernel still compiles against DaCe's headers. That flag should carry the dace
+include only for DaCe-generated frames. It is a build wiring fix, not an intrinsics design.
 
-Not `nf_min`. A prefixed dialect looks tidy in a table and is wrong in practice: nobody writes
-`nf_min` in C++, so a model that has read a billion lines of `std::min` will write `std::min` anyway,
-and the surface spends its budget fighting that instead of on the optimization. An unfamiliar dialect
-is the last thing an agent-facing surface should be.
+## Fix 4 — the reduction gap is real, and it is measured
 
-**The agent writes the idiomatic name for the language it chose.** The table's job is to know that
-those are the same op:
+Every map WCR is a tree reduction: the map says the iterations are independent, so the fold order is
+unspecified and a backend may use a register accumulator or an OpenMP `reduction` clause.
 
-| op | numpy | C | C++ | Fortran |
-|---|---|---|---|---|
-| min | `np.minimum` | `min`, `fmin`, `fminf` | `std::min`, `min` | `MIN` |
-| sqrt | `np.sqrt` | `sqrt`, `sqrtf` | `std::sqrt`, `sqrt` | `SQRT` |
+The question was whether the numpy projection throws that away. It does. Translating
+`C[:] = np.sum(A * B[None, :], axis=1)` through numpyto gives (Fortran, abridged):
 
-So each row grows an **alias set per language** — several spellings in, one op out. That is our
-complexity, not the agent's, and `emit_numpy` already does exactly this for its own inputs
-(`_MATH_INTRINSICS` plus `_NP_VERBATIM_MATH` plus the `(dace.)?math.` prefix rewrite all resolve
-`sin`).
-
-The headers then change job. They do not define a dialect; they **close the gaps so the idiomatic
-name is always available and always means the same thing**:
-
-| | file | what it is for |
-|---|---|---|
-| C | `nf_math.h` | `_Generic` so bare `min`/`max` work on any arithmetic type — C has `fmin` for double and nothing generic |
-| C++ | `nf_math.hpp` | `using std::min; using std::sqrt;` plus `constexpr` overloads where `<cmath>` lacks them |
-| Fortran | `nf_math.f90` | only the ops Fortran has no intrinsic for; `MIN` and `SQRT` need nothing |
-| numpy | — | nothing to ship. `np.minimum` is already idiomatic and already correct |
-
-An explicit name survives in exactly one place: **an op the language has no idiomatic spelling for
-that means the right thing.** `int_floor` is one — C's `/` truncates toward zero, so floor division
-needs a named function or it is silently wrong for negative operands. `nf.reduce` is the other, since
-no language spells "fold this without materializing it". Everything else uses the name the language
-already has.
-
-The line is: **idiomatic where the language has it, an explicit name only where it does not.**
-
-The part that was actually load-bearing is not the prefix but the **allowed set**. The table is the
-list of ops nest-forge can lower AND validate; anything outside it is refused by name at emit time,
-because guessing a spelling per language is how a kernel silently computes something else. That rule
-is unchanged.
-
-And `build.include_flags` gains `-I<nestforge runtime>` while keeping the dace include **only** for
-DaCe-generated frames — an agent-authored kernel builds without it, which is the check that the
-`dace::` leak is actually closed.
-
-## Fix 4 — tree reductions, without lying to the agent
-
-Every map WCR is a tree reduction: the map says the iterations are independent, so the accumulation
-order is unspecified and an implementation may fold it as a tree. That is exactly what a real backend
-does — an OpenMP `reduction(+:acc)` clause, a per-lane accumulator, a `#pragma omp simd reduction`.
-
-Numpy cannot say any of that. Left alone, the slice projection of
-
-```
-for i, j:  C[i] += A[i, j] * B[j]
+```fortran
+do si0 ...; do si1 ...
+    x_cb1(si1+1, si0+1) = A(si1+1) * B(si1+1)     ! a FULL temporary for A*B
+do x_ax0 ...
+    x_cb2(x_ax0+1) = 0.0_c_double
+    do x_rd0 ...
+        x_cb2(x_ax0+1) = x_cb2(x_ax0+1) + x_cb1(x_rd0+1, x_ax0+1)   ! then reduce it
 ```
 
-is `C[:] = np.sum(A * B[None, :], axis=1)` — which **materializes the whole `A * B` product** and then
-reduces it. A backend would fuse the two into one loop with a register accumulator and no buffer at
-all. Show the agent the numpy and it optimizes against a cost model that does not exist.
+Buffer, then reduce — two passes. numpyto's slice fusion is real (`A[1:N-1] = (B[:N-2] + B[2:]) / 3`
+becomes one loop nest, not four temporaries), but it does not reach across the reduction.
 
-Four rules keep it honest.
+The **folded** form, same kernel, lowers to what you would write by hand:
 
-**1. The numpy form is the ORACLE, not the performance model.** This is the sentence that matters.
-`nf.reduce` under numpy is allowed to materialize a temporary; the lowered C/C++/Fortran is required
-not to. The agent is told this in the phase skill, in those words, so it never reads "there is a
-buffer here" out of a `np.sum`.
-
-**2. `nf.reduce`'s argument is lowered as an EXPRESSION, never as a buffer.**
-
-```python
-C[:] = nf.reduce(nf_add, A * B[None, :], axis=1)
+```fortran
+do i = 0, N-1
+    acc = 0.0_c_double
+    do j = 0, N-1
+        acc = acc + A(j+1, i+1) * B(j+1)
+    end do
+    C(i+1) = acc
+end do
 ```
 
-numpyto's desugar already turns a slice statement into a loop nest; a recognized `nf.reduce` becomes
-the accumulate at the bottom of that nest rather than a second pass over a temporary. Where the
-expression genuinely cannot be fused — it is consumed twice, or it is a library call — the emitter
-**says so** instead of quietly materializing.
+One loop nest, register accumulator, no buffer.
 
-**3. The reduction is on the KERNEL LINE, not only in the body.** The structural fact — which axes
-collapse, under which op, into what — belongs where the agent is already looking:
+**So `folded` is the default**, and that inverts what this document said a revision ago. The earlier
+reasoning was that a WCR on a parallel map is order-unspecified so it should render `declared` — true
+about the semantics, and wrong about the consequence, because `declared` is the form that costs a
+buffer today. Defaulting to it would have handed the agent the slower shape and called it the
+canonical one.
+
+The two representations stand, and the agent still picks:
+
+| | reads as | lowers to | order |
+|---|---|---|---|
+| `folded` (default) | an explicit loop with the table's identity as the seed | one nest, no buffer | pinned |
+| `declared` | `np.sum(...)` — shorter, and the numpy a human would write | buffer + reduce, today | unspecified |
+
+`folded` pinning the order does not forbid a tree reduction downstream: the freedom is re-expressed
+where it belongs, as an OpenMP `reduction` clause or a vectorizer decision on the loop, not as a
+string in the numpy. And the emitter's hard invariant is unchanged — whatever it emits is valid numpy
+that reproduces the SDFG.
+
+The kernel line still names the reduction, since that is cheap and structural:
 
 ```
 kernel2_0  [i0=0:N, i1=0:M]  reduce=(+ over i1 -> C)  reads=['A','B'] writes=['C']
 ```
 
-Reading the body then becomes optional rather than required, which is the whole point of the tree.
-
-**4. The agent picks the representation, and the choice IS the reassociation decision.** A reduction
-has two renderings, and both are valid runnable numpy:
-
-```python
-# folded -- order PINNED, bit-reproducible, no tree
-for i0 in range(N):
-    acc = 0.0                              # the table's identity for nf_add
-    for i1 in range(M):
-        acc = acc + A[i0, i1] * B[i1]
-    C[i0] = acc
-
-# declared -- order UNSPECIFIED, a backend may fold it as a tree
-C[:] = nf.reduce(nf_add, A * B[None, :], axis=1)
-```
-
-Floating-point `+` is not associative, so these two do not agree in the last bits — and that is the
-point. Choosing `nf.reduce` is choosing to allow reassociation; choosing the explicit fold is choosing
-to forbid it. There is no separate `reassociable` flag to keep in sync with the code, because the code
-already says it.
-
-The default comes from the SDFG: a WCR on a parallel map is order-unspecified already, so it renders
-`declared`; a reduction lifted out of a sequential loop renders `folded` until someone asks otherwise.
-Validation compares against the order the lowered code actually uses, so bit-exactness stays the gate
-and a reduction is never the excuse to swap the oracle for a norm.
-
-**The emitter's one hard invariant: whatever it emits is valid numpy that reproduces the SDFG.**
-Representation is the agent's choice; validity is not negotiable. A representation that cannot be
-rendered as running numpy for a given kernel is refused by name, not approximated.
+If numpyto later fuses a reduction into its slice-fusion nest, `declared` becomes free and the default
+should be revisited. That is a numpyto change, not a nest-forge one.
 
 ## The API
 
