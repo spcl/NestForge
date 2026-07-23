@@ -31,17 +31,62 @@ from dace.transformation.dataflow.map_fission import MapFission
 
 
 def fission_to_statements(sdfg: dace.SDFG) -> int:
-    """Explode ``sdfg`` to statement granularity in place -- ``SplitStatements`` then ``LoopFission`` then
-    ``MapFission``, so each independent output statement lands in its own loop/map nest. Returns the number
+    """Explode ``sdfg`` to STATEMENT granularity in place, where a statement is one GLOBAL output written
+    from N global inputs, with local temps recomputed (never materialized to a buffer). Returns the number
     of fission steps applied. The inverse of Phase-1's max-fuse; the agent then fuses back up
-    (:mod:`nestforge.fusion_arms`) to the chosen granularity."""
+    (:mod:`nestforge.fusion_arms`) to the chosen granularity.
+
+    Steps: ``SplitStatements(split_maps=True)`` (a straight-line map with several global outputs -> one
+    flat map per output, shared local recomputed; a fission-blocking NestedSDFG replicated per output),
+    then ``LoopFission`` (sequential loops), then :func:`fission_multi_output_maps` (the remaining
+    NestedSDFG-bodied maps -- dependent / indirection).
+
+    NOT ``apply_transformations_repeated(MapFission)``: that splits a map per TASKLET and materializes the
+    local temps to size-N arrays (``{t=x*2; A=t+1}`` -> two maps + a buffer ``t``). Statement granularity
+    is one map per global output precisely because that is the finest split that keeps a local a scalar.
+    """
     from dace.transformation.passes.canonicalize.split_statements import SplitStatements
     from dace.transformation.passes.loop_fission import LoopFission
 
     applied = 0
-    applied += SplitStatements().apply_pass(sdfg, {}) or 0
+    applied += SplitStatements(split_maps=True).apply_pass(sdfg, {}) or 0
     applied += LoopFission().apply_pass(sdfg, {}) or 0
-    applied += sdfg.apply_transformations_repeated(MapFission) or 0
+    applied += fission_multi_output_maps(sdfg)
+    return applied
+
+
+def fission_multi_output_maps(sdfg: dace.SDFG) -> int:
+    """Fission only the maps NOT yet at statement granularity: a top-level map still writing >=2 distinct
+    global outputs (the NestedSDFG-bodied dependent / indirection maps ``SplitStatements`` left). A flat
+    single-output map is already a statement and is left ALONE -- MapFission would split its tasklet chain
+    and materialize the locals. Returns the number of MapFission applications."""
+    applied = 0
+    while True:
+        target = None
+        for state in sdfg.all_states():
+            for entry in [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and state.entry_node(n) is None]:
+                exit_node = state.exit_node(entry)
+                global_outs = {e.data.data for e in state.in_edges(exit_node) if e.data is not None and e.data.data}
+                if len(global_outs) < 2:
+                    continue
+                # expr_index=1 wants a single NestedSDFG body; expr_index=0 the multi-component form.
+                bodies = [
+                    n for n in state.scope_subgraph(entry, False, False).nodes() if isinstance(n, nodes.NestedSDFG)
+                ]
+                if len(bodies) == 1 and MapFission.can_be_applied_to(
+                        sdfg, expr_index=1, map_entry=entry, nested_sdfg=bodies[0]):
+                    target = (1, {"map_entry": entry, "nested_sdfg": bodies[0]})
+                elif MapFission.can_be_applied_to(sdfg, expr_index=0, map_entry=entry):
+                    target = (0, {"map_entry": entry})
+                if target is not None:
+                    break
+            if target is not None:
+                break
+        if target is None:
+            break
+        expr_index, kwargs = target
+        MapFission.apply_to(sdfg, expr_index=expr_index, **kwargs)
+        applied += 1
     return applied
 
 
