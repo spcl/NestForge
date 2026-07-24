@@ -56,7 +56,7 @@ def discover_compilers() -> Dict[str, str]:
 
 
 # --- BLAS backends (a link axis for matmul-heavy kernels) -------------------------------------
-@dataclass
+@dataclass(slots=True)
 class BlasBackend:
     """An installed BLAS implementation and the link flags that select it."""
     name: str
@@ -185,7 +185,7 @@ def run_oracle(prep: Prepared, boundary: Boundary, inputs: Dict[str, np.ndarray]
 
 
 # --- compile + call ---------------------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class Cell:
     compiler: str
     fp_mode: str
@@ -286,6 +286,28 @@ def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     return worst
 
 
+def diff_stats(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> Tuple[float, float]:
+    """``(worst_abs, worst_scaled)`` in ONE pass over the abs-difference, instead of :func:`maxdiff` and
+    :func:`relative_maxdiff` each recomputing ``np.abs(a[k] - b[k])`` separately. Same semantics as calling
+    both (NaN/Inf still map to ``inf`` in both slots); use this wherever a caller needs both numbers."""
+    worst_abs, worst_rel = 0.0, 0.0
+    for k in a:
+        if not a[k].size:
+            continue
+        diff = np.abs(a[k] - b[k])
+        d_abs = float(np.max(diff))
+        if not np.isfinite(d_abs):
+            return float("inf"), float("inf")
+        scale = np.maximum(np.maximum(np.abs(a[k]), np.abs(b[k])), 1.0)
+        with np.errstate(invalid="ignore"):  # inf/inf -> nan, which is a FAILURE, not a warning
+            d_rel = float(np.max(diff / scale))
+        if not np.isfinite(d_rel):
+            return float("inf"), float("inf")
+        worst_abs = max(worst_abs, d_abs)
+        worst_rel = max(worst_rel, d_rel)
+    return worst_abs, worst_rel
+
+
 def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     """Largest elementwise difference SCALED by the magnitude of the values it is between.
 
@@ -309,7 +331,7 @@ def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> floa
     return worst
 
 
-@dataclass
+@dataclass(slots=True)
 class ArenaResult:
     name: str
     cells: List[Cell] = field(default_factory=list)
@@ -366,10 +388,10 @@ def run_arena(prep: Prepared,
             # ``so``/``mode`` are default args to dodge late-binding capture of the loop variables.
             def work(so: Path = so, mode: str = mode) -> Dict[str, Any]:
                 outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
-                # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff)
-                md = float(maxdiff(oracle, outs))
-                ok = relative_maxdiff(oracle, outs) <= MODE_ATOL[mode]
-                return {"ok": bool(ok), "maxdiff": md, "time_us": float(us)}
+                # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff); one pass
+                # over the diff computes both instead of two.
+                md, md_rel = diff_stats(oracle, outs)
+                return {"ok": bool(md_rel <= MODE_ATOL[mode]), "maxdiff": float(md), "time_us": float(us)}
 
             res = run_isolated(work)
             if "error" in res:

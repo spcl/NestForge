@@ -95,7 +95,7 @@ def corpus_candidates(filename: str) -> List[Path]:
     return cands
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def corpus_module(corpus: str = "tsvc2") -> ModuleType:
     """Load a DaCe TSVC corpus script by path (a script, not an importable package). ``tsvc2`` =
     ``tsvc_corpus.py`` (151 kernels), ``tsvc2_5`` = ``tsvc_2_5_corpus.py`` (65 kernels)."""
@@ -114,7 +114,7 @@ def corpus_module(corpus: str = "tsvc2") -> ModuleType:
     return module
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def corpus_symbol_values(corpus: str = "tsvc2") -> Dict[str, int]:
     """Concrete values for a corpus' own SCALAR symbols -- multiplier ``S`` plus tile/offset symbols like
     ``T``/``K``/``SSYM`` -- as the corpus script itself declares them.
@@ -129,7 +129,7 @@ def corpus_symbol_values(corpus: str = "tsvc2") -> Dict[str, int]:
     return {sym: int(val) for sym, val in values.items() if sym not in _SHAPE_SYMS}
 
 
-@dataclass
+@dataclass(slots=True)
 class TsvcKernel:
     """One TSVC kernel: its DaCe ``@dace.program`` SDFG source + its OptArena native baseline."""
     key: str  # short name, e.g. "s000" (the corpus "s000_d_single" with the "_d_single" suffix dropped)
@@ -238,11 +238,11 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
     return sdfg
 
 
-def yaml_presets(kernel: TsvcKernel) -> Dict[str, List[int]]:
-    """``{shape_symbol: [preset sizes]}`` from the kernel's OptArena yaml, skipping the ``XL`` preset."""
-    if kernel.yaml_path is None:
-        return {}
-    params = yaml.safe_load(kernel.yaml_path.read_text()).get("parameters", {})
+@functools.lru_cache(maxsize=None, typed=True)
+def manifest_presets(path: Path) -> Dict[str, List[int]]:
+    """``{shape_symbol: [preset sizes]}`` from an OptArena manifest yaml, skipping the ``XL`` preset.
+    Cached per path: the yaml read + parse is re-run for every arena cell over the same kernel otherwise."""
+    params = yaml.safe_load(path.read_text()).get("parameters", {})
     presets: Dict[str, List[int]] = {}
     for name, mapping in params.items():
         if name in _SKIP_PRESETS or not isinstance(mapping, dict):
@@ -252,20 +252,31 @@ def yaml_presets(kernel: TsvcKernel) -> Dict[str, List[int]]:
     return presets
 
 
+def yaml_presets(kernel: TsvcKernel) -> Dict[str, List[int]]:
+    """``{shape_symbol: [preset sizes]}`` from the kernel's OptArena yaml, skipping the ``XL`` preset."""
+    if kernel.yaml_path is None:
+        return {}
+    return manifest_presets(kernel.yaml_path)
+
+
 def key_seed(key: str) -> int:
     """A stable per-kernel seed offset (so every kernel gets different random sizes, reproducibly).
     ``hash`` is salted per process, so derive from the characters instead."""
     return sum((i + 1) * ord(c) for i, c in enumerate(key)) & 0xFFFF
 
 
+@functools.lru_cache(maxsize=None, typed=True)
+def free_symbols_of(dim) -> frozenset:
+    """The free symbol names of one shape-dimension expression, memoized. Keyed on the dimension
+    object itself (a sympy expression already, in practice) -- ``.free_symbols`` walks the whole
+    expression tree, and the same handful of dims (``LEN_1D``, ``N - 1``, ...) recur across every
+    array in a corpus."""
+    return frozenset(str(s) for s in symbolic.pystr_to_symbolic(dim).free_symbols)
+
+
 def shape_symbols(sdfg: dace.SDFG) -> set:
     """Symbols that appear in an array's shape (the ones that actually size a buffer)."""
-    return {
-        str(s)
-        for desc in sdfg.arrays.values()
-        for dim in desc.shape
-        for s in symbolic.pystr_to_symbolic(dim).free_symbols
-    }
+    return {sym for desc in sdfg.arrays.values() for dim in desc.shape for sym in free_symbols_of(dim)}
 
 
 def sample_sizes(kernel: TsvcKernel,

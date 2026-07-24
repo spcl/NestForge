@@ -59,7 +59,7 @@ def pure_only_math_ops() -> frozenset:
 
 
 # --- veclib characterization -------------------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class VeclibProfile:
     """One vector-math library's measured trade-off on this device (for one compiler)."""
     name: str  # sleef | libmvec | svml
@@ -161,7 +161,7 @@ def rank_veclibs(compiler: str, max_ulp: float = 4.0) -> List[VeclibProfile]:
     return ok + [p for p in profiles if not p.ok]
 
 
-@dataclass
+@dataclass(slots=True)
 class DeviceProfile:
     """The cached per-device characterization consumed by the vectorization + veclib selection stages."""
     machine: str
@@ -169,7 +169,7 @@ class DeviceProfile:
     veclib_ranking: List[VeclibProfile]  # empty when no veclib is installed for the given compiler
 
 
-@functools.lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=8, typed=True)
 def device_profile(compiler: str = "gcc") -> DeviceProfile:
     """Characterize this device ONCE per process (memoized per compiler): the host ISAs plus the veclib
     ranking for ``compiler``. Cross-run persistence is a future add (keyed by host + compiler); within a

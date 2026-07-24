@@ -64,7 +64,8 @@ def fission_multi_output_maps(sdfg: dace.SDFG) -> int:
     while True:
         target = None
         for state in sdfg.all_states():
-            for entry in [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and state.entry_node(n) is None]:
+            sd = state.scope_dict()
+            for entry in [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and sd[n] is None]:
                 exit_node = state.exit_node(entry)
                 global_outs = {e.data.data for e in state.in_edges(exit_node) if e.data is not None and e.data.data}
                 if len(global_outs) < 2:

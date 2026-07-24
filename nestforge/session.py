@@ -72,6 +72,8 @@ def unit_reads_writes(parent: dace.SDFG, node: Union[nodes.MapEntry, LoopRegion]
 class Session:
     """Server-side owner of one SDFG and the id registry the agent drives it through."""
 
+    __slots__ = ("sdfg", "name", "epoch", "handles", "work_dir", "prepared")
+
     def __init__(self, sdfg: dace.SDFG, name: Optional[str] = None, work_dir: Optional[str] = None) -> None:
         self.sdfg = sdfg
         self.name = name or sdfg.label
@@ -102,7 +104,7 @@ class Session:
                 raise StaleHandle(f"id {hid!r} is from a past epoch (now e{self.epoch}); re-list and retry")
             raise KeyError(f"unknown id {hid!r}")
         obj = self.handles[hid]
-        if kind is not None and not hid.split(":")[1] == kind:
+        if kind is not None and hid.split(":", 2)[1] != kind:
             raise KeyError(f"id {hid!r} is not a {kind} handle")
         return obj
 

@@ -94,8 +94,11 @@ def in_order(graph: Union[ControlFlowRegion, SDFGState]) -> List:
 def top_level_nsdfgs(sdfg: dace.SDFG) -> List[Tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` that sits outside all map scopes. One inside a map is a kernel body and is
     left alone."""
-    return [(state, node) for state in sdfg.all_states() for node in state.nodes()
-            if isinstance(node, nodes.NestedSDFG) and state.entry_node(node) is None]
+    out: List[Tuple[SDFGState, nodes.NestedSDFG]] = []
+    for state in sdfg.all_states():
+        sd = state.scope_dict()  # once per state: state.entry_node() rebuilds this per call
+        out += [(state, node) for node in state.nodes() if isinstance(node, nodes.NestedSDFG) and sd[node] is None]
+    return out
 
 
 def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
@@ -119,7 +122,8 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 def free_tasklets(state: SDFGState) -> List[nodes.Tasklet]:
     """Tasklets in ``state`` that sit outside every map scope. A ``LibraryNode`` is not a ``Tasklet``
     and so is never here -- by design: it already is a kernel."""
-    return [n for n in state.nodes() if isinstance(n, nodes.Tasklet) and state.entry_node(n) is None]
+    sd = state.scope_dict()  # once per state: state.entry_node() rebuilds this per call
+    return [n for n in state.nodes() if isinstance(n, nodes.Tasklet) and sd[n] is None]
 
 
 def wrap_groups(state: SDFGState) -> List[List[nodes.Tasklet]]:

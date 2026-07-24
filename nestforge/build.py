@@ -47,6 +47,7 @@ CXX_STD = "c++20"
 DEFAULT_FLAGS = ["-O3", "-march=native", f"-std={CXX_STD}", "-fPIC", "-shared"]
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def compiler_family(compiler: str) -> str:
     """OpenMP-relevant compiler family: ``llvm`` (clang/flang, icx/icpx/ifx), ``intel-classic``
     (icc/icpc/ifort), ``nvidia`` (nvc/nvc++/nvfortran), or ``gnu`` (gcc/gfortran, default)."""
@@ -68,7 +69,7 @@ _COMPILER_ABI = {"gnu": "gomp", "llvm": "kmpc", "intel-classic": "kmpc", "nvidia
 _LLVM_SELECTABLE = frozenset({"libomp", "libgomp", "libiomp5"})
 
 
-@dataclass
+@dataclass(slots=True)
 class OpenMPRuntime:
     """One OpenMP runtime the whole program links (PARALLEL.md: one runtime for every node library + the
     driver). ``libomp`` is default -- LLVM-selectable by name and implements GOMP_* too, so gcc- and
@@ -211,6 +212,7 @@ def driver_search_dirs(compiler: str) -> List[str]:
 _LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
 
 
+@functools.lru_cache(maxsize=None)
 def ldconfig_output() -> str:
     """``ldconfig -p``, or ``""``. sbin is off the non-root PATH on slim images, so try the full paths
     too -- a bare ``ldconfig`` there silently reports an EMPTY loader cache."""
@@ -274,7 +276,7 @@ def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
     return driver_lib_path(soname, compiler) is not None
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def linkable_lib_dir(soname: str, compiler: str = DEFAULT_COMPILER) -> Optional[str]:
     """The ``-L`` directory needed to LINK ``lib<soname>``, or ``None`` if the linker already finds it.
     Loader and linker search different paths (e.g. Ubuntu's libomp-dev symlink can land off the link
@@ -342,6 +344,7 @@ _CLANG_VECLIB = {"sleef": "libmvec", "libmvec": "libmvec", "svml": "SVML"}
 _INTEL_ONEAPI_ROOTS = ("/opt/intel/oneapi/compiler", "/opt/intel/oneapi")
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
     """Directory holding ``lib<soname>`` for ``-L``/``-rpath``, or ``None`` if on the default path.
     Tries the driver, Intel oneAPI dirs, then a SLEEF prefix (env/``~/.local``/``/usr/local``)."""
@@ -361,7 +364,7 @@ def veclib_lib_dir(soname: str, compiler: str) -> Optional[str]:
     return None
 
 
-@dataclass
+@dataclass(slots=True)
 class VectorMathLib:
     """SIMD elementary-math library (sin/exp/...) an autovectorized loop calls instead of scalarizing.
     ``libmvec``/``sleef`` both emit ``_ZGV*`` (gcc fast-math, or clang/icx ``-fveclib=libmvec``; sleef
@@ -423,6 +426,7 @@ def vectorlib_installed(vl: VectorMathLib) -> bool:
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
 
 
+@functools.lru_cache(maxsize=None)
 def dace_runtime_include() -> Path:
     """The ``-I`` directory holding DaCe's runtime headers (``dace/runtime/include``)."""
     inc = Path(dace.__file__).parent / "runtime" / "include"
@@ -431,7 +435,7 @@ def dace_runtime_include() -> Path:
     return inc
 
 
-@dataclass
+@dataclass(slots=True)
 class Param:
     name: str
     ctype: object  # a ctypes type
@@ -487,7 +491,7 @@ def signature(code: str, symbol: str) -> str:
     return m.group(1)
 
 
-@dataclass
+@dataclass(slots=True)
 class BuiltSDFG:
     """A nest-forge-built DaCe ``.so`` with its entry points bound and init/exit managed."""
     name: str
@@ -631,7 +635,7 @@ def clang_major_via_preprocessor(compiler: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def compiler_version(compiler: str) -> Tuple[int, int]:
     """The compiler's ``(major, minor)`` version, parsed from ``--version``. Gates version-dependent
     features (fast linkers, fat-LTO). Returns ``(0, 0)`` (assume old) if unparseable, never a guess."""
@@ -655,6 +659,7 @@ def compiler_version(compiler: str) -> Tuple[int, int]:
     return (0, 0)
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def ar_for(compiler: str) -> str:
     """The LTO-plugin-aware ``ar`` for this compiler (``gcc-ar``/``llvm-ar``) when present, so archiving
     an ``-flto`` object keeps it linkable; plain ``ar`` otherwise."""
@@ -725,7 +730,7 @@ def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
 _FAST_LINKERS = ("mold", "lld", "gold")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def ccache_available() -> bool:
     """Whether a compiler cache is installed and not disabled.
 
@@ -749,6 +754,7 @@ def ccache_prefix(use_ccache: Optional[bool]) -> List[str]:
     return ["ccache"] if ccache_available() else []
 
 
+@functools.lru_cache(maxsize=None)
 def available_linkers() -> Dict[str, str]:
     """Fast alternative linkers installed, fastest first: name -> backing binary path. Default ``bfd``
     is not listed (always the fallback)."""
@@ -760,6 +766,7 @@ def available_linkers() -> Dict[str, str]:
     return found
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def fastest_linker(compiler: str) -> List[str]:
     """``-fuse-ld=<linker>`` for the fastest installed linker this compiler accepts (mold > lld > gold),
     or ``[]``. NVIDIA's nvc/nvc++ has no ``-fuse-ld`` switch, so it keeps its default."""
@@ -771,7 +778,7 @@ def fastest_linker(compiler: str) -> List[str]:
     return []
 
 
-@dataclass
+@dataclass(slots=True)
 class BuildOptions:
     """Toolchain + optimization knobs for the owned build (:func:`build_sdfg` / :func:`compare_link_modes`
     take this instead of a long parameter list). Each axis is independent."""
@@ -910,7 +917,7 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = No
                      compile_seconds=compile_seconds)
 
 
-@dataclass
+@dataclass(slots=True)
 class LinkTimings:
     """Optimization time and the two post-optimization compile times isolated on ONE codegen."""
     codegen_seconds: float  # the optimization (DaCe codegen) phase, run once

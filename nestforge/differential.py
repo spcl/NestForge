@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from nestforge import build, tsvc
-from nestforge.arena import make_inputs, maxdiff, relative_maxdiff, run_oracle
+from nestforge.arena import diff_stats, make_inputs, run_oracle
 from nestforge.extract import whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall, ExternLibEnv
@@ -31,7 +31,7 @@ from nestforge.perf.harness import median
 from nestforge.translate import prepare_whole_program
 
 
-@dataclass
+@dataclass(slots=True)
 class NestVariant:
     """A compiled kernel to swap into one nest: a static/shared library, its ``extern "C"`` entry, and the
     argument order that symbol expects. ``abi_order`` is the silent-break field -- it must match the
@@ -41,7 +41,7 @@ class NestVariant:
     abi_order: List[str]
 
 
-@dataclass
+@dataclass(slots=True)
 class ContextResult:
     """One whole-program measurement with a given set of nests swapped to variants (the rest at reference).
     ``median_us`` is ``inf`` and ``error`` is set when the build or forked run failed; ``ok`` is the
@@ -144,9 +144,9 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
             ref = {o: oracle[o] for o in outs}
             # Report the ABSOLUTE difference (that is what a reader of ContextResult.maxdiff expects), but
             # GATE on the scaled one -- an absolute gate is unreachable for a reduction, see
-            # arena.relative_maxdiff.
-            md = float(maxdiff(ref, outs))
-            verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
+            # arena.relative_maxdiff. One pass over the diff computes both.
+            md, md_rel = diff_stats(ref, outs)
+            verdict = {"ok": bool(md_rel <= atol), "maxdiff": float(md)}
         else:
             verdict = {"ok": False, "maxdiff": float("inf")}
         tbuf = {k: v.copy() for k, v in inputs.items()}

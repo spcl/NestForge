@@ -37,7 +37,7 @@ from nestforge.device_profile import host_isas
 WIDTH_LADDER: Tuple[int, ...] = (8, 16, 32)
 
 
-@dataclass
+@dataclass(slots=True)
 class VecVariant:
     """One named vectorization cell: a greppable name and the VectorizeConfig that produces it."""
     name: str
@@ -146,17 +146,19 @@ def coordinate_descent(seed: VectorizeConfig,
     improvement. ``measure(config)`` returns a time (lower is better) or ``None`` for an unbuildable cell.
     ``O(rounds * sum of axis sizes)`` measurements, not the full product. Returns ``(best_config, best_time)``."""
     current = seed
+    current_key = resolved_key(current)
     best = measure(current)
     for _ in range(rounds):
         improved = False
         for field_name, values in axes:
             for value in values:
                 cand = dataclasses.replace(current, **{field_name: value})
-                if resolved_key(cand) == resolved_key(current):
+                if resolved_key(cand) == current_key:
                     continue  # a no-op move (e.g. flipping remainder under assume_even); skip the measure
                 t = measure(cand)
                 if t is not None and (best is None or t < best):
                     best, current, improved = t, cand, True
+                    current_key = resolved_key(current)  # recompute only on an accepted move
         if not improved:
             break
     return current, best

@@ -178,7 +178,7 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
     for edge in work.all_interstate_edges():
         expressions = list(edge.data.assignments.values()) + [str(edge.data.condition.as_string)]
         for expr in expressions:
-            region_used |= {a for a in work.arrays if re.search(rf"(?<![\w.]){re.escape(a)}\b", expr)}
+            region_used |= set(re.findall(r"[A-Za-z_]\w*", expr)) & work.arrays.keys()
     for aname in list(work.arrays):
         if aname not in region_used:
             del work.arrays[aname]  # touched only outside the region (after orphan drop, no node references it)
