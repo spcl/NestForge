@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Extract any loop-nest (CFG ``LoopRegion``) or map-nest (``MapEntry``) into a standalone SDFG.
 
 One primitive unifies DaCe's two outliners:

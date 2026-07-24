@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The nest's non-transient arrays come from the kernel's OptArena manifest
 (:func:`nestforge.tsvc.index_fills` + ``make_inputs(given=...)``), transients keep the random fill.
 

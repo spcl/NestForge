@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Native surface for hpcagent_bench's **numpy translator**: turn a ``*_numpy.py`` kernel plus its
 ``BenchSpec`` manifest into C / C++ / Fortran source via hpcagent_bench's ``numpyto`` driver.
 

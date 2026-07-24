@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Fusion-granularity axis (paper Axis 1): the atoms->maximal partition ladder the arena sweeps. Unit set,
 no compile -- these prove the ladder is well-formed (endpoints, bounded, monotone, idempotent w.r.t.
 start), not that any point is fast (that is the measured evaluation). Ladder DEPTH is data-dependent

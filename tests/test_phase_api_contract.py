@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CI contract tests for the AGENT-FACING phase API -- the surface `skills/*/SKILL.md` teaches.
 
 A skill file is a prompt: an agent reads it and copies the snippet verbatim. So a stale name there is

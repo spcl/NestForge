@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Phase-2 agent's fission lever: explode a max-fused program to statement granularity by REUSING the
 existing DaCe canon passes (no new transformation).
 

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Numpy emission for the BLAS / LinAlg / standard library nodes a DaCe SDFG can carry.
 
 Every optarena loop-nest that survives as a library node (rather than being lowered to maps) must

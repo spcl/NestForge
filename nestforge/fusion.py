@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase 1 of the 4-phase optimizer: set loop-/map-nest granularity by a fusion strategy.
 
 The framework's first phase fixes the *granularity* the later phases optimize at. A

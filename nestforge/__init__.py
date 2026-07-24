@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """nest-forge: extract DaCe loop-/map-nests and offload them to external compilers via an arena.
 
 Two pieces of the optarena dependency are surfaced natively: :mod:`nestforge.translator`

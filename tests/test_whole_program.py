@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for the whole-program-scope plumbing (Phase 3): the whole-kernel Boundary factory and the
 whole-program prepare path. These build a tiny two-nest SDFG inline (fast ``to_sdfg``) -- they do NOT run
 the corpus or numpyto/gcc, so they stay light; the end-to-end compile+time is exercised by the arena on a

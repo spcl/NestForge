@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pluggable detection strategies.
 
 A strategy is ``Callable[[SDFG], List[Tuple[SDFG, NestNode]]]`` returning the nests to extract,

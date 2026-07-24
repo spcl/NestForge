@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit numpy for real optarena dace kernels and check the library-node ops compute correctly.
 
 Emission is C-style: the kernel allocates nothing, so the caller pre-allocates every buffer -- inputs,

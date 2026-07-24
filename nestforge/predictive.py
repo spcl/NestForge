@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Predictive mode: pick the optimizer that will win WITHOUT building them all.
 
 The arena is exhaustive -- compile every variant, validate, time, take the best. Predictive mode replaces

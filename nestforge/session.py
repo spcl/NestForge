@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the consolidated agent-facing API over the 4-phase optimizer.
 
 A stateless model cannot hold a live SDFG node across turns -- a reference goes stale the moment any

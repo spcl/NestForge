@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The experiment sweep matrix -- kept BOUNDED, and a measurement-cost ledger.
 
 Auto-discovering the corpus (:func:`nestforge.tsvc.iter_tsvc_kernels`) and crossing it with the fusion

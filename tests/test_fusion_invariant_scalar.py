@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regression: a fusion must be REFUSED when loop1 writes a LOOP-INVARIANT location that loop2 reads.
 
 Unfused, loop2 sees the FINAL value loop1 left in that location; fused, it sees the RUNNING value of the

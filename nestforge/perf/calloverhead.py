@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Runtime call-overhead job: what does it cost to call an emitted loop-nest from an external static
 ``.a`` instead of inlining it, and does LTO recover that cost?
 

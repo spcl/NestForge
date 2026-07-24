@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared arena infrastructure: rank partitioning, bounded compiles, ABI binding, and result IO.
 
 Used by every perf driver and every ``perf/plot_*.py`` script.

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """One entry point over the 4-phase optimizer: take whatever the caller has, pick a search space,
 measure the variants.
 

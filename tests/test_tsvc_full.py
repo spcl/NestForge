@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit + end-to-end tests for the TSVC full-matrix driver (nestforge.perf.tsvc_full).
 
 Pure-logic tests (timing, flag composition, sizing, winner selection, table math) run without a compiler;

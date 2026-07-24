@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Granularity search policies (paper C4): traditional exhaustive vs a scoped agentic hill-climb over the
 fusion/offload lattice.
 

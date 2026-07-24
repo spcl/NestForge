@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Optimizers: every arena variant, and the agent, under ONE contract.
 
 The unit under evaluation is an OPTIMIZER -- a named, deterministic procedure that, given a nest, proposes

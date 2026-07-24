@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Region-structure moves: merge the control-flow CONTAINERS, the level above nest fusion.
 
 A nest (map/loop) fuses only with a sibling in the SAME region. Two maps in different States, or two

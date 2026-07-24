@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pluto polyhedral lane helpers: emit-side plumbing for the Pluto (``polycc``) backend, kept apart from
 the DaCe orchestration in :mod:`nestforge.perf.tsvc_full` so it's unit-testable without ``polycc``.
 

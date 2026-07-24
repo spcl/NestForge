@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit an OptArena ``BenchSpec`` manifest (symbols, array shapes, dtypes) for an extracted nest.
 
 The manifest mirrors the fields hpcagent_bench's translator needs (verified against its ``gemm`` /

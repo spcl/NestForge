@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Offloading granularity UNITS (paper Axis 2): the structural unit each external call wraps -- cfg / state
 / map, coarse -> fine. Unit set, no compile: candidate selection per unit, whole-state extraction, and
 that lowering each unit still yields a valid SDFG. Composition with Axis 1 (fusion granularity) is checked

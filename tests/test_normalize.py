@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The normal form the agent's tree is projected from (:mod:`nestforge.normalize`).
 
 Every fixture is built by the DaCe Python frontend rather than by hand: the properties under test --

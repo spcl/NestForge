@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit ``ConditionalBlock`` control flow (if / elif / else) to numpy and check it runs correctly.
 
 A DaCe scalar-level ``if/elif/else`` at control-flow altitude lowers to a ``ConditionalBlock`` whose

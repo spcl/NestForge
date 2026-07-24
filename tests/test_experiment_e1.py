@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E1 driver (C1): the fusion-granularity x backend heatmap. The read-off logic is a unit test (synthetic
 cells, no compile); the end-to-end per-backend variant build + swap + measure is an integration test that
 compiles and forks, gated on a C toolchain."""

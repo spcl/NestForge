@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Phase-2 fission lever (:mod:`nestforge.fission_arms`): explode a program to statement granularity by
 reusing the existing DaCe canon passes (SplitStatements + LoopFission + MapFission), and the agent's real
 Phase-2 flow -- fission then fuse back up. Value-preservation (bit-exact vs the un-fissioned reference) is

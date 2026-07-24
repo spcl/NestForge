@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Static-library overhead job.
 
 For each TSVC kernel, own-build the DaCe SDFG both ways and time only the post-codegen toolchain work:

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Empirical cross-compiler / single-runtime support matrix: TRIES every (compilers, ONE runtime) combo --
 compile, link, load, run -- rather than reasoning from ABI tables, which miss real corners (a runtime that
 won't load, an inert backend, one islanded to its own compiler). Each probe runs forked."""

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Census: emit a standalone numpy kernel for every optarena dace kernel and classify the outcome.
 
 For each corpus kernel we build its SDFG and run ``sdfg_to_numpy`` (library nodes -> numpy ops, maps

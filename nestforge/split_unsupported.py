@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Isolate library nodes the numpy emitter cannot externalize (MPI / pblas communication, sparse, and the
 other :data:`~nestforge.emit_libnode.REFUSED_LIBRARY_NODES`) so the whole-program / externalize lane can
 SPLIT AROUND them.

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """gramschmidt is the worked example for the FP-mode axis of the arena (see docs/FP_RISK.md).
 
 Its two ``np.dot`` reductions (``nrm = A[:,k].A[:,k]`` and ``R[k,j] = Q[:,k].A[:,j]``) each lower to a

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit a standalone numpy/python kernel from an extracted nest.
 
 Walks a state's dataflow topologically: library nodes -> the numpy op (via

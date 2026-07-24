@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E2 driver (C1/C2/C3): search speedup over the traditional baselines.
 
 The ratio's validity is the experiment, so most of these tests are about what must be held EQUAL across

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Fusion granularity as a search axis (paper Axis 1) -- Phase 1 of the 4-phase optimizer.
 
 Place in the pipeline:

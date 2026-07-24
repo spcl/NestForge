@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Extract EVERY compute nest a detection strategy finds, each from a FRESH SDFG.
 
 A kernel may split into several loop-nests. :func:`nestforge.extract.extract_nest_to_sdfg` mutates the

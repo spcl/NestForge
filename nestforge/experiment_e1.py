@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E1 driver (paper C1): the fusion-granularity x backend heatmap.
 
 C1 says the performance-optimal fusion partition is *backend-dependent* -- the winning granularity moves

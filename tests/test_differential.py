@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Per-nest full-program differential measurement. The swap logic is a unit test (no compile); the
 end-to-end build+run of the whole lowered program is an integration test (compiles + forks), gated on a
 working C toolchain so it never fails on a machine without one."""

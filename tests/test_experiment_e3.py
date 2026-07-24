@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E3 driver (C3): the offloading-granularity curve. The read-off logic is a unit test (synthetic cells, no
 compile); the end-to-end unit sweep is an integration test that compiles and forks, gated on a toolchain."""
 import numpy as np

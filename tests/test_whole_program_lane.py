@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The whole-program baseline lane (:mod:`nestforge.whole_program`): optimize the entire program as one
 unit and measure it, so the per-nest arena has an honest baseline to beat. Unit tests cover the
 whole-program optimizer + scope contract; one integration test builds + validates + times a real kernel's

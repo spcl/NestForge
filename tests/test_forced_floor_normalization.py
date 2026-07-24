@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Every nest-forge SDFG is normalized before anything measures it.
 
 Python's `//` on a sympy expression is `sympy.floor(...)`, which sympy distributes and codegen then

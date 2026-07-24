@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Whole-program baseline lane: optimize the ENTIRE un-split program as one unit and measure it.
 
 The baseline a per-nest result must beat -- otherwise a "win" may be something a whole-program optimizer

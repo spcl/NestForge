@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase-3 per-nest optimization API (:mod:`nestforge.optimize`): the knob-bundle grid the agent reads
 before choosing (``optimization_choices``), and the verb that turns a chosen bundle into ONE nest's
 build recipe (``optimize``). Recipe-level -- nothing compiles here except the one buildability gate that

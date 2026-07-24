@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for the runtime call-overhead job's pure logic (no compilation): the trampoline source
 generation, the C-signature param parse, the markdown table, and the plot reader (invoked as a subprocess,
 like the sbatch drivers do -- ``perf/`` is not a package). The full build+time path (three variants per

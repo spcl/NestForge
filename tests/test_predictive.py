@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Predictive mode (:mod:`nestforge.predictive`): rank optimizers without building them. The hardcoded
 strategy encodes one fixed policy -- no FP error, -O3, cheap vectorizer cost model -- and must be
 deterministic, prefer a strict-ieee + cheap cell, and push a declining optimizer to the bottom.

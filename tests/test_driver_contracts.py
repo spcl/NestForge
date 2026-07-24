@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CI contract tests for the perf drivers -- the cross-driver invariants that keep DRIFTING.
 
 nest-forge runs four near-copy drivers (tsvc_arena / tsvc_full / crosslang_xl / calloverhead) plus two

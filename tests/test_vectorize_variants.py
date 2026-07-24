@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Staged screening for the vectorization axis: static pruning / dedup, stable naming, and the
 coordinate-descent search. The pruning + descent logic is pure (no compile); one test builds a vectorized
 kernel through the owned build to confirm a VectorizeConfig actually round-trips to a correct .so."""

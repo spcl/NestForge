@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Granularity search policies (C4): exhaustive vs the scoped agentic hill-climb. Unit set, no compile --
 a synthetic cost table stands in for the differential harness, so the search logic and its COST are tested
 without building anything."""

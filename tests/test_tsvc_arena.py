@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC compiler-arena driver + adapter, plus the emitter user-function rewrites it depends on."""
 import ctypes
 import ctypes.util

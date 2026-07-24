@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit numpy operations for DaCe library nodes (BLAS / LinAlg / reductions / FFT).
 
 Re-emitting a library node as the equivalent numpy op keeps the reference dense so hpcagent_bench's

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Per-nest full-program DIFFERENTIAL measurement (paper method): optimize one nest, but always measure
 the WHOLE program with only that nest swapped.
 

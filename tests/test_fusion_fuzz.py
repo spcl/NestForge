@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Fuzz the Phase-2 arms: RANDOM programs x RANDOM fuse/fission sequences, asserting the three properties
 that make the arms safe for an agent to drive --
 

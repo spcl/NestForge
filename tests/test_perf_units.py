@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Compile-free unit tests for the perf/arena plumbing: signature parsing, FP-precision x cost-model flag
 composition, winner selection, and the markdown reporters -- pure logic on synthetic inputs, so no compiler
 needed (unlike the end-to-end ``test_tsvc_arena.py``, which compiles and skips without a toolchain).

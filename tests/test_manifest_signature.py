@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The manifest's stated invariant: ``input_args`` IS the emitted numpy kernel's positional signature.
 
 The two are consumed together (``translate.prepare`` / ``prepare_whole_program`` write the numpy source and

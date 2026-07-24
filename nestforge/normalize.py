@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Normalize an SDFG into the form the agent's text tree is projected from.
 
 The tree (:mod:`nestforge.introspect`) is the agent's whole view of the program, so every name it

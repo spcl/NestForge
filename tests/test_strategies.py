@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Detection strategies: skip-taskloops (default), innermost maps, innermost loops."""
 import pytest
 

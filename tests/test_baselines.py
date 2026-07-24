@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Baseline comparison lanes (paper C1/C2). Unit set, no compile: the baseline set is well-formed, each
 lane either proposes a recipe or records a skip_reason (never crashes), whole-program proposes at
 whole-program scope, and the Pluto lane is gated on its tool with a recorded reason."""

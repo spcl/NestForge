@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Per-device characterization (stage A of the vectorization + veclib selection): what SIMD ISAs the host
 supports, and how each installed vector-math library trades throughput against accuracy on this box.
 

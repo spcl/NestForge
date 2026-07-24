@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Static-offload end-to-end: lower a map-nest to ExternalCall, build the arena winner as a static
 ``lib<name>_nest.a``, link it INTO the parent SDFG's ``.so`` (``--whole-archive``, no rpath), and run.
 

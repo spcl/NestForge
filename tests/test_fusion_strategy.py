@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase-1 fusion-strategy API (:mod:`nestforge.fusion`): the named/registered granularity strategy that
 Phase 1 applies, and the guarantee that ``maximal-fusion`` reaches the same fixed point as draining the
 per-move arm surface -- so the deterministic default and the agent's move-by-move policy agree.

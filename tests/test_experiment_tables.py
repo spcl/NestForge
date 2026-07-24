@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The E1-E5 tables, checked as data.
 
 ``tests/data/experiments/`` holds the real tables the ``experiments`` workflow produced (run 29819716644).

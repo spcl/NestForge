@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stage-A device characterization: host-ISA expansion (shared by the vectorization sweep) and per-device
 vector-math-library ranking (throughput + ULP). Pure and fast; the one probe-compiling test skips without
 a C compiler."""

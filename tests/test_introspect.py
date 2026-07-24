@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Structure inspection + fuse diagnosis: describe_graph (CFG tree + per-nest read/write sets) and
 can_fuse ("yes" or a reason). can_fuse shares the exact gates of enumerate_fusions, so a "yes" here is a
 move apply_fusion would accept and a reason marks a pair that never appears in enumerate_fusions.

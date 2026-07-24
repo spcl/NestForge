@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Owns the DaCe build (BUILD.md): codegen + compile/link with one compiler, call via ctypes
 (manual init/program/exit) -- not ``dace.compile()``, whose ``__call__`` re-marshals args and
 confounds timing. Entry points: ``__dace_init_N``/``__program_N``/``__dace_exit_N``.

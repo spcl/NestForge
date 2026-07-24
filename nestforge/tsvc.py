@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC corpus adapter: the SDFG source (DaCe ``@dace.program``) and the native-baseline source
 (OptArena ``foundation`` track) for the TSVC-2 microkernels.
 

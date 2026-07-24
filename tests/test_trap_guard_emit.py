@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The numpy oracle must reproduce a kernel's precondition traps, not ignore them.
 
 Guards are built by the DaCe passes that really produce them, never by a hand-shaped stand-in.

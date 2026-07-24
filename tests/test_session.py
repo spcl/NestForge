@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the epoch-stamped-id safety layer over the 4-phase API, and the three distinct decision axes
 it exposes -- region structure (Level 1), nest fusion (Level 2), and offload (Phase 2). These tests cover
 the layer Session ADDS -- id minting, the stale-handle guard on every mutation, kind-checking, the

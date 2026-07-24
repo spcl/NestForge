@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """M0 end-to-end: lower a map-nest to ExternalCall, then run it two ways --
 (1) DaceReference (numpy->dace fallback/competitor), (2) ExternCall linking the arena winner --
 and check both reproduce the original SDFG."""

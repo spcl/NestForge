@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Graceful full-matrix degradation (compiler-free): when a compiler / language target is absent, the
 lane-3 enumeration must SHRINK the matrix -- recording an error cell for the missing coordinate -- and
 keep emitting real compile jobs for the coordinates that ARE available, never raise. Exercises the pure

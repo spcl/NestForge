@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC full-matrix job: every kernel of tsvc2 + tsvc2_5, three lanes, MEDIAN-of-N timing at a
 memory-bound profiling size.
 

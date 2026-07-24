@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Render arena results: for each nest and FP mode, the winning compiler x flag, plus the grid."""
 from __future__ import annotations
 

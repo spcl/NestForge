@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E4 driver (C4): quality vs cost, exhaustive oracle against the scoped agent. The scoring/read-off is a
 unit test (synthetic results, a fake measure -- no compile); the real measured run is integration."""
 import numpy as np

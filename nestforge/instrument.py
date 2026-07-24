@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bracket a nest with timing tasklets, so it is timed IN SITU while the whole program runs.
 
 Standalone timing loses the cache state, page mapping and surrounding threads, answering a different

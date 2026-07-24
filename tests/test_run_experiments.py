@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The E1-E5 runner script: argument handling and the JSON it writes. The table-shaping is unit-tested
 (no compile); a real bounded run is integration."""
 import json

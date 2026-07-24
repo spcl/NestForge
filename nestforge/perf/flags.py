@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared compile-flag matrix for the arena: **FP-precision level** axis crossed with a **vectorizer
 cost-model** axis, per compiler family, for C and Fortran (see ``docs/FP_PRECISION_LEVELS.md``).
 ``intel`` is split from ``llvm`` because icx/icpx/ifx default to ``-fp-model=fast``, so a bare

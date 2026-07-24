@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase 2 of the 4-phase optimizer: decide offload granularity.
 
 Phase 1 fixed the fusion granularity; Phase 2 decides WHICH nests leave the SDFG as external library

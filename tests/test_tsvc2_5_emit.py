@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit + run the tsvc2.5 kernels that exercise the harder control-flow / reduction / recurrence paths.
 
 Each kernel is extracted (baseline opt-mode), emitted to numpy, executed, and checked against a hand

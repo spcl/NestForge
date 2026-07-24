@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase-2 offload-granularity API (:mod:`nestforge.offload`): the named/registered granularity that
 selects which nests leave the SDFG as external calls, the non-mutating candidate inspector the agent
 reads before committing, and the externalize-before-offload commit.

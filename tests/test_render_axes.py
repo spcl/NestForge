@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The README configuration-space figure is generated from the live axis constants; this test is what
 keeps it honest. If someone adds a value to an axis tuple (a new opt-mode, codegen impl, veclib, ...) and
 forgets to regenerate, ``test_readme_figure_is_current`` fails with the fix command."""

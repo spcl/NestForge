@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The optimizer contract (:mod:`nestforge.optimizers`): each arena variant is a deterministic optimizer,
 and the agent is one more under the same contract.
 

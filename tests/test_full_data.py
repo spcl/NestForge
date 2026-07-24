@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Extraction passes whole arrays to the external call (no shrink/rebase to the accessed slice)."""
 import numpy as np
 import dace

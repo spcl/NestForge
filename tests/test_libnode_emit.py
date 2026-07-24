@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Direct numpy emission for library nodes that the corpus kernels wrap (Cholesky, TensorTranspose).
 
 The corpus kernels that use these nodes (cholesky2, stockham_fft) each carry a *separate* structural

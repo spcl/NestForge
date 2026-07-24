@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """``lower_nests_to_external_call``: detect nests via a strategy and swap each for an ``ExternalCall``.
 
 For each nest the strategy returns, extract it to a standalone SDFG, build the numpy + manifest

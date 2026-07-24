@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for the Pluto polyhedral lane helpers (:mod:`nestforge.perf.pluto_lane`).
 
 These exercise the compiler-free / polycc-free logic: locating the emitted scop, deriving sibling paths,

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E5 driver (C2): the non-affine case study.
 
 The classifier is tested against REAL SDFGs built through the production path (``tsvc.build_sdfg`` on

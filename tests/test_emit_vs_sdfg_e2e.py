@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """End-to-end: nest-forge's emitted code reproduces the DaCe SDFG, on the most complex corpus kernels.
 
 nest-forge lowers a DaCe SDFG to standalone numpy (:func:`sdfg_to_numpy`), which hpcagent_bench's ``numpyto``

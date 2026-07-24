@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The MAIN arena timing cells must link the OpenMP runtime the machine actually supports (from
 ``support_matrix.cached_default_runtime``), not the static ``flags.DEFAULT_OPENMP_RUNTIME`` -- mirroring
 the pluto lane. ``enumerate_cells`` reads the machine runtime ONCE and threads it into timing cells only;

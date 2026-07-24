@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Phase-2 fusion tool surface (:mod:`nestforge.fusion_arms`): enumerate legal fusion moves and apply
 them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
 against the un-fused reference. Exercises all three arms -- loop, vertical map, horizontal map -- and the

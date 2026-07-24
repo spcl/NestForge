@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Numpy emission for the symmetric-BLAS + LAPACK library nodes added to :mod:`nestforge.emit_libnode`
 (Symm / Syrk / Syr2k / Potrf), plus the explicit refusal of nodes with no faithful single-process numpy
 form (MPI/pblas communication, sparse, FPGA-stream, LAPACK factorizations that output pivots).

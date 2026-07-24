@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Parallel loop-nest coverage: the seq/parallel classifier + nested-map emission.
 
 ``is_parallel_nest`` routes each extracted nest to the OpenMP vs serial emit; the

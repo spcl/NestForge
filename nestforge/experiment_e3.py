@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E3 driver (paper C3): the offloading-granularity curve.
 
 C3 says choosing WHICH fine regions to externalize pays -- that a monolithic whole-program compile leaves

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Emit WCR (reduction) tasklet out-edges as augmented assignments and check they accumulate.
 
 A ``out[0] += a[i]`` reduction or a ``hist[bin] += w`` scatter is a tasklet whose output edge carries

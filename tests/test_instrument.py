@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Tests for nestforge.instrument: timing tasklets bracketing a nest, ordered by real graph edges.
 import numpy as np
 import pytest

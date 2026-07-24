@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E4 driver (paper C4): quality vs cost, traditional search against the scoped agent.
 
 C4 claims both optimizer classes drive the SAME granularity surface, and that the agent reaches

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Smoke tests for the repo's shell scripts (setup_apt / setup_spack / format) and the format gate.
 
 These don't run apt/spack/installs -- they guard that each script is syntactically valid, self-documents

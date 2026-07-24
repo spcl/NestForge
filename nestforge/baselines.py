@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Baseline comparison lanes (paper C1/C2): the traditional optimizers the per-nest granularity search is
 measured against. Each is an existing :class:`~nestforge.optimizers.Optimizer`, so no new build machinery:
 

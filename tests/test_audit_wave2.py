@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Second audit wave: the remaining findings from the full-repo review. Unit set, no compile.
 
 Covers the contract/robustness bugs that silently mislead rather than crash -- ``can_fuse`` disagreeing

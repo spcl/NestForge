@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Phase-2 agent's fusion tool surface: enumerate the legal fusion moves on an SDFG and apply one.
 
 Three arms, all validated single-pair DaCe transformations:

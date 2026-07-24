@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Offload correctness + overhead baseline over the optarena corpus (single compiler, single flag set).
 
 For each corpus nest this: (1) emits nest-forge's offload path (numpy -> translator C), builds it with

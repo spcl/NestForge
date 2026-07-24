@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The empirical support matrix: discover compilers + runtimes, find which (compilers, ONE runtime) combos
 actually build, link, load and run. Unit tests here exercise the LOGIC (ranking, nvhpc drop, cache) with
 synthetic cells; one integration test builds the real matrix on whatever compilers are present.

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Whole-program offload analysis (:mod:`nestforge.whole_program.offload_scopes`): externalize each nest
 into a call, then put each call in its OWN state -- the scope between the call and the host program, where
 offload is decided per-call (the externalize-before-offload invariant). Structural checks are unit tests;

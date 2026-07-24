@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the arena's configuration-space figure FROM the axis definitions, so it cannot drift.
 
 The axes already ARE module constants (``tsvc.OPT_MODES``, ``flags.COST_MODELS``/``PARALLEL_MODES``/

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regression tests for LATENT emit bugs found in the full-repo audit -- the classes that produce a WRONG
 or uncompilable numpy oracle rather than an obvious crash. Unit set, no compile.
 

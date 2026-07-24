@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """E5 driver (paper C2): the non-affine case study.
 
 C2 says the search runs at SDFG level over the normal form, so it reaches kernels a polyhedral scheduler

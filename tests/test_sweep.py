@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The sweep matrix stays BOUNDED (the guard against a runaway experiment) and the measurement ledger
 counts search cost. Unit set, no compile: cell counts and caps only."""
 import numpy as np

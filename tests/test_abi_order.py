@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The ABI-order contract: whatever order nest-forge binds ctypes arguments in MUST be the order the
 emitted kernel actually declares.
 

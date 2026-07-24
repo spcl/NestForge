@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC compiler-arena driver: run every kernel of tsvc2 + tsvc2_5 through the ``skip-taskloops``
 strategy and, for each kernel x compiler, report three runtime columns: 1) native baseline (the
 original ``_original.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The ASCII tree the agent reads (:func:`nestforge.introspect.describe_graph`).
 
 The tree is the agent's whole view of the program, so its FORMAT is an interface: a change to it

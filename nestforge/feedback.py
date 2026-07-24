@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase 4 of the 4-phase optimizer: change granularity from MEASUREMENTS, and loop.
 
 Phase 1 fixed a starting granularity, Phase 2 externalized it, Phase 3 tuned each nest. Phase 4 reads

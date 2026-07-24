@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Splitting the computation around an unsupported (non-emittable) library node into distinct states, so
 the externalize lane can offload the pure compute before/after it while the node itself stays native
 (:mod:`nestforge.split_unsupported`). An MPI ``Bcast`` stands in for the general unsupported node.

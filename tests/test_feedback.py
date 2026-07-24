@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase-4 feedback loop (:mod:`nestforge.feedback`): the measurement-driven granularity loop and its two
 rules -- ``best_outcome`` (fastest bit-exact wins) and ``improved`` (a round that does not improve stops
 the loop). Driven with a fake ``measure`` (no compiler), plus one real SDFG proving ``default_fuse_step``

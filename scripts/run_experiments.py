@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Run the paper's experiments (E1-E5) and write their tables as JSON.
 
 One entry point for every experiment, because the drivers must agree on the knobs that make their numbers

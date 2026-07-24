@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Staged screening for the DaCe multi-dim tile-op vectorization axis: turn the ~hundreds-of-cells
 VectorizeConfig product into a small, statically-pruned candidate set, then a coordinate-descent search
 that the arena times.

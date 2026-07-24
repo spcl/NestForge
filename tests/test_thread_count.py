@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The auto-par team must be sized by the cores THIS process may use -- not by the node.
 
 ``-ftree-parallelize-loops=N`` bakes N at compile time, so an N read off the whole machine is wrong

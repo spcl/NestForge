@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """``run_isolated`` must survive a live OpenMP pool in the parent -- whichever runtime holds it.
 
 ``fork()`` duplicates only the calling thread. A child that enters a parallel region while the parent's

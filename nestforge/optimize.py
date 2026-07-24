@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phase 3 of the 4-phase optimizer: optimize each externalized nest individually.
 
 Phase 1 fixed the fusion granularity; Phase 2 externalized the chosen nests (each is now an

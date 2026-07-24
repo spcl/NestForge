@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Run a compiled kernel in a forked child, so a segfault or runaway loop in freshly-compiled code
 cannot take down the parent (a pytest run or a sweep rank).
 

@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Cross-compiler x cross-language TSVC job at a fixed preset (XL by default).
 
 For every ``tsvc2``/``tsvc2_5`` kernel: extract the compute nest, translate to C and Fortran, compile

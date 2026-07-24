@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Read-only structure inspection for the agent (and the deterministic path).
 
 Two views, both non-mutating -- safe to call at any point in a session:

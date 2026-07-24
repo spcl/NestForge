@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ONE OpenMP runtime, globally, across every compiler and every lane -- the PARALLEL.md contract.
 
 Every node library and the driver must link the SAME OpenMP runtime, so that libraries built by
