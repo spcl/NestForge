@@ -212,7 +212,7 @@ def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inp
 
 def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, given=None) -> Dict:
     buffers = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (validation runs in place)
-    fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
+    fn, cargs, ptr_names, _time = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
     fn(*cargs)
     outs = {o: buffers[o] for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
@@ -222,7 +222,7 @@ def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, orac
 
 
 def native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps) -> Dict:
-    fn, cargs, _ = native_setup(so, symbol, sig, kernel, time_inputs, time_sizes)  # COW copy in this fork
+    fn, cargs, _ptr, _time = native_setup(so, symbol, sig, kernel, time_inputs, time_sizes)  # COW copy in this fork
     return summarize_times(collect_samples(fn, cargs, reps))
 
 

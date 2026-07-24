@@ -146,34 +146,46 @@ def native_symbol(text: str, expected: str) -> str:
     return m.group(1)
 
 
-def native_setup(so: Path, symbol: str, sig, kernel, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
-    """Bind ``_original.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``.
+#: The upstream single-kernel baselines (VectraArtifacts ``<key>_d_single.cpp``) carry a trailing
+#: ``std::int64_t* __restrict__ time_ns`` self-timing out-param. It is NOT a data buffer -- the kernel writes
+#: its own loop time there -- so it binds to a fresh scratch, is never validated, and the driver keeps its own
+#: perf_counter timing. The name is the fixed upstream convention.
+NATIVE_TIME_PARAM = "time_ns"
 
-    Native bounds are independent of nest buffers, so an OOB here is real -- run via
-    :func:`nestforge.isolation.run_isolated`.
+
+def native_setup(so: Path, symbol: str, sig, kernel, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
+    """Bind ``_original.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names, time_buf)``.
+
+    ``time_buf`` is the 1-element scratch bound to the kernel's :data:`NATIVE_TIME_PARAM` self-timing
+    out-param (``None`` when the baseline has none); the caller must keep the returned tuple alive across
+    the call, since ``cargs`` holds a raw pointer into it. Native bounds are independent of nest buffers, so
+    an OOB here is real -- run via :func:`nestforge.isolation.run_isolated`.
     :raises KeyError: on an unresolved pointer or scalar arg."""
     pool = {"iterations": 1, "vlen": 8}
     pool.update({s.lower(): int(v) for s, v in sizes.items()})
     pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
-    argtypes, ptr_names = [], []
+    argtypes, ptr_names, cargs = [], [], []
+    time_buf: Optional[np.ndarray] = None
     for name, base, is_ptr in sig:
         ct = C_BASE[base]
         if is_ptr:
-            if name not in buffers:
-                raise KeyError(f"native pointer arg {name!r} has no matching array buffer")
             argtypes.append(ctypes.POINTER(ct))
-            ptr_names.append(name)
+            if name in buffers:
+                ptr_names.append(name)
+                cargs.append(buffers[name].ctypes.data_as(ctypes.POINTER(ct)))
+            elif name == NATIVE_TIME_PARAM:
+                time_buf = np.zeros(1, np.int64)  # self-timing out-param, not a validated result
+                cargs.append(time_buf.ctypes.data_as(ctypes.POINTER(ct)))
+            else:
+                raise KeyError(f"native pointer arg {name!r} has no matching array buffer")
         else:
             if name.lower() not in pool:
                 raise KeyError(f"native scalar arg {name!r} unresolved")
             argtypes.append(ct)
+            cargs.append(ct(pool[name.lower()]))
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
-    cargs = [
-        buffers[name].ctypes.data_as(ctypes.POINTER(C_BASE[base])) if is_ptr else C_BASE[base](pool[name.lower()])
-        for name, base, is_ptr in sig
-    ]
-    return fn, cargs, ptr_names
+    return fn, cargs, ptr_names, time_buf
 
 
 # --- numbers + result IO ----------------------------------------------------------------------------

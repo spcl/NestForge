@@ -43,8 +43,8 @@ from nestforge import tsvc
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.build import compiler_family, compiler_version
 from nestforge.perf import flags
-from nestforge.perf.harness import (C_BASE, c_argtypes, call_c, fmt_us, geomean, my_slice, native_symbol, rank_and_size,
-                                    run_compile, signature_order)
+from nestforge.perf.harness import (c_argtypes, call_c, fmt_us, geomean, my_slice, native_setup, native_symbol,
+                                    rank_and_size, run_compile, signature_order)
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.translate import emit_sources, prepare
@@ -296,37 +296,12 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
     independent of the nest-sized buffers, so an OOB here segfaults only the child.
 
     :raises KeyError: on an unresolved pointer or scalar arg."""
-    pool = {"iterations": 1, "vlen": 8}
-    pool.update({s.lower(): int(v) for s, v in sizes.items()})
-    pool.update({k.lower(): int(v) for k, v in kernel.params.items()})
-    argtypes, ptr_names = [], []
-    for name, base, is_ptr in sig:
-        ct = C_BASE[base]
-        if is_ptr:
-            if name not in inputs:
-                raise KeyError(f"native pointer arg {name!r} has no matching array buffer")
-            argtypes.append(ctypes.POINTER(ct))
-            ptr_names.append(name)
-        else:
-            if name.lower() not in pool:
-                raise KeyError(f"native scalar arg {name!r} unresolved")
-            argtypes.append(ct)
-
-    fn = ctypes.CDLL(str(so))[symbol]
-    fn.argtypes, fn.restype = argtypes, None
-
-    def build_args():
-        return [
-            inputs[name].ctypes.data_as(ctypes.POINTER(C_BASE[base])) if is_ptr else C_BASE[base](pool[name.lower()])
-            for name, base, is_ptr in sig
-        ]
-
-    fn(*build_args())  # correctness run
+    fn, cargs, ptr_names, _time = native_setup(so, symbol, sig, kernel, inputs, sizes)
+    fn(*cargs)  # correctness run (mutates the in-place buffers cargs points at)
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "time_us": float("inf"), "unchecked": True}
     md = maxdiff({k: oracle[k] for k in outs}, outs)
-    cargs = build_args()
     fn(*cargs)  # warm
     t0 = time.perf_counter()
     for _ in range(reps):

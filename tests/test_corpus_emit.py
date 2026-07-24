@@ -154,8 +154,12 @@ def test_contour_integral_two_returns_solve_and_indirect_negate():
     rng = np.random.default_rng(1)
     crand = lambda shape: (rng.random(shape) + 1j * rng.random(shape)).astype(np.complex128)
     Ham, int_pts, Y = crand((slab + 1, NR, NR)), crand((32, )), crand((NR, NM))
+    # contour_radius is a read-only config scalar (the reference's 1.0 default = the unit circle); dace lowers
+    # it to a required by-value param -- the python kwarg default is lost -- so supply it, else it reads 0 and
+    # the |z| < radius residue negate never fires (garbage vs the oracle below, which uses 1.0).
     call, src = alloc_run("hpc/dense_linear_algebra/contour_integral/contour_integral", "contour_integral",
-                          dict(NR=NR, NM=NM, slab_per_bc=slab, num_int_pts=32), dict(Ham=Ham, int_pts=int_pts, Y=Y))
+                          dict(NR=NR, NM=NM, slab_per_bc=slab, num_int_pts=32),
+                          dict(Ham=Ham, int_pts=int_pts, Y=Y, contour_radius=1.0))
     assert "np.complex128(" in src and "dace." not in src  # casts normalized to numpy
 
     P0 = np.zeros((NR, NM), np.complex128)
