@@ -28,7 +28,7 @@ from dace.transformation.interstate.fuse_loops import FuseLoops
 from nestforge.extract import find_state_of_node
 
 
-@dataclass
+@dataclass(slots=True)
 class FusionMove:
     """One legal fusion the agent may apply. ``where`` maps the transformation's ``PatternNode`` names to
     the matched nodes (the ``apply_to`` / ``can_be_applied_to`` keyword arguments)."""

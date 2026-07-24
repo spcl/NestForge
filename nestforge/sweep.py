@@ -40,7 +40,7 @@ def parse_units(raw: str) -> Tuple[str, ...]:
 DEFAULT_UNITS: Tuple[str, ...] = parse_units(os.environ.get("NF_SWEEP_UNITS", ",".join(OFFLOAD_UNITS)))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SweepCell:
     """One point of the bounded sweep: a kernel, a fusion-granularity ladder rung, an offloading unit."""
     kernel: str
@@ -82,7 +82,7 @@ def sweep_cells(kernels: Sequence[tsvc.TsvcKernel],
     return cells
 
 
-@dataclass
+@dataclass(slots=True)
 class MeasureLedger:
     """Counts the whole-program measurements a search spent (the cost side of C4). ``tokens`` is the
     agent's extra budget, left 0 for a deterministic search."""

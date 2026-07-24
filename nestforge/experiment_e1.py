@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from nestforge.libnode import ExternalCall
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class E1Cell:
     """One heatmap cell: a kernel measured at one granularity rung with every nest built by one backend.
     ``median_us`` is ``inf`` (and ``ok`` False) when the build failed or the swapped program did not match

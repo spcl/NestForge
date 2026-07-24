@@ -44,7 +44,7 @@ def to_canonical_atoms(sdfg: dace.SDFG) -> None:
     fission_to_statements(sdfg)
 
 
-@dataclass
+@dataclass(slots=True)
 class GranularityPoint:
     """One partition on the atoms->maximal lattice: a name plus a policy that mutates an SDFG to it.
 

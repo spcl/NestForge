@@ -22,7 +22,7 @@ from dace.transformation import helpers
 NestNode = Union[nodes.MapEntry, LoopRegion, SDFGState]
 
 
-@dataclass
+@dataclass(slots=True)
 class Boundary:
     """The interface of an extracted nest, in the order the arena/libnode will use."""
     inputs: List[str]  # data read by the nest (NestedSDFG in-connectors)

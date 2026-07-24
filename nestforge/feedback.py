@@ -66,7 +66,7 @@ def improved(prior: List[Outcome], candidate: Outcome) -> bool:
     return best is None or candidate.median_us < best.median_us
 
 
-@dataclass
+@dataclass(slots=True)
 class FeedbackResult:
     """The loop's record: every round's outcome, the winner, the rounds run, and the granularity SDFG the
     winner was measured at (snapshotted whenever a round set a new best, so ``sdfg`` IS the best

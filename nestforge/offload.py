@@ -52,7 +52,7 @@ def label_nest(node: NestNode) -> str:
     raise TypeError(f"not an offload candidate: {type(node).__name__}")
 
 
-@dataclass
+@dataclass(slots=True)
 class OffloadCandidate:
     """One nest a granularity would externalize -- the parent SDFG it lives in, the nest node, a
     label, and whether its emitted kernel may carry an OpenMP parallel scope (see

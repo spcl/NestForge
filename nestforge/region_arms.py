@@ -26,7 +26,7 @@ from dace.sdfg.state import SDFGState
 from dace.transformation.interstate.state_fusion import StateFusion
 
 
-@dataclass
+@dataclass(slots=True)
 class RegionMove:
     """One legal region merge. ``where`` maps the transformation's ``PatternNode`` names to the matched
     control-flow blocks."""
@@ -42,14 +42,14 @@ def state_fusion_moves(sdfg: dace.SDFG) -> List[RegionMove]:
     """Adjacent ``SDFGState`` pairs ``StateFusion`` accepts -- the merge that dissolves the map barrier so
     cross-state maps become fusable. Enumerated across every control-flow region (recursive), mirroring
     :func:`nestforge.fusion_arms.enumerate_fusions`."""
-    moves: List[RegionMove] = []
-    for cfg in sdfg.all_control_flow_regions(recursive=True):
-        for edge in cfg.edges():
-            first, second = edge.src, edge.dst
-            if isinstance(first, SDFGState) and isinstance(second, SDFGState) and first is not second and \
-                    StateFusion.can_be_applied_to(sdfg, first_state=first, second_state=second):
-                moves.append(RegionMove("fuse-states", {"first_state": first, "second_state": second}, StateFusion))
-    return moves
+    return [
+        RegionMove("fuse-states", {
+            "first_state": edge.src,
+            "second_state": edge.dst
+        }, StateFusion) for cfg in sdfg.all_control_flow_regions(recursive=True) for edge in cfg.edges()
+        if isinstance(edge.src, SDFGState) and isinstance(edge.dst, SDFGState) and edge.src is not edge.dst
+        and StateFusion.can_be_applied_to(sdfg, first_state=edge.src, second_state=edge.dst)
+    ]
 
 
 def enumerate_region_fusions(sdfg: dace.SDFG) -> List[RegionMove]:

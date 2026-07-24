@@ -35,7 +35,7 @@ def set_precision_fp64() -> None:
     dfw.dc_complex_float = dace.complex128
 
 
-@dataclass
+@dataclass(slots=True)
 class CorpusKernel:
     """One optarena kernel that ships a ``@dace.program`` dace impl."""
     short_name: str  # registry key, e.g. "hpc/dense_linear_algebra/gemm/gemm"

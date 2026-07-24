@@ -49,6 +49,7 @@ PARSEABLE_SUFFIXES = {'.py': 'numpy', '.sdfg': 'sdfg', '.sdfgz': 'sdfg'}
 
 class InputKind(enum.Enum):
     """What the caller handed us, after disambiguation."""
+    # no __slots__: Enum
     C_SOURCE = 'c_source'
     CPP_SOURCE = 'cpp_source'
     FORTRAN_SOURCE = 'fortran_source'  # compile as-is
@@ -59,6 +60,7 @@ class InputKind(enum.Enum):
 
 class SearchSpace(enum.Enum):
     """Which axes the sweep may move. The input decides; an agent never changes it."""
+    # no __slots__: Enum
     FLAGS = 'flags'  # the code is fixed, only the compiler invocation varies
     CODEGEN = 'codegen'  # we generate the C++, so codegen varies too
 
@@ -174,13 +176,14 @@ def broad_codegen_axes(budget: int = VARIANT_BUDGET) -> Dict[str, Sequence]:
 
 class AgentMode(enum.Enum):
     """What an agent is asking us to do with its candidate."""
+    # no __slots__: Enum
     #: The agent fixes part of the configuration; we sweep whatever it left open, around that point.
     SEARCH = 'search'
     #: The agent has already decided. Build exactly this, measure it, do not explore around it.
     EXACT = 'exact'
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AgentVariant:
     """A candidate an agent supplies directly, rather than one the sweep enumerates.
 
@@ -218,7 +221,7 @@ class AgentVariant:
         return total
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SearchPlan:
     """The decision, before anything is compiled.
 

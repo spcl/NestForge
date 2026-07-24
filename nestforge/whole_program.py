@@ -28,7 +28,7 @@ from nestforge.split_unsupported import isolate_into_own_state
 from nestforge.translate import prepare_whole_program
 
 
-@dataclass
+@dataclass(slots=True)
 class WholeProgramResult:
     """One whole-program measurement. ``median_us`` is ``inf`` and ``error`` is set when the build or the
     forked run failed; ``ok`` is the bit-exact verdict vs the whole-program numpy oracle."""
@@ -121,7 +121,7 @@ def measure_whole_program(optimizer: Optimizer,
 # Order is fixed: externalize each nest into a call FIRST, then let a tool decide offloadability. A lane
 # that pre-decides offload would have its decision invalidated by a later extraction. Each call gets its
 # own state -- the scope where the host<->device transfer lives -- so calls decide independently.
-@dataclass
+@dataclass(slots=True)
 class OffloadScope:
     """One externalized call as an INDEPENDENT offload unit. ``inputs`` cross INTO the scope
     (host->device on offload), ``outputs`` cross OUT; ``offloadable`` is the per-call decision (injected,

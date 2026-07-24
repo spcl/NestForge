@@ -40,10 +40,7 @@ def subset_indices(memlet: dace.Memlet) -> List[sympy.Expr]:
     subset = memlet.subset
     if subset is None:
         return []
-    exprs: List[sympy.Expr] = []
-    for rng in subset.ndrange():
-        exprs.extend(sympy.sympify(part) for part in rng)
-    return exprs
+    return [sympy.sympify(part) for rng in subset.ndrange() for part in rng]
 
 
 #: DaCe names the symbol carrying a loaded value ``__sym_<array>``, which is how an indirection survives
@@ -119,7 +116,7 @@ def polyhedral_schedulable(sdfg: dace.SDFG) -> Tuple[bool, str]:
     return True, ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class E5Row:
     """One case-study kernel. ``schedulable`` is the polyhedral verdict (``reason`` says why not);
     ``speedup`` is ``coarsest_us / best_us`` -- what searching granularity bought over not searching."""

@@ -46,7 +46,7 @@ BASELINE_DRIVER = {"gcc": "g++", "clang": "clang++"}
 NO_FP_CONTRACT = "-ffp-contract=off"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class E2Row:
     """One (kernel, backend, baseline) comparison. ``speedup`` is ``baseline_us / search_us`` -- above 1.0
     means the search won. It is ``nan`` when either side has no valid measurement, and ``error`` says

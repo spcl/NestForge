@@ -30,7 +30,7 @@ from nestforge.perf import flags
 BASELINE_OPT_MODE = "simplify-parallel"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Proposal:
     """A named recipe for ONE variant of a nest -- exactly what the arena measure path consumes.
 
@@ -75,6 +75,7 @@ class Optimizer(abc.ABC):
     fixed compiler/flag/opt-mode choice -- while the agent and the predictor read the nest.
     """
     name: str
+    __slots__ = ()
 
     @abc.abstractmethod
     def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
@@ -84,6 +85,8 @@ class Optimizer(abc.ABC):
 class DaceOptimizer(Optimizer):
     """One DaCe-lane variant: a fixed ``(opt_mode, BuildOptions)``. Never declines (the DaCe lane builds any
     nest)."""
+
+    __slots__ = ("opt_mode", "build", "name")
 
     def __init__(self, opt_mode: str, build: BuildOptions, name: Optional[str] = None) -> None:
         if opt_mode not in tsvc.OPT_MODES:
@@ -105,6 +108,8 @@ class ExternalOptimizer(Optimizer):
     (``lane_flags`` returns ``(None, reason)`` -- e.g. clang auto-par), the optimizer DECLINES: ``propose``
     returns ``None`` and ``skip_reason`` records why, exactly as a variant is dropped with a reason today.
     """
+
+    __slots__ = ("language", "family", "compiler", "fp_mode", "cost_model", "name", "flags", "skip_reason")
 
     def __init__(self,
                  language: str,
@@ -151,12 +156,13 @@ class NoOpAgent(Optimizer):
     Mirrors ``optarena.harness.optimizers.NoOpOptimizer``. Never runs inference -- there is none to run.
     """
     name = "noop"
+    __slots__ = ()
 
     def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
         return Proposal(self.name, "dace", opt_mode=BASELINE_OPT_MODE, build=BuildOptions())
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Outcome:
     """What one measured round tells an agent: did the proposal build, was it bit-exact, how fast.
 
@@ -180,6 +186,8 @@ class AgenticOptimizer(Optimizer):
     ``max_rounds`` is the hard stop. It is the agent's own bound, not the caller's politeness: an agent that
     never says ``stop`` must still terminate, or a CI job hangs instead of failing.
     """
+
+    __slots__ = ("max_rounds", "rounds", "observed")
 
     def __init__(self, max_rounds: int = 1) -> None:
         if max_rounds < 1:
@@ -208,6 +216,7 @@ class StubAgent(AgenticOptimizer):
     is a different class; this one deliberately makes no move at all.
     """
     name = "stub-agent"
+    __slots__ = ()
 
     def propose(self, nest: Optional[object] = None) -> Optional[Proposal]:
         if self.rounds >= self.max_rounds:
@@ -229,6 +238,8 @@ class WholeProgramOptimizer(Optimizer):
     anything" the lane accepts -- so this class is the non-AI floor, not the only whole-program optimizer.
     Consumed by :func:`nestforge.whole_program.measure_whole_program`.
     """
+
+    __slots__ = ("opt_mode", "build", "name")
 
     def __init__(self,
                  opt_mode: str = "auto-opt",

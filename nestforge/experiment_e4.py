@@ -42,7 +42,7 @@ STRATEGIES: Dict[str, Callable] = {"exhaustive": exhaustive_search, "hillclimb":
 ORACLE = "exhaustive"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class E4Row:
     """One (kernel, backend, strategy) run. ``quality`` is ``oracle_us / best_us`` (1.0 = found the
     optimum); ``measurements`` is what it spent. ``ok`` is False when the strategy never measured a valid

@@ -26,7 +26,7 @@ from typing import Callable, Optional, Sequence
 from nestforge.sweep import MeasureLedger
 
 
-@dataclass
+@dataclass(slots=True)
 class SearchResult:
     """The winning rung, its measured time, and the ledger of what the search spent to find it."""
     best: str

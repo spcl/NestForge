@@ -20,7 +20,7 @@ from typing import List, Optional, Sequence
 from nestforge.optimizers import Optimizer, Proposal
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Prediction:
     """A predicted score for one optimizer. Higher ``score`` = predicted faster/preferred. ``reason`` is a
     short human string (the hardcoded strategy fills it with which policy clauses matched); ``proposal`` is
@@ -35,6 +35,8 @@ class Predictor(abc.ABC):
     """Rank optimizers for a nest without building them. Deterministic: same nest + same optimizers ->
     same ranking. The real cost model will subclass this; every caller goes through :meth:`rank` /
     :meth:`choose`, so the policy is swappable behind one contract."""
+
+    __slots__ = ()
 
     @abc.abstractmethod
     def rank(self, nest: Optional[object], optimizers: Sequence[Optimizer]) -> List[Prediction]:
@@ -64,6 +66,8 @@ class HardcodedStrategy(Predictor):
     A DaCe-lane variant is strict-ieee by construction, so it scores the FP clause too; among equals the
     cheap-cost external cell wins, matching the stated "cheap cost model for vectorization globally".
     """
+
+    __slots__ = ()
 
     STRICT_FP = 2.0
     CHEAP_COST = 1.0

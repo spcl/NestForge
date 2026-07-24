@@ -88,6 +88,8 @@ def proto_and_call(node: "ExternalCall", state: dace.SDFGState) -> Tuple[str, st
                          f"Cell). Falling back to the manifest's role order would silently mis-declare the ABI.")
     params: List[str] = []
     call_args: List[str] = []
+    in_conns = node.in_connectors  # cache the leaf: a dace Property, re-resolved every access otherwise
+    out_conns = node.out_connectors
     for arg in order:
         if arg in arrays:
             dt = dtypes_map[arg]
@@ -100,7 +102,7 @@ def proto_and_call(node: "ExternalCall", state: dace.SDFGState) -> Tuple[str, st
             c = _CPP_SCALAR[dt]
             const = "" if arg in outputs else "const "
             conn = connector_for(arg, outputs)
-            if conn not in node.in_connectors and conn not in node.out_connectors:
+            if conn not in in_conns and conn not in out_conns:
                 # The compiled signature takes an argument this node has no connector for -- typically a
                 # caller-allocated SCRATCH transient, which the emitted C exposes as a parameter but which
                 # never crosses the ExternalCall boundary. Emitting the call anyway would reference an
@@ -126,6 +128,8 @@ class ExternLibEnv:
     registry-resolvable) class right before expansion. M0 assumes one extern call per build;
     per-node isolation is an M1 concern.
     """
+    __slots__ = ()  # never instantiated: consumed purely as a class (dace resolves environments by class)
+
     cmake_minimum_version = None
     cmake_packages = []
     cmake_variables = {}
@@ -170,6 +174,7 @@ class ExternLibEnv:
 @dace.library.expansion
 class ExpandDaceReference(ExpandTransformation):
     """Rebuild the extracted nest as a NestedSDFG (DaCe competitor / correctness fallback)."""
+    # no __slots__: dace ExpandTransformation (make_properties, __dict__-based)
     environments = []
 
     @staticmethod
@@ -182,6 +187,7 @@ class ExpandDaceReference(ExpandTransformation):
 @dace.library.expansion
 class ExpandExternCall(ExpandTransformation):
     """Call the extern-C entry of the chosen compiled ``.so`` from a CPP tasklet."""
+    # no __slots__: dace ExpandTransformation (make_properties, __dict__-based)
     environments = []
 
     @staticmethod
@@ -204,6 +210,8 @@ class ExpandExternCall(ExpandTransformation):
 @dace.library.node
 class ExternalCall(nodes.LibraryNode):
     """A loop-/map-nest lowered to an external, separately-compiled call."""
+    # no __slots__: dace LibraryNode (make_properties, __dict__-based); also carries _standalone_sdfg,
+    # an in-memory-only attr outside the Property schema.
 
     implementations = {"DaceReference": ExpandDaceReference, "ExternCall": ExpandExternCall}
     default_implementation = "DaceReference"

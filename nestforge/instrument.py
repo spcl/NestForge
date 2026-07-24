@@ -23,7 +23,7 @@ CLOCK_READ = ('__out = static_cast<unsigned long long>('
 CLOCK_INCLUDE = '#include <chrono>'
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class NestTimers:
     """Handles to an instrumented nest.
 
