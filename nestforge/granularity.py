@@ -32,7 +32,7 @@ from dace.transformation.passes.canonicalize.normalize_floor_division import Nor
 from dace.sdfg.state import LoopRegion
 
 from nestforge.fission_arms import fission_to_statements
-from nestforge.fusion import apply_fusion, enumerate_fusions
+from nestforge.fusion import apply_fusion, first_fusion
 from nestforge.strategies import top_level_map_entries
 
 
@@ -72,10 +72,10 @@ def fuse_first_k(k: int) -> Callable[[dace.SDFG], None]:
     def apply(sdfg: dace.SDFG) -> None:
         to_canonical_atoms(sdfg)
         for _ in range(k):
-            moves = enumerate_fusions(sdfg)
-            if not moves:
+            move = first_fusion(sdfg)
+            if move is None:
                 break
-            apply_fusion(sdfg, moves[0])
+            apply_fusion(sdfg, move)
         # Forced: fission/fusion build indices with python `//` on sympy expressions, which is
         # sympy floor() -- distributed by sympy and printed without the floor, so the index
         # truncates term by term. Every rung is normalized before anything measures it.
@@ -91,10 +91,10 @@ def fusion_depth(sdfg: dace.SDFG) -> int:
     to_canonical_atoms(probe)
     depth = 0
     while True:
-        moves = enumerate_fusions(probe)
-        if not moves:
+        move = first_fusion(probe)
+        if move is None:
             return depth
-        apply_fusion(probe, moves[0])
+        apply_fusion(probe, move)
         depth += 1
 
 

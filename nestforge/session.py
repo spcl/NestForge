@@ -251,8 +251,8 @@ class Session:
         sets. Ids feed :meth:`can_fuse`; the sets tell the agent what each nest computes. These are the units
         Level-2 fusion operates on -- distinct from the offload candidates of :meth:`list_offload_candidates`."""
         out: List[dict] = []
-        for nest in fusion_units(self.sdfg):
-            reads, writes = unit_reads_writes(self.sdfg, nest)
+        for container, nest in fusion_units(self.sdfg):
+            reads, writes = nest_reads_writes(container, nest)
             hid = self.mint("nest", nest)
             out.append({
                 "id": hid,
@@ -508,14 +508,19 @@ def cell_summary(cell: Cell) -> dict:
     }
 
 
-def fusion_units(sdfg: dace.SDFG) -> List:
-    """The fusable units of ``sdfg``: every top-level map-nest (per state) plus every loop-nest (recursive)
-    -- exactly the node kinds :func:`can_fuse` accepts. Matches what :func:`introspect.describe_graph` walks."""
-    units: List = []
+def fusion_units(sdfg: dace.SDFG) -> List[Tuple[object, Union[nodes.MapEntry, LoopRegion]]]:
+    """The fusable units of ``sdfg`` as ``(container, node)`` pairs: every loop-nest (recursive) and every
+    top-level map-nest (per state) -- exactly the node kinds :func:`can_fuse` accepts, matching what
+    :func:`introspect.describe_graph` walks. ``container`` is the ``SDFGState`` holding a map (what
+    :func:`introspect.nest_reads_writes` needs) or the SDFG itself for a loop (which carries its own
+    states, so the container is ignored there). Carrying it here is why :meth:`Session.list_nests` needs
+    no ``find_state_of_node`` -- the state is already known at the point each map is collected."""
+    units: List[Tuple[object, Union[nodes.MapEntry, LoopRegion]]] = []
     for cfg in sdfg.all_control_flow_regions(recursive=True):
         for node in cfg.nodes():
             if isinstance(node, LoopRegion):
-                units.append(node)
+                units.append((sdfg, node))
     for state in sdfg.all_states():
-        units.extend(top_level_map_entries(state))
+        for entry in top_level_map_entries(state):
+            units.append((state, entry))
     return units

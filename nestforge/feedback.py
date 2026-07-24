@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 import dace
-from nestforge.fusion_arms import apply_fusion, enumerate_fusions
+from nestforge.fusion_arms import apply_fusion, first_fusion
 from nestforge.optimizers import AgenticOptimizer, Outcome, run_agent_loop
 
 #: A granularity move: mutate the SDFG in place, return True if a move applied, False at the fixed point.
@@ -43,10 +43,10 @@ def default_fuse_step(sdfg: dace.SDFG) -> bool:
     The default Phase-4 lever: fuse back up from a fine granularity one move at a time, re-enumerating
     after each (applying one stales the rest). Swap in a fission step for the other direction.
     """
-    moves = enumerate_fusions(sdfg)
-    if not moves:
+    move = first_fusion(sdfg)
+    if move is None:
         return False
-    apply_fusion(sdfg, moves[0])
+    apply_fusion(sdfg, move)
     return True
 
 

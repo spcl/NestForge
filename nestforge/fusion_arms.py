@@ -15,7 +15,8 @@ Fission (the other half of the Phase-2 lever) lives separately; this module is t
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Type
+from itertools import chain
+from typing import Dict, Iterator, List, Optional, Type
 
 import dace
 from dace.sdfg import nodes
@@ -39,9 +40,9 @@ class FusionMove:
         return f"{self.kind}({', '.join(str(n) for n in self.where.values())})"
 
 
-def loop_fusion_moves(sdfg: dace.SDFG) -> List[FusionMove]:
-    """Adjacent ``LoopRegion`` pairs FuseLoops accepts (single sequencing edge, same range, legal)."""
-    moves: List[FusionMove] = []
+def iter_loop_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
+    """Adjacent ``LoopRegion`` pairs FuseLoops accepts (single sequencing edge, same range, legal), yielded
+    lazily so :func:`first_fusion` can stop at the first without scanning the rest."""
     for cfg in sdfg.all_control_flow_regions(recursive=True):
         for first in cfg.nodes():
             if not isinstance(first, LoopRegion):
@@ -52,15 +53,17 @@ def loop_fusion_moves(sdfg: dace.SDFG) -> List[FusionMove]:
             second = out[0].dst
             if isinstance(second, LoopRegion) and second is not first and \
                     FuseLoops.can_be_applied_to(sdfg, first=first, second=second):
-                moves.append(FusionMove("fuse-loops", {"first": first, "second": second}, FuseLoops))
-    return moves
+                yield FusionMove("fuse-loops", {"first": first, "second": second}, FuseLoops)
 
 
-def vertical_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
+def loop_fusion_moves(sdfg: dace.SDFG) -> List[FusionMove]:
+    return list(iter_loop_fusion_moves(sdfg))
+
+
+def iter_vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Producer->consumer map pairs through a TRANSIENT intermediate that MapFusionVertical accepts. A
     non-transient intermediate is a real output -- fusing it away would drop a live result -- so only
-    transients are offered."""
-    moves: List[FusionMove] = []
+    transients are offered. Lazy (see :func:`first_fusion`)."""
     for state in sdfg.all_states():
         for node in state.nodes():
             if not (isinstance(node, nodes.AccessNode) and sdfg.arrays[node.data].transient):
@@ -70,18 +73,21 @@ def vertical_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
             for mx in producers:
                 for me in consumers:
                     if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=mx, array=node, second_map_entry=me):
-                        moves.append(
-                            FusionMove("fuse-map-vertical", {
-                                "first_map_exit": mx,
-                                "array": node,
-                                "second_map_entry": me
-                            }, MapFusionVertical))
-    return moves
+                        yield FusionMove("fuse-map-vertical", {
+                            "first_map_exit": mx,
+                            "array": node,
+                            "second_map_entry": me
+                        }, MapFusionVertical)
 
 
-def horizontal_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
-    """Sibling map pairs (same scope, parallel, same range) that MapFusionHorizontal accepts."""
-    moves: List[FusionMove] = []
+def vertical_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
+    return list(iter_vertical_map_moves(sdfg))
+
+
+def iter_horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
+    """Sibling map pairs (same scope, parallel, same range) that MapFusionHorizontal accepts. Lazy: the
+    O(entries^2) ``can_be_applied_to`` scan stops at the first legal pair when consumed via
+    :func:`first_fusion`."""
     for state in sdfg.all_states():
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
@@ -92,12 +98,14 @@ def horizontal_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
                 if MapFusionHorizontal.can_be_applied_to(sdfg,
                                                          first_parallel_map_entry=first,
                                                          second_parallel_map_entry=second):
-                    moves.append(
-                        FusionMove("fuse-map-horizontal", {
-                            "first_parallel_map_entry": first,
-                            "second_parallel_map_entry": second
-                        }, MapFusionHorizontal))
-    return moves
+                    yield FusionMove("fuse-map-horizontal", {
+                        "first_parallel_map_entry": first,
+                        "second_parallel_map_entry": second
+                    }, MapFusionHorizontal)
+
+
+def horizontal_map_moves(sdfg: dace.SDFG) -> List[FusionMove]:
+    return list(iter_horizontal_map_moves(sdfg))
 
 
 def enumerate_fusions(sdfg: dace.SDFG) -> List[FusionMove]:
@@ -105,6 +113,18 @@ def enumerate_fusions(sdfg: dace.SDFG) -> List[FusionMove]:
     (:func:`apply_fusion`), and re-enumerates -- applying a fusion invalidates the other moves' node
     references."""
     return loop_fusion_moves(sdfg) + vertical_map_moves(sdfg) + horizontal_map_moves(sdfg)
+
+
+def first_fusion(sdfg: dace.SDFG) -> Optional[FusionMove]:
+    """The first legal fusion move, in the SAME order :func:`enumerate_fusions` lists them (loop, then
+    vertical, then horizontal) -- i.e. exactly ``enumerate_fusions(sdfg)[0]`` when one exists, else
+    ``None``. Stops at the first hit instead of materializing every arm: the greedy granularity policies
+    (:func:`nestforge.granularity.fuse_first_k`, :func:`nestforge.granularity.fusion_depth`,
+    :func:`nestforge.feedback.default_fuse_step`) apply one move then re-scan, so they only ever use
+    ``moves[0]`` -- building the whole list (notably the O(entries^2) horizontal ``can_be_applied_to``
+    sweep) just to discard all but the first is wasted work."""
+    return next(chain(iter_loop_fusion_moves(sdfg), iter_vertical_map_moves(sdfg), iter_horizontal_map_moves(sdfg)),
+                None)
 
 
 def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
