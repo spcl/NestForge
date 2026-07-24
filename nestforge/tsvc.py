@@ -36,7 +36,7 @@ from hpcagent_bench.initialize import fill_index_array
 from hpcagent_bench.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
-from nestforge.extract import trip_count_symbols
+from nestforge.extract import Boundary, trip_count_symbols
 from nestforge.fusion import get_fusion_strategy
 
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
@@ -269,7 +269,7 @@ def shape_symbols(sdfg: dace.SDFG) -> set:
 
 
 def sample_sizes(kernel: TsvcKernel,
-                 boundary,
+                 boundary: Boundary,
                  seed: int = 0,
                  random_sizes: bool = False,
                  preset: Optional[str] = None) -> Dict[str, int]:
@@ -332,7 +332,10 @@ def sample_sizes(kernel: TsvcKernel,
     return sizes
 
 
-def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
+def index_fills(kernel: TsvcKernel,
+                boundary: Boundary,
+                sizes: Dict[str, int],
+                seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
     """Valid-subscript values for the nest's integer INDEX arrays, as the kernel's OptArena manifest
     declares them. Feed the result to :func:`nestforge.arena.make_inputs` as ``given``.
 
@@ -348,7 +351,7 @@ def index_fills(kernel: TsvcKernel, boundary, sizes: Dict[str, int], seed: Optio
 
 
 def index_fills_for_manifest(manifest_name: Optional[str],
-                             boundary,
+                             boundary: Boundary,
                              sizes: Dict[str, int],
                              seed: Optional[int] = 0) -> Dict[str, np.ndarray]:
     """:func:`index_fills` keyed by the OptArena manifest NAME rather than a :class:`TsvcKernel`, for a

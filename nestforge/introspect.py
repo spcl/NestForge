@@ -23,14 +23,14 @@ non-transients and free symbols are left.
 from __future__ import annotations
 
 import ast
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import dace
 from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowRegion, LoopRegion, ReturnBlock,
-                             SDFGState)
+from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowBlock, ControlFlowRegion,
+                             LoopRegion, ReturnBlock, SDFGState)
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
@@ -51,7 +51,7 @@ Handle = Callable[[str, object], str]
 class Substitute(ast.NodeTransformer):
     """Replace each ``Name`` that has a definition with that definition's expression."""
 
-    def __init__(self, definitions: Dict[str, str]):
+    def __init__(self, definitions: Dict[str, str]) -> None:
         self.definitions = definitions
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
@@ -246,7 +246,7 @@ def loop_domain(loop: LoopRegion, defs: Dict[str, str]) -> str:
     return resolve_scalars(loop.loop_condition.as_string, defs) if loop.loop_condition is not None else ""
 
 
-def render_range(rng) -> str:
+def render_range(rng: Tuple[Any, Any, Any]) -> str:
     """``begin:end:step`` with the two redundant parts dropped -- an inclusive end is rendered as the
     exclusive bound a reader expects, and a unit step is left off."""
     begin, end, step = rng
@@ -272,8 +272,8 @@ def stamp(text: str, handle: Optional[Handle], kind: str, obj: object) -> str:
     return f"[{handle(kind, obj)}] {text}" if handle is not None else text
 
 
-def walk_regions(cfg, prefix: str, lines: List[str], handle: Optional[Handle], defs: Dict[str, str],
-                 bodies: bool) -> None:
+def walk_regions(cfg: Union[dace.SDFG, ControlFlowRegion], prefix: str, lines: List[str], handle: Optional[Handle],
+                 defs: Dict[str, str], bodies: bool) -> None:
     """Render one CFG's blocks under ``prefix``, recursing. ``prefix`` carries the guides of every
     ancestor, so a child knows whether to draw a pipe or a blank beneath each of them."""
     blocks = in_order(cfg)
@@ -309,7 +309,7 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
         return  # a state with no kernels: do not pay for the topological order nobody will read
     rank = {id(n): i for i, n in enumerate(in_order(state))}
 
-    def descend(scope, pad: str) -> None:
+    def descend(scope: Optional[nodes.MapEntry], pad: str) -> None:
         kernels = [
             n for n in sorted(children[scope], key=lambda n: rank.get(id(n), 0))
             if isinstance(n, (nodes.MapEntry, nodes.LibraryNode))
@@ -326,7 +326,7 @@ def walk_state(state: SDFGState, prefix: str, lines: List[str], handle: Optional
     descend(None, prefix)
 
 
-def block_line(block, defs: Dict[str, str]) -> str:
+def block_line(block: ControlFlowBlock, defs: Dict[str, str]) -> str:
     """One control-flow block's line: its canonical label, plus the domain or condition that says what
     it does. Nothing else -- a fact that holds for every block of a kind belongs in the skills, not on
     every row."""

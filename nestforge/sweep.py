@@ -90,7 +90,7 @@ class MeasureLedger:
     tokens: int = 0
     seen: List[str] = field(default_factory=list)
 
-    def measure(self, label: str, fn: Callable):
+    def measure(self, label: str, fn: Callable[[], float]) -> float:
         """Run one measurement, counting it. ``label`` records which cell was measured (for the ledger dump
         and to spot a search re-measuring a cell it already saw)."""
         self.measurements += 1

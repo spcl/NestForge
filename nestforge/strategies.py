@@ -7,11 +7,11 @@ pass must know which SDFG to operate on). ``outer`` is the default. New strategi
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple, Type, Union
 
 import dace
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.state import ControlFlowRegion, LoopRegion
 
 from nestforge.extract import NestNode
 
@@ -132,7 +132,7 @@ def skip_taskloops(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
     return refs
 
 
-def region_has(region, node_types) -> bool:
+def region_has(region: Union[dace.SDFG, ControlFlowRegion], node_types: Tuple[Type, ...]) -> bool:
     """True if any state anywhere in a control-flow region holds a node of the given types."""
     return any(
         isinstance(n, node_types) for block in region.all_control_flow_blocks() if isinstance(block, dace.SDFGState)

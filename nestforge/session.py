@@ -26,11 +26,11 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import dace
 from dace.sdfg import nodes
-from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
+from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.dataflow.map_fission import MapFission
 
 from nestforge.arena import Cell, run_arena
@@ -62,7 +62,7 @@ class StaleHandle(KeyError):
     """Raised when an id from a past epoch is used -- the graph moved under it; re-list and retry."""
 
 
-def unit_reads_writes(parent: dace.SDFG, node) -> Tuple[List[str], List[str]]:
+def unit_reads_writes(parent: dace.SDFG, node: Union[nodes.MapEntry, LoopRegion]) -> Tuple[List[str], List[str]]:
     """``(reads, writes)`` for one nest, whichever kind it is (map needs its state; loop reads its own
     read/write sets). Thin adapter over :func:`introspect.nest_reads_writes`."""
     container = find_state_of_node(parent, node) if isinstance(node, nodes.MapEntry) else parent
@@ -72,7 +72,7 @@ def unit_reads_writes(parent: dace.SDFG, node) -> Tuple[List[str], List[str]]:
 class Session:
     """Server-side owner of one SDFG and the id registry the agent drives it through."""
 
-    def __init__(self, sdfg: dace.SDFG, name: Optional[str] = None, work_dir: Optional[str] = None):
+    def __init__(self, sdfg: dace.SDFG, name: Optional[str] = None, work_dir: Optional[str] = None) -> None:
         self.sdfg = sdfg
         self.name = name or sdfg.label
         self.epoch = 0
@@ -437,7 +437,7 @@ class Session:
 
     # --- region-tree walk (used by region_tree / fuse_regions) ------------------------------------
 
-    def region_id(self, block) -> str:
+    def region_id(self, block: ControlFlowBlock) -> str:
         """A STABLE, purely descriptive id for a control-flow container in :meth:`region_tree`.
 
         Deliberately not a minted handle: ``region_tree`` is a read view, and no method resolves a
@@ -447,7 +447,7 @@ class Session:
         """
         return f"region:{block.label}"
 
-    def region_node(self, cfg) -> dict:
+    def region_node(self, cfg: Union[dace.SDFG, ControlFlowRegion]) -> dict:
         """One control-flow region as structured data: an id, its label/type, and its child blocks."""
         return {
             "id": self.region_id(cfg),
@@ -456,7 +456,7 @@ class Session:
             "children": [self.block_node(block) for block in cfg.nodes()],
         }
 
-    def block_node(self, block) -> dict:
+    def block_node(self, block: ControlFlowBlock) -> dict:
         """One block inside a region: a State (a barrier, listing its nests) or a nested region (recurse)."""
         if isinstance(block, SDFGState):
             nests = []

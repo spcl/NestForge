@@ -12,10 +12,11 @@ The numpy kernel's arg order (from :mod:`nestforge.emit_numpy`) must match ``inp
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+import dace
 from dace import symbolic
 
 from nestforge.emit_numpy import expand_nested_sdfg_inputs, maxsize_loop_scratch, scratch_arrays
@@ -27,7 +28,7 @@ DEFAULT_SIZE = 1 << 16
 FLOAT_DTYPES = frozenset({"float64", "float32", "float16", "float128"})
 
 
-def symbol_dtype_name(sdfg, s: str) -> str:
+def symbol_dtype_name(sdfg: dace.SDFG, s: str) -> str:
     """numpy dtype name of a boundary symbol from the SDFG symbol table (``"float64"`` for a staged
     ``a_index = a[i]`` value read leaked into the boundary, ``"int64"`` for a size / index symbol).
     Falls back to ``int64`` for a symbol the SDFG does not type."""
@@ -36,7 +37,7 @@ def symbol_dtype_name(sdfg, s: str) -> str:
     return "int64"
 
 
-def sized_sdfg(boundary: Boundary):
+def sized_sdfg(boundary: Boundary) -> dace.SDFG:
     """The standalone SDFG in the SAME form :func:`nestforge.emit_numpy.nest_to_numpy` emits from.
 
     Both passes affect what the manifest must declare: nested-input expansion settles which containers the
@@ -47,14 +48,14 @@ def sized_sdfg(boundary: Boundary):
     return maxsize_loop_scratch(expand_nested_sdfg_inputs(boundary.standalone_sdfg), boundary.symbols)
 
 
-def arg_order(boundary: Boundary, sdfg=None) -> List[str]:
+def arg_order(boundary: Boundary, sdfg: Optional[dace.SDFG] = None) -> List[str]:
     """Arrays (inputs, extra outputs, scratch), then symbols -- identical to the numpy signature."""
     args = array_names(boundary, sdfg)
     args += [s for s in boundary.symbols if s not in args]
     return args
 
 
-def array_names(boundary: Boundary, sdfg=None) -> List[str]:
+def array_names(boundary: Boundary, sdfg: Optional[dace.SDFG] = None) -> List[str]:
     """Every caller-allocated buffer, in numpy-signature order.
 
     Scratch transients are parameters too: the C-style memory model makes the kernel allocate nothing, so a
@@ -68,12 +69,12 @@ def array_names(boundary: Boundary, sdfg=None) -> List[str]:
     return names
 
 
-def shape_str(shape) -> str:
+def shape_str(shape: Sequence[Any]) -> str:
     dims = [symbolic.symstr(d) for d in shape]
     return "(" + ", ".join(dims) + ("," if len(dims) == 1 else "") + ")"
 
 
-def dtype_str(desc) -> str:
+def dtype_str(desc: dace.data.Data) -> str:
     return np.dtype(desc.dtype.type).name
 
 

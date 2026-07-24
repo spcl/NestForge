@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
@@ -80,7 +80,7 @@ def search_best(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], float]:
 
 def run_e2(kernels: Sequence[tsvc.TsvcKernel],
            cells: Sequence[E1Cell],
-           out_dir,
+           out_dir: Union[str, Path],
            preset: str = "S",
            reps: int = 7,
            seed: int = 0,

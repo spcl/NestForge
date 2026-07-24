@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Union
 
 from nestforge.build import COMPILE_TIMEOUT_S
 
@@ -23,9 +23,9 @@ __all__ = ["BenchSpec", "DRIVER", "translate"]
 
 
 def translate(spec: BenchSpec,
-              numpy_path,
+              numpy_path: Union[str, Path],
               name: str,
-              out_dir,
+              out_dir: Union[str, Path],
               target: str = "c",
               precision: str = "float64") -> List[Path]:
     """Translate the ``*_numpy.py`` kernel at ``numpy_path`` into ``target`` source under ``out_dir``.

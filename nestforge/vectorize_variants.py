@@ -27,6 +27,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
+import dace
 from dace.transformation.passes.vectorization.config import VectorizeConfig
 
 from nestforge.device_profile import host_isas
@@ -43,7 +44,7 @@ class VecVariant:
     config: VectorizeConfig
 
 
-def has_same_write_set_branch(sdfg) -> bool:
+def has_same_write_set_branch(sdfg: dace.SDFG) -> bool:
     """True when the SDFG has a conditional whose arms write data (so ``branch_mode=fp_factor`` -- per-lane
     ``c*x + (1-c)*y`` arithmetic vs the ``merge`` blend -- is a REAL axis, not a dead one). Conservative:
     any ``ConditionalBlock`` in the control-flow tree counts; if the DaCe build predates that node type the
@@ -82,7 +83,7 @@ def variant_name(cfg: VectorizeConfig) -> str:
     return "-".join(parts)
 
 
-def enumerate_vec_configs(sdfg,
+def enumerate_vec_configs(sdfg: dace.SDFG,
                           isas: Optional[Sequence[str]] = None,
                           widths: Sequence[int] = WIDTH_LADDER,
                           allow_fma: bool = True) -> List[VecVariant]:

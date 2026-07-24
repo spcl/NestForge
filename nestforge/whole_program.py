@@ -11,7 +11,7 @@ import copy
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import dace
 
@@ -43,7 +43,7 @@ class WholeProgramResult:
 
 def measure_whole_program(optimizer: Optimizer,
                           kernel: tsvc.TsvcKernel,
-                          out_dir,
+                          out_dir: Union[str, Path],
                           preset: str = "S",
                           reps: int = 7,
                           seed: int = 0,
@@ -76,7 +76,7 @@ def measure_whole_program(optimizer: Optimizer,
     oracle = run_oracle(prep, boundary, inputs, sizes)
     built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
 
-    def work():
+    def work() -> Dict[str, object]:
         # bind_program binds only the SDFG's own parameters, so make_inputs' extra scratch is ignored.
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)

@@ -18,7 +18,7 @@ import time
 import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -508,7 +508,7 @@ class BuiltSDFG:
         # each param's OWN ctype: a hardcoded width would mismatch (jacobi's int N vs gemm's int64_t NI)
         self._handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self._init_params]))
 
-    def bind_program(self, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
+    def bind_program(self, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]) -> Tuple[Any, list]:
         """Bind ``__program_N`` and its ctypes args ONCE; return ``(fn, args)``, so a timed rep loop calls
         ``fn(*args)`` with no per-rep marshaling. ``init`` must have run; ``buffers`` must stay alive."""
         fn = self._lib[f"__program_{self.name}"]
@@ -583,7 +583,7 @@ def codegen_impls_available() -> Tuple[str, ...]:
 
 
 @contextlib.contextmanager
-def codegen_config(codegen_impl: str):
+def codegen_config(codegen_impl: str) -> Iterator[None]:
     """Scope the DaCe codegen config for ONE ``generate_code`` call: pin ``emit_tree_reductions`` true and
     select the CPU codegen ``implementation``. Raises for ``experimental`` on a build lacking the key,
     rather than silently emitting legacy and mislabelling it."""
@@ -868,7 +868,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     return so, time.perf_counter() - t0
 
 
-def apply_vectorizer(sdfg: dace.SDFG, config) -> None:
+def apply_vectorizer(sdfg: dace.SDFG, config: object) -> None:
     """Apply the DaCe multi-dim tile-op CPU vectorizer to ``sdfg`` in place. Force-expands tile library
     nodes to tasklets regardless of ``config`` (no ``dace.compile`` here to lower them later). Lazy
     import: eager would close an import cycle."""

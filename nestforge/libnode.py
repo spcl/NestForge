@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import List
+from typing import List, Optional, Tuple
 
 import dace
 import dace.library
@@ -37,7 +37,7 @@ def connector_for(arg: str, outputs: set) -> str:
     return out_conn(arg) if arg in outputs else in_conn(arg)
 
 
-def value_connectors(node, state) -> set:
+def value_connectors(node: "ExternalCall", state: dace.SDFGState) -> set:
     """Connectors DaCe defines as a VALUE, not a pointer: those whose memlet covers one element.
 
     A ``double x`` passed where the compiled signature wants ``double*`` is a compile error, and every
@@ -58,7 +58,7 @@ def value_connectors(node, state) -> set:
     return single
 
 
-def proto_and_call(node: "ExternalCall", state) -> (str, str):
+def proto_and_call(node: "ExternalCall", state: dace.SDFGState) -> Tuple[str, str]:
     """Build the ``extern "C"`` prototype and the call expression for the linked kernel.
 
     Array args are passed by their connector variable (``_in_X`` / ``_out_Y``); size symbols are
@@ -173,7 +173,7 @@ class ExpandDaceReference(ExpandTransformation):
     environments = []
 
     @staticmethod
-    def expansion(node, parent_state, parent_sdfg):
+    def expansion(node: "ExternalCall", parent_state: dace.SDFGState, parent_sdfg: dace.SDFG) -> dace.SDFG:
         if node._standalone_sdfg is None:
             raise ValueError(f"ExternalCall {node.name} has no standalone SDFG to fall back to")
         return copy.deepcopy(node._standalone_sdfg)
@@ -185,7 +185,7 @@ class ExpandExternCall(ExpandTransformation):
     environments = []
 
     @staticmethod
-    def expansion(node, parent_state, parent_sdfg):
+    def expansion(node: "ExternalCall", parent_state: dace.SDFGState, parent_sdfg: dace.SDFG) -> nodes.Tasklet:
         if not node.lib_path or not node.symbol:
             raise ValueError(f"ExternalCall {node.name} needs lib_path + symbol for ExpandExternCall")
         proto, call = proto_and_call(node, parent_state)
@@ -221,7 +221,14 @@ class ExternalCall(nodes.LibraryNode):
     lib_path = dace.properties.Property(dtype=str, default="", desc="compiled static/shared lib")
     fp_mode = dace.properties.Property(dtype=str, default="", desc="winning FP mode")
 
-    def __init__(self, name, inputs=None, outputs=None, numpy_source="", config=None, standalone_sdfg=None, **kwargs):
+    def __init__(self,
+                 name: str,
+                 inputs: Optional[set] = None,
+                 outputs: Optional[set] = None,
+                 numpy_source: str = "",
+                 config: Optional[dict] = None,
+                 standalone_sdfg: Optional[dace.SDFG] = None,
+                 **kwargs) -> None:
         super().__init__(name, inputs=inputs or set(), outputs=outputs or set(), **kwargs)
         self.numpy_source = numpy_source
         self.config = config

@@ -6,8 +6,10 @@ unwired clock read may be scheduled past the code it brackets), and they are SDF
 than transients (a transient nobody reads is dead code simplify may delete, leaving a build that
 measures nothing and reports zero).
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import dace
 from dace import dtypes
@@ -47,7 +49,7 @@ def clock_tasklet(state: SDFGState, sdfg: SDFG, scalar: str, label: str) -> None
     state.add_edge(tasklet, '__out', write, None, dace.Memlet.simple(scalar, '0'))
 
 
-def instrument_nest(sdfg: SDFG, nest, name: Optional[str] = None) -> NestTimers:
+def instrument_nest(sdfg: SDFG, nest: Union[SDFGState, ControlFlowRegion], name: Optional[str] = None) -> NestTimers:
     """Bracket ``nest`` with a clock read before and after, wired by dependency edges.
 
     :param sdfg: the SDFG owning ``nest``.

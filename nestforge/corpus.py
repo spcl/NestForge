@@ -13,12 +13,15 @@ import importlib.util
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterator, List, Optional
 
 import dace
 
 from hpcagent_bench import autogen
 from hpcagent_bench.spec import KERNELS, BenchSpec
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 #: Tracks whose ``_dace.py`` optarena generates on demand (gitignored, never committed). foundation
 #: (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it's never materialized here.
@@ -40,7 +43,7 @@ class CorpusKernel:
     dace_file: Path  # the kernel's ``_dace.py`` on disk (source of truth)
     spec: BenchSpec
 
-    def module(self):
+    def module(self) -> ModuleType:
         """Import the kernel's ``_dace.py`` by file path.
 
         Loading by path (not ``import_module``) sidesteps ``hpcagent_bench.benchmarks`` namespace-package
@@ -54,7 +57,7 @@ class CorpusKernel:
         spec.loader.exec_module(module)
         return module
 
-    def program(self):
+    def program(self) -> dace.frontend.python.parser.DaceProgram:
         """The kernel's *entry* ``@dace.program``, selected by the manifest's ``func_name``.
 
         A module often defines helper programs before it and a ``*_gpu`` variant after, so neither

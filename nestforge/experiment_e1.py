@@ -25,7 +25,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import compile_object, discover_compilers, link_shared
@@ -34,6 +34,10 @@ from nestforge.granularity import GranularityPoint, granularity_ladder
 from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf.harness import signature_order
 from nestforge.translate import emit_sources, prepare
+
+if TYPE_CHECKING:
+    from nestforge.extract import Boundary
+    from nestforge.libnode import ExternalCall
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,7 @@ class E1Cell:
     error: Optional[str] = None
 
 
-def build_backend_variants(calls,
+def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
                            backend_name: str,
                            backend_path: str,
                            out_dir: Path,
@@ -91,7 +95,7 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
                 backend_name: str,
                 backend_path: str,
                 point: GranularityPoint,
-                out_dir,
+                out_dir: Union[str, Path],
                 unit: str = "map",
                 opt_mode: str = "canonicalize",
                 reps: int = 7,
@@ -135,7 +139,7 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
 
 
 def run_e1(kernels: Sequence[tsvc.TsvcKernel],
-           out_dir,
+           out_dir: Union[str, Path],
            unit: str = "map",
            max_granularity_points: int = 3,
            opt_mode: str = "canonicalize",

@@ -22,13 +22,15 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Union
+
+import dace
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
 from nestforge.experiment_e1 import run_e1_cell
 from nestforge.granularity import granularity_ladder
-from nestforge.policy import exhaustive_search, hillclimb_search
+from nestforge.policy import SearchResult, exhaustive_search, hillclimb_search
 from nestforge.sweep import MeasureLedger
 
 #: The two optimizer classes C4 compares, over one shared surface: the traditional oracle and the scoped
@@ -58,7 +60,7 @@ class E4Row:
 
 
 def run_e4(kernels: Sequence[tsvc.TsvcKernel],
-           out_dir,
+           out_dir: Union[str, Path],
            unit: str = "map",
            max_granularity_points: int = 4,
            opt_mode: str = "canonicalize",
@@ -92,7 +94,11 @@ def run_e4(kernels: Sequence[tsvc.TsvcKernel],
         for backend_name, backend_path in backends.items():
             cache: Dict[str, float] = {}
 
-            def measure(label: str, _bn=backend_name, _bp=backend_path, _k=kernel, _c=canonical) -> float:
+            def measure(label: str,
+                        _bn: str = backend_name,
+                        _bp: str = backend_path,
+                        _k: tsvc.TsvcKernel = kernel,
+                        _c: dace.SDFG = canonical) -> float:
                 # Cached per (kernel, backend): a rung's time does not depend on which strategy asked, and
                 # the ledger counts requests, not cache misses -- so sharing cannot flatter anyone.
                 if label not in cache:
@@ -129,7 +135,7 @@ def run_e4(kernels: Sequence[tsvc.TsvcKernel],
 def score(kernel: str,
           backend: str,
           strategy: str,
-          result,
+          result: SearchResult,
           oracle_us: float,
           no_reference: Optional[str] = None) -> E4Row:
     """One row from a finished search. Quality needs BOTH the strategy's time and the oracle's to be finite

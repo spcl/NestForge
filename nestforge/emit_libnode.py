@@ -7,7 +7,7 @@ flat class-name -> statement-builder table.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import dace
 from dace import symbolic
@@ -40,7 +40,7 @@ def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
     return ", ".join(parts)
 
 
-def covers_whole(subset: dace.subsets.Range, desc) -> bool:
+def covers_whole(subset: dace.subsets.Range, desc: dace.data.Data) -> bool:
     """True if ``subset`` spans the entire array descriptor (so no slice suffix is needed)."""
     if len(subset.ranges) != len(desc.shape):
         return False
@@ -50,7 +50,7 @@ def covers_whole(subset: dace.subsets.Range, desc) -> bool:
     return True
 
 
-def is_scalar(desc) -> bool:
+def is_scalar(desc: dace.data.Data) -> bool:
     """A single-element data container (a DaCe ``Scalar`` or a size-1 array)."""
     return isinstance(desc, dace.data.Scalar) or desc.total_size == 1
 
@@ -61,7 +61,7 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     return desc.transient and is_scalar(desc)
 
 
-def scalar_elem(name: str, desc) -> str:
+def scalar_elem(name: str, desc: dace.data.Data) -> str:
     """Index the SOLE element of a size-1 buffer, one index per dimension.
 
     ``is_scalar`` is rank-agnostic, so a rank>=2 size-1 buffer lands here too; ``name[0]`` would select a
@@ -142,7 +142,7 @@ def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
     return write_lhs(sdfg, memlet.data, memlet.subset, keep_singleton=True)
 
 
-def data_edge(edges: list, node: nodes.Node, kind: str):
+def data_edge(edges: list, node: nodes.Node, kind: str) -> dace.sdfg.graph.MultiConnectorEdge:
     """The first edge that actually carries DATA. An empty memlet is a happens-before/ordering edge (added
     by StateFusion), not an operand; taking ``edges[0]`` blindly hits ``sdfg.arrays[None]`` whenever such
     an edge sorts first. Every connector-less operand lookup goes through here."""
@@ -183,18 +183,18 @@ _REDUCTION_FUNC = {
 }
 
 
-def is_one(v) -> bool:
+def is_one(v: Any) -> bool:
     """Value-aware ``v == 1`` (a ``sympy.Float(1.0)`` from a SymbolicProperty compares unequal to the
     int ``1`` under sympy's structural ``__eq__``, so a plain ``== 1`` misfires)."""
     return symbolic.equal_valued(1, v)
 
 
-def is_zero(v) -> bool:
+def is_zero(v: Any) -> bool:
     """Value-aware ``v == 0`` (see :func:`is_one`); ``str(beta) not in ('0','0.0')`` misses e.g. ``0.00``."""
     return symbolic.equal_valued(0, v)
 
 
-def scaled(expr: str, coeff) -> str:
+def scaled(expr: str, coeff: Any) -> str:
     """``expr`` multiplied by ``coeff``, or ``expr`` unchanged when ``coeff`` is 1."""
     return expr if is_one(coeff) else f"{coeff} * ({expr})"
 
@@ -205,7 +205,7 @@ def transposed(expr: str, trans: bool) -> str:
     return f"({expr}).T" if trans else expr
 
 
-def emit_matmul(node, state, sdfg) -> str:
+def emit_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     a = in_expr(state, node, "_a", sdfg)
     b = in_expr(state, node, "_b", sdfg)
     c_read = in_expr(state, node, "_c", sdfg) if not is_zero(node.beta) else None
@@ -215,7 +215,7 @@ def emit_matmul(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {expr}"
 
 
-def emit_gemm(node, state, sdfg) -> str:
+def emit_gemm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * (opA(A) @ opB(B)) + beta * C`` -- the BLAS GEMM ``MatMul`` expands to, connectors
     ``_a``/``_b``/``_c`` with ``transA``/``transB`` operand transposes and scalar ``alpha``/``beta``."""
     reject_runtime_scalars(node, state)
@@ -227,7 +227,7 @@ def emit_gemm(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {expr}"
 
 
-def emit_gemv(node, state, sdfg) -> str:
+def emit_gemv(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * (opA(A) @ x) + beta * y`` -- BLAS GEMV (matrix-vector), connectors ``_A``/``_x``/``_y``."""
     a = transposed(in_expr(state, node, "_A", sdfg), node.transA)
     x = in_expr(state, node, "_x", sdfg)
@@ -237,7 +237,7 @@ def emit_gemv(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_y', sdfg)} = {expr}"
 
 
-def emit_ger(node, state, sdfg) -> str:
+def emit_ger(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * outer(x, y) + A`` -- BLAS GER rank-1 update; connectors ``_x``/``_y``/``_A`` -> ``_res``."""
     x = in_expr(state, node, "_x", sdfg)
     y = in_expr(state, node, "_y", sdfg)
@@ -245,14 +245,14 @@ def emit_ger(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(f'np.outer({x}, {y})', node.alpha)} + {a}"
 
 
-def emit_axpy(node, state, sdfg) -> str:
+def emit_axpy(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``a * x + y`` -- BLAS AXPY; connectors ``_x``/``_y`` -> ``_res``."""
     x = in_expr(state, node, "_x", sdfg)
     y = in_expr(state, node, "_y", sdfg)
     return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(x, node.a)} + {y}"
 
 
-def emit_batched_matmul(node, state, sdfg) -> str:
+def emit_batched_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Batched ``A @ B`` (numpy ``@`` contracts the trailing two dims, broadcasting the batch); connectors
     ``_a``/``_b`` -> ``_c``, with ``transA``/``transB`` swapping the last two axes. A non-zero ``beta`` is
     refused: there is no ``_c`` input connector to accumulate into."""
@@ -267,7 +267,7 @@ def emit_batched_matmul(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {scaled(f'{a} @ {b}', node.alpha)}"
 
 
-def emit_einsum(node, state, sdfg) -> str:
+def emit_einsum(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.einsum(einsum_str, *operands)`` -- operands ordered by connector name, since both the
     specialize expansion and ``LiftEinsum``'s ``einsum_str`` use that same sorted order.
     ``alpha``/``beta`` compose the node properties with any runtime-scalar connectors."""
@@ -290,7 +290,7 @@ def emit_einsum(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, None, sdfg)} = {expr}"
 
 
-def emit_tensordot(node, state, sdfg) -> str:
+def emit_tensordot(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.tensordot(L, R, axes=(left_axes, right_axes))`` with an optional output-mode ``permutation``
     (``np.transpose`` of the contraction result); connectors ``_left_tensor``/``_right_tensor`` ->
     ``_out_tensor``."""
@@ -302,19 +302,19 @@ def emit_tensordot(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
 
 
-def emit_inv(node, state, sdfg) -> str:
+def emit_inv(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.linalg.inv(A)`` -- matrix inverse; connectors ``_ain`` -> ``_aout``."""
     return f"{out_lhs(state, node, '_aout', sdfg)} = np.linalg.inv({in_expr(state, node, '_ain', sdfg)})"
 
 
-def emit_fft(node, state, sdfg) -> str:
+def emit_fft(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``factor * np.fft.fft(x)`` -- DaCe's forward DFT is unnormalized (numpy's default ``norm``), scaled
     by the ``factor`` normalization coefficient; connectors ``_inp`` -> ``_out``."""
     inp = in_expr(state, node, "_inp", sdfg)
     return f"{out_lhs(state, node, '_out', sdfg)} = {scaled(f'np.fft.fft({inp})', node.factor)}"
 
 
-def emit_ifft(node, state, sdfg) -> str:
+def emit_ifft(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``factor * np.fft.ifft(x, norm='forward')`` -- DaCe's inverse DFT omits the ``1/N`` (``norm='forward'``
     puts no scale on the inverse), scaled by ``factor``; connectors ``_inp`` -> ``_out``."""
     inp = in_expr(state, node, "_inp", sdfg)
@@ -325,7 +325,7 @@ def emit_ifft(node, state, sdfg) -> str:
 _ARGREDUCE_FUNC = {"max": ("np.argmax", "np.max"), "min": ("np.argmin", "np.min")}
 
 
-def emit_argreduce(node, state, sdfg):
+def emit_argreduce(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
     """``np.argmax``/``np.argmin`` over the (contiguous) input slice -> a slice-local index plus its value;
     connector ``_in`` -> ``_out_idx`` (position) and ``_out_val`` (extreme). Two statements."""
     argfn, valfn = _ARGREDUCE_FUNC[node.op]
@@ -344,7 +344,7 @@ _SCAN_FUNC = {
 }
 
 
-def emit_scan(node, state, sdfg) -> str:
+def emit_scan(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Inclusive prefix scan -> ``np.cumsum``/``np.cumprod``/``np.maximum.accumulate``/``.minimum.``;
     connector ``_scan_in`` -> ``_scan_out``. Exclusive / seeded / strided scans have no direct numpy
     form and are refused."""
@@ -363,13 +363,13 @@ def emit_scan(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_scan_out', sdfg)} = {func}({in_expr(state, node, '_scan_in', sdfg)})"
 
 
-def emit_integer_sort(node, state, sdfg) -> str:
+def emit_integer_sort(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Ascending 1-D sort -> ``np.sort`` (numpy sorts ascending by default); connectors ``_keys_in`` ->
     ``_keys_out``."""
     return f"{out_lhs(state, node, '_keys_out', sdfg)} = np.sort({in_expr(state, node, '_keys_in', sdfg)})"
 
 
-def emit_scatter_conflict_check(node, state, sdfg) -> List[str]:
+def emit_scatter_conflict_check(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
     """Count duplicate values in a 1-D integer index array (scatter no-conflict proof); connector
     ``_idx_in`` -> ``_count_out`` (a host int64 scalar, ``0`` iff the index is a permutation).
 
@@ -404,7 +404,7 @@ def has_in_conn(state: dace.SDFGState, node: nodes.Node, conn: str) -> bool:
     return any(e.dst_conn == conn for e in state.in_edges(node))
 
 
-def reject_runtime_scalars(node, state: dace.SDFGState) -> None:
+def reject_runtime_scalars(node: nodes.LibraryNode, state: dace.SDFGState) -> None:
     """Refuse a BLAS node with a wired runtime ``_alpha``/``_beta`` scalar connector: the emitters fold
     only the compile-time properties, so a runtime coefficient would be silently dropped."""
     if has_in_conn(state, node, "_alpha") or has_in_conn(state, node, "_beta"):
@@ -412,14 +412,14 @@ def reject_runtime_scalars(node, state: dace.SDFGState) -> None:
                                      "only compile-time alpha/beta are emitted -- fall back to the DaCe variant")
 
 
-def triangle_funcs(uplo: str):
+def triangle_funcs(uplo: str) -> Tuple[str, str, int]:
     """``(write_fn, keep_fn, keep_offset)`` for a symmetric BLAS update that touches only the ``uplo``
     triangle: the written triangle (incl. diagonal) plus the STRICT opposite triangle of the prior value,
     so the untouched half is preserved bit-for-bit (the DaCe reference leaves it unchanged)."""
     return ("np.tril", "np.triu", 1) if uplo == "L" else ("np.triu", "np.tril", -1)
 
 
-def emit_syrk(node, state, sdfg) -> str:
+def emit_syrk(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYRK: ``C := alpha*(A@A.T) + beta*C`` (``trans='N'``, ``A`` is ``N x K``) or ``alpha*(A.T@A)``
     (``trans='T'``, ``A`` is ``K x N``), updating ONLY the ``uplo`` triangle of symmetric ``C``; the
     opposite triangle keeps its prior value. Connectors ``_a``/``_c`` -> ``_c`` (in-place); ``_c`` is read
@@ -435,7 +435,7 @@ def emit_syrk(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
 
 
-def emit_syr2k(node, state, sdfg) -> str:
+def emit_syr2k(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYR2K: ``C := alpha*(A@B.T + B@A.T) + beta*C`` (``trans='N'``, ``A``/``B`` are ``N x K``) or
     ``alpha*(A.T@B + B.T@A) + beta*C`` (``trans='T'``, ``A``/``B`` are ``K x N``); ``A``/``B`` read in FULL
     (rectangular), only the ``uplo`` triangle of symmetric ``C`` written. Connectors ``_a``/``_b``/``_c`` ->
@@ -452,7 +452,7 @@ def emit_syr2k(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
 
 
-def emit_symm(node, state, sdfg) -> str:
+def emit_symm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYMM: ``C := alpha*(A@B) + beta*C`` (``side='L'``) or ``alpha*(B@A) + beta*C`` (``side='R'``),
     where ``A`` is symmetric with only its ``uplo`` triangle stored -> reconstruct the FULL symmetric ``A``
     first. Output ``C`` is FULL (no triangle masking). Connectors ``_a``/``_b``/``_c`` -> ``_c``."""
@@ -467,7 +467,7 @@ def emit_symm(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_c', sdfg)} = {rhs}"
 
 
-def emit_potrf(node, state, sdfg) -> List[str]:
+def emit_potrf(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> List[str]:
     """LAPACK POTRF (Cholesky factorization) -> ``np.linalg.cholesky`` (lower) / ``.conj().T`` (upper),
     mirroring :func:`emit_cholesky`; connectors ``_xin`` -> ``_xout`` (+ optional ``_res`` info scalar,
     always success ``0`` for a numpy reference)."""
@@ -481,24 +481,24 @@ def emit_potrf(node, state, sdfg) -> List[str]:
     return lines
 
 
-def emit_dot(node, state, sdfg) -> str:
+def emit_dot(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     x = in_expr(state, node, "_x", sdfg)
     y = in_expr(state, node, "_y", sdfg)
     return f"{out_lhs(state, node, '_result', sdfg)} = np.dot({x}, {y})"
 
 
-def emit_transpose(node, state, sdfg) -> str:
+def emit_transpose(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     inp = in_expr(state, node, "_inp", sdfg)
     return f"{out_lhs(state, node, '_out', sdfg)} = np.transpose({inp})"
 
 
-def emit_solve(node, state, sdfg) -> str:
+def emit_solve(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     ain = in_expr(state, node, "_ain", sdfg)
     bin_ = in_expr(state, node, "_bin", sdfg)
     return f"{out_lhs(state, node, '_bout', sdfg)} = np.linalg.solve({ain}, {bin_})"
 
 
-def emit_cholesky(node, state, sdfg) -> str:
+def emit_cholesky(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     a = in_expr(state, node, "_a", sdfg)
     # numpy returns the lower factor L (A = L @ L.conj().T); the upper factor is L.conj().T.
     expr = f"np.linalg.cholesky({a})"
@@ -507,7 +507,7 @@ def emit_cholesky(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_b', sdfg)} = {expr}"
 
 
-def emit_tensortranspose(node, state, sdfg) -> str:
+def emit_tensortranspose(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     inp = in_expr(state, node, "_inp_tensor", sdfg)
     if str(node.beta) not in ("0", "0.0"):
         raise UnsupportedLibraryNode(f"TensorTranspose with beta={node.beta} (accumulate) is not emitted")
@@ -517,7 +517,7 @@ def emit_tensortranspose(node, state, sdfg) -> str:
     return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
 
 
-def emit_reduce(node, state, sdfg) -> str:
+def emit_reduce(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     red = detect_reduction_type(node.wcr)
     func = _REDUCTION_FUNC.get(red)
     if func is None:

@@ -21,7 +21,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import sympy
 
@@ -34,7 +34,7 @@ from nestforge.experiment_e1 import E1Cell, run_e1_cell
 from nestforge.granularity import granularity_ladder
 
 
-def subset_indices(memlet) -> List[sympy.Expr]:
+def subset_indices(memlet: dace.Memlet) -> List[sympy.Expr]:
     """Every index expression in a memlet's subset, as sympy. A subset with no ranges (an empty memlet)
     contributes nothing rather than raising."""
     subset = memlet.subset
@@ -137,7 +137,7 @@ class E5Row:
 
 
 def run_e5(kernels: Sequence[tsvc.TsvcKernel],
-           out_dir,
+           out_dir: Union[str, Path],
            unit: str = "map",
            max_granularity_points: int = 4,
            opt_mode: str = "canonicalize",

@@ -18,7 +18,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from nestforge import build, tsvc
 from nestforge.arena import make_inputs, maxdiff, relative_maxdiff, run_oracle
@@ -77,7 +77,7 @@ def set_nest_variant(ext: ExternalCall, variant: NestVariant) -> None:
 
 
 def measure_in_context(kernel: tsvc.TsvcKernel,
-                       out_dir,
+                       out_dir: Union[str, Path],
                        variants: Optional[Dict[str, NestVariant]] = None,
                        granularity: str = "skip-taskloops",
                        opt_mode: str = "canonicalize",
@@ -136,7 +136,7 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
                              out_dir / "build",
                              opts=build.BuildOptions(extra_link=variant_link_args(variants)))
 
-    def work():
+    def work() -> Dict[str, Any]:
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}

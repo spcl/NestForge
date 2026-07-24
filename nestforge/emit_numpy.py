@@ -23,7 +23,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from types import ModuleType
-from typing import Dict, List
+from typing import Callable, Dict, List, Mapping, Optional
 
 import numpy
 import sympy
@@ -155,12 +155,12 @@ _USERFUNC_REWRITES = {
 }
 
 
-def int_floor(a, b):
+def int_floor(a: int, b: int) -> int:
     """``floor(a / b)`` -- python ``//`` is already floored for both signs."""
     return a // b
 
 
-def int_ceil(a, b):
+def int_ceil(a: int, b: int) -> int:
     """``ceil(a / b)``, sign-robust (``== (a + b - 1) // b`` for ``b > 0``)."""
     return -((-a) // b)
 
@@ -243,7 +243,7 @@ _NP_VERBATIM_MATH = frozenset({"power", "arcsin", "arccos", "arctan", "arctan2",
 _MATH_PREFIX_CALL = re.compile(r"\b(?:dace\.)?math\.(\w+)(?=\s*\()")
 
 
-def apply_call(code: str, name: str, fn) -> str:
+def apply_call(code: str, name: str, fn: Callable[..., str]) -> str:
     """Rewrite every ``name(arg0, arg1)`` call in ``code`` via ``fn(arg0, arg1)``, matching balanced
     parentheses so nested arguments stay intact. Leftmost-first with a rescan from the start; the outer
     :func:`rewrite_userfuncs` fixpoint loop resolves calls nested inside the replacements."""
@@ -302,7 +302,7 @@ def rewrite_math_prefix(code: str) -> str:
     """Rewrite a qualified ``dace.math.sin`` / ``math.sin`` to ``np.sin`` (the bare-name rewrite skips
     qualified forms via its lookbehind). Uses the same intrinsic map, so ``asin`` -> ``np.arcsin``."""
 
-    def repl(m):
+    def repl(m: re.Match[str]) -> str:
         fn = m.group(1)
         if fn in _MATH_INTRINSICS:
             return _MATH_INTRINSICS[fn]
@@ -417,7 +417,7 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
     return lines + [normalize_casts(u) for u in wcr_updates]
 
 
-def copy_side(sdfg: dace.SDFG, name: str, subset) -> str:
+def copy_side(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range]) -> str:
     """One side of a memlet copy, rendered as a squeezed view. A scalar local stays bare and a size-1
     buffer reads its element; every other array drops its length-1 axes, so both sides reduce to the
     same packed shape (``(N, 1)`` and ``(1, N)`` both become the ``(N,)`` view ``a[:, 0]`` / ``a[0, :]``).
@@ -433,7 +433,7 @@ def copy_side(sdfg: dace.SDFG, name: str, subset) -> str:
     return f"{name}[{index_str(subset)}]"  # keep_singleton default: length-1 axes collapse away
 
 
-def copy_direction(edge) -> tuple:
+def copy_direction(edge: dace.sdfg.graph.MultiConnectorEdge) -> tuple:
     """``(src_name, src_subset, dst_subset)`` for one access-node -> access-node copy edge.
 
     ``memlet.subset`` indexes ``memlet.data`` (a DaCe invariant), so whichever endpoint ``data`` names
@@ -499,7 +499,8 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
     return lines
 
 
-def copy_sides(sdfg: dace.SDFG, dst_name: str, dst_sub, src_name: str, src_sub) -> tuple:
+def copy_sides(sdfg: dace.SDFG, dst_name: str, dst_sub: Optional[dace.subsets.Range], src_name: str,
+               src_sub: Optional[dace.subsets.Range]) -> tuple:
     """``(lhs, rhs, dst_read)`` for one data copy -- the shared body of :func:`copy_lines` and
     :func:`map_exit_writes`, which render the same assignment from different edges.
 
@@ -526,7 +527,7 @@ def copy_sides(sdfg: dace.SDFG, dst_name: str, dst_sub, src_name: str, src_sub) 
                                                    write=False), reshape_side(sdfg, dst_name, dst_sub, write=False))
 
 
-def reshape_side(sdfg: dace.SDFG, name: str, subset, write: bool) -> str:
+def reshape_side(sdfg: dace.SDFG, name: str, subset: Optional[dace.subsets.Range], write: bool) -> str:
     """One side of a rank-changing copy: bare for a scalar local, explicit ``name[idx]`` for the
     reshaping (rank-collapsing) side, else the whole array via the access oracle."""
     if scalar_local(sdfg, name):
@@ -807,7 +808,7 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> List[str]:
     return lines
 
 
-def ordered_blocks(region) -> List:
+def ordered_blocks(region: dace.sdfg.state.ControlFlowRegion) -> List:
     """Blocks of a control-flow region (SDFG or LoopRegion) in execution order."""
     return list(dfs_topological_sort(region, [region.start_block]))
 
@@ -897,7 +898,8 @@ def strip_scalar_local_subscript(code: str, sdfg: dace.SDFG) -> str:
     return code
 
 
-def interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
+def interstate_lines(region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG,
+                     block: dace.sdfg.state.ControlFlowBlock) -> List[str]:
     """Assignments carried on the edge(s) entering ``block`` (e.g. an indirect index ``s = A[i]``).
 
     DaCe hoists a data-dependent index or loop-carried scalar onto the inter-state edge that reaches
@@ -929,7 +931,7 @@ def interstate_lines(region, sdfg: dace.SDFG, block) -> List[str]:
     return lines
 
 
-def emit_region(region, sdfg: dace.SDFG) -> List[str]:
+def emit_region(region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG) -> List[str]:
     """Numpy statements for every block of a control-flow region, in execution order.
 
     Each block is preceded by a ``# <kind> (<label>)`` provenance comment (``# state (S)`` /
@@ -973,7 +975,7 @@ def scratch_arrays(sdfg: dace.SDFG) -> List[str]:
 _DATA_READ_HEADS = frozenset({"Subscript", "Indexed"})
 
 
-def reads_array_data(expr: sympy.Expr, arrays) -> bool:
+def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> bool:
     """Whether ``expr`` reads the CONTENTS of an array, so its value is unknown until the kernel runs.
 
     Walks the expression TREE. Never use ``free_symbols`` for this: DaCe renders ``A_indptr[i]`` as
@@ -986,7 +988,7 @@ def reads_array_data(expr: sympy.Expr, arrays) -> bool:
     return any(str(s) in arrays for s in expr.free_symbols)
 
 
-def sizable(expr: sympy.Expr, known: set, arrays) -> bool:
+def sizable(expr: sympy.Expr, known: set, arrays: Mapping[str, dace.data.Data]) -> bool:
     """Whether the CALLER can evaluate ``expr`` to a buffer extent before the kernel runs.
 
     True iff it reads no array data (:func:`reads_array_data`) and names no symbol outside ``known``.
@@ -1040,9 +1042,9 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
                 los.setdefault(var, []).append(value)
                 his.setdefault(var, []).append(value)
 
-    def resolve(bounds, combine):
+    def resolve(bounds: Dict[str, list], combine: Callable[..., sympy.Expr]) -> Dict[str, sympy.Expr]:
 
-        def r(expr, seen):
+        def r(expr: sympy.Expr, seen: set) -> sympy.Expr:
             for sym in list(expr.free_symbols):
                 name = str(sym)
                 if name in bounds and name not in seen:
@@ -1055,7 +1057,8 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
     return resolve(los, sympy.Min), resolve(his, sympy.Max)
 
 
-def max_over_loops(dim: sympy.Expr, lo_of: Dict[str, sympy.Expr], hi_of: Dict[str, sympy.Expr], known: set, arrays):
+def max_over_loops(dim: sympy.Expr, lo_of: Dict[str, sympy.Expr], hi_of: Dict[str, sympy.Expr], known: set,
+                   arrays: Mapping[str, dace.data.Data]) -> Optional[sympy.Expr]:
     """Largest value a shape dimension takes over the loop variables' ranges, or ``None``.
 
     Each loop variable is substituted by the endpoint that maximises the dimension: its resolved upper
@@ -1146,7 +1149,7 @@ def reject_unsizable_scratch(sdfg: dace.SDFG, scratch: List[str], symbols: List[
                                   "cannot be pre-allocated C-style")
 
 
-def has_enclosing_loop(block) -> bool:
+def has_enclosing_loop(block: dace.sdfg.state.ControlFlowBlock) -> bool:
     """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG -- the loop a ``break`` /
     ``continue`` inside it would target (walks ``parent_graph`` up to the SDFG root)."""
     region = block.parent_graph

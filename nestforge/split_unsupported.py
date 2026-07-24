@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import List, Set
+from typing import List, Set, Tuple
 
 import dace
 from dace.sdfg import nodes
@@ -90,7 +90,7 @@ def isolate_unsupported_library_nodes(sdfg: dace.SDFG) -> int:
                        "separate an unsupported node from surrounding compute")
 
 
-def whole_program_regions(sdfg: dace.SDFG):
+def whole_program_regions(sdfg: dace.SDFG) -> Tuple[List[List[dace.SDFGState]], List[dace.SDFGState]]:
     """Isolate every unsupported node (in place), then partition ``sdfg``'s states into externalizable
     REGIONS and native ISLANDS -- the split-around-unsupported view of the whole program.
 
@@ -128,7 +128,7 @@ def whole_program_regions(sdfg: dace.SDFG):
                     f"{type(end).__name__}, which is not a partitioned state; its connectivity would be "
                     f"dropped and the neighbours reported as independent regions")
 
-    def find(s):
+    def find(s: dace.SDFGState) -> dace.SDFGState:
         while parent[s] is not s:
             parent[s] = parent[parent[s]]
             s = parent[s]

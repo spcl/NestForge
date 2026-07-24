@@ -13,10 +13,11 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+import dace
 from dace import symbolic
 
 from nestforge.build import COMPILE_TIMEOUT_S, ldconfig_output
@@ -110,12 +111,12 @@ def discover_blas_libraries() -> Dict[str, BlasBackend]:
 
 
 # --- data generation from the manifest --------------------------------------------------------
-def resolve_shape(shape, sizes: Dict[str, int]):
+def resolve_shape(shape: Sequence[Any], sizes: Dict[str, int]) -> Tuple[int, ...]:
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
 
 
-def emitted_sdfg(boundary: Boundary):
+def emitted_sdfg(boundary: Boundary) -> dace.SDFG:
     """The descriptors the EMITTED kernel is written against, not the raw nest's.
 
     The emitter widens a loop-sized scratch transient (``maxsize_loop_scratch``) before rendering, so
@@ -201,7 +202,7 @@ class Cell:
     error: Optional[str] = None
 
 
-def scalar_ctype(sdfg, name: str):
+def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
     """ctypes type of a by-value (non-array) kernel arg, matching the translator's signature.
 
     A float value scalar is ``double`` -> ``c_double``. EVERY integer symbol is emitted ``int64_t`` by the
@@ -231,7 +232,7 @@ def resolve_argtypes(order: List[str], boundary: Boundary) -> list:
 
 
 def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundary: Boundary,
-                inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int):
+                inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int) -> Tuple[Dict[str, np.ndarray], float]:
     """Bind + call the compiled entry. ``order`` is the EMITTED-signature parameter order (see
     :func:`resolve_argtypes`); binding by the manifest's role order instead puts each buffer in the wrong
     parameter slot, which same-typed arrays make completely silent."""
@@ -241,7 +242,7 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
     fn.restype = None
     work = {k: v.copy() for k, v in inputs.items()}
 
-    def build_args():
+    def build_args() -> list:
         out = []
         for arg, at in zip(order, argtypes):
             if arg in work:
@@ -363,7 +364,7 @@ def run_arena(prep: Prepared,
 
             # Forked so a segfault/runaway kills only the child; only the summary crosses the pipe.
             # ``so``/``mode`` are default args to dodge late-binding capture of the loop variables.
-            def work(so=so, mode=mode):
+            def work(so: Path = so, mode: str = mode) -> Dict[str, Any]:
                 outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
                 # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff)
                 md = float(maxdiff(oracle, outs))

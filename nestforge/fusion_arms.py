@@ -15,7 +15,7 @@ Fission (the other half of the Phase-2 lever) lives separately; this module is t
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Type
+from typing import Dict, List, Optional, Type
 
 import dace
 from dace.sdfg import nodes
@@ -167,7 +167,8 @@ def fuse_maps_reason(sdfg: dace.SDFG, first: nodes.MapEntry, second: nodes.MapEn
     return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
 
 
-def vertical_reason(sdfg: dace.SDFG, state, producer: nodes.MapEntry, consumer: nodes.MapEntry):
+def vertical_reason(sdfg: dace.SDFG, state: dace.SDFGState, producer: nodes.MapEntry,
+                    consumer: nodes.MapEntry) -> Optional[str]:
     """``"yes"``/reason if ``producer`` feeds ``consumer`` through a transient (vertical fusion), else
     ``None`` when no such data path exists (so the caller can try the other direction, then horizontal)."""
     exit_p = state.exit_node(producer)

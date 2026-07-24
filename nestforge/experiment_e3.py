@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
@@ -25,7 +25,7 @@ from nestforge.offload import OFFLOAD_UNITS, offload_coarseness
 
 
 def run_e3(kernels: Sequence[tsvc.TsvcKernel],
-           out_dir,
+           out_dir: Union[str, Path],
            units: Sequence[str] = OFFLOAD_UNITS,
            opt_mode: str = "canonicalize",
            backends: Optional[Dict[str, str]] = None,

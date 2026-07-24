@@ -34,13 +34,13 @@ from __future__ import annotations
 import copy
 import heapq
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import dace
 from dace import data as dt
 from dace.sdfg import nodes
-from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowRegion, LoopRegion, ReturnBlock,
-                             SDFGState)
+from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowBlock, ControlFlowRegion,
+                             LoopRegion, ReturnBlock, SDFGState)
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 from dace.transformation.interstate.multistate_inline import InlineMultistateSDFG
 from dace.transformation.passes.canonicalize.normalize_loops_and_maps import NormalizeLoopsAndMaps
@@ -55,7 +55,7 @@ WRAP_PARAM = "__nf_wrap"
 CANONICAL_DATA = re.compile(r"[ts]\d+")
 
 
-def in_order(graph) -> List:
+def in_order(graph: Union[ControlFlowRegion, SDFGState]) -> List:
     """A graph's nodes in topological order, ties broken by insertion order -- used for both a CFG
     (blocks) and a state (dataflow nodes).
 
@@ -202,7 +202,7 @@ def wrap_free_tasklets(sdfg: dace.SDFG) -> int:
 # --- 4. canonical labels ---------------------------------------------------------------------------
 
 
-def block_kind(block) -> str:
+def block_kind(block: ControlFlowBlock) -> str:
     """The tree keyword for a control-flow block -- the ``<kind>`` half of its canonical label.
 
     A ``LoopRegion`` splits by shape rather than by class: one carrying both an init and an update
@@ -247,7 +247,7 @@ def next_label(kind: str, level: int, counters: Dict[tuple, int]) -> str:
     return f"{kind}{level}_{index}"
 
 
-def relabel_cfg(cfg, level: int, counters: Dict[tuple, int]) -> None:
+def relabel_cfg(cfg: Union[dace.SDFG, ControlFlowRegion], level: int, counters: Dict[tuple, int]) -> None:
     """Relabel one CFG's blocks at ``level``, recursing into the regions and states among them.
     ``counters`` is the per-(kind, level) running index, shared across the whole traversal."""
     for block in in_order(cfg):
@@ -334,7 +334,7 @@ def relabel_state(state: SDFGState, level: int, counters: Dict[tuple, int]) -> N
     children = state.scope_children()
     rank = {id(n): i for i, n in enumerate(in_order(state))}
 
-    def descend(scope, depth: int) -> None:
+    def descend(scope: Optional[nodes.MapEntry], depth: int) -> None:
         for node in sorted(children[scope], key=lambda n: rank.get(id(n), 0)):
             if isinstance(node, nodes.MapEntry):
                 node.map.label = next_label("kernel", depth, counters)

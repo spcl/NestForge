@@ -21,10 +21,15 @@ space keeps steered and unsteered runs over identical ground, so their differenc
 :func:`plan_search` is pure -- no compiler, no filesystem -- so the contract is testable on a machine
 with no toolchain. This module PLANS only; nothing here runs the arena yet (see README, Known gaps).
 """
+from __future__ import annotations
+
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple, Union
+
+if TYPE_CHECKING:
+    import dace
 
 #: Suffixes that name a source we can hand STRAIGHT to a compiler (case A).
 COMPILABLE_SUFFIXES = {
@@ -302,7 +307,7 @@ def plan_search(source: Union[str, Path],
                       f'bounded at {VARIANT_BUDGET} variants per compiler')
 
 
-def lower_to_sdfg(source: Union[str, Path], kind: InputKind):
+def lower_to_sdfg(source: Union[str, Path], kind: InputKind) -> dace.SDFG:
     """Lower a parseable input to an SDFG.
 
     NumPy goes through the DaCe Python frontend, Fortran through ``dace_fortran``. Both imports are

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from nestforge import tsvc
 from nestforge.build import DEFAULT_COMPILER, BuildOptions
@@ -53,7 +53,7 @@ class Proposal:
     compiler: Optional[str] = None
     flags: Optional[Tuple[str, ...]] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.lane == "dace":
             if self.opt_mode is None or self.build is None:
                 raise ValueError(f"dace proposal {self.name!r} needs opt_mode and build")
@@ -85,7 +85,7 @@ class DaceOptimizer(Optimizer):
     """One DaCe-lane variant: a fixed ``(opt_mode, BuildOptions)``. Never declines (the DaCe lane builds any
     nest)."""
 
-    def __init__(self, opt_mode: str, build: BuildOptions, name: Optional[str] = None):
+    def __init__(self, opt_mode: str, build: BuildOptions, name: Optional[str] = None) -> None:
         if opt_mode not in tsvc.OPT_MODES:
             raise ValueError(f"opt_mode {opt_mode!r} not in {tsvc.OPT_MODES}")
         self.opt_mode = opt_mode
@@ -114,7 +114,7 @@ class ExternalOptimizer(Optimizer):
                  cost_model: str = "cheap",
                  parallel: str = "sequential",
                  nthreads: int = 1,
-                 name: Optional[str] = None):
+                 name: Optional[str] = None) -> None:
         self.language = language
         self.family = family
         self.compiler = compiler
@@ -181,7 +181,7 @@ class AgenticOptimizer(Optimizer):
     never says ``stop`` must still terminate, or a CI job hangs instead of failing.
     """
 
-    def __init__(self, max_rounds: int = 1):
+    def __init__(self, max_rounds: int = 1) -> None:
         if max_rounds < 1:
             raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
         self.max_rounds = max_rounds
@@ -230,7 +230,10 @@ class WholeProgramOptimizer(Optimizer):
     Consumed by :func:`nestforge.whole_program.measure_whole_program`.
     """
 
-    def __init__(self, opt_mode: str = "auto-opt", build: Optional[BuildOptions] = None, name: Optional[str] = None):
+    def __init__(self,
+                 opt_mode: str = "auto-opt",
+                 build: Optional[BuildOptions] = None,
+                 name: Optional[str] = None) -> None:
         if opt_mode not in tsvc.OPT_MODES:
             raise ValueError(f"opt_mode {opt_mode!r} not in {tsvc.OPT_MODES}")
         self.opt_mode = opt_mode
@@ -241,7 +244,8 @@ class WholeProgramOptimizer(Optimizer):
         return Proposal(self.name, "dace", scope="whole-program", opt_mode=self.opt_mode, build=self.build)
 
 
-def run_agent_loop(agent: AgenticOptimizer, nest: Optional[object], measure) -> List[Outcome]:
+def run_agent_loop(agent: AgenticOptimizer, nest: Optional[object], measure: Callable[[Proposal],
+                                                                                      Outcome]) -> List[Outcome]:
     """Drive ``agent`` to a stop: propose -> ``measure(proposal)`` -> observe, until it proposes ``None``.
 
     ``measure`` is the caller's build+validate+time step and returns an :class:`Outcome`; keeping it a
