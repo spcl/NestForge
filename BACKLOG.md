@@ -227,18 +227,95 @@ The agent's success rides entirely on the quality of the fusion/fission foundati
 audit + improve, AFTER the active tasks above, BEFORE J. Do not reinvent — the passes exist in
 dace/extended; audit and improve them.
 
-- [ ] **K1** **state-fusion-with-happens-before** — the substrate everything else sits on. Audit the
-      WAR-edge-targets-consumer redesign for missed cases.
-- [ ] **K2** **loop-fusion / loop-fission**, **map-fusion / map-fission**. Ruling: **statement-fission
-      is the canonical floor**, not loop-fission. `fission_to_statements` already reaches statement
-      granularity (SplitStatements → LoopFission → MapFission); LoopFission is only a STEP in that
-      descent, never where we stop. Loop-fission alone is the worse primitive.
-- [ ] **K3** **Fuse MORE than statement granularity.** The lattice runs atoms→maximal; the fusion arms
-      must GROUP many statement-atoms into one kernel, not leave them one-atom-per-nest. Decompose to
-      statements, then re-fuse UP to the chosen granularity.
+**AUDIT DONE 2026-07-24** (opus-max, 5 units, every finding adversarially verified). Verdict per
+pass: map-fusion SOUND (no DOALL miscompile constructible); loop-fusion, statement-fission, map-fission
+each carry ONE confirmed silent miscompile. Full report in memory
+`project_nestforge_fusion_foundation_audit`. Repros all executed end-to-end (raw SDFG == numpy, post-pass
+!= numpy, validate() passes).
+
+### K0 — CONFIRMED silent miscompiles (fix FIRST; all have exact patch + acceptance). Fixes touch
+dace canon pipeline → MUST run the npbench/polybench 108-gate + SplitStatements/fuse_loops suites after.
+
+- [ ] **K0a** *(default pipeline)* **statement-fission stale-snapshot** —
+      `dace/transformation/passes/canonicalize/split_statements.py:325-327`, `_snapshot_forward_reads`.
+      Gate redirects a read to the pre-loop snapshot when the verdict SET merely *contains* `WAR` and
+      lacks `RAW`/`complex`; a read that is `WAR` vs one sibling write but `'none'` (offset-0, same-index
+      producer this iter) vs another gets moved off its just-written live value. Repro:
+      `A[i]=B[i]; A[i+1]=E[i]; D[i]=A[i+1]*2` → after `SplitStatements().apply_pass` (and full
+      `canonicalize()`), `D==2*orig_A` not `2*E`. **Fix:** require EVERY verdict read-ahead —
+      `if not (kinds and kinds <= {'WAR','WAR_symbolic'}): continue` (the sound gate already at
+      `break_anti_dependence.py:802`). Accept: repro yields `D==2*E`; existing fission tests bit-exact.
+- [ ] **K0b** *(default pipeline)* **loop-fusion RAW-misread → illegal fusion** —
+      `dace/transformation/interstate/fuse_loops.py:185` reads a `RAW` verdict as "read-behind, safe",
+      but `break_anti_dependence._dep_class:317-319` dumps EVERY not-provably-nonneg symbolic offset into
+      `RAW`. Unknown-sign read-ahead `a[i+K-M]` (K>M) gets fused. Repro: two same-`i` non-DOALL loops,
+      L1 writes `a[i]`, L2 reads `a[i+K-M]` → `LoopFusion().apply_pass` returns 1 (illegal); N=8,K=2,M=0
+      max|diff|≈1.9. **Fix:** 3-way split at `break_anti_dependence.py:317-319`: provably-nonneg→
+      `WAR_symbolic`; provably-nonpositive (new `_provably_nonpositive_under_nonneg_symbols`)→`RAW`;
+      else→`('complex',None)`. No-op for the 3 in-module consumers (`:636,:802,:901` treat RAW==complex).
+      Naive `319→'complex'` over-demotes legit `a[i-K]` read-behind, so the 3-way is required.
+- [ ] **K0c** *(opt-in `split_maps=True`, the nest-forge fission primitive — TOP priority for the agent
+      path)* **map-fission in-place RMW miscompile** —
+      `split_statements.py` `_split_one_map` (root causes `196`+`278`). A map that reads an array via a
+      local and writes it in place: `t=A[i]; A[i]=t+B[i]; C[i]=t*2` splits so the C-clone recomputes
+      `t=A[i]` AFTER the A-clone overwrote `A[i]` (WAR unpreserved) and duplicates the A-write → both A
+      and C wrong; validate() passes. **Fix:** mirror the guard `SplitTasklets` already has for this RMW
+      shape (`split_tasklets.py:555`): before nesting, `if read_arrays & write_arrays: return None`.
+      Accept: repro no longer fires (or gives `A==A0+B0`, `C==A0*2`); `_two_out`/`_three_out` still 2/3.
+- [ ] **K0d** **dead twin `_break_mixed_forward_reads`** (`break_anti_dependence.py:900-965`, call
+      commented at 965). Before ANYONE re-enables 965, apply K0a's sound gate at `901-903` AND switch its
+      `expr` guard (`924-925`) to strict `expr-1`, or delete the function + probe. Accept: re-enabling
+      does not reintroduce K0a.
+
+### K0-COMPLETENESS — missed fusions / over-splits (not miscompiles; quality)
+
+- [ ] **Kc1** loop-fusion output-dep over-match — `fuse_loops.py:204-213` `_same_point` compares only
+      per-dim START; `a[i:i+2]` vs `a[i:i+1]` falsely same-point. Compare full (start,end,step).
+- [ ] **Kc2** loop-fusion WCR/side-effect guard — `fuse_loops.py:165-202` records a WCR in-edge as a
+      plain write; no `side_effects` guard. Only shielded by `_is_doall`+no-assignments. Refuse
+      differing-operator WCR accumulators + side-effect tasklets explicitly.
+- [ ] **Kc3** loop-fusion iterator-name unification — `fuse_loops.py:168` analyses second's subsets
+      under second's loop var; differing names → `complex` → safe OVER-reject. Rename to
+      `first.loop_variable` on a scratch copy before `_fusion_legal` (also removes K0b's reliance on
+      incidental shared naming). `for i{} ; for j{}` elementwise then fuses.
+- [ ] **Kc4** map-fission over-split/materialize — raw `MapFission` (`map_fission.py:55-66`) fissions
+      per component and MATERIALIZES shared locals to size-N buffers (below the atom floor). Route the
+      foundation through `_split_one_map` (post K0c), not raw MapFission. Accept: single-global-output
+      stays 1 map, 0 buffers.
+- [ ] **Kc5** map-fusion horizontal inner-RW check — `map_fusion_horizontal.py:119` never calls
+      `has_inner_read_write_dependency` (vertical does, `map_fusion_vertical.py:1325`). PLAUSIBLE-latent,
+      no runtime repro. Call it for symmetry.
+- [ ] **Kc6** map-fusion unsafe None default — `map_fusion_helper.py:546` treats an undeterminable
+      boundary subset as "no hazard"; return None (refuse) instead. PLAUSIBLE-latent.
+- [ ] **Kc7** map-fission latent WCR drop — `map_fission.py:443,445` do not carry `edge.data.wcr` into
+      the replacement edges. LATENT, no reachable trigger; code-inspection only.
+
+### K-RULINGS (settled by the audit)
+
+- **Normalization "assignment-tasklet → single-element-copy": DO NOT add a pass** (YAGNI). The rewrite
+  already exists bidirectionally: expose via `TrivialTaskletElimination`
+  (`dataflow/trivial_tasklet_elimination.py:50`, wired `canonicalize/pipeline.py:615`), re-materialize via
+  `InsertAssignTasklets*` for the vectorizer. `_dep_class` classifies from memlet subsets, never tasklet
+  code, so a copy exposes NOTHING extra for distance analysis (it's harder — packs read+write into one
+  edge's subset/other_subset). Blanket conversion drops dtype casts + WCR carries + multi-element copies.
+  If finer fission is wanted, the real lever is COPY/EXPRESSION PROPAGATION in `_output_dependency`
+  (`split_statements.py:58-76`): treat a transient that is a pure recomputable fn of shared globals as
+  non-coupling. Not a normalization pass.
+- **Dedup-on-fusion: already sound as a round-trip**, handled downstream not in fusion — duplicated
+  `sym=idx[i]` survive fusion DISTINCT-named (no WAW), `SymbolDedup` (`passes/canonicalize/symbol_dedup.py`)
+  CSEs them, `bypass_trivial_assign_tasklets` collapses duplicate copies. Gap is only decoupling (a
+  consumer that fuses without running those later passes carries duplicates to codegen) — completeness.
+- **map-fusion is the healthiest unit** — sound distance-0 (`producer.covers(consumer)`, single producer,
+  injective single-point pinning). The DOALL/injectivity premise is ASSUMED (standard DaCe map contract),
+  not independently reverified.
+
+### K1–K4 (original — improve after K0 correctness lands)
+
+- [ ] **K1** **state-fusion-with-happens-before** — substrate. Audit WAR-edge-targets-consumer redesign.
+- [ ] **K3** **Fuse MORE than statement granularity** — lattice atoms→maximal; fusion arms GROUP many
+      atoms into one kernel, decompose then re-fuse UP to the chosen granularity.
 - [ ] **K4** **fuse-loops / fuse-maps with close iteration domains** (dace/extended). Audit + expose the
-      granularity choice cleanly. CPU vs GPU have different perf characteristics — the agent LEARNS the
-      tradeoff; the passes must not hardcode it. This is the paper's C1 (backend-dependent optimum).
+      granularity choice cleanly. CPU vs GPU differ — agent LEARNS it, passes must not hardcode. Paper C1.
 
 ## J. Last — mega-kernel
 
