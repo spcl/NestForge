@@ -14,6 +14,7 @@ pytest.importorskip("hpcagent_bench")
 from dace import symbolic
 
 from nestforge.corpus import dace_kernel_names, iter_dace_kernels
+from nestforge.emit_libnode import symbol_scalar
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 
 
@@ -50,14 +51,20 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     sized = maxsize_loop_scratch(sdfg, symbols)
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
+    # a symbol-only scalar (referenced by the kernel as a bare name, never through a memlet) is a by-value
+    # config parameter; pass a python scalar. Every other scalar is a len-1 buffer (name[0]).
+    by_value = {n for n in sized.arrays if symbol_scalar(sdfg, n)}
     call = {}
     for name in inspect.signature(kernel).parameters:
         if name in sizes:
             call[name] = sizes[name]
             continue
         desc = sized.arrays[name]
-        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
         dt = np.dtype(desc.dtype.type)
+        if name in by_value:
+            call[name] = dt.type(inputs[name]) if name in inputs else dt.type(0)
+            continue
+        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
         # reshape inputs to the descriptor shape: a kernel may declare a param 2-D (nbody's mass is
         # [N,1]) while the caller supplies the flat (N,) array; sizes match, so reshape aligns them.
         call[name] = inputs[name].astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
@@ -110,7 +117,11 @@ def test_nussinov_conditionalblock_emits_and_computes():
     N = 20
     rng = np.random.default_rng(0)
     seq = rng.integers(0, 4, size=N).astype(np.int32)
-    call, src = alloc_run("hpc/dynamic_programming/nussinov/nussinov", "nussinov", dict(N=N), dict(seq=seq))
+    # complement_sum / pair_bonus are read-only config scalars (a complementary base pair sums to 3 and
+    # scores 1); the emit takes them by value, so supply them -- unsupplied, they default to 0 and the DP
+    # never scores a pairing.
+    call, src = alloc_run("hpc/dynamic_programming/nussinov/nussinov", "nussinov", dict(N=N),
+                          dict(seq=seq, complement_sum=3, pair_bonus=1))
     assert "if " in src and "else:" in src  # the guards lower through ConditionalBlock
 
     def match(b1, b2):

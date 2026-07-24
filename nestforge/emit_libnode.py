@@ -61,6 +61,17 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     return desc.transient and is_scalar(desc)
 
 
+def symbol_scalar(sdfg: dace.SDFG, name: str) -> bool:
+    """A non-transient scalar the kernel references only as a FREE SYMBOL -- it never flows through a
+    memlet, so the emitted code spells it as the bare ``name`` (a by-value config parameter), not the
+    ``name[0]`` element of a len-1 buffer. A scalar read/written through a memlet is a len-1 buffer and
+    is NOT one of these."""
+    desc = sdfg.arrays[name]
+    if desc.transient or not is_scalar(desc):
+        return False
+    return not any(e.data is not None and e.data.data == name for st in sdfg.all_states() for e in st.edges())
+
+
 def scalar_elem(name: str, desc: dace.data.Data) -> str:
     """Index the SOLE element of a size-1 buffer, one index per dimension.
 
