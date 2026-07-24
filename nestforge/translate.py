@@ -22,7 +22,7 @@ from nestforge.split_unsupported import region_to_standalone, whole_program_regi
 from nestforge.translator import BenchSpec, translate
 
 
-@dataclass
+@dataclass(slots=True)
 class Prepared:
     """A nest turned into files the translator can consume."""
     name: str

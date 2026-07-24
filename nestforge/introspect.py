@@ -23,6 +23,7 @@ non-transients and free symbols are left.
 from __future__ import annotations
 
 import ast
+import functools
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import dace
@@ -50,6 +51,8 @@ Handle = Callable[[str, object], str]
 
 class Substitute(ast.NodeTransformer):
     """Replace each ``Name`` that has a definition with that definition's expression."""
+
+    __slots__ = ("definitions", )
 
     def __init__(self, definitions: Dict[str, str]) -> None:
         self.definitions = definitions
@@ -100,6 +103,13 @@ def resolve_scalars(expression: str, definitions: Dict[str, str]) -> str:
     return ast.unparse(simplify_indices(tree)).strip()
 
 
+@functools.lru_cache(maxsize=None, typed=True)
+def simplified_index(text: str) -> str:
+    """Cached sympy round-trip for one subscript's unparsed slice text (a hundred-kernel tree re-walks
+    the same handful of index shapes -- ``i + 1``, ``2 * j`` -- over and over)."""
+    return str(dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(text)))
+
+
 def simplify_indices(tree: ast.AST) -> ast.AST:
     """Rewrite every subscript index through sympy, so a hoisted read prints ``A[i + 1]`` rather than
     the ``A[(1 + (1 * i))]`` the frontend builds it as."""
@@ -108,8 +118,7 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
         return tree  # the common case: no index to rewrite, so no sympy round-trip and no fixup walk
     for node in subscripts:
         try:
-            simplified = dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(astutils.unparse(node.slice)))
-            node.slice = ast.parse(str(simplified), mode="eval").body
+            node.slice = ast.parse(simplified_index(astutils.unparse(node.slice)), mode="eval").body
         except (SyntaxError, TypeError, AttributeError):
             continue  # an index sympy will not take is still perfectly printable as it stands
     return ast.fix_missing_locations(tree)
@@ -246,11 +255,22 @@ def loop_domain(loop: LoopRegion, defs: Dict[str, str]) -> str:
     return resolve_scalars(loop.loop_condition.as_string, defs) if loop.loop_condition is not None else ""
 
 
+#: ``str(end) -> simplify(end + 1)`` -- the same handful of map/loop bounds recur across a hundred-kernel
+#: tree, so keying on the string form (cheap, and stable across structurally-equal sympy objects built by
+#: different call sites) skips the sympy simplify+add for every repeat.
+_END_PLUS_ONE: Dict[str, Any] = {}
+
+
 def render_range(rng: Tuple[Any, Any, Any]) -> str:
     """``begin:end:step`` with the two redundant parts dropped -- an inclusive end is rendered as the
     exclusive bound a reader expects, and a unit step is left off."""
     begin, end, step = rng
-    text = f"{begin}:{dace.symbolic.simplify(end + 1)}"
+    key = str(end)
+    stop = _END_PLUS_ONE.get(key)
+    if stop is None:
+        stop = dace.symbolic.simplify(end + 1)
+        _END_PLUS_ONE[key] = stop
+    text = f"{begin}:{stop}"
     return text if step == 1 else f"{text}:{step}"
 
 

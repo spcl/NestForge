@@ -48,9 +48,13 @@ def sized_sdfg(boundary: Boundary) -> dace.SDFG:
     return maxsize_loop_scratch(expand_nested_sdfg_inputs(boundary.standalone_sdfg), boundary.symbols)
 
 
-def arg_order(boundary: Boundary, sdfg: Optional[dace.SDFG] = None) -> List[str]:
-    """Arrays (inputs, extra outputs, scratch), then symbols -- identical to the numpy signature."""
-    args = array_names(boundary, sdfg)
+def arg_order(boundary: Boundary, sdfg: Optional[dace.SDFG] = None, arrays: Optional[List[str]] = None) -> List[str]:
+    """Arrays (inputs, extra outputs, scratch), then symbols -- identical to the numpy signature.
+
+    ``arrays`` may be an already-computed :func:`array_names` result -- pass it when the caller has one,
+    so ``scratch_arrays``/``sized_sdfg`` are not walked a second time for the same boundary.
+    """
+    args = list(arrays) if arrays is not None else array_names(boundary, sdfg)
     args += [s for s in boundary.symbols if s not in args]
     return args
 
@@ -86,7 +90,10 @@ def manifest_dict(boundary: Boundary,
     """Build the OptArena manifest dict for ``boundary``'s standalone SDFG."""
     sdfg = sized_sdfg(boundary)
     arrays = array_names(boundary, sdfg)
-    init_arrays = {a: {"shape": shape_str(sdfg.arrays[a].shape), "dtype": dtype_str(sdfg.arrays[a])} for a in arrays}
+    init_arrays = {}
+    for a in arrays:
+        desc = sdfg.arrays[a]
+        init_arrays[a] = {"shape": shape_str(desc.shape), "dtype": dtype_str(desc)}
     sizes = sizes or {s: DEFAULT_SIZE for s in boundary.symbols}
     # A boundary symbol carries its dtype from the SDFG. An integer symbol is a size / index -> the
     # ``parameters`` preset table. A FLOAT symbol is a value scalar (a staged ``a_index = a[i]`` read that
@@ -112,7 +119,7 @@ def manifest_dict(boundary: Boundary,
         "parameters": {
             preset: int_params
         },
-        "input_args": arg_order(boundary, sdfg),
+        "input_args": arg_order(boundary, sdfg, arrays),
         "array_args": arrays,
         "output_args": list(boundary.outputs),
         "init": init,

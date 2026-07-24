@@ -30,7 +30,7 @@ import sympy
 
 import dace
 from dace import symbolic
-from dace.frontend.operations import detect_reduction_type
+from dace.frontend.operations import detect_reduction_type as _detect_reduction_type
 from dace.sdfg import nodes
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion, ReturnBlock
 from dace.sdfg.utils import dfs_topological_sort
@@ -60,15 +60,26 @@ def access(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range) -> str:
     return f"{name}[{index_str(subset)}]"
 
 
-def sub_connectors(code: str, conn_expr: Dict[str, str]) -> str:
+def connector_pattern(conn_expr: Dict[str, str]) -> Optional[re.Pattern]:
+    """The whole-word alternation pattern matching every connector name in ``conn_expr``, or ``None``
+    when there is nothing to substitute. Compiled ONCE per tasklet (:func:`tasklet_lines` builds it
+    before its per-line loop) rather than once per code line -- the pattern depends only on the
+    connector set, not on the line being rewritten."""
+    if not conn_expr:
+        return None
+    return re.compile(r"\b(" + "|".join(re.escape(c) for c in sorted(conn_expr, key=len, reverse=True)) + r")\b")
+
+
+def sub_connectors(code: str, conn_expr: Dict[str, str], pattern: Optional[re.Pattern] = None) -> str:
     """Replace whole-word connector tokens in a tasklet's Python code with their expressions.
 
     Single-pass substitution, so a replacement expression containing another connector's name is not
-    itself re-substituted.
+    itself re-substituted. ``pattern`` may be a precomputed :func:`connector_pattern`; it is derived
+    from ``conn_expr`` when omitted.
     """
     if not conn_expr:
         return code
-    pattern = re.compile(r"\b(" + "|".join(re.escape(c) for c in sorted(conn_expr, key=len, reverse=True)) + r")\b")
+    pattern = pattern if pattern is not None else connector_pattern(conn_expr)
     return pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
@@ -320,6 +331,7 @@ def rewrite_math_prefix(code: str) -> str:
 _DECLTYPE_CAST = re.compile(r"\bdecltype\s*\([^()]*\)")
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def normalize_casts(code: str) -> str:
     """Rewrite DaCe dtype casts, math intrinsics, and sympy user-functions to numpy so the kernel needs
     no ``dace``/``math`` runtime import.
@@ -368,6 +380,14 @@ def trap_guard_lines(tasklet: nodes.Tasklet) -> List[str] | None:
     return [f"if {cond}:", f"    raise AssertionError({f'violated assumption in {tasklet.label}'!r})"]
 
 
+@functools.lru_cache(maxsize=None, typed=True)
+def reduction_type(wcr_str: str) -> dace.dtypes.ReductionType:
+    """Cached :func:`detect_reduction_type` -- the WCR lambda string repeats across every edge of a
+    reduction (one map may have thousands of iterations sharing the same handful of WCR strings), and
+    the underlying detector re-parses the lambda as Python each call."""
+    return _detect_reduction_type(wcr_str)
+
+
 #: reduction type -> ``(accumulator, term) -> combined expression`` for a WCR (augmented) write.
 _WCR_BINOP = {
     dace.dtypes.ReductionType.Sum: lambda acc, t: f"{acc} + {t}",
@@ -404,13 +424,14 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
         if e.data.wcr is None:
             conn_expr[e.src_conn] = target
             continue
-        combine = _WCR_BINOP.get(detect_reduction_type(e.data.wcr))
+        combine = _WCR_BINOP.get(reduction_type(e.data.wcr))
         if combine is None:
             raise UnsupportedNest(f"tasklet {tasklet.label} has an unsupported WCR {e.data.wcr!r}")
         temp = f"__wcr_{e.src_conn}"
         conn_expr[e.src_conn] = temp  # the body writes the temporary, then we accumulate into target
         wcr_updates.append(f"{target} = {combine(target, temp)}")
-    lines = [normalize_casts(sub_connectors(line, conn_expr)) for line in tasklet.code.as_string.splitlines()]
+    pattern = connector_pattern(conn_expr)
+    lines = [normalize_casts(sub_connectors(line, conn_expr, pattern)) for line in tasklet.code.as_string.splitlines()]
     # The accumulate lines are built here, not from tasklet code, but they embed the target's rendered
     # subset -- a strided/derived index renders as sympy ``int_floor(...)``, which is not python. They need
     # the same normalization the body lines get.
@@ -491,7 +512,7 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             # A reduction *copy* (AccessNode -> AccessNode carrying a WCR, e.g. a privatized accumulator
             # copied back): accumulate rather than overwrite -- ``dst = combine(dst, src)``. Tasklet WCRs
             # go through their own path in tasklet_lines; this is the copy-edge analogue.
-            combine = _WCR_BINOP.get(detect_reduction_type(m.wcr))
+            combine = _WCR_BINOP.get(reduction_type(m.wcr))
             if combine is None:
                 raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} has an unsupported WCR {m.wcr!r}")
             rhs = combine(dst_read, rhs)
@@ -709,7 +730,7 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
             continue
         lhs, rhs, dst_read = copy_sides(sdfg, dst_name, dst_sub, src_name, src_sub)
         if m.wcr is not None:
-            combine = _WCR_BINOP.get(detect_reduction_type(m.wcr))
+            combine = _WCR_BINOP.get(reduction_type(m.wcr))
             if combine is None:
                 raise UnsupportedNest(f"reduction (WCR) write-out into {dst_name} has an unsupported WCR {m.wcr!r}")
             rhs = combine(dst_read, rhs)
