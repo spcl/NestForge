@@ -50,8 +50,10 @@ def test_build_sdfg_leaves_no_residual_floor(opt_mode):
 
 
 def test_every_granularity_rung_is_normalized():
-    """The rungs are where fission/fusion rebuild indices, so this is the one that actually bites."""
-    kernel = tsvc.iter_tsvc_kernels(only=["s111"])[0]
+    """The rungs are where fission/fusion rebuild indices, so this is the one that actually bites. s221 is a
+    multi-statement kernel with a deep (depth-5) atoms->maximal ladder; s111 became a single statement-atom
+    (one nest, so a one-rung ladder) once fission reached statement -- not per-tasklet -- granularity."""
+    kernel = tsvc.iter_tsvc_kernels(only=["s221"])[0]
     canonical = tsvc.build_sdfg(kernel, "canonicalize")
     ladder = granularity_ladder(canonical, 4)
     assert len(ladder) >= 2, "test is vacuous on a single-rung ladder"
