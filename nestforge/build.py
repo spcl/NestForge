@@ -766,10 +766,13 @@ def available_linkers() -> Dict[str, str]:
     return found
 
 
-@functools.lru_cache(maxsize=None, typed=True)
 def fastest_linker(compiler: str) -> List[str]:
     """``-fuse-ld=<linker>`` for the fastest installed linker this compiler accepts (mold > lld > gold),
-    or ``[]``. NVIDIA's nvc/nvc++ has no ``-fuse-ld`` switch, so it keeps its default."""
+    or ``[]``. NVIDIA's nvc/nvc++ has no ``-fuse-ld`` switch, so it keeps its default.
+
+    NOT cached: the result depends on ``compiler_version`` (via :func:`linker_supported`), which tests
+    monkeypatch -- a cache keyed on ``compiler`` alone would return a stale pick across a version change.
+    It is a once-per-build call anyway, so the cache bought nothing."""
     if compiler_family(compiler) == "nvidia":
         return []
     for ld in available_linkers():  # dict preserves the fastest-first order of _FAST_LINKERS
