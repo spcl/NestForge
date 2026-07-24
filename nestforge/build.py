@@ -811,7 +811,16 @@ class BuildOptions:
     use_ccache: Optional[bool] = None
 
     def resolved_flags(self) -> List[str]:
-        return list(self.flags if self.flags is not None else DEFAULT_FLAGS)
+        """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard guaranteed.
+
+        The standard is a REQUIREMENT of the DaCe runtime headers, not an optimization knob: ``types.h``
+        uses ``std::bit_cast`` unguarded, so anything below C++20 fails to compile. A caller overriding
+        ``flags`` for one axis (``-O2``, a veclib) must not silently lose it -- an explicit ``-std=`` is
+        honored, an absent one is filled in."""
+        flags = list(self.flags if self.flags is not None else DEFAULT_FLAGS)
+        if not any(f.startswith("-std=") for f in flags):
+            flags.append(f"-std={CXX_STD}")
+        return flags
 
 
 def set_fast_libnodes(sdfg: dace.SDFG) -> None:
