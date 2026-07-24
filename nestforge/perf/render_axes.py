@@ -61,7 +61,7 @@ def lanes() -> List[Lane]:
     since their concrete values are chosen per device by ``device_profile``, not fixed in the figure.
 
     The native lane is deliberately NOT fanned over compiler/cost-model/fp:
-    ``tsvc_full.measure_native_lane`` compiles ``_original.cpp`` exactly once with base flags only -- a
+    ``tsvc_full.measure_native_lane`` compiles ``_native.cpp`` exactly once with base flags only -- a
     single fixed reference point, rendered as one cell."""
     return [
         Lane("native", "native original.cpp reference", [

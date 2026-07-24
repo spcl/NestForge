@@ -3,23 +3,25 @@
 """Import the TSVC native C++ baselines from the upstream VectraArtifacts tree into the HPCAgent-Bench
 foundation, where :attr:`nestforge.tsvc.TsvcKernel.native_cpp` resolves them.
 
-Each foundation kernel wants a ``<stem>_original.cpp`` next to its ``<stem>.yaml`` (the arena's native lane
+Each foundation kernel wants a ``<stem>_native.cpp`` next to its ``<stem>.yaml`` (the arena's native lane
 compiles it and times it as the speedup denominator). The authoritative source is the single-kernel variant
 under ``VectraArtifacts``:
 
   * ``tsvc2``   -> ``tsvc_2/tsvc_cpp_microkernels/<key>/<key>_d_single.cpp``  (self-timing single-run variant)
   * ``tsvc2_5`` -> ``tsvc_2_5/tsvc_2_5_cpp_microkernels/<key>/<key>_d.cpp``   (no ``_single`` variant exists)
 
-Both carry a trailing ``std::int64_t* time_ns`` self-timing out-param; the arena binds it to scratch and keeps
-its own timing (see :data:`nestforge.perf.harness.NATIVE_TIME_PARAM`). Idempotent: overwrites the destination
-so a re-run tracks the upstream. Reports every copy and every kernel with no upstream source (never silent).
+Both carry a trailing ``std::int64_t* time_ns`` self-timing out-param and a ``<chrono>`` clock; the arena times
+the baseline itself, so :func:`strip_timing` removes the instrumentation on import -- the ``_native.cpp`` is a
+pure kernel. The upstream-attribution header is added by HPCAgent-Bench's own tooling, not here, so this only
+bootstraps NEW kernels -- do not re-run it over the curated foundation files (it would drop their header).
+Reports every copy and every kernel with no upstream source (never silent).
 
 Usage: ``python scripts/import_native_baselines.py [--vectra DIR] [--dry-run]``.
 """
 from __future__ import annotations
 
 import argparse
-import shutil
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -31,6 +33,30 @@ CORPUS_SOURCE = {
     "tsvc2": ("tsvc_2/tsvc_cpp_microkernels", "{key}_d_single.cpp"),
     "tsvc2_5": ("tsvc_2_5/tsvc_2_5_cpp_microkernels", "{key}_d.cpp"),
 }
+
+#: The upstream single-kernel sources self-time via a trailing ``std::int64_t* time_ns`` out-param and a
+#: ``<chrono>`` clock. The arena times the baseline itself (perf_counter around the ctypes call), so the
+#: instrumentation is stripped on import -- the imported ``_native.cpp`` is a pure kernel with no timing
+#: param. Each pattern removes one piece; ``\s`` spans newlines, so every formatting variant is covered.
+TIME_STRIP = [
+    (re.compile(r"#include <chrono>\n"), ""),
+    (re.compile(r"using clock_highres[^\n]*\n"), ""),
+    (re.compile(r",\s*std::int64_t \* __restrict__ time_ns\)"), ")"),
+    (re.compile(r"\s*auto t[12] = clock_highres::now\(\);"), ""),
+    (re.compile(r"\s*std::int64_t ns =\s*std::chrono::duration_cast<std::chrono::nanoseconds>\(t2 - t1\)"
+                r"\.count\(\);"), ""),
+    (re.compile(r"\s*(?:time_ns\[0\]|\*time_ns) =\s*"
+                r"std::chrono::duration_cast<std::chrono::nanoseconds>\(t2 - t1\)\.count\(\);"), ""),
+    (re.compile(r"\s*(?:time_ns\[0\]|\*time_ns) = ns;"), ""),
+]
+
+
+def strip_timing(text: str) -> str:
+    """Remove the ``time_ns`` self-timing instrumentation (param, ``<chrono>`` include, clock reads, ns
+    write) from an upstream single-kernel source, leaving the pure kernel the arena compiles."""
+    for pat, repl in TIME_STRIP:
+        text = pat.sub(repl, text)
+    return text
 
 
 def upstream_source(vectra: Path, corpus: str, key: str) -> Optional[Path]:
@@ -46,7 +72,7 @@ def upstream_source(vectra: Path, corpus: str, key: str) -> Optional[Path]:
 def plan_imports(vectra: Path) -> Tuple[List[Tuple[Path, Path]], List[str]]:
     """Resolve every TSVC kernel to a (source, destination) copy; return ``(copies, missing_keys)``.
 
-    Destination is exactly what :attr:`TsvcKernel.native_cpp` expects: ``<stem>_original.cpp`` beside the
+    Destination is exactly what :attr:`TsvcKernel.native_cpp` expects: ``<stem>_native.cpp`` beside the
     kernel's foundation manifest. A kernel with no foundation entry or no upstream source is reported, not
     copied.
     """
@@ -60,7 +86,7 @@ def plan_imports(vectra: Path) -> Tuple[List[Tuple[Path, Path]], List[str]]:
                 missing.append(f"{corpus}/{kernel.key} ("
                                f"{'no foundation entry' if entry is None else 'no upstream .cpp'})")
                 continue
-            copies.append((src, entry.with_name(f"{entry.stem}_original.cpp")))
+            copies.append((src, entry.with_name(f"{entry.stem}_native.cpp")))
     return copies, missing
 
 
@@ -80,7 +106,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     copies, missing = plan_imports(args.vectra)
     for src, dst in copies:
         if not args.dry_run:
-            shutil.copyfile(src, dst)
+            dst.write_text(strip_timing(src.read_text()))
         print(f"{'would copy' if args.dry_run else 'copied'}: {src.name} -> {dst}")
     for m in missing:
         print(f"skip (no source): {m}")

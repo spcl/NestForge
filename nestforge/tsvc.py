@@ -8,10 +8,10 @@ Two upstreams, joined per kernel by its short name (``s000``, ``vpv``, ...):
   * **SDFG source** -- DaCe's ``performance_regression_jobs/tsvc_corpus.py`` (151 typed
     ``@dace.program`` kernels), loaded by file path since it is a script, not a package; overridable
     with ``NESTFORGE_TSVC_CORPUS``. hpcagent_bench's ``foundation`` track ships no ``_dace.py``.
-  * **native baseline** -- ``foundation/tsvc_2_<key>_original.cpp``, symbol ``<key>_d``: the arena's
+  * **native baseline** -- ``foundation/tsvc_2_<key>_native.cpp``, symbol ``<key>_d``: the arena's
     "how well does this compiler auto-vectorize the reference loop" column.
 
-Not a bijection: a kernel with an SDFG but no ``_original.cpp`` runs without the native column.
+Not a bijection: a kernel with an SDFG but no ``_native.cpp`` runs without the native column.
 """
 from __future__ import annotations
 
@@ -155,11 +155,11 @@ class TsvcKernel:
 
     @property
     def native_cpp(self) -> Optional[Path]:
-        """The ``_original.cpp`` native-baseline source, or ``None`` if this kernel has no foundation entry."""
+        """The ``_native.cpp`` native-baseline source, or ``None`` if this kernel has no foundation entry."""
         entry = self.foundation_entry
         if entry is None:
             return None
-        cpp = entry.with_name(f"{entry.stem}_original.cpp")
+        cpp = entry.with_name(f"{entry.stem}_native.cpp")
         return cpp if cpp.exists() else None
 
     @property

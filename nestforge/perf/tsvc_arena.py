@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC compiler-arena driver: run every kernel of tsvc2 + tsvc2_5 through the ``skip-taskloops``
 strategy and, for each kernel x compiler, report three runtime columns: 1) native baseline (the
-original ``_original.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,
+original ``_native.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,
 same compiler/flags -- isolates translation overhead), 3) flag-matrix winner (swept over FP-mode x
 vectorizer cost-model; fastest cell that still validates against the numpy oracle).
 
@@ -296,7 +296,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
     independent of the nest-sized buffers, so an OOB here segfaults only the child.
 
     :raises KeyError: on an unresolved pointer or scalar arg."""
-    fn, cargs, ptr_names, _time = native_setup(so, symbol, sig, kernel, inputs, sizes)
+    fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, inputs, sizes)
     fn(*cargs)  # correctness run (mutates the in-place buffers cargs points at)
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
@@ -312,7 +312,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
 def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes, oracle, reps: int, family: str,
                    workdir: Path) -> Optional[Cell]:
-    """Compile the ``_original.cpp`` baseline and time it (forked) on the SAME inputs/sizes as the nest
+    """Compile the ``_native.cpp`` baseline and time it (forked) on the SAME inputs/sizes as the nest
     columns. ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:

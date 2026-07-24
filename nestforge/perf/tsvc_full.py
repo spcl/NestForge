@@ -5,7 +5,7 @@ memory-bound profiling size.
 
 Lanes
 -----
-1. **native original.cpp** -- the ``<key>_original.cpp`` scalar reference at ``-O3 -march=native``:
+1. **native baseline** -- the ``<key>_native.cpp`` scalar reference at ``-O3 -march=native``:
    how well the compiler auto-vectorizes the reference.
 2. **DaCe-cpp baseline** -- DaCe's own C++ codegen of the EXTRACTED-NEST standalone SDFG (owned
    direct-compile via ``build.build_sdfg``, no cmake), strict-ieee FP. Fanned over codegen impl
@@ -212,7 +212,7 @@ def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inp
 
 def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, given=None) -> Dict:
     buffers = make_inputs(boundary, validate_sizes, seed=0, given=given)  # fresh + correct (validation runs in place)
-    fn, cargs, ptr_names, _time = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
+    fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, buffers, validate_sizes)
     fn(*cargs)
     outs = {o: buffers[o] for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
@@ -222,7 +222,7 @@ def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, orac
 
 
 def native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps) -> Dict:
-    fn, cargs, _ptr, _time = native_setup(so, symbol, sig, kernel, time_inputs, time_sizes)  # COW copy in this fork
+    fn, cargs, _ptr = native_setup(so, symbol, sig, kernel, time_inputs, time_sizes)  # COW copy in this fork
     return summarize_times(collect_samples(fn, cargs, reps))
 
 
@@ -238,7 +238,7 @@ def measure_native_lane(cxx: str,
                         cxx_std: str,
                         workdir: Path,
                         validate_fills=None) -> Optional[Dict]:
-    """Lane 1: compile ``_original.cpp`` at ``-O3 -march=native``, validate@small + time@prof (median).
+    """Lane 1: compile ``_native.cpp`` at ``-O3 -march=native``, validate@small + time@prof (median).
     ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:

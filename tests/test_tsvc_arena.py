@@ -86,7 +86,7 @@ def test_manifest_resolves_from_per_kernel_subfolder():
     vag = tsvc.iter_tsvc_kernels(only=["vag"], corpus="tsvc2")[0]  # tsvc2: tsvc_2_<key> stem
     assert vag.yaml_path is not None and vag.yaml_path.exists()
     assert vag.bench_name == "tsvc_2_vag"
-    assert vag.native_cpp is not None and vag.native_cpp.name == "tsvc_2_vag_original.cpp"
+    assert vag.native_cpp is not None and vag.native_cpp.name == "tsvc_2_vag_native.cpp"
     reroll = tsvc.iter_tsvc_kernels(only=["reroll_gather"], corpus="tsvc2_5")[0]  # tsvc2_5: bare <key> stem
     assert reroll.yaml_path is not None and reroll.bench_name == "reroll_gather"
 

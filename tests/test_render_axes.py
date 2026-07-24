@@ -38,7 +38,7 @@ def test_lane_cell_counts_are_the_axis_product():
 
 
 def test_native_lane_is_a_single_fixed_cell():
-    """``tsvc_full.measure_native_lane`` compiles ``_original.cpp`` ONCE -- one C++ toolchain, ``base_flags``
+    """``tsvc_full.measure_native_lane`` compiles ``_native.cpp`` ONCE -- one C++ toolchain, ``base_flags``
     only (no ``cost_flags``, no ``reduced_fp_flags``). Fanning the native lane over compiler/cost-model/fp
     would document a sweep the arena never runs, so every native axis must be single-valued."""
     native = next(lane for lane in render_axes.lanes() if lane.key == "native")
