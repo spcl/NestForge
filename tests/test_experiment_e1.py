@@ -3,12 +3,11 @@
 """E1 driver (C1): the fusion-granularity x backend heatmap. The read-off logic is a unit test (synthetic
 cells, no compile); the end-to-end per-backend variant build + swap + measure is an integration test that
 compiles and forks, gated on a C toolchain."""
-import numpy as np
 import pytest
 import dace
 
 from nestforge.arena import discover_compilers
-from nestforge.experiment_e1 import E1Cell, best_granularity_per_backend, run_e1, run_e1_cell
+from nestforge.experiment_e1 import E1Cell, best_granularity_per_backend, no_granularity_axis, run_e1, run_e1_cell
 from nestforge.granularity import GranularityPoint, fuse_first_k
 from nestforge.tsvc import TsvcKernel
 
@@ -16,12 +15,16 @@ N = dace.symbol('N')
 
 
 @dace.program
-def two_map(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
-    T = np.empty_like(A)
+def two_map(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
+    """TWO global outputs on purpose. Statement granularity is one map per GLOBAL output
+    (:func:`nestforge.fission_arms.fission_to_statements`), so a producer->consumer chain through a
+    TRANSIENT is a single statement: it fissions to one nest, its ladder holds only ``atoms``, and an E1
+    sweep over it measures no granularity axis at all. Writing C and D independently keeps the two maps
+    separable, so ``atoms`` and ``maximal`` are genuinely different partitions to compare."""
     for i in dace.map[0:N]:
-        T[i] = A[i] + B[i]
+        C[i] = A[i] + B[i]
     for i in dace.map[0:N]:
-        C[i] = T[i] * 2.0
+        D[i] = A[i] * 2.0
 
 
 def kernel():
@@ -45,8 +48,32 @@ def test_best_granularity_ignores_failed_cells():
     cells = [
         E1Cell("k", "gcc", "atoms", "map", float("inf"), False, "build failed"),
         E1Cell("k", "gcc", "maximal", "map", 5.0, True),
+        E1Cell("k", "gcc", "fuse-1", "map", 9.0, True),
     ]
-    assert best_granularity_per_backend(cells) == {("k", "gcc"): "maximal"}
+    assert best_granularity_per_backend(cells) == {("k", "gcc"): "maximal"}  # the failed rung is not the argmin
+
+
+def test_single_surviving_rung_is_no_axis_not_a_winner():
+    """One measured rung is not a preference: with the alternative unbuilt there was no choice to make, so
+    the pair is excluded from the C1 table and reported as having no granularity axis."""
+    cells = [
+        E1Cell("k", "gcc", "atoms", "map", float("inf"), False, "build failed"),
+        E1Cell("k", "gcc", "maximal", "map", 5.0, True),
+    ]
+    assert best_granularity_per_backend(cells) == {}
+    assert no_granularity_axis(cells) == ["k | gcc"]
+
+
+def test_one_rung_ladder_never_reports_a_best():
+    """A single-statement kernel canonicalizes to ONE nest, so its ladder holds only ``atoms``. Reporting
+    that as the backend's preferred granularity would fabricate a C1 finding from a table with no
+    alternative in it -- the first TSVC kernels (s000, s111, ...) are all this shape."""
+    cells = [
+        E1Cell("s000", "gcc", "atoms", "map", 1.2, True),
+        E1Cell("s000", "clang", "atoms", "map", 1.9, True),
+    ]
+    assert best_granularity_per_backend(cells) == {}
+    assert no_granularity_axis(cells) == ["s000 | clang", "s000 | gcc"]
 
 
 @pytest.mark.integration
@@ -96,8 +123,13 @@ def test_run_e1_sweeps_backends_and_granularity_bounded(tmp_path):
     n_backends = len(discover_compilers())
     assert cells and len(cells) <= n_backends * 2  # kernels(1) x backends x <=2 granularity rungs
     assert all(c.ok and c.error is None for c in cells), [c.error for c in cells if not c.ok]
+    # Guard the sweep against measuring nothing: a one-rung ladder would still fill in cells and, before
+    # the read-off excluded it, would have reported "every backend prefers atoms" with no alternative ever
+    # compiled. Both rungs must actually be present for the argmin below to mean anything.
+    assert {c.granularity for c in cells} == {"atoms", "maximal"}
     best = best_granularity_per_backend(cells)
     assert set(b for _k, b in best) == set(discover_compilers())  # every backend produced a winner
+    assert not no_granularity_axis(cells)
 
 
 def test_unit_with_no_nest_is_a_skip_not_fabricated_data(tmp_path):

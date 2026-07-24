@@ -196,14 +196,36 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
     return cells
 
 
-def best_granularity_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]:
-    """The C1 read-off: for each (kernel, backend), the granularity rung with the fastest valid time. When
-    the optimum differs across the backend column for a kernel, that is the backend-dependence C1 claims."""
-    best: Dict[Tuple[str, str], Tuple[float, str]] = {}
+def measured_rungs(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """``(kernel, backend) -> {granularity: median_us}`` over the cells that validated. The grouping both
+    read-offs below share."""
+    grouped: Dict[Tuple[str, str], Dict[str, float]] = {}
     for c in cells:
         if not c.ok:
             continue
-        key = (c.kernel, c.backend)
-        if key not in best or c.median_us < best[key][0]:
-            best[key] = (c.median_us, c.granularity)
-    return {key: gran for key, (_us, gran) in best.items()}
+        rungs = grouped.setdefault((c.kernel, c.backend), {})
+        if c.granularity not in rungs or c.median_us < rungs[c.granularity]:
+            rungs[c.granularity] = c.median_us
+    return grouped
+
+
+def best_granularity_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]:
+    """The C1 read-off: for each (kernel, backend), the granularity rung with the fastest valid time. When
+    the optimum differs across the backend column for a kernel, that is the backend-dependence C1 claims.
+
+    A (kernel, backend) with only ONE measured rung is EXCLUDED, not reported as preferring that rung: a
+    single-statement kernel canonicalizes to one nest (``fusion_depth`` 0), so its ladder holds just
+    ``atoms`` and the argmin is the sole option rather than a measured preference. Including it would fill
+    the heatmap with "every backend prefers atoms" cells for kernels where no alternative was ever
+    compiled -- a finding read off a table that never had a choice in it. :func:`no_granularity_axis`
+    lists what was left out."""
+    return {key: min(rungs, key=rungs.__getitem__) for key, rungs in measured_rungs(cells).items() if len(rungs) > 1}
+
+
+def no_granularity_axis(cells: Sequence[E1Cell]) -> List[str]:
+    """The ``kernel | backend`` keys excluded from the C1 read-off because fewer than two granularity rungs
+    validated -- either the kernel has no partition to choose (a one-rung ladder) or every other rung
+    failed. Reported alongside the table so a sweep that measured no granularity axis at all cannot read
+    as a confirmed result."""
+    return sorted(f"{kernel} | {backend}" for (kernel, backend), rungs in measured_rungs(cells).items()
+                  if len(rungs) < 2)

@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from nestforge import tsvc  # noqa: E402
 from nestforge.arena import discover_compilers  # noqa: E402
-from nestforge.experiment_e1 import best_granularity_per_backend, run_e1  # noqa: E402
+from nestforge.experiment_e1 import best_granularity_per_backend, no_granularity_axis, run_e1  # noqa: E402
 from nestforge.experiment_e2 import run_e2, skipped_lanes, speedup_table  # noqa: E402
 from nestforge.experiment_e3 import best_unit_per_backend, granularity_curve, run_e3  # noqa: E402
 from nestforge.experiment_e4 import cost_quality_table, run_e4, savings_vs_oracle  # noqa: E402
@@ -105,7 +105,14 @@ def main(argv: List[str]) -> int:
                       **shared)
         cells += rows
         fed_by.append("e1")
-        print("e1 ->", write(args.out, "e1", rows, {"best_granularity": best_granularity_per_backend(rows)}))
+        # ``no_granularity_axis`` travels WITH the table: a sweep over single-statement kernels measures no
+        # granularity axis at all, and the empty/short best-table must say so rather than look like a null result.
+        print(
+            "e1 ->",
+            write(args.out, "e1", rows, {
+                "best_granularity": best_granularity_per_backend(rows),
+                "no_granularity_axis": no_granularity_axis(rows)
+            }))
     if "e3" in names:
         rows = run_e3(kernels, args.out / "e3", **shared)
         cells += rows
