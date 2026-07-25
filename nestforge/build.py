@@ -424,6 +424,72 @@ def vectorlib_installed(vl: VectorMathLib) -> bool:
     return lib_findable(vl.soname, vl.lib_dir) or veclib_lib_dir(vl.soname, DEFAULT_COMPILER) is not None
 
 
+#: glibc vector-ABI prefixes: ``_ZGV<isa><mask><lanes>v_``. x86 ``b/c/d/e`` = SSE/AVX/AVX2/AVX512,
+#: aarch64 ``n/s`` = NEON/SVE; ``N`` unmasked, ``M`` masked (what ``omp simd`` emits).
+GLIBC_VECTOR_PREFIXES: Tuple[str, ...] = ("_ZGVbN2v_", "_ZGVcN4v_", "_ZGVdN4v_", "_ZGVeN8v_", "_ZGVbM2v_", "_ZGVcM4v_",
+                                          "_ZGVdM4v_", "_ZGVeM8v_", "_ZGVnN2v_", "_ZGVsMxv_")
+
+#: Two-argument elementals: glibc mangles the extra operand as an extra ``v`` (``_ZGVbN2vv_pow``), so a
+#: unary prefix never matches and the library reads as not serving pow/atan2/hypot at all.
+BINARY_VECTOR_OPS: frozenset = frozenset({"pow", "atan2", "hypot", "fmod"})
+
+#: Elementals the veclib probe exercises; a library is only credited for the ones it actually serves.
+VECLIB_PROBE_OPS: Tuple[str, ...] = ("sin", "cos", "pow", "log", "exp", "tan", "atan")
+
+
+def veclib_symbol_candidates(veclib: str, op: str) -> Tuple[str, ...]:
+    """Every packed symbol spelling ``veclib`` could emit for elemental ``op``.
+
+    ``libmvec`` and ``sleef`` are INDISTINGUISHABLE here on purpose -- both emit the glibc vector ABI and
+    differ only in which library resolves it, so the symbol proves the vectorizer fired and the link line
+    decides who serves the call. SVML mangles the lane count as a suffix (``__svml_sin2/4/8``), so the
+    unsuffixed stem is matched as a prefix.
+    """
+    if veclib == "svml":
+        return (f"__svml_{op}", )
+    if veclib in ("libmvec", "sleef"):
+        prefixes = GLIBC_VECTOR_PREFIXES
+        if op in BINARY_VECTOR_OPS:
+            prefixes = tuple(p[:-1] + "v_" for p in prefixes)  # trailing `v_` -> `vv_`
+        return tuple(prefix + op for prefix in prefixes)
+    return ()
+
+
+def nm_symbols(path: str, dynamic_only: bool) -> str:
+    """``nm`` output for ``path``: undefined imports, or defined exports when ``dynamic_only``. Relocatable
+    objects carry a static symbol table and shared libraries only a dynamic one, so both spellings are
+    tried and the first that yields anything wins."""
+    flavours = (["-D", "--defined-only"], ["--defined-only"]) if dynamic_only else (["-u"], ["-Du"])
+    for extra in flavours:
+        try:
+            done = subprocess.run(["nm", *extra, path], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if done.returncode == 0 and done.stdout.strip():
+            return done.stdout
+    return ""
+
+
+def packed_ops_called(veclib: str, obj_path: str, ops: Tuple[str, ...] = VECLIB_PROBE_OPS) -> Tuple[str, ...]:
+    """Which of ``ops`` ``obj_path`` actually calls through ``veclib``'s packed entry points."""
+    syms = nm_symbols(obj_path, dynamic_only=False)
+    return tuple(op for op in ops if any(c in syms for c in veclib_symbol_candidates(veclib, op)))
+
+
+def packed_ops_provided(veclib: str, lib_path: str, ops: Tuple[str, ...] = VECLIB_PROBE_OPS) -> Tuple[str, ...]:
+    """Which of ``ops`` the library at ``lib_path`` actually EXPORTS. Pairs with :func:`packed_ops_called`:
+    an import nothing provides links against the scalar fallback and silently measures nothing."""
+    syms = nm_symbols(lib_path, dynamic_only=True)
+    return tuple(op for op in ops if any(c in syms for c in veclib_symbol_candidates(veclib, op)))
+
+
+def vectorized_via(veclib: str, obj_path: str) -> bool:
+    """True if ``obj_path`` actually CALLS one of ``veclib``'s packed elementals -- proof the vectorizer
+    fired, not just that the flag was accepted. A compiler may accept ``-fveclib=`` and still emit scalar
+    calls, in which case a timing-only probe measures ``-ffast-math`` and credits it to the library."""
+    return bool(packed_ops_called(veclib, obj_path))
+
+
 # TODO(blas): a BLAS/LAPACK axis (openblas/mkl/blis/nvpl/accelerate) the same way -- discovery exists
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
 

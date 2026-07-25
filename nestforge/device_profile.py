@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import functools
 import platform
+from statistics import median
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 from dace.libraries.tileops._dispatch import detect_host_isa
 
-from nestforge.build import VECTOR_LIBS, VectorMathLib, compiler_family, vectorlib_installed
+from nestforge.build import (VECTOR_LIBS, VectorMathLib, compiler_family, packed_ops_called, vectorlib_installed)
 
 #: ``detect_host_isa()`` result -> the tile-op ISAs the vectorization sweep emits for this host, DEFAULT
 #: (widest) first, with ``SCALAR`` always appended as the floor. ``ARM_SVE`` keeps ``ARM_NEON`` too (both
@@ -70,6 +71,7 @@ class VeclibProfile:
     max_ulp: float  # worst-case ULP error of the veclib result vs a long-double reference
     ok: bool
     reason: Optional[str] = None  # why it was skipped, when ok is False
+    packed_ops: Tuple[str, ...] = ()  # elementals the probe object provably calls through this library
 
 
 def _probe_source() -> str:
@@ -82,20 +84,25 @@ def _probe_source() -> str:
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#define EXPR(S, FSIN, FCOS, FEXP, FLOG) (FSIN(S) + FCOS(S) + FEXP(0.01 * (S)) + FLOG(1.0 + (S) * (S)))
+/* One term per probe op. pow/tan/atan are here because they dominate real kernels and are exactly where
+   the libraries diverge -- libmvec covers sin/cos/tan/exp/log but not atan (measured with nm), so a probe
+   over sin/cos/exp/log alone ranks every library on its best case. */
+#define EXPR(S, FSIN, FCOS, FEXP, FLOG, FTAN, FATAN, FPOW) \
+    (FSIN(S) + FCOS(S) + FEXP(0.01 * (S)) + FLOG(1.0 + (S) * (S)) \
+     + FTAN(0.1 * (S)) + FATAN(S) + FPOW(1.0 + (S), 1.5))
 int main(int argc, char **argv) {
     long n = atol(argv[1]);
     double *x = malloc(n * sizeof(double)), *y = malloc(n * sizeof(double));
     for (long i = 0; i < n; i++) x[i] = 0.5 + 5.0 * ((double)i / (double)n);
     struct timespec a, b;
     clock_gettime(CLOCK_MONOTONIC, &a);
-    for (long i = 0; i < n; i++) { double xv = x[i]; y[i] = EXPR(xv, sin, cos, exp, log); }
+    for (long i = 0; i < n; i++) { double xv = x[i]; y[i] = EXPR(xv, sin, cos, exp, log, tan, atan, pow); }
     clock_gettime(CLOCK_MONOTONIC, &b);
     double secs = (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) * 1e-9;
     double max_ulp = 0.0, checksum = 0.0;
     for (long i = 0; i < n; i++) {
         long double xlv = (long double)x[i];
-        double refd = (double)EXPR(xlv, sinl, cosl, expl, logl);
+        double refd = (double)EXPR(xlv, sinl, cosl, expl, logl, tanl, atanl, powl);
         double u = nextafter(refd, refd * 2.0 + 1.0) - refd;
         double err = u > 0.0 ? fabs(y[i] - refd) / u : 0.0;
         if (err > max_ulp) max_ulp = err;
@@ -108,8 +115,14 @@ int main(int argc, char **argv) {
 """
 
 
+#: Timed repetitions per probe. The two libraries land within a few percent of each other, so one shot
+#: lets run-to-run noise pick the winner (measured: libmvec and sleef swapping places back to back).
+PROBE_REPS: int = 5
+
+
 def _run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: int) -> Optional[Tuple[float, float]]:
-    """Compile + run the probe once; return ``(seconds, max_ulp)`` or ``None`` on any compile/run failure.
+    """Compile the probe ONCE, run it :data:`PROBE_REPS` times, return ``(median seconds, worst ULP)`` --
+    or ``None`` if the compile or any repetition fails, since a partly-working probe is not a result.
     The probe is a separate PROCESS (subprocess), so a crash never touches this one."""
     with tempfile.TemporaryDirectory(prefix="nf_veclib_") as d:
         src = Path(d) / "probe.c"
@@ -119,16 +132,40 @@ def _run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: 
         try:
             if subprocess.run(cmd, capture_output=True, text=True, timeout=120).returncode != 0:
                 return None
-            out = subprocess.run([str(exe), str(n)], capture_output=True, text=True, timeout=120)
+            runs = [
+                subprocess.run([str(exe), str(n)], capture_output=True, text=True, timeout=120)
+                for _ in range(PROBE_REPS)
+            ]
         except (OSError, subprocess.SubprocessError):
             return None
-        if out.returncode != 0 or not out.stdout.strip():
-            return None
+        seconds, ulps = [], []
+        for out in runs:
+            if out.returncode != 0 or not out.stdout.strip():
+                return None
+            try:
+                secs, ulp = out.stdout.split()
+            except ValueError:
+                return None
+            seconds.append(float(secs))
+            ulps.append(float(ulp))
+        return median(seconds), max(ulps)
+
+
+def probe_packed_ops(compiler: str, veclib: str, compile_flags: List[str]) -> Tuple[str, ...]:
+    """Compile the probe to an object under ``compile_flags`` and report which elementals it calls through
+    ``veclib``'s packed entry points. Compiling only (``-c``) keeps this independent of whether the library
+    is linkable, so a flag-accepted-but-scalar build is caught before it is ever timed."""
+    with tempfile.TemporaryDirectory(prefix="nf_veclib_sym_") as d:
+        src = Path(d) / "probe.c"
+        obj = Path(d) / "probe.o"
+        src.write_text(_probe_source())
+        cmd = [compiler, "-O3", "-march=native", *compile_flags, "-c", str(src), "-o", str(obj)]
         try:
-            secs, ulp = out.stdout.split()
-            return float(secs), float(ulp)
-        except ValueError:
-            return None
+            if subprocess.run(cmd, capture_output=True, text=True, timeout=120).returncode != 0:
+                return ()
+        except (OSError, subprocess.SubprocessError):
+            return ()
+        return packed_ops_called(veclib, str(obj))
 
 
 def characterize_veclib(compiler: str, name: str, n: int = 4_000_000) -> VeclibProfile:
@@ -142,15 +179,25 @@ def characterize_veclib(compiler: str, name: str, n: int = 4_000_000) -> VeclibP
         return VeclibProfile(name, compiler, 0.0, 0.0, False, f"{name} incompatible with {compiler_family(compiler)}")
     if not vectorlib_installed(vl):
         return VeclibProfile(name, compiler, 0.0, 0.0, False, f"{name} not installed (soname lib{vl.soname} not found)")
-    scalar = _run_probe(compiler, [], [], n)
     # The veclib needs relaxed math semantics to substitute the packed calls, so the probe uses -ffast-math.
-    veclib = _run_probe(compiler, ["-ffast-math", *vl.compile_flags(compiler)], vl.link_flags(compiler), n)
+    compile_flags = ["-ffast-math", *vl.compile_flags(compiler)]
+    # Prove the vectorizer FIRED before timing anything: a compiler may accept -fveclib= and still emit
+    # scalar calls, and the resulting "speedup" would be -ffast-math credited to the library.
+    called = probe_packed_ops(compiler, name, compile_flags)
+    if not called:
+        return VeclibProfile(name, compiler, 0.0, 0.0, False,
+                             f"{name}: flags accepted but no packed call emitted (scalar build)")
+    # Median of REPS, not one shot: the two libraries land within a few percent of each other, so a single
+    # timing lets run-to-run noise pick the winner (measured: libmvec and sleef swapping places between
+    # back-to-back runs).
+    scalar = _run_probe(compiler, [], [], n)
+    veclib = _run_probe(compiler, compile_flags, vl.link_flags(compiler), n)
     if scalar is None or veclib is None:
         return VeclibProfile(name, compiler, 0.0, 0.0, False, f"{name} probe failed to compile/run")
     scalar_s, _ = scalar
     veclib_s, ulp = veclib
     speedup = (scalar_s / veclib_s) if veclib_s > 0 else 0.0
-    return VeclibProfile(name, compiler, speedup, ulp, True)
+    return VeclibProfile(name, compiler, speedup, ulp, True, None, called)
 
 
 def rank_veclibs(compiler: str, max_ulp: float = 4.0) -> List[VeclibProfile]:
