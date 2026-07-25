@@ -30,6 +30,7 @@ from dace.transformation.interstate import LoopToMap
 
 from nestforge.fission_arms import fission_to_statements, map_fission_moves
 from nestforge.fusion_arms import FusionMove, apply_fusion, can_fuse, enumerate_fusions, first_fusion
+from nestforge.normalize import inline_top_level_nsdfgs
 
 #: A Phase-1 strategy: mutate the SDFG in place to a granularity, returning the step count.
 FusionStrategy = Callable[[dace.SDFG], int]
@@ -59,7 +60,15 @@ def maximal_fusion(sdfg: dace.SDFG) -> int:
     The map-fusion fixed point is exactly what draining :func:`enumerate_fusions` reaches move-by-move;
     the batch form here is the deterministic policy, the arm surface the agent's per-move equivalent.
     """
-    steps = sdfg.apply_transformations_repeated([LoopToMap]) or 0
+    # MapFusion never descends into a NestedSDFG, so inlining is a PRECONDITION of fusing, not cleanup
+    # after it: a nest re-inlined from an ``ExternalCall`` (phase IV) arrives nested, and leaving the
+    # inline to the trailing simplify() fuses nothing while reporting success. Inlining then SPLITS the
+    # nest across states (measured: one state -> five), and horizontal siblings only match inside one
+    # state, so the states it created must be re-fused before fusing maps.
+    steps = inline_top_level_nsdfgs(sdfg)
+    if steps:
+        sdfg.simplify()
+    steps += sdfg.apply_transformations_repeated([LoopToMap]) or 0
     steps += sdfg.apply_transformations_repeated([MapFusionVertical, MapFusionHorizontal]) or 0
     sdfg.simplify()
     return steps
