@@ -139,11 +139,8 @@ class ExternalOptimizer(Optimizer):
                                             nthreads,
                                             compiler=compiler,
                                             veclib=veclib)
-        # A vector-math call needs relaxed FP: measured by `nm -u` on a sin() loop, gcc emits _ZGV* and
-        # clang emits _ZGV*/__svml_* ONLY at fast-math -- 0 symbols at strict-ieee/contract-fma/
-        # assume-finite, even with -fveclib. Below that rung a veclib cell is byte-identical to
-        # veclib=none, so it is a duplicate reported as a distinct variant. Measured for gnu and llvm;
-        # intel/nvidia are not measured, so they are left alone rather than guessed at.
+        # Gate scoped to gnu and llvm; intel/nvidia are not measured, so they are left alone rather than
+        # guessed at.
         # NOTE: perf.tsvc_full composes the same axes and still carries this hazard.
         if composed is not None and family in ("gnu", "llvm") and veclib not in ("none", ""):
             # A packed math call cannot set errno, so -fno-math-errno is what actually enables it; clang

@@ -4,10 +4,13 @@
 vector-math-library ranking (throughput + ULP). Pure and fast; the one probe-compiling test skips without
 a C compiler."""
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from nestforge import device_profile as dp
+from nestforge.build import VECLIB_PROBE_OPS, VECTOR_LIBS, packed_ops_provided, veclib_library_path
 
 pytest.importorskip("hpcagent_bench")
 
@@ -46,6 +49,45 @@ def test_characterize_veclib_gates_without_compiling():
     assert not incompat.ok and "incompatible" in incompat.reason
     unknown = dp.characterize_veclib("g++", "not_a_veclib")
     assert not unknown.ok and "unknown" in unknown.reason
+
+
+def test_probe_links_the_veclib_ahead_of_libm():
+    """Order decides which library the loader binds ``_ZGV*`` to. glibc's libm.so pulls libmvec in, so
+    with ``-lm`` first a sleef cell measures libmvec under sleef's name -- the speedup is real and the
+    label is wrong, which no timing check can catch."""
+    cmd = dp.probe_command("gcc", ["-ffast-math"], ["-lsleefgnuabi"], Path("p.c"), Path("p"))
+    assert cmd.index("-lsleefgnuabi") < cmd.index("-lm")
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
+@pytest.mark.skipif(veclib_library_path(VECTOR_LIBS["sleef"], "gcc") is None, reason="sleef not installed")
+def test_the_probe_link_order_really_keeps_libmvec_out_of_the_binary(tmp_path):
+    """The command-order assertion above, proven on a real link: with the veclib first, libmvec is not
+    even DT_NEEDED, so the packed calls can only have come from sleef. Reversing the order puts BOTH in,
+    libmvec first, and the loader picks libmvec."""
+    src = tmp_path / "p.c"
+    src.write_text("#include <math.h>\n#include <stdio.h>\n"
+                   "int main(){double s=0;for(int i=0;i<1000;i++)s+=sin(i*0.001);printf(\"%f\\n\",s);}\n")
+    sleef = VECTOR_LIBS["sleef"]
+    link = sleef.link_flags("gcc")
+    exe = tmp_path / "p"
+    cmd = dp.probe_command("gcc", ["-ffast-math", "-march=native"], link, src, exe)
+    assert subprocess.run(cmd, capture_output=True, text=True).returncode == 0, cmd
+    needed = subprocess.run(["objdump", "-p", str(exe)], capture_output=True, text=True).stdout
+    assert "libsleefgnuabi" in needed
+    assert "libmvec" not in needed, "libm pulled libmvec in anyway, so this timing is not sleef's"
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
+def test_a_library_is_credited_only_for_the_ops_it_exports():
+    """Emitting a packed call proves the vectorizer fired, not that THIS library serves it -- another
+    library on the link line may resolve it, and the timing would then carry the wrong name. The gate is
+    what the library EXPORTS, so a library that serves nothing is credited with nothing."""
+    path = veclib_library_path(VECTOR_LIBS["libmvec"], "gcc")
+    if path is None:
+        pytest.skip("libmvec not resolvable by gcc")
+    assert packed_ops_provided("libmvec", path) == VECLIB_PROBE_OPS, "glibc serves every probe op"
+    assert packed_ops_provided("libmvec", path, ops=("not_an_elemental", )) == ()
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")

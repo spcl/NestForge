@@ -470,17 +470,57 @@ def nm_symbols(path: str, dynamic_only: bool) -> str:
     return ""
 
 
+def nm_symbol_names(path: str, dynamic_only: bool) -> frozenset:
+    """Symbol NAMES from nm, version suffix stripped (``_ZGVdN4v_sin@@GLIBC_2.22`` -> ``_ZGVdN4v_sin``),
+    so a whole-name test is possible at all."""
+    names = set()
+    for line in nm_symbols(path, dynamic_only).splitlines():
+        parts = line.split()
+        if len(parts) >= 2:  # a bare ``file.o:`` header has one field
+            names.add(parts[-1].split("@", 1)[0])
+    return frozenset(names)
+
+
+def serves_op(names: frozenset, veclib: str, op: str) -> bool:
+    """Whether ``names`` holds a packed entry point of ``veclib`` for elemental ``op``.
+
+    Whole-name, never substring: ``tan`` was credited by ``_ZGVdN4v_tanh``, ``atan`` by sleef's
+    ``_ZGVdN4v_atan_u35``, ``log`` by ``_ZGVdN4v_log10``, so every library read as serving more than it
+    does. SVML is the one prefix case -- it mangles the lane count as a suffix -- so only DIGITS may follow.
+    """
+    if veclib == "svml":
+        stem = f"__svml_{op}"
+        return any(n.startswith(stem) and (len(n) == len(stem) or n[len(stem)].isdigit()) for n in names)
+    return bool(names & frozenset(veclib_symbol_candidates(veclib, op)))
+
+
 def packed_ops_called(veclib: str, obj_path: str, ops: Tuple[str, ...] = VECLIB_PROBE_OPS) -> Tuple[str, ...]:
     """Which of ``ops`` ``obj_path`` actually calls through ``veclib``'s packed entry points."""
-    syms = nm_symbols(obj_path, dynamic_only=False)
-    return tuple(op for op in ops if any(c in syms for c in veclib_symbol_candidates(veclib, op)))
+    names = nm_symbol_names(obj_path, dynamic_only=False)
+    return tuple(op for op in ops if serves_op(names, veclib, op))
 
 
 def packed_ops_provided(veclib: str, lib_path: str, ops: Tuple[str, ...] = VECLIB_PROBE_OPS) -> Tuple[str, ...]:
     """Which of ``ops`` the library at ``lib_path`` actually EXPORTS. Pairs with :func:`packed_ops_called`:
-    an import nothing provides links against the scalar fallback and silently measures nothing."""
-    syms = nm_symbols(lib_path, dynamic_only=True)
-    return tuple(op for op in ops if any(c in syms for c in veclib_symbol_candidates(veclib, op)))
+    an import this library does not provide is resolved by some OTHER library on the link line, and the
+    timing then belongs to that one."""
+    names = nm_symbol_names(lib_path, dynamic_only=True)
+    return tuple(op for op in ops if serves_op(names, veclib, op))
+
+
+def veclib_library_path(vl: VectorMathLib, compiler: str) -> Optional[str]:
+    """The library file the link would resolve, so its exports can be inspected."""
+    if not vl.soname:
+        return None
+    found = driver_lib_path(vl.soname, compiler)
+    if found is not None:
+        return str(found)
+    lib_dir = vl.lib_dir or veclib_lib_dir(vl.soname, compiler)
+    if lib_dir:
+        candidates = sorted(Path(lib_dir).glob(f"lib{vl.soname}.so*"))
+        if candidates:
+            return str(candidates[0])
+    return None
 
 
 def vectorized_via(veclib: str, obj_path: str) -> bool:

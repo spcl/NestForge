@@ -31,7 +31,8 @@ from typing import Dict, List, Optional, Tuple
 
 from dace.libraries.tileops._dispatch import detect_host_isa
 
-from nestforge.build import (VECTOR_LIBS, VectorMathLib, compiler_family, packed_ops_called, vectorlib_installed)
+from nestforge.build import (VECTOR_LIBS, VectorMathLib, compiler_family, packed_ops_called, packed_ops_provided,
+                             veclib_library_path, vectorlib_installed)
 
 #: ``detect_host_isa()`` result -> the tile-op ISAs the vectorization sweep emits for this host, DEFAULT
 #: (widest) first, with ``SCALAR`` always appended as the floor. ``ARM_SVE`` keeps ``ARM_NEON`` too (both
@@ -120,6 +121,16 @@ int main(int argc, char **argv) {
 PROBE_REPS: int = 5
 
 
+def probe_command(compiler: str, extra_flags: List[str], link_flags: List[str], src: Path, exe: Path) -> List[str]:
+    """The probe's compile+link command, with the veclib's ``-l`` AHEAD of ``-lm``.
+
+    Order is the whole point: glibc's ``libm.so`` pulls in libmvec, so with ``-lm`` first the loader binds
+    ``_ZGV*`` to libmvec and a sleef cell times libmvec under sleef's name (measured with
+    ``LD_DEBUG=bindings``; libmvec drops out of ``DT_NEEDED`` entirely once the order is right).
+    """
+    return [compiler, "-O3", "-march=native", *extra_flags, str(src), "-o", str(exe), *link_flags, "-lm"]
+
+
 def _run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: int) -> Optional[Tuple[float, float]]:
     """Compile the probe ONCE, run it :data:`PROBE_REPS` times, return ``(median seconds, worst ULP)`` --
     or ``None`` if the compile or any repetition fails, since a partly-working probe is not a result.
@@ -128,7 +139,7 @@ def _run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: 
         src = Path(d) / "probe.c"
         exe = Path(d) / "probe"
         src.write_text(_probe_source())
-        cmd = [compiler, "-O3", "-march=native", *extra_flags, str(src), "-o", str(exe), "-lm", *link_flags]
+        cmd = probe_command(compiler, extra_flags, link_flags, src, exe)
         try:
             if subprocess.run(cmd, capture_output=True, text=True, timeout=120).returncode != 0:
                 return None
@@ -187,6 +198,15 @@ def characterize_veclib(compiler: str, name: str, n: int = 4_000_000) -> VeclibP
     if not called:
         return VeclibProfile(name, compiler, 0.0, 0.0, False,
                              f"{name}: flags accepted but no packed call emitted (scalar build)")
+    # Emitting the call is not enough -- THIS library must be the one that exports it, or some other
+    # library on the link line resolves it and the speedup is credited to the wrong name.
+    lib_path = veclib_library_path(vl, compiler)
+    served = tuple(op for op in called if op in packed_ops_provided(name, lib_path)) if lib_path else ()
+    if not served:
+        return VeclibProfile(
+            name, compiler, 0.0, 0.0, False, f"{name}: the object calls {called} but "
+            f"{'lib' + str(vl.soname) if lib_path else 'the library'} exports none of them, so another "
+            f"library would resolve them and this timing would not be {name}'s")
     # Median of REPS, not one shot: the two libraries land within a few percent of each other, so a single
     # timing lets run-to-run noise pick the winner (measured: libmvec and sleef swapping places between
     # back-to-back runs).
@@ -197,7 +217,7 @@ def characterize_veclib(compiler: str, name: str, n: int = 4_000_000) -> VeclibP
     scalar_s, _ = scalar
     veclib_s, ulp = veclib
     speedup = (scalar_s / veclib_s) if veclib_s > 0 else 0.0
-    return VeclibProfile(name, compiler, speedup, ulp, True, None, called)
+    return VeclibProfile(name, compiler, speedup, ulp, True, None, served)
 
 
 def rank_veclibs(compiler: str, max_ulp: float = 4.0) -> List[VeclibProfile]:

@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import dace
 
 from nestforge import build, tsvc
-from nestforge.arena import make_inputs, maxdiff, relative_maxdiff, run_oracle
+from nestforge.arena import diff_stats, make_inputs, run_oracle
 from nestforge.extract import Boundary, find_state_of_node, whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall
@@ -85,10 +85,9 @@ def measure_whole_program(optimizer: Optimizer,
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
         if outs:
             ref = {o: oracle[o] for o in outs}
-            # absolute diff is REPORTED, the scaled one gates: an absolute atol is unreachable at
-            # reduction magnitudes
-            md = float(maxdiff(ref, outs))
-            verdict = {"ok": bool(relative_maxdiff(ref, outs) <= atol), "maxdiff": md}
+            # absolute diff is REPORTED, the scaled one gates: an absolute atol is unreachable at reduction magnitudes
+            md, md_rel = diff_stats(ref, outs)
+            verdict = {"ok": bool(md_rel <= atol), "maxdiff": float(md)}
         else:
             verdict = {"ok": False, "maxdiff": float("inf")}
         # init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling)
