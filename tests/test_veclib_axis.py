@@ -32,15 +32,23 @@ def test_svml_is_declined_on_gnu_and_accepted_on_llvm():
     assert external("svml", family="llvm", compiler="clang").propose() is not None
 
 
+#: fp rungs where a veclib really emits a packed call, measured with ``nm -u`` on a sin() loop. A packed
+#: math call cannot set errno, so ``-fno-math-errno`` is the trigger: clang needs only that, gcc needs
+#: full ``-ffast-math`` (0 symbols with ``-fno-math-errno`` alone, with or without ``-fopenmp-simd``).
+LIVE_RUNGS = {"gnu": {"fast-math"}, "llvm": {"assume-finite", "fast-math"}}
+
+
 @pytest.mark.parametrize("family,compiler", [("gnu", "gcc"), ("llvm", "clang")])
-@pytest.mark.parametrize("fp_mode", [m for m in flags.FP_LEVELS if m != "fast-math"])
-def test_a_veclib_below_fast_math_is_declined_as_a_duplicate(family, compiler, fp_mode):
-    """Measured by ``nm -u`` on a sin() loop: BOTH gcc and clang emit zero packed-math symbols at
-    strict-ieee/contract-fma/assume-finite -- clang too, even with an explicit ``-fveclib``. Such a cell is
-    byte-identical to ``veclib=none``, so measuring it would report a duplicate as a distinct variant."""
+@pytest.mark.parametrize("fp_mode", flags.FP_LEVELS)
+def test_a_veclib_is_live_exactly_where_a_packed_call_is_emitted(family, compiler, fp_mode):
+    """Anywhere else the object is byte-identical to ``veclib=none``, so measuring it would report a
+    duplicate as a distinct variant -- and declining a rung that DOES vectorize silently drops a real cell."""
     opt = external("libmvec", fp_mode=fp_mode, family=family, compiler=compiler)
-    assert opt.propose() is None
-    assert "fast-math" in opt.skip_reason
+    if fp_mode in LIVE_RUNGS[family]:
+        assert opt.propose() is not None, f"{family} vectorizes at {fp_mode}; declining it drops a real cell"
+    else:
+        assert opt.propose() is None
+        assert opt.skip_reason
 
 
 @pytest.mark.parametrize("veclib", ["sleef", "libmvec"])
@@ -56,7 +64,7 @@ def test_the_duplicate_gate_is_scoped_to_the_families_it_was_measured_on():
     gated = external("libmvec", fp_mode="strict-ieee", family="gnu", compiler="gcc")
     assert gated.propose() is None
     ungated = external("libmvec", fp_mode="strict-ieee", family="intel", compiler="icx")
-    assert ungated.skip_reason is None or "fast-math" not in ungated.skip_reason
+    assert ungated.skip_reason is None or "packed math call" not in ungated.skip_reason
 
 
 def test_veclib_none_survives_every_fp_level():

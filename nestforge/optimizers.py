@@ -145,10 +145,17 @@ class ExternalOptimizer(Optimizer):
         # veclib=none, so it is a duplicate reported as a distinct variant. Measured for gnu and llvm;
         # intel/nvidia are not measured, so they are left alone rather than guessed at.
         # NOTE: perf.tsvc_full composes the same axes and still carries this hazard.
-        if (composed is not None and family in ("gnu", "llvm") and veclib not in ("none", "")
-                and fp_mode != "fast-math"):
-            composed, reason = None, (f"{family} emits vector-math calls only at fast-math, so veclib "
-                                      f"{veclib} at fp={fp_mode} would duplicate veclib=none")
+        if composed is not None and family in ("gnu", "llvm") and veclib not in ("none", ""):
+            # A packed math call cannot set errno, so -fno-math-errno is what actually enables it; clang
+            # needs only that (measured: 1 packed symbol at assume-finite, 0 at contract-fma), gcc needs
+            # full -ffast-math (0 symbols with -fno-math-errno alone, with or without -fopenmp-simd).
+            # Read off the composed flags, not the rung name, so a change to the flag tables cannot
+            # silently re-enable a cell that is byte-identical to veclib=none.
+            enabled = "-ffast-math" in composed or (family == "llvm" and "-fno-math-errno" in composed)
+            if not enabled:
+                composed, reason = None, (f"{family} emits no packed math call without "
+                                          f"{'-ffast-math' if family == 'gnu' else '-fno-math-errno'}, so "
+                                          f"veclib {veclib} at fp={fp_mode} would duplicate veclib=none")
         self.flags: Optional[Tuple[str, ...]] = tuple(composed) if composed is not None else None
         self.skip_reason: Optional[str] = reason if composed is None else None
 
