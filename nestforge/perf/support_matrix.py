@@ -27,35 +27,26 @@ from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 DEFAULT_CACHE = Path(
     os.environ.get("NF_TOOLCHAIN_CACHE") or (Path(__file__).resolve().parents[2] / ".cache" / "toolchains.json"))
 
-#: Vector-math libs whose absolute path we resolve per compiler: SVML (Intel), libmvec (glibc), SLEEF (separate pkg).
-VECLIB_SONAMES = ("svml", "sleef", "mvec")
-
 
 @dataclass(frozen=True, slots=True)
 class ToolPaths:
-    """Absolute paths for one compiler family: driver, locatable OpenMP runtimes, locatable veclibs --
-    resolved by asking the driver (``-print-file-name``), not by guessing filesystem layout."""
+    """Absolute paths for one compiler family: driver and the OpenMP runtimes it can locate -- resolved by
+    asking the driver (``-print-file-name``), not by guessing filesystem layout."""
     family: str  # OpenMP family: gnu | llvm | intel-classic | nvidia
     compiler: str  # absolute path to the C driver
     openmp: Dict[str, str] = field(default_factory=dict)  # runtime name -> absolute lib dir
-    veclibs: Dict[str, str] = field(default_factory=dict)  # veclib soname -> absolute .so path
 
 
 def resolve_tool_paths(tc: Toolchain) -> ToolPaths:
-    """Resolve the OpenMP-runtime and veclib paths ``tc`` can actually link, by asking its own driver;
-    one it can't locate is simply absent from the dict."""
+    """Resolve the OpenMP-runtime paths ``tc`` can actually link, by asking its own driver; one it cannot
+    locate is simply absent from the dict."""
     fam = compiler_family(tc.cc)
     omp: Dict[str, str] = {}
     for name, rt in OPENMP_RUNTIMES.items():
         found = driver_lib_path(rt.soname, tc.cc)
         if found is not None:
             omp[name] = str(found.parent)
-    vec: Dict[str, str] = {}
-    for soname in VECLIB_SONAMES:
-        found = driver_lib_path(soname, tc.cc)
-        if found is not None:
-            vec[soname] = str(found)
-    return ToolPaths(family=fam, compiler=tc.cc, openmp=omp, veclibs=vec)
+    return ToolPaths(family=fam, compiler=tc.cc, openmp=omp)
 
 
 #: One parallel loop with a unique function name so N of them link into one program without symbol clash.
@@ -242,121 +233,15 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
     return "\n".join(lines)
 
 
-@dataclass(slots=True)
-class VeclibCell:
-    """One (compiler-family, veclib) attempt: does a ``sin`` loop compile+link, does the object actually
-    CALL the packed ``sin``, and match ``numpy.sin``? A ``-fveclib=`` flag can be accepted while the
-    vectorizer leaves the call scalar, hence the separate ``vectorized`` field."""
-    veclib: str
-    compiler: str  # compiler-family label (gnu | llvm | intel-classic | nvidia)
-    ok: bool  # compiled AND linked
-    loads: bool  # the linked .so dlopened and ran
-    vectorized: bool  # the object references the veclib's packed sin (nm -u fingerprint)
-    correct: bool  # ran and matched numpy.sin
-    reason: str = ""
-
-
-#: One ``sin`` loop under ``#pragma omp simd``; at -O3/native+fast-math the vectorizer may swap it for a
-#: packed veclib routine, which :func:`vectorized_via` confirms.
-_SIN_SOURCE = """#include <math.h>
-void sinloop(double *restrict a, const double *restrict b, int n) {
-  #pragma omp simd
-  for (int i = 0; i < n; i++) a[i] = sin(b[i]);
-}
-"""
-
-
-def vectorized_via(veclib: str, obj_path: str) -> bool:
-    """True if ``obj_path`` calls ``veclib``'s packed vector ``sin`` (``nm -u`` fingerprint) -- proof the
-    vectorizer fired, not just that the flag was accepted. ``libmvec``/``sleef`` share the same glibc
-    ``_ZGV*`` emission and differ only in the linked library; ``none`` is always False."""
-    if veclib == "none":
-        return False
-    try:
-        syms = subprocess.run(["nm", "-u", obj_path], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if veclib in ("libmvec", "sleef"):
-        return any(s in syms for s in (
-            "_ZGVbN2v_sin",
-            "_ZGVcN4v_sin",
-            "_ZGVdN4v_sin",
-            "_ZGVeN8v_sin",  # unmasked SSE/AVX/AVX2/AVX512
-            "_ZGVbM2v_sin",
-            "_ZGVcM4v_sin",
-            "_ZGVdM4v_sin",
-            "_ZGVeM8v_sin"))  # masked (omp-simd/AVX512)
-    if veclib == "svml":
-        return "__svml_sin" in syms
-    return False
-
-
-def try_veclib(tc: Toolchain, veclib: str, workdir: Path) -> VeclibCell:
-    """Compile a ``sin`` loop with ``tc`` against ``veclib``, prove the object CALLS the packed routine,
-    link it, and run it forked against ``numpy.sin``. Each failing stage forces later stages False."""
-    fam = compiler_family(tc.cc)
-    vec, reason = flags.veclib_flags(tc.cc, veclib)
-    if vec is None:
-        return VeclibCell(veclib, fam, False, False, False, False, reason or f"veclib {veclib} unsupported")
-    # -ffast-math authorises the scalar->packed substitution; the `none` baseline must OMIT it or gcc
-    # emits libmvec calls this cell never links and the .so fails to load
-    base = ["-O3", "-march=native", "-fopenmp-simd", "-fPIC", "-shared"]
-    if veclib != "none":
-        base = ["-ffast-math", *base]
-    src = workdir / "sinloop.c"
-    src.write_text(_SIN_SOURCE)
-    obj = workdir / "sinloop.o"
-    comp = subprocess.run([tc.cc, *base, *vec, "-c", str(src), "-o", str(obj)], capture_output=True, text=True)
-    if comp.returncode != 0:
-        last = comp.stderr.strip().splitlines()[-1][:80] if comp.stderr.strip() else "?"
-        return VeclibCell(veclib, fam, False, False, False, False, f"compile: {last}")
-    vectorized = vectorized_via(veclib, str(obj))
-    # object BEFORE the veclib -l flags: under --as-needed a lib listed first drops out of DT_NEEDED
-    so = workdir / "sinloop.so"
-    link = subprocess.run([tc.cc, *base, str(obj), *vec, "-o", str(so)], capture_output=True, text=True)
-    if link.returncode != 0:
-        last = link.stderr.strip().splitlines()[-1][:80] if link.stderr.strip() else "?"
-        return VeclibCell(veclib, fam, False, False, vectorized, False, f"link: {last}")
-
-    def work():
-        lib = ctypes.CDLL(str(so))
-        lib.sinloop.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double), ctypes.c_int]
-        lib.sinloop.restype = None
-        n = 1024
-        a = np.zeros(n)
-        b = np.linspace(0.0, 6.0, n)
-        lib.sinloop(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                    b.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)
-        return {"ok": bool(np.allclose(a, np.sin(b), atol=1e-6)), "maxdiff": float(np.max(np.abs(a - np.sin(b))))}
-
-    res = run_isolated(work, timeout=60.0)
-    if "error" in res:
-        return VeclibCell(veclib, fam, True, False, vectorized, False, f"load/run: {res['error'][:80]}")
-    return VeclibCell(veclib, fam, True, True, vectorized, bool(res["ok"]),
-                      "" if res["ok"] else "ran but diverged from numpy.sin")
-
-
-def probe_vector_libs(toolchains: List[Toolchain]) -> List[VeclibCell]:
-    """Probe every (toolchain, veclib) empirically: compile+link+run a ``sin`` loop forked against
-    ``numpy.sin``. ``none`` is the scalar baseline proving the harness works."""
-    cells: List[VeclibCell] = []
-    for tc in toolchains:
-        for veclib in flags.VECLIBS:
-            with tempfile.TemporaryDirectory() as d:
-                cells.append(try_veclib(tc, veclib, Path(d)))
-    return cells
-
-
 class MachineCompat:
     """Queryable view of the discovered support matrix: what THIS machine actually supports, for a sweep
     to prune against instead of the static ABI table, which answers only what is possible in principle."""
 
-    __slots__ = ("config", "_cells", "_veclib_cells")
+    __slots__ = ("config", "_cells")
 
     def __init__(self, config: Dict):
         self.config = config
         self._cells = config.get("support_matrix", [])
-        self._veclib_cells = config.get("veclib_matrix", [])
 
     def default_runtime(self) -> OpenMPRuntime:
         """The runtime to standardise on: the empirically-best cross-compiler survivor, or LIBOMP if
@@ -398,16 +283,6 @@ class MachineCompat:
         own = self.supported_runtimes(compiler_family)
         return OPENMP_RUNTIMES.get(own[0]) if own else None
 
-    def supported_veclibs(self, compiler_family: str) -> List[str]:
-        """Veclibs ``compiler_family`` ran correctly here (``none`` always included), from the empirical
-        probe rather than the ABI table."""
-        return list(self.config.get("supported_veclibs", {}).get(compiler_family, []))
-
-    def veclib_vectorizes(self, compiler_family: str, veclib: str) -> bool:
-        """Did ``compiler_family`` x ``veclib`` emit a packed vector ``sin`` AND match numpy here?"""
-        return any(c["compiler"] == compiler_family and c["veclib"] == veclib and c["vectorized"] and c["correct"]
-                   for c in self._veclib_cells)
-
 
 def machine_compat(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> MachineCompat:
     """The compatibility view for this machine, from the cache (probing once if absent)."""
@@ -426,8 +301,8 @@ def cached_default_runtime(cache: Path = DEFAULT_CACHE) -> OpenMPRuntime:
 
 
 def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
-    """The discovered toolchain config for this machine: absolute compiler/runtime/veclib paths +
-    surviving cross-compiler runtimes. Probed once, then cached as JSON until ``refresh=True``."""
+    """The discovered toolchain config for this machine: absolute compiler/runtime paths + surviving
+    cross-compiler runtimes. Probed once, then cached as JSON until ``refresh=True``."""
     if cache.exists() and not refresh:
         try:
             return json.loads(cache.read_text())
@@ -437,11 +312,6 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
         warnings.simplefilter("ignore")
         toolchains = discover_toolchains("auto")
     cells, notes = build_support_matrix(toolchains)
-    veclib_cells = probe_vector_libs(toolchains)
-    supported_vec: Dict[str, List[str]] = {}
-    for c in veclib_cells:
-        if c.correct and c.veclib not in supported_vec.setdefault(c.compiler, []):
-            supported_vec[c.compiler].append(c.veclib)
     config = {
         "compilers": {
             t.name: {
@@ -459,8 +329,6 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
         "default_openmp_runtime": (surviving_runtimes(cells) or [flags.DEFAULT_OPENMP_RUNTIME.name])[0],
         "surviving_runtimes": surviving_runtimes(cells),
         "support_matrix": [asdict(c) for c in cells],
-        "veclib_matrix": [asdict(c) for c in veclib_cells],
-        "supported_veclibs": supported_vec,
         "notes": notes,
     }
     try:
