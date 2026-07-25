@@ -115,7 +115,7 @@ def compat_from(cells, default_runtime="libomp", surviving=("libomp", "libiomp5"
     return MachineCompat({
         "default_openmp_runtime": default_runtime,
         "surviving_runtimes": list(surviving),
-        "support_matrix": [vars(c) for c in cells],  # every caller passes MatrixCell, a dataclass
+        "support_matrix": [asdict(c) for c in cells],  # every caller passes MatrixCell, a dataclass
     })
 
 

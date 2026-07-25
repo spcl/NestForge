@@ -125,7 +125,7 @@ def cell_work(so: Path,
     return {"ok": bool(ok), "maxdiff": md, "time_us": float(us)}
 
 
-@dataclass
+@dataclass(slots=True)
 class Cell:
     language: str
     compiler: str
@@ -138,7 +138,7 @@ class Cell:
     error: Optional[str] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class XlNest:
     """One extracted nest plus its oracle / sizes / timing buffers. Per-language source is parsed
     lazily in :func:`run_kernel`."""

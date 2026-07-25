@@ -31,7 +31,7 @@ DEFAULT_CACHE = Path(
 VECLIB_SONAMES = ("svml", "sleef", "mvec")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ToolPaths:
     """Absolute paths for one compiler family: driver, locatable OpenMP runtimes, locatable veclibs --
     resolved by asking the driver (``-print-file-name``), not by guessing filesystem layout."""
@@ -86,7 +86,7 @@ def emits_fork_call(obj: str) -> bool:
     return any(s in syms for s in ("GOMP_parallel", "kmpc_fork"))
 
 
-@dataclass
+@dataclass(slots=True)
 class MatrixCell:
     """One attempt: this tuple of compilers, each building one nest, linked against this one runtime."""
     runtime: str
@@ -242,7 +242,7 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
     return "\n".join(lines)
 
 
-@dataclass
+@dataclass(slots=True)
 class VeclibCell:
     """One (compiler-family, veclib) attempt: does a ``sin`` loop compile+link, does the object actually
     CALL the packed ``sin``, and match ``numpy.sin``? A ``-fveclib=`` flag can be accepted while the
@@ -350,6 +350,8 @@ def probe_vector_libs(toolchains: List[Toolchain]) -> List[VeclibCell]:
 class MachineCompat:
     """Queryable view of the discovered support matrix: what THIS machine actually supports, for a sweep
     to prune against instead of the static ABI table, which answers only what is possible in principle."""
+
+    __slots__ = ("config", "_cells", "_veclib_cells")
 
     def __init__(self, config: Dict):
         self.config = config

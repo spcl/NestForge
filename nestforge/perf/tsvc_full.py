@@ -457,7 +457,7 @@ def measure_dace_vectorized_lane(tc: Toolchain,
 
 
 # --- lane 3 cell model -------------------------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class Cell:
     """One lane-3 sweep point: the full axis coordinates + correctness + median timing, or an error."""
     opt_mode: str
@@ -480,7 +480,7 @@ class Cell:
     error: Optional[str] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class Pending:
     """A cell not yet compiled/run, plus the context it needs (kept off the serialized :class:`Cell`)."""
     cell: Cell

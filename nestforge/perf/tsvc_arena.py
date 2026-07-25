@@ -51,7 +51,7 @@ from nestforge.translate import emit_sources, prepare
 
 
 # --- compiler discovery (PATH + spack + vendor install roots) ---------------------------------------
-@dataclass
+@dataclass(slots=True)
 class Toolchain:
     """One discovered toolchain family: its C compiler (for the translated nest) and C++ compiler (for
     the native ``.cpp`` baseline), plus a version and where it was found."""
@@ -222,7 +222,7 @@ def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
 
 
 # --- a single measured compile cell -----------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class Cell:
     """One (compiler, flags) measurement: correctness + timing, or an error."""
     compiler: str  # family label
@@ -235,7 +235,7 @@ class Cell:
     error: Optional[str] = None
 
 
-@dataclass
+@dataclass(slots=True)
 class NestUnit:
     """One extracted nest of a kernel, with everything a cell needs to compile + validate + time it.
     Named ``<key>`` when the kernel has one nest, ``<key>_n<idx>`` when it has several."""

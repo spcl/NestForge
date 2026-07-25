@@ -33,14 +33,14 @@ LANGUAGES: Tuple[str, ...] = ("c", "c++", "fortran")
 COMPILERS: Tuple[str, ...] = ("gcc", "clang", "nvhpc", "intel")
 
 
-@dataclass
+@dataclass(slots=True)
 class Axis:
     """One arena axis: a name and the value labels the figure shows for it."""
     name: str
     values: Tuple[str, ...]
 
 
-@dataclass
+@dataclass(slots=True)
 class Lane:
     """One measurement lane and the axes that apply to it (axes are lane-dependent -- see module doc)."""
     key: str

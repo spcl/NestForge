@@ -167,7 +167,7 @@ def build_and_time(cc: str,
     return out
 
 
-@dataclass
+@dataclass(slots=True)
 class CoNest:
     """One extracted nest plus its emitted C source and parsed signature. Single-nest kernels use
     ``<key>``/``<key>_fp64``; multi-nest kernels one per ``<key>_n<idx>``."""
