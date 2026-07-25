@@ -147,11 +147,11 @@ def native_symbol(text: str, expected: str) -> str:
 
 
 def native_setup(so: Path, symbol: str, sig, kernel, buffers: Dict[str, np.ndarray], sizes: Dict[str, int]):
-    """Bind ``_native.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``.
+    """Bind ``_reference.cpp`` on ``buffers``; return ``(fn, cargs, ptr_names)``.
 
-    The imported baselines are pure kernels -- ``scripts/import_native_baselines.py`` strips the upstream
-    ``time_ns`` self-timing param -- so every pointer arg resolves to a data buffer and the arena times the
-    call itself. Native bounds are independent of nest buffers, so an OOB here is real -- run via
+    The baselines are pure kernels -- hpcagent_bench's ``scripts/collect_reference_sources.py`` strips the
+    upstream ``time_ns`` self-timing param on import -- so every pointer arg resolves to a data buffer and the
+    arena times the call itself. Native bounds are independent of nest buffers, so an OOB here is real -- run via
     :func:`nestforge.isolation.run_isolated`.
     :raises KeyError: on an unresolved pointer or scalar arg."""
     pool = {"iterations": 1, "vlen": 8}

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC compiler-arena driver: run every kernel of tsvc2 + tsvc2_5 through the ``skip-taskloops``
 strategy and, for each kernel x compiler, report three runtime columns: 1) native baseline (the
-original ``_native.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,
+original ``_reference.cpp`` at default flags), 2) default-flags (the extracted nest translated to C,
 same compiler/flags -- isolates translation overhead), 3) flag-matrix winner (swept over FP-mode x
 vectorizer cost-model; fastest cell that still validates against the numpy oracle).
 
@@ -312,7 +312,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
 
 def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes, oracle, reps: int, family: str,
                    workdir: Path) -> Optional[Cell]:
-    """Compile the ``_native.cpp`` baseline and time it (forked) on the SAME inputs/sizes as the nest
+    """Compile the ``_reference.cpp`` baseline and time it (forked) on the SAME inputs/sizes as the nest
     columns. ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:

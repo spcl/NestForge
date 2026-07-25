@@ -76,9 +76,12 @@ def measure_whole_program(optimizer: Optimizer,
     inputs = make_inputs(boundary, sizes, seed=seed, given=tsvc.index_fills(kernel, boundary, sizes, seed=seed))
     prep = prepare_whole_program(sdfg, kernel.key, out_dir, sizes=sizes)
     oracle = run_oracle(prep, boundary, inputs, sizes)
-    built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
 
     def work() -> Dict[str, object]:
+        # BUILD inside the fork, not just the run: dace codegen and the C++ compile are where a candidate
+        # hangs or dies natively, which a per-kernel try/except cannot catch. Only this summary crosses
+        # back, so the artifact (and its dlopen mapping) dying with the child costs nothing.
+        built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
         # bind_program binds only the SDFG's own parameters, so make_inputs' extra scratch is ignored.
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)

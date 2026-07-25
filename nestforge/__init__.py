@@ -25,6 +25,7 @@ from nestforge.offload import (DEFAULT_GRANULARITY, OffloadCandidate, OffloadGra
 # on a function. Reach it as its three sibling phases are reached -- `from nestforge.optimize import optimize`.
 from nestforge.optimize import (DEFAULT_OPT_MODE, BuildOptions, DaceOptimizer, ExternalOptimizer, Optimizer, Proposal,
                                 OPT_MODES, optimization_choices)
+from nestforge.run import NestReport, ProgramReport, optimize_program
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
 from nestforge.translator import BenchSpec, translate
 
@@ -73,6 +74,10 @@ __all__ = [
     "Outcome",
     "AgenticOptimizer",
     "run_agent_loop",
+    # the executing entry point: hand it a kernel, get measured winners
+    "optimize_program",
+    "ProgramReport",
+    "NestReport",
     # native optarena surfaces
     "translate",
     "BenchSpec",

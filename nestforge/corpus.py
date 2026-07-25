@@ -25,9 +25,11 @@ from hpcagent_bench.spec import KERNELS, BenchSpec
 if TYPE_CHECKING:
     from types import ModuleType
 
-#: Tracks whose ``_dace.py`` optarena generates on demand (gitignored, never committed). foundation
-#: (TSVC) is sourced through :mod:`nestforge.tsvc`, not this corpus, so it's never materialized here.
-DACE_TRACKS = ("hpc", "ml")
+#: Tracks whose ``_dace.py`` this module materializes on demand (gitignored, never committed --
+#: ``autogen.ensure`` regenerates it here or in :mod:`nestforge.tsvc`, whichever runs first). foundation
+#: also goes through :mod:`nestforge.tsvc` for its TSVC subset, which additionally carries the
+#: ``_reference.cpp`` baseline and TSVC-specific sizing that this module has no use for.
+DACE_TRACKS = ("hpc", "ml", "foundation")
 
 
 def set_precision_fp64() -> None:

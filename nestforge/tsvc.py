@@ -8,10 +8,10 @@ Two upstreams, joined per kernel by its short name (``s000``, ``vpv``, ...):
   * **SDFG source** -- DaCe's ``performance_regression_jobs/tsvc_corpus.py`` (151 typed
     ``@dace.program`` kernels), loaded by file path since it is a script, not a package; overridable
     with ``NESTFORGE_TSVC_CORPUS``. hpcagent_bench's ``foundation`` track ships no ``_dace.py``.
-  * **native baseline** -- ``foundation/tsvc_2_<key>_native.cpp``, symbol ``<key>_d``: the arena's
+  * **native baseline** -- ``foundation/tsvc_2_<key>_reference.cpp``, symbol ``<key>_d``: the arena's
     "how well does this compiler auto-vectorize the reference loop" column.
 
-Not a bijection: a kernel with an SDFG but no ``_native.cpp`` runs without the native column.
+Not a bijection: a kernel with an SDFG but no ``_reference.cpp`` runs without the native column.
 """
 from __future__ import annotations
 
@@ -123,7 +123,12 @@ def corpus_symbol_values(corpus: str = "tsvc2") -> Dict[str, int]:
 
     Both spellings are read: ``tsvc2`` binds a lone ``S_VALUE``, ``tsvc2_5`` a ``SIZES`` dict. The value
     must be the corpus' own since loop bounds are written to stay in range for it. ``_SHAPE_SYMS`` are
-    dropped -- sizing those is the arena's job, so a corpus' ``LEN_1D`` must not shadow the sampled one."""
+    dropped -- sizing those is the arena's job, so a corpus' ``LEN_1D`` must not shadow the sampled one.
+
+    ``foundation`` has no corpus script: every symbol it binds comes from the kernel's own manifest, which
+    :func:`sample_sizes` reads through ``yaml_presets``. Empty here, never an error."""
+    if corpus == "foundation":
+        return {}
     namespace = vars(corpus_module(corpus))
     values = dict(namespace.get("SIZES", {}))
     if "S_VALUE" in namespace:
@@ -155,11 +160,16 @@ class TsvcKernel:
 
     @property
     def native_cpp(self) -> Optional[Path]:
-        """The ``_native.cpp`` native-baseline source, or ``None`` if this kernel has no foundation entry."""
+        """The timing-free C++ baseline, or ``None`` if this kernel has no foundation entry.
+
+        ``_reference.cpp``, not the retired ``_native.cpp``: both were the upstream microkernel with the
+        ``time_ns`` instrumentation stripped -- semantically identical for all 151 tsvc_2 kernels, differing
+        only in whether the symbol carried the ``_single`` suffix -- so hpcagent_bench collapsed them onto
+        the one name its own collector maintains."""
         entry = self.foundation_entry
         if entry is None:
             return None
-        cpp = entry.with_name(f"{entry.stem}_native.cpp")
+        cpp = entry.with_name(f"{entry.stem}_reference.cpp")
         return cpp if cpp.exists() else None
 
     @property
@@ -184,9 +194,20 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -
     ``tsvc2`` ships a ``KERNELS`` registry of descriptors (``s000_d_single`` -> key ``s000``, with
     regime/params/tags); ``tsvc2_5`` ships a ``collect()`` of bare ``@dace.program`` s (key = function
     name, no regime/params metadata)."""
-    module = corpus_module(corpus)
     want = set(only) if only else None
     out: List[TsvcKernel] = []
+    if corpus == "foundation":
+        # The whole hpcagent_bench track, TSVC included. Sizing, native baselines and manifests all hang
+        # off `foundation_entry`, which resolves a bare <key> stem, so nothing below this line is
+        # TSVC-specific. Programs are materialized eagerly: measured ~2 ms each, ~0.5 s for all 220.
+        from nestforge.corpus import iter_dace_kernels
+        for kernel in sorted(iter_dace_kernels("foundation"), key=lambda k: k.short_name):
+            key = kernel.short_name.rsplit("/", 1)[-1]
+            if want is not None and key not in want:
+                continue
+            out.append(TsvcKernel(key=key, program=kernel.program(), regime="1d", params={}, corpus=corpus))
+        return out
+    module = corpus_module(corpus)
     if corpus == "tsvc2_5":
         for prog in module.collect():
             key = prog.f.__name__
@@ -201,6 +222,21 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -
         out.append(
             TsvcKernel(key=key, program=k.program, regime=k.regime, params=dict(k.params), corpus=corpus, tags=k.tags))
     return out
+
+
+def foundation_coverage_gap() -> Dict[str, List[str]]:
+    """corpus -> keys it carries that the ``foundation`` track does not.
+
+    foundation holds tsvc2 under a ``tsvc_2_`` stem and tsvc2_5 under bare names, but it is NOT a
+    superset of either. A sweep that defaults to foundation and says nothing reads as full corpus
+    coverage while quietly omitting these.
+    """
+    foundation = {k.key for k in iter_tsvc_kernels(corpus="foundation")}
+    gap: Dict[str, List[str]] = {}
+    for corpus, stem in (("tsvc2", "tsvc_2_"), ("tsvc2_5", "")):
+        keys = [k.key for k in iter_tsvc_kernels(corpus=corpus)]
+        gap[corpus] = sorted(k for k in keys if f"{stem}{k}" not in foundation)
+    return gap
 
 
 #: The optimization modes applied to a kernel's SDFG *before* the loopnest-splitting pass runs. This is

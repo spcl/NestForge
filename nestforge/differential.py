@@ -132,13 +132,17 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
     if missing:
         raise KeyError(f"variants name nests not in this granularity: {sorted(missing)} "
                        f"(present: {sorted(ext.name for ext, _ in calls)})")
-    ExternLibEnv.reset()  # drop libraries accumulated by a previous build (their temp dirs may be gone)
-    lowered.expand_library_nodes()
-    built = build.build_sdfg(lowered,
-                             out_dir / "build",
-                             opts=build.BuildOptions(extra_link=variant_link_args(variants)))
 
     def work() -> Dict[str, Any]:
+        # BUILD inside the fork, not just the run. dace codegen and the C++ compile are where a candidate
+        # hangs or dies natively, and a per-kernel try/except catches neither -- one bad candidate used to
+        # take the whole sweep with it. The parent needs only this summary, so nothing is lost by letting
+        # the artifact die with the child; the .so mapping goes with it instead of leaking per cell.
+        ExternLibEnv.reset()  # drop libraries a previous build accumulated (their temp dirs may be gone)
+        lowered.expand_library_nodes()
+        built = build.build_sdfg(lowered,
+                                 out_dir / "build",
+                                 opts=build.BuildOptions(extra_link=variant_link_args(variants)))
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)
         outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}

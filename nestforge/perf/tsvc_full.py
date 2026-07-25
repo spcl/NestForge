@@ -5,7 +5,7 @@ memory-bound profiling size.
 
 Lanes
 -----
-1. **native baseline** -- the ``<key>_native.cpp`` scalar reference at ``-O3 -march=native``:
+1. **native baseline** -- the ``<key>_reference.cpp`` scalar reference at ``-O3 -march=native``:
    how well the compiler auto-vectorizes the reference.
 2. **DaCe-cpp baseline** -- DaCe's own C++ codegen of the EXTRACTED-NEST standalone SDFG (owned
    direct-compile via ``build.build_sdfg``, no cmake), strict-ieee FP. Fanned over codegen impl
@@ -238,7 +238,7 @@ def measure_native_lane(cxx: str,
                         cxx_std: str,
                         workdir: Path,
                         validate_fills=None) -> Optional[Dict]:
-    """Lane 1: compile ``_native.cpp`` at ``-O3 -march=native``, validate@small + time@prof (median).
+    """Lane 1: compile ``_reference.cpp`` at ``-O3 -march=native``, validate@small + time@prof (median).
     ``None`` when the kernel ships no native source or the family has no C++ compiler."""
     cpp = kernel.native_cpp
     if cpp is None or cxx is None:
@@ -1218,21 +1218,30 @@ def render_tables(out: Path) -> str:
 
 
 # --- CLI ---------------------------------------------------------------------------------------------
-def resolve_veclibs(spec: List[str], compiler: str = "gcc") -> Tuple[str, ...]:
-    """Resolve ``--veclibs`` to axis values. ``'auto'`` -> none + the per-device characterized winner
-    (compiles tiny probes once); ``'none'`` -> just none; an explicit list is used verbatim with none
-    ensured present. No installed veclib -> resolves to ``('none',)`` rather than erroring."""
+def resolve_veclibs(spec: List[str], compilers: Sequence[str] = ("gcc", )) -> Tuple[str, ...]:
+    """Resolve ``--veclibs`` to axis values. ``'auto'`` -> none + each compiler's characterized winner
+    (compiles tiny probes once per compiler); ``'none'`` -> just none; an explicit list is used verbatim
+    with none ensured present. No installed veclib -> resolves to ``('none',)`` rather than erroring.
+
+    Ranked PER COMPILER, not once: the libraries are not interchangeable across families -- SVML is
+    clang/icx-only, so a gcc-only ranking silently denies llvm cells their best candidate.
+    :func:`veclibs_for` then drops each winner from the cells whose compiler cannot use it.
+    """
     if list(spec) == ["auto"]:
         from nestforge.device_profile import rank_veclibs
-        ranked = [p for p in rank_veclibs(compiler) if p.ok]
-        return ("none", ranked[0].name) if ranked else ("none", )
+        winners = []
+        for compiler in compilers:
+            ranked = [p for p in rank_veclibs(compiler) if p.ok]
+            if ranked:
+                winners.append(ranked[0].name)
+        return tuple(dict.fromkeys(["none", *winners]))
     out = list(dict.fromkeys(spec))
     if "none" not in out:
         out = ["none"] + out
     return tuple(out)
 
 
-def resolved_axes(args) -> Dict:
+def resolved_axes(args, compilers: Sequence[str] = ("gcc", )) -> Dict:
     parallelism = list(flags.PARALLEL_MODES) if args.parallelism == "both" else [args.parallelism]
     return {
         "opt_modes": args.opt_modes,
@@ -1242,7 +1251,7 @@ def resolved_axes(args) -> Dict:
         "fp_modes": args.fp_modes,
         "gate": not args.no_gate,
         "matrix_preset": args.matrix_preset,
-        "veclibs": resolve_veclibs(args.veclibs),
+        "veclibs": resolve_veclibs(args.veclibs, compilers),
         "vectorize": args.vectorize,
         "pluto": args.pluto,
     }
@@ -1250,7 +1259,11 @@ def resolved_axes(args) -> Dict:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC full-matrix job (native / DaCe-cpp / nest-forge sweep)")
-    ap.add_argument("--corpora", nargs="*", default=["tsvc2", "tsvc2_5"], choices=["tsvc2", "tsvc2_5"])
+    # `foundation` is the hpcagent_bench track and the default: 220 kernels = 135 tsvc2 (as `tsvc_2_<key>`)
+    # + 56 tsvc2_5 (bare) + 29 that exist nowhere else. NOT a superset -- 16 tsvc2 and 9 tsvc2_5 kernels
+    # ship only in the standalone corpus modules -- so those stay selectable and the run reports the gap
+    # rather than letting a narrower sweep read as full coverage.
+    ap.add_argument("--corpora", nargs="*", default=["foundation"], choices=["tsvc2", "tsvc2_5", "foundation"])
     ap.add_argument("--languages", nargs="*", default=["c", "c++", "fortran"], choices=list(_EMIT))
     ap.add_argument("--opt-modes",
                     nargs="*",
@@ -1330,7 +1343,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[tsvc-full] no toolchains discovered (checked PATH + spack); nothing to run")
         return 1
     fortran_by_family = lang_compilers(["fortran"], toolchains).get("fortran", {})
-    axes = resolved_axes(args)
+    axes = resolved_axes(args, tuple(dict.fromkeys(t.cc for t in toolchains)))
     print("[tsvc-full] toolchains: " +
           ", ".join(f"{t.name}(cc={Path(t.cc).name},cxx={Path(t.cxx).name if t.cxx else '-'},"
                     f"ftn={Path(fortran_by_family[t.name]).name if t.name in fortran_by_family else '-'})"
@@ -1340,6 +1353,13 @@ def main(argv: Optional[List[str]] = None) -> int:
           f"profile={args.profile_preset}")
 
     kernels = [k for corpus in args.corpora for k in tsvc.iter_tsvc_kernels(only=args.only, corpus=corpus)]
+    if args.corpora == ["foundation"] and not args.only:
+        # say what a foundation-only sweep leaves out, so it cannot be read as full corpus coverage
+        gap = tsvc.foundation_coverage_gap()
+        for corpus, keys in gap.items():
+            if keys:
+                print(f"[tsvc-full] NOT covered by foundation: {len(keys)} {corpus} kernel(s) "
+                      f"(add --corpora foundation {corpus} to sweep them): {' '.join(keys)}")
     procid, ntasks = rank_and_size()
     mine = my_slice(kernels, procid, ntasks)
     if args.limit:

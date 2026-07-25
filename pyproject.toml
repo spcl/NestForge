@@ -28,6 +28,9 @@ classifiers = [
 # them -- pip treats it as unsatisfied by a local editable and reinstalls over the checkout.
 dependencies = ["numpy", "pyyaml", "sympy"]
 
+[project.scripts]
+nestforge = "nestforge.__main__:main"
+
 [project.optional-dependencies]
 # Single source of truth for the dev/test/format tools; requirements-dev.txt installs this extra.
 dev = [

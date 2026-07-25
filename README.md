@@ -107,6 +107,24 @@ pip install -r requirements-dev.txt
 pytest -m "not integration"
 ```
 
+## Run it on your own kernel
+
+`nestforge.run.optimize_program` is the executing entry point: hand it a `.py` (one `@dace.program`),
+an `.sdfg`/`.sdfgz`, or an SDFG already in hand, plus a value for every free symbol, and it lowers,
+translates, sweeps the compiler x FP matrix, and returns the winner per nest.
+
+```bash
+python -m nestforge my_kernel.py --size N=1048576 --reps 10
+```
+
+```python
+from nestforge import optimize_program
+
+report = optimize_program("my_kernel.py", sizes={"N": 1 << 20}, reps=10)
+print(report.markdown())
+report.winners()  # nest name -> fastest strict-ieee-correct Cell
+```
+
 ## Plot the results
 
 The plotters are **readers** — they never recompile, just render the per-kernel JSON a benchmark run
@@ -334,10 +352,11 @@ emission is read-only and refuses nests it cannot soundly express. `examples/dem
 ieee-strict bit-exact vs fast-math FMA rounding.
 
 Known gaps, in the order they block work:
-- `nestforge.entry` plans but never executes: `plan_search` returns a `SearchPlan` and nothing hands it
-  to `run_arena`. The `optimize_program` entry point `docs/PLAN_optimize_contract.md` specifies is
-  unwritten.
-- `lower_to_sdfg` raises `NotImplementedError` for `InputKind.NUMPY`; the plan still reports
+- `nestforge.entry` still only plans -- `plan_search` returns a `SearchPlan` and nothing there hands it
+  to `run_arena`. The executing entry point `docs/PLAN_optimize_contract.md` item 1 specifies is
+  written now, as `nestforge.run.optimize_program`; it lowers, translates and measures directly and
+  never goes through `entry.py`. Wiring `entry.py`'s plan into that execution is still open.
+- `entry.lower_to_sdfg` raises `NotImplementedError` for `InputKind.NUMPY`; the plan still reports
   `needs_parse`, so a caller sees the gap rather than a wrong answer.
 - `FLAG_AXES['vectorize']` names its three values but they are not yet mapped to per-compiler flags.
 - Nested map-in-map emission; hidden layer-config symbols for the ML kernels; SQLite result tracking;

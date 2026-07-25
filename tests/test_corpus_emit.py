@@ -18,6 +18,7 @@ from dace import symbolic
 from nestforge.corpus import dace_kernel_names, iter_dace_kernels
 from nestforge.emit_libnode import symbol_scalar
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.isolation import run_isolated
 
 
 def kernels():
@@ -88,6 +89,18 @@ def test_corpus_exposes_dace_kernels():
         "hpc/dense_linear_algebra/lu/lu",
     } <= hpc
     assert len(dace_kernel_names("ml")) >= 5, len(dace_kernel_names("ml"))
+
+
+def test_foundation_track_reachable_via_iter_dace_kernels():
+    """Guards against foundation silently yielding 0 kernels again (it did until DACE_TRACKS included
+    it): sample the first two non-TSVC foundation kernels and check each still builds to an SDFG.
+    ``to_sdfg`` runs isolated -- a freshly-generated ``_dace.py`` can crash the codegen it drives."""
+    foundation = sorted((k for k in iter_dace_kernels("foundation") if "tsvc" not in k.short_name),
+                        key=lambda k: k.short_name)
+    assert foundation, "foundation track yielded no kernels"
+    for kernel in foundation[:2]:
+        result = run_isolated(lambda k=kernel: {"ok": k.program().to_sdfg(simplify=True) is not None})
+        assert result.get("ok"), f"{kernel.short_name}: {result.get('error')}"
 
 
 def test_gemm_matmul_emits_and_computes():

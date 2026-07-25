@@ -6,7 +6,7 @@ name of the size symbol.
 The symbol does not decide the class: several ``LEN_1D`` kernels carry a nested loop and run O(n^2), and
 several ``LEN_2D`` kernels sweep one loop and run O(n).
 
-``k`` is read STATICALLY from the kernel's own ``_native.cpp``: a loop multiplies the work when its
+``k`` is read STATICALLY from the kernel's own ``_reference.cpp``: a loop multiplies the work when its
 CONDITION (never its init or increment) names something that SCALES -- a scalar parameter, or the index
 of an enclosing loop that itself scales -- and does not name the index of an enclosing STRIDED loop.
 
