@@ -55,7 +55,7 @@ def test_static_offload_links_a_into_parent_and_runs(tmp_path):
     prep = prepare(boundary, ext.name, tmp_path / "kern")
     c_source = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c")
     res = run_arena(prep, boundary, c_source, tmp_path / "build", sizes={"N": 1 << 14}, reps=25)
-    win = res.winners["ieee-strict"]
+    win = res.winners["strict-ieee"]
     assert win.maxdiff == 0.0
     archive = build_winner_archive(win, c_source, ext.name, tmp_path / "archive")
     assert archive.suffix == ".a" and archive.is_file()

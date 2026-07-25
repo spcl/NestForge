@@ -60,7 +60,7 @@ def test_extern_call_links_winner_and_runs(tmp_path):
     c_source = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c")
     sizes = {"N": 1 << 14}
     res = run_arena(prep, boundary, c_source, tmp_path / "build", sizes=sizes, reps=25)
-    win = res.winners["ieee-strict"]
+    win = res.winners["strict-ieee"]
     assert win.maxdiff == 0.0
 
     # Point the node at the winning lib + expand the extern call.

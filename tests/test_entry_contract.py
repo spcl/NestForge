@@ -138,11 +138,11 @@ def test_flag_axes_cover_what_the_contract_names():
         assert len(values) >= 2, 'an axis with one value is not a search axis'
 
 
-def test_fp_axis_matches_the_arena_that_owns_the_flags():
-    """arena.FP_MODES owns the real flag lists and the per-mode tolerance. Restating the names here
-    keeps planning import-light, so this guards the two from drifting apart."""
-    from nestforge.arena import FP_MODES
-    assert tuple(FP_MODES) == tuple(FLAG_AXES['fp'])
+def test_fp_axis_matches_the_flag_matrix_that_owns_it():
+    """flags.FP_LEVELS owns the real per-family flag lists. Restating the names in entry keeps planning
+    import-light (the flag matrix pulls dace), so this guards the two from drifting apart."""
+    from nestforge.perf import flags
+    assert tuple(flags.FP_LEVELS) == tuple(FLAG_AXES['fp'])
 
 
 def test_vectorize_is_one_axis_not_a_degenerate_cross():
@@ -196,12 +196,17 @@ def test_broad_sweep_opens_knobs_in_priority_order():
 
 
 def test_broad_budget_is_honoured_for_any_budget():
-    for budget in (4, 8, 16, 72, 1000):
+    # DERIVED, not a literal: this floor moved the moment the fp axis grew from three rungs to
+    # flags.FP_LEVELS' four, and a hardcoded one fails as arithmetic rather than as a broken contract.
+    floor = 1
+    for values in (*CORE_CODEGEN_AXES.values(), *FLAG_AXES.values()):
+        floor *= len(values)
+    for budget in (4, 8, 16, 72, 96, 1000):
         axes = broad_codegen_axes(budget)
         total = 1
         for values in (*axes.values(), *FLAG_AXES.values()):
             total *= len(values)
-        assert total <= max(budget, 36), f'budget {budget} overshot at {total}'
+        assert total <= max(budget, floor), f'budget {budget} overshot at {total}'
 
 
 def test_flags_space_is_smaller_than_parsed_space():

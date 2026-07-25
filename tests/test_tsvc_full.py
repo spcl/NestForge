@@ -111,6 +111,20 @@ def test_lane_flags_gate_reduced_cxx_and_unsupported(monkeypatch):
     assert "-ftree-parallelize-loops=16" in par
 
 
+def test_lane_flags_declines_a_family_the_matrix_has_no_rung_for():
+    """``build.compiler_family`` also returns ``intel-classic`` (icc/icpc/ifort), which this matrix has no
+    rung for -- classic icc is not icx. Every other unsupported axis degrades to ``(None, reason)``, but
+    ``_FP`` was indexed directly, so an icc backend raised KeyError and killed the sweep instead of
+    recording a skip."""
+    none, why = flags.lane_flags("intel-classic", "strict-ieee", "default", "sequential", "c", 1)
+    assert none is None and "intel-classic" in why
+    # and the families it DOES know still compose at every rung -- a blanket decline would be no better
+    for family in ("gnu", "llvm", "nvidia", "intel"):
+        for level in flags.FP_LEVELS:
+            composed, reason = flags.lane_flags(family, level, "default", "sequential", "c", 1)
+            assert composed and reason is None, (family, level)
+
+
 def test_lane_flags_omp_emit_enables_openmp_every_family():
     # omp-emit is supported for EVERY family (pragmas are in OUR source, a bare -fopenmp/-mp, not an
     # auto-parallelizer) -- so clang (which auto-par cannot reach) still gets an omp-emit lane.

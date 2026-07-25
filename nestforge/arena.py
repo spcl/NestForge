@@ -9,6 +9,7 @@ external wall-clock over repeats.
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ import dace
 from dace import symbolic
 
 from nestforge.build import COMPILE_TIMEOUT_S, compiler_family, ldconfig_output
+from nestforge.dedup import collapse, representatives, variant_key
 from nestforge.perf import flags
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.extract import Boundary
@@ -30,16 +32,9 @@ from nestforge.isolation import run_isolated
 from nestforge.translate import Prepared
 
 # --- FP modes (the flag axis) -----------------------------------------------------------------
-_BASE = ["-O3", "-march=native", "-fPIC", "-shared"]
-FP_MODES: Dict[str, List[str]] = {
-    # bit-exact vs numpy: no fast-math, no FMA contraction.
-    "ieee-strict": _BASE + ["-ffp-contract=off"],
-    # finite-math-only relaxations that preserve IEEE rounding; FMA left on (the accuracy pivot).
-    "fast-but-ieee": _BASE + ["-fno-math-errno", "-fno-trapping-math", "-fno-signed-zeros"],
-    # everything goes.
-    "fast-math": _BASE + ["-ffast-math"],
-}
-MODE_ATOL = {"ieee-strict": 0.0, "fast-but-ieee": 1e-9, "fast-math": 1e-6}
+#: Strict rung overridden to BIT-EXACT: arena compares emitted C vs emitted numpy, same op order, so 0.0
+#: is reachable here -- unlike the whole-program oracle FP_ATOL is written for (pairwise sum vs tree).
+ARENA_ATOL: Dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 0.0}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
 # numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is needed because a comparison
@@ -203,6 +198,9 @@ class Cell:
     #: elsewhere silently swaps pointers.
     abi_order: Optional[List[str]] = None
     error: Optional[str] = None
+    #: Cell whose measurement this one carries because both built the identical artifact (dedup.variant_key).
+    #: Its timing is real, just not measured twice -- ``None`` means this cell was measured itself.
+    same_as: Optional[str] = None
 
 
 def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
@@ -341,6 +339,9 @@ class ArenaResult:
     winners: Dict[str, Cell] = field(default_factory=dict)  # fp_mode -> best correct cell
     #: wall time of the whole sweep (all candidates: compile + validate + time) -- the search cost.
     optimization_seconds: float = 0.0
+    #: ``rep == dup, dup`` per collapsed group. Reported because a silent collapse reads exactly like a
+    #: sweep that measured everything.
+    collapsed: List[str] = field(default_factory=list)
 
 
 def run_arena(prep: Prepared,
@@ -352,6 +353,11 @@ def run_arena(prep: Prepared,
               seed: int = 0,
               given: Optional[Dict[str, np.ndarray]] = None) -> ArenaResult:
     """Sweep discovered compilers x FP modes; validate + time each; pick a winner per FP mode.
+
+    Every cell is BUILT, then cells that produced the identical artifact are measured once and the rest
+    carry that result with ``Cell.same_as`` set (:func:`dedup.variant_key`) -- a pure add compiles to one
+    object for all four fp rungs, and timing it four times measures nothing new. What collapsed is on
+    ``ArenaResult.collapsed``.
 
     ``given`` is forwarded to :func:`make_inputs`; this layer is corpus-agnostic, so a caller measuring a
     corpus kernel must pass ``tsvc.index_fills(...)`` -- without it an integer index array fills to
@@ -367,12 +373,32 @@ def run_arena(prep: Prepared,
     inputs = make_inputs(boundary, sizes, seed=seed, given=given)
     oracle = run_oracle(prep, boundary, inputs, sizes)
 
+    def measure(so: Path, mode: str) -> Dict[str, Any]:
+        outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
+        # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff); one pass over
+        # the diff computes both instead of two.
+        md, md_rel = diff_stats(oracle, outs)
+        return {"ok": bool(md_rel <= ARENA_ATOL[mode]), "maxdiff": float(md), "time_us": float(us)}
+
     result = ArenaResult(name=prep.name)
     t_sweep = time.perf_counter()
+    built: Dict[str, Tuple[Cell, Path]] = {}
     for cname, cpath in compilers.items():
-        for mode, mode_flags in FP_MODES.items():  # not `flags`: that name is the flag-matrix module here
+        family = compiler_family(cpath)
+        for mode in flags.FP_LEVELS:
+            # family-aware: a local table would hand -ffast-math to nvc, and be a second fp vocabulary
+            composed, reason = flags.lane_flags(family,
+                                                mode,
+                                                "default",
+                                                parallel="none",
+                                                lang="c",
+                                                nthreads=1,
+                                                compiler=cpath)
+            if composed is None:
+                result.cells.append(Cell(cname, mode, False, float("inf"), float("inf"), error=reason))
+                continue
             so = out_dir / f"lib{prep.name}_{cname}_{mode}.so"
-            cmd = [cpath, *mode_flags, str(c_source), "-o", str(so)]
+            cmd = [cpath, *composed, str(c_source), "-o", str(so)]
             t_c = time.perf_counter()
             comp = subprocess.run(cmd, capture_output=True, text=True)
             compile_us = (time.perf_counter() - t_c) * 1e6
@@ -386,34 +412,38 @@ def run_arena(prep: Prepared,
                          compile_us=compile_us,
                          error=comp.stderr[-400:]))
                 continue
+            cell = Cell(cname,
+                        mode,
+                        False,
+                        float("inf"),
+                        float("inf"),
+                        compile_us=compile_us,
+                        so_path=str(so),
+                        symbol=symbol,
+                        abi_order=list(order))
+            result.cells.append(cell)
+            built[f"{cname}:{mode}"] = (cell, so)
 
-            # Forked so a segfault/runaway kills only the child; only the summary crosses the pipe.
-            # ``so``/``mode`` are default args to dodge late-binding capture of the loop variables.
-            def work(so: Path = so, mode: str = mode) -> Dict[str, Any]:
-                outs, us = call_native(so, symbol, order, argtypes, boundary, inputs, sizes, reps)
-                # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff); one pass
-                # over the diff computes both instead of two.
-                md, md_rel = diff_stats(oracle, outs)
-                return {"ok": bool(md_rel <= MODE_ATOL[mode]), "maxdiff": float(md), "time_us": float(us)}
-
-            res = run_isolated(work)
-            if "error" in res:
-                result.cells.append(
-                    Cell(cname, mode, False, float("inf"), float("inf"), compile_us=compile_us, error=res["error"]))
-            else:
-                result.cells.append(
-                    Cell(cname,
-                         mode,
-                         res["ok"],
-                         res["maxdiff"],
-                         res["time_us"],
-                         compile_us=compile_us,
-                         so_path=str(so),
-                         symbol=symbol,
-                         abi_order=list(order)))
+    # Group by the ARTIFACT, not by the axes that asked for it: cells whose code AND link are identical
+    # are one measurement, and measuring costs reps x the kernel against one objdump to find out. An
+    # artifact that cannot be keyed gets a unique id, so failing to inspect means measuring it.
+    keys = {cid: (variant_key(so, symbol) or f"unkeyed:{cid}") for cid, (_, so) in built.items()}
+    for members in collapse(keys).values():
+        cell, so = built[members[0]]
+        # Forked so a segfault/runaway kills only the child; only the summary crosses the pipe.
+        res = run_isolated(functools.partial(measure, so, cell.fp_mode))
+        if "error" in res:
+            cell.error = res["error"]
+        else:
+            cell.ok, cell.maxdiff, cell.time_us = bool(res["ok"]), float(res["maxdiff"]), float(res["time_us"])
+        for twin_id in members[1:]:
+            twin = built[twin_id][0]
+            twin.ok, twin.maxdiff, twin.time_us = cell.ok, cell.maxdiff, cell.time_us
+            twin.error, twin.same_as = cell.error, members[0]
+    result.collapsed = representatives(keys)[1]
 
     result.optimization_seconds = time.perf_counter() - t_sweep
-    for mode in FP_MODES:
+    for mode in flags.FP_LEVELS:
         correct = [c for c in result.cells if c.fp_mode == mode and c.ok]
         if correct:
             result.winners[mode] = min(correct, key=lambda c: c.time_us)
@@ -441,9 +471,8 @@ def compile_object(cpath: str,
                    lang: str = "c") -> Path:
     """Compile one emitted source to a ``.o`` at ``(compiler, fp-mode, veclib, cost-model)``.
 
-    Flags via :mod:`~nestforge.perf.flags`, not the local ``FP_MODES``: that table is family-blind (would
-    hand ``-ffast-math`` to nvc, which wants ``-fast``) and is the seam where the two fp vocabularies met --
-    ``ExternalOptimizer`` emits :data:`flags.FP_LEVELS` names, which ``FP_MODES`` has no keys for."""
+    ``fp_mode`` is a :data:`flags.FP_LEVELS` rung -- the ONE fp vocabulary; a second one here is what
+    silently killed every E1 cell and :func:`build_winner_archive` call once the flags moved."""
     out_dir.mkdir(parents=True, exist_ok=True)
     obj = out_dir / f"{name}_nest.o"
     family = compiler_family(cpath)
@@ -458,7 +487,8 @@ def compile_object(cpath: str,
     if composed is None:
         raise ValueError(f"cannot compile {name} with {Path(cpath).name} at fp={fp_mode!r} "
                          f"veclib={veclib!r} cost={cost_model!r}: {reason}")
-    run_tool([cpath, *composed, "-fPIC", "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
+    cflags = [f for f in composed if f != "-shared"]  # link-only, and this step is -c (mirrors build.compile)
+    run_tool([cpath, *cflags, "-fPIC", "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
     return obj
 
 
@@ -477,13 +507,21 @@ def archive_objects(objs: List[Path], name: str, out_dir: Path) -> Path:
     return archive
 
 
-def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str) -> Path:
+def link_shared(objs: List[Path], name: str, out_dir: Path, cpath: str, veclib: Optional[str] = None) -> Path:
     """Link objects into ``lib<name>_nest.so``. Resolved at ``dlopen`` time, hence order-independent, so it
     survives dace SORTING the parent's link flags (which leaves a static archive's members un-pulled). The
-    parent links it with an rpath (see :meth:`ExternLibEnv.configure`)."""
+    parent links it with an rpath (see :meth:`ExternLibEnv.configure`).
+
+    ``veclib`` MUST match what :func:`compile_object` used. A shared object is allowed to carry undefined
+    symbols, so omitting it links cleanly and then dies at ``dlopen`` with ``undefined symbol: _ZGV...``
+    -- the failure surfaces a whole phase away from its cause.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     so = out_dir / f"lib{name}_nest.so"
-    run_tool([cpath, "-shared", "-fPIC", *[str(o) for o in objs], "-o", str(so)], f"linking lib{name}_nest.so")
+    vec_l, reason = flags.veclib_link_flags(cpath, veclib)
+    if vec_l is None:
+        raise ValueError(f"cannot link {name} with {Path(cpath).name} veclib={veclib!r}: {reason}")
+    run_tool([cpath, "-shared", "-fPIC", *[str(o) for o in objs], *vec_l, "-o", str(so)], f"linking lib{name}_nest.so")
     return so
 
 

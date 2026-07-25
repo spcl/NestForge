@@ -19,7 +19,7 @@ This stitches the three built pieces together:
 
 "Backend" here is a compiler discovered on PATH (gcc/clang); the same driver extends to an ISA axis on the
 cluster by adding cross-compilers to :func:`nestforge.arena.discover_compilers`. Every variant is built at
-``ieee-strict`` so the swapped program stays bit-exact -- E1 measures where granularity moves time, not
+``strict-ieee`` so the swapped program stays bit-exact -- E1 measures where granularity moves time, not
 where fast-math moves accuracy (that is the arena's FP axis, orthogonal here).
 """
 from __future__ import annotations
@@ -96,8 +96,9 @@ def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
                            backend_name: str,
                            backend_path: str,
                            out_dir: Path,
-                           fp_mode: str = "ieee-strict",
-                           emitted: Optional[List[EmittedNest]] = None) -> Dict[str, NestVariant]:
+                           fp_mode: str = "strict-ieee",
+                           emitted: Optional[List[EmittedNest]] = None,
+                           veclib: str = "none") -> Dict[str, NestVariant]:
     """Compile every nest of a lowered program with ONE backend and link them into a single shared lib.
 
     ``calls`` is the ``[(ExternalCall, Boundary)]`` from :func:`lower_nests_to_external_call`. Each nest is
@@ -109,8 +110,9 @@ def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
     ``emitted`` is the rung's shared C, from :func:`emit_nest_sources`; ``None`` emits it here."""
     out_dir.mkdir(parents=True, exist_ok=True)
     emitted = emit_nest_sources(calls, out_dir) if emitted is None else emitted
-    objs = [compile_object(backend_path, fp_mode, e.c_source, e.name, out_dir / e.name) for e in emitted]
-    lib = link_shared(objs, backend_name, out_dir, backend_path)
+    # one veclib for BOTH steps: compiling with it and linking without leaves _ZGV* unresolved at dlopen
+    objs = [compile_object(backend_path, fp_mode, e.c_source, e.name, out_dir / e.name, veclib=veclib) for e in emitted]
+    lib = link_shared(objs, backend_name, out_dir, backend_path, veclib=veclib)
     return {e.name: NestVariant(str(lib), e.symbol, e.order) for e in emitted}
 
 

@@ -43,7 +43,7 @@ EXTERNAL_WHOLE_PROGRAM_PENDING = ("gcc-O3", "llvm-O3", "graphite", "polly")
 BASELINE_DRIVER = {"gcc": "g++", "clang": "clang++"}
 
 #: The whole-program baseline is built at the search side's FP regime. build_backend_variants pins every
-#: nest to ``ieee-strict`` (arena: ``-ffp-contract=off``), so a baseline left at the driver default forms
+#: nest to ``strict-ieee`` (arena: ``-ffp-contract=off``), so a baseline left at the driver default forms
 #: FMAs the search side is denied and the difference lands inside the ratio.
 NO_FP_CONTRACT = "-ffp-contract=off"
 
@@ -139,7 +139,7 @@ def baseline_optimizer(backend: str) -> WholeProgramOptimizer:
     """The whole-program baseline built by ``backend``'s C++ driver at the search side's FP regime.
 
     Both halves matter: the driver so the ratio is not part compiler swap, and ``-ffp-contract=off`` so the
-    baseline is denied the FMAs every offloaded nest is denied (build_backend_variants pins ieee-strict)."""
+    baseline is denied the FMAs every offloaded nest is denied (build_backend_variants pins strict-ieee)."""
     driver = BASELINE_DRIVER.get(backend, DEFAULT_COMPILER)
     return WholeProgramOptimizer(opt_mode="auto-opt",
                                  build=BuildOptions(compiler=driver, flags=DEFAULT_FLAGS + [NO_FP_CONTRACT]),

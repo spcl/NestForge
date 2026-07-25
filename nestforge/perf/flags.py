@@ -335,13 +335,11 @@ def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
     return flags
 
 
-def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
-    """Compile+link flags for a vector-math library on an external lane, or ``(None, reason)`` when
-    incompatible/unknown/requested without a compiler. Per-family spelling delegates to
-    :class:`build.VectorMathLib`, imported lazily to keep this module dace-free."""
+def resolve_veclib(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[object], Optional[str]]:
+    """``(library, reason)``. ``(None, None)`` is the scalar baseline -- no library and no problem -- so
+    callers branch on ``reason``, not on the library. Lazy import keeps this module dace-free."""
     if not veclib or veclib == "none":
-        # icx auto-links libsvml/libimf, so even the scalar baseline needs the support rpath
-        return (list(support_rpath_flags(compiler)) if compiler else []), None
+        return None, None
     if not compiler:
         return None, f"veclib {veclib} requested without a compiler to resolve its family"
     from nestforge.build import VECTOR_LIBS
@@ -350,7 +348,41 @@ def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Option
         return None, f"unknown veclib {veclib!r} (expected one of {tuple(VECTOR_LIBS)})"
     if not vl.compatible(compiler):
         return None, f"veclib {veclib} incompatible with {Path(compiler).name}"
-    return vl.compile_flags(compiler) + vl.link_flags(compiler) + list(support_rpath_flags(compiler)), None
+    return vl, None
+
+
+def veclib_compile_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """COMPILE half: ``-fveclib=`` on llvm, nothing on gnu (``-ffast-math`` alone emits ``_ZGV*`` there)."""
+    vl, reason = resolve_veclib(compiler, veclib)
+    if reason is not None:
+        return None, reason
+    return ([] if vl is None else vl.compile_flags(compiler)), None
+
+
+def veclib_link_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """LINK half: the ``-l``/``-L``/``-rpath`` that make the packed calls resolve.
+
+    Kept separate from the compile half because a shared object may carry undefined symbols: an object
+    compiled with a veclib and linked without one links CLEANLY and fails at ``dlopen``. Any path that
+    compiles and links in two steps must ask for this half explicitly.
+    """
+    vl, reason = resolve_veclib(compiler, veclib)
+    if reason is not None:
+        return None, reason
+    # icx auto-links libsvml/libimf, so even the scalar baseline needs the support rpath
+    support = list(support_rpath_flags(compiler)) if compiler else []
+    return (support if vl is None else vl.link_flags(compiler) + support), None
+
+
+def veclib_flags(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Both halves, for a cell that compiles and links in ONE command (see :func:`veclib_link_flags`)."""
+    compile_half, reason = veclib_compile_flags(compiler, veclib)
+    if compile_half is None:
+        return None, reason
+    link_half, reason = veclib_link_flags(compiler, veclib)
+    if link_half is None:
+        return None, reason
+    return compile_half + link_half, None
 
 
 def lane_flags(family: str,
@@ -370,6 +402,9 @@ def lane_flags(family: str,
     :param lang: ``"c"``, ``"c++"`` or ``"fortran"``.
     :param openmp: the ONE runtime every parallel cell links (:data:`DEFAULT_OPENMP_RUNTIME` when unset);
         a compiler that can't link it declines rather than silently falling back."""
+    # compiler_family also yields 'intel-classic', which has no rung here (classic icc != icx): decline, not KeyError
+    if family not in _FP:
+        return None, f"no fp flag matrix for compiler family {family!r} (known: {tuple(_FP)})"
     fp_lang = "fortran" if lang == "fortran" else "c"
     out = base_flags(family)
     if lang == "c++":

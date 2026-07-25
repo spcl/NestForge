@@ -6,12 +6,14 @@ Every rule here was measured with ``nm`` on a ``sin()`` loop before it was encod
 the measurement, so a future toolchain that behaves differently fails loudly instead of silently
 re-enabling a cell that produces a duplicate binary.
 """
+import ctypes
 import shutil
 import subprocess
 
 import pytest
 
-from nestforge.arena import compile_object
+from nestforge.arena import compile_object, link_shared
+from nestforge.build import packed_ops_called
 from nestforge.optimizers import ExternalOptimizer, deterministic_optimizers
 from nestforge.perf import flags
 
@@ -94,8 +96,8 @@ def test_deterministic_optimizers_enumerates_the_veclib_axis():
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
 @pytest.mark.parametrize("fp_mode", flags.FP_LEVELS)
 def test_compile_object_accepts_every_fp_level(tmp_path, fp_mode):
-    """``arena.FP_MODES`` had three gnu-only spellings and no ``contract-fma``; the external lane already
-    emitted :data:`flags.FP_LEVELS` names, so those raised KeyError at the seam."""
+    """The arena used to keep three gnu-only fp spellings of its own with no ``contract-fma``; the
+    external lane already emitted :data:`flags.FP_LEVELS` names, so those raised at the seam."""
     src = tmp_path / "k.c"
     src.write_text(KERNEL)
     assert compile_object("gcc", fp_mode, src, "k", tmp_path / fp_mode).exists()
@@ -111,6 +113,24 @@ def test_compile_object_refuses_an_unsupported_combination(tmp_path):
         compile_object("gcc", "fast-math", src, "k", tmp_path / "svml", veclib="svml")
     with pytest.raises(ValueError, match="nope"):
         compile_object("gcc", "fast-math", src, "k", tmp_path / "nope", veclib="nope")
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")
+def test_a_veclib_object_links_into_a_LOADABLE_shared_object(tmp_path):
+    """A shared object is allowed to carry undefined symbols, so compiling with a veclib and linking
+    without one links CLEANLY and dies at ``dlopen``. Loading it is the only check that catches this; a
+    zero exit from the linker does not. The bare link below is the negative control -- without it this
+    test would still pass on a toolchain that emitted no packed call at all."""
+    src = tmp_path / "k.c"
+    src.write_text(KERNEL)
+    obj = compile_object("gcc", "fast-math", src, "k", tmp_path / "o", veclib="libmvec")
+    assert packed_ops_called("libmvec", str(obj)), "gcc emitted no packed call, so this proves nothing"
+
+    ctypes.CDLL(str(link_shared([obj], "k", tmp_path / "lib", "gcc", veclib="libmvec")))
+
+    bare = link_shared([obj], "kbare", tmp_path / "bare", "gcc", veclib="none")
+    with pytest.raises(OSError, match="undefined symbol"):
+        ctypes.CDLL(str(bare))
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not on PATH")

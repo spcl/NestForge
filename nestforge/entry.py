@@ -77,11 +77,12 @@ PARSED_KINDS = frozenset({InputKind.NUMPY, InputKind.FORTRAN_PARSE, InputKind.SD
 #:
 #: `vectorize` is ONE axis, not a switch crossed with a cost model: with vectorization off the cost
 #: model has nothing to decide, so the crossed form emitted the same variant three times.
-#: `fp` mirrors :data:`nestforge.arena.FP_MODES`, which owns the flag lists and the per-mode
-#: comparison tolerance. Restated here to keep planning import-light; a test asserts they never drift.
+#: `fp` mirrors :data:`nestforge.perf.flags.FP_LEVELS`, which owns the per-family flag lists. Restated
+#: here because importing that module pulls dace in, and planning must stay import-light; a test asserts
+#: the two never drift.
 FLAG_AXES: Dict[str, Sequence[str]] = {
     'vectorize': ('none', 'cheap', 'auto'),
-    'fp': ('ieee-strict', 'fast-but-ieee', 'fast-math'),
+    'fp': ('strict-ieee', 'contract-fma', 'assume-finite', 'fast-math'),
 }
 
 #: Every DaCe CPU codegen axis, values verified against dace `extended` config_schema.yml.
@@ -139,9 +140,11 @@ CORE_CODEGEN_AXES: Dict[str, Sequence] = {
 }
 
 #: Ceiling on the variants ONE plan may enumerate; the arena builds each once per discovered
-#: compiler, so with the usual two this is ~144 compilations. The full product of every knob is six
+#: compiler, so with the usual two this is ~192 compilations. The full product of every knob is six
 #: figures, which is not a sweep anyone runs.
-VARIANT_BUDGET = 72
+#: Scaled 72 -> 96 with the fp axis (3 rungs -> flags.FP_LEVELS' 4): the flag axes multiply every codegen
+#: combination, so a budget left at 72 silently closed the broad sweep instead of costing it one knob.
+VARIANT_BUDGET = 96
 
 #: Order in which a broad sweep re-opens pinned knobs, most likely to matter first. It opens them
 #: while the budget allows, so the bound holds by construction rather than by hoping.

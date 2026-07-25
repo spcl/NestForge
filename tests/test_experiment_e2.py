@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 import dace
 
-from nestforge.arena import FP_MODES, discover_compilers
+from nestforge.arena import discover_compilers
+from nestforge.perf import flags
 from nestforge.experiment_e1 import E1Cell
 from nestforge.experiment_e2 import (BASELINE_DRIVER, E2Row, EXTERNAL_WHOLE_PROGRAM_PENDING, NO_FP_CONTRACT,
                                      baseline_optimizer, compare, run_e2, search_best, skipped_lanes, speedup_table)
@@ -53,10 +54,11 @@ def test_search_best_omits_a_pair_whose_every_cell_failed():
 
 
 def test_baseline_is_built_by_the_same_toolchain_and_fp_regime_as_the_search_side():
-    """Both halves of the comparability contract, asserted against the arena's own ieee-strict flags:
-    the C++ driver matching the backend, and -ffp-contract=off. A baseline left at the driver default
-    forms FMAs every offloaded nest is denied, and the difference lands inside the ratio."""
-    assert NO_FP_CONTRACT in FP_MODES["ieee-strict"]  # the search side really is pinned this way
+    """Both halves of the comparability contract, asserted against the flags the search side really
+    composes at strict-ieee: the C++ driver matching the backend, and -ffp-contract=off. A baseline left
+    at the driver default forms FMAs every offloaded nest is denied, and the difference lands in the ratio."""
+    composed, _ = flags.lane_flags("gnu", "strict-ieee", "default", parallel="none", lang="c", nthreads=1)
+    assert NO_FP_CONTRACT in composed  # the search side really is pinned this way
     for backend, driver in BASELINE_DRIVER.items():
         opt = baseline_optimizer(backend)
         assert opt.build.compiler == driver, backend

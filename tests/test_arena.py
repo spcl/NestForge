@@ -5,7 +5,8 @@ import dace
 from nestforge.strategies import outer
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare, emit_sources
-from nestforge.arena import run_arena, discover_compilers, FP_MODES
+from nestforge.arena import run_arena, discover_compilers
+from nestforge.perf import flags
 
 N = dace.symbol('N')
 
@@ -30,15 +31,27 @@ def test_arena_vadd(tmp_path):
 
     assert discover_compilers(), "no compilers on PATH"
     # every FP mode has at least one correct build, and a winner
-    for mode in FP_MODES:
+    for mode in flags.FP_LEVELS:
         assert mode in res.winners, f"no correct build for {mode}: {[(c.compiler,c.fp_mode,c.ok,c.maxdiff) for c in res.cells if c.fp_mode==mode]}"
-    # ieee-strict must be bit-exact vs the numpy oracle
-    assert res.winners["ieee-strict"].maxdiff == 0.0
+    # strict-ieee must be bit-exact vs the numpy oracle
+    assert res.winners["strict-ieee"].maxdiff == 0.0
     # all vadd cells are correct (a pure add reassociates trivially)
     assert all(c.ok for c in res.cells), [(c.compiler, c.fp_mode, c.maxdiff, c.error) for c in res.cells if not c.ok]
     # total optimization time (the sweep) and per-candidate compile time are tracked
     assert res.optimization_seconds > 0.0
     assert all(c.compile_us > 0.0 for c in res.cells)
+    # EVERY cell is still built and reported; dedup removes measurements, never cells
+    assert len(res.cells) == len(discover_compilers()) * len(flags.FP_LEVELS)
+    # a pure add reaches none of the fp ladder, so the rungs must collapse -- and a collapsed cell must
+    # carry its twin's real numbers, not a blank, or the winner tables silently lose those rungs
+    assert res.collapsed, "vadd compiles identically at every rung; nothing collapsed means dedup is inert"
+    for c in res.cells:
+        if c.same_as is None:
+            continue
+        twin = next(t for t in res.cells if f"{t.compiler}:{t.fp_mode}" == c.same_as)
+        assert (c.ok, c.time_us, c.maxdiff) == (twin.ok, twin.time_us, twin.maxdiff), (c, twin)
+    assert len([c for c in res.cells if c.same_as is None]) < len(res.cells), "dedup saved no measurement"
+    assert len(res.collapsed) == len({c.same_as for c in res.cells if c.same_as is not None}), "one note per group"
 
 
 if __name__ == "__main__":
