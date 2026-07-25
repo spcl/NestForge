@@ -53,6 +53,7 @@ class Proposal:
     # --- external lane (numpyto C / Fortran) ---
     language: Optional[str] = None  # "c" | "fortran"
     compiler: Optional[str] = None
+    veclib: str = "none"  # flags.VECLIBS: the SIMD elementary-math library the loop calls
     flags: Optional[Tuple[str, ...]] = None
 
     def __post_init__(self) -> None:
@@ -111,7 +112,7 @@ class ExternalOptimizer(Optimizer):
     returns ``None`` and ``skip_reason`` records why, exactly as a variant is dropped with a reason today.
     """
 
-    __slots__ = ("language", "family", "compiler", "fp_mode", "cost_model", "name", "flags", "skip_reason")
+    __slots__ = ("language", "family", "compiler", "fp_mode", "cost_model", "veclib", "name", "flags", "skip_reason")
 
     def __init__(self,
                  language: str,
@@ -121,20 +122,33 @@ class ExternalOptimizer(Optimizer):
                  cost_model: str = "cheap",
                  parallel: str = "sequential",
                  nthreads: int = 1,
+                 veclib: str = "none",
                  name: Optional[str] = None) -> None:
         self.language = language
         self.family = family
         self.compiler = compiler
         self.fp_mode = fp_mode
         self.cost_model = cost_model
-        self.name = name or f"{language}:cc={compiler},fp={fp_mode},cost={cost_model}"
+        self.veclib = veclib
+        self.name = name or f"{language}:cc={compiler},fp={fp_mode},cost={cost_model},vec={veclib}"
         composed, reason = flags.lane_flags(family,
                                             fp_mode,
                                             cost_model,
                                             parallel,
                                             language,
                                             nthreads,
-                                            compiler=compiler)
+                                            compiler=compiler,
+                                            veclib=veclib)
+        # A vector-math call needs relaxed FP: measured by `nm -u` on a sin() loop, gcc emits _ZGV* and
+        # clang emits _ZGV*/__svml_* ONLY at fast-math -- 0 symbols at strict-ieee/contract-fma/
+        # assume-finite, even with -fveclib. Below that rung a veclib cell is byte-identical to
+        # veclib=none, so it is a duplicate reported as a distinct variant. Measured for gnu and llvm;
+        # intel/nvidia are not measured, so they are left alone rather than guessed at.
+        # NOTE: perf.tsvc_full composes the same axes and still carries this hazard.
+        if (composed is not None and family in ("gnu", "llvm") and veclib not in ("none", "")
+                and fp_mode != "fast-math"):
+            composed, reason = None, (f"{family} emits vector-math calls only at fast-math, so veclib "
+                                      f"{veclib} at fp={fp_mode} would duplicate veclib=none")
         self.flags: Optional[Tuple[str, ...]] = tuple(composed) if composed is not None else None
         self.skip_reason: Optional[str] = reason if composed is None else None
 
@@ -147,6 +161,7 @@ class ExternalOptimizer(Optimizer):
                         cost_model=self.cost_model,
                         language=self.language,
                         compiler=self.compiler,
+                        veclib=self.veclib,
                         flags=self.flags)
 
 
@@ -280,12 +295,25 @@ def run_agent_loop(agent: AgenticOptimizer, nest: Optional[object], measure: Cal
                        f"without stopping ({len(outcomes)} rounds measured)")
 
 
+def device_veclibs(compiler: str) -> Tuple[str, ...]:
+    """``none`` plus this device's accuracy-gated veclib winner, from the discovery phase.
+
+    veclib is a per-DEVICE property, not a per-nest one: which library is fastest inside the ULP budget is
+    a property of the hardware and the installed libraries, so searching it per cell multiplies the sweep
+    by ``len(VECLIBS)`` only to re-derive one constant. Returns just ``("none",)`` when nothing is
+    installed or compatible -- an empty axis, not a fabricated winner."""
+    from nestforge.device_profile import device_profile
+    winner = next((p.name for p in device_profile(compiler).veclib_ranking if p.ok), None)
+    return ("none", winner) if winner is not None else ("none", )
+
+
 def deterministic_optimizers(
-    compilers: Sequence[str] = (DEFAULT_COMPILER, ),
-    opt_modes: Sequence[str] = tsvc.OPT_MODES,
-    external: Sequence[Tuple[str, str, str]] = (("c", "gnu", "gcc"), ),
-    fp_modes: Sequence[str] = ("strict-ieee", ),
-    cost_models: Sequence[str] = ("cheap", "default")
+        compilers: Sequence[str] = (DEFAULT_COMPILER, ),
+        opt_modes: Sequence[str] = tsvc.OPT_MODES,
+        external: Sequence[Tuple[str, str, str]] = (("c", "gnu", "gcc"), ),
+        fp_modes: Sequence[str] = ("strict-ieee", ),
+        cost_models: Sequence[str] = ("cheap", "default"),
+        veclibs: Optional[Sequence[str]] = None,
 ) -> List[Optimizer]:
     """Every arena variant as one optimizer -- "each variant is an optimizer".
 
@@ -299,7 +327,11 @@ def deterministic_optimizers(
         for cc in compilers:
             out.append(DaceOptimizer(opt_mode, BuildOptions(compiler=cc)))
     for language, family, cc in external:
-        for fp in fp_modes:
-            for cost in cost_models:
-                out.append(ExternalOptimizer(language, family, cc, fp_mode=fp, cost_model=cost))
+        # Default is the scalar floor ONLY. veclib comes from the device-discovery phase, passed in as
+        # `veclibs=device_veclibs(cc)` -- never resolved here, because that probe compiles and times real
+        # binaries (measured: it turned this enumeration from instant into minutes).
+        for veclib in (veclibs or ("none", )):
+            for fp in fp_modes:
+                for cost in cost_models:
+                    out.append(ExternalOptimizer(language, family, cc, fp_mode=fp, cost_model=cost, veclib=veclib))
     return out

@@ -22,7 +22,8 @@ import numpy as np
 import dace
 from dace import symbolic
 
-from nestforge.build import COMPILE_TIMEOUT_S, ldconfig_output
+from nestforge.build import COMPILE_TIMEOUT_S, compiler_family, ldconfig_output
+from nestforge.perf import flags
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.extract import Boundary
 from nestforge.isolation import run_isolated
@@ -369,9 +370,9 @@ def run_arena(prep: Prepared,
     result = ArenaResult(name=prep.name)
     t_sweep = time.perf_counter()
     for cname, cpath in compilers.items():
-        for mode, flags in FP_MODES.items():
+        for mode, mode_flags in FP_MODES.items():  # not `flags`: that name is the flag-matrix module here
             so = out_dir / f"lib{prep.name}_{cname}_{mode}.so"
-            cmd = [cpath, *flags, str(c_source), "-o", str(so)]
+            cmd = [cpath, *mode_flags, str(c_source), "-o", str(so)]
             t_c = time.perf_counter()
             comp = subprocess.run(cmd, capture_output=True, text=True)
             compile_us = (time.perf_counter() - t_c) * 1e6
@@ -430,13 +431,34 @@ def run_tool(cmd: List[str], what: str) -> None:
         raise RuntimeError(f"{what} failed ({done.returncode}): {' '.join(cmd)}\n{done.stderr[-2000:]}")
 
 
-def compile_object(cpath: str, fp_mode: str, c_source: Path, name: str, out_dir: Path) -> Path:
-    """Compile one emitted C source to a ``.o`` with a chosen ``(compiler, fp-mode)`` -- shared by the
-    winner-archive and the per-backend E1 variant. ``-fPIC`` (in every ``FP_MODES`` entry) makes the
-    object linkable into the parent ``.so``."""
+def compile_object(cpath: str,
+                   fp_mode: str,
+                   c_source: Path,
+                   name: str,
+                   out_dir: Path,
+                   veclib: Optional[str] = None,
+                   cost_model: str = "default",
+                   lang: str = "c") -> Path:
+    """Compile one emitted source to a ``.o`` at ``(compiler, fp-mode, veclib, cost-model)``.
+
+    Flags via :mod:`~nestforge.perf.flags`, not the local ``FP_MODES``: that table is family-blind (would
+    hand ``-ffast-math`` to nvc, which wants ``-fast``) and is the seam where the two fp vocabularies met --
+    ``ExternalOptimizer`` emits :data:`flags.FP_LEVELS` names, which ``FP_MODES`` has no keys for."""
     out_dir.mkdir(parents=True, exist_ok=True)
     obj = out_dir / f"{name}_nest.o"
-    run_tool([cpath, *FP_MODES[fp_mode], "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
+    family = compiler_family(cpath)
+    composed, reason = flags.lane_flags(family,
+                                        fp_mode,
+                                        cost_model,
+                                        parallel="none",
+                                        lang=lang,
+                                        nthreads=1,
+                                        compiler=cpath,
+                                        veclib=veclib)
+    if composed is None:
+        raise ValueError(f"cannot compile {name} with {Path(cpath).name} at fp={fp_mode!r} "
+                         f"veclib={veclib!r} cost={cost_model!r}: {reason}")
+    run_tool([cpath, *composed, "-fPIC", "-c", str(c_source), "-o", str(obj)], f"compiling {name} with {cpath}")
     return obj
 
 
