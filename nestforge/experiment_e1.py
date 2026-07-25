@@ -25,6 +25,7 @@ where fast-math moves accuracy (that is the arena's FP axis, orthogonal here).
 from __future__ import annotations
 
 import copy
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
@@ -56,22 +57,22 @@ class E1Cell:
     error: Optional[str] = None
 
 
-def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
-                           backend_name: str,
-                           backend_path: str,
-                           out_dir: Path,
-                           fp_mode: str = "ieee-strict") -> Dict[str, NestVariant]:
-    """Compile every nest of a lowered program with ONE backend and link them into a single shared lib.
+@dataclass(frozen=True, slots=True)
+class EmittedNest:
+    """One nest rendered to C, ready for any backend to compile."""
+    name: str
+    c_source: Path
+    symbol: str
+    order: List[str]
 
-    ``calls`` is the ``[(ExternalCall, Boundary)]`` from :func:`lower_nests_to_external_call`. Each nest is
-    emitted to C, compiled to an object with ``backend_path`` at ``fp_mode``, then all objects are linked
-    into one shared lib (:func:`~nestforge.arena.link_shared`) -- one ``.so`` per backend so
-    ``ExternLibEnv`` links a single library (M0), and a ``.so`` resolves at load regardless of the parent's
-    link order. Returns nest-name -> :class:`NestVariant`, all pointing at that one lib with their own
-    extern-C symbol + ABI order."""
+
+def emit_nest_sources(calls: List[Tuple[ExternalCall, Boundary]], out_dir: Path) -> List[EmittedNest]:
+    """Render every nest of a lowered program to C.
+
+    Emission takes no compiler and no fp mode: the same text is what every backend compiles. So this is a
+    property of the granularity rung, not of a heatmap cell, and belongs outside the backend loop."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    objs: List[Path] = []
-    metas: List[Tuple[str, str, List[str]]] = []
+    emitted: List[EmittedNest] = []
     for ext, boundary in calls:
         vdir = out_dir / ext.name
         prep = prepare(boundary, ext.name, vdir)
@@ -87,10 +88,42 @@ def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
                              f"crosses no data, so an extern call to it is a no-op. Boundary inputs="
                              f"{sorted(boundary.inputs)}, outputs={sorted(boundary.outputs)}, "
                              f"symbols={sorted(boundary.symbols)}; source={c_source}")
-        objs.append(compile_object(backend_path, fp_mode, c_source, ext.name, vdir))
-        metas.append((ext.name, symbol, order))
+        emitted.append(EmittedNest(ext.name, c_source, symbol, order))
+    return emitted
+
+
+def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
+                           backend_name: str,
+                           backend_path: str,
+                           out_dir: Path,
+                           fp_mode: str = "ieee-strict",
+                           emitted: Optional[List[EmittedNest]] = None) -> Dict[str, NestVariant]:
+    """Compile every nest of a lowered program with ONE backend and link them into a single shared lib.
+
+    ``calls`` is the ``[(ExternalCall, Boundary)]`` from :func:`lower_nests_to_external_call`. Each nest is
+    compiled to an object with ``backend_path`` at ``fp_mode``, then all objects are linked into one shared
+    lib (:func:`~nestforge.arena.link_shared`) -- one ``.so`` per backend so ``ExternLibEnv`` links a single
+    library (M0), and a ``.so`` resolves at load regardless of the parent's link order. Returns nest-name ->
+    :class:`NestVariant`, all pointing at that one lib with their own extern-C symbol + ABI order.
+
+    ``emitted`` is the rung's shared C, from :func:`emit_nest_sources`; ``None`` emits it here."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    emitted = emit_nest_sources(calls, out_dir) if emitted is None else emitted
+    objs = [compile_object(backend_path, fp_mode, e.c_source, e.name, out_dir / e.name) for e in emitted]
     lib = link_shared(objs, backend_name, out_dir, backend_path)
-    return {name: NestVariant(str(lib), symbol, order) for name, symbol, order in metas}
+    return {e.name: NestVariant(str(lib), e.symbol, e.order) for e in emitted}
+
+
+def lower_rung(canonical: "object", point: GranularityPoint,
+               unit: str) -> Tuple["object", List[Tuple[ExternalCall, Boundary]]]:
+    """The granularity-applied program and its nests: the backend-invariant half of a cell.
+
+    Lowering is deterministic, so the nest names match the copy :func:`measure_in_context` lowers
+    internally."""
+    sdfg = copy.deepcopy(canonical)
+    point.apply(sdfg)  # P1: mutate to this partition
+    sdfg.validate()
+    return sdfg, lower_nests_to_external_call(copy.deepcopy(sdfg), unit)
 
 
 def run_e1_cell(kernel: tsvc.TsvcKernel,
@@ -103,27 +136,24 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
                 reps: int = 7,
                 canonical: Optional["object"] = None,
                 preset: str = "S",
-                seed: int = 0) -> E1Cell:
+                seed: int = 0,
+                emitted: Optional[List[EmittedNest]] = None) -> E1Cell:
     """Measure one (kernel, backend, granularity) heatmap cell.
 
-    Lowers the granularity-applied canonical program to find its nests (deterministic, so the nest names
-    match the copy :func:`measure_in_context` lowers internally), builds a per-backend archive for them, and
-    swaps every nest to that backend before timing the whole program in context."""
+    Lowers the granularity-applied canonical program to find its nests, builds a per-backend archive for
+    them, and swaps every nest to that backend before timing the whole program in context.
+
+    ``canonical`` is the kernel's P0 program and ``emitted`` the rung's C: both are backend-invariant, so
+    the sweep builds each once and shares it across the cells that differ only by backend."""
     out_dir = Path(out_dir)
-    # ``canonical`` is the kernel's P0 program, built ONCE by the sweep and shared across its cells. Each
-    # cell mutates its own copy (point.apply), and a deepcopy is ~195x cheaper than re-canonicalizing
-    # (1.5 ms vs 299 ms measured), so rebuilding per cell was almost pure waste.
-    sdfg = copy.deepcopy(canonical) if canonical is not None else tsvc.build_sdfg(kernel, opt_mode)
-    point.apply(sdfg)  # P1: mutate to this partition
-    sdfg.validate()
-    calls = lower_nests_to_external_call(copy.deepcopy(sdfg), unit)
+    sdfg, calls = lower_rung(canonical if canonical is not None else tsvc.build_sdfg(kernel, opt_mode), point, unit)
     if not calls:
         # No nest at this unit (e.g. unit='cfg' on a kernel with no LoopRegion). Measuring anyway would time
         # the all-reference program under a backend label -- identical for every backend, because no backend
         # compiled anything -- fabricating "backend-independent" heatmap data. Record it as a skip instead.
         return E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False,
                       f"no {unit!r} nest to offload at granularity {point.name!r}")
-    variants = build_backend_variants(calls, backend_name, backend_path, out_dir / "variants")
+    variants = build_backend_variants(calls, backend_name, backend_path, out_dir / "variants", emitted=emitted)
     res = measure_in_context(
         kernel,
         out_dir / "ctx",
@@ -175,9 +205,24 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
             for backend_name in backends:
                 cells.append(E1Cell(kernel.key, backend_name, "-", unit, float("inf"), False, repr(e)))
             continue
-        for backend_name, backend_path in backends.items():
-            for point in ladder:
+        # Rung OUTSIDE, backend inside: the rung's C is what every backend compiles, and emitting it costs a
+        # subprocess (~130 ms per nest, measured) against a ~50 ms compile. Emitting per cell re-rendered
+        # identical text once per backend.
+        for point in ladder:
+            rung_dir = out_dir / kernel.key / point.name / "nests"
+            emitted, rung_error = None, None
+            try:
+                _, calls = lower_rung(canonical, point, unit)
+                emitted = emit_nest_sources(calls, rung_dir) if calls else None
+            except caught as e:
+                # The rung failed to lower or emit: it fails identically for every backend, so it is
+                # recorded on each of its cells rather than rediscovered once per backend.
+                rung_error = repr(e)
+            for backend_name, backend_path in backends.items():
                 cell_dir = out_dir / kernel.key / backend_name / point.name
+                if rung_error is not None:
+                    cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, rung_error))
+                    continue
                 try:
                     cells.append(
                         run_e1_cell(kernel,
@@ -190,9 +235,18 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
                                     reps,
                                     canonical=canonical,
                                     preset=preset,
-                                    seed=seed))
+                                    seed=seed,
+                                    emitted=emitted))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
+                finally:
+                    # A cell's build tree is scratch: its only product is the E1Cell just recorded, and the
+                    # failure reason travels in the cell, not on disk. Measured ~168 KB per cell, so a full
+                    # corpus sweep would otherwise leave ~220 MB behind -- and nothing can put that scratch
+                    # on a memory-backed filesystem until it is bounded. The sweep deletes what the sweep
+                    # created; run_e1_cell keeps whatever directory its caller passed.
+                    shutil.rmtree(cell_dir, ignore_errors=True)
+            shutil.rmtree(rung_dir, ignore_errors=True)
     return cells
 
 
