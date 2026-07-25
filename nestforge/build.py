@@ -834,7 +834,10 @@ def set_fast_libnodes(sdfg: dace.SDFG) -> None:
 def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[Path, float]:
     """Compile the generated frame into ``lib<name>.so``; return (path, toolchain wall_seconds only).
     Two link modes: ``link_external=False`` (monolithic, single TU) or ``=True`` (archive to a static
-    ``.a`` then link via ``--whole-archive``); see the branches below."""
+    ``.a`` then link via ``--whole-archive``); see the branches below.
+
+    Compiling and linking are always separate commands: a compile is cacheable, a link is not, and ccache
+    declines any command that does both."""
     compiler = opts.compiler
     flags = opts.resolved_flags()
     inc = include_flags(folder)
@@ -851,17 +854,16 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     cflags = [f for f in flags if f != "-shared"]  # -shared is a link-only flag; drop it for any -c step
     obj = folder / f"{name}.o"
     lto_f = ["-flto"] if opts.lto else []
+    ld = fastest_linker(compiler)  # probe before the clock: a linker choice is not toolchain work
 
-    if not opts.link_external and not opts.openmp:
-        # no mandated runtime: one compile+link command is safe (nothing for a second runtime to sneak in)
-        # libs go AFTER the source: ld resolves left-to-right, a -l before the object contributes nothing
-        cmd = [*cc, compiler, *flags, *lto_f, *vec_c, *inc, str(frame), "-o", str(so), *vec_l, *blas_l, *extra_l]
-        t0 = time.perf_counter()
-        run(cmd)
-    elif not opts.link_external:
-        # mandated runtime: split compile from link so ONLY that runtime is linked (gnu dual-runtime trap)
+    if not opts.link_external:
+        # libs go AFTER the object: ld resolves left-to-right, a -l before it contributes nothing
         compile_cmd = [*cc, compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
-        link_cmd = [compiler, "-shared", *cflags, *lto_f, str(obj), *omp_l, *vec_l, *blas_l, *extra_l, "-o", str(so)]
+        link_cmd = [
+            compiler, "-shared", *cflags, *lto_f, *ld,
+            str(obj), *omp_l, *vec_l, *blas_l, *extra_l, "-o",
+            str(so)
+        ]
         t0 = time.perf_counter()
         run(compile_cmd)
         run(link_cmd)
@@ -870,7 +872,6 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
         # stale-archive cleanup) BEFORE the clock starts, so compile_seconds is compile+archive+link only
         lto_c = fat_lto_flags(compiler) if opts.lto else []
         ar = ar_for(compiler)
-        ld = fastest_linker(compiler)
         archive = folder / f"lib{name}_nest.a"
         if archive.exists():
             archive.unlink()  # ar r APPENDS; start clean so a rebuild doesn't stack stale members
