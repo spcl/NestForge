@@ -282,6 +282,13 @@ def no_granularity_axis(cells: Sequence[E1Cell]) -> List[str]:
     """The ``kernel | backend`` keys excluded from the C1 read-off because fewer than two granularity rungs
     validated -- either the kernel has no partition to choose (a one-rung ladder) or every other rung
     failed. Reported alongside the table so a sweep that measured no granularity axis at all cannot read
-    as a confirmed result."""
-    return sorted(f"{kernel} | {backend}" for (kernel, backend), rungs in measured_rungs(cells).items()
-                  if len(rungs) < 2)
+    as a confirmed result.
+
+    Enumerated over every (kernel, backend) the sweep ATTEMPTED, not over the ones that measured:
+    :func:`measured_rungs` keys itself off validated cells only, so a pair whose every rung failed was
+    absent from it entirely and therefore appeared in neither table. Measured on s221, whose six cells all
+    failed with the same lowering error: the exclusion list came back empty while the kernel silently
+    vanished from the read-off -- the exact "reads as a null result" failure this list exists to prevent."""
+    attempted = dict.fromkeys((c.kernel, c.backend) for c in cells)  # ordered, deduped
+    rungs = measured_rungs(cells)
+    return sorted(f"{kernel} | {backend}" for kernel, backend in attempted if len(rungs.get((kernel, backend), {})) < 2)

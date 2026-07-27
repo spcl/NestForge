@@ -145,8 +145,15 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
                                  opts=build.BuildOptions(extra_link=variant_link_args(variants)))
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)
-        outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
-        if outs:
+        # NOT `if o in vbuf`: an output the lowering renamed or dropped would leave the comparison set
+        # silently narrower than the boundary, and a miscompile confined to that output would still read
+        # ok=True as long as the survivors matched. Missing means the run did not produce what the
+        # boundary declares, which is a failure, not a smaller comparison.
+        missing = [o for o in boundary.outputs if o not in vbuf]
+        outs = {} if missing else {o: vbuf[o] for o in boundary.outputs}
+        if missing:
+            verdict = {"ok": False, "maxdiff": float("inf"), "error": f"outputs absent from the run: {sorted(missing)}"}
+        elif outs:
             ref = {o: oracle[o] for o in outs}
             # Report the ABSOLUTE difference (that is what a reader of ContextResult.maxdiff expects), but
             # GATE on the scaled one -- an absolute gate is unreachable for a reduction, see

@@ -277,14 +277,16 @@ def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
     so a NaN-poisoned kernel would report 0.0 and win the arena.
     """
     worst = 0.0
+    compared = False
     for k in a:
         if not a[k].size:
             continue
+        compared = True
         d = float(np.max(np.abs(a[k] - b[k])))
         if not np.isfinite(d):
             return float("inf")
         worst = max(worst, d)
-    return worst
+    return worst if compared else float("inf")  # a verdict read off zero elements is not a match
 
 
 def diff_stats(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> Tuple[float, float]:
@@ -292,9 +294,11 @@ def diff_stats(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> Tuple[floa
     :func:`relative_maxdiff` each recomputing ``np.abs(a[k] - b[k])`` separately. Same semantics as calling
     both (NaN/Inf still map to ``inf`` in both slots); use this wherever a caller needs both numbers."""
     worst_abs, worst_rel = 0.0, 0.0
+    compared = False
     for k in a:
         if not a[k].size:
             continue
+        compared = True
         diff = np.abs(a[k] - b[k])
         d_abs = float(np.max(diff))
         if not np.isfinite(d_abs):
@@ -306,6 +310,11 @@ def diff_stats(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> Tuple[floa
             return float("inf"), float("inf")
         worst_abs = max(worst_abs, d_abs)
         worst_rel = max(worst_rel, d_rel)
+    if not compared:
+        # Every array was zero-size, so the loop body never ran and 0.0 would be returned as "bit-exact"
+        # from a comparison that touched no element. Skipping an individual empty array is fine; a verdict
+        # read off nothing is not, and the gate is <= atol, so it must fail loudly.
+        return float("inf"), float("inf")
     return worst_abs, worst_rel
 
 
@@ -319,9 +328,11 @@ def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> floa
     real miscompile (far more than a few ULP) is still caught. NaN/Inf still fail.
     """
     worst = 0.0
+    compared = False
     for k in a:
         if not a[k].size:
             continue
+        compared = True
         scale = np.maximum(np.maximum(np.abs(a[k]), np.abs(b[k])), 1.0)
         with np.errstate(invalid="ignore"):  # inf/inf -> nan, which is a FAILURE, not a warning
             d = float(np.max(np.abs(a[k] - b[k]) / scale))
@@ -329,7 +340,7 @@ def relative_maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> floa
         if not np.isfinite(d):
             return float("inf")
         worst = max(worst, d)
-    return worst
+    return worst if compared else float("inf")  # a verdict read off zero elements is not a match
 
 
 @dataclass(slots=True)

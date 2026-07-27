@@ -209,9 +209,14 @@ def summarize(kernel: str, backend: str, schedulable: bool, reason: str, coarses
                      "no granularity rung measured")
     best = min(valid, key=valid.get)
     base_us = valid.get(coarsest, float("inf"))
-    usable = 0.0 < base_us < float("inf")
+    # BOTH sides of the ratio are bounds-checked. Guarding only the numerator left a zero-valued winning
+    # rung to raise ZeroDivisionError here, and summarize() is called outside the per-point try, so one
+    # degenerate timing aborted the whole run_experiments invocation instead of skipping one row.
+    usable = 0.0 < base_us < float("inf") and 0.0 < valid[best] < float("inf")
     speedup = base_us / valid[best] if usable else 0.0
-    error = None if usable else f"coarsest rung {coarsest!r} did not measure; no baseline to divide by"
+    error = None if usable else (
+        f"coarsest rung {coarsest!r} did not measure; no baseline to divide by"
+        if not 0.0 < base_us < float("inf") else f"winning rung {best!r} measured {valid[best]}; nothing to divide by")
     return E5Row(kernel, backend, schedulable, reason, best, valid[best], coarsest, base_us, speedup, usable, error)
 
 

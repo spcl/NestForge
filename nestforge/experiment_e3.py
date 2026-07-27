@@ -97,12 +97,34 @@ def granularity_curve(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], List[Tup
 def best_unit_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]:
     """The C3 read-off: for each (kernel, backend), the offloading unit with the fastest valid time. A
     finest-unit win supports fine-grained externalization; a coarsest-unit win is the boundary cost
-    dominating, which is the same claim measured from the other side."""
-    best: Dict[Tuple[str, str], Tuple[float, str]] = {}
+    dominating, which is the same claim measured from the other side.
+
+    A (kernel, backend) with only ONE validated unit is EXCLUDED, for the reason
+    :func:`~nestforge.experiment_e1.best_granularity_per_backend` excludes a one-rung ladder: a kernel with
+    no LoopRegion fails 'cfg', a kernel with no compute-bearing state boundary fails 'state', and the
+    surviving 'map' cell is then the argmin of a set of one -- reported identically to a genuine three-way
+    comparison. :func:`no_unit_axis` lists what was left out."""
+    measured = units_measured(cells)
+    return {key: min(units, key=units.__getitem__) for key, units in measured.items() if len(units) > 1}
+
+
+def units_measured(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """``(kernel, backend) -> {unit: median_us}`` over the cells that validated."""
+    grouped: Dict[Tuple[str, str], Dict[str, float]] = {}
     for c in cells:
         if not c.ok:
             continue
-        key = (c.kernel, c.backend)
-        if key not in best or c.median_us < best[key][0]:
-            best[key] = (c.median_us, c.unit)
-    return {key: unit for key, (_us, unit) in best.items()}
+        units = grouped.setdefault((c.kernel, c.backend), {})
+        if c.unit not in units or c.median_us < units[c.unit]:
+            units[c.unit] = c.median_us
+    return grouped
+
+
+def no_unit_axis(cells: Sequence[E1Cell]) -> List[str]:
+    """The ``kernel | backend`` keys excluded from the C3 read-off because fewer than two offloading units
+    validated. Enumerated over every pair the sweep ATTEMPTED, so a pair whose every unit failed is listed
+    rather than vanishing from both tables."""
+    attempted = dict.fromkeys((c.kernel, c.backend) for c in cells)  # ordered, deduped
+    measured = units_measured(cells)
+    return sorted(f"{kernel} | {backend}" for kernel, backend in attempted
+                  if len(measured.get((kernel, backend), {})) < 2)
