@@ -355,6 +355,25 @@ def test_a_descending_range_covers_its_last_element():
     assert list(range(7, stop, -1)) == [7, 6, 5, 4, 3, 2, 1, 0], "element 0 must not be dropped"
 
 
+@pytest.mark.parametrize("rng, want", [
+    ((7, 0, -1), list(range(7, -1, -1))),
+    ((7, 2, -1), [7, 6, 5, 4, 3, 2]),
+    ((0, 7, 1), list(range(8))),
+    ((1, 7, 2), [1, 3, 5, 7]),
+])
+def test_index_str_slices_a_descending_range_to_its_last_element(rng, want):
+    """A numpy SLICE reads a negative stop as "count back from the end", not as its arithmetic value, so
+    the `end + sign` stop that is correct for `range()` renders `A[7:-1:-1]` -- which selects NOTHING.
+    A full reversal emitted a silent no-op (or a broadcast error against an ascending destination), in the
+    numpy ORACLE that every bit-exactness verdict is compared against.
+
+    Enumerated against real numpy rather than by re-deriving the formula: the formula was the bug."""
+    from nestforge.emit_libnode import index_str
+    a = np.arange(8)
+    got = eval(f"a[{index_str(dace.subsets.Range([rng]))}]", {"a": a})
+    assert list(np.atleast_1d(got)) == want
+
+
 def test_range_stop_refuses_a_step_of_unknown_sign():
     """No sound stop exists without a direction; guessing one silently drops or over-runs elements."""
     from nestforge.emit_numpy import UnsupportedNest, range_stop

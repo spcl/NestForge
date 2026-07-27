@@ -45,7 +45,16 @@ def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
             if stop is None:
                 raise UnsupportedLibraryNode(f"subset range ({beg}, {end}, {step}) has a step of undecidable sign; "
                                              "no sound numpy slice stop")
-            parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(stop)}:{symbolic.symstr(step)}")
+            # A numpy SLICE reads a negative stop as "count back from the end", not as its arithmetic value:
+            # `A[7:-1:-1]` selects NOTHING, so a full reversal emits a silent no-op (or a broadcast error
+            # when the destination is ascending). Omitting the stop is the only way to spell "run to the
+            # start of the axis". `range()` has no such rule, which is why emit_numpy.range_stop -- the same
+            # end+sign arithmetic -- is correct as it stands. Indices are nonnegative, so a descending stop
+            # is ``end - 1 >= -1``: exactly -1 is the whole negative case.
+            if symbolic.symstr(stop) == "-1":
+                parts.append(f"{symbolic.symstr(beg)}::{symbolic.symstr(step)}")
+            else:
+                parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(stop)}:{symbolic.symstr(step)}")
     return ", ".join(parts)
 
 

@@ -19,6 +19,7 @@ import dace as dc
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
+from nestforge.isolation import run_isolated
 from nestforge.normalize import (WRAP_PARAM, block_kind, free_tasklets, in_order, inline_top_level_nsdfgs,
                                  normalize_for_tree, rename_map_params, rename_transient_data, top_level_nsdfgs,
                                  wrap_free_tasklets, wrap_groups)
@@ -380,6 +381,57 @@ def test_map_params_are_canonical():
         if WRAP_PARAM in entry.map.params:
             continue
         assert entry.map.params == [f"i{axis}" for axis in range(len(entry.map.params))]
+
+
+#: Square extent for the param-shadowing fixtures. Tiny: the property under test is which SYMBOL each
+#: index position ends up carrying, which a 4x4 shows exactly as well as a 4096x4096.
+MAP_N = 4
+
+
+@dc.program
+def swapped_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
+    # params ['i1','i0'] -- a full permutation of the names rename_map_params renames TO
+    for i1, i0 in dc.map[0:MAP_N, 0:MAP_N]:
+        B[i1, i0] = A[i1, i0] * 2.0
+
+
+@dc.program
+def shadowing_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
+    # params ['j','i0'] -- param 0's TARGET (i0) is param 1's current name: a partial overlap
+    for j, i0 in dc.map[0:MAP_N, 0:MAP_N]:
+        B[j, i0] = A[j, i0] * 2.0
+
+
+@pytest.mark.parametrize("program", [swapped_map_params, shadowing_map_params], ids=["permutation", "partial"])
+def test_renaming_params_that_shadow_their_targets_preserves_values(program):
+    """Renaming pair by pair collapses two index positions onto ONE symbol whenever a later param already
+    holds an earlier param's target name: ``['i1','i0']`` rewrote ``A[i1,i0]`` to ``A[i0,i0]`` and then to
+    ``A[i1,i1]``, so the map wrote only its diagonal -- ``validate()`` clean, no exception, 12 of 16
+    elements silently left at zero. normalize itself emits ``i0,i1,...``, so any later move that permutes
+    or merges params walks into it.
+
+    Values, not the params list: :func:`test_map_params_are_canonical` asserts that list and cannot see
+    this, because the list is force-set after the rename and reads correct in the broken pass too."""
+    sdfg = program.to_sdfg(simplify=True)
+    entry = next(e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params)
+    params = list(entry.map.params)
+    wanted = [f"i{axis}" for axis in range(len(params))]
+    # Without a genuine shadow the fixture takes the safe path and the assertions below prove nothing.
+    assert any(p in wanted and p != w for p, w in zip(params, wanted)), \
+        f"fixture params {params} do not shadow the rename targets {wanted}; the test would be vacuous"
+
+    rename_map_params(sdfg)
+
+    def work():
+        a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))  # copy: dace bars a view
+        b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
+        sdfg(A=a, B=b)
+        return {"got": b.tolist(), "want": (a * 2.0).tolist()}
+
+    res = run_isolated(work, timeout=300)
+    assert "error" not in res, res["error"]
+    assert entry.map.params == wanted
+    np.testing.assert_allclose(res["got"], res["want"])
 
 
 def test_renaming_nothing_changes_nothing():

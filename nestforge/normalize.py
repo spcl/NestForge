@@ -41,6 +41,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import dace
 from dace import data as dt
 from dace.sdfg import nodes
+from dace.sdfg.replace import replace_dict
 from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowBlock, ControlFlowRegion,
                              LoopRegion, ReturnBlock, SDFGState)
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
@@ -317,10 +318,14 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
             wanted = [f"i{axis}" for axis in range(len(node.map.params))]
             if node.map.params == wanted:
                 continue
-            subgraph = state.scope_subgraph(node)
-            for old, new in zip(list(node.map.params), wanted):
-                if old != new:
-                    subgraph.replace(old, new)
+            renames = {old: new for old, new in zip(node.map.params, wanted) if old != new}
+            # ONE simultaneous substitution, the same discipline as rename_transient_data. A rename per
+            # pair collapses two index positions onto one symbol whenever a LATER param already holds an
+            # EARLIER param's target name: ['i1','i0'] renames i1->i0 (body now reads A[i0,i0]) and then
+            # i0->i1 (A[i1,i1]), so the map writes only its diagonal. ['j','i0'] does the same. Both
+            # validate clean and produce a silent wrong answer -- normalize itself emits i0,i1,..., so any
+            # later move that permutes or merges params walks straight into it.
+            replace_dict(state.scope_subgraph(node), renames)
             node.map.params = wanted
 
 
