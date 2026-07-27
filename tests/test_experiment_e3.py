@@ -82,11 +82,20 @@ def test_run_e3_sweeps_the_offload_axis_bounded(tmp_path):
     # the real thing: one kernel across the unit axis, every valid cell bit-exact against the oracle.
     backends = discover_compilers()
     assert backends, "need gcc/clang on PATH"
-    cells = run_e3([kernel()], tmp_path, units=("cfg", "map"), reps=3)
-    assert len(cells) == len(backends) * 2
-    # 'cfg' selects no nest on this flat kernel -> a recorded skip; 'map' must measure for every backend.
+    cells = run_e3([kernel()], tmp_path, units=OFFLOAD_UNITS, reps=3)
+    assert len(cells) == len(backends) * len(OFFLOAD_UNITS)
+    # 'cfg' selects no nest on this flat kernel -> a recorded skip; 'state' and 'map' must both measure for
+    # every backend. Two validated units is the point: best_by EXCLUDES a pair with one, so a sweep
+    # restricted to ('cfg', 'map') here would leave the read-off empty and assert nothing about the argmin.
     measured = [c for c in cells if c.ok]
-    assert {c.unit for c in measured} == {"map"}
+    assert {c.unit for c in measured} == {"state", "map"}
     assert {c.backend for c in measured} == set(backends)
     assert all(c.median_us < float("inf") for c in measured)
-    assert set(best_unit_per_backend(cells).values()) == {"map"}
+    assert [c.error for c in cells
+            if c.unit == "cfg"] == ["no 'cfg' nest to offload at granularity 'atoms'"] * len(backends)
+    # WHICH unit wins is the C3 finding and moves with the backend (gcc and clang disagree on this kernel),
+    # so pin the read-off's shape -- a verdict per backend, drawn from the units that actually measured --
+    # not a fixed winner.
+    best = best_unit_per_backend(cells)
+    assert set(best) == {("two_map", b) for b in backends}
+    assert set(best.values()) <= {"state", "map"}

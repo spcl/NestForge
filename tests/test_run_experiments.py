@@ -114,12 +114,22 @@ def test_bounded_run_produces_real_measurements_not_just_rows(tmp_path):
 def test_e2_alone_still_measures_a_search_side(tmp_path):
     # E2 divides a search time by a baseline; asking for it alone must still sweep the search axis rather
     # than emitting a table of bare baselines.
+    #
+    # NAMED, not the corpus head, for the reason its sibling above gives -- and now doubly so: the default
+    # corpus is hpcagent_bench, whose head is `argmax_value`, a conditional reduction with no map and so no
+    # granularity axis at all. `--kernels 1` therefore asserted a measured search side against a kernel that
+    # can never have one, and read as an E2 regression rather than a corpus-head change.
+    #
+    # s212, not the sibling's s221: foundation's s221 fails every rung with
+    # InvalidSDFGNodeError('Isolated node'), so it has no valid search cell either. The sibling stays green
+    # on it only because s212 measures alongside.
     rc = main(
         ["--out",
-         str(tmp_path), "--kernels", "1", "--granularity-points", "2", "--reps", "3", "--experiments", "e2"])
+         str(tmp_path), "--only", "s212", "--granularity-points", "2", "--reps", "3", "--experiments", "e2"])
     assert rc == 0
     payload = json.loads((tmp_path / "e2.json").read_text())
     assert payload["rows"]
+    assert payload["search_cells_from"] == ["e1-fallback"]  # e2 alone must MEASURE a search side, not skip it
     assert any(r["search_us"] not in ("inf", None) for r in payload["rows"])
 
 
