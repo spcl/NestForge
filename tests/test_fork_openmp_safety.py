@@ -89,10 +89,21 @@ def build(tmp_path, runtime):
     return so
 
 
-def call_kernel(so, n=N):
+#: Worker threads the poisoning region must bring up. Pinned through omp_set_num_threads rather than left
+#: to the environment: the repo's standard test prefix exports OMP_NUM_THREADS=1, under which libgomp
+#: spawns no workers at all -- there is then no pool to deadlock a forked child on and none to tear down,
+#: so every regression in this file passes VACUOUSLY and the 900s-hang guarantee is silently unpinned.
+POOL_THREADS = min(4, os.cpu_count() or 1)
+
+
+def call_kernel(so, n=N, threads=POOL_THREADS):
     """Enter an OpenMP parallel region. Used for BOTH the parent's poisoning and the child's work, so
     the two differ only in which side of the fork they run on."""
     lib = ctypes.CDLL(str(so))
+    # resolves through the .so's DT_NEEDED runtime; overrides OMP_NUM_THREADS for this thread
+    lib.omp_set_num_threads.argtypes = [ctypes.c_int]
+    lib.omp_set_num_threads.restype = None
+    lib.omp_set_num_threads(threads)
     lib.kern.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
     lib.kern.restype = None
     a = np.zeros(n)
@@ -191,8 +202,11 @@ def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
     survival cannot be isolated from libgomp's drop, so TEARS_DOWN_POOL only documents it."""
     assert TEARS_DOWN_POOL[("gomp", "soft")], "the default cell must be a genuine tear-down"
     so = build(tmp_path, "gomp")
-    call_kernel(so)  # poison: libgomp's pool is now a thread per core
+    call_kernel(so)  # poison: libgomp's pool is now POOL_THREADS deep
     busy = thread_count()
+    # A pool that never came up makes "the count dropped" unfalsifiable, and the drop is the ONLY direct
+    # observable of tear-down -- assert the precondition rather than let the test pass on an empty pool.
+    assert busy > 1, f"the poisoning region brought up no worker threads (count {busy}); nothing to tear down"
     assert thread_count() == busy, "the thread count moved with no pause -- the measurement is not stable"
     pause_openmp_pools()  # default mode is soft (asserted separately)
     assert thread_count() < busy, f"(gomp, soft): pool NOT torn down, thread count stayed at {busy}"

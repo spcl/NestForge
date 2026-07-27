@@ -345,9 +345,13 @@ class CountingArray(np.ndarray):
 
 
 class FakeBoundary:
+    """Both halves of :class:`nestforge.extract.Boundary` that call_c reads. ``inputs`` is not optional
+    padding: their INTERSECTION with ``outputs`` is what call_c restores between timed reps, so a fixture
+    carrying only ``outputs`` cannot express an in-place kernel at all."""
 
-    def __init__(self, outputs):
+    def __init__(self, outputs, inputs=()):
         self.outputs = outputs
+        self.inputs = list(inputs)
 
 
 class FakeKernel:
@@ -362,16 +366,18 @@ class FakeKernel:
         self.calls += 1
 
 
-def call_c_on_stub(monkeypatch, reps, **kw):
+def call_c_on_stub(monkeypatch, reps, read_write=False, **kw):
     """Drive harness.call_c against a stubbed .so -- the ABI marshalling is real, only the compiled entry
-    is faked, so no compiler/toolchain is needed."""
+    is faked, so no compiler/toolchain is needed. ``read_write`` marks ``a`` as an in-place buffer (read AND
+    written), the case whose per-rep restore decides what the timing measures."""
     fn = FakeKernel()
     monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
     buf = np.zeros(4, dtype=np.float64).view(CountingArray)
     inputs = {"a": buf}
     argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int64]
-    out, us = harness.call_c(Path("stub.so"), "k_fp64", ["a", "LEN_1D"], argtypes, FakeBoundary(["a"]), inputs,
-                             {"LEN_1D": 4}, reps, **kw)
+    boundary = FakeBoundary(["a"], inputs=["a"] if read_write else [])
+    out, us = harness.call_c(Path("stub.so"), "k_fp64", ["a", "LEN_1D"], argtypes, boundary, inputs, {"LEN_1D": 4},
+                             reps, **kw)
     return out, us, buf, fn
 
 
@@ -387,3 +393,39 @@ def test_call_c_snapshots_outputs_by_default(monkeypatch):
     # The validate path still needs the post-correctness-run values, snapshotted before timing mutates them.
     out, _, buf, _ = call_c_on_stub(monkeypatch, reps=1)
     assert set(out) == {"a"} and buf.copies == 1
+
+
+def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
+    """An array that is both read and written must start each timed rep from the same values. Without the
+    restore an in-place kernel times ``a * b**k`` -- denormal arithmetic by a handful of reps -- and the
+    ranking E1 reads off granularity rungs becomes "which candidate decayed slower"."""
+    restored = []
+    fn = FakeKernel()
+    monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
+    buf = np.zeros(4, dtype=np.float64)
+
+    class Recorder(np.ndarray):
+        """Records what the restore writes back, so the assertion is on VALUES, not on a copy count."""
+
+        def __setitem__(self, key, value):
+            restored.append(np.asarray(value).copy())
+            super().__setitem__(key, value)
+
+    inputs = {"a": buf.view(Recorder)}
+    inputs["a"][...] = 0.25  # the pristine values the restore must reinstate
+    restored.clear()
+    harness.call_c(Path("stub.so"),
+                   "k_fp64", ["a", "LEN_1D"], [ctypes.POINTER(ctypes.c_double), ctypes.c_int64],
+                   FakeBoundary(["a"], inputs=["a"]),
+                   inputs, {"LEN_1D": 4},
+                   reps=3)
+    assert len(restored) == 3, f"expected one restore per rep, saw {len(restored)}"
+    for values in restored:
+        np.testing.assert_array_equal(values, np.full(4, 0.25))
+
+
+def test_call_c_does_not_restore_a_write_only_buffer(monkeypatch):
+    """A fully-overwritten output cannot accumulate, so it must NOT be snapshotted: at the profiling preset
+    a blanket copy of every output doubles the forked child's peak RSS for nothing."""
+    _, _, buf, _ = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
+    assert buf.copies == 0
