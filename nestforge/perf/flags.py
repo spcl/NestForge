@@ -188,7 +188,7 @@ def reduced_fp_flags(family: str, mode: str, lang: str = "c") -> List[str]:
     return flags
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``compiler`` accepts ``probe_flags`` on a trivial COMPILE-ONLY invocation. Necessary but
     not sufficient -- a back end can accept a flag and do nothing (see :func:`autopar_fires`). ``-c``
@@ -210,7 +210,7 @@ def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
 _AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def autopar_fires(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
     """True if ``probe_flags`` make ``compiler`` actually EMIT a parallel loop (``nm -u`` for the fork
     call), not merely accept it: Ubuntu clang 21 parses ``-mllvm -polly`` but schedules no Polly passes,
@@ -279,7 +279,7 @@ def omp_emit_flags(family: str) -> List[str]:
 SUPPORT_LIB_PROBE = "svml"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
     """``-Wl,-rpath`` for the compiler's own auto-linked support libraries, or ``()`` when it has none.
     NOT the OpenMP runtime's directory -- an icx cell rpathing only the libomp dir links but dies at
@@ -288,7 +288,7 @@ def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
     return ("-Wl,-rpath,%s" % found.parent, ) if found else ()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def runtime_dir(soname: str, compiler: str) -> Optional[str]:
     """Directory for BOTH ``-L`` and ``-Wl,-rpath``, or ``None`` when neither is needed. Asks the LINKING
     compiler first, widening only if it doesn't know: resolving availability and ``-L`` through different

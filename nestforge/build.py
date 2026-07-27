@@ -214,7 +214,7 @@ def driver_search_dirs(compiler: str) -> List[str]:
 _LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def ldconfig_output() -> str:
     """``ldconfig -p``, or ``""``. sbin is off the non-root PATH on slim images, so try the full paths
     too -- a bare ``ldconfig`` there silently reports an EMPTY loader cache."""
@@ -534,7 +534,7 @@ def vectorized_via(veclib: str, obj_path: str) -> bool:
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def dace_runtime_include() -> Path:
     """The ``-I`` directory holding DaCe's runtime headers (``dace/runtime/include``)."""
     inc = Path(dace.__file__).parent / "runtime" / "include"
@@ -862,7 +862,7 @@ def ccache_prefix(use_ccache: Optional[bool]) -> List[str]:
     return ["ccache"] if ccache_available() else []
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=None, typed=True)
 def available_linkers() -> Dict[str, str]:
     """Fast alternative linkers installed, fastest first: name -> backing binary path. Default ``bfd``
     is not listed (always the fallback)."""

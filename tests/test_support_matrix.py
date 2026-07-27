@@ -6,7 +6,6 @@ synthetic cells; one integration test builds the real matrix on whatever compile
 """
 import json
 from dataclasses import asdict
-from types import SimpleNamespace
 
 import pytest
 

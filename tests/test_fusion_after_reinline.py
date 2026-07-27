@@ -8,7 +8,6 @@ maps the fusion arms can actually see. A NestedSDFG hides its maps from ``MapFus
 program that is never inlined fuses nothing -- and reports success while doing it.
 """
 import numpy as np
-import pytest
 
 import dace
 

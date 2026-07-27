@@ -34,15 +34,15 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
-import dace
-from dace import symbolic
+import dace  # noqa: E402
+from dace import symbolic  # noqa: E402
 
-from nestforge.corpus import iter_dace_kernels
-from nestforge.strategies import get_strategy
-from nestforge.extract import extract_nest_to_sdfg
-from nestforge.translate import prepare, emit_sources
-from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE
-from nestforge.tsvc import index_fills_for_manifest
+from nestforge.corpus import iter_dace_kernels  # noqa: E402
+from nestforge.strategies import get_strategy  # noqa: E402
+from nestforge.extract import extract_nest_to_sdfg  # noqa: E402
+from nestforge.translate import prepare, emit_sources  # noqa: E402
+from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE  # noqa: E402
+from nestforge.tsvc import index_fills_for_manifest  # noqa: E402
 
 # one compiler, one flag set -- the fixed operating point for the overhead comparison.
 FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]

@@ -32,8 +32,7 @@ import dace
 from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.state import (BreakBlock, ConditionalBlock, ContinueBlock, ControlFlowBlock, ControlFlowRegion,
-                             LoopRegion, ReturnBlock, SDFGState)
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
