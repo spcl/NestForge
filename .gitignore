@@ -24,3 +24,6 @@ id_ecdsa*
 *.p12
 *.pfx
 .cache/
+
+# Winner dataset (nestforge/dataset.py): append-only JSONL a sweep leaves behind. Job output, not source.
+.results/

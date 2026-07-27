@@ -73,6 +73,7 @@ from nestforge import vectorize_variants as vv
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
+from nestforge.dataset import WinnerRecord, fingerprint, nest_features, record_winner
 from nestforge.dedup import variant_key
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
@@ -902,8 +903,48 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
     }
 
 
-def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str, str], strategy: str, axes: Dict,
-               reps: int, profile_preset: str, nthreads: int, cxx_std: str, compile_jobs: int, workdir: Path) -> Dict:
+def record_nest_winner(kernel, nc: Dict, axis: str, cell: Dict, baseline_cells: List[Dict], compiler: str,
+                       dataset_dir: Optional[Path]) -> None:
+    """Append this nest's winning config to the dataset, so a sweep leaves behind what it learned and not
+    only what it printed. Never raises: the tables are the job's product, the dataset is a by-product."""
+    if not cell.get("ok") or not finite(cell.get("median_us", float("inf"))):
+        return  # a failed lane has no winner to learn from; the skip reason is already on the cell
+    base = next((b for b in baseline_cells if b.get("nest") == nc["nest_idx"] and b.get("ok")), None)
+    base_us = base.get("median_us") if base else None
+    base_us = base_us if finite(base_us if base_us is not None else float("inf")) else None
+    c_source = nc["lang_src"].get("c", (None, ))[0]
+    try:
+        record_winner(
+            WinnerRecord(kernel=kernel.key,
+                         corpus=kernel.corpus,
+                         nest=nc["nest_idx"],
+                         fingerprint=fingerprint(c_source),
+                         axis=axis,
+                         winner={
+                             k: v
+                             for k, v in cell.items() if k in ("vec_variant", "compiler", "codegen_impl")
+                         },
+                         median_us=float(cell["median_us"]),
+                         baseline_us=base_us,
+                         speedup=(base_us / cell["median_us"]) if base_us else None,
+                         features=nest_features(nc["boundary"].standalone_sdfg),
+                         compiler=compiler), dataset_dir)
+    except Exception as e:  # noqa: BLE001 -- a by-product must never take the sweep down
+        print(f"[tsvc-full] dataset record failed for {kernel.key} n{nc['nest_idx']}: {type(e).__name__}: {e}")
+
+
+def run_kernel(kernel,
+               toolchains: List[Toolchain],
+               fortran_by_family: Dict[str, str],
+               strategy: str,
+               axes: Dict,
+               reps: int,
+               profile_preset: str,
+               nthreads: int,
+               cxx_std: str,
+               compile_jobs: int,
+               workdir: Path,
+               dataset_dir: Optional[Path] = None) -> Dict:
     """Run all three lanes + the full lane-3 sweep for one kernel; return the JSON-able result."""
     result = {
         "key": kernel.key,
@@ -977,6 +1018,7 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
                                                      validate_fills=nc["validate_fills"])
                 vcell["nest"] = nc["nest_idx"]
                 dace_vec_cells.append(vcell)
+                record_nest_winner(kernel, nc, "vectorize", vcell, dace_cpp_cells, cxx_tc.name, dataset_dir)
             result["dace_cpp_vec"] = dace_vec_cells
 
     # Optional Pluto polyhedral lane: polycc transform of the emitted scop, one cell per nest. Opt-in
@@ -1440,9 +1482,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     for i, kernel in enumerate(mine):
         workdir = Path(tempfile.mkdtemp(prefix=f"nf_full_{kernel.corpus}_{kernel.key}_"))
         try:
-            res = run_kernel(kernel, toolchains, fortran_by_family, args.strategy, {
-                **axes, "opt_mode": None
-            }, args.reps, args.profile_preset, args.threads, args.cxx_std, args.compile_jobs, workdir)
+            res = run_kernel(kernel,
+                             toolchains,
+                             fortran_by_family,
+                             args.strategy, {
+                                 **axes, "opt_mode": None
+                             },
+                             args.reps,
+                             args.profile_preset,
+                             args.threads,
+                             args.cxx_std,
+                             args.compile_jobs,
+                             workdir,
+                             dataset_dir=out)
         except Exception as e:  # pragma: no cover - a kernel must never crash the whole rank
             res = {"key": kernel.key, "corpus": kernel.corpus, "skipped": f"crash: {type(e).__name__}: {str(e)[:160]}"}
         finally:
