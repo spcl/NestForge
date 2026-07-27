@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from nestforge import tsvc
+from nestforge.device_profile import device_profile
 from nestforge.build import DEFAULT_COMPILER, BuildOptions
 from nestforge.perf import flags
 
@@ -306,7 +307,6 @@ def device_veclibs(compiler: str) -> Tuple[str, ...]:
     a property of the hardware and the installed libraries, so searching it per cell multiplies the sweep
     by ``len(VECLIBS)`` only to re-derive one constant. Returns just ``("none",)`` when nothing is
     installed or compatible -- an empty axis, not a fabricated winner."""
-    from nestforge.device_profile import device_profile
     winner = next((p.name for p in device_profile(compiler).veclib_ranking if p.ok), None)
     return ("none", winner) if winner is not None else ("none", )
 

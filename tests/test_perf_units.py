@@ -450,3 +450,24 @@ def test_native_signature_does_not_eat_a_name_containing_const():
     into `_term`, binding the argument list one name out of step with the compiled signature."""
     sig = tsvc.native_signature('extern "C" void k_d(const double* const_term, int64_t LEN_1D)', "k_d")
     assert sig == [("const_term", "double", True), ("LEN_1D", "int64_t", False)]
+
+
+def test_family_of_only_ever_names_a_real_fp_family():
+    """`family_of` feeds `flags.fp_flags`/`base_flags`, which index the FP tables by family. A label it maps
+    to a family those tables do not have would KeyError mid-sweep -- or worse, `base_flags` would silently
+    fall back to `-march=native` and the cell would be measured under flags nobody chose."""
+    labels = ["gcc", "clang", "nvhpc", "intel", "some-future-toolchain"]
+    for label in labels:
+        assert crosslang_xl.family_of(label) in flags._FP, label
+        assert crosslang_xl.family_of(label) in flags._REDUCED_FP, label
+
+
+def test_the_two_family_vocabularies_stay_apart():
+    """build.compiler_family classifies an EXECUTABLE for its OpenMP ABI; family_of classifies a toolchain
+    LABEL for the FP tables. They are not interchangeable, and this pins the exact disagreement that makes
+    that true, so a future 'simplification' that collapses them fails here instead of in a sweep."""
+    from nestforge.build import compiler_family
+
+    assert compiler_family("icc") == "intel-classic" and compiler_family("icc") not in flags._FP
+    assert compiler_family("icx") == "llvm"  # an Intel compiler classified llvm: the ABI, not the FP family
+    assert crosslang_xl.family_of("intel") == "intel"

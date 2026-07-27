@@ -75,7 +75,7 @@ class VeclibProfile:
     packed_ops: Tuple[str, ...] = ()  # elementals the probe object provably calls through this library
 
 
-def _probe_source() -> str:
+def probe_source() -> str:
     """A standalone C probe: fill an array, apply a math-heavy expression, print ``<seconds> <max_ulp>``.
     The expression lives in ONE ``EXPR`` macro instantiated twice -- ``double`` (the veclib target) and
     ``long double`` (the accuracy reference) -- so both compute exactly the same thing and max-ULP measures
@@ -131,14 +131,14 @@ def probe_command(compiler: str, extra_flags: List[str], link_flags: List[str], 
     return [compiler, "-O3", "-march=native", *extra_flags, str(src), "-o", str(exe), *link_flags, "-lm"]
 
 
-def _run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: int) -> Optional[Tuple[float, float]]:
+def run_probe(compiler: str, extra_flags: List[str], link_flags: List[str], n: int) -> Optional[Tuple[float, float]]:
     """Compile the probe ONCE, run it :data:`PROBE_REPS` times, return ``(median seconds, worst ULP)`` --
     or ``None`` if the compile or any repetition fails, since a partly-working probe is not a result.
     The probe is a separate PROCESS (subprocess), so a crash never touches this one."""
     with tempfile.TemporaryDirectory(prefix="nf_veclib_") as d:
         src = Path(d) / "probe.c"
         exe = Path(d) / "probe"
-        src.write_text(_probe_source())
+        src.write_text(probe_source())
         cmd = probe_command(compiler, extra_flags, link_flags, src, exe)
         try:
             if subprocess.run(cmd, capture_output=True, text=True, timeout=120).returncode != 0:
@@ -169,7 +169,7 @@ def probe_packed_ops(compiler: str, veclib: str, compile_flags: List[str]) -> Tu
     with tempfile.TemporaryDirectory(prefix="nf_veclib_sym_") as d:
         src = Path(d) / "probe.c"
         obj = Path(d) / "probe.o"
-        src.write_text(_probe_source())
+        src.write_text(probe_source())
         cmd = [compiler, "-O3", "-march=native", *compile_flags, "-c", str(src), "-o", str(obj)]
         try:
             if subprocess.run(cmd, capture_output=True, text=True, timeout=120).returncode != 0:
@@ -210,8 +210,8 @@ def characterize_veclib(compiler: str, name: str, n: int = 4_000_000) -> VeclibP
     # Median of REPS, not one shot: the two libraries land within a few percent of each other, so a single
     # timing lets run-to-run noise pick the winner (measured: libmvec and sleef swapping places between
     # back-to-back runs).
-    scalar = _run_probe(compiler, [], [], n)
-    veclib = _run_probe(compiler, compile_flags, vl.link_flags(compiler), n)
+    scalar = run_probe(compiler, [], [], n)
+    veclib = run_probe(compiler, compile_flags, vl.link_flags(compiler), n)
     if scalar is None or veclib is None:
         return VeclibProfile(name, compiler, 0.0, 0.0, False, f"{name} probe failed to compile/run")
     scalar_s, _ = scalar

@@ -16,6 +16,7 @@ import sympy
 import dace
 from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
+from dace.libraries.standard.nodes.scan import ScanOp
 from dace.sdfg import nodes
 
 
@@ -401,7 +402,6 @@ def emit_scan(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     """Inclusive prefix scan -> ``np.cumsum``/``np.cumprod``/``np.maximum.accumulate``/``.minimum.``;
     connector ``_scan_in`` -> ``_scan_out``. Exclusive / seeded / strided scans have no direct numpy
     form and are refused."""
-    from dace.libraries.standard.nodes.scan import ScanOp
     red = {
         ScanOp.SUM: dace.dtypes.ReductionType.Sum,
         ScanOp.PRODUCT: dace.dtypes.ReductionType.Product,

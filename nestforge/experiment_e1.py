@@ -28,7 +28,7 @@ import copy
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import compile_object, discover_compilers, link_shared
@@ -267,17 +267,53 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
     return cells
 
 
-def measured_rungs(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
-    """``(kernel, backend) -> {granularity: median_us}`` over the cells that validated. The grouping both
-    read-offs below share."""
+def measured_by(cells: Sequence[E1Cell], axis: Callable[[E1Cell], str]) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """``(kernel, backend) -> {axis value: fastest validated median_us}``.
+
+    ``axis`` reads the swept coordinate off a cell -- ``granularity`` for E1's C1 read-off, ``unit`` for
+    E3's C3 one. The two experiments sweep different axes of the SAME cell and share every rule about
+    reading one off: only validated cells count, the fastest duplicate wins, and a coordinate with a single
+    measured value is not a preference. One implementation so a fix to any of those cannot land in one
+    experiment and miss the other."""
     grouped: Dict[Tuple[str, str], Dict[str, float]] = {}
     for c in cells:
         if not c.ok:
             continue
-        rungs = grouped.setdefault((c.kernel, c.backend), {})
-        if c.granularity not in rungs or c.median_us < rungs[c.granularity]:
-            rungs[c.granularity] = c.median_us
+        point = axis(c)
+        values = grouped.setdefault((c.kernel, c.backend), {})
+        if point not in values or c.median_us < values[point]:
+            values[point] = c.median_us
     return grouped
+
+
+def best_by(cells: Sequence[E1Cell], axis: Callable[[E1Cell], str]) -> Dict[Tuple[str, str], str]:
+    """The argmin along ``axis`` per ``(kernel, backend)``, EXCLUDING pairs with a single measured value --
+    an argmin over a set of one is the only option, not a measured preference, and reads identically to a
+    real comparison in the table."""
+    return {
+        key: min(values, key=values.__getitem__)
+        for key, values in measured_by(cells, axis).items() if len(values) > 1
+    }
+
+
+def unmeasured_axis(cells: Sequence[E1Cell], axis: Callable[[E1Cell], str]) -> List[str]:
+    """The ``kernel | backend`` keys excluded from a read-off because fewer than two values validated.
+
+    Enumerated over every pair the sweep ATTEMPTED, not over the ones that measured: a pair whose every
+    cell failed is absent from :func:`measured_by` entirely and would otherwise appear in NEITHER table."""
+    attempted = dict.fromkeys((c.kernel, c.backend) for c in cells)  # ordered, deduped
+    measured = measured_by(cells, axis)
+    return sorted(f"{kernel} | {backend}" for kernel, backend in attempted
+                  if len(measured.get((kernel, backend), {})) < 2)
+
+
+def granularity_of(cell: E1Cell) -> str:
+    return cell.granularity
+
+
+def measured_rungs(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
+    """``(kernel, backend) -> {granularity: median_us}`` over the cells that validated."""
+    return measured_by(cells, granularity_of)
 
 
 def best_granularity_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]:
@@ -290,7 +326,7 @@ def best_granularity_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str
     the heatmap with "every backend prefers atoms" cells for kernels where no alternative was ever
     compiled -- a finding read off a table that never had a choice in it. :func:`no_granularity_axis`
     lists what was left out."""
-    return {key: min(rungs, key=rungs.__getitem__) for key, rungs in measured_rungs(cells).items() if len(rungs) > 1}
+    return best_by(cells, granularity_of)
 
 
 def no_granularity_axis(cells: Sequence[E1Cell]) -> List[str]:
@@ -304,6 +340,4 @@ def no_granularity_axis(cells: Sequence[E1Cell]) -> List[str]:
     absent from it entirely and therefore appeared in neither table. Measured on s221, whose six cells all
     failed with the same lowering error: the exclusion list came back empty while the kernel silently
     vanished from the read-off -- the exact "reads as a null result" failure this list exists to prevent."""
-    attempted = dict.fromkeys((c.kernel, c.backend) for c in cells)  # ordered, deduped
-    rungs = measured_rungs(cells)
-    return sorted(f"{kernel} | {backend}" for kernel, backend in attempted if len(rungs.get((kernel, backend), {})) < 2)
+    return unmeasured_axis(cells, granularity_of)

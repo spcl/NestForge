@@ -27,7 +27,6 @@ import argparse
 import ctypes
 import json
 import math
-import re
 import shutil
 import socket
 import subprocess
@@ -46,17 +45,16 @@ from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import discover_toolchains
-from nestforge.perf.harness import c_argtypes, load_results, median, my_slice, rank_and_size, signature_order
+from nestforge.perf.harness import (c_argtypes, load_results, median, my_slice, rank_and_size, raw_signature,
+                                    signature_order)
 from nestforge.perf.tsvc_full import c_call_args
 from nestforge.translate import emit_sources, prepare
 
 
 def signature_params(csrc: str, symbol: str) -> str:
-    """The raw parameter declaration list (types + names) of ``void <symbol>(...)`` in the emitted C."""
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", csrc, re.S)
-    if not m:
-        raise LookupError(f"entry point {symbol} not found in the emitted C")
-    return " ".join(m.group(1).split())
+    """The raw parameter declaration list (types + names) of ``void <symbol>(...)`` in the emitted C,
+    whitespace-collapsed for re-declaration in the generated trampoline."""
+    return " ".join(raw_signature(csrc, symbol, "c").split())
 
 
 def runner_source(symbol: str, params: str, argnames: List[str], kernel_c: Optional[Path]) -> str:

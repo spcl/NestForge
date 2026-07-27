@@ -266,7 +266,13 @@ def run_kernel(kernel: "tsvc.TsvcKernel",
 
 
 def family_of(name: str) -> str:
-    """Toolchain family label (gcc/clang/nvhpc/intel) -> the flag-matrix FP family (gnu/llvm/nvidia/intel)."""
+    """Toolchain family LABEL (gcc/clang/nvhpc/intel) -> the flag-matrix FP family (gnu/llvm/nvidia/intel).
+
+    Deliberately NOT :func:`nestforge.build.compiler_family`, which looks like the same function and is not:
+    that one classifies a compiler EXECUTABLE for its OpenMP ABI and linker, and speaks a different
+    vocabulary on purpose -- ``icc`` is ``intel-classic`` there and ``icx`` is ``llvm``, neither of which is
+    a key of the FP tables. Feeding one's answer to the other's consumer reads a flag table under the wrong
+    family. `tests/test_perf_units.py` pins this function's codomain to the FP tables' actual keys."""
     return {"gcc": "gnu", "clang": "llvm", "nvhpc": "nvidia", "intel": "intel"}.get(name, "gnu")
 
 

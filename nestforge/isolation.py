@@ -9,6 +9,7 @@ result comes back as an ``{"error": ...}`` sentinel.
 """
 from __future__ import annotations
 
+import faulthandler
 import ctypes
 import json
 import os
@@ -63,7 +64,6 @@ def quiet_fatal_signals() -> None:
     """In the forked child, drop the faulthandler inherited from pytest: on a segfault it dumps the
     PARENT's stack into the captured output. The parent reports the crash from the child's exit signal."""
     try:
-        import faulthandler
         faulthandler.disable()
     except Exception:
         pass

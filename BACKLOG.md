@@ -193,27 +193,35 @@ it, or rewrite the doc to say "planned". Do not leave them reading as fact.
 
 ## H. Cleanup (KISS/YAGNI)
 
-- [ ] **H1** `perf/crosslang_xl.py::family_of` duplicates `build.compiler_family` and disagrees with
-      it on the Intel label (`intel` vs `intel-classic`). `tsvc_arena.Toolchain.fp_family` already
-      does the job correctly — delete `family_of`.
-- [ ] **H2** Three FP-flag tables: `arena.FP_MODES` (gcc/clang, 3 levels), `perf/flags._FP` (4
-      families x 4 levels), `perf/flags._REDUCED_FP`. `arena._BASE` is byte-identical to
-      `flags.base_flags("gnu")`. Collapse the arena's onto `perf/flags`.
-- [ ] **H3** `device_profile.py` has the repo's only two underscore-prefixed FUNCTIONS
-      (`_probe_source`, `_run_probe`) — rename. (The ~58 underscore CONSTANTS are a separate call;
-      13 of them are read directly by tests, so the underscore is already a lie for those.)
-- [ ] **H4** `granularity.to_canonical_atoms` is a one-statement passthrough to
-      `fission_to_statements` with no added behaviour. Inline its 4 callers.
+- [x] **H1** RESOLVED, but NOT as written: `family_of` is not a duplicate of `build.compiler_family`.
+      They classify different things — a toolchain LABEL for the FP tables vs a compiler EXECUTABLE for
+      its OpenMP ABI/linker — and the Intel disagreement is the point, not a bug: `flags._FP` is keyed
+      `intel`, while `compiler_family` answers `intel-classic` for icc and `llvm` for icx, neither of
+      which is an FP-table key. Deleting `family_of` and using `compiler_family` would have indexed the
+      flag tables under a family they do not have. Both docstrings now say so, and two tests pin
+      `family_of`'s codomain to the FP tables' real keys and pin the disagreement itself.
+- [x] **H2** DONE (already landed in `232ed3b`, "one fp vocabulary"): `arena` no longer carries its own
+      tables; `ARENA_ATOL` derives from `flags.FP_ATOL`.
+- [x] **H3** DONE: renamed to `probe_source` / `run_probe`. The tree now has ZERO underscore-prefixed
+      functions or classes. (The ~58 underscore CONSTANTS remain a separate call; 13 of them are read
+      directly by tests, so the underscore is already a lie for those.)
+- [ ] **H4** KEEP, reconsidered: `to_canonical_atoms` is a one-statement passthrough, but its name and
+      docstring are the only place the P0 contract is stated (this IS the ladder's base, and it is
+      idempotent on an already-canonical SDFG). Inlining it deletes that statement and leaves five call
+      sites each implying it by convention. Reopen only if the contract moves somewhere better.
 - [ ] **H5** Unreferenced by anything: `prototypes/gpu_stream_interop/` (11 tracked files, zero
       references outside itself) and `scripts/census.py`. Also
       `docs/paper/EXPERIMENT_frontend_semantics_gap.md:345,364` cite `scripts/census_ai.py`, which
       does not exist. Decide keep-and-reference or delete.
 - [ ] **H6** `nestforge/report.py` (34 lines) has one consumer, `examples/demo_fma.py`. No test, no
       driver, no CI. Keep only if the example is kept.
-- [ ] **H7** `Session.emit_variant` has zero callers and zero tests, and its docstring advertises
-      `target="numpy"|"cpp"` -- neither is a numpyto `--target` (it would fail argparse `choices`).
-      BK5's `kernel_source(lang=...)` is the tested per-language surface now; either delete
-      `emit_variant` or route it through `LANG_LOWERING` and fix the contract.
+- [x] **H7** DONE: `Session.emit_variant` deleted (broken contract, zero callers, zero tests;
+      `kernel_source(lang=...)` is the tested surface). Also deleted alongside it, same grounds:
+      `Session.list_map_fissions` / `Session.fission_map` (zero callers, zero tests, and riding raw
+      `MapFission`, which Kc4 already records as over-splitting and K0c/the s221 report record as
+      producing an isolated node) and `build.vectorized_via` (a one-line wrapper every caller bypassed
+      in favour of `packed_ops_called`). Re-add per-map fission on `_split_one_map` when something
+      actually needs it.
 
 ## I. Unverified numbers in docs
 

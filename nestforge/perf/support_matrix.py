@@ -5,6 +5,7 @@ compile, link, load, run -- rather than reasoning from ABI tables, which miss re
 won't load, an inert backend, one islanded to its own compiler). Each probe runs forked."""
 from __future__ import annotations
 
+import argparse
 import ctypes
 import itertools
 import json
@@ -67,16 +68,6 @@ void run_all(double *a, const double *b, int n) {{
 """
 
 
-def emits_fork_call(obj: str) -> bool:
-    """True if ``obj`` emits an OpenMP fork call -- proof the loop parallelised, not just linked (see
-    :func:`nestforge.perf.flags.autopar_fires`)."""
-    try:
-        syms = subprocess.run(["nm", "-u", obj], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return any(s in syms for s in ("GOMP_parallel", "kmpc_fork"))
-
-
 @dataclass(slots=True)
 class MatrixCell:
     """One attempt: this tuple of compilers, each building one nest, linked against this one runtime."""
@@ -117,7 +108,7 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
             return MatrixCell(
                 runtime.name, label, False, False, False, False,
                 f"{tc.name} compile: {proc.stderr.strip().splitlines()[-1][:80] if proc.stderr.strip() else '?'}")
-        parallel = parallel and emits_fork_call(str(obj))
+        parallel = parallel and flags.emits_fork_call(str(obj))
         objs.append(str(obj))
 
     # one .so via the first compiler's link flags -- all nests need the SAME soname
@@ -340,7 +331,6 @@ def machine_config(cache: Path = DEFAULT_CACHE, refresh: bool = False) -> Dict:
 
 
 def main() -> None:
-    import argparse
     ap = argparse.ArgumentParser(description="Discover the toolchain support matrix for this machine.")
     ap.add_argument("--refresh", action="store_true", help="re-probe even if the cache exists")
     ap.add_argument("--no-cache", action="store_true", help="probe and print, do not read or write the cache")

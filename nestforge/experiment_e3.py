@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
-from nestforge.experiment_e1 import E1Cell, run_e1_cell
+from nestforge.experiment_e1 import E1Cell, best_by, measured_by, run_e1_cell, unmeasured_axis
 from nestforge.granularity import granularity_ladder
 from nestforge.offload import OFFLOAD_UNITS, offload_coarseness
 
@@ -104,27 +104,20 @@ def best_unit_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]
     no LoopRegion fails 'cfg', a kernel with no compute-bearing state boundary fails 'state', and the
     surviving 'map' cell is then the argmin of a set of one -- reported identically to a genuine three-way
     comparison. :func:`no_unit_axis` lists what was left out."""
-    measured = units_measured(cells)
-    return {key: min(units, key=units.__getitem__) for key, units in measured.items() if len(units) > 1}
+    return best_by(cells, unit_of)
+
+
+def unit_of(cell: E1Cell) -> str:
+    return cell.unit
 
 
 def units_measured(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
     """``(kernel, backend) -> {unit: median_us}`` over the cells that validated."""
-    grouped: Dict[Tuple[str, str], Dict[str, float]] = {}
-    for c in cells:
-        if not c.ok:
-            continue
-        units = grouped.setdefault((c.kernel, c.backend), {})
-        if c.unit not in units or c.median_us < units[c.unit]:
-            units[c.unit] = c.median_us
-    return grouped
+    return measured_by(cells, unit_of)
 
 
 def no_unit_axis(cells: Sequence[E1Cell]) -> List[str]:
     """The ``kernel | backend`` keys excluded from the C3 read-off because fewer than two offloading units
     validated. Enumerated over every pair the sweep ATTEMPTED, so a pair whose every unit failed is listed
     rather than vanishing from both tables."""
-    attempted = dict.fromkeys((c.kernel, c.backend) for c in cells)  # ordered, deduped
-    measured = units_measured(cells)
-    return sorted(f"{kernel} | {backend}" for kernel, backend in attempted
-                  if len(measured.get((kernel, backend), {})) < 2)
+    return unmeasured_axis(cells, unit_of)

@@ -56,3 +56,16 @@ if __name__ == "__main__":
     import pathlib
     test_translate_to_c(pathlib.Path(tempfile.mkdtemp()))
     print("translate OK")
+
+
+def test_the_standalone_preamble_is_the_live_helpers():
+    """An emitted standalone kernel must compute what the validated in-process one computes. The preamble
+    is generated from int_floor/int_ceil rather than hand-copied, so an edit to either cannot leave the
+    emitted text behind -- assert the property, not the generation trick."""
+    from nestforge import emit_numpy
+
+    namespace = {}
+    exec(emit_numpy.STANDALONE_PREAMBLE, namespace)  # noqa: S102 -- the point is that it is runnable
+    for a, b in ((7, 2), (-7, 2), (7, -2), (-7, -2), (8, 4), (0, 3)):
+        assert namespace["int_floor"](a, b) == emit_numpy.int_floor(a, b), (a, b)
+        assert namespace["int_ceil"](a, b) == emit_numpy.int_ceil(a, b), (a, b)

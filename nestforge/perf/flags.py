@@ -207,7 +207,22 @@ def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
 
 #: The OpenMP fork call an auto-parallelized loop must contain to have actually been parallelized:
 #: ``GOMP_parallel`` (gcc's parloops) or ``__kmpc_fork_call`` (LLVM). Absence == the loop stayed serial.
-_AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
+AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
+
+
+def emits_fork_call(obj: str) -> bool:
+    """True if ``obj`` calls an OpenMP fork entry -- proof the loop actually parallelized, not merely that
+    the flag was accepted or the runtime linked.
+
+    One definition, because two backend probes ask this question: this module's :func:`autopar_fires` (which
+    compiles its own probe first) and the support matrix (which is handed an object someone else built). Kept
+    together with :data:`AUTOPAR_FORK_SYMS` so adding a future runtime's fork symbol cannot update one probe
+    and leave the other silently reporting "not parallelized"."""
+    try:
+        syms = subprocess.run(["nm", "-u", obj], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(s in syms for s in AUTOPAR_FORK_SYMS)
 
 
 @functools.lru_cache(maxsize=None, typed=True)
@@ -227,10 +242,9 @@ def autopar_fires(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
                                   timeout=60)
             if proc.returncode != 0:
                 return False
-            syms = subprocess.run(["nm", "-u", obj], capture_output=True, text=True, timeout=30).stdout
         except (OSError, subprocess.SubprocessError):
             return False
-    return any(s in syms for s in _AUTOPAR_FORK_SYMS)
+        return emits_fork_call(obj)
 
 
 def autopar_flags(family: str,

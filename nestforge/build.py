@@ -25,6 +25,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import numpy as np
 
 import dace
+from dace.codegen import codegen
+from dace.codegen import compiler as dace_compiler
 from dace.transformation.auto.auto_optimize import set_fast_implementations
 
 #: ctypes type per C scalar type appearing in a DaCe entry-point signature.
@@ -523,13 +525,6 @@ def veclib_library_path(vl: VectorMathLib, compiler: str) -> Optional[str]:
     return None
 
 
-def vectorized_via(veclib: str, obj_path: str) -> bool:
-    """True if ``obj_path`` actually CALLS one of ``veclib``'s packed elementals -- proof the vectorizer
-    fired, not just that the flag was accepted. A compiler may accept ``-fveclib=`` and still emit scalar
-    calls, in which case a timing-only probe measures ``-ffast-math`` and credits it to the library."""
-    return bool(packed_ops_called(veclib, obj_path))
-
-
 # TODO(blas): a BLAS/LAPACK axis (openblas/mkl/blis/nvpl/accelerate) the same way -- discovery exists
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
 
@@ -716,7 +711,6 @@ def generate_program_folder(sdfg: dace.SDFG, out_dir: Path, codegen_impl: Option
     :param codegen_impl: ``experimental`` | ``legacy``; ``None`` -> :func:`default_codegen_impl`.
     :returns: (the C++ Frame source path, sdfg name).
     """
-    from dace.codegen import codegen, compiler as dace_compiler
     out_dir.mkdir(parents=True, exist_ok=True)
     with codegen_config(codegen_impl or default_codegen_impl()):
         code_objects = codegen.generate_code(sdfg)

@@ -11,7 +11,7 @@ The contract:
 
   * A ``list_*`` call mints ids at the session's current epoch and returns plain data (labels, read/write
     sets, reasons) -- never a node.
-  * A mutating call (:meth:`fuse`, :meth:`fission_all`, :meth:`fission_map`, :meth:`externalize`) bumps the
+  * A mutating call (:meth:`fuse`, :meth:`fission_all`, :meth:`externalize`) bumps the
     epoch and clears every handle, then returns the fresh graph. The tree it returns carries ids again --
     minted at the NEW epoch by :meth:`describe` -- so the agent can act on what it was just handed
     without a re-list; it is only the ids it held from BEFORE the call that are now stale.
@@ -33,12 +33,11 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
-from dace.transformation.dataflow.map_fission import MapFission
 
 from nestforge.arena import Cell, run_arena
 from nestforge.extract import Boundary, detach, extract_map_nest, find_state_of_node
 from nestforge.feedback import run_feedback_loop
-from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements, map_fission_moves
+from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements
 from nestforge.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes
 from nestforge.offload import DEFAULT_GRANULARITY, label_nest, lower_nests_to_external_call, offload_candidates
 from nestforge.region_arms import RegionMove, apply_region_fusion, enumerate_region_fusions
@@ -299,22 +298,6 @@ class Session:
         self.bump()
         return self.describe()
 
-    def list_map_fissions(self) -> List[dict]:
-        """Maps ``MapFission`` can split one at a time (a map whose nested-SDFG body has independent output
-        groups), each with an id for :meth:`fission_map` -- fine-grained control vs :meth:`fission_all`."""
-        out: List[dict] = []
-        for map_entry, nsdfg in map_fission_moves(self.sdfg):
-            hid = self.mint("fission", (map_entry, nsdfg))
-            out.append({"id": hid, "label": label_nest(map_entry)})
-        return out
-
-    def fission_map(self, move_id: str) -> str:
-        """Split one map (from a current :meth:`list_map_fissions`). Bumps the epoch; returns the fresh tree."""
-        map_entry, nsdfg = self.resolve(move_id, "fission")
-        MapFission.apply_to(self.sdfg, expr_index=1, map_entry=map_entry, nested_sdfg=nsdfg)
-        self.bump()
-        return self.describe()
-
     # --- Phase 2: externalize (hand a nest to the next phase) --------------------------------------
 
     def list_offload_candidates(self, granularity: str = DEFAULT_GRANULARITY) -> List[dict]:
@@ -373,13 +356,6 @@ class Session:
         """Write the nest's numpy reference (the correctness oracle) and return its path. Both modes
         validate against it."""
         return str(self.prepare_nest(nest_id).numpy_path)
-
-    def emit_variant(self, nest_id: str, target: str = "c", precision: str = "float64") -> List[str]:
-        """Emit the nest's kernel in ``target`` (``"numpy"`` | ``"c"`` | ``"cpp"`` | ``"fortran"``) and return
-        the written source paths. Mode B sweeps these; a Mode-A agent may start from one."""
-        prep = self.prepare_nest(nest_id)
-        gen = self.work_dir / prep.name / target
-        return [str(p) for p in emit_sources(prep, gen, target=target, precision=precision)]
 
     def set_kernel(self, nest_id: str, lib_path: str, symbol: str, abi_order: List[str], fp_mode: str = "") -> dict:
         """Mode A -- point the nest at an agent-authored compiled kernel: a ``.a`` (static, linked into the

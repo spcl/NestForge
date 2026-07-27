@@ -77,20 +77,34 @@ def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
 
 
 # --- ABI binding ------------------------------------------------------------------------------------
+def raw_signature(text: str, symbol: str, lang: str = "c") -> str:
+    """The parameter-declaration text between the parens of the kernel entry, verbatim.
+
+    Split out because two callers want the same match for different halves of it: :func:`signature_order`
+    takes the NAMES (to bind arguments), while the call-overhead lane needs the types too, to re-declare the
+    entry in a generated trampoline. Two copies of the regex would drift the day an emitter changes how it
+    writes a signature, and only one of the two would then fail to find it.
+
+    :raises LookupError: when the entry is absent -- a caller must never bind against a signature it did
+        not actually find."""
+    if lang == "fortran":
+        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
+    else:
+        m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", text, re.S)
+    if not m:
+        raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
+    return m.group(1)
+
+
 def signature_order(text: str, symbol: str, lang: str = "c") -> List[str]:
     """Parameter names of the kernel entry, in declaration order, for the language's syntax.
 
     The emitted C order (sorted arrays, then symbols) is NOT the manifest ``input_args`` order, so args
     must bind to this or a size lands in a pointer slot. Fortran ``&`` continuations are stripped first."""
+    params = raw_signature(text, symbol, lang)
     if lang == "fortran":
-        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
-        if not m:
-            raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
-        return [a.strip() for a in m.group(1).replace("&", " ").split(",") if a.strip()]
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", text, re.S)
-    if not m:
-        raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
-    return [p.strip().split()[-1].lstrip("*") for p in m.group(1).split(",") if p.strip() and p.strip() != "void"]
+        return [a.strip() for a in params.replace("&", " ").split(",") if a.strip()]
+    return [p.strip().split()[-1].lstrip("*") for p in params.split(",") if p.strip() and p.strip() != "void"]
 
 
 def c_argtypes(order: List[str], boundary) -> list:

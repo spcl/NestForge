@@ -18,6 +18,7 @@ import ast
 import atexit
 import copy
 import functools
+import inspect
 import hashlib
 import importlib.util
 import re
@@ -189,20 +190,14 @@ EMITTED_BUILTINS = {"np": numpy, "int_floor": int_floor, "int_ceil": int_ceil}
 #: The same three names as SOURCE, so an emitted kernel can be a SELF-CONTAINED module instead of one
 #: that only runs under :func:`load_emitted`'s injected namespace. A representation handed to an agent
 #: has to be numpy it can paste into a file and run, and that a translator can read without being told
-#: what ``int_floor`` means -- an injected builtin is neither. Kept byte-identical in behaviour to the
-#: functions above; :func:`nestforge.emit_numpy.standalone_source` is what puts them in front of a body.
-STANDALONE_PREAMBLE = """import numpy as np
-
-
-def int_floor(a, b):
-    \"\"\"``floor(a / b)`` -- python ``//`` is already floored for both signs.\"\"\"
-    return a // b
-
-
-def int_ceil(a, b):
-    \"\"\"``ceil(a / b)``, sign-robust (``== (a + b - 1) // b`` for ``b > 0``).\"\"\"
-    return -((-a) // b)
-"""
+#: what ``int_floor`` means -- an injected builtin is neither.
+#:
+#: GENERATED from the functions above rather than hand-copied. A hand-written copy has no mechanism keeping
+#: it in step: an edit to ``int_ceil``'s sign handling would update the callable that every validated run
+#: uses and leave the emitted text computing the old index arithmetic, with nothing to catch the drift and
+#: only a standalone-emitted kernel affected.
+STANDALONE_PREAMBLE = "import numpy as np\n\n\n" + "\n\n\n".join(
+    inspect.getsource(fn).strip() for fn in (int_floor, int_ceil)) + "\n"
 
 
 def standalone_source(fn_name: str, args: List[str], body: List[str]) -> str:

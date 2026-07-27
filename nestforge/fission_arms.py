@@ -30,6 +30,8 @@ from typing import List, Tuple
 import dace
 from dace.sdfg import nodes
 from dace.transformation.dataflow.map_fission import MapFission
+from dace.transformation.passes.canonicalize.split_statements import SplitStatements
+from dace.transformation.passes.loop_fission import LoopFission
 
 
 def fission_to_statements(sdfg: dace.SDFG) -> int:
@@ -47,8 +49,6 @@ def fission_to_statements(sdfg: dace.SDFG) -> int:
     local temps to size-N arrays (``{t=x*2; A=t+1}`` -> two maps + a buffer ``t``). Statement granularity
     is one map per global output precisely because that is the finest split that keeps a local a scalar.
     """
-    from dace.transformation.passes.canonicalize.split_statements import SplitStatements
-    from dace.transformation.passes.loop_fission import LoopFission
 
     applied = 0
     applied += SplitStatements(split_maps=True).apply_pass(sdfg, {}) or 0

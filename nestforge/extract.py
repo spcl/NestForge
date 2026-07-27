@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Union
 import dace
 from dace import symbolic
 from dace.sdfg import nodes
+from dace.sdfg.graph import SubgraphView
 from dace.sdfg.state import LoopRegion, SDFGState
 from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
@@ -86,7 +87,6 @@ def extract_state_nest(parent_sdfg: dace.SDFG, state: SDFGState, name: Optional[
     offloading granularity (coarser than one map, finer than a control-flow region). ``full_data=True``
     nests entire boundary arrays so the emitted C signature is not shrunk to accessed sub-ranges (same
     reason as :func:`extract_map_nest`)."""
-    from dace.sdfg.graph import SubgraphView
     subgraph = SubgraphView(state, state.nodes())
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
     return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
@@ -173,7 +173,6 @@ def trip_count_symbols(sdfg: dace.SDFG) -> set:
 
 def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
     """Outline a CFG loop region into a standalone SDFG (M1)."""
-    from dace.sdfg.graph import SubgraphView
     # pre-declare each nest-defined symbol: nest_sdfg_subgraph KeyErrors otherwise. The dtype is INFERRED,
     # not int64 by fiat -- nest_sdfg_subgraph's own type-inference fallback reads whatever is registered
     # here, so a float staged across an interstate edge would be locked to int64 and truncated silently.

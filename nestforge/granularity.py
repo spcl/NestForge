@@ -87,10 +87,15 @@ def fuse_first_k(k: int) -> Callable[[dace.SDFG], None]:
     return apply
 
 
-def fusion_depth(sdfg: dace.SDFG) -> int:
+def fusion_depth(sdfg: dace.SDFG, owned: bool = False) -> int:
     """The number of greedy fusion moves from atoms to the maximal (fixed-point) partition -- the height of
-    the ladder for this SDFG. Computed on a copy, so ``sdfg`` is untouched."""
-    probe = copy.deepcopy(sdfg)
+    the ladder for this SDFG. Computed on a copy, so ``sdfg`` is untouched.
+
+    ``owned=True`` measures IN PLACE, for a caller whose ``sdfg`` has no other reference and is discarded
+    right after (:func:`kernels_with_axis` builds one per kernel purely to probe it). Probing consumes the
+    graph, so this is destructive -- pass it only when nothing will read ``sdfg`` again. It saves one full
+    SDFG deepcopy per kernel, which over a 245-kernel corpus scan is the scan's dominant cost."""
+    probe = sdfg if owned else copy.deepcopy(sdfg)
     to_canonical_atoms(probe)
     depth = 0
     while True:
@@ -158,7 +163,7 @@ def kernels_with_axis(kernels: Sequence[tsvc.TsvcKernel],
             break
         scanned += 1
         try:
-            depth = fusion_depth(tsvc.build_sdfg(kernel, opt_mode))
+            depth = fusion_depth(tsvc.build_sdfg(kernel, opt_mode), owned=True)  # freshly built, probed, discarded
         except Exception as e:  # same contract as the drivers: an unbuildable kernel is a skip-with-reason
             dropped[kernel.key] = repr(e)
             continue

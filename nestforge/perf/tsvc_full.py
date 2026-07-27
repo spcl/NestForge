@@ -70,6 +70,8 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a cwd stub)
 
 from nestforge import tsvc
+from nestforge.device_profile import rank_veclibs
+from nestforge import vectorize_variants as vv
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
@@ -406,7 +408,6 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             "vectorized": True,
             **summarize_times([])
         }
-    from nestforge import vectorize_variants as vv
     fam = tc.fp_family
     dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "contract-fma", "c")
     atol = flags.FP_ATOL["contract-fma"]
@@ -1228,7 +1229,6 @@ def resolve_veclibs(spec: List[str], compilers: Sequence[str] = ("gcc", )) -> Tu
     :func:`veclibs_for` then drops each winner from the cells whose compiler cannot use it.
     """
     if list(spec) == ["auto"]:
-        from nestforge.device_profile import rank_veclibs
         winners = []
         for compiler in compilers:
             ranked = [p for p in rank_veclibs(compiler) if p.ok]
