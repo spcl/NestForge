@@ -10,13 +10,22 @@ Append-only JSONL, one record per (nest, axis, job). JSONL because jobs are conc
 socket, several nodes) and an append of a single short line is atomic on POSIX up to PIPE_BUF, so ranks
 share one file without a lock or a merge step. A rewritten-whole JSON would need both.
 
-The nest is identified by :func:`~nestforge.dedup.cpp_body_key` over its emitted C -- flags never reach
-the emitted source, so the SAME nest keeps ONE identity across compilers, FP rungs and machines, and the
-dataset can ask "what won for this loopnest elsewhere?". A kernel key cannot do that: `s000` is a
-different nest per opt-mode, and two corpora spell the same computation under different names.
+The nest is identified by its NUMPY source, and stored by it. Every emitted variant -- C, C++, Fortran --
+is a translation of that one rendering (:func:`nestforge.emit_numpy.nest_to_numpy`), so it is the only
+form that is both upstream of the language axis and independent of compiler, flags and machine. Keying on
+the emitted C instead tied a nest's identity to one lane: a Fortran-only run recorded no identity at all.
+A kernel key cannot do the job either -- `s000` is a different nest per opt-mode, and two corpora spell
+the same computation under different names.
+
+The source itself is content-addressed under ``nests/<fingerprint>.py`` rather than copied into every
+record: a nest measured by a hundred jobs is one file, and a record stays a row rather than a document.
+That also makes a recorded winner reproducible -- the exact input the translator consumed is on disk next
+to it.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import platform
@@ -28,8 +37,6 @@ from typing import Dict, List, Optional
 import dace
 import numpy as np
 
-from nestforge.dedup import cpp_body_key
-
 #: Where records land when a caller names no directory. Relative, so a job writes under its own result
 #: root rather than a path baked in here; ``NF_DATASET_DIR`` overrides it.
 DATASET_DIR: str = os.environ.get("NF_DATASET_DIR", ".results")
@@ -37,6 +44,9 @@ DATASET_DIR: str = os.environ.get("NF_DATASET_DIR", ".results")
 #: One file per axis keeps a reader from filtering, and keeps two concurrent sweeps of different axes off
 #: each other's lines entirely.
 FILENAME: str = "winners-{axis}.jsonl"
+
+#: Content-addressed nest store: the numpy rendering every record's ``fingerprint`` points at.
+NEST_DIR: str = "nests"
 
 
 @dataclass(slots=True)
@@ -131,14 +141,47 @@ def nest_features(sdfg: dace.SDFG) -> Dict[str, object]:
     }
 
 
-def fingerprint(c_source: Optional[Path]) -> str:
-    """The nest's flag-independent identity, or ``""`` when its source is unavailable.
+def fingerprint(numpy_source: Optional[str]) -> str:
+    """The nest's identity: a hash of its numpy source, normalized through the AST.
 
-    Empty rather than a raise: a record with no fingerprint still carries features and a winner, and
-    losing the whole record would be the larger loss. A reader joins on a non-empty fingerprint."""
-    if c_source is None or not c_source.is_file():
+    Through the AST rather than over the text, because a rename of the emitted function or a change in the
+    renderer's whitespace is not a different loopnest -- and the dataset's whole value is that the same
+    nest, met again in another job, joins to what won for it last time. Unparseable source falls back to
+    the raw text (a hash that over-splits costs a join; one that over-merges corrupts the labels).
+
+    ``""`` when there is no source: a record with no identity still carries features and a winner, and
+    losing the whole record would be the larger loss. A reader joins on a NON-empty fingerprint."""
+    if not numpy_source:
         return ""
-    return cpp_body_key(c_source.read_text())
+    try:
+        canonical = ast.dump(ast.parse(numpy_source), annotate_fields=True, include_attributes=False)
+    except SyntaxError:
+        canonical = numpy_source
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+def store_nest(numpy_source: str, out_dir: Optional[Path] = None) -> str:
+    """Write ``numpy_source`` to ``<out_dir>/nests/<fingerprint>.py`` if it is not already there, and
+    return the fingerprint. Content-addressed, so concurrent ranks meeting the same nest write the same
+    bytes to the same path and the last writer wins harmlessly."""
+    key = fingerprint(numpy_source)
+    if not key:
+        return ""
+    out = Path(out_dir if out_dir is not None else DATASET_DIR) / NEST_DIR
+    path = out / f"{key}.py"
+    try:
+        if not path.exists():
+            out.mkdir(parents=True, exist_ok=True)
+            path.write_text(numpy_source)
+    except OSError:
+        pass  # a by-product; the record still carries the fingerprint and the features
+    return key
+
+
+def load_nest(key: str, out_dir: Optional[Path] = None) -> Optional[str]:
+    """The numpy source behind a record's ``fingerprint``, or ``None`` when this results tree never saw it."""
+    path = Path(out_dir if out_dir is not None else DATASET_DIR) / NEST_DIR / f"{key}.py"
+    return path.read_text() if path.is_file() else None
 
 
 def record_winner(record: WinnerRecord, out_dir: Optional[Path] = None) -> Path:

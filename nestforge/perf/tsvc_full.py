@@ -73,7 +73,7 @@ from nestforge import vectorize_variants as vv
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
-from nestforge.dataset import WinnerRecord, fingerprint, nest_features, record_winner
+from nestforge.dataset import WinnerRecord, nest_features, record_winner, store_nest
 from nestforge.dedup import variant_key
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
@@ -663,6 +663,8 @@ def build_opt_context(kernel, opt_mode: str, strategy: str, profile_preset: str,
             "validate_fills": validate_fills,
             "oracle": oracle,
             "lang_src": lang_src,
+            # the source every language variant is translated FROM -- the nest's identity in the dataset
+            "numpy_source": prep.numpy_source,
             "has_math": has_math,
             "omp_src": omp_src,
             "parallel": parallel,
@@ -912,13 +914,15 @@ def record_nest_winner(kernel, nc: Dict, axis: str, cell: Dict, baseline_cells: 
     base = next((b for b in baseline_cells if b.get("nest") == nc["nest_idx"] and b.get("ok")), None)
     base_us = base.get("median_us") if base else None
     base_us = base_us if finite(base_us if base_us is not None else float("inf")) else None
-    c_source = nc["lang_src"].get("c", (None, ))[0]
     try:
+        # The NUMPY rendering is the nest's identity: every emitted C/C++/Fortran variant is a translation
+        # of it, so it is the one form upstream of the language axis. Stored content-addressed, so a nest
+        # a hundred jobs measured is one file on disk.
         record_winner(
             WinnerRecord(kernel=kernel.key,
                          corpus=kernel.corpus,
                          nest=nc["nest_idx"],
-                         fingerprint=fingerprint(c_source),
+                         fingerprint=store_nest(nc["numpy_source"], dataset_dir),
                          axis=axis,
                          winner={
                              k: v

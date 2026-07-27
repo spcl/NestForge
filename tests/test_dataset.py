@@ -82,21 +82,40 @@ def test_features_are_inputs_only():
     assert json.dumps(feats)  # a record must serialize
 
 
-def test_the_fingerprint_is_the_same_nest_under_different_flags(tmp_path):
-    """The join key. Compile flags never reach the emitted source, so one nest keeps ONE identity across
-    compilers, FP rungs and machines -- which is what lets the dataset ask what won for this loopnest
-    somewhere else. Keyed on the kernel name instead, `s000` would be a different nest per opt-mode."""
-    src = tmp_path / "nest.c"
-    src.write_text("void k(double *a, const double *b, int n) {\n  for (int i = 0; i < n; ++i) a[i] = b[i] + 1.0;\n}\n")
-    same = tmp_path / "same_body_other_name.c"
-    same.write_text("void k(double *a, const double *b, int n) { for (int i = 0; i < n; ++i) a[i] = b[i] + 1.0; }")
-    other = tmp_path / "other.c"
-    other.write_text(
-        "void k(double *a, const double *b, int n) {\n  for (int i = 0; i < n; ++i) a[i] = b[i] * 2.0;\n}\n")
+NEST_SRC = """def kernel(a, b, c, N):
+    # a comment, and some deliberate blank lines below
 
-    assert dataset.fingerprint(src) == dataset.fingerprint(same)  # layout is not identity
-    assert dataset.fingerprint(src) != dataset.fingerprint(other)  # the computation is
-    assert dataset.fingerprint(None) == "" and dataset.fingerprint(tmp_path / "absent.c") == ""
+    for i in range(N):
+        c[i] = a[i] + 1.0
+"""
+NEST_REFORMATTED = "def kernel(a, b, c, N):\n    for i in range(N):\n        c[i] = a[i] + 1.0\n"
+NEST_OTHER = "def kernel(a, b, c, N):\n    for i in range(N):\n        c[i] = a[i] * 2.0\n"
+
+
+def test_the_fingerprint_is_the_numpy_nest_normalized_through_the_ast(tmp_path):
+    """The join key, and why it is the NUMPY source: every emitted C/C++/Fortran variant is a translation
+    of that one rendering, so it is the only form upstream of the language axis and independent of
+    compiler, flags and machine. Keyed on the emitted C, a Fortran-only run recorded no identity at all.
+
+    Through the AST so a comment or a blank line is not a different loopnest -- the dataset exists to join
+    the same nest, met again in another job, to what won for it last time."""
+    assert dataset.fingerprint(NEST_SRC) == dataset.fingerprint(NEST_REFORMATTED)
+    assert dataset.fingerprint(NEST_SRC) != dataset.fingerprint(NEST_OTHER)  # the computation IS identity
+    assert dataset.fingerprint(None) == "" and dataset.fingerprint("") == ""
+    # unparseable source still keys (over-splitting costs a join; over-merging corrupts the labels)
+    assert dataset.fingerprint("def kernel(:::") != ""
+
+
+def test_the_nest_source_is_stored_once_and_reloadable(tmp_path):
+    """Content-addressed: a nest a hundred jobs measured is ONE file, and a recorded winner stays
+    reproducible -- the exact input the translator consumed sits next to it."""
+    key = dataset.store_nest(NEST_SRC, tmp_path)
+    assert key and (tmp_path / "nests" / f"{key}.py").is_file()
+    assert dataset.store_nest(NEST_REFORMATTED, tmp_path) == key  # same nest -> same address
+    assert len(list((tmp_path / "nests").glob("*.py"))) == 1
+    assert dataset.load_nest(key, tmp_path) == NEST_SRC  # the first writer's bytes
+    assert dataset.load_nest("never-seen", tmp_path) is None
+    assert dataset.store_nest("", tmp_path) == ""
 
 
 def test_the_default_directory_is_relative_and_overridable(monkeypatch):
@@ -126,7 +145,7 @@ def test_the_sweep_records_a_winner_per_nest(tmp_path, monkeypatch):
     nc = {
         "nest_idx": 0,
         "boundary": type("B", (), {"standalone_sdfg": madd.to_sdfg(simplify=True)})(),
-        "lang_src": {},
+        "numpy_source": NEST_SRC,
     }
     cell = {"ok": True, "median_us": 4.0, "vec_variant": "cpu-w16-posttail-fma", "compiler": "gcc"}
     baselines = [{"nest": 0, "ok": True, "median_us": 8.0}]
@@ -138,6 +157,8 @@ def test_the_sweep_records_a_winner_per_nest(tmp_path, monkeypatch):
     assert rows[0]["winner"]["vec_variant"] == "cpu-w16-posttail-fma"
     assert rows[0]["baseline_us"] == 8.0 and rows[0]["speedup"] == 2.0
     assert rows[0]["features"]["has_fma_pattern"] is True
+    # the record points at the nest it was measured on, and that nest is on disk
+    assert dataset.load_nest(rows[0]["fingerprint"], tmp_path) == NEST_SRC
 
 
 def test_a_failed_lane_records_nothing(tmp_path):
@@ -151,7 +172,7 @@ def test_a_failed_lane_records_nothing(tmp_path):
     nc = {
         "nest_idx": 0,
         "boundary": type("B", (), {"standalone_sdfg": madd.to_sdfg(simplify=True)})(),
-        "lang_src": {},
+        "numpy_source": NEST_SRC,
     }
     failed = {"ok": False, "error": "no vectorization config validated", "median_us": float("inf")}
     tsvc_full.record_nest_winner(FakeKernel(), nc, "vectorize", failed, [], "gcc", tmp_path)
