@@ -309,15 +309,26 @@ def apply_vectorizer(sdfg: dace.SDFG, config: object) -> None:
     VectorizeCPUMultiDim(dataclasses.replace(config, expand_tile_nodes=True)).apply_pass(sdfg, {})
 
 
-def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> BuiltSDFG:
-    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` carrying
-    ``codegen_seconds``/``compile_seconds`` timing.
+@dataclass(slots=True)
+class GeneratedProgram:
+    """The optimization phase's output: emitted source, not yet compiled.
 
-    :param opts: toolchain + optimization knobs; ``None`` uses all defaults (g++, monolithic, no veclib) --
-        including a RESOLVED OpenMP runtime, since dace emits ``#pragma omp parallel for`` for every
-        multicore map and a build without one runs that schedule serially. A caller comparing against a
-        serial baseline must therefore pin ``OMP_NUM_THREADS=1`` rather than assume no OpenMP.
+    Split out of :func:`build_sdfg` so a search can hash ``source`` and SKIP a compile that would emit
+    byte-identical code -- the cheapest possible screen, since a knob whose flip changes nothing here
+    cannot change a timing.
     """
+    frame: Path  # the frame .cpp DaCe emitted
+    name: str
+    source: str
+    codegen_seconds: float
+
+    @property
+    def folder(self) -> Path:
+        return self.frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
+
+
+def generate_program(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> GeneratedProgram:
+    """Run the optimization phase only: apply the configured passes and emit the program folder."""
     opts = opts or BuildOptions()
     t_opt = time.perf_counter()
     sdfg = copy.deepcopy(sdfg)
@@ -328,21 +339,38 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = No
     if opts.vectorize is not None:
         apply_vectorizer(sdfg, opts.vectorize)
     frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
-    folder = frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
-    codegen_seconds = time.perf_counter() - t_opt
+    return GeneratedProgram(frame=frame,
+                            name=name,
+                            source=frame.read_text(),
+                            codegen_seconds=time.perf_counter() - t_opt)
 
-    code = frame.read_text()
-    init_params = parse_params(signature(code, f"__dace_init_{name}"))
-    prog_params = parse_params(signature(code, f"__program_{name}"))
 
-    so, compile_seconds = compile(frame, folder, name, opts)
-    return BuiltSDFG(name=name,
+def compile_program(gen: GeneratedProgram, opts: Optional[BuildOptions] = None) -> BuiltSDFG:
+    """Compile + link an already-generated program and bind its entry points."""
+    opts = opts or BuildOptions()
+    init_params = parse_params(signature(gen.source, f"__dace_init_{gen.name}"))
+    prog_params = parse_params(signature(gen.source, f"__program_{gen.name}"))
+    so, compile_seconds = compile(gen.frame, gen.folder, gen.name, opts)
+    return BuiltSDFG(name=gen.name,
                      so_path=so,
                      _lib=ctypes.CDLL(str(so)),
                      _init_params=init_params,
                      _prog_params=prog_params,
-                     codegen_seconds=codegen_seconds,
+                     codegen_seconds=gen.codegen_seconds,
                      compile_seconds=compile_seconds)
+
+
+def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = None) -> BuiltSDFG:
+    """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` carrying
+    ``codegen_seconds``/``compile_seconds`` timing.
+
+    :param opts: toolchain + optimization knobs; ``None`` uses all defaults (g++, monolithic, no veclib) --
+        including a RESOLVED OpenMP runtime, since dace emits ``#pragma omp parallel for`` for every
+        multicore map and a build without one runs that schedule serially. A caller comparing against a
+        serial baseline must therefore pin ``OMP_NUM_THREADS=1`` rather than assume no OpenMP.
+    """
+    opts = opts or BuildOptions()
+    return compile_program(generate_program(sdfg, out_dir, opts), opts)
 
 
 @dataclass(slots=True)
@@ -358,17 +386,13 @@ def compare_link_modes(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptio
     ``compile_seconds`` is the only thing that differs. ``opts``' link mode is overridden per build; its
     other axes apply to both."""
     opts = opts or BuildOptions()
-    t_opt = time.perf_counter()
-    sdfg = copy.deepcopy(sdfg)
-    if opts.expand_libnodes:  # mirror build_sdfg: compare the SAME (expanded) SDFG the caller configured
-        sdfg.expand_library_nodes()
-    elif opts.fast_libnodes:
-        set_fast_libnodes(sdfg)
-    frame, name = generate_program_folder(sdfg, out_dir, opts.codegen_impl)
-    folder = frame.parent.parent.parent
-    codegen_seconds = time.perf_counter() - t_opt
+    # the SAME optimization phase build_sdfg runs, so the two link modes compare the code the caller's
+    # opts actually produce -- an inlined copy here silently dropped the vectorizer from the comparison
+    gen = generate_program(sdfg, out_dir, opts)
     # compile time IS the result here, so the cache is forced OFF: a hit would report ~0s and make the
     # monolithic-vs-external comparison meaningless.
-    _, mono = compile(frame, folder, name, replace(opts, link_external=False, use_ccache=False))
-    _, ext = compile(frame, folder, name, replace(opts, link_external=True, use_ccache=False))
-    return LinkTimings(codegen_seconds=codegen_seconds, compile_seconds_monolithic=mono, compile_seconds_external=ext)
+    _, mono = compile(gen.frame, gen.folder, gen.name, replace(opts, link_external=False, use_ccache=False))
+    _, ext = compile(gen.frame, gen.folder, gen.name, replace(opts, link_external=True, use_ccache=False))
+    return LinkTimings(codegen_seconds=gen.codegen_seconds,
+                       compile_seconds_monolithic=mono,
+                       compile_seconds_external=ext)

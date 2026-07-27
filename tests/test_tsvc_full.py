@@ -571,6 +571,15 @@ def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
     assert res["dace_cpp"] and all(c["ok"] and c["maxdiff"] == 0.0 for c in res["dace_cpp"])
 
 
+class FakeGenerated:
+    """Stands in for build.GeneratedProgram: only ``source`` is read before the compile screen."""
+
+    def __init__(self, source: str):
+        self.source = source
+        self.name = "fake"
+        self.codegen_seconds = 0.0
+
+
 def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
     """The descent compiles a cell per config, and a nest the vectorizer declines to touch emits the SAME
     object for every one of them -- `resolved_key` cannot see that, because the configs genuinely differ.
@@ -597,7 +606,7 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
         def unload(self):
             pass
 
-    runs = {"n": 0}
+    runs, compiles = {"n": 0}, {"n": 0}
     keyed: List[Optional[str]] = []
 
     def fake_run(*a, **k):
@@ -612,7 +621,12 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
             "mean_us": 4.0
         }
 
-    monkeypatch.setattr(tsvc_full, "dace_build_sdfg", lambda *a, **k: FakeBuilt())
+    def fake_compile(gen, opts=None):
+        compiles["n"] += 1
+        return FakeBuilt()
+
+    monkeypatch.setattr(tsvc_full, "generate_program", lambda *a, **k: FakeGenerated("void __program_vadd() {}"))
+    monkeypatch.setattr(tsvc_full, "compile_program", fake_compile)
     monkeypatch.setattr(tsvc_full, "run_isolated", fake_run)
 
     def fake_key(so, symbol=None):
@@ -629,6 +643,9 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
                                                   workdir=tmp_path)
     assert cell["ok"] and cell["median_us"] == 4.0
     assert runs["n"] == 1, f"one artifact, {runs['n']} timed runs -- the artifact dedup is not wired in"
+    # the SOURCE screen must fire FIRST, so an inert nest costs ONE compile and not one per config -- that
+    # is the whole point of screening before the compile rather than after it
+    assert compiles["n"] == 1, f"identical source, {compiles['n']} compiles -- the codegen screen runs too late"
     # the NAMED entry point, never the whole object: a whole-object key also covers __dace_init_*/
     # __dace_exit_*, so a build differing only in a scratch allocation would key apart and be re-timed
     assert set(keyed) == {"__program_vadd"}, keyed
@@ -671,7 +688,14 @@ def test_the_vectorize_lane_still_times_distinct_artifacts(monkeypatch, tmp_path
             "mean_us": 1.0
         }
 
-    monkeypatch.setattr(tsvc_full, "dace_build_sdfg", lambda *a, **k: FakeBuilt())
+    sources = {"n": 0}
+
+    def fake_generate(*a, **k):
+        sources["n"] += 1
+        return FakeGenerated(f"void __program_vadd2() {{ int x = {sources['n']}; }}")
+
+    monkeypatch.setattr(tsvc_full, "generate_program", fake_generate)
+    monkeypatch.setattr(tsvc_full, "compile_program", lambda gen, opts=None: FakeBuilt())
     monkeypatch.setattr(tsvc_full, "run_isolated", fake_run)
     monkeypatch.setattr(tsvc_full, "variant_key", lambda so, symbol=None: f"artifact-{runs['n']}")
 

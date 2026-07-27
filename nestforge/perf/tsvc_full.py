@@ -71,10 +71,11 @@ from nestforge import tsvc
 from nestforge.device_profile import rank_veclibs
 from nestforge import vectorize_variants as vv
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
-from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
+from nestforge.build import (BuildOptions, codegen_impls_available, compile_program, default_codegen_impl,
+                             generate_program)
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.dataset import WinnerRecord, nest_features, record_winner, store_nest
-from nestforge.dedup import variant_key
+from nestforge.dedup import cpp_body_key, variant_key
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags, pluto_lane, support_matrix
@@ -431,35 +432,51 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     rejected: Dict[str, Tuple[int, str]] = {}
     #: dedup.variant_key -> the cell actually measured for that artifact.
     by_artifact: Dict[str, Dict] = {}
+    #: dedup.cpp_body_key -> the cell actually measured for that emitted SOURCE. The cheaper of the two
+    #: screens and the one that fires first: it costs a codegen, not a codegen + compile + run.
+    by_codegen: Dict[str, Dict] = {}
 
     def reject(kind: str, detail: str = "") -> None:
         count, example = rejected.get(kind, (0, detail))
         rejected[kind] = (count + 1, example or detail)
 
+    def twin_of(cfg, seen: Dict[str, Dict], key: Optional[str]) -> Optional[Dict]:
+        """The already-measured cell this config would duplicate, recorded under its own name."""
+        if key is None or key not in seen:
+            return None
+        twin = seen[key]
+        results[vv.resolved_key(cfg)] = {**twin, "vec_variant": vv.variant_name(cfg), "same_as": twin["vec_variant"]}
+        return twin
+
     def measure(cfg) -> Optional[float]:
         counter["i"] += 1
         try:
-            built = dace_build_sdfg(
-                boundary.standalone_sdfg, workdir / f"vec{counter['i']}",
-                BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg))
+            opts = BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg)
+            gen = generate_program(boundary.standalone_sdfg, workdir / f"vec{counter['i']}", opts)
         except Exception as e:  # noqa: BLE001 -- a config the vectorizer/codegen rejects is not a candidate
             reject(f"build: {type(e).__name__}", str(e)[:100])
             return None
-        # Group by the ARTIFACT, as arena.run_arena does on the flag axis. `resolved_key` collapses the
-        # configs provably equivalent from the CONFIG alone; only the built object shows the rest -- and a
-        # nest the vectorizer declines to touch emits the SAME object for every cell, so the descent would
-        # otherwise re-time one build a dozen times. One objdump against reps x the kernel.
+        # Screen 1, on the SOURCE, before any compile. An inert nest -- one the vectorizer declines to
+        # touch -- emits the same code for every cell, and a knob whose flip is byte-identical here cannot
+        # change a timing. Catching it now costs one codegen instead of a codegen + compile + timed run.
+        code_key = cpp_body_key(gen.source)
+        twin = twin_of(cfg, by_codegen, code_key)
+        if twin is not None:
+            return twin["median_us"]
+        try:
+            built = compile_program(gen, opts)
+        except Exception as e:  # noqa: BLE001 -- a config the compiler rejects is not a candidate either
+            reject(f"build: {type(e).__name__}", str(e)[:100])
+            return None
+        # Screen 2, on the ARTIFACT, as arena.run_arena does on the flag axis: two DIFFERENT sources can
+        # still compile to the same code, which only the object shows. One objdump against reps x kernel.
         # Named symbol, not the whole object: dedup.asm_body_key warns that a whole-object key also covers
         # __dace_init_*/__dace_exit_* boilerplate, so a config differing only in a scratch allocation would
         # key apart and the lane would re-time one identical build -- the re-timing this exists to stop.
         key = variant_key(built.so_path, f"__program_{built.name}")
-        if key is not None and key in by_artifact:
+        twin = twin_of(cfg, by_artifact, key)
+        if twin is not None:
             built.unload()
-            twin = by_artifact[key]
-            results[vv.resolved_key(cfg)] = {
-                **twin, "vec_variant": vv.variant_name(cfg),
-                "same_as": twin["vec_variant"]
-            }
             return twin["median_us"]
         try:
             res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
@@ -478,6 +495,7 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             return None
         cell = {**res, "vec_variant": vv.variant_name(cfg)}
         results[vv.resolved_key(cfg)] = cell
+        by_codegen[code_key] = cell
         if key is not None:
             by_artifact[key] = cell
         return res["median_us"]

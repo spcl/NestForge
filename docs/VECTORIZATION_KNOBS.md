@@ -78,14 +78,33 @@ never had a caller, so the "two entry points" were one real search and one that 
    this sweep can establish the assertion.
 3. **The K>=2 paths in `resolved_key` / `variant_name` had never executed.** FIXED by removing them —
    every cell is K=1.
-4. **An inert nest is measured anyway.** On `s275_n0` and `s231_n0` every knob emits identical code — the
-   vectorizer does not apply — yet the lane still spends its whole descent on them. OPEN: one codegen-hash
-   comparison would rule the axis out before the first compile.
+4. **An inert nest was measured anyway.** On `s275_n0` and `s231_n0` every knob emits identical code — the
+   vectorizer does not apply — yet the lane spent its whole descent on them.
+   FIXED: the lane now screens on the emitted SOURCE before it compiles. Measured on an inert nest,
+   18 compiles collapse to 1.
+
+## The two screens, in the order they fire
+
+| screen | key | cost per cell | what only it can see |
+|---|---|---|---|
+| source | `dedup.cpp_body_key` on the emitted C++ | one codegen | a knob the vectorizer ignores on THIS nest — before a compile is spent |
+| artifact | `dedup.variant_key` on `__program_<name>` | codegen + compile | two DIFFERENT sources the compiler folds to the same code |
+
+Neither subsumes the other, so both stay. The source screen is what closes finding 4; the artifact screen
+is the 42%-collapse one already measured over the flag axis.
+
+Measured, three descent seeds per nest, real DaCe emissions (`tests/test_dedup.py::test_the_codegen_screen_*`):
+
+| nest | distinct sources from 3 seeds | |
+|---|---|---|
+| `s275_n0`, `s231_n0` | 1 | inert — collapses, no compile spent |
+| `s000_n0`, `s1161_n0` | 3 | tiles — stays distinct, the width axis survives |
+
+Both directions are asserted. A screen that over-collapsed would silently delete the axis it exists to skip,
+which is the failure mode worth guarding: it would look like a faster sweep, not like a lost search.
 
 ## Next
 
-1. Wire the codegen-hash screen into the lane (finding 4): hash the seed against one flipped knob and skip
-   the nest when they match. Nothing else prunes an inert nest.
-2. Cheap corpus-wide screen (CI, codegen only, no compile): report how many of the 259 nests are inert and
-   how many tile at all.
-3. Time the 4-arm remainder axis per target — the C1 heatmap, and the reason this axis was worth the screen.
+1. Cheap corpus-wide screen (CI, codegen only, no compile): report how many of the 259 nests are inert and
+   how many tile at all. The per-nest machinery for this now exists; only the sweep driver is missing.
+2. Time the 4-arm remainder axis per target — the C1 heatmap, and the reason this axis was worth the screen.
