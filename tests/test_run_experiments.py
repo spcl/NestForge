@@ -135,3 +135,23 @@ def test_entry_point_forwards_argv_without_the_program_name():
     assert bad.value.code == 2
     src = SCRIPT.read_text()
     assert "sys.exit(main(sys.argv[1:]))" in src, "entry point must forward argv WITHOUT the program name"
+
+
+def test_only_is_not_truncated_by_the_kernel_budget(monkeypatch, tmp_path):
+    """--only names the sweep exactly. --kernels defaults to 1, and applying it on top swept just the
+    first named key while printing a complete-looking run."""
+    seen = []
+    import run_experiments as re_mod
+    monkeypatch.setattr(re_mod, "discover_compilers", lambda: {"gcc": "/usr/bin/gcc"})
+    monkeypatch.setattr(re_mod, "run_e1", lambda kernels, *a, **kw: seen.extend(k.key for k in kernels) or [])
+    main(["--out", str(tmp_path), "--only", "s221,s212", "--experiments", "e1"])
+    assert seen == ["s212", "s221"]  # corpus order, both kept
+
+
+def test_unknown_only_key_is_rejected(monkeypatch, tmp_path):
+    # iter_tsvc_kernels filters a set, so a typo'd key silently shrinks the sweep instead of failing.
+    import run_experiments as re_mod
+    monkeypatch.setattr(re_mod, "discover_compilers", lambda: {"gcc": "/usr/bin/gcc"})
+    with pytest.raises(SystemExit) as e:
+        main(["--out", str(tmp_path), "--only", "s212,nosuchkernel", "--experiments", "e1"])
+    assert e.value.code == 2

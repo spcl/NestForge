@@ -116,7 +116,9 @@ def main(argv: List[str]) -> int:
                 "scanned": scan.scanned,
                 "min_fusion_depth": args.min_fusion_depth
             }))
-    elif args.kernels:
+    elif args.kernels and not only:
+        # --only names the sweep exactly; letting --kernels (default 1) truncate it on top silently swept
+        # the first key and reported it as the whole run.
         kernels = kernels[:args.kernels]
     if not kernels:
         print(
