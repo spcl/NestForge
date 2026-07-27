@@ -153,7 +153,7 @@ def test_c_call_args_honors_the_declared_ctype():
     ctypes call raise once ``fn.argtypes`` is set, so every validated timing cell for that nest is dropped
     while the sibling driver (which uses ``t(sizes[a])``) times it fine.
     """
-    from nestforge.perf.tsvc_full import c_call_args
+    from nestforge.perf.harness import c_call_args
 
     order = ["arr", "n", "x"]
     argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int64, ctypes.c_double]

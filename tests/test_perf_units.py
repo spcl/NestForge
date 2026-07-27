@@ -144,7 +144,7 @@ def test_enumerate_cells_gates_veclib_cells_by_nest_math(tmp_path):
     """The veclib axis fans lane-3 cells off the PRECOMPUTED per-lang ``has_math`` flag: a math nest gets
     both none and libmvec timing cells, a plain-arithmetic nest gets none only. Dummy paths -- no source I/O."""
     from nestforge.perf import tsvc_full
-    from nestforge.perf.tsvc_arena import discover_toolchains
+    from nestforge.toolchain import discover_toolchains
     tcs = discover_toolchains("gcc")
     axes = {
         "opt_mode": "simplify-parallel",

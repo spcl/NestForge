@@ -9,7 +9,7 @@ from pathlib import Path
 
 from nestforge.toolchain import LIBGOMP, LIBOMP
 from nestforge.perf import flags, support_matrix, tsvc_full
-from nestforge.perf.tsvc_arena import Toolchain
+from nestforge.toolchain import Toolchain
 
 # The gnu link spelling for a runtime's soname (flags.openmp_runtime_flags): libgomp -> -lgomp, default
 # libomp -> -lomp, both pinned via --push-state,--no-as-needed. Discriminates "injected" from "default".

@@ -123,7 +123,7 @@ def test_pluto_lane_marshals_the_size_first_vla_abi_end_to_end(tmp_path, monkeyp
     garbage / a crash, not a bit-exact match to the numpy oracle."""
     from nestforge import tsvc
     from nestforge.perf import tsvc_full
-    from nestforge.perf.tsvc_arena import discover_toolchains
+    from nestforge.toolchain import discover_toolchains
     if not discover_toolchains("gcc"):
         pytest.skip("no gcc toolchain")
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]

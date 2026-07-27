@@ -33,7 +33,7 @@ from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
-from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.toolchain import Toolchain, discover_toolchains
 from nestforge.perf.harness import c_argtypes, call_c, load_results, my_slice, rank_and_size, run_compile, signature_order
 from nestforge.translate import emit_sources, prepare
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util  # a SUBMODULE: `import ctypes` alone does not bind it, and lib_findable needs it
 import functools
+import glob
 import os
 import re
 import shutil
@@ -659,6 +660,176 @@ def compiler_version(compiler: str) -> Tuple[int, int]:
         if m:
             return (int(m.group(1)), int(m.group(2)))
     return (0, 0)
+
+
+# --- whole-toolchain discovery (PATH + spack + vendor install roots) --------------------------------
+# Lives here, not in a perf DRIVER: perf/crosslang_xl, perf/support_matrix and perf/calloverhead all
+# imported perf/tsvc_arena purely to reach Toolchain/discover_toolchains, dragging a whole measurement
+# driver (and its dace import) in to answer "which compilers does this box have".
+@dataclass(slots=True)
+class Toolchain:
+    """One discovered toolchain family: its C compiler (for the translated nest) and C++ compiler (for
+    the native ``.cpp`` baseline), plus a version and where it was found."""
+    name: str  # family label: "gcc" | "clang" | "nvhpc" | "intel"
+    cc: str  # C compiler path (gcc / clang / nvc / icx)
+    cxx: Optional[str]  # C++ compiler path (g++ / clang++ / nvc++ / icpx); None -> no native column
+    version: Tuple[int, int]
+    source: str  # "path" | "spack"
+
+    @property
+    def family(self) -> str:
+        """OpenMP-runtime family of the C compiler (icx -> llvm). Use :attr:`fp_family` for flag matrices."""
+        return compiler_family(self.cc)
+
+    @property
+    def fp_family(self) -> str:
+        """Flag-matrix FP family. Intel is its own despite being clang-based (it defaults to
+        ``-fp-model=fast``); the rest coincide with :attr:`family`."""
+        return "intel" if self.name == "intel" else self.family
+
+
+#: family label -> (C compiler exe, C++ compiler exe).
+_FAMILY_EXES = {
+    "gcc": ("gcc", "g++"),
+    "clang": ("clang", "clang++"),
+    "nvhpc": ("nvc", "nvc++"),
+    "intel": ("icx", "icpx")
+}
+#: user tokens (compiler names/aliases) -> family label.
+_ALIASES = {
+    "gcc": "gcc", "g++": "gcc", "gnu": "gcc",
+    "clang": "clang", "clang++": "clang", "llvm": "clang",
+    "nvc": "nvhpc", "nvc++": "nvhpc", "nvhpc": "nvhpc", "nvidia": "nvhpc",
+    "icx": "intel", "icpx": "intel", "intel": "intel", "oneapi": "intel",
+}  # yapf: disable
+
+
+def spack_bin_dirs() -> List[Path]:
+    """``bin`` dirs of spack-INSTALLED gcc/llvm/nvhpc, so a compiler installed but not ``spack load``ed
+    onto PATH is still discoverable. Best-effort: never fatal, bounded by a short timeout."""
+    if not shutil.which("spack"):
+        return []
+    dirs: List[Path] = []
+    try:
+        out = subprocess.run(["spack", "find", "--paths", "--no-groups"], capture_output=True, text=True,
+                             timeout=25).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].split("@")[0] in ("gcc", "llvm", "nvhpc"):
+            bindir = Path(parts[-1]) / "bin"
+            if bindir.is_dir():
+                dirs.append(bindir)
+    return dirs
+
+
+def spack_compiler_bin_dirs() -> List[Path]:
+    """``bin`` dirs of every compiler spack has REGISTERED -- distinct from :func:`spack_bin_dirs`, which
+    enumerates spack-INSTALLED packages. Best-effort, bounded: capped specs + short per-call timeout."""
+    if not shutil.which("spack"):
+        return []
+    try:
+        listing = subprocess.run(["spack", "compiler", "list"], capture_output=True, text=True, timeout=25).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    specs = []
+    for line in listing.splitlines():
+        line = line.strip()
+        if not line or line.startswith("==>") or line.startswith("--"):
+            continue  # banner / header rules
+        specs += [tok for tok in line.split() if "@" in tok]
+    dirs: List[Path] = []
+    for spec in specs[:12]:
+        try:
+            info = subprocess.run(["spack", "compiler", "info", spec], capture_output=True, text=True,
+                                  timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in info.splitlines():
+            if "=" not in line:
+                continue  # lines like "\t\tcc = /opt/.../bin/gcc"
+            path = line.split("=", 1)[1].strip()
+            if path and os.path.isabs(path):
+                d = Path(path).parent
+                if d.is_dir() and d not in dirs:
+                    dirs.append(d)
+    return dirs
+
+
+#: Install roots of the vendor toolchains that ship OFF PATH under a versioned tree, newest-first globs.
+#: ``NF_EXTRA_COMPILER_DIRS`` (colon-separated) prepends a site's own prefix.
+_VENDOR_COMPILER_GLOBS = (
+    "/opt/intel/oneapi/compiler/*/bin",  # icx/icpx/ifx; NOT 'latest' -- can point at an ifx-only version
+    "/opt/nvidia/hpc_sdk/Linux_x86_64/*/compilers/bin",  # nvc / nvc++ / nvfortran
+)
+
+
+def vendor_compiler_bin_dirs() -> List[Path]:
+    """``bin`` dirs of vendor toolchains at their default location but not on PATH (Intel oneAPI,
+    NVIDIA HPC), ``NF_EXTRA_COMPILER_DIRS`` first.
+
+    setvars.sh is deliberately NOT sourced: the arena dlopens libraries in-process, so a shell-start
+    LD_LIBRARY_PATH would not reach the loader (rpath is baked instead, see ``flags.support_rpath_flags``).
+    Newest version first, because an older oneAPI dir may ship ``ifx`` with no ``icx`` and hide the
+    real compiler."""
+    dirs: List[Path] = []
+    for d in os.environ.get("NF_EXTRA_COMPILER_DIRS", "").split(os.pathsep):
+        p = Path(d)
+        if d and p.is_dir():
+            dirs.append(p)
+    for pattern in _VENDOR_COMPILER_GLOBS:
+        for d in sorted((Path(x) for x in glob.glob(pattern)), reverse=True):
+            if d.is_dir() and d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
+def which_on_path(exe: str, extra_dirs: List[Path]) -> Optional[str]:
+    """``exe`` on PATH, else under one of ``extra_dirs`` (the spack + vendor install bins)."""
+    found = shutil.which(exe)
+    if found:
+        return found
+    for d in extra_dirs:
+        cand = d / exe
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def discover_toolchains(requested: str = "auto") -> List[Toolchain]:
+    """Discover the requested toolchain families. ``"auto"`` (or ``"all"``) enumerates gcc / clang /
+    nvhpc; otherwise ``requested`` is a whitespace list of compiler names/aliases. A family is kept when
+    its C compiler is found (on PATH or in a spack install bin); its C++ compiler is optional (its
+    absence just drops that family's native column)."""
+    tokens = list(_FAMILY_EXES) if requested.strip() in ("", "auto", "all") else requested.split()
+    families: List[str] = []
+    for t in tokens:
+        fam = _ALIASES.get(t.strip())
+        if fam is None:
+            warnings.warn(f"unknown compiler token {t!r}; known: {sorted(_ALIASES)}")
+        elif fam not in families:
+            families.append(fam)
+    # installed AND registered: a spack-default host may have a compiler registered but not in a
+    # `spack find` prefix
+    extra_dirs = spack_bin_dirs()
+    for d in spack_compiler_bin_dirs() + vendor_compiler_bin_dirs():
+        if d not in extra_dirs:
+            extra_dirs.append(d)
+    out: List[Toolchain] = []
+    for fam in families:
+        cc_exe, cxx_exe = _FAMILY_EXES[fam]
+        cc = which_on_path(cc_exe, extra_dirs)
+        if cc is None:
+            warnings.warn(f"{fam}: C compiler {cc_exe!r} not found (PATH, spack or vendor default); skipping "
+                          f"this family")
+            continue
+        cxx = which_on_path(cxx_exe, extra_dirs)
+        if cxx is None:
+            warnings.warn(f"{fam}: C++ compiler {cxx_exe!r} not found; native-baseline column disabled for {fam}")
+        source = "path" if shutil.which(cc_exe) else "vendor/spack"
+        out.append(Toolchain(name=fam, cc=cc, cxx=cxx, version=compiler_version(cc), source=source))
+    return out
 
 
 @functools.lru_cache(maxsize=None, typed=True)

@@ -40,13 +40,12 @@ import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 
 from nestforge import tsvc
 from nestforge.arena import accumulating_outputs, make_inputs, rewind, rewind_snapshot
-from nestforge.toolchain import COMPILE_TIMEOUT_S, ar_for, fat_lto_flags, raw_signature
+from nestforge.toolchain import (COMPILE_TIMEOUT_S, ar_for, discover_toolchains, fat_lto_flags, raw_signature)
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
-from nestforge.perf.tsvc_arena import discover_toolchains
-from nestforge.perf.harness import c_argtypes, load_results, median, my_slice, rank_and_size, signature_order
-from nestforge.perf.tsvc_full import c_call_args
+from nestforge.perf.harness import (c_argtypes, c_call_args, load_results, median, my_slice, rank_and_size,
+                                    signature_order)
 from nestforge.translate import emit_sources, prepare
 
 

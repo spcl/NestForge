@@ -12,7 +12,7 @@ import pytest
 from nestforge.perf import flags
 from nestforge.perf.support_matrix import (MachineCompat, MatrixCell, build_support_matrix, loop_source, machine_compat,
                                            machine_config, render_matrix, resolve_tool_paths, surviving_runtimes)
-from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.toolchain import Toolchain, discover_toolchains
 
 
 def cell(runtime, compilers, correct=True):

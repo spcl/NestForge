@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from nestforge.perf import flags, tsvc_full
-from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.toolchain import Toolchain, discover_toolchains
 
 
 def test_compiler_for_routes_by_language_and_none_when_absent():

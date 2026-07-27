@@ -65,8 +65,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
-
 import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a cwd stub)
 
 from nestforge import tsvc
@@ -80,9 +78,9 @@ from nestforge.isolation import run_isolated
 from nestforge.perf import flags, pluto_lane, support_matrix
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
-from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable,
-                                    load_results, my_slice, native_setup, native_symbol, rank_and_size, run_compile,
-                                    signature_order)
+from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, c_call_args, call_c, finite, fmt_us,
+                                    jsonable, load_results, my_slice, native_setup, native_symbol, rank_and_size,
+                                    run_compile, signature_order)
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
@@ -187,13 +185,6 @@ def collect_samples(fn, cargs, reps: int, snapshot=()) -> List[float]:
         fn(*cargs)
         samples.append((time.perf_counter() - t0) * 1e6)
     return samples
-
-
-def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], sizes: Dict[str, int]) -> list:
-    """ctypes arguments for the emitted kernel, in C-signature order: array -> buffer pointer, size
-    symbol -> scalar by value. Uses each arg's own type, since a leaked FLOAT scalar is typed
-    ``c_double`` by :func:`c_argtypes` and a hardcoded int64 would raise."""
-    return [work[a].ctypes.data_as(t) if a in work else t(sizes[a]) for a, t in zip(order, argtypes)]
 
 
 # --- lane 3: nest cell validate / time (run inside a forked child) -----------------------------------

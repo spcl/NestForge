@@ -14,7 +14,7 @@ import pytest
 
 from nestforge import tsvc
 from nestforge.perf import calloverhead as co
-from nestforge.perf.tsvc_arena import discover_toolchains
+from nestforge.toolchain import discover_toolchains
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLOT_CALLOVERHEAD = REPO_ROOT / "perf" / "plot_calloverhead.py"

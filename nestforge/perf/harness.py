@@ -98,6 +98,13 @@ def c_argtypes(order: List[str], boundary) -> list:
     ]
 
 
+def c_call_args(order: List[str], argtypes: list, work: Dict[str, np.ndarray], sizes: Dict[str, int]) -> list:
+    """ctypes arguments for the emitted kernel, in C-signature order: array -> buffer pointer, size
+    symbol -> scalar by value. Uses each arg's own type, since a leaked FLOAT scalar is typed
+    ``c_double`` by :func:`c_argtypes` and a hardcoded int64 would raise."""
+    return [work[a].ctypes.data_as(t) if a in work else t(sizes[a]) for a, t in zip(order, argtypes)]
+
+
 def call_c(so: Path,
            symbol: str,
            order: List[str],

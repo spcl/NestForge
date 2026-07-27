@@ -19,10 +19,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from nestforge.toolchain import OPENMP_RUNTIMES, OpenMPRuntime, compiler_family, driver_lib_path
+from nestforge.toolchain import (OPENMP_RUNTIMES, OpenMPRuntime, Toolchain, compiler_family, discover_toolchains,
+                                 driver_lib_path)
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags
-from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 
 #: Discovered toolchain config cache -- probed once, then loaded verbatim until deleted (or refreshed).
 DEFAULT_CACHE = Path(
