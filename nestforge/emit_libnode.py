@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import sympy
+
 import dace
 from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
@@ -38,8 +40,25 @@ def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
         elif str(step) == "1":
             parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(end + 1)}")
         else:
-            parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(end + 1)}:{symbolic.symstr(step)}")
+            stop = exclusive_stop(end, step)
+            if stop is None:
+                raise UnsupportedLibraryNode(f"subset range ({beg}, {end}, {step}) has a step of undecidable sign; "
+                                             "no sound numpy slice stop")
+            parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(stop)}:{symbolic.symstr(step)}")
     return ", ".join(parts)
+
+
+def exclusive_stop(end: sympy.Expr, step: sympy.Expr) -> Optional[sympy.Expr]:
+    """One past the last element in the direction of travel for a DaCe range whose ``end`` is INCLUSIVE;
+    ``None`` when the step's sign is not decidable (no sound stop exists, so callers must refuse).
+
+    A blanket ``end + 1`` is right only for a POSITIVE step. For the reverse read ``(4, 0, -1)`` it renders
+    ``4:1:-1``, which yields three elements instead of five -- silently dropping the tail of every
+    reversed/negative-stride access, including in the numpy reference that validation compares against."""
+    sign = sympy.sign(sympy.sympify(step))
+    if sign not in (1, -1):
+        return None
+    return end + sign
 
 
 def covers_whole(subset: dace.subsets.Range, desc: dace.data.Data) -> bool:

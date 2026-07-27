@@ -114,8 +114,17 @@ def call_c(so: Path,
     """Bind by the C signature order, run once for correctness (snapshotting outputs), then time ``reps``
     calls on the same buffers, mutating ``inputs`` in place. Callers must run this in a forked child.
 
-    :param copy_outputs: ``False`` skips the snapshot for a pure-timing caller; at profiling size it
-        would double the child's peak RSS."""
+    An array that is both READ and WRITTEN is restored before every timed rep, outside the timed region.
+    Without it an in-place kernel (``a[:] = a[:] * b``) feeds on its own output: TSVC inputs are drawn from
+    [0, 0.25), so by rep k the buffer holds ``a * b**k`` and reaches denormals within a handful of reps --
+    the median then times subnormal arithmetic rather than the kernel, and the faster candidate is whichever
+    decayed slower. :func:`nestforge.arena.call_native` already restores; this path was missed.
+
+    Only the read-write intersection is snapshotted, not every input: an output the kernel fully overwrites
+    cannot accumulate, and at the profiling preset a blanket copy would double the child's peak RSS.
+
+    :param copy_outputs: ``False`` skips the RESULT snapshot for a pure-timing caller (same RSS reason); the
+        restore snapshot above is not optional, since it decides what the timing means."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
 
@@ -125,14 +134,20 @@ def call_c(so: Path,
             for a, t in zip(order, argtypes)
         ]
 
+    accumulating = [o for o in boundary.outputs if o in boundary.inputs and o in inputs]
+    pristine = {o: inputs[o].copy() for o in accumulating}
     fn(*build_args())  # correctness run
     outputs = {o: inputs[o].copy() for o in boundary.outputs} if copy_outputs else None
     cargs = build_args()
     fn(*cargs)  # warm
-    t0 = time.perf_counter()
+    total = 0.0
     for _ in range(reps):
+        for name in accumulating:
+            inputs[name][...] = pristine[name]
+        t0 = time.perf_counter()
         fn(*cargs)
-    return outputs, (time.perf_counter() - t0) / reps * 1e6
+        total += time.perf_counter() - t0
+    return outputs, total / reps * 1e6
 
 
 def native_symbol(text: str, expected: str) -> str:

@@ -15,6 +15,8 @@ import copy
 import os
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 import dace
 import dace.library
 import dace.properties
@@ -81,7 +83,15 @@ def proto_and_call(node: "ExternalCall", state: dace.SDFGState) -> Tuple[str, st
     arrays = set(manifest["array_args"])
     outputs = set(manifest["output_args"])
     dtypes_map = {a: v["dtype"] for a, v in manifest["init"]["arrays"].items()}
-    scalar_dtypes = {n: v["dtype"] for n, v in (manifest["init"].get("scalars") or {}).items() if isinstance(v, dict)}
+    # `init.scalars` carries a bare DEFAULT VALUE, not a descriptor -- emit_yaml writes `{name: 0.0}` and
+    # relies on the value's type to say "double" (see its comment on float value scalars). The dict form is
+    # still accepted, but requiring it made this mapping unconditionally EMPTY, so every float value scalar
+    # fell to the 'int64' default below and was declared int64_t: the truncation + SysV register-class
+    # break this function's own docstring warns about, with nothing to signal it.
+    scalar_dtypes = {
+        n: (v["dtype"] if isinstance(v, dict) else np.dtype(type(v)).name)
+        for n, v in (manifest["init"].get("scalars") or {}).items()
+    }
     by_value = value_connectors(node, state)
     order = list(node.abi_order or [])
     if not order:

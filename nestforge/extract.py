@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import dace
 from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
+from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
 NestNode = Union[nodes.MapEntry, LoopRegion, SDFGState]
@@ -103,6 +104,37 @@ def nest_defined_symbols(loop: LoopRegion) -> set:
     return syms
 
 
+def assignment_dtype(sdfg: dace.SDFG, rhs: str) -> dace.dtypes.typeclass:
+    """The dtype of an inter-state assignment's right-hand side, inferred from ``sdfg``'s symbol and array
+    tables; ``int64`` when it cannot be inferred.
+
+    A loop variable is an integer, but an assignment target is not necessarily one: canonicalization stages
+    a float read (``delta = A[i] * 0.5``) as exactly such a symbol, and declaring it int64 truncates every
+    value that crosses the nest boundary -- a wrong answer, not a crash. Inference only ever replaces the
+    int64 assumption when it succeeds, so an expression dace cannot type keeps the previous behaviour."""
+    table = {s: t for s, t in sdfg.symbols.items()}
+    table.update({name: desc.dtype for name, desc in sdfg.arrays.items()})
+    try:
+        inferred = infer_expr_type(rhs, table)
+    except Exception:  # inference walks arbitrary expression ASTs; an untypeable RHS keeps the default
+        return dace.int64
+    return inferred if isinstance(inferred, dace.dtypes.typeclass) else dace.int64
+
+
+def nest_defined_symbol_dtypes(sdfg: dace.SDFG, loop: LoopRegion) -> Dict[str, dace.dtypes.typeclass]:
+    """Every symbol :func:`nest_defined_symbols` reports, mapped to the dtype it should be declared with:
+    ``int64`` for a loop variable, the inferred type of the assigned expression for an assignment target."""
+    dtypes: Dict[str, dace.dtypes.typeclass] = {}
+    for b in [loop, *loop.all_control_flow_blocks()]:
+        if isinstance(b, LoopRegion) and b.loop_variable and b.init_statement:
+            dtypes[b.loop_variable] = dace.int64
+    for e in loop.all_interstate_edges():
+        for target, rhs in e.data.assignments.items():
+            if target not in dtypes:
+                dtypes[target] = assignment_dtype(sdfg, str(rhs))
+    return dtypes
+
+
 def trip_count_symbols(sdfg: dace.SDFG) -> set:
     """Symbols that can change HOW MUCH work ``sdfg`` does: loop init/condition/update statements, map
     ranges, and inter-state-edge conditions -- named as ``sdfg`` itself sees them.
@@ -142,10 +174,12 @@ def trip_count_symbols(sdfg: dace.SDFG) -> set:
 def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
     """Outline a CFG loop region into a standalone SDFG (M1)."""
     from dace.sdfg.graph import SubgraphView
-    # pre-declare each nest-defined symbol as int64: nest_sdfg_subgraph KeyErrors otherwise.
-    for s in nest_defined_symbols(loop):
+    # pre-declare each nest-defined symbol: nest_sdfg_subgraph KeyErrors otherwise. The dtype is INFERRED,
+    # not int64 by fiat -- nest_sdfg_subgraph's own type-inference fallback reads whatever is registered
+    # here, so a float staged across an interstate edge would be locked to int64 and truncated silently.
+    for s, dtype in nest_defined_symbol_dtypes(parent_sdfg, loop).items():
         if s not in parent_sdfg.symbols:
-            parent_sdfg.add_symbol(s, dace.int64)
+            parent_sdfg.add_symbol(s, dtype)
     subgraph = SubgraphView(parent_sdfg, [loop])
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     # find the NestedSDFG node in the state nest_sdfg_subgraph returned.
