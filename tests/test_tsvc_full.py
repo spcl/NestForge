@@ -568,3 +568,105 @@ def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
                                workdir=tmp_path)
     assert "skipped" not in res, res.get("skipped")
     assert res["dace_cpp"] and all(c["ok"] and c["maxdiff"] == 0.0 for c in res["dace_cpp"])
+
+
+def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
+    """The descent compiles a cell per config, and a nest the vectorizer declines to touch emits the SAME
+    object for every one of them -- `resolved_key` cannot see that, because the configs genuinely differ.
+    Without the artifact key the lane re-times one build a dozen times and reports the spread as a
+    measured width/remainder preference.
+    """
+    import dace
+
+    from nestforge.toolchain import Toolchain
+
+    N = dace.symbol("N")
+
+    @dace.program
+    def vadd(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+        c[:] = a + b
+
+    class FakeBoundary:
+        standalone_sdfg = vadd.to_sdfg(simplify=True)
+
+    class FakeBuilt:
+        so_path = tmp_path / "inert.so"
+
+        def unload(self):
+            pass
+
+    runs = {"n": 0}
+
+    def fake_run(*a, **k):
+        runs["n"] += 1
+        return {
+            "ok": True,
+            "maxdiff": 0.0,
+            "median_us": 4.0,
+            "min_us": 4.0,
+            "p25_us": 4.0,
+            "p75_us": 4.0,
+            "mean_us": 4.0
+        }
+
+    monkeypatch.setattr(tsvc_full, "dace_build_sdfg", lambda *a, **k: FakeBuilt())
+    monkeypatch.setattr(tsvc_full, "run_isolated", fake_run)
+    monkeypatch.setattr(tsvc_full, "variant_key", lambda so, symbol=None: "one-and-only-artifact")
+
+    tc = Toolchain(name="gcc", cc="gcc", cxx="g++", version=(13, 0), source="path")
+    cell = tsvc_full.measure_dace_vectorized_lane(tc,
+                                                  FakeBoundary(), {"N": 8}, {}, {"N": 8}, {},
+                                                  reps=1,
+                                                  cxx_std="c++20",
+                                                  workdir=tmp_path)
+    assert cell["ok"] and cell["median_us"] == 4.0
+    assert runs["n"] == 1, f"one artifact, {runs['n']} timed runs -- the artifact dedup is not wired in"
+
+
+def test_the_vectorize_lane_still_times_distinct_artifacts(monkeypatch, tmp_path):
+    """The other direction: a key that differs per build must NOT collapse, or the lane would report one
+    config's time for every cell and the search would be measuring nothing."""
+    import dace
+
+    from nestforge.toolchain import Toolchain
+
+    N = dace.symbol("N")
+
+    @dace.program
+    def vadd2(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+        c[:] = a + b
+
+    class FakeBoundary:
+        standalone_sdfg = vadd2.to_sdfg(simplify=True)
+
+    class FakeBuilt:
+        so_path = tmp_path / "distinct.so"
+
+        def unload(self):
+            pass
+
+    runs = {"n": 0}
+
+    def fake_run(*a, **k):
+        runs["n"] += 1
+        return {
+            "ok": True,
+            "maxdiff": 0.0,
+            "median_us": float(10 - runs["n"]),
+            "min_us": 1.0,
+            "p25_us": 1.0,
+            "p75_us": 1.0,
+            "mean_us": 1.0
+        }
+
+    monkeypatch.setattr(tsvc_full, "dace_build_sdfg", lambda *a, **k: FakeBuilt())
+    monkeypatch.setattr(tsvc_full, "run_isolated", fake_run)
+    monkeypatch.setattr(tsvc_full, "variant_key", lambda so, symbol=None: f"artifact-{runs['n']}")
+
+    tc = Toolchain(name="gcc", cc="gcc", cxx="g++", version=(13, 0), source="path")
+    tsvc_full.measure_dace_vectorized_lane(tc,
+                                           FakeBoundary(), {"N": 8}, {}, {"N": 8}, {},
+                                           reps=1,
+                                           cxx_std="c++20",
+                                           workdir=tmp_path)
+    assert runs["n"] > 1, "every artifact differed, so every cell had to be timed"

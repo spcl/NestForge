@@ -73,6 +73,7 @@ from nestforge import vectorize_variants as vv
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
+from nestforge.dedup import variant_key
 from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags, pluto_lane, support_matrix
@@ -424,6 +425,8 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     # ICE'd on all 40 configs and a lane whose nest genuinely cannot vectorize reported the SAME sentence --
     # and the first is a toolchain bug to fix, the second a result to keep.
     rejected: Dict[str, int] = {}
+    #: dedup.variant_key -> the cell actually measured for that artifact.
+    by_artifact: Dict[str, Dict] = {}
 
     def reject(reason: str) -> None:
         rejected[reason] = rejected.get(reason, 0) + 1
@@ -437,6 +440,19 @@ def measure_dace_vectorized_lane(tc: Toolchain,
         except Exception as e:  # noqa: BLE001 -- a config the vectorizer/codegen rejects is not a candidate
             reject(f"build: {type(e).__name__}: {str(e)[:100]}")
             return None
+        # Group by the ARTIFACT, as arena.run_arena does on the flag axis. `resolved_key` collapses the
+        # configs provably equivalent from the CONFIG alone; only the built object shows the rest -- and a
+        # nest the vectorizer declines to touch emits the SAME object for every cell, so the descent would
+        # otherwise re-time one build a dozen times. One objdump against reps x the kernel.
+        key = variant_key(built.so_path)
+        if key is not None and key in by_artifact:
+            built.unload()
+            twin = by_artifact[key]
+            results[vv.resolved_key(cfg)] = {
+                **twin, "vec_variant": vv.variant_name(cfg),
+                "same_as": twin["vec_variant"]
+            }
+            return twin["median_us"]
         try:
             res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
                                                      atol, reps, validate_fills),
@@ -452,7 +468,10 @@ def measure_dace_vectorized_lane(tc: Toolchain,
         if not finite(res.get("median_us", float("inf"))):
             reject("timing: non-finite median")
             return None
-        results[vv.resolved_key(cfg)] = {**res, "vec_variant": vv.variant_name(cfg)}
+        cell = {**res, "vec_variant": vv.variant_name(cfg)}
+        results[vv.resolved_key(cfg)] = cell
+        if key is not None:
+            by_artifact[key] = cell
         return res["median_us"]
 
     # Prune the one axis this NEST may not be able to move before spending a compile on it: fp_factor is a
