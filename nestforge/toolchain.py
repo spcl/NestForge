@@ -354,6 +354,30 @@ def runtime_installed(rt: OpenMPRuntime) -> bool:
     return lib_findable(rt.soname, rt.lib_dir)
 
 
+@functools.lru_cache(maxsize=None, typed=True)
+def usable_openmp(compiler: str) -> Optional[OpenMPRuntime]:
+    """The ONE OpenMP runtime ``compiler`` can actually link, preferring the mandated ``libomp``.
+
+    CPU codegen emits ``#pragma omp parallel for`` whether or not the build enables OpenMP; without it the
+    compiler DROPS the pragma (``-Wunknown-pragmas``) and the measured program is serial while the schedule
+    says otherwise. So the runtime is resolved rather than left to the caller.
+
+    Resolved, never a bare ``-fopenmp``: that lets each family link its own default (gcc->libgomp,
+    clang->libomp), which puts two thread pools in one process as soon as a sweep spans compilers -- the
+    single-runtime contract ``OpenMPRuntime.check`` exists to enforce. ``None`` when nothing links, so the
+    caller can build serial rather than fail.
+
+    Preference order is libomp first (LLVM-selectable AND GOMP-compatible, so gcc- and clang-built objects
+    share one pool), then whatever else this compiler accepts."""
+    for rt in (LIBOMP, *OPENMP_RUNTIMES.values()):
+        if not rt.compatible(compiler):
+            continue
+        # intel-classic/nvidia hard-link their own runtime through -qopenmp/-mp; there is no -l to resolve.
+        if compiler_family(compiler) in ("intel-classic", "nvidia") or lib_linkable(rt.soname, compiler):
+            return rt
+    return None
+
+
 #: clang/icx -fveclib token per veclib. x86 has no -fveclib=SLEEF, so sleef reuses libmvec's token
 #: (differs only in linked lib, libsleefgnuabi); svml is __svml_*.
 _CLANG_VECLIB = {"sleef": "libmvec", "libmvec": "libmvec", "svml": "SVML"}

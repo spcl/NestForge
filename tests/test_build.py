@@ -627,3 +627,26 @@ def test_a_clean_compile_warns_about_nothing(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning at all fails this test
         toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "clean.o")])
+
+
+def test_a_cpu_build_links_an_openmp_runtime_by_default():
+    """dace emits `#pragma omp parallel for` for every multicore map. A build that passes no OpenMP flag
+    DROPS the pragma and runs the schedule serially -- silently, since the program is still correct. So the
+    runtime is resolved rather than left to the caller."""
+    rt = toolchain_mod.usable_openmp("g++")
+    assert rt is not None, "no OpenMP runtime linkable by g++ on this box"
+    assert "-fopenmp" in " ".join(rt.compile_flags("g++"))
+
+
+def test_the_resolved_runtime_is_named_never_a_bare_fopenmp():
+    """A bare -fopenmp lets each family link its own default (gcc->libgomp, clang->libomp), so a sweep
+    spanning compilers ends up with two thread pools in one process. libomp is preferred because it is
+    LLVM-selectable AND GOMP-compatible, so gcc- and clang-built objects share one pool."""
+    assert toolchain_mod.usable_openmp("g++") is toolchain_mod.usable_openmp("clang++")
+    assert toolchain_mod.usable_openmp("g++").name == "libomp"
+
+
+def test_an_explicit_runtime_is_not_overridden():
+    """A lane pinning a runtime (the support matrix sweeps them) must keep it."""
+    opts = BuildOptions(openmp=toolchain_mod.LIBGOMP)
+    assert opts.openmp is toolchain_mod.LIBGOMP

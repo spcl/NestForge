@@ -17,6 +17,7 @@ import ctypes
 import functools
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
 import time
+import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -29,7 +30,8 @@ from dace.codegen import compiler as dace_compiler
 from dace.transformation.auto.auto_optimize import set_fast_implementations
 
 from nestforge.toolchain import (CXX_STD, DEFAULT_COMPILER, DEFAULT_FLAGS, OpenMPRuntime, Param, VectorMathLib, ar_for,
-                                 ccache_prefix, fastest_linker, fat_lto_flags, parse_params, run, signature)
+                                 ccache_prefix, fastest_linker, fat_lto_flags, parse_params, run, signature,
+                                 usable_openmp)
 
 # TODO(blas): a BLAS/LAPACK axis (openblas/mkl/blis/nvpl/accelerate) the same way -- discovery exists
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
@@ -242,8 +244,15 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     compiler = opts.compiler
     flags = opts.resolved_flags()
     inc = include_flags(folder)
-    omp_c = opts.openmp.compile_flags(compiler) if opts.openmp else []
-    omp_l = opts.openmp.link_flags(compiler) if opts.openmp else []
+    # OpenMP is REQUIRED for CPU: dace emits `#pragma omp parallel for` for every multicore map, and a
+    # build without it drops the pragma and runs the schedule serially. An explicit opts.openmp pins the
+    # runtime; otherwise resolve one (never a bare -fopenmp -- see toolchain.usable_openmp).
+    omp = opts.openmp or usable_openmp(compiler)
+    if omp is None:
+        warnings.warn(f"{Path(compiler).name} can link no OpenMP runtime; building SERIAL -- any parallel "
+                      "map in this SDFG is emitted as an ignored pragma and the timing is single-threaded")
+    omp_c = omp.compile_flags(compiler) if omp else []
+    omp_l = omp.link_flags(compiler) if omp else []
     vec_c = opts.veclib.compile_flags(compiler) if opts.veclib else []
     vec_l = opts.veclib.link_flags(compiler) if opts.veclib else []
     blas_l = list(opts.blas_link or [])  # link the chosen BLAS (fast_libnodes)
