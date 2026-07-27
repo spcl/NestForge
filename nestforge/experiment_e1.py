@@ -139,17 +139,26 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
                 canonical: Optional["object"] = None,
                 preset: str = "S",
                 seed: int = 0,
-                emitted: Optional[List[EmittedNest]] = None) -> E1Cell:
+                emitted: Optional[List[EmittedNest]] = None,
+                lowered: Optional["object"] = None) -> E1Cell:
     """Measure one (kernel, backend, granularity) heatmap cell.
 
     Lowers the granularity-applied canonical program to find its nests, builds a per-backend archive for
     them, and swaps every nest to that backend before timing the whole program in context.
 
-    ``canonical`` is the kernel's P0 program and ``emitted`` the rung's C: both are backend-invariant, so
-    the sweep builds each once and shares it across the cells that differ only by backend."""
+    ``canonical`` is the kernel's P0 program, ``lowered`` the granularity-applied one, and ``emitted`` the
+    rung's C. All three are backend-invariant, so the sweep builds each once and shares it across the cells
+    that differ only by backend. ``lowered`` is only READ (measure_in_context lowers a deepcopy), so one
+    instance is safe to hand to every backend."""
     out_dir = Path(out_dir)
-    sdfg, calls = lower_rung(canonical if canonical is not None else tsvc.build_sdfg(kernel, opt_mode), point, unit)
-    if not calls:
+    calls: List[Tuple[ExternalCall, Boundary]] = []
+    if lowered is None:
+        # Standalone call (E3/E4/E5, or a test): derive the backend-invariant halves here. The sweep hands
+        # them in instead, because applying the granularity and lowering it once per BACKEND repeated a
+        # fission + fusion-move search + a per-nest extraction whose result is then never read.
+        lowered, calls = lower_rung(canonical if canonical is not None else tsvc.build_sdfg(kernel, opt_mode), point,
+                                    unit)
+    if not (calls or emitted):
         # No nest at this unit (e.g. unit='cfg' on a kernel with no LoopRegion). Measuring anyway would time
         # the all-reference program under a backend label -- identical for every backend, because no backend
         # compiled anything -- fabricating "backend-independent" heatmap data. Record it as a skip instead.
@@ -162,7 +171,7 @@ def run_e1_cell(kernel: tsvc.TsvcKernel,
         variants=variants,
         granularity=unit,
         opt_mode=opt_mode,
-        sdfg=sdfg,  # already canonical + granularity-applied above; do not rebuild it
+        sdfg=lowered,  # already canonical + granularity-applied; do not rebuild it (and it is only READ)
         reps=reps,
         # Pinned, not defaulted: E2 divides these times by a baseline measured through a DIFFERENT entry
         # point (measure_whole_program), and two independent defaults drifting apart would silently
@@ -212,10 +221,15 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
         # identical text once per backend.
         for point in ladder:
             rung_dir = out_dir / kernel.key / point.name / "nests"
-            emitted, rung_error = None, None
+            emitted, lowered, rung_error = None, None, None
             try:
-                _, calls = lower_rung(canonical, point, unit)
+                # Both halves are backend-invariant, so they are computed ONCE per rung and shared: applying
+                # the granularity and lowering it again per backend repeated a fission plus a fusion-move
+                # search plus a per-nest extraction, and every backend but the first threw the result away.
+                lowered, calls = lower_rung(canonical, point, unit)
                 emitted = emit_nest_sources(calls, rung_dir) if calls else None
+                if not calls:
+                    rung_error = f"no {unit!r} nest to offload at granularity {point.name!r}"
             except caught as e:
                 # The rung failed to lower or emit: it fails identically for every backend, so it is
                 # recorded on each of its cells rather than rediscovered once per backend.
@@ -238,7 +252,8 @@ def run_e1(kernels: Sequence[tsvc.TsvcKernel],
                                     canonical=canonical,
                                     preset=preset,
                                     seed=seed,
-                                    emitted=emitted))
+                                    emitted=emitted,
+                                    lowered=lowered))
                 except caught as e:
                     cells.append(E1Cell(kernel.key, backend_name, point.name, unit, float("inf"), False, repr(e)))
                 finally:

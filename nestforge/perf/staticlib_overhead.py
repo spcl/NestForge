@@ -33,7 +33,7 @@ import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 from nestforge import tsvc
 from nestforge.arena import discover_blas_libraries
 from nestforge.build import BuildOptions, compare_link_modes
-from nestforge.perf.harness import median, my_slice, rank_and_size
+from nestforge.perf.harness import load_results, median, my_slice, rank_and_size
 
 
 def run_kernel(kernel: "tsvc.TsvcKernel", compiler: str, reps: int, opt_mode: str, fast_libnodes: bool) -> Dict:
@@ -72,8 +72,7 @@ def seed_dir(out: Path) -> Path:
 
 
 def render_tables(out: Path) -> str:
-    files = sorted(p for p in out.glob("*.json") if p.name != "tables.md")
-    rows = [json.loads(p.read_text()) for p in files]
+    rows = load_results(out)
     done = [r for r in rows if "monolithic_ms" in r]
     skipped = [r for r in rows if "skipped" in r]
     lines = [

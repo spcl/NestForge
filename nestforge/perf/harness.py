@@ -14,6 +14,7 @@ import re
 import statistics
 import subprocess
 import time
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -102,6 +103,19 @@ def c_argtypes(order: List[str], boundary) -> list:
     ]
 
 
+def accumulating_outputs(boundary, buffers) -> List[str]:
+    """Outputs the kernel both READS and WRITES -- the ones a timed rep loop must restore.
+
+    Every timing path in the repo needs this same set, and getting it wrong is invisible: an in-place nest
+    left un-restored feeds on its own output, so rep k computes ``a * b**k``, reaches denormals within a
+    handful of reps, and the median times subnormal arithmetic instead of the kernel. One definition, so a
+    caller cannot quietly disagree about which buffers decay.
+
+    A fully-overwritten output is deliberately NOT in the set: it cannot accumulate, and snapshotting it
+    would double peak RSS at the profiling preset for nothing."""
+    return [o for o in boundary.outputs if o in boundary.inputs and o in buffers]
+
+
 def call_c(so: Path,
            symbol: str,
            order: List[str],
@@ -134,7 +148,7 @@ def call_c(so: Path,
             for a, t in zip(order, argtypes)
         ]
 
-    accumulating = [o for o in boundary.outputs if o in boundary.inputs and o in inputs]
+    accumulating = accumulating_outputs(boundary, inputs)
     pristine = {o: inputs[o].copy() for o in accumulating}
     fn(*build_args())  # correctness run
     outputs = {o: inputs[o].copy() for o in boundary.outputs} if copy_outputs else None
@@ -227,13 +241,23 @@ def jsonable(obj):
 
 
 def load_results(results_dir: Path) -> List[dict]:
-    """Every per-kernel JSON in ``results_dir`` (``tables.md`` and unparseable files skipped)."""
+    """Every per-kernel JSON in ``results_dir``.
+
+    A driver writes one file per kernel as it goes, so a results directory routinely contains a file that
+    is truncated (the job was killed) or still being written (a concurrent rank). Reading them with a bare
+    ``json.loads`` takes the whole report down over one bad file, losing every kernel that DID finish --
+    which is the opposite of what per-kernel files are for.
+
+    An unreadable file is skipped, but WARNED about, never passed over in silence: a table quietly missing
+    three kernels reads exactly like a sweep that only ran the others."""
     rows: List[dict] = []
+    unreadable: List[str] = []
     for path in sorted(results_dir.glob("*.json")):
-        if path.name == "tables.md":
-            continue
         try:
             rows.append(json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError, ValueError):
-            continue
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            unreadable.append(f"{path.name}: {type(e).__name__}")
+    if unreadable:
+        warnings.warn(f"{results_dir}: skipped {len(unreadable)} unreadable result file(s) -- the tables below "
+                      f"are missing their kernels: {', '.join(sorted(unreadable))}")
     return rows

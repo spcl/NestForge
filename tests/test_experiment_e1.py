@@ -6,6 +6,7 @@ compiles and forks, gated on a C toolchain."""
 import pytest
 import dace
 
+from nestforge import experiment_e1, tsvc
 from nestforge.arena import discover_compilers
 from nestforge.experiment_e1 import E1Cell, best_granularity_per_backend, no_granularity_axis, run_e1, run_e1_cell
 from nestforge.granularity import GranularityPoint, fuse_first_k
@@ -146,7 +147,6 @@ def test_unit_with_no_nest_is_a_skip_not_fabricated_data(tmp_path):
 def test_a_zero_argument_nest_is_reported_where_it_happens(tmp_path, monkeypatch):
     """An empty ABI order used to surface at expansion as "has no abi_order", which names the arena --
     the wrong place to look. It must fail where the empty signature is read, naming the nest's boundary."""
-    from nestforge import experiment_e1
 
     class FakeBoundary:
         inputs, outputs, symbols = (), (), ()
@@ -162,3 +162,21 @@ def test_a_zero_argument_nest_is_reported_where_it_happens(tmp_path, monkeypatch
 
     with pytest.raises(ValueError, match="crosses no data"):
         experiment_e1.build_backend_variants([(FakeExt(), FakeBoundary())], "gcc", "/usr/bin/gcc", tmp_path)
+
+
+@pytest.mark.integration
+def test_a_shared_rung_survives_being_measured(tmp_path):
+    """run_e1 lowers each granularity rung ONCE and hands the same SDFG to every backend, so a cell that
+    mutated it would silently measure a different program for the second backend onward. Pin the contract
+    the sharing rests on: measuring leaves the caller's SDFG byte-identical."""
+    compilers = discover_compilers()
+    assert compilers, "need gcc/clang on PATH"
+    name, path = next(iter(compilers.items()))
+    atoms = GranularityPoint("atoms", fuse_first_k(0))
+    lowered, calls = experiment_e1.lower_rung(tsvc.build_sdfg(kernel(), "canonicalize"), atoms, "map")
+    assert calls, "the fixture must have a nest to offload, or the contract is not exercised"
+    emitted = experiment_e1.emit_nest_sources(calls, tmp_path / "nests")
+    before = lowered.hash_sdfg()
+    cell = run_e1_cell(kernel(), name, path, atoms, tmp_path, unit="map", reps=2, emitted=emitted, lowered=lowered)
+    assert cell.error is None, cell.error
+    assert lowered.hash_sdfg() == before, "measuring mutated the shared rung; later backends would differ"

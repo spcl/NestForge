@@ -46,7 +46,7 @@ from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import discover_toolchains
-from nestforge.perf.harness import c_argtypes, median, my_slice, rank_and_size, signature_order
+from nestforge.perf.harness import c_argtypes, load_results, median, my_slice, rank_and_size, signature_order
 from nestforge.perf.tsvc_full import c_call_args
 from nestforge.translate import emit_sources, prepare
 
@@ -239,8 +239,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
 
 
 def render_tables(out: Path) -> str:
-    files = sorted(p for p in out.glob("*.json") if p.name != "tables.md")
-    rows = [json.loads(p.read_text()) for p in files]
+    rows = load_results(out)
     done = [r for r in rows if r.get("inline_us") is not None]
     skipped = [r for r in rows if "skipped" in r]
     lines = [

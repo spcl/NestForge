@@ -43,13 +43,14 @@ from nestforge.extract import extract_nest_to_sdfg  # noqa: E402
 from nestforge.translate import prepare, emit_sources  # noqa: E402
 from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE  # noqa: E402
 from nestforge.tsvc import index_fills_for_manifest  # noqa: E402
+from nestforge.perf.harness import accumulating_outputs  # noqa: E402
 
 # one compiler, one flag set -- the fixed operating point for the overhead comparison.
 FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
 DEFAULT_SIZE = 96
 
 
-def _sizes(boundary) -> dict:
+def sizes_for(boundary) -> dict:
     """A size for each boundary symbol: a size symbol (appears in an array shape) -> DEFAULT_SIZE;
     a loop-carried index (appears in no array shape) -> 0 (the nest resets it before use)."""
     sdfg = boundary.standalone_sdfg
@@ -62,17 +63,17 @@ def _sizes(boundary) -> dict:
     return {s: (DEFAULT_SIZE if s in shape_syms else 0) for s in boundary.symbols}
 
 
-def _abi_order(csrc: Path, symbol: str) -> list:
+def abi_order(csrc: Path, symbol: str) -> list:
     sig = re.search(rf"void\s+{symbol}\s*\((.*?)\)\s*\{{", csrc.read_text(), re.S).group(1)
     return [p.strip().split()[-1].lstrip("*") for p in sig.split(",")]
 
 
-def _time_offload(prep, boundary, sizes, inputs, reps):
+def time_offload(prep, boundary, sizes, inputs, reps):
     """Compile the emitted C once (gcc, FLAGS), call via ctypes; return (outputs, time_us)."""
     work = Path(tempfile.mkdtemp(prefix="nf_ovh_c_"))
     csrc = next(p for p in emit_sources(prep, work) if p.suffix == ".c" and "pluto" not in p.name)
     symbol = f"{prep.name}_fp64"
-    order = _abi_order(csrc, symbol)
+    order = abi_order(csrc, symbol)
     bsdfg = boundary.standalone_sdfg
     gcc = discover_compilers()["gcc"]
     so = work / f"lib_{prep.name}.so"
@@ -93,13 +94,21 @@ def _time_offload(prep, boundary, sizes, inputs, reps):
     tbuf = {k: v.copy() for k, v in inputs.items()}
     cargs = args_for(tbuf)  # built ONCE; the reused buffers' pointers stay valid -> bare C call in loop
     fn(*cargs)  # warm
-    t0 = time.perf_counter()
+    # Restore the read-write buffers between reps (see harness.accumulating_outputs). Timing 50 reps of an
+    # in-place nest without this measured `a * b**50` -- denormal arithmetic, not the kernel -- and this
+    # script's whole output is the offload time. The restore sits outside the timed region.
+    accumulating = accumulating_outputs(boundary, tbuf)
+    total = 0.0
     for _ in range(reps):
+        for name in accumulating:
+            tbuf[name][...] = inputs[name]
+        t0 = time.perf_counter()
         fn(*cargs)
-    return outputs, (time.perf_counter() - t0) / reps * 1e6
+        total += time.perf_counter() - t0
+    return outputs, total / reps * 1e6
 
 
-def _dace_reference(boundary, sizes, inputs):
+def dace_reference(boundary, sizes, inputs):
     """Run the standalone nest through DaCe's OWN codegen as a semantic cross-check (does nest-forge's
     offloaded C match what DaCe itself computes for the same nest?). Correctness only -- a *fair*
     head-to-head TIME needs nest-forge to own the DaCe build too (own compile + a C++ <chrono> timer +
@@ -116,7 +125,7 @@ def _dace_reference(boundary, sizes, inputs):
     return {o: fresh[o].copy() for o in boundary.outputs if o not in scalars}
 
 
-def _correct(outs, oracle) -> bool:
+def matches(outs, oracle) -> bool:
     return all(np.allclose(outs[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True) for o in oracle)
 
 
@@ -132,7 +141,7 @@ def run(track=None, limit=None, reps=50):
             name = f"{k.short_name.split('/')[-1]}_{idx}"
             try:
                 boundary = extract_nest_to_sdfg(parent, node, name=name)
-                sizes = _sizes(boundary)
+                sizes = sizes_for(boundary)
                 # The manifest's index arrays, keyed by the kernel's manifest name (these are OptArena
                 # kernels, not TsvcKernels). Without them a declared integer index array fills to all-zeros
                 # and the gather being measured degenerates to one cached read.
@@ -140,9 +149,9 @@ def run(track=None, limit=None, reps=50):
                 inputs = make_inputs(boundary, sizes, seed=0, given=fills)
                 prep = prepare(boundary, name, Path(tempfile.mkdtemp(prefix="nf_ovh_p_")))
                 oracle = run_oracle(prep, boundary, inputs, sizes)
-                off_out, off_us = _time_offload(prep, boundary, sizes, inputs, reps)
-                dace_out = _dace_reference(boundary, sizes, inputs)
-                rows.append((name, off_us, _correct(off_out, oracle), _correct(dace_out, off_out)))
+                off_out, off_us = time_offload(prep, boundary, sizes, inputs, reps)
+                dace_out = dace_reference(boundary, sizes, inputs)
+                rows.append((name, off_us, matches(off_out, oracle), matches(dace_out, off_out)))
             except Exception as e:
                 rows.append((name, f"skip:{type(e).__name__}", None, None))
         if limit and len(rows) >= limit:

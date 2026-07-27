@@ -34,7 +34,7 @@ from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
-from nestforge.perf.harness import c_argtypes, call_c, my_slice, rank_and_size, run_compile, signature_order
+from nestforge.perf.harness import c_argtypes, call_c, load_results, my_slice, rank_and_size, run_compile, signature_order
 from nestforge.translate import emit_sources, prepare
 
 #: language -> (numpyto target, suffix, compiler-exe candidates per family). C and Fortran both emit
@@ -277,8 +277,7 @@ def cells_winner(cells: List[Dict]) -> Optional[Dict]:
 
 
 def render_tables(out: Path) -> str:
-    files = sorted(p for p in out.glob("*.json") if p.name != "tables.md")
-    kernels = [json.loads(p.read_text()) for p in files]
+    kernels = load_results(out)
     done = [k for k in kernels if "cells" in k]
     skipped = [k for k in kernels if "skipped" in k]
     lines = [

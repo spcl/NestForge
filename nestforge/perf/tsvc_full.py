@@ -79,7 +79,8 @@ from nestforge.perf import flags, pluto_lane, support_matrix
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, call_c, finite, fmt_us, jsonable,
-                                    my_slice, native_setup, native_symbol, rank_and_size, run_compile, signature_order)
+                                    load_results, my_slice, native_setup, native_symbol, rank_and_size, run_compile,
+                                    signature_order)
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
@@ -1036,8 +1037,7 @@ def kernel_winner(cells: List[Dict],
 
 
 def render_tables(out: Path) -> str:
-    files = sorted(p for p in out.glob("*.json") if p.name != "tables.md")
-    kernels = [json.loads(p.read_text()) for p in files]
+    kernels = load_results(out)
     done = [k for k in kernels if "cells" in k]
     skipped = [k for k in kernels if "skipped" in k]
 

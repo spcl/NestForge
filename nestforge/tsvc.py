@@ -25,6 +25,7 @@ from types import ModuleType
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
 import yaml
 
 import dace
@@ -38,6 +39,7 @@ from hpcagent_bench.initialize import fill_index_array
 from hpcagent_bench.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
+from nestforge.build import split_params
 from nestforge.extract import Boundary, trip_count_symbols
 from nestforge.fusion import get_fusion_strategy
 
@@ -423,23 +425,43 @@ def index_fills_for_manifest(manifest_name: Optional[str],
     return fills
 
 
+#: C base types the arena can bind for a native baseline. Kept equal to the keys of
+#: :data:`nestforge.perf.harness.C_BASE` -- that mapping is what turns these strings into ctypes types, so a
+#: type accepted here but absent there would KeyError mid-bind. `tests/test_perf_units.py` pins the two.
+NATIVE_C_BASE = frozenset({"double", "float", "int64_t", "int"})
+
+#: Type qualifiers stripped before the base type is read. Matched as whole WORDS -- a substring strip turns
+#: a parameter named ``const_term`` into ``_term``. Both spellings of restrict: the TSVC baselines are C99
+#: (``restrict``) while DaCe-generated code is C++ (``__restrict__``).
+QUALIFIERS = re.compile(r"\b(?:const|volatile|restrict|__restrict__|__restrict)\b")
+
+
 def native_signature(cpp_text: str, symbol: str) -> List[Tuple[str, str, bool]]:
     """Parse the ``extern "C"`` baseline signature ``void <symbol>(...)`` into
     ``[(param_name, base_ctype, is_pointer), ...]`` in declaration order.
 
-    Base ctype is one of ``double``/``float``/``int64_t``/``int`` (the only types the TSVC baselines
-    use); ``const`` / ``__restrict__`` qualifiers are stripped.
+    Base ctype is one of :data:`NATIVE_C_BASE` -- the types :data:`nestforge.perf.harness.C_BASE` can bind.
+    A type outside that set is REFUSED rather than defaulted: the previous fallback made every unrecognised
+    declaration an ``int``, so a ``bool`` or ``long`` parameter bound as a 4-byte int with no error anywhere
+    -- an ABI mismatch ctypes cannot catch and the numbers cannot reveal.
+
+    ``const`` / ``__restrict__`` are stripped as whole WORDS and the list is split on TOP-LEVEL commas
+    (:func:`nestforge.build.split_params`); a substring strip corrupts a parameter named ``const_term``.
     """
     m = re.search(rf"\b{re.escape(symbol)}\s*\((.*?)\)", cpp_text, re.S)
     if not m:
         raise LookupError(f"native symbol {symbol} not found in the baseline source")
     params: List[Tuple[str, str, bool]] = []
-    for raw in m.group(1).split(","):
-        tok = raw.replace("__restrict__", " ").replace("const", " ").strip()
-        if not tok:
+    for raw in split_params(m.group(1)):
+        tok = re.sub(QUALIFIERS, "", raw).strip()
+        if not tok or tok == "void":
             continue
         is_ptr = "*" in tok
         name = re.split(r"[\s*]+", tok)[-1]
-        base = ("int64_t" if "int64" in tok else "double" if "double" in tok else "float" if "float" in tok else "int")
+        base = tok[:tok.rfind(name)].replace("*", "").strip()
+        if base not in NATIVE_C_BASE:
+            raise ValueError(f"native baseline parameter {name!r} of {symbol!r} has C type {base!r}, which the "
+                             f"arena cannot bind (known: {sorted(NATIVE_C_BASE)}); binding it as a default width "
+                             "would be a silent ABI mismatch")
         params.append((name, base, is_ptr))
     return params

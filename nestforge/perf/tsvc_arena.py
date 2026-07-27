@@ -43,8 +43,8 @@ from nestforge import tsvc
 from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
 from nestforge.build import compiler_family, compiler_version
 from nestforge.perf import flags
-from nestforge.perf.harness import (c_argtypes, call_c, fmt_us, geomean, my_slice, native_setup, native_symbol,
-                                    rank_and_size, run_compile, signature_order)
+from nestforge.perf.harness import (c_argtypes, call_c, fmt_us, geomean, load_results, my_slice, native_setup,
+                                    native_symbol, rank_and_size, run_compile, signature_order)
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.translate import emit_sources, prepare
@@ -419,8 +419,7 @@ def ensure_seed_dir(out: Path, seed: int) -> Path:
 def render_tables(out: Path, seed: int) -> str:
     """Merge every per-kernel JSON under ``seed<seed>/`` into a markdown report."""
     seed_dir = ensure_seed_dir(out, seed)
-    files = sorted(p for p in seed_dir.glob("*.json") if p.name not in ("tables.md", ))
-    kernels = [json.loads(p.read_text()) for p in files]
+    kernels = load_results(seed_dir)
     done = [k for k in kernels if "rows" in k]
     skipped = [k for k in kernels if "skipped" in k]
 
@@ -478,7 +477,7 @@ def link_whole_program(out: Path, seed: int, toolchains: List[Toolchain], opt_mo
     verify every symbol resolves, and report the aggregate comparison. Sizes are read back from the
     stored sweep JSON, never re-sampled, so the reconstructed nest matches what was timed."""
     seed_dir = ensure_seed_dir(out, seed)
-    kernels = [json.loads(p.read_text()) for p in sorted(seed_dir.glob("*.json")) if p.name != "tables.md"]
+    kernels = load_results(seed_dir)
     done = [k for k in kernels if "rows" in k]
     by_name = {tc.name: tc for tc in toolchains}
     link_dir = seed_dir / "link"

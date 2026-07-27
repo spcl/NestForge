@@ -429,3 +429,24 @@ def test_call_c_does_not_restore_a_write_only_buffer(monkeypatch):
     a blanket copy of every output doubles the forked child's peak RSS for nothing."""
     _, _, buf, _ = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
     assert buf.copies == 0
+
+
+def test_the_native_signature_type_set_matches_what_the_arena_can_bind():
+    """`native_signature` produces base-type STRINGS that `harness.C_BASE` turns into ctypes types. A type
+    accepted by the parser but absent from that mapping would KeyError mid-bind, and one accepted by the
+    mapping but refused by the parser makes a legitimate baseline unmeasurable. Pin them equal."""
+    assert set(tsvc.NATIVE_C_BASE) == set(harness.C_BASE)
+
+
+def test_native_signature_refuses_a_type_it_cannot_bind():
+    """The old fallback made every unrecognised declaration an `int`, so a `bool` bound as a 4-byte int:
+    a silent ABI mismatch ctypes cannot catch and the timings cannot reveal."""
+    with pytest.raises(ValueError, match="cannot bind"):
+        tsvc.native_signature('extern "C" void k_d(bool flag, double* a)', "k_d")
+
+
+def test_native_signature_does_not_eat_a_name_containing_const():
+    """Qualifiers are stripped as whole words. A substring strip turned a parameter named `const_term`
+    into `_term`, binding the argument list one name out of step with the compiled signature."""
+    sig = tsvc.native_signature('extern "C" void k_d(const double* const_term, int64_t LEN_1D)', "k_d")
+    assert sig == [("const_term", "double", True), ("LEN_1D", "int64_t", False)]
