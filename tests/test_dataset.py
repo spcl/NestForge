@@ -3,6 +3,7 @@
 """The loopnest -> winner dataset a sweep leaves behind: the record's shape, the flag-independent nest
 identity it joins on, and the two failure modes that must not cost a job its results."""
 import json
+from pathlib import Path
 
 import dace
 import pytest
@@ -118,11 +119,21 @@ def test_the_nest_source_is_stored_once_and_reloadable(tmp_path):
     assert dataset.store_nest("", tmp_path) == ""
 
 
-def test_the_default_directory_is_relative_and_overridable(monkeypatch):
-    """No hardcoded absolute path: a job writes under its own result root. Records land in `.results` only
-    when nothing names a directory."""
-    assert not dataset.DATASET_DIR.startswith("/")
-    assert dataset.DATASET_DIR == ".results" or dataset.DATASET_DIR
+def test_the_default_directory_is_relative_and_overridable(monkeypatch, tmp_path):
+    """No hardcoded absolute path: a job writes under its own result root. The previous version of this
+    test asserted `DATASET_DIR == ".results" or DATASET_DIR` -- true for every non-empty string, so it
+    could not fail -- and could not exercise NF_DATASET_DIR at all, since the value was read at import."""
+    monkeypatch.delenv("NF_DATASET_DIR", raising=False)
+    assert dataset.dataset_dir() == Path(".results")
+    assert not dataset.DEFAULT_DIR.startswith("/")
+
+    monkeypatch.setenv("NF_DATASET_DIR", str(tmp_path / "elsewhere"))
+    assert dataset.dataset_dir() == tmp_path / "elsewhere"  # resolved per call, so the env var wins
+    assert dataset.dataset_dir(tmp_path / "explicit") == tmp_path / "explicit"  # an argument beats it
+
+    # and the override is REACHED: a record with no out_dir lands under the env directory
+    dataset.record_winner(a_record())
+    assert (tmp_path / "elsewhere" / "winners-vectorize.jsonl").is_file()
 
 
 @pytest.mark.parametrize("axis", ["vectorize", "granularity", "flags"])
@@ -177,3 +188,24 @@ def test_a_failed_lane_records_nothing(tmp_path):
     failed = {"ok": False, "error": "no vectorization config validated", "median_us": float("inf")}
     tsvc_full.record_nest_winner(FakeKernel(), nc, "vectorize", failed, [], "gcc", tmp_path)
     assert dataset.load_records(tmp_path) == []
+
+
+def test_a_strided_extent_is_not_booked_as_symbolic():
+    """`(end - begin + 1) / step` renders a step-2 range as "3.5", which fails isdigit() and books a fully
+    CONSTANT extent as symbolic -- corrupting the one feature whose meaning is "the remainder is always
+    emitted". int_ceil keeps it an integer, and the recorded trip count is the real one."""
+    sdfg = dace.SDFG("strided")
+    state = sdfg.add_state()
+    sdfg.add_array("A", [8], dace.float64)
+    entry, exit_ = state.add_map("m", {"i": dace.subsets.Range([(0, 6, 2)])})
+    tasklet = state.add_tasklet("t", {}, {"o"}, "o = 1.0")
+    src = state.add_access("A")
+    state.add_edge(entry, None, tasklet, None, dace.Memlet())
+    state.add_edge(tasklet, "o", exit_, "IN_A", dace.Memlet("A[i]"))
+    state.add_edge(exit_, "OUT_A", src, None, dace.Memlet("A[0:8]"))
+    exit_.add_in_connector("IN_A")
+    exit_.add_out_connector("OUT_A")
+
+    feats = dataset.nest_features(sdfg)
+    assert feats["innermost_extents"] == ["4"], feats["innermost_extents"]  # ceil(7/2), not "3.5"
+    assert feats["symbolic_extents"] == 0, "a constant strided extent was booked as symbolic"

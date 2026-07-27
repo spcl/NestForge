@@ -210,7 +210,7 @@ def compiler_accepts(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
 AUTOPAR_FORK_SYMS = ("GOMP_parallel", "kmpc_fork")
 
 
-def emits_fork_call(obj: str) -> bool:
+def emits_fork_call(obj: str) -> Optional[bool]:
     """True if ``obj`` calls an OpenMP fork entry -- proof the loop actually parallelized, not merely that
     the flag was accepted or the runtime linked.
 
@@ -221,7 +221,10 @@ def emits_fork_call(obj: str) -> bool:
     try:
         syms = subprocess.run(["nm", "-u", obj], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
-        return False
+        # `nm` absent (a slim container without binutils) is NOT evidence of a serial object. Returning
+        # False there made every support-matrix cell unparallel, so the survivor gate emptied and every
+        # lane keyed on a surviving runtime skipped -- a missing tool reported as "no runtime works".
+        return None
     return any(s in syms for s in AUTOPAR_FORK_SYMS)
 
 
@@ -244,7 +247,9 @@ def autopar_fires(compiler: str, probe_flags: Tuple[str, ...]) -> bool:
                 return False
         except (OSError, subprocess.SubprocessError):
             return False
-        return emits_fork_call(obj)
+        # An unreadable object ('nm' absent) is not evidence the flags fired: this probe GATES a
+        # lane, so unknown must fall back to the conservative False.
+        return emits_fork_call(obj) is True
 
 
 def autopar_flags(family: str,

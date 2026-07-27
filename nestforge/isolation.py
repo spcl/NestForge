@@ -31,6 +31,10 @@ OMP_PAUSE_HARD = 2
 #: name -> ``omp_pause_resource_t`` value, for a config/CLI knob.
 OMP_PAUSE_MODES = {"soft": OMP_PAUSE_SOFT, "hard": OMP_PAUSE_HARD}
 
+#: chars of a child exception kept in the ``{"error": ...}`` sentinel. Must clear the longest wrapped
+#: subprocess message (``translator`` embeds ``stderr[-2000:]``) or the traceback is lost.
+ERROR_CHARS = 4000
+
 
 def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
     """Tear down the thread pool of every OpenMP runtime ALREADY loaded here, so the coming fork is safe.
@@ -84,7 +88,9 @@ def run_isolated(work_fn: Callable[[], Dict], timeout: float = 900.0) -> Dict:
         try:
             payload = json.dumps(work_fn())
         except BaseException as e:  # any Python-level failure comes back as an error (a segfault does not)
-            payload = json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"})
+            # 200 chars cut a wrapped compiler/numpyto traceback off at the first frame's path and left the
+            # failure undiagnosable. The parent reads to EOF in a loop, so a longer message costs nothing.
+            payload = json.dumps({"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"})
         try:
             os.write(w, payload.encode())
         finally:

@@ -646,7 +646,46 @@ def test_the_resolved_runtime_is_named_never_a_bare_fopenmp():
     assert toolchain_mod.usable_openmp("g++").name == "libomp"
 
 
-def test_an_explicit_runtime_is_not_overridden():
-    """A lane pinning a runtime (the support matrix sweeps them) must keep it."""
-    opts = BuildOptions(openmp=toolchain_mod.LIBGOMP)
-    assert opts.openmp is toolchain_mod.LIBGOMP
+def test_an_explicit_runtime_is_not_overridden(tmp_path, monkeypatch):
+    """A lane pinning a runtime (the support matrix sweeps them) must keep it THROUGH the compile.
+
+    The previous version asserted `BuildOptions(openmp=X).openmp is X` -- a dataclass readback that holds
+    for any implementation. Delete the `opts.openmp or` in build.compile and it still passed, while every
+    pinned lane silently linked the resolved default and the runtime sweep measured one runtime under four
+    names. This intercepts the flags the compile actually issues."""
+    seen = []
+    monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
+    monkeypatch.setattr(build_mod, "usable_openmp", lambda compiler: toolchain_mod.LIBOMP)
+    src = tmp_path / "x.cpp"
+    src.write_text("int main() { return 0; }\n")
+
+    build_mod.compile(src, tmp_path, "x", BuildOptions(openmp=toolchain_mod.LIBGOMP))
+    issued = " ".join(t for cmd in seen for t in cmd)
+    # -lgomp vs -lomp is what actually separates the two on g++ (both compile with a plain -fopenmp), so
+    # this is the token that fails if the pin is dropped for the resolved default.
+    assert "-lgomp" in issued, f"the pinned libgomp never reached the link: {issued}"
+    assert "-lomp" not in issued.replace("-lgomp", ""), "the resolved libomp replaced the pinned runtime"
+
+
+def test_compiler_warnings_are_reported_but_bounded():
+    """-Wall on DaCe-generated C++ fires on nearly every cell, each with its own paths and line numbers.
+    `warnings.warn` dedups on exact TEXT, so it deduped nothing: a phase-1 sweep printed a distinct
+    multi-KB block per compiled cell and grew __warningregistry__ for the life of the rank. Keyed on the
+    warning KIND instead, and counted past a budget -- suppressed, never silently dropped."""
+    toolchain_mod._warned.clear()
+    try:
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            for cell in range(50):  # the same KIND, 50 different files
+                toolchain_mod.warn_once("g++", f"/build/cell{cell}/x.cpp:{cell}:9: warning: unused [-Wunused-variable]")
+        assert len(seen) == 1, f"one warning kind reported {len(seen)} times"
+        summary = toolchain_mod.warning_summary()
+        assert any("unused-variable" in line and "49 further" in line for line in summary), summary
+
+        # a genuinely NEW kind is still reported, up to the budget
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            toolchain_mod.warn_once("g++", "x.cpp:1:1: warning: set but not used [-Wunused-but-set-variable]")
+        assert len(seen) == 1
+    finally:
+        toolchain_mod._warned.clear()

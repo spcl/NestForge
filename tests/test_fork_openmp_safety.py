@@ -23,7 +23,8 @@ import numpy as np
 import pytest
 
 from nestforge.perf import flags
-from nestforge.isolation import OMP_PAUSE_MODES, OMP_PAUSE_SOFT, OMP_RUNTIME_SONAMES, pause_openmp_pools, run_isolated
+from nestforge.isolation import (ERROR_CHARS, OMP_PAUSE_MODES, OMP_PAUSE_SOFT, OMP_RUNTIME_SONAMES, pause_openmp_pools,
+                                 run_isolated)
 
 OMP_SRC = """#include <omp.h>
 void kern(double *a, int n) {
@@ -237,3 +238,18 @@ def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypa
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
     with pytest.warns(UserWarning, match="omp_pause_resource_all"):
         pause_openmp_pools()
+
+
+def test_a_child_exception_survives_the_pipe_intact():
+    """The error sentinel must carry the whole wrapped message. ``translator`` raises RuntimeError with
+    ``stderr[-2000:]`` embedded; a 200-char cap sliced that off at the first traceback frame's path and
+    left an e2e failure with no evidence of what the subprocess actually said."""
+    tail = "LAST-FRAME-MARKER"
+    long_message = "x" * 2500 + tail
+
+    def boom():
+        raise RuntimeError(long_message)
+
+    res = run_isolated(boom, timeout=60.0)
+    assert tail in res["error"], f"message truncated to {len(res['error'])} chars -- the tail is the diagnosis"
+    assert len(long_message) <= ERROR_CHARS  # the cap must clear translator's own 2000-char stderr slice

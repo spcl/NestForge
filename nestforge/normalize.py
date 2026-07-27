@@ -308,24 +308,57 @@ def rename_transient_data(sdfg: dace.SDFG) -> Dict[str, str]:
     return renames
 
 
+def enclosing_param_count(node: nodes.MapEntry, scope: Dict) -> int:
+    """How many map parameters the ENCLOSING map chain of ``node`` already owns.
+
+    A nested map's body reads its ancestors' parameters too, so its own names have to start where theirs
+    stop -- numbering every map from ``i0`` inside its own scope gives an inner 1-D map the name its outer
+    map already holds."""
+    count, parent = 0, scope[node]
+    while parent is not None:
+        count += len(parent.map.params)
+        parent = scope[parent]
+    return count
+
+
 def rename_map_params(sdfg: dace.SDFG) -> None:
-    """Rename each map's parameters to ``i0, i1, ...`` within its own scope. The frontend's ``__i0`` is
-    the same name with leading underscores; a wrap map keeps :data:`WRAP_PARAM`, which says what it is."""
+    """Rename map parameters to ``i0, i1, ...``, numbered down the NESTING CHAIN rather than per scope.
+    The frontend's ``__i0`` is the same name with leading underscores; a wrap map keeps
+    :data:`WRAP_PARAM`, which says what it is.
+
+    Numbered by depth because a map's scope subgraph contains its ancestors' parameters: an outer ``i``
+    and an inner ``j`` both renamed to ``i0`` make the body read ``A[i0, i0]``, so the nest writes only its
+    diagonal. It validates clean and returns a silent wrong answer (measured: ``B[0] == [1, 0, 0, 0]`` for
+    ``B = A + 1``). Sibling maps are disjoint scopes and may reuse names freely.
+
+    Two passes through a fresh temporary, because one pass cannot be safe in either direction: renaming an
+    outer ``i`` to ``i0`` collides with an inner map ALREADY called ``i0``, and renaming the inner first
+    collides with whatever the outer becomes. The temporaries are unique across the whole state, so
+    neither pass can land on a live name."""
     for state in sdfg.all_states():
-        for node in state.nodes():
-            if not isinstance(node, nodes.MapEntry) or WRAP_PARAM in node.map.params:
-                continue
-            wanted = [f"i{axis}" for axis in range(len(node.map.params))]
-            if node.map.params == wanted:
-                continue
-            renames = {old: new for old, new in zip(node.map.params, wanted) if old != new}
-            # ONE simultaneous substitution, the same discipline as rename_transient_data. A rename per
-            # pair collapses two index positions onto one symbol whenever a LATER param already holds an
-            # EARLIER param's target name: ['i1','i0'] renames i1->i0 (body now reads A[i0,i0]) and then
-            # i0->i1 (A[i1,i1]), so the map writes only its diagonal. ['j','i0'] does the same. Both
-            # validate clean and produce a silent wrong answer -- normalize itself emits i0,i1,..., so any
-            # later move that permutes or merges params walks straight into it.
-            replace_dict(state.scope_subgraph(node), renames)
+        scope = state.scope_dict()
+        entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
+        targets = {}
+        for node in entries:
+            base = enclosing_param_count(node, scope)
+            wanted = [f"i{base + axis}" for axis in range(len(node.map.params))]
+            if node.map.params != wanted:
+                targets[node] = wanted
+        if not targets:
+            continue
+        # pass 1: every renamed param to a name nothing in this state can be holding
+        temps = {}
+        for index, (node, wanted) in enumerate(targets.items()):
+            temp = [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
+            # ONE simultaneous substitution per scope, the same discipline as rename_transient_data: a
+            # rename per pair lets the second overwrite the first when a later param holds an earlier
+            # param's target.
+            replace_dict(state.scope_subgraph(node), dict(zip(node.map.params, temp)))
+            node.map.params = temp
+            temps[node] = temp
+        # pass 2: the temporaries to the final names, now that no live param can collide with one
+        for node, wanted in targets.items():
+            replace_dict(state.scope_subgraph(node), dict(zip(temps[node], wanted)))
             node.map.params = wanted
 
 

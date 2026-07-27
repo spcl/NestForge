@@ -22,18 +22,15 @@ config exposes is decided rather than explored:
     remainder, so it does not answer "how is the remainder emitted"; and nothing here can establish the
     assertion, since the extent arrives as a symbol and the validating size and the timing size differ.
 
-Two stages, cheapest first:
+The search is a **coordinate descent** (:func:`coordinate_descent`): sweep one axis at a time holding the
+rest, keep the winner, advance -- ``O(sum of axis sizes)`` measurements instead of ``O(product)``, and
+multi-start so a single greedy path does not design away a width x remainder interaction. Ahead of it,
+:func:`live_axes` drops the one optional axis a given nest cannot move: ``fp_factor`` needs a same-write-set
+branch writing an INTEGER, because the vectorizer blends integer ``ITE`` only. Deduped by
+:func:`resolved_key`, so a silently-collapsed config is never measured twice.
 
-  A. **free static pruning** (:func:`enumerate_vec_configs`, no compile) -- read the nest's SDFG and drop
-     the one optional axis it cannot move: ``fp_factor`` needs a same-write-set branch writing an INTEGER
-     (the vectorizer blends integer ``ITE`` only). Deduped by :func:`resolved_key`, so a silently-collapsed
-     config is never recorded as a distinct variant.
-  B. **coordinate descent** (:func:`coordinate_descent`) -- sweep one axis at a time holding the rest, keep
-     the winner, advance. ``O(sum of axis sizes)`` instead of ``O(product)``; multi-start so a single greedy
-     path does not design away a width x remainder interaction.
-
-Both entry points draw their remainder arms from :data:`REMAINDER_ARMS`, so the enumeration and the descent
-cannot disagree about which arms exist -- they did, and each searched an arm the other never saw.
+:data:`REMAINDER_ARMS` is the single definition of the remainder axis. It reads that way because there were
+once two entry points that disagreed about which arms existed, each searching an arm the other never saw.
 
 Names are stable and greppable: ``cpu-w16-posttail-fma``."""
 from __future__ import annotations
@@ -48,10 +45,6 @@ from dace.transformation.passes.vectorization.config import VectorizeConfig
 #: Width ladder for the tile dim: powers of two, all divisible by 8 so an AVX512 (8xfp64) tile is legal at
 #: every rung; 64 is opt-in (pass it explicitly) since it rarely pays on memory-bound nests.
 WIDTH_LADDER: Tuple[int, ...] = (8, 16, 32)
-
-#: Timed cells per nest that a sweep will tolerate. The pruned product is ``widths x arms x branch`` -- 24 at
-#: the default ladder -- but the ladder is caller-supplied, and every cell is a codegen + compile + forked run.
-MAX_CELLS: int = 256
 
 #: FP rungs that forbid FMA contraction. Everything above ``strict-ieee`` permits it (``-ffp-contract=fast``
 #: / ``-Mfma``), so the vectorizer's own fuse is granted exactly when the compiler's already is -- denying it
@@ -90,13 +83,6 @@ REMAINDER_ARMS: Tuple[Tuple[str, Dict[str, object]], ...] = (
         "scalar_remainder_emit": "tile_k1"
     }),
 )
-
-
-@dataclass(slots=True)
-class VecVariant:
-    """One named vectorization cell: a greppable name and the VectorizeConfig that produces it."""
-    name: str
-    config: VectorizeConfig
 
 
 def fma_allowed(fp_mode: str) -> bool:
@@ -188,51 +174,9 @@ def variant_name(cfg: VectorizeConfig) -> str:
 def live_axes(sdfg: dace.SDFG) -> Dict[str, bool]:
     """Which optional axes can change THIS nest's generated code: ``{"fp_factor": ...}``.
 
-    Read once and shared by :func:`enumerate_vec_configs` and :func:`descent_axes` so the two entry points
-    prune identically."""
+    Read once per nest and handed to :func:`descent_axes`, so the pruning happens before the first
+    compile rather than once per candidate."""
     return {"fp_factor": has_integer_conditional_write(sdfg)}
-
-
-def enumerate_vec_configs(sdfg: dace.SDFG,
-                          widths: Sequence[int] = WIDTH_LADDER,
-                          fp_mode: str = "contract-fma") -> List[VecVariant]:
-    """The statically-pruned candidate set for a nest: ``widths x`` :data:`REMAINDER_ARMS` ``x branch_mode``,
-    with ``branch_mode`` offered only where an integer conditional makes it live. Deduped by
-    :func:`resolved_key`, so no silently-identical cells."""
-    live = live_axes(sdfg)
-    out: List[VecVariant] = []
-    seen = set()
-
-    def add(cfg: VectorizeConfig) -> None:
-        key = resolved_key(cfg)
-        if key in seen:
-            return
-        seen.add(key)
-        out.append(VecVariant(variant_name(cfg), cfg))
-
-    for w in widths:
-        base = base_config(w, fp_mode)
-        for _, delta in REMAINDER_ARMS:
-            arm = dataclasses.replace(base, **delta)
-            add(arm)
-            if live["fp_factor"]:
-                add(dataclasses.replace(arm, branch_mode="fp_factor"))
-    return out
-
-
-def cap_variants(variants: Sequence[VecVariant], max_cells: int = MAX_CELLS) -> Tuple[List[VecVariant], List[str]]:
-    """``(kept, notes)`` -- the first ``max_cells`` variants, plus a note naming what was dropped.
-
-    A cap is a coverage claim the tables would otherwise make silently: a truncated sweep reports the best of
-    what it tried in the same column as an exhaustive one. The note exists so the caller can print it.
-    Truncation is by enumeration order (width-major, then remainder arm), so the narrowest widths keep their
-    full arm set rather than every width losing its tail."""
-    if len(variants) <= max_cells:
-        return list(variants), []
-    dropped = variants[max_cells:]
-    return list(variants[:max_cells]), [
-        f"capped at {max_cells} cells: dropped {len(dropped)} ({dropped[0].name} .. {dropped[-1].name})"
-    ]
 
 
 def descent_axes(widths: Sequence[int] = WIDTH_LADDER,

@@ -631,7 +631,10 @@ def raw_signature(text: str, symbol: str, lang: str = "c") -> str:
     if lang == "fortran":
         m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
     else:
-        m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", text, re.S)
+        # `[^)]*`, not `(.*?)`: a non-greedy dot backtracks ACROSS a preceding prototype, so a file with
+        # `void k(...);` above `void k(...) {` captures a parameter list spanning from the declaration's
+        # `(` to the definition's `)`. Excluding `)` cannot cross a closing paren at all.
+        m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.S)
     if not m:
         raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
     return m.group(1)
@@ -911,6 +914,54 @@ def fat_lto_flags(compiler: str) -> List[str]:
 #: the whole sweep rank (ThreadPoolExecutor shutdown waits for every worker). Override: NF_COMPILE_TIMEOUT.
 COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 
+#: Distinct warning TEXTS reported per tool before the rest are counted instead of printed. A sweep
+#: compiles thousands of DaCe-generated cells and -Wall fires on nearly all of them, each with its own
+#: file paths and line numbers -- so `warnings.warn`, which dedups on exact text, dedups nothing and both
+#: the log and `__warningregistry__` grow without bound for the life of the rank.
+WARN_BUDGET: int = 5
+
+#: tool name -> (distinct texts already reported, total suppressed after the budget).
+_warned: Dict[str, Tuple[set, int]] = {}
+
+
+def warning_kinds(stderr: str) -> str:
+    """The distinct ``[-Wflag]`` kinds in ``stderr``, or its first line when the compiler named none.
+
+    Keyed on the KIND, not the text: two cells warning about a different unused variable are one thing to
+    tell the user about, and the per-cell paths are exactly what defeats deduplication."""
+    kinds = sorted({m.group(1) for m in re.finditer(r"\[-W([a-z0-9-]+)\]", stderr)})
+    return ", ".join(kinds) if kinds else stderr.strip().splitlines()[0][:120]
+
+
+def warn_once(tool: str, stderr: str) -> None:
+    """Report a SUCCEEDING command's warnings, bounded.
+
+    Unbounded, this printed a distinct multi-KB block per compiled cell -- hundreds of MB across a phase-1
+    sweep. Over budget the kinds are counted, not printed, and :func:`warning_summary` reports the total,
+    so nothing is silently dropped."""
+    kinds = warning_kinds(stderr)
+    seen, suppressed = _warned.setdefault(tool, (set(), 0))
+    if kinds in seen:
+        _warned[tool] = (seen, suppressed + 1)
+        return
+    if len(seen) >= WARN_BUDGET:
+        _warned[tool] = (seen, suppressed + 1)
+        return
+    seen.add(kinds)
+    _warned[tool] = (seen, suppressed)
+    warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-2000:]}")
+
+
+def warning_summary() -> List[str]:
+    """One line per tool naming what was reported and how many further warnings were only counted."""
+    out = []
+    for tool, (seen, suppressed) in sorted(_warned.items()):
+        line = f"{tool}: {len(seen)} warning kind(s) reported ({', '.join(sorted(seen))})"
+        if suppressed:
+            line += f"; {suppressed} further warning(s) suppressed"
+        out.append(line)
+    return out
+
 
 def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
     try:
@@ -922,10 +973,7 @@ def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
     if p.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
     if p.stderr.strip():
-        # A SUCCEEDING compile that warned was silently discarded, so -Wall on the dace codegen would have
-        # produced nothing readable. Not raised: this is generated C++ we do not own. warnings.warn dedups
-        # identical text from one call site, which matters when a sweep compiles thousands of cells.
-        warnings.warn(f"{Path(cmd[0]).name} warnings:\n{p.stderr[-2000:]}")
+        warn_once(Path(cmd[0]).name, p.stderr)
 
 
 #: Fast alternative linkers, FASTEST FIRST. Default ``bfd`` ``ld`` is always the fallback (not listed).

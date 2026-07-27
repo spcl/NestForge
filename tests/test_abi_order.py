@@ -75,3 +75,24 @@ def test_arena_binds_by_the_emitted_signature_not_the_manifest(tmp_path):
     result = run_arena(prep, boundary, csrc, tmp_path / "build", sizes={"N": 32}, reps=2)
     cells = [c for c in result.cells if c.ok]
     assert cells, f"no arena cell validated -- the ABI bind order is wrong: {[c.error for c in result.cells]}"
+
+
+def test_a_prototype_above_the_definition_does_not_widen_the_capture():
+    """`raw_signature` anchors on `void <symbol>(...) {` so a doc comment naming the function cannot match.
+    With a non-greedy `(.*?)` that anchor introduced the opposite failure: the dot backtracks ACROSS a
+    preceding PROTOTYPE, capturing from the declaration's `(` to the definition's `)`. The caller then
+    binds a garbage parameter list -- or, since both drivers now catch ValueError, silently drops the
+    native column. `[^)]*` cannot cross a closing paren at all."""
+    from nestforge.toolchain import raw_signature
+
+    declared_then_defined = ('void s000_fp64(double *restrict a, const double *restrict b, int64_t LEN_1D);\n'
+                             '\n'
+                             'extern "C" void s000_fp64(double *restrict a, const double *restrict b, '
+                             'int64_t LEN_1D) {\n  return;\n}\n')
+    params = raw_signature(declared_then_defined, "s000_fp64")
+    assert params == "double *restrict a, const double *restrict b, int64_t LEN_1D"
+    assert ";" not in params and "void" not in params
+
+    # the original motivation still holds: a doc COMMENT naming the entry is not a definition
+    commented = "// s000_fp64 (s000): copy b into a\nvoid s000_fp64(double *a, int64_t n) {\n}\n"
+    assert raw_signature(commented, "s000_fp64") == "double *a, int64_t n"

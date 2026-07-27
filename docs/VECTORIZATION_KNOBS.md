@@ -21,10 +21,9 @@ opt-mode, `skip-taskloops` strategy.
 | `loop_to_map_permissive` | not offered | no effect on 7/7 already-mapped nests; only the 131 map-less nests could move, and permissive `LoopToMap` is the unsound direction |
 | `expand_tile_nodes`, `validate`, `validate_all`, `device` | not axes | build-time / target selection, not a code axis |
 
-Cells per nest = `widths x arms x branch` = **12** at the default ladder, 24 where `fp_factor` is live —
-far inside the 256 budget, which now exists only for a caller-supplied width ladder. `cap_variants` reports
-what any cap dropped, since a truncated sweep otherwise reports its best in the same column as an
-exhaustive one.
+The search is a coordinate descent over those three axes, so it costs `sum of axis sizes` per round —
+3 widths + 4 arms (+2 branch modes where live), from three seeds — not the `widths x arms x branch`
+product. There is no cap and nothing is truncated, so no cell is dropped silently.
 
 ## The remainder axis in full
 
@@ -50,16 +49,17 @@ runtime value decides only the tail's trip count, never whether the tail exists.
 ## The coverage hole this closed
 
 `vectorize_variants.py` covered 2 of the 4 remainder arms, and its two entry points disagreed about which 2
-— so `full_mask` was searched by neither and each entry point covered an arm the other never saw:
+— so `full_mask` was searched by neither and each covered an arm the other never saw:
 
-| arm | `enumerate_vec_configs` | `descent_axes` |
+| arm | deep-sweep enumeration | `descent_axes` |
 |---|---|---|
 | `masked` | yes | yes |
 | `fullmask` | **no** | **no** |
 | `posttail` | **no** | yes |
 | `k1tail` | yes | **no** |
 
-Both now read one `REMAINDER_ARMS` table, and a test asserts they offer the same arm set.
+There is now one entry point and one `REMAINDER_ARMS` table. The deep-sweep enumeration is gone: it had
+never had a caller, so the "two entry points" were one real search and one that only tests ran.
 
 ## Bugs this screen turned up
 

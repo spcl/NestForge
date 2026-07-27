@@ -9,6 +9,7 @@ import ctypes
 import json
 import shutil
 import subprocess
+from typing import List, Optional
 
 import pytest
 
@@ -590,12 +591,14 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
         standalone_sdfg = vadd.to_sdfg(simplify=True)
 
     class FakeBuilt:
+        name = "vadd"
         so_path = tmp_path / "inert.so"
 
         def unload(self):
             pass
 
     runs = {"n": 0}
+    keyed: List[Optional[str]] = []
 
     def fake_run(*a, **k):
         runs["n"] += 1
@@ -611,7 +614,12 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tsvc_full, "dace_build_sdfg", lambda *a, **k: FakeBuilt())
     monkeypatch.setattr(tsvc_full, "run_isolated", fake_run)
-    monkeypatch.setattr(tsvc_full, "variant_key", lambda so, symbol=None: "one-and-only-artifact")
+
+    def fake_key(so, symbol=None):
+        keyed.append(symbol)
+        return "one-and-only-artifact"
+
+    monkeypatch.setattr(tsvc_full, "variant_key", fake_key)
 
     tc = Toolchain(name="gcc", cc="gcc", cxx="g++", version=(13, 0), source="path")
     cell = tsvc_full.measure_dace_vectorized_lane(tc,
@@ -621,6 +629,9 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
                                                   workdir=tmp_path)
     assert cell["ok"] and cell["median_us"] == 4.0
     assert runs["n"] == 1, f"one artifact, {runs['n']} timed runs -- the artifact dedup is not wired in"
+    # the NAMED entry point, never the whole object: a whole-object key also covers __dace_init_*/
+    # __dace_exit_*, so a build differing only in a scratch allocation would key apart and be re-timed
+    assert set(keyed) == {"__program_vadd"}, keyed
 
 
 def test_the_vectorize_lane_still_times_distinct_artifacts(monkeypatch, tmp_path):
@@ -640,6 +651,7 @@ def test_the_vectorize_lane_still_times_distinct_artifacts(monkeypatch, tmp_path
         standalone_sdfg = vadd2.to_sdfg(simplify=True)
 
     class FakeBuilt:
+        name = "vadd2"
         so_path = tmp_path / "distinct.so"
 
         def unload(self):

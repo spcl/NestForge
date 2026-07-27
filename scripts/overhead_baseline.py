@@ -41,9 +41,14 @@ from nestforge.corpus import iter_dace_kernels  # noqa: E402
 from nestforge.strategies import get_strategy  # noqa: E402
 from nestforge.extract import extract_nest_to_sdfg  # noqa: E402
 from nestforge.translate import prepare, emit_sources  # noqa: E402
-from nestforge.arena import make_inputs, run_oracle, discover_compilers, CTYPE  # noqa: E402
+from nestforge.arena import (
+    CTYPE,
+    discover_compilers,
+    make_inputs,
+    rewind,
+    rewind_snapshot,  # noqa: E402
+    run_oracle)
 from nestforge.tsvc import index_fills_for_manifest  # noqa: E402
-from nestforge.perf.harness import accumulating_outputs  # noqa: E402
 
 # one compiler, one flag set -- the fixed operating point for the overhead comparison.
 FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
@@ -93,15 +98,15 @@ def time_offload(prep, boundary, sizes, inputs, reps):
     outputs = {o: fresh[o].copy() for o in boundary.outputs}
     tbuf = {k: v.copy() for k, v in inputs.items()}
     cargs = args_for(tbuf)  # built ONCE; the reused buffers' pointers stay valid -> bare C call in loop
+    # Snapshot BEFORE the warm call: an in-place nest mutates its own inputs, so a snapshot taken after it
+    # would restore every rep to `a*b` rather than to `a`. Timing 50 reps without any restore measured
+    # `a * b**50` -- denormal arithmetic, not the kernel -- and this script's whole output is the offload
+    # time. Both the warm call and every rep start from the same state; the restore is outside the timing.
+    snapshot = rewind_snapshot(boundary, tbuf)
     fn(*cargs)  # warm
-    # Restore the read-write buffers between reps (see harness.accumulating_outputs). Timing 50 reps of an
-    # in-place nest without this measured `a * b**50` -- denormal arithmetic, not the kernel -- and this
-    # script's whole output is the offload time. The restore sits outside the timed region.
-    accumulating = accumulating_outputs(boundary, tbuf)
     total = 0.0
     for _ in range(reps):
-        for name in accumulating:
-            tbuf[name][...] = inputs[name]
+        rewind(snapshot)
         t0 = time.perf_counter()
         fn(*cargs)
         total += time.perf_counter() - t0

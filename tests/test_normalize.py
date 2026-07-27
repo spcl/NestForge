@@ -434,6 +434,43 @@ def test_renaming_params_that_shadow_their_targets_preserves_values(program):
     np.testing.assert_allclose(res["got"], res["want"])
 
 
+@dc.program
+def nested_map_scopes(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
+    # two SEPARATE map scopes, one inside the other -- what LoopToMap produces for a nested loop
+    for i in dc.map[0:MAP_N]:
+        for j in dc.map[0:MAP_N]:
+            B[i, j] = A[i, j] * 2.0
+
+
+def test_nested_map_scopes_do_not_collapse_onto_one_index():
+    """Numbering every map from ``i0`` inside its OWN scope hands an inner 1-D map the name its outer map
+    already holds: ``A[i, j]`` becomes ``A[i0, i0]`` and the nest writes only its diagonal. Measured before
+    the fix: ``B[0] == [1, 0, 0, 0]`` where ``A + 1`` wants ``[1, 2, 3, 4]`` -- ``validate()`` clean, no
+    exception, 12 of 16 elements silently left at zero.
+
+    The sibling fixtures above cannot see this: they use ONE 2-D map, where per-scope numbering is
+    correct. Values, not the params list -- the list is force-set after the rename and reads correct in
+    the broken pass too."""
+    sdfg = nested_map_scopes.to_sdfg(simplify=True)
+    entries = [e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params]
+    assert len(entries) == 2, f"fixture must nest two map scopes, got {len(entries)}"
+
+    rename_map_params(sdfg)
+
+    # numbered down the NESTING CHAIN, so the inner map starts where the outer stops
+    assert sorted(p for e in entries for p in e.map.params) == ["i0", "i1"]
+
+    def work():
+        a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))
+        b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
+        sdfg(A=a, B=b)
+        return {"got": b.tolist(), "want": (a * 2.0).tolist()}
+
+    res = run_isolated(work, timeout=300)
+    assert "error" not in res, res["error"]
+    np.testing.assert_allclose(res["got"], res["want"])
+
+
 def test_renaming_nothing_changes_nothing():
     sdfg = branchy.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)

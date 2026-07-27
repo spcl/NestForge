@@ -75,7 +75,7 @@ class MatrixCell:
     compilers: Tuple[str, ...]  # family label per nest, in nest order
     ok: bool
     loads: bool
-    parallel: bool  # every nest object actually emitted a fork call
+    parallel: Optional[bool]  # every nest object emitted a fork call; None = `nm` could not tell
     correct: bool  # the linked program ran and matched numpy
     reason: str = ""
 
@@ -108,7 +108,11 @@ def try_combination(nests_by: List[Toolchain], runtime: OpenMPRuntime, workdir: 
             return MatrixCell(
                 runtime.name, label, False, False, False, False,
                 f"{tc.name} compile: {proc.stderr.strip().splitlines()[-1][:80] if proc.stderr.strip() else '?'}")
-        parallel = parallel and flags.emits_fork_call(str(obj))
+        # `None` = 'nm' could not tell. Kept as unknown rather than folded to False: this value GATES the
+        # survivor list, and a box without binutils would otherwise report that no OpenMP runtime works at
+        # all instead of one column being unverifiable.
+        fires = flags.emits_fork_call(str(obj))
+        parallel = None if (fires is None or parallel is None) else (parallel and fires)
         objs.append(str(obj))
 
     # one .so via the first compiler's link flags -- all nests need the SAME soname
@@ -186,7 +190,11 @@ def build_support_matrix(toolchains: Optional[List[Toolchain]] = None,
                 # out, such a cell fed surviving_runtimes and MachineCompat could standardise the whole
                 # sweep on a runtime that never actually parallelised. The docstring already said
                 # "links, loads, parallelises and runs correct"; the code did not.
-                if cell.ok and cell.loads and cell.parallel and cell.correct:
+                # `cell.parallel is not False`: a cell that PROVED it stayed serial is out, but one whose
+                # parallelism could not be probed (no `nm`) still survives on links + loads + correct.
+                # Folding unknown into False emptied the whole matrix on a slim container, and every lane
+                # keyed on a surviving runtime then skipped -- a missing tool read as "no runtime works".
+                if cell.ok and cell.loads and cell.parallel is not False and cell.correct:
                     survivors.append(cell)
         return survivors
 
@@ -217,7 +225,9 @@ def render_matrix(cells: List[MatrixCell], notes: List[str]) -> str:
     lines = ["runtime    compilers                     parallel  correct"]
     lines.append("-" * 60)
     for c in sorted(cells, key=lambda c: (c.runtime, c.compilers)):
-        lines.append(f"{c.runtime:10s} {'+'.join(c.compilers):28s}  {'yes' if c.parallel else 'NO ':8s}  "
+        # '?' is not 'NO': a column `nm` could not read must not print as a proven-serial cell.
+        shown = "yes" if c.parallel else ("?" if c.parallel is None else "NO")
+        lines.append(f"{c.runtime:10s} {'+'.join(c.compilers):28s}  {shown:8s}  "
                      f"{'yes' if c.correct else 'no'}")
     if not cells:
         lines.append("(none survived)")

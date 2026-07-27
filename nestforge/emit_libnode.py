@@ -49,8 +49,19 @@ def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
             # `A[7:-1:-1]` selects NOTHING, so a full reversal emits a silent no-op (or a broadcast error
             # when the destination is ascending). Omitting the stop is the only way to spell "run to the
             # start of the axis". `range()` has no such rule, which is why emit_numpy.range_stop -- the same
-            # end+sign arithmetic -- is correct as it stands. Indices are nonnegative, so a descending stop
-            # is ``end - 1 >= -1``: exactly -1 is the whole negative case.
+            # end+sign arithmetic -- is correct as it stands.
+            #
+            # Decided ARITHMETICALLY, not by comparing the rendered text to "-1": a symbolic stop such as
+            # `M - 1` renders as neither, yet reaches -1 at M == 0 and silently selects nothing -- inside
+            # the numpy ORACLE every bit-exactness verdict is compared against. Indices are nonnegative and
+            # canonicalization assumes symbols are too, so `stop < 0` is decidable only when it is provably
+            # negative; anything that MAY go negative is refused rather than mis-emitted.
+            maybe_negative = stop is not None and not (stop >= 0)
+            if maybe_negative and symbolic.symstr(stop) != "-1":
+                raise UnsupportedLibraryNode(
+                    f"descending subset range ({beg}, {end}, {step}) has stop {symbolic.symstr(stop)}, which is not "
+                    "provably >= 0; numpy would read a negative value as an offset from the END of the axis "
+                    "and silently select nothing")
             if symbolic.symstr(stop) == "-1":
                 parts.append(f"{symbolic.symstr(beg)}::{symbolic.symstr(step)}")
             else:

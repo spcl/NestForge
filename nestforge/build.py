@@ -313,7 +313,10 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: Optional[BuildOptions] = No
     """Generate + compile + link an SDFG ourselves; return a :class:`BuiltSDFG` carrying
     ``codegen_seconds``/``compile_seconds`` timing.
 
-    :param opts: toolchain + optimization knobs; ``None`` uses all defaults (g++, monolithic, no OpenMP/veclib).
+    :param opts: toolchain + optimization knobs; ``None`` uses all defaults (g++, monolithic, no veclib) --
+        including a RESOLVED OpenMP runtime, since dace emits ``#pragma omp parallel for`` for every
+        multicore map and a build without one runs that schedule serially. A caller comparing against a
+        serial baseline must therefore pin ``OMP_NUM_THREADS=1`` rather than assume no OpenMP.
     """
     opts = opts or BuildOptions()
     t_opt = time.perf_counter()

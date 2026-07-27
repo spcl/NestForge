@@ -36,10 +36,24 @@ from typing import Dict, List, Optional
 
 import dace
 import numpy as np
+from dace import symbolic
+
+from nestforge.vectorize_variants import has_integer_conditional_write, has_same_write_set_branch
 
 #: Where records land when a caller names no directory. Relative, so a job writes under its own result
-#: root rather than a path baked in here; ``NF_DATASET_DIR`` overrides it.
-DATASET_DIR: str = os.environ.get("NF_DATASET_DIR", ".results")
+#: root rather than a path baked in here.
+DEFAULT_DIR: str = ".results"
+
+
+def dataset_dir(out_dir: Optional[Path] = None) -> Path:
+    """``out_dir``, else ``$NF_DATASET_DIR``, else :data:`DEFAULT_DIR`.
+
+    Resolved per call rather than captured at import, so the env var actually overrides -- an import-time
+    constant answers to whatever the environment was when the first module happened to import this one."""
+    if out_dir is not None:
+        return Path(out_dir)
+    return Path(os.environ.get("NF_DATASET_DIR") or DEFAULT_DIR)
+
 
 #: One file per axis keeps a reader from filtering, and keeps two concurrent sweeps of different axes off
 #: each other's lines entirely.
@@ -55,7 +69,7 @@ class WinnerRecord:
     kernel: str
     corpus: str
     nest: int
-    fingerprint: str  # cpp_body_key of the emitted nest: identity independent of flags/compiler/machine
+    fingerprint: str  # sha of the numpy nest's AST: one identity across languages, flags and machines
     axis: str  # which search produced this winner ("vectorize", "flags", "granularity", ...)
     winner: Dict[str, object]  # the winning configuration, as the axis spells it
     median_us: float
@@ -92,9 +106,7 @@ def nest_features(sdfg: dace.SDFG) -> Dict[str, object]:
 
     Deliberately cheap and syntactic: everything here reads the SDFG that is already in memory, so
     recording costs a graph walk against a sweep that already spent minutes compiling."""
-    from nestforge.vectorize_variants import has_integer_conditional_write, has_same_write_set_branch
-
-    maps, tasklets, innermost, symbolic = 0, 0, [], 0
+    maps, tasklets, innermost, symbolic_count = 0, 0, [], 0
     for state in sdfg.all_states():
         scope = state.scope_children()
         for node in state.nodes():
@@ -106,10 +118,13 @@ def nest_features(sdfg: dace.SDFG) -> Dict[str, object]:
             if any(isinstance(child, dace.nodes.MapEntry) for child in scope[node]):
                 continue
             begin, end, step = node.map.range[-1]
-            extent = str((end - begin + 1) / step)
+            # int_ceil, never `/`: true division renders a step-2 range as "3.5", which then fails the
+            # isdigit() test and books a fully CONSTANT extent as symbolic -- the feature whose whole
+            # meaning is "the remainder is always emitted".
+            extent = symbolic.symstr(symbolic.int_ceil(end - begin + 1, step))
             innermost.append(extent)
             if not extent.lstrip("-").isdigit():
-                symbolic += 1
+                symbolic_count += 1
     arrays = [d for d in sdfg.arrays.values() if not d.transient]
     return {
         "maps":
@@ -119,7 +134,7 @@ def nest_features(sdfg: dace.SDFG) -> Dict[str, object]:
         "innermost_maps":
         len(innermost),
         "symbolic_extents":
-        symbolic,  # a symbolic extent means the remainder is ALWAYS emitted
+        symbolic_count,  # a symbolic extent means the remainder is ALWAYS emitted
         "innermost_extents":
         innermost,
         "arrays":
@@ -167,7 +182,7 @@ def store_nest(numpy_source: str, out_dir: Optional[Path] = None) -> str:
     key = fingerprint(numpy_source)
     if not key:
         return ""
-    out = Path(out_dir if out_dir is not None else DATASET_DIR) / NEST_DIR
+    out = dataset_dir(out_dir) / NEST_DIR
     path = out / f"{key}.py"
     try:
         if not path.exists():
@@ -180,7 +195,7 @@ def store_nest(numpy_source: str, out_dir: Optional[Path] = None) -> str:
 
 def load_nest(key: str, out_dir: Optional[Path] = None) -> Optional[str]:
     """The numpy source behind a record's ``fingerprint``, or ``None`` when this results tree never saw it."""
-    path = Path(out_dir if out_dir is not None else DATASET_DIR) / NEST_DIR / f"{key}.py"
+    path = dataset_dir(out_dir) / NEST_DIR / f"{key}.py"
     return path.read_text() if path.is_file() else None
 
 
@@ -190,7 +205,7 @@ def record_winner(record: WinnerRecord, out_dir: Optional[Path] = None) -> Path:
     Never raises on a full/unwritable directory: a sweep that measured for an hour must not lose its
     tables because the dataset could not be appended to. The failure goes to the record file's directory
     being absent from the caller's results instead."""
-    out = Path(out_dir if out_dir is not None else DATASET_DIR)
+    out = dataset_dir(out_dir)
     path = out / FILENAME.format(axis=record.axis)
     try:
         out.mkdir(parents=True, exist_ok=True)
@@ -205,7 +220,7 @@ def load_records(out_dir: Optional[Path] = None, axis: Optional[str] = None) -> 
     """Every record under ``out_dir``, optionally for one axis. A truncated final line (a job killed
     mid-append) is skipped, not fatal: the point of an append-only log is that what landed stays readable.
     """
-    out = Path(out_dir if out_dir is not None else DATASET_DIR)
+    out = dataset_dir(out_dir)
     pattern = FILENAME.format(axis=axis) if axis else FILENAME.format(axis="*")
     rows: List[Dict] = []
     for path in sorted(out.glob(pattern)):

@@ -425,12 +425,16 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     # Why each config was dropped. Every rejection used to return a bare None, so a lane where the compiler
     # ICE'd on all 40 configs and a lane whose nest genuinely cannot vectorize reported the SAME sentence --
     # and the first is a toolchain bug to fix, the second a result to keep.
-    rejected: Dict[str, int] = {}
+    #: reason CLASS -> (count, one example). Keyed on the class, never on the detail: a key carrying a
+    #: per-cell maxdiff or a path made every rejection unique, so the counter that exists to say
+    #: "validation (x40)" reported forty entries of one.
+    rejected: Dict[str, Tuple[int, str]] = {}
     #: dedup.variant_key -> the cell actually measured for that artifact.
     by_artifact: Dict[str, Dict] = {}
 
-    def reject(reason: str) -> None:
-        rejected[reason] = rejected.get(reason, 0) + 1
+    def reject(kind: str, detail: str = "") -> None:
+        count, example = rejected.get(kind, (0, detail))
+        rejected[kind] = (count + 1, example or detail)
 
     def measure(cfg) -> Optional[float]:
         counter["i"] += 1
@@ -439,13 +443,16 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                 boundary.standalone_sdfg, workdir / f"vec{counter['i']}",
                 BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg))
         except Exception as e:  # noqa: BLE001 -- a config the vectorizer/codegen rejects is not a candidate
-            reject(f"build: {type(e).__name__}: {str(e)[:100]}")
+            reject(f"build: {type(e).__name__}", str(e)[:100])
             return None
         # Group by the ARTIFACT, as arena.run_arena does on the flag axis. `resolved_key` collapses the
         # configs provably equivalent from the CONFIG alone; only the built object shows the rest -- and a
         # nest the vectorizer declines to touch emits the SAME object for every cell, so the descent would
         # otherwise re-time one build a dozen times. One objdump against reps x the kernel.
-        key = variant_key(built.so_path)
+        # Named symbol, not the whole object: dedup.asm_body_key warns that a whole-object key also covers
+        # __dace_init_*/__dace_exit_* boilerplate, so a config differing only in a scratch allocation would
+        # key apart and the lane would re-time one identical build -- the re-timing this exists to stop.
+        key = variant_key(built.so_path, f"__program_{built.name}")
         if key is not None and key in by_artifact:
             built.unload()
             twin = by_artifact[key]
@@ -461,10 +468,10 @@ def measure_dace_vectorized_lane(tc: Toolchain,
         finally:
             built.unload()
         if "error" in res:
-            reject(f"run: {str(res['error'])[:100]}")
+            reject("run", str(res["error"])[:100])
             return None
         if not res.get("ok"):
-            reject(f"validation: maxdiff {res.get('maxdiff')} > atol {atol}")
+            reject("validation: maxdiff > atol", f"maxdiff {res.get('maxdiff')} > {atol}")
             return None
         if not finite(res.get("median_us", float("inf"))):
             reject("timing: non-finite median")
@@ -482,7 +489,8 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     best_cfg, best_t = vv.multistart_descent(vv.default_seeds(fp_mode=fp_mode), axes, measure, rounds)
     winner = results.get(vv.resolved_key(best_cfg)) if best_t is not None else None
     if winner is None:
-        why = "; ".join(f"{r} (x{n})" for r, n in sorted(rejected.items(), key=lambda kv: -kv[1])[:3])
+        top = sorted(rejected.items(), key=lambda kv: -kv[1][0])[:3]
+        why = "; ".join(f"{kind} (x{count}{': ' + example if example else ''})" for kind, (count, example) in top)
         return {
             "ok": False,
             "error": f"no vectorization config validated ({counter['i']} tried): {why or 'none attempted'}",
