@@ -261,6 +261,48 @@ def test_render_tables_reports_vectorized_dace_geomean(tmp_path):
     assert "plain / tile-op-vectorized speedup:** 2.500x" in rep  # 10 / 4
 
 
+def kernel_json(key: str, corpus: str, dace_us: float, win_us: float) -> dict:
+    """One measured kernel whose winner beats its DaCe-cpp baseline by ``dace_us / win_us``."""
+    return {
+        "key": key,
+        "corpus": corpus,
+        "regime": "1d",
+        "profile_preset": "PROF",
+        "native": {
+            "ok": True,
+            "median_us": 8.0
+        },
+        "dace_cpp": [{
+            "ok": True,
+            "median_us": dace_us,
+            "codegen_impl": "experimental",
+            "nest": 0
+        }],
+        "cells":
+        [_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, win_us)],
+    }
+
+
+def test_render_tables_splits_the_geomean_per_corpus(tmp_path):
+    """tsvc2 and tsvc2_5 share NO kernel key, so a pooled geomean over a two-corpus sweep estimates
+    neither population. The per-corpus table is what a corpus comparison reads."""
+    (tmp_path / "tsvc2_sA.json").write_text(json.dumps(kernel_json("sA", "tsvc2", 10.0, 2.0)))  # 5.00x
+    (tmp_path / "tsvc2_5_xB.json").write_text(json.dumps(kernel_json("xB", "tsvc2_5", 10.0, 5.0)))  # 2.00x
+    rep = tsvc_full.render_tables(tmp_path)
+    assert "### per corpus" in rep
+    assert "| tsvc2 | best-nest/DaCe | 5.000x | 1 |" in rep
+    assert "| tsvc2_5 | best-nest/DaCe | 2.000x | 1 |" in rep
+    # the pooled headline stays, and is neither corpus' number: sqrt(5*2) = 3.162
+    assert "**Geomean best-nest / DaCe-cpp speedup:** 3.162x" in rep
+
+
+def test_render_tables_omits_the_per_corpus_table_for_one_corpus(tmp_path):
+    """A single-corpus sweep has nothing to compare, and an extra table restating the headline geomean
+    reads as if a second population had been measured."""
+    (tmp_path / "tsvc2_sA.json").write_text(json.dumps(kernel_json("sA", "tsvc2", 10.0, 2.0)))
+    assert "### per corpus" not in tsvc_full.render_tables(tmp_path)
+
+
 def test_render_tables_reports_gate_failure(tmp_path):
     bad = _cell("simplify-parallel",
                 "c",

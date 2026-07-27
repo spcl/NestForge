@@ -179,3 +179,35 @@ def test_ci_format_gate_pins_the_same_yapf_as_the_dev_extra():
     assert installed, "the format gate installs no yapf"
     for spec in installed:
         assert spec == pinned, f"format gate installs {spec}, [dev] pins {pinned}"
+
+
+def test_submit_wrappers_export_only_knobs_the_batch_script_reads():
+    """A submit wrapper hands the batch script its configuration through ``sbatch --export``, and nothing
+    checks the names match. A knob renamed in daint_all.sh (or misspelled in the wrapper) then silently
+    falls back to the batch default: the job runs, produces a full table, and measures the WRONG
+    configuration -- e.g. a corpus-comparison run that quietly swept only the default corpus.
+    """
+    import re
+
+    batch = (REPO / "perf" / "daint_all.sh").read_text()
+    # `VAR="${VAR:-default}"` is how daint_all.sh declares every knob it honours.
+    known = set(re.findall(r"^(\w+)=\"\$\{\1:-", batch, re.MULTILINE)) | {"ALL", "NF_REPO"}
+    assert "CORPORA" in known, "the knob scan found nothing -- daint_all.sh's declaration style changed"
+
+    for wrapper in sorted((REPO / "perf").glob("submit_*.sh")):
+        text = wrapper.read_text()
+        for exported in re.findall(r'--export="([^"]*)"', text):
+            if exported.startswith("$"):
+                # `--export="$common"` -- resolve the shell variable by concatenating every assignment to
+                # it (wrappers build the list in two steps). Unresolved, the export list would be skipped
+                # and this test would pass while checking nothing, which is the failure it exists to stop.
+                name = exported.lstrip("${").rstrip("}")
+                parts = re.findall(rf'^{re.escape(name)}="(.*)"$', text, re.MULTILINE)
+                assert parts, f"{wrapper.name} exports {exported}, which is assigned nowhere in the file"
+                exported = ",".join(parts)
+            for assignment in exported.split(","):
+                name = assignment.split("=")[0].strip()
+                if not name or name.startswith("$"):
+                    continue
+                assert name in known, (f"{wrapper.name} exports {name!r}, which daint_all.sh never reads "
+                                       f"-- the job would run with its default instead. Known: {sorted(known)}")

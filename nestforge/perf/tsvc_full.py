@@ -79,8 +79,8 @@ from nestforge.perf import flags, pluto_lane, support_matrix
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
 from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, c_call_args, call_c, finite, fmt_us,
-                                    jsonable, load_results, my_slice, native_setup, native_symbol, rank_and_size,
-                                    run_compile, signature_order)
+                                    geomean, jsonable, load_results, my_slice, native_setup, native_symbol,
+                                    rank_and_size, run_compile, signature_order)
 from nestforge.strategies import empty_strategy_reason, get_strategy, is_parallel_nest
 from nestforge.translate import emit_sources, prepare
 
@@ -412,8 +412,12 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             **summarize_times([])
         }
     fam = tc.fp_family
-    dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "contract-fma", "c")
-    atol = flags.FP_ATOL["contract-fma"]
+    #: The lane's FP rung, in ONE place: it picks the compile flags, the validation tolerance AND whether
+    #: the tile path fuses its own multiply-adds. Denying the vectorizer a contraction the compiler is
+    #: already granted would make this lane numerically stricter than the baseline it is divided by.
+    fp_mode = "contract-fma"
+    dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, fp_mode, "c")
+    atol = flags.FP_ATOL[fp_mode]
     results: Dict[tuple, Dict] = {}
     counter = {"i": 0}
     # Why each config was dropped. Every rejection used to return a bare None, so a lane where the compiler
@@ -451,7 +455,11 @@ def measure_dace_vectorized_lane(tc: Toolchain,
         results[vv.resolved_key(cfg)] = {**res, "vec_variant": vv.variant_name(cfg)}
         return res["median_us"]
 
-    best_cfg, best_t = vv.multistart_descent(vv.default_seeds(), vv.descent_axes(), measure, rounds)
+    # Prune the one axis this NEST may not be able to move before spending a compile on it: fp_factor is a
+    # no-op without an integer conditional -- it would measure the same build under a second name (verified
+    # identical codegen; see docs/VECTORIZATION_KNOBS.md).
+    axes = vv.descent_axes(live=vv.live_axes(boundary.standalone_sdfg))
+    best_cfg, best_t = vv.multistart_descent(vv.default_seeds(fp_mode=fp_mode), axes, measure, rounds)
     winner = results.get(vv.resolved_key(best_cfg)) if best_t is not None else None
     if winner is None:
         why = "; ".join(f"{r} (x{n})" for r, n in sorted(rejected.items(), key=lambda kv: -kv[1])[:3])
@@ -1105,6 +1113,14 @@ def render_tables(out: Path) -> str:
     pluto_speedups: List[float] = []  # per-kernel DaCe-cpp / Pluto ratios (the polyhedral lane), where it ran
     pluto_skips: Dict[str, int] = {}  # skip-reason -> count, so an absent polycc is reported, not hidden
     novalidate = 0
+    # (corpus, axis) -> ratios. The headline geomeans below pool every row, which describes NEITHER corpus
+    # when a sweep covers two: tsvc2 (151 kernels) and tsvc2_5 (65) are DISJOINT key sets, so their rows are
+    # not samples of one population and comparing the two corpora is the only reason to sweep both.
+    per_corpus: Dict[Tuple[str, str], List[float]] = {}
+
+    def note(corpus: str, axis: str, ratio: float) -> None:
+        per_corpus.setdefault((corpus, axis), []).append(ratio)
+
     for k in sorted(done, key=lambda x: (x["corpus"], x["key"])):
         # dace_cpp is a list of per-nest cells (older JSON: single-dict/empty tolerated), fanned over codegen
         # impl; a cell with no codegen_impl predates the axis -> treated as legacy.
@@ -1126,6 +1142,7 @@ def render_tables(out: Path) -> str:
         exp_us = sum(exp_meds) if (exp_meds and all(finite(m) for m in exp_meds)) else None
         if legacy_us and exp_us:
             codegen_speedups.append(legacy_us / exp_us)
+            note(k["corpus"], "legacy/experimental codegen", legacy_us / exp_us)
         # vectorization axis: plain-DaCe (denominator) total / vectorized-DaCe total, when both fully timed.
         vec_raw = k.get("dace_cpp_vec")
         vec_list = vec_raw if isinstance(vec_raw, list) else ([vec_raw] if vec_raw else [])
@@ -1134,6 +1151,7 @@ def render_tables(out: Path) -> str:
                                                                                        for m in vec_meds)) else None
         if dace_us is not None and vec_us:
             vec_speedups.append(dace_us / vec_us)
+            note(k["corpus"], "DaCe/tile-op-vectorized", dace_us / vec_us)
         # Pluto polyhedral lane: DaCe-cpp total / Pluto total, only when EVERY nest's Pluto cell timed
         # (a skip on any nest -> the kernel is not comparable). Skips are tallied by reason instead.
         pluto_list = k.get("pluto") or []
@@ -1145,6 +1163,7 @@ def render_tables(out: Path) -> str:
                                        and all(finite(m) for m in pluto_meds)) else None
         if dace_us is not None and pluto_us:
             pluto_speedups.append(dace_us / pluto_us)
+            note(k["corpus"], "DaCe/Pluto", dace_us / pluto_us)
         nat = k.get("native") or {}
         nat_med = nat.get("median_us")
         nat_us = nat_med if (nat.get("ok") and finite(nat_med)) else None
@@ -1164,6 +1183,7 @@ def render_tables(out: Path) -> str:
             sp = (dace_us / win_us) if (dace_us is not None and win_us) else None
             if sp is not None and math.isfinite(sp):
                 speedups.append(sp)
+                note(k["corpus"], "best-nest/DaCe", sp)
             lines.append(f"| {k['key']} | {k['corpus']} | {opt_mode} | {lang} | {comp} | {fmt_us(nat_us)} "
                          f"| {fmt_us(dace_us)}{dace_flag} | {fmt_us(win_us)} | {cfg} | {md} | "
                          f"{'—' if sp is None else f'{sp:.2f}x'} |")
@@ -1200,6 +1220,19 @@ def render_tables(out: Path) -> str:
             "", f"**Pluto lane skips (per nest):** {summary}. A skip is recorded, never a silent drop "
             "(polycc is a separate polyhedral toolchain, absent off the optarena container)."
         ]
+    corpora = {corpus for corpus, _ in per_corpus}
+    if len(corpora) > 1:
+        lines += [
+            "", "### per corpus", "",
+            "Every geomean above pools the whole sweep. tsvc2 and tsvc2_5 share NO kernel key, so a pooled "
+            "number is not an estimate of either corpus -- read this table instead whenever a run covers "
+            "more than one. Comparing the corpora is a comparison of two kernel POPULATIONS (tsvc2_5 is the "
+            "irregular/conditional extension set), never a per-kernel A/B.", "", "| corpus | axis | geomean | rows |",
+            "|" + "---|" * 4
+        ]
+        for (corpus, axis), ratios in sorted(per_corpus.items()):
+            g = geomean(ratios)
+            lines.append(f"| {corpus} | {axis} | {'—' if g is None else f'{g:.3f}x'} | {len(ratios)} |")
     if novalidate:
         lines += [
             "", f"`†` {novalidate} kernels' DaCe-cpp baseline did not bit-match the numpy oracle (DaCe vs "

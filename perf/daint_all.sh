@@ -161,6 +161,11 @@ COMPILE_JOBS="${COMPILE_JOBS:-16}"         # phase 1 bounded compile pool
 # flag cost cells (clang/icx/nvc 'cheap'=='default') are always deduped regardless. Set 'full' for the
 # exhaustive cost x parallel cross-product.
 MATRIX_PRESET="${MATRIX_PRESET:-lean}"     # phase 1 matrix preset: lean | full
+# Phase 1 multi-dim tile-op vectorizer lane (VectorizeConfig coordinate descent per nest). OFF by default:
+# it compiles tens of cells per nest, so it multiplies phase-1 wall clock. VECTORIZE=1 turns it on.
+VECTORIZE="${VECTORIZE:-0}"
+VECTORIZE_FLAG=""
+[ "$VECTORIZE" = "1" ] && VECTORIZE_FLAG="--vectorize"
 
 RUN_FULL="${RUN_FULL:-1}"
 RUN_CROSSLANG="${RUN_CROSSLANG:-1}"
@@ -188,7 +193,8 @@ run_full () {
       --parallelism "'"$PARALLELISM"'" --cost-models '"$COST_MODELS"' --fp-modes '"$FP_MODES"' \
       --veclibs '"$VECLIBS"' \
       --profile-preset "'"$PROFILE_PRESET"'" --compilers "'"$COMPILERS"'" --reps "'"$REPS"'" \
-      --matrix-preset "'"$MATRIX_PRESET"'" --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'"
+      --matrix-preset "'"$MATRIX_PRESET"'" --compile-jobs "'"$COMPILE_JOBS"'" --out "'"$OUT_FULL"'" \
+      '"$VECTORIZE_FLAG"'
   ' || echo "[all] phase 1 (tsvc_full) sweep failed (partial results kept)"
   python3 -m nestforge.perf.tsvc_full --tables-only --out "$OUT_FULL" \
     || echo "[all] phase 1 (tsvc_full) tables failed"
