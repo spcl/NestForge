@@ -112,7 +112,17 @@ def run_sweep(out_dir: Path, preset: str, reps: int, seed: int, limit: Optional[
 
 def merge_tables(out_dir: Path) -> int:
     """Fold every rank's per-kernel JSON into one summary on stdout."""
-    rows = [json.loads(p.read_text()) for p in sorted(out_dir.glob("*.json")) if p.name != "summary.json"]
+    # A rank killed mid-write (OOM, walltime) leaves a truncated JSON. Parsed unguarded, that one file
+    # raised and lost the whole sweep's results at the very last step; the run costs hours to repeat.
+    # Named on stdout rather than dropped, so a short table is never mistaken for a complete one.
+    rows, unreadable = [], []
+    for p in sorted(out_dir.glob("*.json")):
+        if p.name == "summary.json":
+            continue
+        try:
+            rows.append(json.loads(p.read_text()))
+        except (json.JSONDecodeError, OSError) as e:
+            unreadable.append(f"{p.name}: {type(e).__name__}: {str(e)[:80]}")
     measured = [r for r in rows if isinstance(r.get("nests"), list)]
     failed = [r for r in rows if not isinstance(r.get("nests"), list)]
     nests = [n for r in measured for n in r["nests"]]
@@ -122,7 +132,14 @@ def merge_tables(out_dir: Path) -> int:
     print(f"duplicate-artifact groups collapsed: {collapsed}")
     for r in failed:
         print(f"  FAILED {r['kernel']}: {str(r.get('error'))[:110]}")
-    (out_dir / "summary.json").write_text(json.dumps({"kernels": len(rows), "nests": len(nests)}, indent=1))
+    for u in unreadable:
+        print(f"  UNREADABLE {u}")
+    (out_dir / "summary.json").write_text(
+        json.dumps({
+            "kernels": len(rows),
+            "nests": len(nests),
+            "unreadable": unreadable
+        }, indent=1))
     return 0
 
 

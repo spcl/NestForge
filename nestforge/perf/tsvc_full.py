@@ -72,7 +72,7 @@ import dace  # noqa: F401 -- ensure the real DaCe package is importable (not a c
 from nestforge import tsvc
 from nestforge.device_profile import rank_veclibs
 from nestforge import vectorize_variants as vv
-from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
+from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
 from nestforge.build import BuildOptions, codegen_impls_available, default_codegen_impl
 from nestforge.build import build_sdfg as dace_build_sdfg
 from nestforge.extract import extract_nest_to_sdfg
@@ -168,12 +168,21 @@ def summarize_times(samples: List[float]) -> Dict[str, float]:
     }
 
 
-def collect_samples(fn, cargs, reps: int) -> List[float]:
+def collect_samples(fn, cargs, reps: int, snapshot=()) -> List[float]:
     """Warm once, then time ``reps`` individual calls on the reused args: ONE sample per rep, not one
-    mean over the whole loop."""
+    mean over the whole loop.
+
+    :param snapshot: :func:`arena.rewind_snapshot` pairs, restored before the warm call and before every
+        rep, outside the timed region. Empty only when the nest writes nothing it also reads. Skipping it
+        does not merely add noise -- an in-place nest feeds on its own output, so rep k times ``a * b**k``,
+        which reaches denormals within a handful of reps; the median then reports subnormal arithmetic and
+        the winner is whichever candidate decayed slower. The reps are also no longer samples of one
+        quantity, so the median of a decaying series is not an estimate of anything."""
+    rewind(snapshot)
     fn(*cargs)  # warm
     samples: List[float] = []
     for _ in range(reps):
+        rewind(snapshot)
         t0 = time.perf_counter()
         fn(*cargs)
         samples.append((time.perf_counter() - t0) * 1e6)
@@ -204,13 +213,17 @@ def nest_validate_work(so: Path,
     return {"ok": bool(relative_maxdiff(oracle, vout) <= atol), "maxdiff": md}
 
 
-def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, time_inputs, time_sizes, reps: int) -> Dict:
+def nest_timing_work(so: Path, symbol: str, order: List[str], argtypes, boundary, time_inputs, time_sizes,
+                     reps: int) -> Dict:
     """Median-of-N timing at the PROFILING preset. ``time_inputs`` is allocated once per opt-mode and
-    reused by every timing cell; the fork gets its own COW copy, so timing in place is safe."""
+    reused by every timing cell; the fork gets its own COW copy, so timing in place is safe.
+
+    COW protects the PARENT across forks; it does nothing for a buffer across reps INSIDE one fork, which
+    is why the rep loop still rewinds every read-write output."""
     fn = ctypes.CDLL(str(so))[symbol]
     fn.argtypes, fn.restype = argtypes, None
     cargs = c_call_args(order, argtypes, time_inputs, time_sizes)
-    return summarize_times(collect_samples(fn, cargs, reps))
+    return summarize_times(collect_samples(fn, cargs, reps, rewind_snapshot(boundary, time_inputs)))
 
 
 def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, given=None) -> Dict:
@@ -224,9 +237,11 @@ def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, orac
     return {"ok": bool(md <= 1e-6), "maxdiff": md}
 
 
-def native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps) -> Dict:
+def native_timing_work(so, symbol, sig, kernel, boundary, time_inputs, time_sizes, reps) -> Dict:
     fn, cargs, _ptr = native_setup(so, symbol, sig, kernel, time_inputs, time_sizes)  # COW copy in this fork
-    return summarize_times(collect_samples(fn, cargs, reps))
+    # Same rewind as the nest lane: the native column is the speedup DENOMINATOR, so letting only one of
+    # the two decay would bias every ratio in the table by an unknown factor.
+    return summarize_times(collect_samples(fn, cargs, reps, rewind_snapshot(boundary, time_inputs)))
 
 
 def measure_native_lane(cxx: str,
@@ -251,7 +266,9 @@ def measure_native_lane(cxx: str,
     try:
         symbol = native_symbol(text, kernel.native_symbol)
         sig = tsvc.native_signature(text, symbol)
-    except LookupError as e:
+    # ValueError too: a type the arena cannot bind is a NATIVE-COLUMN problem. Caught as LookupError
+    # only, it escaped and took the whole kernel down as a crash rather than one skipped column.
+    except (LookupError, ValueError) as e:
         return {"ok": False, "error": str(e), **summarize_times([])}
     so = workdir / f"{kernel.key}_{family}_native.so"
     ok, compile_us, err = run_compile([cxx, *nat_flags, str(cpp), "-o", str(so)])
@@ -261,7 +278,7 @@ def measure_native_lane(cxx: str,
         lambda: native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, oracle, validate_fills))
     if "error" in vres:
         return {"ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
-    tres = run_isolated(lambda: native_timing_work(so, symbol, sig, kernel, time_inputs, time_sizes, reps),
+    tres = run_isolated(lambda: native_timing_work(so, symbol, sig, kernel, boundary, time_inputs, time_sizes, reps),
                         timeout=RUN_TIMEOUT_S)
     stats = summarize_times([]) if "error" in tres else tres
     return {
@@ -305,12 +322,7 @@ def dace_run_work(built,
     try:
         # bind once, time the bare call: matches native/nest timing, no per-rep marshaling
         fn, cargs = built.bind_program(tbuf, time_sizes)
-        fn(*cargs)  # warm
-        samples: List[float] = []
-        for _ in range(reps):
-            t0 = time.perf_counter()
-            fn(*cargs)
-            samples.append((time.perf_counter() - t0) * 1e6)
+        samples = collect_samples(fn, cargs, reps, rewind_snapshot(boundary, tbuf))
     finally:
         built.close()
     return {**verdict, **summarize_times(samples)}
@@ -413,6 +425,13 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     atol = flags.FP_ATOL["contract-fma"]
     results: Dict[tuple, Dict] = {}
     counter = {"i": 0}
+    # Why each config was dropped. Every rejection used to return a bare None, so a lane where the compiler
+    # ICE'd on all 40 configs and a lane whose nest genuinely cannot vectorize reported the SAME sentence --
+    # and the first is a toolchain bug to fix, the second a result to keep.
+    rejected: Dict[str, int] = {}
+
+    def reject(reason: str) -> None:
+        rejected[reason] = rejected.get(reason, 0) + 1
 
     def measure(cfg) -> Optional[float]:
         counter["i"] += 1
@@ -420,7 +439,8 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             built = dace_build_sdfg(
                 boundary.standalone_sdfg, workdir / f"vec{counter['i']}",
                 BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, vectorize=cfg))
-        except Exception:  # a config the vectorizer/codegen rejects is just not a candidate
+        except Exception as e:  # noqa: BLE001 -- a config the vectorizer/codegen rejects is not a candidate
+            reject(f"build: {type(e).__name__}: {str(e)[:100]}")
             return None
         try:
             res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
@@ -428,7 +448,14 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                                timeout=RUN_TIMEOUT_S)
         finally:
             built.unload()
-        if "error" in res or not res.get("ok") or not finite(res.get("median_us", float("inf"))):
+        if "error" in res:
+            reject(f"run: {str(res['error'])[:100]}")
+            return None
+        if not res.get("ok"):
+            reject(f"validation: maxdiff {res.get('maxdiff')} > atol {atol}")
+            return None
+        if not finite(res.get("median_us", float("inf"))):
+            reject("timing: non-finite median")
             return None
         results[vv.resolved_key(cfg)] = {**res, "vec_variant": vv.variant_name(cfg)}
         return res["median_us"]
@@ -436,9 +463,10 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     best_cfg, best_t = vv.multistart_descent(vv.default_seeds(), vv.descent_axes(), measure, rounds)
     winner = results.get(vv.resolved_key(best_cfg)) if best_t is not None else None
     if winner is None:
+        why = "; ".join(f"{r} (x{n})" for r, n in sorted(rejected.items(), key=lambda kv: -kv[1])[:3])
         return {
             "ok": False,
-            "error": "no vectorization config validated (non-vectorizable nest)",
+            "error": f"no vectorization config validated ({counter['i']} tried): {why or 'none attempted'}",
             "vectorized": True,
             "compiler": tc.name,
             **summarize_times([])
@@ -843,7 +871,7 @@ def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) ->
     if "error" in vres:
         return {**label, "ok": False, "error": vres["error"], "compile_us": compile_us, **summarize_times([])}
     tres = run_isolated(
-        lambda: nest_timing_work(so, symbol, order, argtypes, nc["time_inputs"], nc["time_sizes"], reps),
+        lambda: nest_timing_work(so, symbol, order, argtypes, boundary, nc["time_inputs"], nc["time_sizes"], reps),
         timeout=RUN_TIMEOUT_S)
     stats = summarize_times([]) if "error" in tres else tres
     return {
@@ -990,8 +1018,8 @@ def run_kernel(kernel, toolchains: List[Toolchain], fortran_by_family: Dict[str,
             continue
         cell.ok, cell.maxdiff = vres["ok"], vres["maxdiff"]
         if cell.role == "timing" and cell.ok:  # only VALIDATED timing cells are (expensively) timed
-            tres = run_isolated(lambda: nest_timing_work(so, p.symbol, p.order, p.argtypes, ctx["time_inputs"], ctx[
-                "time_sizes"], reps),
+            tres = run_isolated(lambda: nest_timing_work(so, p.symbol, p.order, p.argtypes, ctx["boundary"], ctx[
+                "time_inputs"], ctx["time_sizes"], reps),
                                 timeout=RUN_TIMEOUT_S)
             if "error" in tres:
                 cell.error = f"timing: {tres['error']}"

@@ -185,6 +185,21 @@ def test_set_kernel_sets_leaf_fields_without_bumping_epoch():
     assert s.nest_boundary(nest_id)  # same id still resolves
 
 
+def test_set_kernel_selects_the_extern_call_expansion():
+    """The three leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion
+    would emit the numpy reference and Mode A would time the FRAMEWORK's kernel while reporting it as the
+    agent's. The outputs would still be correct and the number still plausible -- nothing else catches it."""
+    s = make_session()
+    nest_id = s.externalize()[0]["id"]
+    ext, _ = s.resolve(nest_id, "extnest")
+    # None, not "DaceReference": dace leaves the field unset and falls back to default_implementation at
+    # expand time. Either way the agent's kernel is not the one that runs, so the guard is on "not chosen".
+    assert ext.implementation != "ExternCall", "fixture already selects the expansion; test would be vacuous"
+    out = s.set_kernel(nest_id, "/abs/libk.a", "k", ["A", "B", "T", "N"])
+    assert ext.implementation == "ExternCall"
+    assert out["implementation"] == "ExternCall"  # reported back, so a transport can check it
+
+
 def test_emit_reference_writes_numpy_oracle(tmp_path):
     s = Session(vertical_pair.to_sdfg(simplify=True), work_dir=str(tmp_path))
     nest_id = s.externalize()[0]["id"]

@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nestforge import tsvc
+from nestforge import arena, tsvc
 from nestforge.isolation import run_isolated
-from nestforge.perf import crosslang_xl, flags, harness, tsvc_arena
+from nestforge.perf import crosslang_xl, flags, harness, tsvc_arena, tsvc_full
 
 
 # --- native-baseline signature parsing (tsvc.native_signature) ----------------------------------------
@@ -25,9 +25,9 @@ def test_native_signature_strips_qualifiers_and_types():
 
 
 def test_native_signature_float_and_missing_symbol():
-    assert tsvc.native_signature("void k(float* x)", "k") == [("x", "float", True)]
+    assert tsvc.native_signature("void k(float* x) {", "k") == [("x", "float", True)]
     with pytest.raises(LookupError):
-        tsvc.native_signature("void other(double* x)", "k")
+        tsvc.native_signature("void other(double* x) {", "k")
 
 
 def test_native_symbol_fallback_to_first_kernel():
@@ -419,7 +419,9 @@ def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
                    FakeBoundary(["a"], inputs=["a"]),
                    inputs, {"LEN_1D": 4},
                    reps=3)
-    assert len(restored) == 3, f"expected one restore per rep, saw {len(restored)}"
+    # 4 = one per rep, plus one before the WARM call so the call the CPU trains its caches and predictors
+    # on starts from the same state the timed reps do.
+    assert len(restored) == 4, f"expected one restore per rep plus the warm call, saw {len(restored)}"
     for values in restored:
         np.testing.assert_array_equal(values, np.full(4, 0.25))
 
@@ -429,6 +431,60 @@ def test_call_c_does_not_restore_a_write_only_buffer(monkeypatch):
     a blanket copy of every output doubles the forked child's peak RSS for nothing."""
     _, _, buf, _ = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
     assert buf.copies == 0
+
+
+# --- the rewind primitive, shared by every timing loop in the repo ------------------------------------
+def test_accumulating_outputs_is_the_read_write_intersection():
+    """Read-only and write-only buffers are both excluded: the first is never written, the second holds
+    nothing that survives into the next rep. Only the intersection can feed on its own output."""
+    buffers = {n: np.zeros(2) for n in ("rw", "wo", "ro")}
+    boundary = FakeBoundary(["rw", "wo"], inputs=["rw", "ro"])
+    assert arena.accumulating_outputs(boundary, buffers) == ["rw"]
+    # A buffer the caller never allocated cannot be rewound; naming it must not KeyError mid-loop.
+    assert arena.accumulating_outputs(FakeBoundary(["absent"], inputs=["absent"]), buffers) == []
+
+
+def test_rewind_restores_values_taken_before_the_kernel_ran():
+    a = np.full(4, 0.25)
+    snapshot = arena.rewind_snapshot(FakeBoundary(["a"], inputs=["a"]), {"a": a})
+    a *= 0.5  # stand in for an in-place kernel consuming its own output
+    arena.rewind(snapshot)
+    np.testing.assert_array_equal(a, np.full(4, 0.25))
+
+
+def test_rewind_snapshot_writes_through_to_the_bound_buffer():
+    """The pairs must hold the LIVE array, not a copy of it: every timing path binds its ctypes pointers
+    once, before the rep loop, so a rewind into a detached array would restore nothing the kernel reads."""
+    a = np.full(4, 0.25)
+    snapshot = arena.rewind_snapshot(FakeBoundary(["a"], inputs=["a"]), {"a": a})
+    assert snapshot[0][0] is a
+
+
+def test_collect_samples_restores_the_snapshot_before_every_rep():
+    """tsvc_full's nest, native and DaCe-cpp lanes all time through collect_samples. Passing no snapshot
+    let each of them measure a decaying buffer -- and the lanes are divided by each other, so the bias did
+    not cancel."""
+    a = np.full(4, 0.25)
+    boundary = FakeBoundary(["a"], inputs=["a"])
+    snapshot = arena.rewind_snapshot(boundary, {"a": a})
+    seen = []
+
+    def fn(*_args):
+        seen.append(a.copy())  # what THIS call was handed
+        a[...] *= 0.25  # in-place decay, the shape of the bug
+
+    tsvc_full.collect_samples(fn, (), reps=3, snapshot=snapshot)
+    assert len(seen) == 4, "warm call plus one per rep"
+    for values in seen:
+        np.testing.assert_array_equal(values, np.full(4, 0.25))
+
+
+def test_collect_samples_without_a_snapshot_still_times_the_reps():
+    """A nest that writes nothing it reads needs no rewind; the default must not become mandatory
+    plumbing for those lanes."""
+    calls = []
+    tsvc_full.collect_samples(lambda *_: calls.append(1), (), reps=3)
+    assert len(calls) == 4 and len(tsvc_full.collect_samples(lambda *_: None, (), reps=3)) == 3
 
 
 def test_the_native_signature_type_set_matches_what_the_arena_can_bind():
@@ -442,13 +498,49 @@ def test_native_signature_refuses_a_type_it_cannot_bind():
     """The old fallback made every unrecognised declaration an `int`, so a `bool` bound as a 4-byte int:
     a silent ABI mismatch ctypes cannot catch and the timings cannot reveal."""
     with pytest.raises(ValueError, match="cannot bind"):
-        tsvc.native_signature('extern "C" void k_d(bool flag, double* a)', "k_d")
+        tsvc.native_signature('extern "C" void k_d(bool flag, double* a) {', "k_d")
+
+
+def test_native_signature_ignores_a_doc_comment_naming_the_symbol():
+    """29 of the 245 foundation baselines put ``// <symbol> (<note>): ...`` directly above the declaration.
+    A ``\\b<symbol>\\s*\\(`` search matches the COMMENT first and returns its parenthetical as the whole
+    parameter list, so the parse raised and -- because both drivers catch only LookupError -- the ValueError
+    killed the entire kernel, not just its native column. The ``void`` anchor is what rules the comment out."""
+    cpp = ('// argmax_value_d (s314): x = a[0]; for i: if a[i] > x: x = a[i]\n'
+           'extern "C" void argmax_value_d(const double* __restrict__ a, double* __restrict__ out, int64_t n) {')
+    assert tsvc.native_signature(cpp, "argmax_value_d") == [("a", "double", True), ("out", "double", True),
+                                                            ("n", "int64_t", False)]
+
+
+def test_native_signature_accepts_a_namespace_qualified_type():
+    """The C++ baselines spell the <cstdint> types both bare and ``std::``-qualified -- same type, same ABI.
+    Unhandled, the qualified spelling failed NATIVE_C_BASE and dropped every gather/scatter kernel (whose
+    index array is the one declared that way) from the sweep."""
+    cpp = 'extern "C" void ext_gather_load_d(double* dst, const std::int64_t* __restrict__ idx, int len) {'
+    assert tsvc.native_signature(cpp, "ext_gather_load_d") == [("dst", "double", True), ("idx", "int64_t", True),
+                                                               ("len", "int", False)]
+
+
+def test_every_foundation_baseline_signature_parses():
+    """The parser's real input is the shipped corpus, and both defects above were invisible to hand-written
+    fixtures. Parse all 245 for real: a kernel whose signature will not parse is one no sweep can measure."""
+    from nestforge.perf.harness import native_symbol
+    failed = {}
+    kernels = tsvc.iter_tsvc_kernels(corpus="foundation")
+    assert kernels, "the foundation corpus came back empty; this test would prove nothing"
+    for kernel in kernels:
+        text = kernel.native_cpp.read_text()
+        try:
+            tsvc.native_signature(text, native_symbol(text, kernel.native_symbol))
+        except (LookupError, ValueError) as e:
+            failed[kernel.key] = f"{type(e).__name__}: {e}"
+    assert not failed, f"{len(failed)} of {len(kernels)} baselines do not parse: {sorted(failed)[:10]}"
 
 
 def test_native_signature_does_not_eat_a_name_containing_const():
     """Qualifiers are stripped as whole words. A substring strip turned a parameter named `const_term`
     into `_term`, binding the argument list one name out of step with the compiled signature."""
-    sig = tsvc.native_signature('extern "C" void k_d(const double* const_term, int64_t LEN_1D)', "k_d")
+    sig = tsvc.native_signature('extern "C" void k_d(const double* const_term, int64_t LEN_1D) {', "k_d")
     assert sig == [("const_term", "double", True), ("LEN_1D", "int64_t", False)]
 
 
@@ -463,10 +555,10 @@ def test_family_of_only_ever_names_a_real_fp_family():
 
 
 def test_the_two_family_vocabularies_stay_apart():
-    """build.compiler_family classifies an EXECUTABLE for its OpenMP ABI; family_of classifies a toolchain
+    """toolchain.compiler_family classifies an EXECUTABLE for its OpenMP ABI; family_of classifies a toolchain
     LABEL for the FP tables. They are not interchangeable, and this pins the exact disagreement that makes
     that true, so a future 'simplification' that collapses them fails here instead of in a sweep."""
-    from nestforge.build import compiler_family
+    from nestforge.toolchain import compiler_family
 
     assert compiler_family("icc") == "intel-classic" and compiler_family("icc") not in flags._FP
     assert compiler_family("icx") == "llvm"  # an Intel compiler classified llvm: the ABI, not the FP family

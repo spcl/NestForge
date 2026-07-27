@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from nestforge import build, tsvc
-from nestforge.arena import diff_stats, make_inputs, run_oracle
+from nestforge.arena import diff_stats, make_inputs, rewind, rewind_snapshot, run_oracle
 from nestforge.extract import whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall, ExternLibEnv
@@ -166,17 +166,18 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
         built.init(sizes)
         try:
             fn, cargs = built.bind_program(tbuf, sizes)
+            # Restore every buffer the program READS AND WRITES before each timed rep. Without this an
+            # in-place nest (a[:] = a[:] * b) feeds on its own previous output -- rep k computes a * b**k,
+            # which reaches Inf/denormals in a few reps, and denormal arithmetic rather than the kernel
+            # dominates the median. That silently biases the exact quantity E1 compares across granularity
+            # rungs. The restore writes in place (cargs holds these buffers) and sits OUTSIDE the timed
+            # region; arena.accumulating_outputs is the one definition of which buffers decay.
+            snapshot = rewind_snapshot(boundary, tbuf)
+            rewind(snapshot)
             fn(*cargs)  # warm
-            # Restore every buffer the program WRITES before each timed rep. Without this an in-place nest
-            # (a[:] = a[:] * b) feeds on its own previous output -- rep k computes a * b**k, which reaches
-            # Inf/denormals in a few reps, and denormal arithmetic rather than the kernel dominates the
-            # median. That silently biases the exact quantity E1 compares across granularity rungs. The
-            # restore writes in place (cargs holds these buffers) and sits OUTSIDE the timed region.
-            mutated = [o for o in boundary.outputs if o in tbuf]
             samples: List[float] = []
             for _ in range(reps):
-                for name in mutated:
-                    tbuf[name][...] = inputs[name]
+                rewind(snapshot)
                 t0 = time.perf_counter()
                 fn(*cargs)
                 samples.append((time.perf_counter() - t0) * 1e6)

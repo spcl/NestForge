@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import dace
 
 from nestforge import build, tsvc
-from nestforge.arena import diff_stats, make_inputs, run_oracle
+from nestforge.arena import diff_stats, make_inputs, rewind, rewind_snapshot, run_oracle
 from nestforge.extract import Boundary, find_state_of_node, whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall
@@ -85,8 +85,15 @@ def measure_whole_program(optimizer: Optimizer,
         # bind_program binds only the SDFG's own parameters, so make_inputs' extra scratch is ignored.
         vbuf = {k: v.copy() for k, v in inputs.items()}
         built.run(vbuf, sizes)
-        outs = {o: vbuf[o] for o in boundary.outputs if o in vbuf}
-        if outs:
+        # NOT `if o in vbuf`: an output the build renamed or dropped would leave the comparison set
+        # silently NARROWER than the boundary, and a miscompile confined to that output would still read
+        # ok=True as long as the survivors matched. Missing means the run did not produce what the boundary
+        # declares -- a failure, not a smaller comparison. differential.py carries the same guard.
+        absent = [o for o in boundary.outputs if o not in vbuf]
+        outs = {} if absent else {o: vbuf[o] for o in boundary.outputs}
+        if absent:
+            verdict = {"ok": False, "maxdiff": float("inf"), "error": f"outputs absent from the run: {sorted(absent)}"}
+        elif outs:
             ref = {o: oracle[o] for o in outs}
             # absolute diff is REPORTED, the scaled one gates: an absolute atol is unreachable at reduction magnitudes
             md, md_rel = diff_stats(ref, outs)
@@ -98,14 +105,15 @@ def measure_whole_program(optimizer: Optimizer,
         built.init(sizes)
         try:
             fn, cargs = built.bind_program(tbuf, sizes)
+            # Restore every buffer the program READS AND WRITES before each rep (outside the timing): an
+            # in-place program otherwise feeds on its own output, reaching denormals/Inf in a few reps and
+            # timing those. arena.accumulating_outputs is the one definition of that set.
+            snapshot = rewind_snapshot(boundary, tbuf)
+            rewind(snapshot)
             fn(*cargs)  # warm
-            # Restore every written buffer before each rep (outside the timing): an in-place program
-            # otherwise feeds on its own output, reaching denormals/Inf in a few reps and timing those.
-            mutated = [o for o in boundary.outputs if o in tbuf]
             samples: List[float] = []
             for _ in range(reps):
-                for name in mutated:
-                    tbuf[name][...] = inputs[name]
+                rewind(snapshot)
                 t0 = time.perf_counter()
                 fn(*cargs)
                 samples.append((time.perf_counter() - t0) * 1e6)

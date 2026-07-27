@@ -116,7 +116,10 @@ def fake_corpus(monkeypatch, depths):
         probed.append(kernel.key)
         return kernel.key
 
-    def depth(key):
+    def depth(key, owned=False):
+        # `owned` mirrors the real signature: kernels_with_axis probes in place (the SDFG it builds has no
+        # other reference), and a stub that cannot take the argument turns a TypeError into "this kernel has
+        # no granularity axis" -- the selection would silently come back empty.
         if isinstance(depths[key], Exception):
             raise depths[key]
         return depths[key]

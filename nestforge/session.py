@@ -113,6 +113,10 @@ class Session:
         """A mutation happened: advance the epoch and drop every handle (all now stale)."""
         self.epoch += 1
         self.handles = {}
+        # Nest ids carry the epoch, so every memoized Prepared is now unreachable -- resolve() rejects the
+        # id before prepare_nest ever consults the cache. Holding them would pin whole emitted packages
+        # (and, after :meth:`feedback` swaps the graph, nodes of an SDFG nobody references any more).
+        self.prepared = {}
 
     # --- Phase 0: see the graph -------------------------------------------------------------------
 
@@ -369,10 +373,17 @@ class Session:
         ext.lib_path = lib_path
         ext.symbol = symbol
         ext.abi_order = list(abi_order)
+        # Load-bearing: ExternalCall.default_implementation is "DaceReference", so the three leaf fields
+        # above are INERT on their own -- expansion would emit the numpy reference, the agent's kernel would
+        # never be called, and Mode A would report the reference's time as the agent's result. Correct
+        # output plus a plausible number is exactly the failure no assertion catches (differential.py:78
+        # carries the same line for the same reason).
+        ext.implementation = "ExternCall"
         if fp_mode:
             ext.fp_mode = fp_mode
         return {
             "nest": ext.name,
+            "implementation": ext.implementation,
             "abi_order": list(ext.abi_order),
             "boundary_order": list(boundary.inputs) + list(boundary.outputs) + list(boundary.symbols),
         }
@@ -399,6 +410,12 @@ class Session:
         framework's build+time step (supplied by the transport, never the model) -- Phase 4 is driven by
         MEASUREMENT, so it cannot be a pure-data tool. Bumps the epoch (granularity changed)."""
         res = run_feedback_loop(self.sdfg, measure, max_rounds=max_rounds)
+        # run_feedback_loop MUTATES the graph it is given and keeps searching past the best round, so
+        # self.sdfg is left at whatever granularity the last (rejected) round produced. Adopting
+        # res.sdfg -- the snapshot taken when the best was set -- is what makes the reported best_us
+        # describe the graph the session then hands to emit/sweep/build. The bump() below is what makes
+        # the swap safe: every id into the old graph goes stale in the same step.
+        self.sdfg = res.sdfg
         self.bump()
         best = res.best
         return {

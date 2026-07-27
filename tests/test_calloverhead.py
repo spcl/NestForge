@@ -75,6 +75,35 @@ def test_render_tables_computes_ratios_and_geomean(tmp_path):
     assert "`bad`" in report  # skipped kernel listed, not silently dropped
 
 
+def test_render_tables_keeps_a_decaying_kernel_out_of_the_geomean(tmp_path):
+    """A kernel that writes a buffer it also reads decays inside the trampoline's inner loop, which no
+    rewind can reach (see time_work). Its ratio times partly-subnormal arithmetic, so it is shown with its
+    reason and excluded from the headline number rather than averaged in as if it were comparable."""
+    stable = {
+        "key": "clean",
+        "compiler": "gnu",
+        "inline_us": 1.0,
+        "external_lto_us": 1.0,
+        "external_us": 2.0,
+        "call_overhead": 2.0,
+        "lto_overhead": 1.0,
+        "accumulating": []
+    }
+    (tmp_path / "tsvc2_clean.json").write_text(json.dumps(stable))
+    (tmp_path / "tsvc2_inplace.json").write_text(
+        json.dumps({
+            **stable, "key": "inplace",
+            "call_overhead": 8.0,
+            "lto_overhead": 8.0,
+            "accumulating": ["a"]
+        }))
+    report = co.render_tables(tmp_path)
+    assert "| inplace † |" in report and "| clean |" in report  # both rows present
+    # 2.0, not the 4.0 geomean of {2, 8}: the decaying kernel must not move the headline.
+    assert "**Geomean call overhead (external / inline):** 2.0000x over 1 kernels." in report
+    assert "`inplace`" in report and "cannot be rewound mid-loop" in report
+
+
 def test_plot_calloverhead_smoke(tmp_path):
     """The plot reader (subprocess, as the drivers call it) tolerates a completed kernel, a skipped one,
     and a non-finite external time -> PNG + CSV land, the skipped kernel is dropped, non-finite is empty."""
