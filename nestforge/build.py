@@ -204,15 +204,23 @@ class BuildOptions:
     use_ccache: Optional[bool] = None
 
     def resolved_flags(self) -> List[str]:
-        """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard guaranteed.
+        """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard and ``-Wall`` guaranteed.
 
         The standard is a REQUIREMENT of the DaCe runtime headers, not an optimization knob: ``types.h``
         uses ``std::bit_cast`` unguarded, so anything below C++20 fails to compile. A caller overriding
         ``flags`` for one axis (``-O2``, a veclib) must not silently lose it -- an explicit ``-std=`` is
-        honored, an absent one is filled in."""
+        honored, an absent one is filled in.
+
+        ``-Wall`` but deliberately NOT ``-Werror``: this compiles DACE-GENERATED C++, so a warning is a
+        codegen signal to read, not a reason to fail a measurement we do not control the source of.
+        :func:`toolchain.run` prints what it produces. Filled in the same way as ``-std=``, since most
+        callers pass their own ``flags`` for one axis and would otherwise lose it; an explicit ``-w``
+        (silence) is honored."""
         flags = list(self.flags if self.flags is not None else DEFAULT_FLAGS)
         if not any(f.startswith("-std=") for f in flags):
             flags.append(f"-std={CXX_STD}")
+        if "-Wall" not in flags and "-w" not in flags:
+            flags.append("-Wall")
         return flags
 
 

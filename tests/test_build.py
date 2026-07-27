@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -595,3 +596,34 @@ def test_toolchain_is_importable_without_dace():
     """)
     r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
+
+
+# --- compiler diagnostics on the DaCe-generated C++ -------------------------------------------------
+def test_resolved_flags_guarantee_the_standard_and_warnings_without_forcing_them():
+    """Both are FILLED IN, not appended blindly: nearly every caller passes its own ``flags`` for one axis
+    (an -O level, a veclib) and would otherwise lose them. ``-Werror`` is deliberately absent -- this
+    compiles generated C++ we do not own, so a warning is a codegen signal, not a failed measurement."""
+    assert BuildOptions().resolved_flags()[-1] == "-Wall"
+    assert BuildOptions(flags=["-O2"]).resolved_flags() == ["-O2", "-std=c++20", "-Wall"]
+    # an explicit choice wins in both directions: -w silences, -Wextra is not duplicated into -Wall
+    assert "-Wall" not in BuildOptions(flags=["-O2", "-w"]).resolved_flags()
+    assert BuildOptions(flags=["-O2", "-Wall", "-Wextra"]).resolved_flags().count("-Wall") == 1
+    assert not any(f.startswith("-Werror") for f in BuildOptions().resolved_flags())
+
+
+def test_a_succeeding_compile_surfaces_its_warnings(tmp_path):
+    """-Wall is inert unless the diagnostics are read: toolchain.run captured stderr and dropped it on
+    success, so every warning from the generated C++ went to /dev/null."""
+    src = tmp_path / "warn.cpp"
+    src.write_text("int main() { int unused_variable = 1; return 0; }\n")
+    with pytest.warns(UserWarning, match="unused_variable"):
+        toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "warn.o")])
+
+
+def test_a_clean_compile_warns_about_nothing(tmp_path):
+    """The sweep compiles thousands of cells; a run that warned unconditionally would bury the real ones."""
+    src = tmp_path / "clean.cpp"
+    src.write_text("int main() { return 0; }\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning at all fails this test
+        toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "clean.o")])

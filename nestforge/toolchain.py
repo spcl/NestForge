@@ -897,6 +897,11 @@ def run(cmd: List[str], timeout: Optional[float] = COMPILE_TIMEOUT_S) -> None:
                            f"(pathological compile/link; ceiling is NF_COMPILE_TIMEOUT)")
     if p.returncode != 0:
         raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
+    if p.stderr.strip():
+        # A SUCCEEDING compile that warned was silently discarded, so -Wall on the dace codegen would have
+        # produced nothing readable. Not raised: this is generated C++ we do not own. warnings.warn dedups
+        # identical text from one call site, which matters when a sweep compiles thousands of cells.
+        warnings.warn(f"{Path(cmd[0]).name} warnings:\n{p.stderr[-2000:]}")
 
 
 #: Fast alternative linkers, FASTEST FIRST. Default ``bfd`` ``ld`` is always the fallback (not listed).
