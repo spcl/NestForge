@@ -94,8 +94,11 @@ module. The design rationale is `docs/agentic_optimizer/`.
 ## Quick start
 
 ```bash
-# 1. nest-forge plus its three sibling checkouts (all public)
-git clone https://github.com/spcl/NestForge.git && cd NestForge
+# 1. nest-forge plus its three sibling checkouts (all public). --recurse-submodules pulls the pinned
+#    HPCAgent-Bench checkout under external/, which carries the DEFAULT kernel corpus -- without it a
+#    clone with no separate hpcagent_bench install can measure nothing.
+git clone --recurse-submodules https://github.com/spcl/NestForge.git && cd NestForge
+#    (already cloned? `git submodule update --init --remote` does the same, and tracks main)
 git clone https://github.com/spcl/OptArena.git ../optarena
 git clone -b extended https://github.com/spcl/dace.git ../dace   # or: git -C ../dace switch extended
 git clone https://github.com/spcl/dace-fortran.git ../dace-fortran

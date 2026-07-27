@@ -1,0 +1,4 @@
+[submodule "external/hpcagent-bench"]
+	path = external/hpcagent-bench
+	url = git@github.com:spcl/HPCAgent-Bench.git
+	branch = main

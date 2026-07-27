@@ -322,7 +322,7 @@ def render_tables(out: Path) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC cross-compiler x cross-language job")
-    ap.add_argument("--corpora", nargs="*", default=["tsvc2", "tsvc2_5"], choices=["tsvc2", "tsvc2_5"])
+    ap.add_argument("--corpora", nargs="*", default=["foundation"], choices=["tsvc2", "tsvc2_5", "foundation"])
     ap.add_argument("--languages", nargs="*", default=["c", "fortran"], choices=list(_LANGS))
     ap.add_argument("--preset", default="XL", choices=["S", "M", "L", "XL"])
     ap.add_argument("--compilers", default="auto")

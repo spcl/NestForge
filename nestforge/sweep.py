@@ -50,7 +50,7 @@ class SweepCell:
     unit: str
 
 
-def bounded_kernels(corpus: str = "tsvc2",
+def bounded_kernels(corpus: str = "foundation",
                     only: Sequence[str] = None,
                     limit: int = DEFAULT_KERNEL_LIMIT) -> List[tsvc.TsvcKernel]:
     """Auto-discover the corpus, then CAP to ``limit`` kernels (or the explicit ``only`` set). The cap is

@@ -170,7 +170,7 @@ def analyze(kernel: tsvc.TsvcKernel) -> Dict[str, object]:
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=Path("complexity.json"))
-    ap.add_argument("--corpus", nargs="*", default=["tsvc2", "tsvc2_5"])
+    ap.add_argument("--corpus", nargs="*", default=["foundation"], choices=["tsvc2", "tsvc2_5", "foundation"])
     ap.add_argument("--kernels", nargs="*", default=None, help="kernel keys (default: every corpus kernel)")
     args = ap.parse_args(argv)
 

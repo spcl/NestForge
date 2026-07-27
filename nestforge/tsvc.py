@@ -40,6 +40,7 @@ from hpcagent_bench.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
 from nestforge.build import split_params
+from nestforge.corpus import iter_dace_kernels
 from nestforge.extract import Boundary, trip_count_symbols
 from nestforge.fusion import get_fusion_strategy
 
@@ -145,7 +146,7 @@ class TsvcKernel:
     program: object  # the DaCe ``@dace.program``
     regime: str  # "1d" or "2d"
     params: Dict[str, int]  # scalar loop parameters (e.g. n1, n3) with their registered values
-    corpus: str = "tsvc2"  # which corpus this kernel came from ("tsvc2" | "tsvc2_5")
+    corpus: str = "foundation"  # source corpus ("foundation" | "tsvc2" | "tsvc2_5")
     tags: frozenset = field(default_factory=frozenset)
 
     @property
@@ -190,8 +191,42 @@ class TsvcKernel:
         return self.yaml_path.stem if self.yaml_path is not None else None
 
 
-def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -> List[TsvcKernel]:
-    """Every kernel from a DaCe TSVC corpus, optionally filtered to the ``only`` short names.
+#: Stem hpcagent_bench files the TSVC-2 kernels under. Stripped so a kernel keeps ONE key whatever corpus
+#: it was loaded from: ``--only s221`` and every recorded result key stay valid across the switch. Verified
+#: collision-free -- no bare foundation kernel is named like a de-stemmed ``tsvc_2_*`` one.
+FOUNDATION_TSVC_STEM = "tsvc_2_"
+
+
+def foundation_key(name: str) -> str:
+    """A foundation registry name reduced to the corpus-independent kernel key."""
+    return name[len(FOUNDATION_TSVC_STEM):] if name.startswith(FOUNDATION_TSVC_STEM) else name
+
+
+def corpus_metadata() -> Dict[str, Tuple[str, Dict[str, int], frozenset]]:
+    """``key -> (regime, params, tags)`` from the DaCe TSVC registry, for enriching foundation kernels.
+
+    hpcagent_bench manifests carry problem-size presets but NOT a kernel's scalar loop parameters (s122's
+    ``n1``/``n3``, s162's ``k``), and :func:`sample_sizes` raises on a work-deciding symbol it cannot size
+    -- so without this the 11 kernels that have such parameters would drop out of a foundation sweep.
+    ``regime``/``tags`` come along because they are reported per kernel and would otherwise read as "1d,
+    untagged" for all 245.
+
+    BEST-EFFORT: a checkout without DaCe's corpus script still gets every foundation kernel, and only those
+    11 fail loudly at sizing. Returning an empty map is therefore correct, not a silent degradation."""
+    try:
+        return {k.key: (k.regime, dict(k.params), k.tags) for k in iter_tsvc_kernels(corpus="tsvc2")}
+    except (FileNotFoundError, ImportError, AttributeError):
+        return {}
+
+
+def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "foundation") -> List[TsvcKernel]:
+    """Every kernel of a corpus, optionally filtered to the ``only`` short names.
+
+    ``foundation`` (the DEFAULT) is the installed hpcagent_bench track: 245 kernels, a measured superset of
+    both DaCe corpora (151 ``tsvc_2_*`` == all of tsvc2, plus tsvc2_5 and 29 more), and the only source
+    that ships each kernel's manifest and native baseline. It is the default because it is the corpus that
+    is actually installed with the project -- the two below are scripts inside a DaCe checkout, which a
+    bare clone need not have.
 
     ``tsvc2`` ships a ``KERNELS`` registry of descriptors (``s000_d_single`` -> key ``s000``, with
     regime/params/tags); ``tsvc2_5`` ships a ``collect()`` of bare ``@dace.program`` s (key = function
@@ -202,12 +237,14 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -
         # The whole hpcagent_bench track, TSVC included. Sizing, native baselines and manifests all hang
         # off `foundation_entry`, which resolves a bare <key> stem, so nothing below this line is
         # TSVC-specific. Programs are materialized eagerly: measured ~2 ms each, ~0.5 s for all 220.
-        from nestforge.corpus import iter_dace_kernels
+        meta = corpus_metadata()
         for kernel in sorted(iter_dace_kernels("foundation"), key=lambda k: k.short_name):
-            key = kernel.short_name.rsplit("/", 1)[-1]
+            key = foundation_key(kernel.short_name.rsplit("/", 1)[-1])
             if want is not None and key not in want:
                 continue
-            out.append(TsvcKernel(key=key, program=kernel.program(), regime="1d", params={}, corpus=corpus))
+            regime, params, tags = meta.get(key, ("1d", {}, frozenset()))
+            out.append(
+                TsvcKernel(key=key, program=kernel.program(), regime=regime, params=params, corpus=corpus, tags=tags))
         return out
     module = corpus_module(corpus)
     if corpus == "tsvc2_5":
@@ -229,15 +266,16 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "tsvc2") -
 def foundation_coverage_gap() -> Dict[str, List[str]]:
     """corpus -> keys it carries that the ``foundation`` track does not.
 
-    foundation holds tsvc2 under a ``tsvc_2_`` stem and tsvc2_5 under bare names, but it is NOT a
-    superset of either. A sweep that defaults to foundation and says nothing reads as full corpus
-    coverage while quietly omitting these.
+    MEASURED empty for both corpora today (foundation 245 >= tsvc2 151 + tsvc2_5 65), but kept as a live
+    check rather than a claim: foundation is maintained independently, and a sweep that defaults to it and
+    says nothing would read as full corpus coverage while quietly omitting whatever drifted out.
+
+    Keys are compared after :func:`foundation_key` normalisation, so the two sides speak the same names.
     """
     foundation = {k.key for k in iter_tsvc_kernels(corpus="foundation")}
     gap: Dict[str, List[str]] = {}
-    for corpus, stem in (("tsvc2", "tsvc_2_"), ("tsvc2_5", "")):
-        keys = [k.key for k in iter_tsvc_kernels(corpus=corpus)]
-        gap[corpus] = sorted(k for k in keys if f"{stem}{k}" not in foundation)
+    for corpus in ("tsvc2", "tsvc2_5"):
+        gap[corpus] = sorted(k.key for k in iter_tsvc_kernels(corpus=corpus) if k.key not in foundation)
     return gap
 
 
