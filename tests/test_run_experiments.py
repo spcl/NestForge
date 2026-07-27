@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The E1-E5 runner script: argument handling and the JSON it writes. The table-shaping is unit-tested
 (no compile); a real bounded run is integration."""
+import dataclasses
 import json
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from run_experiments import EXPERIMENTS, main, to_json_value  # noqa: E402
+from run_experiments import EXPERIMENTS, RunProvenance, main, provenance, to_json_value, write  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_experiments.py"
 
@@ -155,3 +156,30 @@ def test_unknown_only_key_is_rejected(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         main(["--out", str(tmp_path), "--only", "s212,nosuchkernel", "--experiments", "e1"])
     assert e.value.code == 2
+
+
+def test_every_result_file_records_what_produced_it(tmp_path):
+    """A corpus sweep is many sbatch jobs, and merging their JSON concatenates rows that otherwise carry no
+    record of their conditions. Two rows differing in preset, seed or reps -- or measured on different
+    nodes -- are not two measurements of the same thing, so every file must name its own."""
+    import argparse
+
+    args = argparse.Namespace(preset="M", seed=3, reps=11, granularity_points=4)
+    run = provenance(args, ["gcc", "clang"])
+    assert (run.preset, run.seed, run.reps, run.granularity_points) == ("M", 3, 11, 4)
+    assert run.backends == ["gcc", "clang"]
+    assert run.host and run.cpu and run.dace_version, "host/cpu/dace version are what make two nodes comparable"
+
+    path = write(tmp_path, "e1", [{"kernel": "s221"}], {"best_granularity": {}}, run)
+    got = json.loads(path.read_text())
+    assert got["run"] == dataclasses.asdict(run)
+    assert got["rows"] == [{"kernel": "s221"}]
+
+
+def test_a_table_cannot_overwrite_the_provenance_block(tmp_path):
+    """Tables are splatted into the payload beside "run"/"rows". A table named either would replace the
+    provenance with no sign it had, and the merged file would then attribute one job's rows to another
+    job's conditions."""
+    run = RunProvenance("S", 0, 5, 2, ["gcc"], "host", "cpu", "abc123", "1.0")
+    with pytest.raises(ValueError, match="colliding with the reserved keys"):
+        write(tmp_path, "e1", [], {"run": {"preset": "XL"}}, run)

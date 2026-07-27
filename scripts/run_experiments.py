@@ -18,6 +18,8 @@ sweep that dies on kernel 3 of 90 must not lose kernels 1 and 2.
 import argparse
 import dataclasses
 import json
+import platform
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -26,6 +28,8 @@ from typing import Dict, List
 # `python scripts/run_experiments.py` from a checkout cannot import nestforge unless it happens to be
 # pip-installed. This is the cluster entry point -- it must run from a bare clone.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import dace  # noqa: E402
 
 from nestforge import tsvc  # noqa: E402
 from nestforge.arena import discover_compilers  # noqa: E402
@@ -59,9 +63,74 @@ def to_json_value(value):
     return value
 
 
-def write(out_dir: Path, name: str, rows, tables: Dict) -> Path:
+@dataclasses.dataclass(frozen=True, slots=True)
+class RunProvenance:
+    """What has to MATCH for two result files to be comparable at all.
+
+    A corpus sweep is submitted as many sbatch jobs, and merging their JSON means concatenating rows that
+    carry no record of what produced them. Two rows differing in preset, seed or reps are not two
+    measurements of the same thing, and two rows from different nodes are not comparable even when every
+    knob agrees -- so the host and CPU model are provenance too, not decoration. Written once per file
+    (the knobs are fixed for a run) rather than per row, so it costs nothing to carry.
+    """
+    preset: str
+    seed: int
+    reps: int
+    granularity_points: int
+    backends: List[str]
+    host: str
+    cpu: str
+    nestforge_commit: str
+    dace_version: str
+
+
+def cpu_model() -> str:
+    """The CPU this run measured on. /proc/cpuinfo first (exact on the cluster nodes), platform's weaker
+    answer as the portable fallback."""
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or platform.machine()
+
+
+def repo_commit() -> str:
+    """The nest-forge commit that produced the numbers; ``"unknown"`` from a checkout with no git (a bare
+    tarball on a cluster is a legitimate way to run this)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parents[1]), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return proc.stdout.strip() if proc.returncode == 0 else "unknown"
+
+
+def provenance(args, backends: List[str]) -> RunProvenance:
+    return RunProvenance(preset=args.preset,
+                         seed=args.seed,
+                         reps=args.reps,
+                         granularity_points=args.granularity_points,
+                         backends=list(backends),
+                         host=platform.node(),
+                         cpu=cpu_model(),
+                         nestforge_commit=repo_commit(),
+                         dace_version=dace.__version__)
+
+
+def write(out_dir: Path, name: str, rows, tables: Dict, run: RunProvenance) -> Path:
+    payload = {"run": dataclasses.asdict(run), "rows": to_json_value(rows), **to_json_value(tables)}
+    # A table named "run" or "rows" would overwrite the provenance block with no sign that it had -- the
+    # merged file would then attribute one job's rows to another job's conditions.
+    clash = {"run", "rows"} & set(to_json_value(tables))
+    if clash:
+        raise ValueError(f"experiment {name!r} has table(s) {sorted(clash)} colliding with the reserved keys")
     path = out_dir / f"{name}.json"
-    path.write_text(json.dumps({"rows": to_json_value(rows), **to_json_value(tables)}, indent=2, sort_keys=True))
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
     return path
 
 
@@ -94,6 +163,7 @@ def main(argv: List[str]) -> int:
         print("no compiler found by discover_compilers(); nothing can be measured", file=sys.stderr)
         return 1
 
+    run = provenance(args, backends)
     only = [k.strip() for k in args.only.split(",") if k.strip()]
     kernels = list(tsvc.iter_tsvc_kernels(only=only or None))
     # `only` filters a set, so an unknown key silently shrinks the sweep -- a typo would submit a job that
@@ -115,7 +185,7 @@ def main(argv: List[str]) -> int:
                 "dropped": scan.dropped,
                 "scanned": scan.scanned,
                 "min_fusion_depth": args.min_fusion_depth
-            }))
+            }, run))
     elif args.kernels and not only:
         # --only names the sweep exactly; letting --kernels (default 1) truncate it on top silently swept
         # the first key and reported it as the whole run.
@@ -148,16 +218,17 @@ def main(argv: List[str]) -> int:
             write(args.out, "e1", rows, {
                 "best_granularity": best_granularity_per_backend(rows),
                 "no_granularity_axis": no_granularity_axis(rows)
-            }))
+            }, run))
     if "e3" in names:
         rows = run_e3(kernels, args.out / "e3", **shared)
         cells += rows
         fed_by.append("e3")
-        print("e3 ->",
-              write(args.out, "e3", rows, {
-                  "curve": granularity_curve(rows),
-                  "best_unit": best_unit_per_backend(rows)
-              }))
+        print(
+            "e3 ->",
+            write(args.out, "e3", rows, {
+                "curve": granularity_curve(rows),
+                "best_unit": best_unit_per_backend(rows)
+            }, run))
     if "e2" in names:
         if not cells:  # E2 needs a search side; measure the E1 axis for it rather than reporting half a table
             fed_by.append("e1-fallback")
@@ -182,7 +253,7 @@ def main(argv: List[str]) -> int:
                 "speedup": speedup_table(rows),
                 "skipped": skipped_lanes(rows),
                 "search_cells_from": fed_by,
-            }))
+            }, run))
     if "e4" in names:
         rows = run_e4(kernels,
                       args.out / "e4",
@@ -194,14 +265,14 @@ def main(argv: List[str]) -> int:
             write(args.out, "e4", rows, {
                 "cost_quality": cost_quality_table(rows),
                 "savings": savings_vs_oracle(rows)
-            }))
+            }, run))
     if "e5" in names:
         rows = run_e5(kernels,
                       args.out / "e5",
                       unit=args.unit,
                       max_granularity_points=args.granularity_points,
                       **shared)
-        print("e5 ->", write(args.out, "e5", rows, {"non_affine_speedup": non_affine_findings(rows)}))
+        print("e5 ->", write(args.out, "e5", rows, {"non_affine_speedup": non_affine_findings(rows)}, run))
     return 0
 
 
