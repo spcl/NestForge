@@ -9,7 +9,10 @@ numpy oracle: source-tree layout, the init/program/exit call sequence, and per-p
 import ctypes.util
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +21,7 @@ import pytest
 import dace
 
 import nestforge.build as build_mod
+import nestforge.toolchain as toolchain_mod
 
 pytest.importorskip("hpcagent_bench")
 pytestmark = pytest.mark.skipif(shutil.which("g++") is None, reason="g++ not on PATH")
@@ -28,12 +32,13 @@ from nestforge.extract import extract_nest_to_sdfg
 from nestforge.translate import prepare
 from nestforge.arena import make_inputs, run_oracle
 from dace.sdfg import nodes
-from nestforge.build import (build_sdfg, dace_runtime_include, driver_lib_path, driver_search_dirs, ldconfig_dirs,
-                             hint_dirs, llvm_version, linkable_lib_dir, OpenMPRuntime, compiler_family, LIBOMP,
-                             LIBNVOMP, compare_link_modes, LinkTimings, available_linkers, fastest_linker,
-                             linker_supported, VECTOR_LIBS, SLEEF, LIBMVEC, SVML, vectorlib_installed, BuildOptions,
-                             set_fast_libnodes, runtime_installed, config_has, codegen_impls_available, codegen_config,
-                             default_codegen_impl, CODEGEN_IMPLS, parse_params)
+from nestforge.build import (CODEGEN_IMPLS, BuildOptions, LinkTimings, build_sdfg, codegen_config,
+                             codegen_impls_available, compare_link_modes, config_has, dace_runtime_include,
+                             default_codegen_impl, set_fast_libnodes)
+from nestforge.toolchain import (LIBMVEC, LIBNVOMP, LIBOMP, SLEEF, SVML, VECTOR_LIBS, OpenMPRuntime, available_linkers,
+                                 compiler_family, driver_lib_path, driver_search_dirs, fastest_linker, hint_dirs,
+                                 ldconfig_dirs, linkable_lib_dir, linker_supported, llvm_version, parse_params,
+                                 runtime_installed, vectorlib_installed)
 
 
 def kernels():
@@ -127,8 +132,8 @@ def test_hint_dirs_rank_by_version_across_all_roots(tmp_path, monkeypatch):
     for root, versions in ((lib, ("llvm-9", "llvm-21")), (lib64, ("llvm-14", "llvm-18"))):
         for v in versions:
             (root / v / "lib").mkdir(parents=True)
-    monkeypatch.setattr(build_mod, "_LIB_DIR_HINT_ROOTS", (str(lib), str(lib64)))
-    monkeypatch.setattr(build_mod, "_LIB_DIR_HINTS", ())
+    monkeypatch.setattr(toolchain_mod, "_LIB_DIR_HINT_ROOTS", (str(lib), str(lib64)))
+    monkeypatch.setattr(toolchain_mod, "_LIB_DIR_HINTS", ())
 
     hints = hint_dirs()
     assert [Path(d).parent.name for d in hints] == ["llvm-21", "llvm-18", "llvm-14", "llvm-9"]
@@ -143,8 +148,8 @@ def test_hint_dirs_is_a_total_order_so_two_identical_boxes_agree(tmp_path, monke
     for name in ("llvm-18", "llvm-18.1"):
         (root / name / "lib").mkdir(parents=True)
     (root / "llvm-18" / "lib64").mkdir()  # same version, two dirs -> the tiebreaker has to decide
-    monkeypatch.setattr(build_mod, "_LIB_DIR_HINT_ROOTS", (str(root), ))
-    monkeypatch.setattr(build_mod, "_LIB_DIR_HINTS", ())
+    monkeypatch.setattr(toolchain_mod, "_LIB_DIR_HINT_ROOTS", (str(root), ))
+    monkeypatch.setattr(toolchain_mod, "_LIB_DIR_HINTS", ())
 
     assert hint_dirs() == hint_dirs()  # stable across calls
     assert hint_dirs()[0].endswith("llvm-18.1/lib")  # newest first, ties broken by path
@@ -153,13 +158,13 @@ def test_hint_dirs_is_a_total_order_so_two_identical_boxes_agree(tmp_path, monke
 def test_ldconfig_candidates_are_version_ranked_before_first_match(monkeypatch):
     """The loader cache lists dirs in ITS order, and linkable_lib_dir returns the FIRST hit -- so without
     ranking, the version fix in hint_dirs is unreachable whenever ldconfig knows any llvm dir at all."""
-    monkeypatch.setattr(build_mod, "linker_finds", lambda soname, compiler: False)
-    monkeypatch.setattr(build_mod, "env_library_dirs", lambda: [])
-    monkeypatch.setattr(build_mod, "driver_lib_path", lambda soname, compiler: None)
-    monkeypatch.setattr(build_mod, "driver_search_dirs", lambda compiler: [])
+    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda soname, compiler: False)
+    monkeypatch.setattr(toolchain_mod, "env_library_dirs", lambda: [])
+    monkeypatch.setattr(toolchain_mod, "driver_lib_path", lambda soname, compiler: None)
+    monkeypatch.setattr(toolchain_mod, "driver_search_dirs", lambda compiler: [])
     # cache order is deliberately oldest-first, the order that used to win
-    monkeypatch.setattr(build_mod, "ldconfig_dirs", lambda soname: ["/opt/llvm-14/lib", "/opt/llvm-18/lib"])
-    monkeypatch.setattr(build_mod.Path, "exists", lambda self: "llvm-" in str(self))
+    monkeypatch.setattr(toolchain_mod, "ldconfig_dirs", lambda soname: ["/opt/llvm-14/lib", "/opt/llvm-18/lib"])
+    monkeypatch.setattr(toolchain_mod.Path, "exists", lambda self: "llvm-" in str(self))
 
     linkable_lib_dir.cache_clear()
     assert linkable_lib_dir("omp", "g++") == "/opt/llvm-18/lib"
@@ -178,7 +183,7 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
     # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
     assert rt.compile_flags("g++") == ["-fopenmp"] and without_search_paths(rt.link_flags("g++")) == ["-lomp"]
     # intel-classic and nvidia link ONLY their native runtimes (icc->libiomp5, nvc->libnvomp), not libomp.
-    from nestforge.build import LIBIOMP5
+    from nestforge.toolchain import LIBIOMP5
     assert LIBIOMP5.compile_flags("icc") == ["-qopenmp"]
     assert without_search_paths(LIBIOMP5.link_flags("icc")) == ["-qopenmp"]
     assert LIBNVOMP.compile_flags("nvc") == ["-mp"]
@@ -193,7 +198,7 @@ def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
 def test_openmp_runtime_registry_covers_the_popular_runtimes():
     """The four popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel, ABI-compat
     with libomp), libnvomp (NVIDIA, nvc -mp only)."""
-    from nestforge.build import OPENMP_RUNTIMES, LIBGOMP, LIBIOMP5
+    from nestforge.toolchain import LIBGOMP, LIBIOMP5, OPENMP_RUNTIMES
     assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5", "libnvomp"}
     # gcc on Intel's runtime (GOMP-compat); search paths filtered (see without_search_paths).
     assert without_search_paths(LIBIOMP5.link_flags("g++")) == ["-liomp5"]
@@ -204,7 +209,7 @@ def test_openmp_abi_compatibility_is_enforced():
     """A runtime is usable only if the compiler can actually LINK it, which depends on HOW the family
     selects a runtime, not ABI alone: gcc links any gomp-capable runtime by soname; LLVM name-selects only
     libomp/libiomp5 (kmpc ABI); icc/nvc++ hard-link their native runtime alone. Mismatches raise."""
-    from nestforge.build import LIBOMP, LIBGOMP, LIBIOMP5, LIBNVOMP
+    from nestforge.toolchain import LIBGOMP, LIBIOMP5, LIBNVOMP, LIBOMP
     # nvc++ / icc link ONLY their native runtimes.
     assert LIBNVOMP.compatible("nvc++") and not LIBOMP.compatible("nvc++") and not LIBIOMP5.compatible("nvc++")
     assert LIBIOMP5.compatible("icc") and not LIBOMP.compatible("icc") and not LIBGOMP.compatible("icc")
@@ -264,27 +269,25 @@ def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path,
     "-l<soname> resolves" -- e.g. Ubuntu's libomp-dev package moves the lib off the default linker path
     across releases. Pinning the apt package can't fix that; finding the file can.
     """
-    from nestforge import build as build_mod
     (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
     # LD_LIBRARY_PATH (not LIBRARY_PATH): the LOADER searches it, the LINKER does not -- exactly where a
     # spack/module runtime lives. LIBRARY_PATH would prove nothing (the linker already searches that).
     monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
-    build_mod.linkable_lib_dir.cache_clear()
+    toolchain_mod.linkable_lib_dir.cache_clear()
     rt = OpenMPRuntime(name="libfakeomp", soname="fakeomp")
-    assert not build_mod.linker_finds("fakeomp", "g++"), "premise: the linker cannot find it unaided"
+    assert not toolchain_mod.linker_finds("fakeomp", "g++"), "premise: the linker cannot find it unaided"
     assert f"-L{tmp_path}" in rt.link_flags("g++")
-    assert build_mod.lib_linkable("fakeomp", "g++")  # and the honest probe agrees it can be linked
-    build_mod.linkable_lib_dir.cache_clear()
+    assert toolchain_mod.lib_linkable("fakeomp", "g++")  # and the honest probe agrees it can be linked
+    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
 def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch):
     # Discovery must stay invisible when the lib is already on the default path. Forced rather than read
     # off this box, so the assertion means the same thing wherever it runs.
-    from nestforge import build as build_mod
-    monkeypatch.setattr(build_mod, "linker_finds", lambda *a, **kw: True)
-    build_mod.linkable_lib_dir.cache_clear()
+    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: True)
+    toolchain_mod.linkable_lib_dir.cache_clear()
     assert OpenMPRuntime().link_flags("g++") == ["-lomp"]
-    build_mod.linkable_lib_dir.cache_clear()
+    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
 def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
@@ -309,12 +312,11 @@ def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp
 
 def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch):
     # A spack/module runtime is pinned by hand and must win; "" means "I know: use a bare -l".
-    from nestforge import build as build_mod
-    monkeypatch.setattr(build_mod, "linker_finds", lambda *a, **kw: False)
-    build_mod.linkable_lib_dir.cache_clear()
+    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: False)
+    toolchain_mod.linkable_lib_dir.cache_clear()
     assert "-L/opt/spack/omp" in OpenMPRuntime(lib_dir="/opt/spack/omp").link_flags("g++")
     assert OpenMPRuntime(lib_dir="").link_flags("g++") == ["-lomp"]
-    build_mod.linkable_lib_dir.cache_clear()
+    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
 def test_parallel_map_emits_omp_pragma():
@@ -407,13 +409,12 @@ def test_available_linkers_and_fastest_pick():
 def test_fastest_linker_version_gate_skips_unsupported(monkeypatch):
     """The pick is VERSION-gated: an old compiler predating -fuse-ld=mold must not get mold even when
     installed. Forces the version below mold's floor (unlike the host-dependent check above)."""
-    import nestforge.build as B
-    monkeypatch.setattr(B, "compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
-    assert not B.linker_supported("g++", "mold")
-    picked = B.fastest_linker("g++")
+    monkeypatch.setattr(toolchain_mod, "compiler_version", lambda c: (9, 0))  # gcc 9 < mold's (12,1) floor; >= lld/gold
+    assert not toolchain_mod.linker_supported("g++", "mold")
+    picked = toolchain_mod.fastest_linker("g++")
     if picked:  # whatever it fell back to (lld/gold), g++ at v9 must actually support it, and it isn't mold
         assert picked != ["-fuse-ld=mold"]
-        assert B.linker_supported("g++", picked[0].split("=", 1)[1])
+        assert toolchain_mod.linker_supported("g++", picked[0].split("=", 1)[1])
 
 
 def test_veclib_flag_mapping_and_compatibility():
@@ -441,9 +442,8 @@ def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch,
     """The veclib ``-l`` is pinned NEEDED via ``--push-state,--no-as-needed,...,--pop-state``, so unlike a
     bare ``-l`` its POSITION no longer decides linkage. Still, assert it appears exactly once, after the
     source/object, in every branch of :func:`compile` (construction hygiene)."""
-    import nestforge.build as B
     cmds = []
-    monkeypatch.setattr(B, "run", lambda cmd, **kw: cmds.append(list(cmd)))
+    monkeypatch.setattr(build_mod, "run", lambda cmd, **kw: cmds.append(list(cmd)))
     frame = tmp_path / "src" / "cpu" / "k.cpp"
     frame.parent.mkdir(parents=True)
     frame.write_text("")
@@ -451,7 +451,7 @@ def test_veclib_link_flags_come_after_the_source_in_every_link_mode(monkeypatch,
                               veclib=SLEEF), BuildOptions(compiler="clang++", veclib=SLEEF, openmp=LIBOMP),
                  BuildOptions(compiler="clang++", veclib=SLEEF, link_external=True)):
         cmds.clear()
-        B.compile(frame, tmp_path, "k", opts)
+        build_mod.compile(frame, tmp_path, "k", opts)
         link = [c for c in cmds if any("-lsleefgnuabi" in a for a in c)]
         assert len(link) == 1, opts
         cmd = link[0]
@@ -572,3 +572,26 @@ def test_vectorized_owned_build_matches_oracle():
     owned_build_matches_oracle("hpc/structured_grids/jacobi_1d/jacobi_1d",
                                size=256,
                                opts=BuildOptions(vectorize=VectorizeConfig(widths=(8, ), target_isa="AUTO")))
+
+
+def test_toolchain_is_importable_without_dace():
+    """The point of splitting it out of `build`: asking whether ldconfig knows about libomp must not drag
+    in the DaCe codegen stack. `perf/flags` used to import `build` lazily for exactly this reason -- a
+    workaround that only held as long as nobody hoisted the import. Load the module file with nothing else
+    in sys.modules and assert dace never arrives."""
+    # A SUBPROCESS, not this interpreter: the test module imports dace at line 18, and every other test in
+    # the suite has too, so an in-process check could only ever assert `had_dace or ...` -- true before the
+    # module is even loaded. The isolation being tested only exists in a fresh interpreter.
+    path = Path(__file__).resolve().parents[1] / "nestforge" / "toolchain.py"
+    probe = textwrap.dedent(f"""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location("nf_toolchain_isolated", {str(path)!r})
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["nf_toolchain_isolated"] = module
+        spec.loader.exec_module(module)
+        assert "dace" not in sys.modules, "importing nestforge.toolchain pulled in dace"
+        assert module.compiler_family("icx") == "llvm"          # a real probe, not just an import
+        assert module.lib_findable("m", None) in (True, False)  # reaches ctypes.util, a SUBMODULE import
+    """)
+    r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-800:]

@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from nestforge.build import OPENMP_RUNTIMES, OpenMPRuntime, compiler_family, driver_lib_path
+from nestforge.toolchain import OPENMP_RUNTIMES, OpenMPRuntime, compiler_family, driver_lib_path
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
@@ -181,7 +181,12 @@ def build_support_matrix(toolchains: Optional[List[Toolchain]] = None,
             for combo in itertools.product(usable, repeat=nests):
                 with tempfile.TemporaryDirectory() as d:
                     cell = try_combination(list(combo), rt, Path(d))
-                if cell.ok and cell.loads and cell.correct:
+                # cell.parallel too: the matrix exists to establish that a SHARED OpenMP runtime works, and
+                # a cell whose objects emit no fork call proves only that serial code links and runs. Left
+                # out, such a cell fed surviving_runtimes and MachineCompat could standardise the whole
+                # sweep on a runtime that never actually parallelised. The docstring already said
+                # "links, loads, parallelises and runs correct"; the code did not.
+                if cell.ok and cell.loads and cell.parallel and cell.correct:
                     survivors.append(cell)
         return survivors
 

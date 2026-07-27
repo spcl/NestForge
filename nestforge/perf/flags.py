@@ -14,8 +14,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from nestforge.build import (CXX_STD, LIBOMP, OpenMPRuntime, compiler_family, driver_lib_path, lib_linkable,
-                             linkable_lib_dir)
+from nestforge.toolchain import (CXX_STD, LIBOMP, VECTOR_LIBS, OpenMPRuntime, compiler_family, driver_lib_path,
+                                 lib_linkable, linkable_lib_dir)
 
 #: The ONE OpenMP runtime every lane links unless a cell names another. libomp because both gcc and
 #: clang can link it (it carries a GOMP_* compat layer), so their node libraries share one thread pool.
@@ -80,7 +80,7 @@ _ARCH: Dict[str, str] = {
 COST_MODELS: Tuple[str, ...] = ("default", "cheap", "no-vec")
 
 #: Vector-math-library axis DOMAIN; the arena sweeps only ``none`` + the accuracy-gated winner.
-#: Per-family spelling lives in ``build.VectorMathLib``.
+#: Per-family spelling lives in ``toolchain.VectorMathLib``.
 VECLIBS: Tuple[str, ...] = ("none", "sleef", "libmvec", "svml")
 
 
@@ -351,12 +351,11 @@ def cxx_source_flags(family: str, cxx_std: str = CXX_STD) -> List[str]:
 
 def resolve_veclib(compiler: Optional[str], veclib: Optional[str]) -> Tuple[Optional[object], Optional[str]]:
     """``(library, reason)``. ``(None, None)`` is the scalar baseline -- no library and no problem -- so
-    callers branch on ``reason``, not on the library. Lazy import keeps this module dace-free."""
+    callers branch on ``reason``, not on the library."""
     if not veclib or veclib == "none":
         return None, None
     if not compiler:
         return None, f"veclib {veclib} requested without a compiler to resolve its family"
-    from nestforge.build import VECTOR_LIBS
     vl = VECTOR_LIBS.get(veclib)
     if vl is None:
         return None, f"unknown veclib {veclib!r} (expected one of {tuple(VECTOR_LIBS)})"

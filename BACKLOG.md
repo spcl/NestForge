@@ -209,12 +209,13 @@ it, or rewrite the doc to say "planned". Do not leave them reading as fact.
       docstring are the only place the P0 contract is stated (this IS the ladder's base, and it is
       idempotent on an already-canonical SDFG). Inlining it deletes that statement and leaves five call
       sites each implying it by convention. Reopen only if the contract moves somewhere better.
-- [ ] **H5** Unreferenced by anything: `prototypes/gpu_stream_interop/` (11 tracked files, zero
-      references outside itself) and `scripts/census.py`. Also
-      `docs/paper/EXPERIMENT_frontend_semantics_gap.md:345,364` cite `scripts/census_ai.py`, which
-      does not exist. Decide keep-and-reference or delete.
-- [ ] **H6** `nestforge/report.py` (34 lines) has one consumer, `examples/demo_fma.py`. No test, no
-      driver, no CI. Keep only if the example is kept.
+- [ ] **H5** CONFIRMED unreferenced, awaiting a keep/delete call (deliberate artifacts, so not
+      deleted unilaterally): `prototypes/gpu_stream_interop/` (11 tracked files, zero references outside
+      itself and this list) and `scripts/census.py` (zero references anywhere). Separately,
+      `docs/paper/EXPERIMENT_frontend_semantics_gap.md:345,364` cite `scripts/census_ai.py`, which does
+      not exist -- the doc prescribes a step nobody can run; either write it or correct the doc.
+- [x] **H6** WRONG as written, closing: `nestforge/report.py` has TWO consumers, and one of them is
+      `nestforge/run.py:29` (`render_markdown`) -- the executing entry point, not an example. Keep.
 - [x] **H7** DONE: `Session.emit_variant` deleted (broken contract, zero callers, zero tests;
       `kernel_source(lang=...)` is the tested surface). Also deleted alongside it, same grounds:
       `Session.list_map_fissions` / `Session.fission_map` (zero callers, zero tests, and riding raw

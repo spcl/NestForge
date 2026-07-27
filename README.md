@@ -265,6 +265,8 @@ nestforge/
   corpus.py       NATIVE: npbench/polybench kernel corpus (over the optarena dependency)
 
   build.py        owned DaCe build (generate + compile + link ourselves; bind_program timing)
+  toolchain.py    what the machine's toolchains can do (compiler families, OpenMP runtimes,
+                  vector-math libs, linkers, ccache, C-signature parsing) -- no DaCe
   isolation.py    run_isolated: run a compiled kernel in a forked child (segfault/OOM-safe)
   arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner
   report.py       render arena results: winning compiler×flag per nest and FP mode, plus the grid

@@ -7,7 +7,7 @@ the sequential correctness GATE cell stays runtime-free. Pure enumeration path (
 """
 from pathlib import Path
 
-from nestforge.build import LIBGOMP, LIBOMP
+from nestforge.toolchain import LIBGOMP, LIBOMP
 from nestforge.perf import flags, support_matrix, tsvc_full
 from nestforge.perf.tsvc_arena import Toolchain
 

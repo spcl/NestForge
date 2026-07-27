@@ -39,7 +39,7 @@ from hpcagent_bench.initialize import fill_index_array
 from hpcagent_bench.spec import KERNELS, BenchSpec
 
 from nestforge.arena import resolve_shape
-from nestforge.build import split_params
+from nestforge.toolchain import raw_signature, split_params
 from nestforge.corpus import iter_dace_kernels
 from nestforge.extract import Boundary, trip_count_symbols
 from nestforge.fusion import get_fusion_strategy
@@ -473,6 +473,13 @@ NATIVE_C_BASE = frozenset({"double", "float", "int64_t", "int"})
 #: (``restrict``) while DaCe-generated code is C++ (``__restrict__``).
 QUALIFIERS = re.compile(r"\b(?:const|volatile|restrict|__restrict__|__restrict)\b")
 
+#: Namespace qualification on a base type. The C++ baselines spell the ``<cstdint>`` types both bare
+#: (``int64_t``) and qualified (``std::int64_t``) -- the same type and the same ABI, so the qualifier is
+#: dropped rather than enumerated into :data:`NATIVE_C_BASE`, which mirrors ``harness.C_BASE``'s ctypes keys.
+#: Left unhandled, every gather/scatter kernel (whose index array is the one declared ``std::int64_t``)
+#: raised and was dropped from the sweep.
+NAMESPACE = re.compile(r"(?:\w+\s*::\s*)+")
+
 
 def native_signature(cpp_text: str, symbol: str) -> List[Tuple[str, str, bool]]:
     """Parse the ``extern "C"`` baseline signature ``void <symbol>(...)`` into
@@ -484,19 +491,21 @@ def native_signature(cpp_text: str, symbol: str) -> List[Tuple[str, str, bool]]:
     -- an ABI mismatch ctypes cannot catch and the numbers cannot reveal.
 
     ``const`` / ``__restrict__`` are stripped as whole WORDS and the list is split on TOP-LEVEL commas
-    (:func:`nestforge.build.split_params`); a substring strip corrupts a parameter named ``const_term``.
+    (:func:`nestforge.toolchain.split_params`); a substring strip corrupts a parameter named ``const_term``.
+
+    The entry is located by :func:`nestforge.toolchain.raw_signature`, shared with the timing harness, not
+    by a local regex. A looser ``\\b<symbol>\\s*\\(`` also matches the DOC COMMENT that names the function:
+    ``// argmax_value_d (s314): ...`` sits directly above the declaration in the foundation baselines, so
+    the parameter list came back as ``s314`` and the kernel was dropped from every sweep.
     """
-    m = re.search(rf"\b{re.escape(symbol)}\s*\((.*?)\)", cpp_text, re.S)
-    if not m:
-        raise LookupError(f"native symbol {symbol} not found in the baseline source")
     params: List[Tuple[str, str, bool]] = []
-    for raw in split_params(m.group(1)):
+    for raw in split_params(raw_signature(cpp_text, symbol, "c")):
         tok = re.sub(QUALIFIERS, "", raw).strip()
         if not tok or tok == "void":
             continue
         is_ptr = "*" in tok
         name = re.split(r"[\s*]+", tok)[-1]
-        base = tok[:tok.rfind(name)].replace("*", "").strip()
+        base = NAMESPACE.sub("", tok[:tok.rfind(name)].replace("*", "").strip())
         if base not in NATIVE_C_BASE:
             raise ValueError(f"native baseline parameter {name!r} of {symbol!r} has C type {base!r}, which the "
                              f"arena cannot bind (known: {sorted(NATIVE_C_BASE)}); binding it as a default width "

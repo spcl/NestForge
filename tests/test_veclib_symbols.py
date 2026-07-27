@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Whole-symbol veclib matching (:func:`nestforge.build.serves_op`) vs. the substring test it replaced.
+"""Whole-symbol veclib matching (:func:`nestforge.toolchain.serves_op`) vs. the substring test it replaced.
 
 The old ``candidate in nm_output`` test credited a library for elementals it does not serve whenever one
 symbol name is a PREFIX of another (``tanh`` starts with ``tan``, ``log10``/``log1p``/``log2`` all start
@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from nestforge.build import VECTOR_LIBS, nm_symbol_names, packed_ops_called, serves_op, veclib_library_path
+from nestforge.toolchain import VECTOR_LIBS, nm_symbol_names, packed_ops_called, serves_op, veclib_library_path
 
 GCC_MISSING = shutil.which("gcc") is None
 

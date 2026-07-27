@@ -26,7 +26,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
 
-from nestforge.build import DEFAULT_COMPILER, BuildOptions
+from nestforge.build import BuildOptions
+from nestforge.toolchain import DEFAULT_COMPILER
 from nestforge.optimizers import (BASELINE_OPT_MODE, DaceOptimizer, ExternalOptimizer, Optimizer, Proposal,
                                   deterministic_optimizers)
 from nestforge.tsvc import OPT_MODES

@@ -40,8 +40,8 @@ import numpy as np
 import dace  # noqa: F401 -- ensure the DaCe package (not a cwd-shadowing stub) is importable
 
 from nestforge import tsvc
-from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, run_oracle
-from nestforge.build import compiler_family, compiler_version
+from nestforge.arena import maxdiff, make_inputs, relative_maxdiff, rewind, rewind_snapshot, run_oracle
+from nestforge.toolchain import compiler_family, compiler_version
 from nestforge.perf import flags
 from nestforge.perf.harness import (c_argtypes, call_c, fmt_us, geomean, load_results, my_slice, native_setup,
                                     native_symbol, rank_and_size, run_compile, signature_order)
@@ -295,19 +295,28 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
     """Bind + validate + time the native baseline in the forked child: the original C's bounds are
     independent of the nest-sized buffers, so an OOB here segfaults only the child.
 
+    The rep loop rewinds every read-write output, exactly as :func:`harness.call_c` does for the nest
+    columns measured on the SAME buffers. This lane is the speedup denominator, so timing it under decayed
+    (eventually subnormal) data while the numerator ran on pristine data biased every ``best/native`` ratio
+    in the table -- the two columns were not measuring the same thing.
+
     :raises KeyError: on an unresolved pointer or scalar arg."""
     fn, cargs, ptr_names = native_setup(so, symbol, sig, kernel, inputs, sizes)
+    snapshot = rewind_snapshot(boundary, inputs)
     fn(*cargs)  # correctness run (mutates the in-place buffers cargs points at)
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "time_us": float("inf"), "unchecked": True}
     md = maxdiff({k: oracle[k] for k in outs}, outs)
+    rewind(snapshot)
     fn(*cargs)  # warm
-    t0 = time.perf_counter()
+    total = 0.0
     for _ in range(reps):
+        rewind(snapshot)
+        t0 = time.perf_counter()
         fn(*cargs)
-    us = (time.perf_counter() - t0) / reps * 1e6
-    return {"ok": bool(md <= 1e-6), "maxdiff": float(md), "time_us": float(us)}
+        total += time.perf_counter() - t0
+    return {"ok": bool(md <= 1e-6), "maxdiff": float(md), "time_us": float(total / reps * 1e6)}
 
 
 def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes, oracle, reps: int, family: str,
@@ -322,7 +331,9 @@ def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes,
     try:
         symbol = native_symbol(text, kernel.native_symbol)
         sig = tsvc.native_signature(text, symbol)
-    except LookupError as e:
+    # ValueError too: a type the arena cannot bind is a NATIVE-COLUMN problem. Caught as LookupError
+    # only, it escaped and took the whole kernel down as a crash rather than one skipped column.
+    except (LookupError, ValueError) as e:
         return Cell(family, "native", nat, False, float("inf"), float("inf"), 0.0, error=str(e))
 
     so = workdir / f"{kernel.key}_{family}_native.so"

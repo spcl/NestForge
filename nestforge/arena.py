@@ -23,7 +23,7 @@ import numpy as np
 import dace
 from dace import symbolic
 
-from nestforge.build import COMPILE_TIMEOUT_S, compiler_family, ldconfig_output
+from nestforge.toolchain import COMPILE_TIMEOUT_S, compiler_family, ldconfig_output
 from nestforge.dedup import collapse, representatives, variant_key
 from nestforge.perf import flags
 from nestforge.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
@@ -232,6 +232,37 @@ def resolve_argtypes(order: List[str], boundary: Boundary) -> list:
     return types
 
 
+def accumulating_outputs(boundary: Boundary, buffers: Dict[str, np.ndarray]) -> List[str]:
+    """Outputs the kernel both READS and WRITES -- the ones a timed rep loop must restore.
+
+    Every timing path in the repo needs this same set, and getting it wrong is invisible: an in-place nest
+    left un-restored feeds on its own output, so rep k computes ``a * b**k``, reaches denormals within a
+    handful of reps, and the median times subnormal arithmetic instead of the kernel. ONE definition, so a
+    caller cannot quietly disagree about which buffers decay -- four timing loops each rolled their own and
+    three picked a different set.
+
+    A fully-overwritten output is deliberately NOT in the set: nothing it holds survives into the next rep,
+    so it cannot accumulate, and snapshotting it would double peak RSS at the profiling preset for nothing.
+
+    Lives here rather than in ``perf.harness`` because the non-perf timing paths (:mod:`differential`,
+    :mod:`whole_program`) need it too and already depend on this module."""
+    return [o for o in boundary.outputs if o in boundary.inputs and o in buffers]
+
+
+def rewind_snapshot(boundary: Boundary, buffers: Dict[str, np.ndarray]) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Each accumulating buffer paired with a pristine copy of itself, ready for :func:`rewind`.
+
+    Taken ONCE, before the warm call, so the copy is the state every rep starts from. Pairs hold the ARRAY,
+    not its name, so :func:`rewind` costs no dict lookup inside the rep loop."""
+    return [(buffers[o], buffers[o].copy()) for o in accumulating_outputs(boundary, buffers)]
+
+
+def rewind(snapshot: List[Tuple[np.ndarray, np.ndarray]]) -> None:
+    """Restore the pristine contents of every accumulating buffer. Call OUTSIDE the timed region."""
+    for buf, pristine in snapshot:
+        buf[...] = pristine
+
+
 def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundary: Boundary,
                 inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int) -> Tuple[Dict[str, np.ndarray], float]:
     """Bind + call the compiled entry. ``order`` is the EMITTED-signature parameter order (see
@@ -254,15 +285,12 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
 
     # bind ONCE (every rep reuses these buffers): per-rep data_as would time Python marshaling
     args = build_args()
+    snapshot = rewind_snapshot(boundary, work)
     fn(*args)  # correctness run
     outputs = {o: work[o].copy() for o in boundary.outputs}
-    # Restore every written buffer before each rep (outside the timed region): an in-place nest otherwise
-    # feeds on its own output, reaching denormals/Inf in a few reps and timing those instead.
-    mutated = [o for o in boundary.outputs if o in work]
-    total = 0.0
+    total = 0.0  # the correctness run above doubles as the warm call
     for _ in range(reps):
-        for name in mutated:
-            work[name][...] = inputs[name]
+        rewind(snapshot)
         t0 = time.perf_counter()
         fn(*args)
         total += time.perf_counter() - t0

@@ -27,7 +27,8 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
 from nestforge.baselines import pluto_available
-from nestforge.build import BuildOptions, DEFAULT_COMPILER, DEFAULT_FLAGS
+from nestforge.build import BuildOptions
+from nestforge.toolchain import DEFAULT_COMPILER, DEFAULT_FLAGS
 from nestforge.experiment_e1 import E1Cell
 from nestforge.optimizers import WholeProgramOptimizer
 from nestforge.whole_program import measure_whole_program

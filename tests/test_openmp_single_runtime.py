@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nestforge.build import OPENMP_RUNTIMES, compiler_family
+from nestforge.toolchain import OPENMP_RUNTIMES, compiler_family
 from nestforge.perf import flags
 
 #: A minimal nest with an OpenMP region: enough to make the compiler link a runtime, which is all that

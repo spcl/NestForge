@@ -112,7 +112,7 @@ def test_lane_flags_gate_reduced_cxx_and_unsupported(monkeypatch):
 
 
 def test_lane_flags_declines_a_family_the_matrix_has_no_rung_for():
-    """``build.compiler_family`` also returns ``intel-classic`` (icc/icpc/ifort), which this matrix has no
+    """``toolchain.compiler_family`` also returns ``intel-classic`` (icc/icpc/ifort), which this matrix has no
     rung for -- classic icc is not icx. Every other unsupported axis degrades to ``(None, reason)``, but
     ``_FP`` was indexed directly, so an icc backend raised KeyError and killed the sweep instead of
     recording a skip."""

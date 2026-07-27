@@ -31,8 +31,8 @@ from typing import Dict, List, Optional, Tuple
 
 from dace.libraries.tileops._dispatch import detect_host_isa
 
-from nestforge.build import (VECTOR_LIBS, VectorMathLib, compiler_family, packed_ops_called, packed_ops_provided,
-                             veclib_library_path, vectorlib_installed)
+from nestforge.toolchain import (VECTOR_LIBS, VectorMathLib, compiler_family, packed_ops_called, packed_ops_provided,
+                                 veclib_library_path, vectorlib_installed)
 
 #: ``detect_host_isa()`` result -> the tile-op ISAs the vectorization sweep emits for this host, DEFAULT
 #: (widest) first, with ``SCALAR`` always appended as the floor. ``ARM_SVE`` keeps ``ARM_NEON`` too (both

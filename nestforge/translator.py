@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import List, Union
 
-from nestforge.build import COMPILE_TIMEOUT_S
+from nestforge.toolchain import COMPILE_TIMEOUT_S
 
 from hpcagent_bench import emit_bridge
 from hpcagent_bench.spec import BenchSpec
@@ -46,7 +46,7 @@ def translate(spec: BenchSpec,
             str(out), "--precision", precision
         ]
         # Bound the numpyto AOT translate+compile so a pathological kernel can't hang the rank
-        # forever (matches build.run's NF_COMPILE_TIMEOUT ceiling); a timeout is just a translate
+        # forever (matches toolchain.run's NF_COMPILE_TIMEOUT ceiling); a timeout is just a translate
         # failure -> caller records the cell as errored and continues.
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)

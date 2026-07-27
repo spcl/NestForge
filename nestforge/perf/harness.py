@@ -20,8 +20,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from nestforge.arena import CTYPE, scalar_ctype
-from nestforge.build import COMPILE_TIMEOUT_S
+from nestforge.arena import CTYPE, rewind, rewind_snapshot, scalar_ctype
+from nestforge.toolchain import COMPILE_TIMEOUT_S, raw_signature
 
 #: Per-kernel *execution* ceiling (s); a runaway kernel would otherwise hold the fork open for the whole
 #: job. Override with ``NF_RUN_TIMEOUT``.
@@ -77,25 +77,6 @@ def run_compile(cmd: List[str]) -> Tuple[bool, float, Optional[str]]:
 
 
 # --- ABI binding ------------------------------------------------------------------------------------
-def raw_signature(text: str, symbol: str, lang: str = "c") -> str:
-    """The parameter-declaration text between the parens of the kernel entry, verbatim.
-
-    Split out because two callers want the same match for different halves of it: :func:`signature_order`
-    takes the NAMES (to bind arguments), while the call-overhead lane needs the types too, to re-declare the
-    entry in a generated trampoline. Two copies of the regex would drift the day an emitter changes how it
-    writes a signature, and only one of the two would then fail to find it.
-
-    :raises LookupError: when the entry is absent -- a caller must never bind against a signature it did
-        not actually find."""
-    if lang == "fortran":
-        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
-    else:
-        m = re.search(rf"void\s+{re.escape(symbol)}\s*\((.*?)\)\s*\{{", text, re.S)
-    if not m:
-        raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
-    return m.group(1)
-
-
 def signature_order(text: str, symbol: str, lang: str = "c") -> List[str]:
     """Parameter names of the kernel entry, in declaration order, for the language's syntax.
 
@@ -115,19 +96,6 @@ def c_argtypes(order: List[str], boundary) -> list:
         ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
         for a in order
     ]
-
-
-def accumulating_outputs(boundary, buffers) -> List[str]:
-    """Outputs the kernel both READS and WRITES -- the ones a timed rep loop must restore.
-
-    Every timing path in the repo needs this same set, and getting it wrong is invisible: an in-place nest
-    left un-restored feeds on its own output, so rep k computes ``a * b**k``, reaches denormals within a
-    handful of reps, and the median times subnormal arithmetic instead of the kernel. One definition, so a
-    caller cannot quietly disagree about which buffers decay.
-
-    A fully-overwritten output is deliberately NOT in the set: it cannot accumulate, and snapshotting it
-    would double peak RSS at the profiling preset for nothing."""
-    return [o for o in boundary.outputs if o in boundary.inputs and o in buffers]
 
 
 def call_c(so: Path,
@@ -162,16 +130,15 @@ def call_c(so: Path,
             for a, t in zip(order, argtypes)
         ]
 
-    accumulating = accumulating_outputs(boundary, inputs)
-    pristine = {o: inputs[o].copy() for o in accumulating}
+    snapshot = rewind_snapshot(boundary, inputs)
     fn(*build_args())  # correctness run
     outputs = {o: inputs[o].copy() for o in boundary.outputs} if copy_outputs else None
     cargs = build_args()
+    rewind(snapshot)  # the warm call primes the caches from the same state a timed rep sees
     fn(*cargs)  # warm
     total = 0.0
     for _ in range(reps):
-        for name in accumulating:
-            inputs[name][...] = pristine[name]
+        rewind(snapshot)
         t0 = time.perf_counter()
         fn(*cargs)
         total += time.perf_counter() - t0

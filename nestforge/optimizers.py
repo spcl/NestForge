@@ -25,7 +25,8 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from nestforge import tsvc
 from nestforge.device_profile import device_profile
-from nestforge.build import DEFAULT_COMPILER, BuildOptions
+from nestforge.build import BuildOptions
+from nestforge.toolchain import DEFAULT_COMPILER
 from nestforge.perf import flags
 
 #: The Phase-1 baseline opt-mode -- DaCe simplify + LoopToMap + MapFusion, the arena's speedup denominator.

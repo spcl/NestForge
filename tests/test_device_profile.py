@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from nestforge import device_profile as dp
-from nestforge.build import VECLIB_PROBE_OPS, VECTOR_LIBS, packed_ops_provided, veclib_library_path
+from nestforge.toolchain import VECLIB_PROBE_OPS, VECTOR_LIBS, packed_ops_provided, veclib_library_path
 
 pytest.importorskip("hpcagent_bench")
 

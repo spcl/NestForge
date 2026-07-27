@@ -39,14 +39,13 @@ from typing import Dict, List, Optional, Tuple
 import dace  # noqa: F401 -- ensures real dace importable, not a cwd stub
 
 from nestforge import tsvc
-from nestforge.arena import make_inputs
-from nestforge.build import COMPILE_TIMEOUT_S, ar_for, fat_lto_flags
+from nestforge.arena import accumulating_outputs, make_inputs, rewind, rewind_snapshot
+from nestforge.toolchain import COMPILE_TIMEOUT_S, ar_for, fat_lto_flags, raw_signature
 from nestforge.isolation import run_isolated
 from nestforge.multinest import extract_all_nests
 from nestforge.perf import flags
 from nestforge.perf.tsvc_arena import discover_toolchains
-from nestforge.perf.harness import (c_argtypes, load_results, median, my_slice, rank_and_size, raw_signature,
-                                    signature_order)
+from nestforge.perf.harness import c_argtypes, load_results, median, my_slice, rank_and_size, signature_order
 from nestforge.perf.tsvc_full import c_call_args
 from nestforge.translate import emit_sources, prepare
 
@@ -110,16 +109,28 @@ def build_external(cc: str, cflags: List[str], kernel_c: Path, symbol: str, para
     return so
 
 
-def time_work(so: Path, run_symbol: str, order: List[str], argtypes: list, work: Dict, sizes: Dict[str, int],
+def time_work(so: Path, run_symbol: str, order: List[str], argtypes: list, boundary, work: Dict, sizes: Dict[str, int],
               inner: int, reps: int) -> Dict:
     """Per-call microseconds: warm, then time ``reps`` calls to the trampoline (each running the kernel
-    ``inner`` times), divide the median by ``inner``. Runs in a forked child."""
+    ``inner`` times), divide the median by ``inner``. Runs in a forked child.
+
+    Every read-write output is rewound before the warm call and before each timed rep, so the reps are
+    samples of ONE quantity rather than a decaying series -- without it rep 7 started from data already
+    destroyed by ``6 * inner`` in-place iterations and the median estimated nothing.
+
+    The rewind CANNOT reach inside the trampoline: its ``inner`` loop runs in compiled C, and interrupting
+    it to restore would time the memcpy instead of the call. So a kernel that reads what it writes still
+    decays within a single rep, and :func:`render_tables` reports those kernels separately rather than
+    folding them into the headline geomean."""
     fn = ctypes.CDLL(str(so))[run_symbol]
     fn.argtypes, fn.restype = [*argtypes, ctypes.c_int64], None
     cargs = c_call_args(order, argtypes, work, sizes) + [ctypes.c_int64(inner)]
+    snapshot = rewind_snapshot(boundary, work)
+    rewind(snapshot)
     fn(*cargs)  # warm
     samples = []
     for _ in range(reps):
+        rewind(snapshot)
         t0 = time.perf_counter()
         fn(*cargs)
         samples.append((time.perf_counter() - t0) * 1e6)
@@ -144,20 +155,24 @@ def build_and_time(cc: str,
     never aborting the others.
 
     ``given`` forwards the manifest's index-array fills to :func:`make_inputs` -- without them a
-    gather/scatter kernel would time an all-zero index array, the wrong memory behaviour."""
+    gather/scatter kernel would time an all-zero index array, the wrong memory behaviour.
+
+    ``accumulating`` names the read-write outputs; see :func:`time_work` for why they cannot be rewound
+    inside the trampoline and must therefore be reported instead of silently averaged in."""
     cflags = flags.base_flags(family)
     builders = {
         "inline": lambda d: build_inline(cc, cflags, kernel_c, symbol, params, argnames, d),
         "external_lto": lambda d: build_external(cc, cflags, kernel_c, symbol, params, argnames, d, lto=True),
         "external": lambda d: build_external(cc, cflags, kernel_c, symbol, params, argnames, d, lto=False),
     }
-    out: Dict[str, Optional[float]] = {}
+    out: Dict[str, object] = {}
     for name, build in builders.items():
         try:
             so = build(workdir)
             work = make_inputs(boundary, sizes, seed=0, given=given)
-            res = run_isolated(
-                lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, work, sizes, inner, reps))
+            out.setdefault("accumulating", accumulating_outputs(boundary, work))
+            res = run_isolated(lambda so=so, work=work: time_work(so, f"run_{symbol}", order, argtypes, boundary, work,
+                                                                  sizes, inner, reps))
             out[name] = None if "error" in res else res["per_call_us"]
         except Exception as e:  # noqa: BLE001 -- a failed variant must not sink the others
             out[name] = None
@@ -211,12 +226,14 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
     # time each variant per nest and sum; a variant is None if any nest failed to build/time it.
     per_variant: Dict[str, List[Optional[float]]] = {"inline": [], "external": [], "external_lto": []}
     multi = len(units) > 1
+    accumulating: List[str] = []
     for u in units:
         # trampoline forwards params by name; abi_order gives exactly those names.
         times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.order, u.argtypes, u.boundary, u.sizes,
                                inner, reps, u.nest_dir, u.given)
         for v in per_variant:
             per_variant[v].append(times.get(v))
+        accumulating += [f"n{u.idx}:{a}" if multi else a for a in times.get("accumulating", ())]
         for k in ("inline_error", "external_error", "external_lto_error"):
             if k in times:
                 result[f"n{u.idx}_{k}" if multi else k] = times[k]
@@ -227,6 +244,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
 
     inline, ext, extlto = total("inline"), total("external"), total("external_lto")
     result.update({
+        "accumulating": accumulating,  # non-empty -> the trampoline's inner loop decays; see time_work
         "inline_us": inline,
         "external_us": ext,
         "external_lto_us": extlto,
@@ -256,14 +274,21 @@ def render_tables(out: Path) -> str:
     def ratio(x):
         return "—" if x is None else f"{x:.3f}"
 
-    call_ratios, lto_ratios = [], []
+    call_ratios, lto_ratios, decaying = [], [], []
     for r in sorted(done, key=lambda x: x["key"]):
         co, lo = r.get("call_overhead"), r.get("lto_overhead")
-        if co:
+        # A kernel that reads what it writes decays inside the trampoline's inner loop (see time_work), so
+        # its ratio times partly-subnormal arithmetic. Kept in the table, kept OUT of the geomean: folding
+        # it in would move the headline number by an amount nobody can bound.
+        decays = bool(r.get("accumulating"))
+        if decays:
+            decaying.append(r["key"])
+        if co and not decays:
             call_ratios.append(co)
-        if lo:
+        if lo and not decays:
             lto_ratios.append(lo)
-        lines.append(f"| {r['key']} | {r['compiler']} | {us(r['inline_us'])} | {us(r.get('external_lto_us'))} "
+        mark = " †" if decays else ""
+        lines.append(f"| {r['key']}{mark} | {r['compiler']} | {us(r['inline_us'])} | {us(r.get('external_lto_us'))} "
                      f"| {us(r.get('external_us'))} | {ratio(co)} | {ratio(lo)} |")
 
     def geomean(xs):
@@ -276,6 +301,13 @@ def render_tables(out: Path) -> str:
         lines += [
             f"**Geomean LTO overhead (external-lto / inline):** {glo:.4f}x over {len(lto_ratios)} kernels "
             "(closer to 1.0 = LTO recovers more of the inlining)."
+        ]
+    if decaying:
+        lines += [
+            "", f"† {len(decaying)} kernels write a buffer they also read. The trampoline's inner loop runs in "
+            "compiled C and cannot be rewound mid-loop, so their arithmetic decays toward denormals within one "
+            "timed rep. Their rows are shown but excluded from both geomeans: "
+            f"{', '.join('`' + k + '`' for k in sorted(decaying))}."
         ]
     if skipped:
         lines += ["", "## skipped", ""

@@ -13,7 +13,7 @@ import subprocess
 import pytest
 
 from nestforge.arena import compile_object, link_shared
-from nestforge.build import packed_ops_called
+from nestforge.toolchain import packed_ops_called
 from nestforge.optimizers import ExternalOptimizer, deterministic_optimizers
 from nestforge.perf import flags
 
