@@ -78,11 +78,16 @@ def test_bounded_run_produces_real_measurements_not_just_rows(tmp_path):
     Named, not taken from the corpus head: the first six tsvc2 kernels all canonicalize to one
     statement-atom (measured ``fusion_depth`` 0), so ``--kernels 3`` swept three one-rung ladders and
     ``best_granularity`` -- which excludes them by construction -- was asserted non-empty against a table
-    that could never hold a row. s221 (depth 5) and s212 (depth 4) are the axis this asserts on.
+    that could never hold a row. s1281 (depth 8) and s212 (depth 4) are the axis this asserts on.
+
+    s1281 replaced s221 (depth 5): s221 fails EVERY rung with InvalidSDFGNodeError('Isolated node') -- a
+    dace MapFission defect, not ours (it accepts the map, then leaves one of the two `a` AccessNodes at
+    degree 0). This test stayed green on it because a slice's failures are invisible once any kernel in it
+    measures, so half the named axis was dead and nothing said so.
     """
     rc = main([
         "--out",
-        str(tmp_path), "--only", "s221,s212", "--granularity-points", "3", "--reps", "3", "--experiments",
+        str(tmp_path), "--only", "s1281,s212", "--granularity-points", "3", "--reps", "3", "--experiments",
         "e1,e2,e3,e4,e5"
     ])
     assert rc == 0
@@ -98,7 +103,12 @@ def test_bounded_run_produces_real_measurements_not_just_rows(tmp_path):
             not_excluded = [r for r in payload["rows"] if not r.get("ok") and "excluded" not in (r.get("error") or "")]
             assert not not_excluded, f"e5 rows failed rather than excluded: {not_excluded[:2]}"
             continue
-        assert measured_rows(payload), f"{name} produced rows but measured NOTHING: {payload['rows'][:2]}"
+        measured = measured_rows(payload)
+        assert measured, f"{name} produced rows but measured NOTHING: {payload['rows'][:2]}"
+        # EVERY named kernel, not merely one of them: a slice's failures are invisible under a bare
+        # `assert measured`, which is how s221 stayed dead at every rung here with the test green.
+        assert {r["kernel"] for r in measured} == {"s1281", "s212"}, \
+            f"{name} measured only {sorted({r['kernel'] for r in measured})} of the two named kernels"
 
     e1 = json.loads((tmp_path / "e1.json").read_text())
     assert e1["best_granularity"], "E1 measured cells but named no winner"

@@ -52,7 +52,9 @@ Scanned nest-forge's `tsvc2` corpus (151 kernels: `build_sdfg(k, 'canonicalize')
 - 4 hit this exact `InvalidSDFGNodeError('Isolated node', ...)` at the same `fission_multi_output_maps` call: `s152`, `s221`, `s241`, `s243`
 - 10 hit a different, pre-existing failure (`'Data descriptor X is written to, but only given to nested SDFG as an input connector'`, and 2x `StopIteration`) -- not this bug, not investigated further here.
 
-Not scanned: `tsvc2_5`, `foundation`, or the polybench/npbench (`hpcagent_bench`) corpus for this specific bug, so the true count across all of nest-forge's corpora is >= 4.
+Not scanned: `tsvc2_5` or the polybench/npbench (`hpcagent_bench`) corpus for this specific bug, so the true count across all of nest-forge's corpora is >= 4.
+
+`foundation` (now the DEFAULT corpus) reproduces it too: `s221` and `s152` fail identically when taken from `foundation` rather than `tsvc2`, so the default corpus switch did not route around the bug -- it is the same kernel shape either way.
 
 Because `nestforge.granularity.to_canonical_atoms` is the P0 base every `GranularityPoint` in the fusion ladder normalizes from (`nestforge/granularity.py:42-47,75-77`), all 4 affected kernels fail at **every** granularity rung (`atoms` through `maximal`), matching the reported symptom.
 
