@@ -4,10 +4,14 @@
 no compile -- these prove the ladder is well-formed (endpoints, bounded, monotone, idempotent w.r.t.
 start), not that any point is fast (that is the measured evaluation). Ladder DEPTH is data-dependent
 (fission explodes to statement atoms), so tests compute it rather than hardcode."""
+from types import SimpleNamespace
+
 import numpy as np
 import dace
 
-from nestforge.granularity import (GranularityPoint, count_nests, fuse_first_k, fusion_depth, granularity_ladder)
+from nestforge import granularity
+from nestforge.granularity import (GranularityPoint, count_nests, fuse_first_k, fusion_depth, granularity_ladder,
+                                   kernels_with_axis)
 
 N = dace.symbol('N')
 
@@ -99,3 +103,57 @@ def test_single_point_ladder_is_applicable():
     ladder = granularity_ladder(sdfg, max_points=1)
     ladder[0].apply(sdfg)
     assert count_nests(sdfg) >= 1
+
+
+def fake_corpus(monkeypatch, depths):
+    """A corpus of stub kernels with dictated ladder depths; an ``Exception`` value raises from the probe.
+
+    The selection is about WHICH kernels a sweep takes, so the probe is stubbed: building 151 real corpus
+    kernels to assert a filter would make this a cluster job."""
+    probed = []
+
+    def build(kernel, opt_mode):
+        probed.append(kernel.key)
+        return kernel.key
+
+    def depth(key):
+        if isinstance(depths[key], Exception):
+            raise depths[key]
+        return depths[key]
+
+    monkeypatch.setattr(granularity.tsvc, "build_sdfg", build)
+    monkeypatch.setattr(granularity, "fusion_depth", depth)
+    return [SimpleNamespace(key=k) for k in depths], probed
+
+
+def test_selection_drops_one_rung_ladders(monkeypatch):
+    # the head of tsvc2 is all fusion_depth 0, so a corpus-order sweep measures no granularity axis at all
+    # and every "winner" it reports is the only rung that existed.
+    kernels, _ = fake_corpus(monkeypatch, {"flat_a": 0, "deep": 4, "flat_b": 0})
+    scan = kernels_with_axis(kernels)
+    assert [k.key for k in scan.kept] == ["deep"]
+    assert scan.dropped["flat_a"] == "fusion_depth 0 < 1"
+    assert scan.scanned == 3
+
+
+def test_selection_honors_min_depth(monkeypatch):
+    kernels, _ = fake_corpus(monkeypatch, {"shallow": 1, "deep": 5})
+    assert [k.key for k in kernels_with_axis(kernels, min_depth=3).kept] == ["deep"]
+
+
+def test_selection_limit_stops_the_probe_early(monkeypatch):
+    # the probe canonicalizes each candidate (seconds per kernel), so a bounded --kernels budget must stop
+    # the scan, not filter a fully-probed corpus.
+    kernels, probed = fake_corpus(monkeypatch, {"a": 2, "b": 2, "c": 2, "d": 2})
+    scan = kernels_with_axis(kernels, limit=2)
+    assert [k.key for k in scan.kept] == ["a", "b"]
+    assert probed == ["a", "b"] and scan.scanned == 2
+
+
+def test_selection_records_an_unbuildable_kernel_and_continues(monkeypatch):
+    # a corpus sweep meets InvalidSDFGError/TypeError from canonicalize; losing the remaining kernels to it
+    # would make the selection itself the fragile step.
+    kernels, _ = fake_corpus(monkeypatch, {"broken": TypeError("canonicalize blew up"), "deep": 3})
+    scan = kernels_with_axis(kernels)
+    assert [k.key for k in scan.kept] == ["deep"]
+    assert "canonicalize blew up" in scan.dropped["broken"]

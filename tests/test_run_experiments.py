@@ -52,7 +52,7 @@ def test_script_is_runnable_and_documents_its_flags():
     # tricks): a broken import here surfaces only when someone submits a job.
     proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
-    for flag in ("--out", "--experiments", "--kernels", "--reps", "--preset", "--seed"):
+    for flag in ("--out", "--experiments", "--kernels", "--reps", "--preset", "--seed", "--only", "--min-fusion-depth"):
         assert flag in proc.stdout
     for name in EXPERIMENTS:
         assert name in proc.stdout
@@ -70,13 +70,19 @@ def test_bounded_run_produces_real_measurements_not_just_rows(tmp_path):
     `rc == 0` and non-empty rows -- stayed green with the whole measurement path dead: main() returns 0
     unconditionally once a compiler is found, and every driver emits failure rows.
 
-    A kernel with a real fusion depth and >=2 rungs, so the search surface is not a single point (on a
+    Kernels with a real fusion depth and >=2 rungs, so the search surface is not a single point (on a
     1-rung ladder E4's oracle-vs-hillclimb comparison is degenerate: quality and savings are 1.0 by
     construction and a regression in either is invisible).
+
+    Named, not taken from the corpus head: the first six tsvc2 kernels all canonicalize to one
+    statement-atom (measured ``fusion_depth`` 0), so ``--kernels 3`` swept three one-rung ladders and
+    ``best_granularity`` -- which excludes them by construction -- was asserted non-empty against a table
+    that could never hold a row. s221 (depth 5) and s212 (depth 4) are the axis this asserts on.
     """
     rc = main([
         "--out",
-        str(tmp_path), "--kernels", "3", "--granularity-points", "3", "--reps", "3", "--experiments", "e1,e2,e3,e4,e5"
+        str(tmp_path), "--only", "s221,s212", "--granularity-points", "3", "--reps", "3", "--experiments",
+        "e1,e2,e3,e4,e5"
     ])
     assert rc == 0
     for name in EXPERIMENTS:

@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Callable, Dict, List, Sequence
 
 import dace
 from dace.transformation.passes.canonicalize.normalize_floor_division import NormalizeFloorDivision
 from dace.sdfg.state import LoopRegion
 
+from nestforge import tsvc
 from nestforge.fission_arms import fission_to_statements
 from nestforge.fusion import apply_fusion, first_fusion
 from nestforge.strategies import top_level_map_entries
@@ -119,6 +120,53 @@ def granularity_ladder(sdfg: dace.SDFG, max_points: int = 0) -> List[Granularity
     if max_points and max_points < len(ks):
         ks = sorted({round(i * depth / (max_points - 1)) for i in range(max_points)})
     return [GranularityPoint(name_for(k, depth), fuse_first_k(k)) for k in ks]
+
+
+@dataclass(frozen=True, slots=True)
+class AxisScan:
+    """What a :func:`kernels_with_axis` selection kept, and why it dropped the rest.
+
+    ``dropped`` maps kernel key -> reason, and ``scanned`` counts the kernels actually probed (less than
+    the corpus when ``limit`` stopped the scan early) -- so a sweep's coverage is a written record rather
+    than something to re-derive from which kernels happen to appear in the tables."""
+    kept: List[tsvc.TsvcKernel]
+    dropped: Dict[str, str]
+    scanned: int
+
+
+def kernels_with_axis(kernels: Sequence[tsvc.TsvcKernel],
+                      min_depth: int = 1,
+                      opt_mode: str = "canonicalize",
+                      limit: int = 0) -> AxisScan:
+    """The kernels whose granularity ladder is at least ``min_depth`` moves deep.
+
+    Selecting by CORPUS ORDER measures no axis: on tsvc2, 190 of 216 kernels canonicalize to a single
+    statement-atom (``fusion_depth`` 0), the first six among them, so a bounded sweep over the head of the
+    corpus fills the heatmap with one-rung ladders whose argmin is the only option rather than a measured
+    preference. C1 is a claim about WHICH partition wins, so the sweep must be pointed at kernels that
+    have more than one.
+
+    ``opt_mode`` must match what the driver builds with, or the depth measured here is not the depth swept.
+    ``limit`` (>0) stops as soon as that many kernels qualify -- the probe canonicalizes each candidate,
+    so scanning the whole corpus to fill a 3-kernel budget is work nobody asked for. A kernel that cannot
+    be built or fissioned is dropped with its exception as the reason, never crashing the selection."""
+    kept: List[tsvc.TsvcKernel] = []
+    dropped: Dict[str, str] = {}
+    scanned = 0
+    for kernel in kernels:
+        if limit and len(kept) >= limit:
+            break
+        scanned += 1
+        try:
+            depth = fusion_depth(tsvc.build_sdfg(kernel, opt_mode))
+        except Exception as e:  # same contract as the drivers: an unbuildable kernel is a skip-with-reason
+            dropped[kernel.key] = repr(e)
+            continue
+        if depth < min_depth:
+            dropped[kernel.key] = f"fusion_depth {depth} < {min_depth}"
+            continue
+        kept.append(kernel)
+    return AxisScan(kept, dropped, scanned)
 
 
 def name_for(k: int, depth: int) -> str:

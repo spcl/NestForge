@@ -34,6 +34,7 @@ from nestforge.experiment_e2 import run_e2, skipped_lanes, speedup_table  # noqa
 from nestforge.experiment_e3 import best_unit_per_backend, granularity_curve, run_e3  # noqa: E402
 from nestforge.experiment_e4 import cost_quality_table, run_e4, savings_vs_oracle  # noqa: E402
 from nestforge.experiment_e5 import non_affine_findings, run_e5  # noqa: E402
+from nestforge.granularity import kernels_with_axis  # noqa: E402
 
 EXPERIMENTS = ("e1", "e2", "e3", "e4", "e5")
 
@@ -69,6 +70,12 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--out", type=Path, required=True, help="directory for the JSON tables and build trees")
     ap.add_argument("--experiments", default=",".join(EXPERIMENTS), help=f"comma-separated subset of {EXPERIMENTS}")
     ap.add_argument("--kernels", type=int, default=1, help="how many corpus kernels to sweep (0 = all)")
+    ap.add_argument("--only", default="", help="comma-separated kernel keys to sweep instead of the corpus head")
+    ap.add_argument("--min-fusion-depth",
+                    type=int,
+                    default=0,
+                    help="sweep only kernels whose granularity ladder is at least this deep (0 = corpus order); "
+                    "--kernels then bounds how many QUALIFYING kernels are taken")
     ap.add_argument("--granularity-points", type=int, default=2, help="granularity rungs per kernel")
     ap.add_argument("--reps", type=int, default=5, help="timed repetitions per measurement")
     ap.add_argument("--preset", default="S", help="problem-size preset, shared by every experiment")
@@ -87,9 +94,36 @@ def main(argv: List[str]) -> int:
         print("no compiler found by discover_compilers(); nothing can be measured", file=sys.stderr)
         return 1
 
-    kernels = list(tsvc.iter_tsvc_kernels())
-    if args.kernels:
+    only = [k.strip() for k in args.only.split(",") if k.strip()]
+    kernels = list(tsvc.iter_tsvc_kernels(only=only or None))
+    # `only` filters a set, so an unknown key silently shrinks the sweep -- a typo would submit a job that
+    # measures fewer kernels than asked and reports it as a complete run.
+    missing = sorted(set(only) - {k.key for k in kernels})
+    if missing:
+        ap.error(f"unknown kernel key(s) {missing} for --only; not in the tsvc2 corpus")
+    if args.min_fusion_depth:
+        # Depth-first selection, so --kernels bounds MEASURABLE kernels: the corpus head is all one-rung
+        # ladders, and a sweep over those reports "every backend prefers atoms" for kernels that were never
+        # offered an alternative. The scan travels with the tables -- what was probed and why each candidate
+        # was dropped is provenance the heatmap cannot carry.
+        scan = kernels_with_axis(kernels, min_depth=args.min_fusion_depth, limit=args.kernels)
+        kernels = scan.kept
+        print(
+            f"granularity selection: kept {len(kernels)} of {scan.scanned} probed at depth "
+            f">= {args.min_fusion_depth} ->",
+            write(args.out, "selection", [k.key for k in kernels], {
+                "dropped": scan.dropped,
+                "scanned": scan.scanned,
+                "min_fusion_depth": args.min_fusion_depth
+            }))
+    elif args.kernels:
         kernels = kernels[:args.kernels]
+    if not kernels:
+        print(
+            f"no kernel qualified (--only={args.only!r}, --min-fusion-depth={args.min_fusion_depth}); "
+            "every experiment would sweep an empty corpus",
+            file=sys.stderr)
+        return 1
     shared = dict(reps=args.reps, preset=args.preset, seed=args.seed, backends=backends)
     print(f"{len(kernels)} kernel(s) x {len(backends)} backend(s): {', '.join(sorted(backends))}")
 
