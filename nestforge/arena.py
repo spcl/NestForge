@@ -32,12 +32,13 @@ from nestforge.isolation import run_isolated
 from nestforge.translate import Prepared
 
 # --- FP modes (the flag axis) -----------------------------------------------------------------
-#: Strict rung tightened: arena compares emitted C against emitted numpy, same op order, so it can hold a
-#: far tighter gate than the whole-program oracle FP_ATOL is written for (pairwise sum vs tree). Not 0.0 --
-#: bit-exactness is not something a correct build owes us here (libm is not correctly rounded, and the
-#: compiler may still pick a different but equally valid instruction sequence), and demanding it made every
-#: strict cell the arena's own false negative.
-ARENA_ATOL: Dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 1e-15}
+#: Strict rung overridden to BIT-EXACT: arena compares emitted C vs emitted numpy, same op order, so 0.0
+#: is reachable here -- unlike the whole-program oracle FP_ATOL is written for (pairwise sum vs tree).
+#: This was briefly relaxed to 1e-15 on the theory that 0.0 was producing false negatives. It was not:
+#: the false negatives came from dedup twins inheriting the representative's ok flag at the strictest
+#: rung, fixed below by re-gating each twin, and ``tests/test_arena.py`` pins ``maxdiff == 0.0`` for the
+#: strict winner. Relax this only against a build that demonstrably cannot reach it.
+ARENA_ATOL: Dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 0.0}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
 # numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is needed because a comparison

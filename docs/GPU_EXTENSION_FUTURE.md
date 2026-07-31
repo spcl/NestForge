@@ -32,7 +32,7 @@ Local hardware/toolchain facts that drive the table: RTX 4050 (sm_89, `/dev/nvid
 
 | Backend | Emittable from a map | Local toolchain ready | Effort | Payoff | How validated | Recommend |
 |---|---|---|---|---|---|---|
-| **CUDA C** (nvcc 13.1 / clang-21 `-x cuda` / nvc++) | Yes — reuse DaCe `CUDACodeGen`, zero new emitter | **Yes** — RTX 4050 sm_89 + nvcc 13.1 compile *and run* locally, no extra SDK | High | Medium | On-device: cudaMalloc→H2D same oracle inputs→launch→sync→D2H→compare vs numpy. Bit-exact only with `--fmad=false`; else `np.allclose` per `MODE_ATOL` | **Yes — but as a separate lane, not an FP-flag column** |
+| **CUDA C** (nvcc 13.1 / clang-21 `-x cuda` / nvc++) | Yes — reuse DaCe `CUDACodeGen`, zero new emitter | **Yes** — RTX 4050 sm_89 + nvcc 13.1 compile *and run* locally, no extra SDK | High | Medium | On-device: cudaMalloc→H2D same oracle inputs→launch→sync→D2H→compare vs numpy. Bit-exact only with `--fmad=false`; else `np.allclose` per `ARENA_ATOL` | **Yes — but as a separate lane, not an FP-flag column** |
 | **HIP C** (hipcc / amdclang) | Yes — same `CUDACodeGen` with `backend='hip'` | **No** — no ROCm/hipcc/`hip_runtime.h`; gfx1103 iGPU unsupported by ROCm | High | Low | Same shape as CUDA (hipMemcpy D2H), but nothing local to compile or run | No |
 | **SYCL** (icpx `-fsycl` / AdaptiveCpp) | Yes, but needs a **new** `numpyto_sycl` emitter (DaCe has no SYCL target) | **CPU only** — icpx spir64 ran a `parallel_for` bit-exact on the Ryzen; no confirmed SYCL GPU device | Medium | Low | ctypes `.so` via `call_native` + buffer/host-accessor or USM D2H copy; CPU-SYCL plausibly bit-exact | No |
 | **OpenMP target** (`nvc -mp=gpu` / clang / gcc nvptx) | Yes — `#pragma omp target teams distribute parallel for`, pure C, fits the C-source seam | **Partial** — only `nvc -mp=gpu` out of the box; clang lacks the nvptx `libomptarget`, gcc lacks the installed nvptx accel package | Medium | Low | Offload on RTX 4050, `map(from:/tofrom:)` D2H, compare vs oracle; FP reassociation breaks bit-exact unless `-Mnofma`/`-ffp-contract=off`, reductions still need tolerance | No (thin column only) |
@@ -50,7 +50,7 @@ Local hardware/toolchain facts that drive the table: RTX 4050 (sm_89, `/dev/nvid
 It is the only backend that (a) is genuinely runnable on-device locally (RTX 4050 sm_89 + nvcc 13.1, no extra SDK), and (b) requires **zero new emitter code** — DaCe already lowers a `GPU_Device` map to `.cu` + a `__dace_runkernel` host wrapper (`cuda.py:1776, 1800`). It is also the direct comparison point for DaCe's only GPU emitter. Add it **not** as an FP-flag column but as a separate lane: set the extracted map's schedule to `GPU_Device`, emit `.cu` via DaCe, nvcc it, run, D2H-compare vs the numpy oracle. This validates the device-scope cut (§4/M4) at the lowest possible cost.
 
 **#2 — OpenMP-target via `nvc -mp=gpu`, as one thin directive column (optional).**
-Rationale: it is the single GPU model that emits **pure C source with no kernel syntax** (`#pragma omp target teams distribute parallel for collapse(k)`), so it maps most cleanly onto nest-forge's existing `translate → C → compile` seam (`translate.py:emit_sources(target="c")`), and `nvc -mp=gpu` works out of the box. Gate it hard: only `nvc` is locally ready (clang has no nvptx `libomptarget`, gcc's nvptx accel package is not installed), and GPU FMA/reduction reassociation breaks bit-exactness — `MODE_ATOL["ieee-strict"]==0.0` (`arena.py:37`) is unreachable on-device for reductions even with `-Mnofma`. Worth it only if you want a directive-vs-CUDA accuracy contrast; otherwise skip.
+Rationale: it is the single GPU model that emits **pure C source with no kernel syntax** (`#pragma omp target teams distribute parallel for collapse(k)`), so it maps most cleanly onto nest-forge's existing `translate → C → compile` seam (`translate.py:emit_sources(target="c")`), and `nvc -mp=gpu` works out of the box. Gate it hard: only `nvc` is locally ready (clang has no nvptx `libomptarget`, gcc's nvptx accel package is not installed), and GPU FMA/reduction reassociation breaks bit-exactness — `ARENA_ATOL["strict-ieee"] == 0.0` (`arena.py:40`) is unreachable on-device for reductions even with `-Mnofma`. Worth it only if you want a directive-vs-CUDA accuracy contrast; otherwise skip.
 
 **#3 — stdpar (`nvc++ -stdpar=gpu`), as a stretch.**
 Cheapest source shape (`std::for_each(par_unseq, …)`, ISO C++ only) and nvc++ is installed, but it depends on CUDA Unified Memory for all data movement, which changes the buffer model versus the explicit-copy CUDA lane. Defer until #1 is solid.
@@ -73,11 +73,11 @@ For the CUDA lane, the emit step **bypasses the numpy→C translator** (`transla
 
 Add a GPU compiler axis parallel to `_CANDIDATE_COMPILERS` (`arena.py:39`), e.g. `{"nvcc": <nvhpc nvcc>, "clang-cuda": <clang-21 -x cuda --cuda-path=/opt/nvidia/hpc_sdk/.../cuda/13.1>}`, with a **GPU-specific flag map** that replaces `FP_MODES` (host flags do not transfer):
 
-- `ieee-strict` → `-arch=sm_89 --fmad=false` (best-effort; note reductions still diverge),
+- `strict-ieee` → `-arch=sm_89 --fmad=false` (best-effort; note reductions still diverge),
 - `fast-but-ieee` → `-arch=sm_89` (FMA on),
 - `fast-math` → `-arch=sm_89 --use_fast_math`.
 
-Timing is CUDA-event based inside the child, and the report accounts H2D/D2H separately from kernel time. Reuse `MODE_ATOL` (`arena.py:37`) for the compare tolerance, but document that GPU `ieee-strict` is a floor, not `0.0`. This produces `GpuCell` records alongside the CPU `Cell`s (`arena.py:149-159`), reported in their own section — never interleaved with the gcc/clang × FP grid.
+Timing is CUDA-event based inside the child, and the report accounts H2D/D2H separately from kernel time. Reuse `ARENA_ATOL` (`arena.py:40`) for the compare tolerance, but document that GPU `strict-ieee` is a floor, not `0.0`. This produces `GpuCell` records alongside the CPU `Cell`s (`arena.py:149-159`), reported in their own section — never interleaved with the gcc/clang × FP grid.
 
 ### 4.3 How a GPU cell validates vs the numpy oracle
 
@@ -86,13 +86,13 @@ The same oracle (`run_oracle`, `arena.py:133`) and the same `make_inputs` arrays
 1. `cudaMalloc` a device buffer per manifest `input_args`, `cudaMemcpy` H2D the oracle inputs,
 2. invoke the DaCe `.so`'s `__dace_runkernel` entry via `ctypes` (device pointers in its `__state`),
 3. `cudaDeviceSynchronize`, `cudaMemcpy` D2H the `boundary.outputs`,
-4. `maxdiff` vs the oracle (`arena.py:200`) under `MODE_ATOL`, free buffers.
+4. `maxdiff` vs the oracle (`arena.py:377`) under `ARENA_ATOL`, free buffers.
 
 Only the small `{ok, maxdiff, time_us}` summary crosses the fork pipe, exactly as the CPU path does today (`arena.py:253-256`).
 
 ### 4.4 Mapping to the plan: M4 (device-scope cut) + `ExpandExternCallGPU`
 
-- **M4 = the device-scope-cut strategy.** nest-forge has `outer` / `skip-taskloops` / `innermost` extraction strategies (`README.md` M1, `strategies.py`). M4 adds a `device` strategy that picks the map level to mark `GPU_Device` — the host/device boundary — the direct sibling of `parent_is_parallel` in `PARALLEL.md §2` (one level owns the parallelism; everything below is per-thread/per-lane). `PARALLEL.md §5`'s order-preserving vs order-changing FP taxonomy carries over unchanged: a GPU reduction is a reassociation event, gated against the sequential ieee-strict baseline by `fp_risk`.
+- **M4 = the device-scope-cut strategy.** nest-forge has `outer` / `skip-taskloops` / `innermost` extraction strategies (`README.md` M1, `strategies.py`). M4 adds a `device` strategy that picks the map level to mark `GPU_Device` — the host/device boundary — the direct sibling of `parent_is_parallel` in `PARALLEL.md §2` (one level owns the parallelism; everything below is per-thread/per-lane). `PARALLEL.md §5`'s order-preserving vs order-changing FP taxonomy carries over unchanged: a GPU reduction is a reassociation event, gated against the sequential strict-ieee baseline by `fp_risk`.
 - **`ExpandExternCallGPU` = the GPU sibling of `ExpandExternCall`.** The whole-program libnode is `ExternalCall` with two implementations, `DaceReference` (rebuild-as-NestedSDFG fallback/oracle) and `ExternCall` (link the winning `.so`), in `libnode.py:96-134`. Add a third implementation `ExpandExternCallGPU` that links the DaCe-built `.cu` `.so` **plus its `__dace_runkernel` host wrapper** into the whole-program SDFG — structurally identical to how `ExpandExternCall` (`libnode.py:108-126`) wraps the CPU `.so` in a CPP tasklet, but the wrapper it calls does the H2D/launch/D2H. `DaceReference` (`libnode.py:96`) remains the correctness oracle for the GPU cell as for CPU (`README.md:22`).
 
 ---

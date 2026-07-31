@@ -27,9 +27,11 @@ DEFAULT_OPENMP_RUNTIME = LIBOMP
 FP_LEVELS: Tuple[str, ...] = ("strict-ieee", "contract-fma", "assume-finite", "fast-math")
 
 #: Validation tolerance vs the numpy fp64 oracle, which isn't bit-reproducible itself (pairwise np.sum,
-#: BLAS dot, non-correctly-rounded libm), so even ``strict-ieee`` isn't atol 0.
+#: BLAS dot, non-correctly-rounded libm), so even ``strict-ieee`` isn't atol 0. The arena lane compares
+#: emitted C against emitted numpy in the SAME op order and overrides the strict rung to 0.0
+#: (:data:`nestforge.arena.ARENA_ATOL`); these values are for the whole-program oracle only.
 FP_ATOL: Dict[str, float] = {
-    "strict-ieee": 1e-14,
+    "strict-ieee": 1e-15,
     "contract-fma": 1e-13,
     "assume-finite": 1e-13,
     "fast-math": 1e-5,

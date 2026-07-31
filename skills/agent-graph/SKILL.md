@@ -184,7 +184,7 @@ from nestforge.arena import run_arena, build_winner_archive
 prep = prepare(boundary, ext.name, out_dir)
 emit_sources(prep, gen_dir, target="c")     # target: "numpy" | "c" | "cpp" | "fortran"
 res  = run_arena(prep, boundary, c_source, build_dir, sizes={"N": 1 << 14})
-win  = res.winners["ieee-strict"]            # best correct cell for that fp-mode
+win  = res.winners["strict-ieee"]            # best correct cell for that fp-mode (flags.FP_LEVELS spelling)
 ```
 
 **The comparison is the point.** Record the cost of each: Mode A's cost is the agent's own budget (tokens
