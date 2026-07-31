@@ -35,6 +35,19 @@ def gather_prog(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
 
 
 @dace.program
+def gather_two_map_prog(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
+    # Non-affine AND fusable: the end-to-end case study needs BOTH. A one-map gather canonicalizes to
+    # fusion_depth 0, so its ladder is the single 'atoms' rung and summarize() rejects it as "no axis to
+    # search" -- correctly, but that makes it useless as the fixture for a test whose whole point is that
+    # granularity was swept.
+    T = np.empty_like(A)
+    for k in dace.map[0:N]:
+        T[k] = A[idx[k]]
+    for k in dace.map[0:N]:
+        C[k] = T[k] * 2.0
+
+
+@dace.program
 def two_map_prog(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
     # TWO fusable maps, so the granularity ladder has a real depth: atoms != maximal. A single-map kernel
     # collapses the ladder to one rung, where ladder[0] and ladder[-1] are the same object and an
@@ -56,6 +69,10 @@ def nonlinear_prog(A: dace.float64[N], C: dace.float64[N]):
 
 def gather_kernel():
     return TsvcKernel(key="gather", program=gather_prog, regime="1d", params={}, corpus="tsvc2")
+
+
+def gather_two_map_kernel():
+    return TsvcKernel(key="gather_two_map", program=gather_two_map_prog, regime="1d", params={}, corpus="tsvc2")
 
 
 def test_ordinary_corpus_kernels_are_affine():
@@ -205,14 +222,17 @@ def test_run_e5_measures_a_non_affine_kernel_end_to_end(tmp_path, monkeypatch):
 
     Asserts a MEASURED row (ok, finite time, a real ladder label), not merely that rows exist -- every
     driver records failures as rows, so 'rows are non-empty' is true even when nothing built.
+
+    The fixture is the TWO-map gather: a measured row needs two rungs to compare, and a one-map kernel has
+    a depth-0 ladder that summarize() rejects outright.
     """
     backends = discover_compilers()
     assert backends, "need gcc/clang on PATH"
     one = dict([next(iter(backends.items()))])
     import nestforge.experiment_e5 as e5
-    monkeypatch.setattr(e5.tsvc, "build_sdfg", lambda k, m: gather_prog.to_sdfg(simplify=True))
+    monkeypatch.setattr(e5.tsvc, "build_sdfg", lambda k, m: gather_two_map_prog.to_sdfg(simplify=True))
 
-    rows = run_e5([gather_kernel()], tmp_path, max_granularity_points=2, reps=3, backends=one)
+    rows = run_e5([gather_two_map_kernel()], tmp_path, max_granularity_points=2, reps=3, backends=one)
     assert len(rows) == 1
     row = rows[0]
     assert not row.schedulable and "data-dependent" in row.reason

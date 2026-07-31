@@ -590,28 +590,27 @@ def reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
 def reconcile_connector_descriptor(inner: dace.SDFG, sdfg: dace.SDFG, outer: str) -> None:
     """Make the inner descriptor for connector array ``outer`` agree with the buffer it aliases.
 
-    Only ONE disagreement is legitimate here: a connector that is a ``Scalar`` inside and a size-1
-    ARRAY outside (a nested return). Both spell one element, but bare ``x`` and ``x[0]`` do not read the
-    same thing, so the inner descriptor takes the outer's and both sides index it identically.
+    The connector IS the outer buffer, so it adopts the outer descriptor outright. Matching shapes are
+    not enough: ``transient`` decides the SPELLING (a scalar transient is a bare local, everything else
+    is indexed), and a connector is never transient inside while the buffer it aliases may well be
+    outside. Returning early on equal shapes left exactly that gap -- a fused map's ``__map_fusion_T``
+    scalar was written ``__map_fusion_T[0] = ...`` by the inner body, read bare by the outer one, and
+    allocated by neither (``scratch_arrays`` skips size-1 transients), so the emitted C referenced an
+    undeclared name.
 
-    Any other disagreement means the two really do have different extents, and overwriting the inner
-    shape with the outer one silently re-ranks the body: an under-offset multi-dim connector then emits
-    ``Z[j]`` -- a whole row -- where ``Z[j, k]`` was meant.
-    :func:`reject_underranked_codeblock_index` catches that for inter-state code but not for dataflow
-    memlets, so refuse it here instead of papering over it.
-
-    ``expand_nested_sdfg_inputs`` has already widened every connector to the full outer array, so the
-    shapes normally match outright and this does nothing.
+    Two shapes that genuinely differ are refused unless both are single-element (a ``Scalar`` inside, a
+    size-1 ARRAY outside -- a nested return; both spell one element). Adopting a differing outer shape
+    would silently re-rank the body: an under-offset multi-dim connector emits ``Z[j]`` -- a whole row --
+    where ``Z[j, k]`` was meant. :func:`reject_underranked_codeblock_index` catches that for inter-state
+    code but not for dataflow memlets, so refuse it here instead of papering over it.
     """
     inner_desc, outer_desc = inner.arrays[outer], sdfg.arrays[outer]
-    if [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]:
-        return
-    if is_scalar(inner_desc) and is_scalar(outer_desc):
-        inner.arrays[outer] = copy.deepcopy(outer_desc)
-        return
-    raise UnsupportedNest(f"nested SDFG connector {outer!r} is {inner_desc.shape} inside but "
-                          f"{outer_desc.shape} outside; the extents differ, so the inner body indexes a "
-                          "different shape than the buffer it aliases -- not emittable as numpy")
+    same_shape = [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]
+    if not same_shape and not (is_scalar(inner_desc) and is_scalar(outer_desc)):
+        raise UnsupportedNest(f"nested SDFG connector {outer!r} is {inner_desc.shape} inside but "
+                              f"{outer_desc.shape} outside; the extents differ, so the inner body indexes a "
+                              "different shape than the buffer it aliases -- not emittable as numpy")
+    inner.arrays[outer] = copy.deepcopy(outer_desc)
 
 
 def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedSDFG) -> List[str]:
