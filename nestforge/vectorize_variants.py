@@ -36,15 +36,19 @@ Names are stable and greppable: ``cpu-w16-posttail-fma``."""
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import dace
+from dace.sdfg.state import ConditionalBlock
 from dace.transformation.passes.vectorization.config import VectorizeConfig
 
 #: Width ladder for the tile dim: powers of two, all divisible by 8 so an AVX512 (8xfp64) tile is legal at
 #: every rung; 64 is opt-in (pass it explicitly) since it rarely pays on memory-bound nests.
 WIDTH_LADDER: Tuple[int, ...] = (8, 16, 32)
+
+#: Descent passes over the axes. Two, because a pass that changes nothing already breaks out early, so a
+#: third only pays off for an axis interaction the second pass did not already settle.
+DESCENT_ROUNDS: int = 2
 
 #: FP rungs that forbid FMA contraction. Everything above ``strict-ieee`` permits it (``-ffp-contract=fast``
 #: / ``-Mfma``), so the vectorizer's own fuse is granted exactly when the compiler's already is -- denying it
@@ -100,11 +104,7 @@ def conditional_blocks(sdfg: dace.SDFG) -> List["object"]:
 
     ``all_control_flow_regions`` defaults to ``recursive=False``, and a map body's conditional lives in a
     NestedSDFG -- so the shallow walk finds conditionals only in nests that have no map, i.e. exactly the
-    ones the tile path cannot vectorize. Returns ``[]`` when the DaCe build predates the node type."""
-    try:
-        from dace.sdfg.state import ConditionalBlock
-    except ImportError:
-        return []
+    ones the tile path cannot vectorize."""
     return [b for b in sdfg.all_control_flow_regions(recursive=True) if isinstance(b, ConditionalBlock)]
 
 
@@ -200,18 +200,36 @@ def descent_axes(widths: Sequence[int] = WIDTH_LADDER,
     return axes
 
 
-def coordinate_descent(seed: VectorizeConfig,
-                       axes: List[Tuple[str, List[Dict[str, object]]]],
-                       measure: Callable[[VectorizeConfig], Optional[float]],
-                       rounds: int = 2) -> Tuple[VectorizeConfig, Optional[float]]:
+def memoized(measure: Callable[[VectorizeConfig], Optional[float]]) -> Callable[[VectorizeConfig], Optional[float]]:
+    """``measure`` behind one cache keyed on :func:`resolved_key`.
+
+    The seeds overlap and each round re-offers the axes, so the raw descent measures the same config 1.5x
+    to 3.75x over -- and a repeat is not free: it pays a deepcopy, the vectorizer, DaCe codegen and a
+    clang-format run before the source screen can notice it has seen this code before.
+    """
+    seen: Dict[Tuple, Optional[float]] = {}
+
+    def cached(cfg: VectorizeConfig) -> Optional[float]:
+        key = resolved_key(cfg)
+        if key not in seen:  # membership, not truthiness: an unbuildable cell caches None and is not retried
+            seen[key] = measure(cfg)
+        return seen[key]
+
+    return cached
+
+
+def coordinate_descent(
+        seed: VectorizeConfig, axes: List[Tuple[str, List[Dict[str, object]]]],
+        measure: Callable[[VectorizeConfig], Optional[float]]) -> Tuple[VectorizeConfig, Optional[float]]:
     """Greedy coordinate descent from ``seed``: sweep one axis at a time holding the rest at the current
-    best, keep the fastest improving move, advance; repeat up to ``rounds`` passes or until a pass finds no
-    improvement. ``measure(config)`` returns a time (lower is better) or ``None`` for an unbuildable cell.
-    ``O(rounds * sum of axis sizes)`` measurements, not the full product. Returns ``(best_config, best_time)``."""
+    best, keep the fastest improving move, advance; repeat up to :data:`DESCENT_ROUNDS` passes or until a
+    pass finds no improvement. ``measure(config)`` returns a time (lower is better) or ``None`` for an
+    unbuildable cell. ``O(rounds * sum of axis sizes)`` measurements, not the full product.
+    Returns ``(best_config, best_time)``."""
     current = seed
     current_key = resolved_key(current)
     best = measure(current)
-    for _ in range(rounds):
+    for _ in range(DESCENT_ROUNDS):
         improved = False
         for _, deltas in axes:
             for delta in deltas:
@@ -227,15 +245,16 @@ def coordinate_descent(seed: VectorizeConfig,
     return current, best
 
 
-def multistart_descent(seeds: Sequence[VectorizeConfig],
-                       axes: List[Tuple[str, List[Dict[str, object]]]],
-                       measure: Callable[[VectorizeConfig], Optional[float]],
-                       rounds: int = 2) -> Tuple[VectorizeConfig, Optional[float]]:
+def multistart_descent(
+        seeds: Sequence[VectorizeConfig], axes: List[Tuple[str, List[Dict[str, object]]]],
+        measure: Callable[[VectorizeConfig], Optional[float]]) -> Tuple[VectorizeConfig, Optional[float]]:
     """Run :func:`coordinate_descent` from several seeds and keep the global best -- so a width x remainder
-    interaction is not designed away by a single greedy path."""
+    interaction is not designed away by a single greedy path. The cache spans the seeds, not just one
+    descent: the seeds meet in the middle of the ladder and would otherwise re-measure the same cells."""
     best_cfg, best_t = None, None
+    measure = memoized(measure)
     for seed in seeds:
-        cfg, t = coordinate_descent(seed, axes, measure, rounds)
+        cfg, t = coordinate_descent(seed, axes, measure)
         if t is not None and (best_t is None or t < best_t):
             best_cfg, best_t = cfg, t
     return (best_cfg if best_cfg is not None else seeds[0]), best_t

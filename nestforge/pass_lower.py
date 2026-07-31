@@ -67,8 +67,8 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
 
 
 def lower_nests_to_external_call(sdfg: dace.SDFG,
-                                 strategy: Union[str, Strategy] = "skip-taskloops",
-                                 name_prefix: str = "extcall") -> List[Tuple[ExternalCall, Boundary]]:
+                                 strategy: Union[str,
+                                                 Strategy] = "skip-taskloops") -> List[Tuple[ExternalCall, Boundary]]:
     """Lower every nest the strategy selects into an ``ExternalCall`` node.
 
     Defaults to ``skip-taskloops``: offload the compute-bearing nests, not the pure map/loop
@@ -80,7 +80,7 @@ def lower_nests_to_external_call(sdfg: dace.SDFG,
     refs = strat(sdfg)
     out: List[Tuple[ExternalCall, Boundary]] = []
     for idx, (parent, node) in enumerate(refs):
-        name = f"{name_prefix}_{idx}"
+        name = f"extcall_{idx}"
         boundary = extract_nest_to_sdfg(parent, node, name=name)
         ext = replace_nsdfg_with_external(boundary, name)
         out.append((ext, boundary))

@@ -14,8 +14,10 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# support_rpath_flags is re-exported on purpose: it moved down to toolchain when build.py needed it too,
+# and callers here (and their tests) already spell it flags.support_rpath_flags.
 from nestforge.toolchain import (CXX_STD, LIBOMP, VECTOR_LIBS, OpenMPRuntime, compiler_family, driver_lib_path,
-                                 lib_linkable, linkable_lib_dir)
+                                 lib_linkable, linkable_lib_dir, support_rpath_flags)
 
 #: The ONE OpenMP runtime every lane links unless a cell names another. libomp because both gcc and
 #: clang can link it (it carries a GOMP_* compat layer), so their node libraries share one thread pool.
@@ -31,6 +33,16 @@ FP_ATOL: Dict[str, float] = {
     "contract-fma": 1e-13,
     "assume-finite": 1e-13,
     "fast-math": 1e-5,
+}
+
+#: Relative tolerance FLOOR per output dtype: about one ULP of that storage format. A gate tighter than
+#: the format's own resolution can never be met -- fp16 carries 11 significand bits, so one ULP is ~1e-3
+#: and any fp64-shaped gate rejects every correct fp16 kernel. Composed as ``max(rung, dtype)``: the rung
+#: says how much reassociation is allowed, the dtype says how little the format can even represent.
+DTYPE_ATOL: Dict[str, float] = {
+    "float64": 2.3e-16,
+    "float32": 1.2e-7,
+    "float16": 9.8e-4,
 }
 
 #: FP-mode flags per (family, level) -- C spellings; Fortran deltas applied by :func:`fortran_fp_flags`.
@@ -169,6 +181,13 @@ _REDUCED_FP: Dict[str, Dict[str, List[str]]] = {
 #: catches an O(1) wrong answer, ``no-fast-errno`` is near-bit-exact (only FMA differs).
 REDUCED_FP_ATOL: Dict[str, float] = {"default-fp": 1e-6, "no-fast-errno": 1e-12}
 
+#: Gate for the NATIVE and Pluto baseline lanes. Those builds are plain ``-O3 -march=native``, i.e. the
+#: ``default-fp`` rung. Named because all three sites used to spell a bare ``1e-6`` AND compare it against
+#: an ABSOLUTE maxdiff, which is strictly harsher than every other lane's relative gate (relative_maxdiff
+#: floors its denominator at 1.0) -- a large-magnitude kernel was then dropped from the sample for a
+#: contraction whose relative error was ~1e-16.
+NATIVE_ATOL: float = REDUCED_FP_ATOL["default-fp"]
+
 #: The parallelization axis of the full-matrix job.
 #:  * ``sequential`` -- the sequential emit, no parallel flags.
 #:  * ``auto-par``   -- compiler's OWN auto-parallelizer, polyhedral by default; an absent back end is a
@@ -291,20 +310,6 @@ def autopar_flags(family: str,
 def omp_emit_flags(family: str) -> List[str]:
     """Switch that turns ON the OpenMP pragmas WE emit: ``-fopenmp`` (gcc/clang/icx) or ``-mp`` (nvc)."""
     return {"nvidia": ["-mp"]}.get(family, ["-fopenmp"])
-
-
-#: icx auto-links libsvml/libimf/libirng/libintlc from its own off-path lib dir with NO RUNPATH; probing
-#: this one locates the whole set (they share a directory). gcc/clang have no comparable set.
-SUPPORT_LIB_PROBE = "svml"
-
-
-@functools.lru_cache(maxsize=None, typed=True)
-def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
-    """``-Wl,-rpath`` for the compiler's own auto-linked support libraries, or ``()`` when it has none.
-    NOT the OpenMP runtime's directory -- an icx cell rpathing only the libomp dir links but dies at
-    ``dlopen``. The arena dlopens node libraries in-process, so ``LD_LIBRARY_PATH`` is not an option."""
-    found = driver_lib_path(SUPPORT_LIB_PROBE, compiler)
-    return ("-Wl,-rpath,%s" % found.parent, ) if found else ()
 
 
 @functools.lru_cache(maxsize=None, typed=True)

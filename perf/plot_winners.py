@@ -44,7 +44,7 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
-from plot_common import finite, geomean, load_results  # noqa: E402
+from plot_common import timing_cells, finite, geomean, load_results  # noqa: E402
 
 #: label for the "let nest-forge choose per kernel" bar in the chart / summary.
 NESTFORGE_LABEL = "nestforge-best"
@@ -67,14 +67,6 @@ def baseline_us(kernel: dict) -> Optional[float]:
     if finite(native.get("median_us")):
         return float(native["median_us"])
     return None
-
-
-def timing_cells(kernel: dict) -> List[dict]:
-    """The validated, finite-median lane-3 timing cells of one kernel."""
-    return [
-        c for c in (kernel.get("cells") or [])
-        if c.get("role") == "timing" and c.get("ok") is True and finite(c.get("median_us"))
-    ]
 
 
 def best_for_compiler(cells: List[dict], compiler: str) -> Optional[dict]:

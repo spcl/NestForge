@@ -132,22 +132,28 @@ def asm_bodies(obj: Path) -> Dict[str, str]:
     return parse_disassembly(out) if out is not None else {}
 
 
+def asm_text(bodies: Mapping[str, str], obj: Path, symbol: Optional[str]) -> str:
+    """The instruction text to key: one ``symbol``, or every symbol when ``None``."""
+    if symbol is None:
+        return "\n".join(f"{name}\n{bodies[name]}" for name in sorted(bodies))
+    if symbol not in bodies:
+        raise LookupError(f"symbol {symbol!r} not in {obj} (has: {sorted(bodies)})")
+    return bodies[symbol]
+
+
 def asm_body_key(obj: Path, symbol: Optional[str] = None) -> str:
     """Key over ``obj``'s disassembly -- one ``symbol``, or every symbol when ``None``.
 
-    Prefer naming the symbol: a whole-object key also covers init/exit boilerplate, which can differ
-    between two builds whose measured kernel is the same code.
+    Name a symbol only when it is the code that RUNS. A DaCe ``__program_<name>`` is a trampoline into
+    ``__program_<name>_internal`` and disassembles the same whatever the body does, so keying on it
+    collapses every variant into one. The whole-object key also covers init/exit, which is the right
+    direction anyway: init allocates the persistent storage, so a build that allocates differently is a
+    different build. Over-separating costs an extra measurement, over-collapsing deletes a search axis.
     """
     bodies = asm_bodies(obj)
     if not bodies:
         raise LookupError(f"no disassembly for {obj} (objdump missing, or the object has no code)")
-    if symbol is None:
-        text = "\n".join(f"{name}\n{bodies[name]}" for name in sorted(bodies))
-    elif symbol in bodies:
-        text = bodies[symbol]
-    else:
-        raise LookupError(f"symbol {symbol!r} not in {obj} (has: {sorted(bodies)})")
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(asm_text(bodies, obj, symbol).encode()).hexdigest()
 
 
 #: ``objdump -p`` dependency line: ``  NEEDED               libmvec.so.1``.
@@ -174,9 +180,10 @@ def variant_key(artifact: Path, symbol: Optional[str] = None) -> Optional[str]:
     collapses every fp rung. ``None`` rather than a raise so a caller can fall back to measuring the
     variant; a failure to inspect must never read as "same as the last one".
     """
-    if not asm_bodies(artifact):
+    bodies = asm_bodies(artifact)  # one objdump: going through asm_body_key would disassemble twice
+    if not bodies:
         return None
-    code = asm_body_key(artifact, symbol)
+    code = hashlib.sha256(asm_text(bodies, artifact, symbol).encode()).hexdigest()
     return hashlib.sha256("\n".join((code, *needed_libraries(artifact))).encode()).hexdigest()
 
 

@@ -1,6 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Contract tests for nestforge.entry: input kind -> search space. No compiler required.
+import dataclasses
 import itertools
 
 import pytest
@@ -217,9 +218,12 @@ def test_flags_space_is_smaller_than_parsed_space():
 
 
 def test_plan_is_immutable():
+    """``pytest.raises(Exception)`` around ``SearchSpace.ALL`` was satisfied by the AttributeError from
+    that nonexistent member, BEFORE the assignment ran -- so the test passed against a non-frozen
+    SearchPlan too. Name a real member and the exact exception."""
     plan = plan_search('kernel.c')
-    with pytest.raises(Exception):
-        plan.space = SearchSpace.ALL
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        plan.space = SearchSpace.CODEGEN
 
 
 def test_axes_are_copied_not_aliased():

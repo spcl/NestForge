@@ -94,7 +94,7 @@ def fusion_depth(sdfg: dace.SDFG, owned: bool = False) -> int:
     ``owned=True`` measures IN PLACE, for a caller whose ``sdfg`` has no other reference and is discarded
     right after (:func:`kernels_with_axis` builds one per kernel purely to probe it). Probing consumes the
     graph, so this is destructive -- pass it only when nothing will read ``sdfg`` again. It saves one full
-    SDFG deepcopy per kernel, which over a 245-kernel corpus scan is the scan's dominant cost."""
+    SDFG deepcopy per kernel, which over a whole-corpus scan is the scan's dominant cost."""
     probe = sdfg if owned else copy.deepcopy(sdfg)
     to_canonical_atoms(probe)
     depth = 0

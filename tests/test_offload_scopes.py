@@ -28,24 +28,24 @@ def two_nest(a: dace.float64[N], b: dace.float64[N], out: dace.float64[N]):
         out[i] = tmp[i] + b[i]
 
 
-def _sdfg():
+def two_nest_sdfg():
     return two_nest.to_sdfg(simplify=True)
 
 
-def _calls(sdfg):
+def lowered_calls(sdfg):
     return [n for s in sdfg.states() for n in s.nodes() if isinstance(n, ExternalCall)]
 
 
 def test_each_nest_becomes_an_offload_scope():
-    _, scopes = offload_scopes(_sdfg())
+    _, scopes = offload_scopes(two_nest_sdfg())
     assert len(scopes) == 2  # two_nest has two compute nests
     assert all(isinstance(s, OffloadScope) for s in scopes)
     assert all(s.offloadable and s.reason == "" for s in scopes)  # default: an externalized nest may offload
 
 
 def test_each_call_is_isolated_in_its_own_state():
-    work, scopes = offload_scopes(_sdfg())
-    calls = _calls(work)
+    work, scopes = offload_scopes(two_nest_sdfg())
+    calls = lowered_calls(work)
     assert len(calls) == 2
     # every externalized call sits ALONE among the nodes-with-compute of its state: the scope between the
     # call and the host program. No two calls share a state.
@@ -56,7 +56,7 @@ def test_each_call_is_isolated_in_its_own_state():
 
 
 def test_scope_boundary_is_the_host_device_transfer_set():
-    _, scopes = offload_scopes(_sdfg())
+    _, scopes = offload_scopes(two_nest_sdfg())
     # producer nest: reads a, writes the tmp bridge; consumer nest: reads that bridge + b, writes out.
     producer = next(s for s in scopes if "out" not in s.outputs)
     consumer = next(s for s in scopes if "out" in s.outputs)
@@ -65,12 +65,12 @@ def test_scope_boundary_is_the_host_device_transfer_set():
 
 
 def test_analysis_is_non_destructive():
-    src = _sdfg()
+    src = two_nest_sdfg()
     before = (len(list(src.states())), sum(len(s.nodes()) for s in src.states()))
     offload_scopes(src)
     after = (len(list(src.states())), sum(len(s.nodes()) for s in src.states()))
     assert before == after, "offload_scopes mutated its input SDFG"
-    assert not _calls(src), "offload_scopes externalized on the caller's SDFG instead of a copy"
+    assert not lowered_calls(src), "offload_scopes externalized on the caller's SDFG instead of a copy"
 
 
 def test_offloadable_decision_is_injectable():
@@ -78,7 +78,7 @@ def test_offloadable_decision_is_injectable():
     def refuse_all(call, boundary):
         return False, "tool says not GPU-viable"
 
-    _, scopes = offload_scopes(_sdfg(), offloadable=refuse_all)
+    _, scopes = offload_scopes(two_nest_sdfg(), offloadable=refuse_all)
     assert all(not s.offloadable and s.reason == "tool says not GPU-viable" for s in scopes)
 
 
@@ -94,9 +94,9 @@ def test_externalized_isolated_program_is_value_preserving(tmp_path):
     a, b = rng.random(n), rng.random(n)
 
     ref_out = np.zeros(n)
-    _sdfg()(a=a.copy(), b=b.copy(), out=ref_out, N=n)  # reference: the un-externalized program
+    two_nest_sdfg()(a=a.copy(), b=b.copy(), out=ref_out, N=n)  # reference: the un-externalized program
 
-    work, scopes = offload_scopes(_sdfg())
+    work, scopes = offload_scopes(two_nest_sdfg())
     assert len(scopes) == 2
     got_out = np.zeros(n)
     work(a=a.copy(), b=b.copy(), out=got_out, N=n)  # externalized + isolated, still runnable

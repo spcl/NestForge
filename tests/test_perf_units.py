@@ -190,15 +190,15 @@ def test_family_of_maps_labels_to_fp_families():
 
 
 # --- winner selection ---------------------------------------------------------------------------------
-def _cell(ok, t, fp="strict-ieee", cost="default"):
+def make_cell(ok, t, fp="strict-ieee", cost="default"):
     return {"ok": ok, "time_us": t, "fp_level": fp, "cost_model": cost, "maxdiff": 0.0}
 
 
 def test_cells_winner_picks_fastest_ok_only():
-    cells = [_cell(True, 5.0), _cell(True, 2.0, "fast-math"), _cell(False, 1.0)]  # the 1.0 is not ok
+    cells = [make_cell(True, 5.0), make_cell(True, 2.0, "fast-math"), make_cell(False, 1.0)]  # the 1.0 is not ok
     assert crosslang_xl.cells_winner(cells)["time_us"] == 2.0
-    assert crosslang_xl.cells_winner([_cell(False, 1.0)]) is None  # nothing valid -> no winner
-    assert crosslang_xl.cells_winner([_cell(True, float("inf"))]) is None  # inf is not a real time
+    assert crosslang_xl.cells_winner([make_cell(False, 1.0)]) is None  # nothing valid -> no winner
+    assert crosslang_xl.cells_winner([make_cell(True, float("inf"))]) is None  # inf is not a real time
 
 
 def test_global_winner_across_toolchains_carries_compiler():
@@ -232,7 +232,7 @@ def test_global_winner_across_toolchains_carries_compiler():
 
 
 # --- report math (render_tables) ----------------------------------------------------------------------
-def _tsvc_row(nat, win):
+def make_tsvc_row(nat, win):
 
     def cell(t, label):
         return {
@@ -266,7 +266,7 @@ def test_tsvc_render_tables_geomean_and_skipped(tmp_path):
             "sizes": {
                 "LEN_1D": 4
             },
-            "rows": [_tsvc_row(10.0, 2.0)]
+            "rows": [make_tsvc_row(10.0, 2.0)]
         }))
     (sd / "sB.json").write_text(
         json.dumps({
@@ -275,7 +275,7 @@ def test_tsvc_render_tables_geomean_and_skipped(tmp_path):
             "sizes": {
                 "LEN_1D": 4
             },
-            "rows": [_tsvc_row(8.0, 4.0)]
+            "rows": [make_tsvc_row(8.0, 4.0)]
         }))
     (sd / "sC.json").write_text(json.dumps({"key": "sC", "skipped": "no compute nest"}))
     rep = tsvc_arena.render_tables(tmp_path, 0)

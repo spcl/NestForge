@@ -10,8 +10,8 @@ input:
 =============================  =========================  ====================================
 input                          what we can still change   search space
 =============================  =========================  ====================================
-C / C++ / Fortran SOURCE       only how it is compiled    vectorize x fp                    (9)
-NumPy / Fortran / SDFG         the generated code too     + codegen knobs, budgeted        (72)
+C / C++ / Fortran SOURCE       only how it is compiled    vectorize x fp                   (12)
+NumPy / Fortran / SDFG         the generated code too     + codegen knobs, budgeted        (96)
 =============================  =========================  ====================================
 
 per compiler; the arena builds each variant once per discovered toolchain.

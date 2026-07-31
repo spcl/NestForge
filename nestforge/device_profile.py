@@ -20,8 +20,6 @@ Nothing here mutates DaCe or emits an SDFG; it reads host capabilities and compi
 (run as separate processes, so a broken probe never touches the parent)."""
 from __future__ import annotations
 
-import functools
-import platform
 from statistics import median
 import subprocess
 import tempfile
@@ -228,19 +226,3 @@ def rank_veclibs(compiler: str, max_ulp: float = 4.0) -> List[VeclibProfile]:
     ok = [p for p in profiles if p.ok]
     ok.sort(key=lambda p: (p.max_ulp > max_ulp, -p.throughput_speedup))
     return ok + [p for p in profiles if not p.ok]
-
-
-@dataclass(slots=True)
-class DeviceProfile:
-    """The cached per-device characterization consumed by the vectorization + veclib selection stages."""
-    machine: str
-    host_isas: Tuple[str, ...]
-    veclib_ranking: List[VeclibProfile]  # empty when no veclib is installed for the given compiler
-
-
-@functools.lru_cache(maxsize=8, typed=True)
-def device_profile(compiler: str = "gcc") -> DeviceProfile:
-    """Characterize this device ONCE per process (memoized per compiler): the host ISAs plus the veclib
-    ranking for ``compiler``. Cross-run persistence is a future add (keyed by host + compiler); within a
-    sweep rank this in-process memo already means "measured once"."""
-    return DeviceProfile(machine=platform.machine(), host_isas=host_isas(), veclib_ranking=rank_veclibs(compiler))

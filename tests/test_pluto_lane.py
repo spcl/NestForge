@@ -103,7 +103,7 @@ def test_run_polycc_reports_not_installed_when_binary_missing(tmp_path, monkeypa
     assert ok is False and reason.startswith("skip:not-installed")
 
 
-def _fake_identity_polycc(dirpath: Path) -> str:
+def fake_identity_polycc(dirpath: Path) -> str:
     """A stand-in ``polycc`` that just COPIES its ``--pet <src> -o <out>`` input to the output -- the
     identity 'transform'. Since the emitted ``_pluto_input.c`` is already a valid sequential C kernel with
     the VLA/size-first signature, compiling+running the copy exercises the WHOLE marshaling path (binding ->
@@ -129,7 +129,7 @@ def test_pluto_lane_marshals_the_size_first_vla_abi_end_to_end(tmp_path, monkeyp
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
     ctxs = tsvc_full.build_opt_context(k, "simplify-parallel", "skip-taskloops", "S", ["c"], tmp_path)
     nc = ctxs[0]
-    fake = _fake_identity_polycc(tmp_path)
+    fake = fake_identity_polycc(tmp_path)
     monkeypatch.setattr(pluto_lane, "POLYCC", fake)
     monkeypatch.setattr(pluto_lane, "polycc_available", lambda: True)
     res = tsvc_full.measure_pluto_lane(nc, "gcc", reps=3, workdir=tmp_path / "pluto")

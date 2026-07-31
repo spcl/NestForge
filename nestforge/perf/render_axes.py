@@ -58,7 +58,8 @@ class Lane:
 def lanes() -> List[Lane]:
     """The lane/axis spec, built from the live axis constants -- add a value to a tuple and both the
     arena and this figure change together. ``veclib``/``vectorization`` show per-device symbolic leaves
-    since their concrete values are chosen per device by ``device_profile``, not fixed in the figure.
+    since their concrete values are chosen per device by ``perf.tsvc_full.resolve_veclibs``, not fixed
+    in the figure.
 
     The native lane is deliberately NOT fanned over compiler/cost-model/fp:
     ``tsvc_full.measure_native_lane`` compiles ``_reference.cpp`` exactly once with base flags only -- a

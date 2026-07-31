@@ -154,6 +154,27 @@ class OpenMPRuntime:
         return [*libdir, f"-l{self.soname}"]
 
 
+#: icx auto-links libsvml/libimf/libirng/libintlc from its own off-path lib dir with NO RUNPATH; probing
+#: this one locates the whole set (they share a directory). gcc/clang have no comparable set.
+SUPPORT_LIB_PROBE = "svml"
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def support_rpath_flags(compiler: str) -> Tuple[str, ...]:
+    """``-Wl,-rpath`` for the compiler's own auto-linked support libraries, or ``()`` when it has none.
+
+    NOT the OpenMP runtime's directory -- an icx cell rpathing only the libomp dir links but dies at
+    ``dlopen``. Everything here dlopens what it builds, so ``LD_LIBRARY_PATH`` is not an option.
+
+    Lives beside the driver probes rather than in ``perf.flags`` because BOTH link-line composers need it:
+    the owned build (:func:`nestforge.build.compile`) reached only the OpenMP/veclib halves, so every
+    icpx-built ``.so`` came out with NEEDED libsvml/libimf/libirng/libintlc and no RUNPATH and died in the
+    ``ctypes.CDLL`` immediately after the link.
+    """
+    found = driver_lib_path(SUPPORT_LIB_PROBE, compiler)
+    return ("-Wl,-rpath,%s" % found.parent, ) if found else ()
+
+
 #: Ready-made OpenMP runtimes. libomp/libgomp/libiomp5 are mutually GOMP-ABI compatible (libomp/libiomp5
 #: also implement __kmpc_*). NVIDIA's libnvomp is reachable only via nvc/nvfortran -mp.
 LIBOMP = OpenMPRuntime(name="libomp", soname="omp")  # LLVM default; kmpc+gomp
@@ -189,10 +210,15 @@ _LIB_PROBE_DRIVERS = ("clang++", "clang", "g++", "gcc")
 PROBE_TIMEOUT_S: float = 15.0
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def driver_lib_path(soname: str, compiler: str) -> Optional[Path]:
     """Where ``compiler`` resolves ``lib<soname>.so``, or ``None``. ``-print-file-name`` asks what the
     driver resolves, a different question from what ldconfig/``find_library`` finds (see
-    :func:`linkable_lib_dir`)."""
+    :func:`linkable_lib_dir`).
+
+    Cached like every other probe here: it is on the flag-composition path (``lib_linkable`` ->
+    ``openmp_runtime_flags``), so an uncached one re-forks the driver for the same
+    ``(soname, compiler)`` on every auto-par/omp cell of the sweep."""
     try:
         out = subprocess.run([compiler, f"-print-file-name=lib{soname}.so"],
                              capture_output=True,
@@ -369,7 +395,7 @@ def usable_openmp(compiler: str) -> Optional[OpenMPRuntime]:
 
     Preference order is libomp first (LLVM-selectable AND GOMP-compatible, so gcc- and clang-built objects
     share one pool), then whatever else this compiler accepts."""
-    for rt in (LIBOMP, *OPENMP_RUNTIMES.values()):
+    for rt in OPENMP_RUNTIMES.values():  # deliberately libomp-first; the prefix used to re-probe it
         if not rt.compatible(compiler):
             continue
         # intel-classic/nvidia hard-link their own runtime through -qopenmp/-mp; there is no -l to resolve.

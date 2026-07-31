@@ -88,7 +88,17 @@ never had a caller, so the "two entry points" were one real search and one that 
 | screen | key | cost per cell | what only it can see |
 |---|---|---|---|
 | source | `dedup.cpp_body_key` on the emitted C++ | one codegen | a knob the vectorizer ignores on THIS nest — before a compile is spent |
-| artifact | `dedup.variant_key` on `__program_<name>` | codegen + compile | two DIFFERENT sources the compiler folds to the same code |
+| artifact | `dedup.variant_key` on the WHOLE object | codegen + compile | two DIFFERENT sources the compiler folds to the same code |
+
+The artifact screen keys **every** function body, not `__program_<name>`. That entry point is a
+three-instruction trampoline into `__program_<name>_internal`, so it disassembles identically for every
+config: keying on it collapsed the whole descent onto cell 1 and the lane reported a winner it never
+timed (measured: one asm hash `ba7b81640a` across widths 8/16/32, while `cpp_body_key` differed). Init and
+exit stay IN the key — init allocates the persistent storage, so a config that allocates differently is a
+different build. Over-separating costs one extra measurement; over-collapsing deletes the axis.
+
+Both screens also RECORD on the collapse path. The artifact screen used to return without writing the
+source cache, so that cache held one entry for an entire lane.
 
 Neither subsumes the other, so both stay. The source screen is what closes finding 4; the artifact screen
 is the 42%-collapse one already measured over the flag axis.
@@ -102,6 +112,12 @@ Measured, three descent seeds per nest, real DaCe emissions (`tests/test_dedup.p
 
 Both directions are asserted. A screen that over-collapsed would silently delete the axis it exists to skip,
 which is the failure mode worth guarding: it would look like a faster sweep, not like a lost search.
+
+The descent additionally memoizes on `resolved_key` across all three seeds and both rounds
+(`vectorize_variants.memoized`): the seeds meet in the middle of the width ladder, and the raw descent
+re-generated the same config 1.5×–3.75× (measured 28–35 calls for 8–11 distinct configs). A repeat is not
+free — it pays a deepcopy, the vectorizer, DaCe codegen and a clang-format run before the source screen
+can notice it has seen that code before.
 
 ## Next
 

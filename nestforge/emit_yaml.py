@@ -50,25 +50,24 @@ def sized_sdfg(boundary: Boundary) -> dace.SDFG:
     return maxsize_loop_scratch(expand_nested_sdfg_inputs(boundary.standalone_sdfg), boundary.symbols)
 
 
-def arg_order(boundary: Boundary, sdfg: Optional[dace.SDFG] = None, arrays: Optional[List[str]] = None) -> List[str]:
+def arg_order(boundary: Boundary, sdfg: dace.SDFG, arrays: List[str]) -> List[str]:
     """Arrays (inputs, extra outputs, scratch), then symbols -- identical to the numpy signature.
 
-    ``arrays`` may be an already-computed :func:`array_names` result -- pass it when the caller has one,
-    so ``scratch_arrays``/``sized_sdfg`` are not walked a second time for the same boundary.
+    ``arrays`` is an already-computed :func:`array_names` result: every caller has one, so re-deriving it
+    here would walk ``scratch_arrays``/``sized_sdfg`` a second time for the same boundary.
     """
-    args = list(arrays) if arrays is not None else array_names(boundary, sdfg)
+    args = list(arrays)
     args += [s for s in boundary.symbols if s not in args]
     return args
 
 
-def array_names(boundary: Boundary, sdfg: Optional[dace.SDFG] = None) -> List[str]:
+def array_names(boundary: Boundary, sdfg: dace.SDFG) -> List[str]:
     """Every caller-allocated buffer, in numpy-signature order.
 
     Scratch transients are parameters too: the C-style memory model makes the kernel allocate nothing, so a
     non-scalar transient the body indexes must cross the ABI like any other array. Omitting it here would
     leave the translator no declaration for a name the body references.
     """
-    sdfg = sized_sdfg(boundary) if sdfg is None else sdfg
     names = list(boundary.inputs)
     names += [o for o in boundary.outputs if o not in boundary.inputs]
     names += [s for s in scratch_arrays(sdfg) if s not in names]
@@ -84,11 +83,7 @@ def dtype_str(desc: dace.data.Data) -> str:
     return np.dtype(desc.dtype.type).name
 
 
-def manifest_dict(boundary: Boundary,
-                  name: str,
-                  sizes: Optional[Dict[str, int]] = None,
-                  preset: str = "S",
-                  track: str = "foundation") -> Dict:
+def manifest_dict(boundary: Boundary, name: str, sizes: Optional[Dict[str, int]] = None, preset: str = "S") -> Dict:
     """Build the OptArena manifest dict for ``boundary``'s standalone SDFG."""
     sdfg = sized_sdfg(boundary)
     arrays = array_names(boundary, sdfg)
@@ -125,7 +120,8 @@ def manifest_dict(boundary: Boundary,
         "array_args": arrays,
         "output_args": list(boundary.outputs),
         "init": init,
+        # the literal stays: hpcagent_bench.spec hoists taxonomy.track into BenchSpec
         "taxonomy": {
-            "track": track
+            "track": "foundation"
         },
     }

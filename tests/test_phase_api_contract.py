@@ -64,7 +64,7 @@ def test_every_symbol_a_skill_imports_exists(skill):
     """Copy-paste is the point: an import in a skill snippet must resolve, or the agent gets ImportError."""
     for module, name in skill_imports(skill):
         mod = importlib.import_module(module)
-        assert hasattr(mod, name), f"{skill}: `from {module} import {name}` -- {module} has no {name!r}"
+        assert name in vars(mod), f"{skill}: `from {module} import {name}` -- {module} has no {name!r}"
 
 
 @pytest.mark.parametrize("phase", PHASE_MODULES)
@@ -75,9 +75,10 @@ def test_phase_is_reachable_as_a_module(phase):
     ``nestforge.optimize.optimization_choices`` fails on a function object. Keep the four uniform.
     """
     import nestforge
-    assert isinstance(getattr(nestforge, phase), types.ModuleType), (
-        f"nestforge.{phase} is a {type(getattr(nestforge, phase)).__name__}, not the submodule -- a top-level "
-        f"re-export is shadowing it")
+    bound = vars(nestforge)[phase]
+    assert isinstance(bound, types.ModuleType), (
+        f"nestforge.{phase} is a {type(bound).__name__}, not the submodule -- a top-level re-export is "
+        f"shadowing it")
 
 
 def test_skills_quote_the_real_strategy_names():
@@ -110,3 +111,30 @@ def test_phase_skills_state_preconditions_and_guardrails(skill):
     text = skill.read_text()
     assert "## Preconditions" in text, f"{skill} must state what must already hold"
     assert "## Guardrails" in text, f"{skill} must state what must never be done"
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)
+def test_skill_prose_never_names_a_session_tool_that_is_gone(skill):
+    """A tool named in BACKTICKS is a tool an agent will call, and prose is where the roster is listed.
+
+    ``skill_imports`` only parses ```python blocks, so three tools deleted from ``Session`` survived in the
+    agent-graph roster for several commits: an agent copying that list gets ``AttributeError`` (``Session``
+    has no ``__getattr__``). Only names that read as tool calls are checked -- a backticked word that is
+    also a Session attribute is enough to be worth keeping true.
+    """
+    from nestforge.session import Session
+    live = {n for n in vars(Session) if not n.startswith("__")}
+    # A skill also names FREE functions (`fission_to_statements`) and DaCe methods (`can_be_applied_to`),
+    # which are not Session tools and must not be flagged. So the roster is Session's surface plus every
+    # public name of the modules the skill's own code blocks import from.
+    for module, _ in skill_imports(skill):
+        if module.startswith("nestforge") or module.startswith("dace"):
+            live |= {n for n in vars(importlib.import_module(module)) if not n.startswith("_")}
+    # the vocabulary this guard polices: verbs the phase API actually uses, so an unrelated backticked
+    # word (a field name, a python builtin) is never asserted against the surface
+    # `can_fuse`, not `can_`: `can_be_applied_to` is a DaCe transformation METHOD, never a module name
+    verbs = ("list_", "fuse", "fission", "emit_", "set_", "sweep", "feedback", "externalize", "region_tree",
+             "nest_boundary", "can_fuse")
+    named = {m for m in re.findall(r"`([a-z_][a-z0-9_]*)`", skill.read_text()) if m.startswith(verbs)}
+    gone = sorted(named - live)
+    assert not gone, f"{skill} names tools that no longer exist: {gone}"

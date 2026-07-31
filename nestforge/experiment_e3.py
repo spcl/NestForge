@@ -15,13 +15,12 @@ argmin, which is where the offload boundary starts costing more than the finer r
 """
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from nestforge import tsvc
 from nestforge.arena import discover_compilers
-from nestforge.experiment_e1 import E1Cell, best_by, measured_by, run_e1_cell, unmeasured_axis
+from nestforge.experiment_e1 import E1Cell, best_by, run_e1_cell
 from nestforge.granularity import granularity_ladder
 from nestforge.offload import OFFLOAD_UNITS, offload_coarseness
 
@@ -73,7 +72,7 @@ def run_e3(kernels: Sequence[tsvc.TsvcKernel],
                                     unit,
                                     opt_mode,
                                     reps,
-                                    canonical=copy.deepcopy(canonical),
+                                    canonical=canonical,
                                     preset=preset,
                                     seed=seed))
                 except caught as e:
@@ -103,21 +102,10 @@ def best_unit_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]
     :func:`~nestforge.experiment_e1.best_granularity_per_backend` excludes a one-rung ladder: a kernel with
     no LoopRegion fails 'cfg', a kernel with no compute-bearing state boundary fails 'state', and the
     surviving 'map' cell is then the argmin of a set of one -- reported identically to a genuine three-way
-    comparison. :func:`no_unit_axis` lists what was left out."""
+    comparison. What was left out is visible in E3's own ``curve``, which carries every attempted pair
+    with its per-cell error."""
     return best_by(cells, unit_of)
 
 
 def unit_of(cell: E1Cell) -> str:
     return cell.unit
-
-
-def units_measured(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
-    """``(kernel, backend) -> {unit: median_us}`` over the cells that validated."""
-    return measured_by(cells, unit_of)
-
-
-def no_unit_axis(cells: Sequence[E1Cell]) -> List[str]:
-    """The ``kernel | backend`` keys excluded from the C3 read-off because fewer than two offloading units
-    validated. Enumerated over every pair the sweep ATTEMPTED, so a pair whose every unit failed is listed
-    rather than vanishing from both tables."""
-    return unmeasured_axis(cells, unit_of)

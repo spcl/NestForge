@@ -17,7 +17,7 @@ from nestforge.emit_numpy import load_emitted, sdfg_to_numpy
 from nestforge.strategies import get_strategy, is_parallel_nest
 
 
-def _refs(key, opt_mode="simplify-parallel", strategy="skip-taskloops"):
+def nest_refs(key, opt_mode="simplify-parallel", strategy="skip-taskloops"):
     kernel = tsvc.iter_tsvc_kernels(only=[key], corpus="tsvc2")[0]
     sdfg = tsvc.build_sdfg(kernel, opt_mode=opt_mode)
     return sdfg, get_strategy(strategy)(sdfg)
@@ -41,7 +41,7 @@ def test_loop_region_is_sequential():
 
 
 def test_real_parallel_map_kernel_is_parallel():
-    _, refs = _refs("s2275")
+    _, refs = nest_refs("s2275")
     assert refs
     assert any(is_parallel_nest(node) for _, node in refs)
 
@@ -50,7 +50,7 @@ def test_real_parallel_map_kernel_is_parallel():
 def test_s2275_nested_map_emits_and_computes():
     # s2275 baseline = outer i-loop with an inner j-loop (2-D aa FMA) + an i-level 1-D statement.
     # The 'outer' strategy offloads the whole parent nest; map_lines must recurse to nested for-loops.
-    _, refs = _refs("s2275", strategy="outer")
+    _, refs = nest_refs("s2275", strategy="outer")
     assert len(refs) == 1
     boundary = extract_nest_to_sdfg(refs[0][0], refs[0][1], name="s2275")
     src = sdfg_to_numpy(boundary.standalone_sdfg, "s2275")

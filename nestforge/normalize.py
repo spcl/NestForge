@@ -290,20 +290,26 @@ def rename_transient_data(sdfg: dace.SDFG) -> Dict[str, str]:
     taken = {prefix: {int(n[1:]) for n in settled if n[0] == prefix} for prefix in ("t", "s")}
     # A survivor already called ``t3`` would otherwise be clobbered by whatever is renamed to ``t3``.
     survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
+    # ...and so would a target that is canonical-SHAPED but under the wrong prefix: a Scalar named ``t0``
+    # is not settled (its prefix is ``s``), yet it still HOLDS the name ``t0`` until its own rename lands.
+    # replace_dict renames the descriptor dict sequentially, so handing ``t0`` to someone else first
+    # clobbered the holder and left the SDFG failing validation with `Array "t0" not found`.
+    held = {n for n in targets if n not in settled}
     renames = {}
     for old, prefix in targets.items():
         if old in settled:
             continue
         index = 0
-        while index in taken[prefix] or f"{prefix}{index}" in survivors:
+        while index in taken[prefix] or f"{prefix}{index}" in (survivors | held):
             index += 1
         taken[prefix].add(index)
         renames[old] = f"{prefix}{index}"
     if not renames:
         return {}
-    # ONE replace_dict, not a rename per name: the substitution is simultaneous, so a mapping that
-    # reuses a name another target currently holds (t3 -> t7 while something else becomes t3) still
-    # lands correctly. Renaming one at a time would let the second overwrite the first.
+    # ONE replace_dict, not a rename per name -- but note it is simultaneous only for the GRAPH: the
+    # descriptor dict is rewritten key by key (dace/sdfg/sdfg.py), so a mapping that hands out a name
+    # another target still holds destroys that target's descriptor. ``held`` above is what keeps such a
+    # mapping from being built in the first place.
     sdfg.replace_dict(renames)
     return renames
 

@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Sweep the hpcagent_bench ``foundation`` track (220 kernels) through the arena, one JSON per kernel.
+"""Sweep the hpcagent_bench ``foundation`` track through the arena, one JSON per kernel.
 
 Every kernel is lowered to its nests and each nest is measured across the arena's compiler x FP-level
 matrix, deduped by built artifact (:mod:`nestforge.dedup`), and validated against the numpy oracle before
@@ -8,7 +8,7 @@ any timing counts. Ranks self-partition via ``SLURM_PROCID``/``SLURM_NTASKS`` (:
 so ``srun`` needs no extra coordination and a rank that dies takes only its own slice with it.
 
 A kernel that cannot lower, emit or build is recorded with its reason and the sweep continues -- across
-220 corpus kernels some will not translate, and losing the run to one of them is the failure mode this
+corpus kernels some will not translate, and losing the run to one of them is the failure mode this
 exists to avoid. Results are written per kernel, so a killed sweep keeps everything already finished.
 
 The measurement itself forks (:func:`nestforge.isolation.run_isolated`), so a segfaulting candidate costs

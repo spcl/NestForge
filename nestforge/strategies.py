@@ -13,7 +13,7 @@ from typing import Callable, Dict, List, Tuple, Type, Union
 
 import dace
 from dace.sdfg import nodes
-from dace.sdfg.state import ControlFlowRegion, LoopRegion
+from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, LoopRegion
 
 from nestforge.extract import NestNode
 
@@ -41,8 +41,30 @@ def top_level_map_entries(state: dace.SDFGState) -> List[nodes.MapEntry]:
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
 
 
+def branch_states(region: ConditionalBlock) -> List[dace.SDFGState]:
+    """Direct states of every branch of a conditional, plus those of any conditional nested inside it.
+
+    A kernel guarded by ``if k > 0:`` is a whole state graph the top-level walk cannot see: it is not an
+    ``SDFGState`` and not a ``LoopRegion``, so a walk that tests only those two skipped the entire
+    conditional and reported "no compute nest" for the kernel (foundation ``s162`` is exactly this).
+
+    Deliberately NOT states inside a nested ``LoopRegion``: extraction carves a ``SubgraphView`` out of
+    the parent SDFG's OWN nodes, so a loop that is not a direct node of the root cannot be pulled out --
+    and lifting a map from inside it would leave its loop behind.
+    """
+    states: List[dace.SDFGState] = []
+    for _, branch in region.branches:
+        for block in branch.nodes():
+            if isinstance(block, dace.SDFGState):
+                states.append(block)
+            elif isinstance(block, ConditionalBlock):
+                states.extend(branch_states(block))
+    return states
+
+
 def outer(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
-    """Outermost nests of the root SDFG: top-level map-nests + top-level CFG loop regions.
+    """Outermost nests of the root SDFG: top-level map-nests + top-level CFG loop regions, plus the
+    map-nests of a top-level conditional's branches (see :func:`branch_states`).
 
     Does not descend into nested SDFGs (those are already 'inside'); other strategies may.
     """
@@ -53,6 +75,10 @@ def outer(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
         elif isinstance(block, dace.SDFGState):
             for me in top_level_map_entries(block):
                 refs.append((sdfg, me))
+        elif isinstance(block, ConditionalBlock):
+            for state in branch_states(block):
+                for me in top_level_map_entries(state):
+                    refs.append((sdfg, me))
     return refs
 
 
@@ -131,6 +157,10 @@ def skip_taskloops(sdfg: dace.SDFG) -> List[Tuple[dace.SDFG, NestNode]]:
         elif isinstance(block, dace.SDFGState):
             for me in top_level_map_entries(block):
                 collect_skip_map(sdfg, block, me, refs)
+        elif isinstance(block, ConditionalBlock):
+            for state in branch_states(block):
+                for me in top_level_map_entries(state):
+                    collect_skip_map(sdfg, state, me, refs)
     return refs
 
 

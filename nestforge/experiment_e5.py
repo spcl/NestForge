@@ -20,7 +20,6 @@ than a bare boolean.
 """
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -187,7 +186,7 @@ def run_e5(kernels: Sequence[tsvc.TsvcKernel],
                                     unit,
                                     opt_mode,
                                     reps,
-                                    canonical=copy.deepcopy(canonical),
+                                    canonical=canonical,
                                     preset=preset,
                                     seed=seed))
                 except caught as e:
@@ -207,6 +206,14 @@ def summarize(kernel: str, backend: str, schedulable: bool, reason: str, coarses
     if not valid:
         return E5Row(kernel, backend, schedulable, reason, "-", float("inf"), coarsest, float("inf"), 0.0, False,
                      "no granularity rung measured")
+    if len(valid) == 1:
+        # ONE rung is not a search: best and coarsest are the same cell, so the ratio is a structural 1.0
+        # that reads in the table exactly like a searched kernel where nothing helped. E1 and E3 guard the
+        # same way (no_granularity_axis / unmeasured_axis); publishing it as ok would put a fabricated
+        # datapoint in the C2 headline -- and every fusion_depth-0 kernel lands here.
+        only = next(iter(valid))
+        return E5Row(kernel, backend, schedulable, reason, only, valid[only], coarsest, valid[only], 0.0, False,
+                     f"only one granularity rung measured ({only!r}); no axis to search")
     best = min(valid, key=valid.get)
     base_us = valid.get(coarsest, float("inf"))
     # BOTH sides of the ratio are bounds-checked. Guarding only the numerator left a zero-valued winning

@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import warnings
 import os
 import platform
 import time
@@ -211,8 +212,10 @@ def record_winner(record: WinnerRecord, out_dir: Optional[Path] = None) -> Path:
         out.mkdir(parents=True, exist_ok=True)
         with path.open("a") as handle:
             handle.write(json.dumps(asdict(record)) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        # never fatal (an hour of tables must not be lost to a full disk), but never silent either: the
+        # returned path would otherwise read as "written" to every caller
+        warnings.warn(f"winner record not appended to {path}: {e}")
     return path
 
 

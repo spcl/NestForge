@@ -10,7 +10,6 @@ Build + validate is the per-nest lane's path, pointed at
 from __future__ import annotations
 
 import copy
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -18,14 +17,13 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import dace
 
 from nestforge import build, tsvc
-from nestforge.arena import diff_stats, make_inputs, rewind, rewind_snapshot, run_oracle
+from nestforge.arena import make_inputs, run_oracle, validate_and_time
 from nestforge.extract import Boundary, find_state_of_node, whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall
 from nestforge.optimizers import Optimizer
 from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf import flags
-from nestforge.perf.harness import median
 from nestforge.split_unsupported import isolate_into_own_state
 from nestforge.translate import prepare_whole_program
 
@@ -83,43 +81,9 @@ def measure_whole_program(optimizer: Optimizer,
         # back, so the artifact (and its dlopen mapping) dying with the child costs nothing.
         built = build.build_sdfg(boundary.standalone_sdfg, out_dir / "build", opts=proposal.build)
         # bind_program binds only the SDFG's own parameters, so make_inputs' extra scratch is ignored.
-        vbuf = {k: v.copy() for k, v in inputs.items()}
-        built.run(vbuf, sizes)
-        # NOT `if o in vbuf`: an output the build renamed or dropped would leave the comparison set
-        # silently NARROWER than the boundary, and a miscompile confined to that output would still read
-        # ok=True as long as the survivors matched. Missing means the run did not produce what the boundary
-        # declares -- a failure, not a smaller comparison. differential.py carries the same guard.
-        absent = [o for o in boundary.outputs if o not in vbuf]
-        outs = {} if absent else {o: vbuf[o] for o in boundary.outputs}
-        if absent:
-            verdict = {"ok": False, "maxdiff": float("inf"), "error": f"outputs absent from the run: {sorted(absent)}"}
-        elif outs:
-            ref = {o: oracle[o] for o in outs}
-            # absolute diff is REPORTED, the scaled one gates: an absolute atol is unreachable at reduction magnitudes
-            md, md_rel = diff_stats(ref, outs)
-            verdict = {"ok": bool(md_rel <= atol), "maxdiff": float(md)}
-        else:
-            verdict = {"ok": False, "maxdiff": float("inf")}
-        # init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling)
-        tbuf = {k: v.copy() for k, v in inputs.items()}
-        built.init(sizes)
-        try:
-            fn, cargs = built.bind_program(tbuf, sizes)
-            # Restore every buffer the program READS AND WRITES before each rep (outside the timing): an
-            # in-place program otherwise feeds on its own output, reaching denormals/Inf in a few reps and
-            # timing those. arena.accumulating_outputs is the one definition of that set.
-            snapshot = rewind_snapshot(boundary, tbuf)
-            rewind(snapshot)
-            fn(*cargs)  # warm
-            samples: List[float] = []
-            for _ in range(reps):
-                rewind(snapshot)
-                t0 = time.perf_counter()
-                fn(*cargs)
-                samples.append((time.perf_counter() - t0) * 1e6)
-        finally:
-            built.close()
-        return {**verdict, "median_us": median(samples)}
+        # arena.validate_and_time owns the absent-output guard, the report-absolute/gate-relative split and
+        # the per-rep rewind -- differential.py runs the identical body, and they drifted while duplicated.
+        return validate_and_time(built, boundary, inputs, sizes, oracle, atol, reps)
 
     res = run_isolated(work, timeout=timeout)
     if "error" in res:
@@ -170,7 +134,7 @@ def offload_scopes(
     for ext, boundary in calls:
         # Re-find the state each time: isolating a prior call fissions states, but the node object is stable.
         state = find_state_of_node(work, ext)
-        isolate_into_own_state(work, state, ext)
+        isolate_into_own_state(state, ext)
         ok, reason = decide(ext, boundary)
         scopes.append(OffloadScope(ext.name, list(boundary.inputs), list(boundary.outputs), ok, reason))
     return work, scopes

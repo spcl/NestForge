@@ -136,7 +136,9 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
     outs = {o: inputs[o].copy() for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "time_us": float("inf"), "unchecked": True}
-    md = maxdiff({k: oracle[k] for k in outs}, outs)
+    ref = {k: oracle[k] for k in outs}
+    md = maxdiff(ref, outs)  # absolute is REPORTED, the scaled one is the gate (as every other lane)
+    ok = bool(relative_maxdiff(ref, outs) <= flags.NATIVE_ATOL)
     rewind(snapshot)
     fn(*cargs)  # warm
     total = 0.0
@@ -145,7 +147,7 @@ def native_work(so: Path, symbol: str, sig, kernel, boundary, inputs, sizes, ora
         t0 = time.perf_counter()
         fn(*cargs)
         total += time.perf_counter() - t0
-    return {"ok": bool(md <= 1e-6), "maxdiff": float(md), "time_us": float(total / reps * 1e6)}
+    return {"ok": ok, "maxdiff": float(md), "time_us": float(total / reps * 1e6)}
 
 
 def measure_native(cxx: str, kernel: "tsvc.TsvcKernel", boundary, inputs, sizes, oracle, reps: int, family: str,
@@ -225,7 +227,8 @@ def run_kernel(kernel: "tsvc.TsvcKernel", toolchains: List[Toolchain], strategy:
     rows: List[Dict] = []
     for tc in toolchains:
         fam = tc.fp_family  # flag-matrix FP family (intel != llvm); also the cell label
-        default = measure_over_nests(tc.cc, units, flags.base_flags(fam), reps, 1e-6, fam, "default", workdir)
+        default = measure_over_nests(tc.cc, units, flags.base_flags(fam), reps, flags.NATIVE_ATOL, fam, "default",
+                                     workdir)
         cells = [
             measure_over_nests(tc.cc, units, cflags, reps, flags.FP_ATOL[level], fam, f"{level}/{model}", workdir)
             for level, model, cflags in flags.flag_matrix(fam)

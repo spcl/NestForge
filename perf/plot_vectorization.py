@@ -50,40 +50,12 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
-from plot_common import finite, geomean, load_results  # noqa: E402
+from plot_common import PALETTE, time_by_nest, timing_cells, finite, geomean, load_results  # noqa: E402
 
 #: The single-core coordinate this reader lives on. Vectorized = the compiler's own cost model; the
 #: scalar floor = ``no-vec``. Both on the ``sequential`` (one-core) lane so the only difference that
 #: moves the number is the compiler's auto-vectorizer.
 SEQ, VEC_COST, SCALAR_COST = "sequential", "default", "no-vec"
-
-#: Same palette as plot_speedup_matrix so the winning-compiler colours match across the report.
-PALETTE: Dict[str, str] = {"gcc": "#4c72b0", "clang": "#dd8452", "nvhpc": "#55a868", "intel": "#c44e52"}
-
-
-def timing_cells(kernel: dict) -> List[dict]:
-    """The validated, finite-median lane-3 timing cells of one kernel."""
-    return [
-        c for c in (kernel.get("cells") or [])
-        if c.get("role") == "timing" and c.get("ok") is True and finite(c.get("median_us"))
-    ]
-
-
-def time_by_nest(cells: List[dict], predicate) -> Optional[float]:
-    """A kernel's whole-kernel time for the cells matching ``predicate``, summed over its nests (the
-    fastest matching cell per nest). ``None`` unless EVERY nest the kernel timed has a matching cell --
-    so a partial match never masquerades as the whole kernel. A single-nest kernel is the usual case."""
-    matched = [c for c in cells if predicate(c)]
-    if not matched:
-        return None
-    nests = {c.get("nest", 0) for c in cells}
-    total = 0.0
-    for n in nests:
-        per_nest = [c for c in matched if c.get("nest", 0) == n]
-        if not per_nest:
-            return None  # this nest has no matching cell -> whole-kernel time undefined for this combo
-        total += min(c["median_us"] for c in per_nest)
-    return total
 
 
 @dataclass

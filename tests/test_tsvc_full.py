@@ -154,7 +154,7 @@ def test_validate_cap_never_runs_big_oracle():
 
 
 # --- winner selection + table math --------------------------------------------------------------------
-def _cell(opt, lang, comp, par, cost, fp, role, ok, median, maxdiff=0.0):
+def make_cell(opt, lang, comp, par, cost, fp, role, ok, median, maxdiff=0.0):
     return {
         "opt_mode": opt,
         "language": lang,
@@ -177,11 +177,11 @@ def _cell(opt, lang, comp, par, cost, fp, role, ok, median, maxdiff=0.0):
 
 def test_kernel_winner_picks_fastest_validated_timing_cell():
     cells = [
-        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "default-fp", "timing", True, 5.0),
-        _cell("simplify-parallel", "c", "gcc", "auto-par", "no-vec", "no-fast-errno", "timing", True, 2.0),
-        _cell("simplify-parallel", "c", "gcc", "sequential", "cheap", "default-fp", "timing", False, 1.0),  # not ok
-        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True,
-              9.0),  # gate, not timing
+        make_cell("simplify-parallel", "c", "gcc", "sequential", "default", "default-fp", "timing", True, 5.0),
+        make_cell("simplify-parallel", "c", "gcc", "auto-par", "no-vec", "no-fast-errno", "timing", True, 2.0),
+        make_cell("simplify-parallel", "c", "gcc", "sequential", "cheap", "default-fp", "timing", False, 1.0),  # not ok
+        make_cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True,
+                  9.0),  # gate, not timing
     ]
     win = tsvc_full.kernel_winner(cells, "simplify-parallel", "c", "gcc")
     assert win["median_us"] == 2.0 and win["parallel"] == "auto-par"
@@ -191,11 +191,21 @@ def test_kernel_winner_picks_fastest_validated_timing_cell():
 def test_render_tables_gate_speedup_and_unsupported(tmp_path):
     cells = [
         # a bit-exact gate + a validated timing winner
-        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "strict-ieee", "gate", True, 0.0, maxdiff=0.0),
-        _cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0),
+        make_cell("simplify-parallel",
+                  "c",
+                  "gcc",
+                  "sequential",
+                  "default",
+                  "strict-ieee",
+                  "gate",
+                  True,
+                  0.0,
+                  maxdiff=0.0),
+        make_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0),
         # an unsupported auto-par cell (recorded)
         {
-            **_cell("simplify-parallel", "c", "clang", "auto-par", "default", "default-fp", "timing", False, float("inf")), "error":
+            **make_cell("simplify-parallel", "c", "clang", "auto-par", "default", "default-fp", "timing", False,
+                        float("inf")), "error":
             "unsupported: clang/flang has no plain-loop auto-parallelizer"
         },
     ]
@@ -227,7 +237,7 @@ def test_render_tables_gate_speedup_and_unsupported(tmp_path):
 
 def test_render_tables_reports_vectorized_dace_geomean(tmp_path):
     """When a kernel carries a vectorized DaCe lane, the reporter emits the plain/vectorized geomean."""
-    cells = [_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0)]
+    cells = [make_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, 2.0)]
     (tmp_path / "tsvc2_sV.json").write_text(
         json.dumps({
             "key":
@@ -265,10 +275,14 @@ def test_render_tables_reports_vectorized_dace_geomean(tmp_path):
 def kernel_json(key: str, corpus: str, dace_us: float, win_us: float) -> dict:
     """One measured kernel whose winner beats its DaCe-cpp baseline by ``dace_us / win_us``."""
     return {
-        "key": key,
-        "corpus": corpus,
-        "regime": "1d",
-        "profile_preset": "PROF",
+        "key":
+        key,
+        "corpus":
+        corpus,
+        "regime":
+        "1d",
+        "profile_preset":
+        "PROF",
         "native": {
             "ok": True,
             "median_us": 8.0
@@ -280,7 +294,7 @@ def kernel_json(key: str, corpus: str, dace_us: float, win_us: float) -> dict:
             "nest": 0
         }],
         "cells":
-        [_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, win_us)],
+        [make_cell("simplify-parallel", "c", "gcc", "sequential", "default", "no-fast-errno", "timing", True, win_us)],
     }
 
 
@@ -305,16 +319,16 @@ def test_render_tables_omits_the_per_corpus_table_for_one_corpus(tmp_path):
 
 
 def test_render_tables_reports_gate_failure(tmp_path):
-    bad = _cell("simplify-parallel",
-                "c",
-                "gcc",
-                "sequential",
-                "default",
-                "strict-ieee",
-                "gate",
-                False,
-                float("inf"),
-                maxdiff=3.0)
+    bad = make_cell("simplify-parallel",
+                    "c",
+                    "gcc",
+                    "sequential",
+                    "default",
+                    "strict-ieee",
+                    "gate",
+                    False,
+                    float("inf"),
+                    maxdiff=3.0)
     (tmp_path / "tsvc2_sX.json").write_text(
         json.dumps({
             "key": "sX",
@@ -332,16 +346,16 @@ def test_render_tables_gate_ok_with_tiny_nonzero_maxdiff_is_not_a_failure(tmp_pa
     """REGRESSION: strict-ieee is NOT atol-0 (transcendentals drift ~1e-15 from numpy), so a gate cell that
     VALIDATED (``ok=True``) with a tiny non-zero ``maxdiff`` must NOT report as a failure -- keyed off
     ``cell.ok``, never ``maxdiff == 0.0``."""
-    passing = _cell("simplify-parallel",
-                    "c",
-                    "gcc",
-                    "sequential",
-                    "default",
-                    "strict-ieee",
-                    "gate",
-                    True,
-                    4.0,
-                    maxdiff=1e-16)
+    passing = make_cell("simplify-parallel",
+                        "c",
+                        "gcc",
+                        "sequential",
+                        "default",
+                        "strict-ieee",
+                        "gate",
+                        True,
+                        4.0,
+                        maxdiff=1e-16)
     (tmp_path / "tsvc2_sO.json").write_text(
         json.dumps({
             "key": "sO",
@@ -370,7 +384,7 @@ def test_my_slice_disjoint_and_covers():
 
 
 # --- end-to-end (all three lanes) ---------------------------------------------------------------------
-def _small_axes():
+def small_axes():
     # One FP mode, not both (test_reduced_fp_modes_and_atol covers that axis): halves the compile matrix so
     # this test stays light when the 3-language matrix runs concurrently under -n auto.
     return {
@@ -393,7 +407,7 @@ def test_run_kernel_all_lanes_s000(tmp_path):
                                tcs,
                                ftn,
                                "skip-taskloops", {
-                                   **_small_axes(), "opt_mode": None
+                                   **small_axes(), "opt_mode": None
                                },
                                reps=1,
                                profile_preset="S",
@@ -509,7 +523,7 @@ def test_cxx_only_run_keeps_the_veclib_axis(tmp_path):
     assert tsvc_full.veclibs_for(nc["has_math"]["c++"], ("none", "svml"), "icx") == ("none", "svml")
 
 
-def _one_lang_axes():
+def one_lang_axes():
     return {
         "opt_modes": ["simplify-parallel"],
         "languages": ["c"],
@@ -534,7 +548,7 @@ def test_dace_baseline_timing_always_produced_recurrence(tmp_path):
                                tcs,
                                ftn,
                                "skip-taskloops",
-                               _one_lang_axes(),
+                               one_lang_axes(),
                                reps=2,
                                profile_preset="S",
                                nthreads=2,
@@ -560,7 +574,7 @@ def test_dace_baseline_validates_for_2d_inner_nest(tmp_path):
                                tcs,
                                ftn,
                                "skip-taskloops",
-                               _one_lang_axes(),
+                               one_lang_axes(),
                                reps=2,
                                profile_preset="S",
                                nthreads=2,
@@ -646,9 +660,10 @@ def test_the_vectorize_lane_times_one_artifact_once(monkeypatch, tmp_path):
     # the SOURCE screen must fire FIRST, so an inert nest costs ONE compile and not one per config -- that
     # is the whole point of screening before the compile rather than after it
     assert compiles["n"] == 1, f"identical source, {compiles['n']} compiles -- the codegen screen runs too late"
-    # the NAMED entry point, never the whole object: a whole-object key also covers __dace_init_*/
-    # __dace_exit_*, so a build differing only in a scratch allocation would key apart and be re-timed
-    assert set(keyed) == {"__program_vadd"}, keyed
+    # the WHOLE object, never `__program_<name>`: that entry point is a trampoline that disassembles the
+    # same for every config, so keying on it collapsed every cell onto the first and the descent measured
+    # nothing. init/exit belong in the key -- init allocates the persistent storage a config can change.
+    assert set(keyed) == {None}, keyed
 
 
 def test_the_vectorize_lane_still_times_distinct_artifacts(monkeypatch, tmp_path):

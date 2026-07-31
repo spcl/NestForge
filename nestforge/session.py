@@ -37,17 +37,14 @@ from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, LoopRegion, SDF
 from nestforge.arena import Cell, run_arena
 from nestforge.extract import Boundary, detach, extract_map_nest, find_state_of_node
 from nestforge.feedback import run_feedback_loop
+from dace.sdfg.state import ConditionalBlock
+
 from nestforge.fusion import FusionMove, apply_fusion, can_fuse, enumerate_fusions, fission_to_statements
 from nestforge.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes
 from nestforge.offload import DEFAULT_GRANULARITY, label_nest, lower_nests_to_external_call, offload_candidates
 from nestforge.region_arms import RegionMove, apply_region_fusion, enumerate_region_fusions
 from nestforge.strategies import is_parallel_nest, top_level_map_entries
 from nestforge.translate import Prepared, emit_sources, prepare
-
-try:
-    from dace.sdfg.state import ConditionalBlock
-except ImportError:  # older DaCe without first-class conditional regions
-    ConditionalBlock = None
 
 #: kernel_source(lang=...) -> (numpyto --target, generated-source extension). The C backend emits the
 #: WHOLE C-family from ONE ``--target c`` run -- a ``.c`` AND a ``.cpp`` -- so bare C++ is the ``.cpp`` of
@@ -472,7 +469,7 @@ class Session:
                 "barrier": True,
                 "nests": nests
             }
-        if ConditionalBlock is not None and isinstance(block, ConditionalBlock):
+        if isinstance(block, ConditionalBlock):
             branches = [{
                 "condition": "else" if cond is None else f"when {cond.as_string}",
                 "region": self.region_node(branch),

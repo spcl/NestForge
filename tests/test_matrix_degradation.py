@@ -25,7 +25,7 @@ def test_compiler_for_routes_by_language_and_none_when_absent():
     assert tsvc_full.compiler_for("fortran", noc, {}) is None
 
 
-def _synthetic_opt_ctx():
+def synthetic_opt_ctx():
     """A lane-3 context with three language sources but dummy Paths -- enumerate_cells never reads them."""
     return {
         "lang_src": {
@@ -37,7 +37,7 @@ def _synthetic_opt_ctx():
     }
 
 
-def _axes():
+def make_axes():
     return {
         "opt_mode": "simplify-parallel",
         "parallelism": ["sequential", "auto-par"],
@@ -53,7 +53,7 @@ def test_enumerate_cells_shrinks_matrix_when_compiler_absent(tmp_path, monkeypat
     # Force the polyhedral-backend probe to report ABSENT so clang auto-par (Polly) degrades
     # deterministically -- independent of whether this box's clang happens to ship Polly.
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: False)
-    pendings, jobs = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
+    pendings, jobs = tsvc_full.enumerate_cells(synthetic_opt_ctx(), [tc], {}, make_axes(), 4, flags.CXX_STD, tmp_path)
 
     def by_lang(lang):
         return [p for p in pendings if p.cell.language == lang]
@@ -91,7 +91,7 @@ def test_enumerate_cells_autopar_compiles_when_polyhedral_backend_present(tmp_pa
     tc = Toolchain("clang", cc="clang", cxx=None, version=(18, 0), source="path")
     monkeypatch.setattr(flags, "compiler_accepts", lambda *a, **k: True)
     monkeypatch.setattr(flags, "autopar_fires", lambda *a, **k: True)
-    pendings, _ = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 4, flags.CXX_STD, tmp_path)
+    pendings, _ = tsvc_full.enumerate_cells(synthetic_opt_ctx(), [tc], {}, make_axes(), 4, flags.CXX_STD, tmp_path)
     c_autopar = [p for p in pendings if p.cell.language == "c" and p.cell.parallel == "auto-par"]
     assert c_autopar and all(p.compile_key is not None and not p.cell.error for p in c_autopar)
 
@@ -100,7 +100,7 @@ def test_enumerate_cells_with_present_c_compiler_does_not_raise(tmp_path):
     """Sanity: a full gcc toolchain (cc + cxx present) enumerates C and C++ compile jobs and only fortran
     (absent from the empty family map) degrades to an error cell -- no exception at any coordinate."""
     tc = Toolchain("gcc", cc="gcc", cxx="g++", version=(13, 0), source="path")
-    pendings, jobs = tsvc_full.enumerate_cells(_synthetic_opt_ctx(), [tc], {}, _axes(), 8, flags.CXX_STD, tmp_path)
+    pendings, jobs = tsvc_full.enumerate_cells(synthetic_opt_ctx(), [tc], {}, make_axes(), 8, flags.CXX_STD, tmp_path)
     langs_with_jobs = {p.cell.language for p in pendings if p.compile_key is not None}
     assert {"c", "c++"} <= langs_with_jobs  # both real C/C++ compile jobs
     ftn = [p for p in pendings if p.cell.language == "fortran"]

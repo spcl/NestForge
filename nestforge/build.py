@@ -31,7 +31,7 @@ from dace.transformation.auto.auto_optimize import set_fast_implementations
 
 from nestforge.toolchain import (CXX_STD, DEFAULT_COMPILER, DEFAULT_FLAGS, OpenMPRuntime, Param, VectorMathLib, ar_for,
                                  ccache_prefix, fastest_linker, fat_lto_flags, parse_params, run, signature,
-                                 usable_openmp)
+                                 support_rpath_flags, usable_openmp)
 
 # TODO(blas): a BLAS/LAPACK axis (openblas/mkl/blis/nvpl/accelerate) the same way -- discovery exists
 # (arena.discover_blas_libraries); missing is threading a chosen BLAS into the link line + a prune step.
@@ -257,6 +257,10 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
     vec_l = opts.veclib.link_flags(compiler) if opts.veclib else []
     blas_l = list(opts.blas_link or [])  # link the chosen BLAS (fast_libnodes)
     extra_l = list(opts.extra_link or [])  # extern nest-variant libs (differential swap), after the frame
+    # The DRIVER's own auto-linked support libs (icx: libsvml/libimf/libirng/libintlc) sit off the loader
+    # path with no RUNPATH of their own. Without this the link succeeds and the ctypes.CDLL below raises
+    # "libsvml.so: cannot open shared object file" -- the whole intel lane, dead at dlopen.
+    sup_l = list(support_rpath_flags(compiler))
     # AUTO-detected compiler cache. Only the COMPILE steps are cached (a link is not cacheable), and any
     # path that reports compile_seconds as a measurement passes use_ccache=False.
     cc = ccache_prefix(opts.use_ccache)
@@ -271,7 +275,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
         compile_cmd = [*cc, compiler, *cflags, *lto_f, "-c", *omp_c, *vec_c, *inc, str(frame), "-o", str(obj)]
         link_cmd = [
             compiler, "-shared", *cflags, *lto_f, *ld,
-            str(obj), *omp_l, *vec_l, *blas_l, *extra_l, "-o",
+            str(obj), *omp_l, *vec_l, *blas_l, *extra_l, *sup_l, "-o",
             str(so)
         ]
         t0 = time.perf_counter()
@@ -290,7 +294,7 @@ def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> Tuple[P
         # link from the object's REAL code (NOT -flto) so the entry points survive + export
         link_cmd = [
             compiler, "-shared", *cflags, *ld, "-Wl,--export-dynamic", "-Wl,--whole-archive",
-            str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, *blas_l, *extra_l, "-o",
+            str(archive), "-Wl,--no-whole-archive", *omp_l, *vec_l, *blas_l, *extra_l, *sup_l, "-o",
             str(so)
         ]
         t0 = time.perf_counter()

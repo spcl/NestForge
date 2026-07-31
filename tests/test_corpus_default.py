@@ -23,11 +23,22 @@ def test_the_default_corpus_is_foundation():
     assert kernels and all(k.corpus == "foundation" for k in kernels)
 
 
+#: tsvc2_5 keys the installed foundation track does NOT carry. This is a real, measured gap, not a
+#: tolerance: the assertion below is exact, so a kernel joining or leaving it still fails the test. A sweep
+#: that runs `perf/daint_foundation.sh` alone therefore loses these three -- run `perf/daint_all.sh` too.
+KNOWN_FOUNDATION_GAP = {"tsvc2": [], "tsvc2_5": ["ext_war_sym", "iv_additive", "iv_multiplicative"]}
+
+
 def test_foundation_covers_both_dace_corpora():
-    """The switch is only safe because foundation is a superset. Measured, not assumed -- foundation is
-    maintained independently and could drift, which would silently shrink every sweep."""
+    """Foundation carries all of tsvc2, and exactly three tsvc2_5 kernels less.
+
+    This started as ``gap == {}`` on the belief that foundation is a strict superset. It is not, and the
+    check is what caught the drift -- foundation is maintained independently, and the failure mode it
+    exists for is a sweep silently shrinking. Pinned EXACTLY rather than relaxed: a fourth kernel dropping
+    out, or one of these three coming back, must still turn this red.
+    """
     gap = tsvc.foundation_coverage_gap()
-    assert gap == {"tsvc2": [], "tsvc2_5": []}, f"foundation no longer covers: {gap}"
+    assert gap == KNOWN_FOUNDATION_GAP, f"foundation coverage moved: {gap}"
 
 
 def test_a_kernel_keeps_one_key_across_corpora():

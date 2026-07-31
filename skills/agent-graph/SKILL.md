@@ -57,11 +57,11 @@ For **loops** the "region" is the enclosing loop, so merging = fusing the outer 
 `list_fusions` move); fuse outer, then inner.
 
 **The rule that keeps you correct:** any mutation (`fuse` / `fuse_regions` / `fission_all` /
-`fission_map` / `externalize`) bumps the epoch and invalidates every id. Reusing an `e0:` id raises
+`externalize`) bumps the epoch and invalidates every id. Reusing an `e0:` id raises
 `StaleHandle` — "re-list and retry". Tools by axis: **L1** `region_tree`/`list_region_fusions`/
-`fuse_regions`; **L2** `list_nests`/`can_fuse`/`list_fusions`/`fuse`/`fission_all`/`list_map_fissions`/
-`fission_map`; **P2** `list_offload_candidates`/`externalize`; **P3** `nest_boundary`/`emit_reference`/
-`emit_variant`/`set_kernel` (Mode A)/`sweep` (Mode B); **P4** `feedback`. The raw functions below are
+`fuse_regions`; **L2** `list_nests`/`can_fuse`/`list_fusions`/`fuse`/`fission_all`;
+**P2** `list_offload_candidates`/`externalize`; **P3** `nest_boundary`/`emit_reference`/
+`set_kernel` (Mode A)/`sweep` (Mode B); **P4** `feedback`. The raw functions below are
 what these wrap — call them directly for the deterministic path, `Session` for an agent.
 
 ## Step 0 — see the graph (read-only, safe anytime)

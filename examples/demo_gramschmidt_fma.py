@@ -32,7 +32,7 @@ _MODES = {
 }
 
 
-def _A(M, N, conditioning):
+def conditioned_matrix(M, N, conditioning):
     rng = np.random.default_rng(0)
     if conditioning == "well":
         return rng.standard_normal((M, N))
@@ -71,7 +71,7 @@ def main():
     print("-" * 68)
     results = {}
     for conditioning in ("well", "ill"):
-        A = _A(M, N, conditioning)
+        A = conditioned_matrix(M, N, conditioning)
         base = {
             a: (A.copy() if a == "A" else np.zeros(tuple(
                 int(symbolic.evaluate(x, env)) for x in bsdfg.arrays[a].shape), np.dtype(bsdfg.arrays[a].dtype.type)))

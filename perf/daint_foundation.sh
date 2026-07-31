@@ -10,10 +10,12 @@
 #SBATCH --output=nf_foundation_%j.out
 #SBATCH --error=nf_foundation_%j.err
 #
-# The hpcagent_bench FOUNDATION track (245 kernels) swept with all variants, on CSCS Alps/daint
-# (GH200, aarch64). Sibling of perf/daint_all.sh, which sweeps the standalone tsvc2 / tsvc2_5
-# corpus modules instead; since HPCAgent-Bench 642ef538 foundation is a true SUPERSET of both, so
-# this script alone covers everything those two do plus the 29 non-TSVC foundation microkernels.
+# The hpcagent_bench FOUNDATION track swept with all variants, on CSCS Alps/daint (GH200, aarch64).
+# Sibling of perf/daint_all.sh, which sweeps the standalone tsvc2 / tsvc2_5 corpus modules instead.
+#
+# Foundation covers all of tsvc2 but is NOT a superset of both: nestforge.tsvc.foundation_coverage_gap()
+# reports three tsvc2_5 kernels it lacks (ext_war_sym, iv_additive, iv_multiplicative). Run daint_all.sh
+# too if those matter; ask that function rather than trusting a count in a comment.
 #
 # Two independent phases, each guarded (`|| echo`, partial results kept) and each toggleable:
 #
@@ -126,7 +128,7 @@ MATRIX_PRESET="${MATRIX_PRESET:-lean}"     # lean | full -- see perf/daint_all.s
 COMPILE_JOBS="${COMPILE_JOBS:-16}"         # phase 1 bounded compile pool
 ARENA_PRESET="${ARENA_PRESET:-M}"          # phase 2 manifest preset (S/M/L/XL)
 ARENA_REPS="${ARENA_REPS:-15}"             # phase 2 timed runs per cell
-LIMIT="${LIMIT:-}"                         # first N kernels only (smoke runs); empty = all 245
+LIMIT="${LIMIT:-}"                         # first N kernels only (smoke runs); empty = the whole track
 
 RUN_FULL="${RUN_FULL:-1}"
 RUN_ARENA="${RUN_ARENA:-1}"

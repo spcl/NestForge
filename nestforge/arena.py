@@ -32,9 +32,12 @@ from nestforge.isolation import run_isolated
 from nestforge.translate import Prepared
 
 # --- FP modes (the flag axis) -----------------------------------------------------------------
-#: Strict rung overridden to BIT-EXACT: arena compares emitted C vs emitted numpy, same op order, so 0.0
-#: is reachable here -- unlike the whole-program oracle FP_ATOL is written for (pairwise sum vs tree).
-ARENA_ATOL: Dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 0.0}
+#: Strict rung tightened: arena compares emitted C against emitted numpy, same op order, so it can hold a
+#: far tighter gate than the whole-program oracle FP_ATOL is written for (pairwise sum vs tree). Not 0.0 --
+#: bit-exactness is not something a correct build owes us here (libm is not correctly rounded, and the
+#: compiler may still pick a different but equally valid instruction sequence), and demanding it made every
+#: strict cell the arena's own false negative.
+ARENA_ATOL: Dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 1e-15}
 
 _CANDIDATE_COMPILERS = {"gcc": "gcc", "clang": "clang"}
 # numpy dtype name -> ctypes scalar for the emitted kernel's ABI. ``bool`` is needed because a comparison
@@ -263,16 +266,87 @@ def rewind(snapshot: List[Tuple[np.ndarray, np.ndarray]]) -> None:
         buf[...] = pristine
 
 
-def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundary: Boundary,
-                inputs: Dict[str, np.ndarray], sizes: Dict[str, int], reps: int) -> Tuple[Dict[str, np.ndarray], float]:
-    """Bind + call the compiled entry. ``order`` is the EMITTED-signature parameter order (see
-    :func:`resolve_argtypes`); binding by the manifest's role order instead puts each buffer in the wrong
-    parameter slot, which same-typed arrays make completely silent."""
+def validate_and_time(built, boundary: Boundary, inputs: Dict[str, np.ndarray], sizes: Dict[str, int],
+                      oracle: Dict[str, np.ndarray], atol: float, reps: int) -> Dict[str, Any]:
+    """Validate a built program against ``oracle``, then time it: the body BOTH whole-program lanes run
+    inside their fork (:mod:`nestforge.whole_program`, :mod:`nestforge.differential`).
+
+    Three invariants they were each carrying their own copy of, and which are the whole reason this is one
+    function:
+
+    * a boundary output MISSING from the run is a failure, not a smaller comparison. ``if o in vbuf`` would
+      quietly narrow the comparison set, and a miscompile confined to that output would still read ok.
+    * the ABSOLUTE difference is reported (that is what a reader of ``maxdiff`` expects) while the SCALED
+      one gates -- an absolute atol is unreachable at reduction magnitudes (see :func:`relative_maxdiff`).
+    * every read-write buffer is rewound before each rep, OUTSIDE the timed region: an in-place program
+      otherwise feeds on its own output and the median times denormal arithmetic instead of the kernel.
+
+    ``built`` is a :class:`nestforge.build.BuiltSDFG`; untyped here only to keep :mod:`nestforge.arena`
+    free of the codegen import.
+    """
+    vbuf = {k: v.copy() for k, v in inputs.items()}
+    built.run(vbuf, sizes)
+    absent = [o for o in boundary.outputs if o not in vbuf]
+    outs = {} if absent else {o: vbuf[o] for o in boundary.outputs}
+    if absent:
+        verdict = {"ok": False, "maxdiff": float("inf"), "error": f"outputs absent from the run: {sorted(absent)}"}
+    elif outs:
+        md, md_rel = diff_stats({o: oracle[o] for o in outs}, outs)
+        verdict = {"ok": bool(md_rel <= atol), "maxdiff": float(md)}
+    else:
+        verdict = {"ok": False, "maxdiff": float("inf")}
+    # init once, bind once, call the bare kernel in the rep loop (no per-rep marshaling)
+    tbuf = {k: v.copy() for k, v in inputs.items()}
+    built.init(sizes)
+    try:
+        fn, cargs = built.bind_program(tbuf, sizes)
+        snapshot = rewind_snapshot(boundary, tbuf)
+        rewind(snapshot)
+        fn(*cargs)  # warm
+        samples: List[float] = []
+        for _ in range(reps):
+            rewind(snapshot)
+            t0 = time.perf_counter()
+            fn(*cargs)
+            samples.append((time.perf_counter() - t0) * 1e6)
+    finally:
+        built.close()
+    return {**verdict, "median_us": float(np.median(samples))}
+
+
+def call_native(so: Path,
+                symbol: str,
+                order: List[str],
+                argtypes: list,
+                boundary: Boundary,
+                inputs: Dict[str, np.ndarray],
+                sizes: Dict[str, int],
+                reps: int,
+                copy_inputs: bool = True,
+                copy_outputs: bool = True) -> Tuple[Optional[Dict[str, np.ndarray]], float]:
+    """Bind + call the compiled entry, then time ``reps`` calls on the same buffers.
+
+    ``order`` is the EMITTED-signature parameter order (see :func:`resolve_argtypes`); binding by the
+    manifest's role order instead puts each buffer in the wrong parameter slot, which same-typed arrays
+    make completely silent.
+
+    An array that is both READ and WRITTEN is restored before every timed rep, OUTSIDE the timed region.
+    Without it an in-place kernel (``a[:] = a[:] * b``) feeds on its own output: TSVC inputs are drawn from
+    [0, 0.25), so by rep k the buffer holds ``a * b**k`` and reaches denormals within a handful of reps --
+    the median then times subnormal arithmetic rather than the kernel, and the faster candidate is whichever
+    decayed slower. Only the read-write intersection is snapshotted: a fully-overwritten output cannot
+    accumulate, and at the profiling preset a blanket copy would double the child's peak RSS.
+
+    :param copy_inputs: ``False`` runs on the CALLER's buffers, so a validating caller can read the results
+        back out of them (what :func:`nestforge.perf.harness.call_c` needs).
+    :param copy_outputs: ``False`` skips the RESULT snapshot for a pure-timing caller (same RSS reason);
+        the restore snapshot above is not optional, since it decides what the timing means.
+    """
     lib = ctypes.CDLL(str(so))
     fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
     fn.argtypes = argtypes
     fn.restype = None
-    work = {k: v.copy() for k, v in inputs.items()}
+    work = {k: v.copy() for k, v in inputs.items()} if copy_inputs else inputs
 
     def build_args() -> list:
         out = []
@@ -287,8 +361,10 @@ def call_native(so: Path, symbol: str, order: List[str], argtypes: list, boundar
     args = build_args()
     snapshot = rewind_snapshot(boundary, work)
     fn(*args)  # correctness run
-    outputs = {o: work[o].copy() for o in boundary.outputs}
-    total = 0.0  # the correctness run above doubles as the warm call
+    outputs = {o: work[o].copy() for o in boundary.outputs} if copy_outputs else None
+    total = 0.0
+    rewind(snapshot)  # the warm call primes the caches from the same state a timed rep sees
+    fn(*args)  # warm
     for _ in range(reps):
         rewind(snapshot)
         t0 = time.perf_counter()
@@ -315,6 +391,18 @@ def maxdiff(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
             return float("inf")
         worst = max(worst, d)
     return worst if compared else float("inf")  # a verdict read off zero elements is not a match
+
+
+def dtype_floor(arrays: Dict[str, np.ndarray]) -> float:
+    """The loosest :data:`flags.DTYPE_ATOL` floor among ``arrays`` -- one ULP of the narrowest format
+    present. An unlisted dtype (integer, bool) contributes nothing: it is exact or it is wrong."""
+    return max((flags.DTYPE_ATOL[v.dtype.name] for v in arrays.values() if v.dtype.name in flags.DTYPE_ATOL),
+               default=0.0)
+
+
+def gate_atol(mode: str, outputs: Dict[str, np.ndarray]) -> float:
+    """The relative gate for one cell: its FP rung, never tighter than what the output dtype can express."""
+    return max(ARENA_ATOL[mode], dtype_floor(outputs))
 
 
 def diff_stats(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> Tuple[float, float]:
@@ -417,7 +505,14 @@ def run_arena(prep: Prepared,
         # report the ABSOLUTE difference, gate on the scaled one (see relative_maxdiff); one pass over
         # the diff computes both instead of two.
         md, md_rel = diff_stats(oracle, outs)
-        return {"ok": bool(md_rel <= ARENA_ATOL[mode]), "maxdiff": float(md), "time_us": float(us)}
+        # md_rel and the dtype floor cross the pipe too: every TWIN re-gates on them at its OWN rung.
+        return {
+            "ok": bool(md_rel <= gate_atol(mode, outs)),
+            "maxdiff": float(md),
+            "md_rel": float(md_rel),
+            "time_us": float(us),
+            "dtype_floor": dtype_floor(outs),
+        }
 
     result = ArenaResult(name=prep.name)
     t_sweep = time.perf_counter()
@@ -477,7 +572,13 @@ def run_arena(prep: Prepared,
             cell.ok, cell.maxdiff, cell.time_us = bool(res["ok"]), float(res["maxdiff"]), float(res["time_us"])
         for twin_id in members[1:]:
             twin = built[twin_id][0]
-            twin.ok, twin.maxdiff, twin.time_us = cell.ok, cell.maxdiff, cell.time_us
+            twin.maxdiff, twin.time_us = cell.maxdiff, cell.time_us
+            # Re-gate at the TWIN's own rung. FP_LEVELS is strictest-first and collapse keeps the first
+            # member, so the representative is always the strictest cell: inheriting its ``ok`` failed
+            # every looser twin of a build that is correct AT THAT TWIN'S TOLERANCE, and the report then
+            # said "no correct build" for a rung that passed.
+            twin.ok = (cell.ok if "error" in res else bool(
+                res["md_rel"] <= max(ARENA_ATOL[twin.fp_mode], res["dtype_floor"])))
             twin.error, twin.same_as = cell.error, members[0]
     result.collapsed = representatives(keys)[1]
 

@@ -206,6 +206,24 @@ def data_edge(edges: list, node: nodes.Node, kind: str) -> dace.sdfg.graph.Multi
                                  "ordering edges); not emittable as numpy")
 
 
+def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> dace.sdfg.graph.MultiConnectorEdge:
+    """The in-edge on ``conn``. Missing is a refusal, never a bare ``StopIteration``: DaCe does not wire
+    every connector an emitter might name (a ``MatMul`` declares ``_a``/``_b`` only, so the ``beta``
+    accumulate has no ``_c`` to read)."""
+    edge = next((e for e in edges if e.dst_conn == conn), None)
+    if edge is None:
+        raise UnsupportedLibraryNode(f"{type(node).__name__} has no {conn!r} input connector; not emittable as numpy")
+    return edge
+
+
+def out_conn_edge(edges: list, node: nodes.Node, conn: str) -> dace.sdfg.graph.MultiConnectorEdge:
+    """The out-edge on ``conn`` (see :func:`in_conn_edge`)."""
+    edge = next((e for e in edges if e.src_conn == conn), None)
+    if edge is None:
+        raise UnsupportedLibraryNode(f"{type(node).__name__} has no {conn!r} output connector; not emittable as numpy")
+    return edge
+
+
 def in_expr(state: dace.SDFGState,
             node: nodes.Node,
             conn: Optional[str],
@@ -215,7 +233,19 @@ def in_expr(state: dace.SDFGState,
     ``list(state.in_edges(node))`` -- pass it when a caller resolves several connectors off the same
     node, so ``state.in_edges`` is scanned once rather than once per connector."""
     edges = list(state.in_edges(node)) if edges is None else edges
-    edge = data_edge(edges, node, "input") if conn is None else next(e for e in edges if e.dst_conn == conn)
+    edge = data_edge(edges, node, "input") if conn is None else in_conn_edge(edges, node, conn)
+    return memlet_expr(edge.data, sdfg)
+
+
+def out_expr(state: dace.SDFGState,
+             node: nodes.Node,
+             conn: Optional[str],
+             sdfg: dace.SDFG,
+             edges: Optional[list] = None) -> str:
+    """Read expression for the buffer an OUTPUT connector writes -- the prior value a ``beta`` accumulate
+    adds into, for a node that has no matching input connector."""
+    edges = list(state.out_edges(node)) if edges is None else edges
+    edge = data_edge(edges, node, "output") if conn is None else out_conn_edge(edges, node, conn)
     return memlet_expr(edge.data, sdfg)
 
 
@@ -226,7 +256,7 @@ def out_lhs(state: dace.SDFGState,
             edges: Optional[list] = None) -> str:
     """Write target for one output connector. ``edges`` as in :func:`in_expr`, for ``state.out_edges``."""
     edges = list(state.out_edges(node)) if edges is None else edges
-    edge = data_edge(edges, node, "output") if conn is None else next(e for e in edges if e.src_conn == conn)
+    edge = data_edge(edges, node, "output") if conn is None else out_conn_edge(edges, node, conn)
     if edge.data.wcr is not None:
         # No library-node emitter applies an output-edge WCR (all write via write_lhs), so an accumulate
         # would silently become an overwrite. Refuse -> the ExternalCall falls back to the DaCe variant.
@@ -271,13 +301,19 @@ def transposed(expr: str, trans: bool) -> str:
 
 
 def emit_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+    """``alpha * (opA(A) @ opB(B)) + beta * C`` -- the un-specialized ``MatMul``.
+
+    ``transA``/``transB`` are node properties here exactly as on ``Gemm`` (``FoldTransposeIntoMatMul``
+    sets them); ignoring them emitted ``A @ B`` for an SDFG DaCe computes as ``A.T @ B`` -- a silently
+    wrong oracle whenever A is square. The ``beta`` term reads the OUTPUT buffer's prior value, since
+    ``MatMul`` declares inputs ``_a``/``_b`` only and has no ``_c`` connector to read.
+    """
     in_edges, out_edges = list(state.in_edges(node)), list(state.out_edges(node))
-    a = in_expr(state, node, "_a", sdfg, in_edges)
-    b = in_expr(state, node, "_b", sdfg, in_edges)
-    c_read = in_expr(state, node, "_c", sdfg, in_edges) if not is_zero(node.beta) else None
+    a = transposed(in_expr(state, node, "_a", sdfg, in_edges), node.transA)
+    b = transposed(in_expr(state, node, "_b", sdfg, in_edges), node.transB)
     expr = scaled(f"{a} @ {b}", node.alpha)
-    if c_read is not None:
-        expr = f"{expr} + {node.beta} * {c_read}"
+    if not is_zero(node.beta):
+        expr = f"{expr} + {node.beta} * {out_expr(state, node, '_c', sdfg, out_edges)}"
     return f"{out_lhs(state, node, '_c', sdfg, out_edges)} = {expr}"
 
 
@@ -346,6 +382,8 @@ def emit_einsum(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG)
     operands = []
     has_alpha = has_beta = False
     for e in state.in_edges(node):
+        if e.data.is_empty():
+            continue  # a happens-before ordering edge carries no operand; memlet_expr would hit arrays[None]
         if e.dst_conn in coeff:
             has_alpha = has_alpha or e.dst_conn == "_alpha"
             has_beta = has_beta or e.dst_conn == "_beta"
@@ -357,8 +395,7 @@ def emit_einsum(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG)
     if has_alpha or not is_one(node.alpha):
         expr = f"({coeff['_alpha']}) * ({expr})"
     if has_beta or not is_zero(node.beta):
-        out_edge = next(iter(state.out_edges(node)))
-        expr = f"{expr} + ({coeff['_beta']}) * ({memlet_expr(out_edge.data, sdfg)})"
+        expr = f"{expr} + ({coeff['_beta']}) * ({out_expr(state, node, None, sdfg)})"
     return f"{out_lhs(state, node, None, sdfg)} = {expr}"
 
 

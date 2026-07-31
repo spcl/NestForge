@@ -242,6 +242,7 @@ nestforge/
   extract.py      extract_nest_to_sdfg(parent_sdfg, node) -> (standalone_sdfg, Boundary)
   multinest.py    extract EVERY nest a strategy finds, each from a fresh SDFG
   strategies.py   Strategy = (SDFG) -> [(parent_sdfg, node)]; `outer` default + registry
+  normalize.py    canonical names for transients, map params and state labels (a stable vocabulary)
   split_unsupported.py  isolate library nodes the emitter cannot externalize (MPI/sparse/...)
 
   fusion.py       PHASE 1  set granularity by a fusion strategy
@@ -268,12 +269,17 @@ nestforge/
   toolchain.py    what the machine's toolchains can do (compiler families, OpenMP runtimes,
                   vector-math libs, linkers, ccache, C-signature parsing) -- no DaCe
   isolation.py    run_isolated: run a compiled kernel in a forked child (segfault/OOM-safe)
-  arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner
+  arena.py        compiler discovery + compiler×flag×FP-mode sweep + winner; the shared
+                  validate-then-time body and the one definition of "which buffers decay"
+  dedup.py        collapse variants that are the same build twice (source key + artifact key)
   report.py       render arena results: winning compiler×flag per nest and FP mode, plus the grid
-  device_profile.py  per-device characterization: which SIMD ISAs and veclibs this box has
+  run.py          optimize_program: the import-light entry the CLI and the agent both call
+  device_profile.py  per-device characterization: host ISAs + the accuracy-gated veclib ranking
   predictive.py   pick the optimizer that will win WITHOUT building them all
 
+  dataset.py      append-only winner dataset: (loopnest, winning config) per sweep, under .results/
   differential.py per-nest full-program differential measurement (swap one nest, run everything)
+  vendored.py     locate a vendored dependency checkout without importing it
   whole_program.py  baseline lane: optimize the ENTIRE un-split program as one unit
   baselines.py    the traditional-optimizer baseline lanes (paper C1/C2)
   policy.py       granularity search policies: exhaustive vs a scoped agentic hill-climb (C4)
@@ -291,6 +297,7 @@ nestforge/
     render_axes.py      regenerate the axis diagram in this README from the live constants
     staticlib_overhead.py   monolithic vs external static-lib COMPILE-time overhead
     calloverhead.py         runtime CALL overhead: inline vs external-LTO-.a vs external-.a (timed)
+    foundation_sweep.py     the foundation-corpus emit/extract census
   tsvc.py         TSVC corpus adapter + preset sizing
 perf/               daint sbatch (daint_all.sh + smoke + submit_all.sh) + plot_*.py + README
 ```

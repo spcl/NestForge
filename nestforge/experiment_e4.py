@@ -21,7 +21,6 @@ look cheaper than it is.
 """
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Union
@@ -112,7 +111,7 @@ def run_e4(kernels: Sequence[tsvc.TsvcKernel],
                                        unit,
                                        opt_mode,
                                        reps,
-                                       canonical=copy.deepcopy(_c),
+                                       canonical=_c,
                                        preset=preset,
                                        seed=seed)
                     cache[label] = cell.median_us if cell.ok else float("inf")

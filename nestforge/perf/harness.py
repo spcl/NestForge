@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from nestforge.arena import CTYPE, rewind, rewind_snapshot, scalar_ctype
+from nestforge.arena import CTYPE, call_native, scalar_ctype
 from nestforge.toolchain import COMPILE_TIMEOUT_S, raw_signature
 
 #: Per-kernel *execution* ceiling (s); a runaway kernel would otherwise hold the fork open for the whole
@@ -114,42 +114,25 @@ def call_c(so: Path,
            sizes,
            reps: int,
            copy_outputs: bool = True):
-    """Bind by the C signature order, run once for correctness (snapshotting outputs), then time ``reps``
-    calls on the same buffers, mutating ``inputs`` in place. Callers must run this in a forked child.
+    """Bind by the C signature order, run once for correctness, then time ``reps`` calls, mutating
+    ``inputs`` in place. Callers must run this in a forked child.
 
-    An array that is both READ and WRITTEN is restored before every timed rep, outside the timed region.
-    Without it an in-place kernel (``a[:] = a[:] * b``) feeds on its own output: TSVC inputs are drawn from
-    [0, 0.25), so by rep k the buffer holds ``a * b**k`` and reaches denormals within a handful of reps --
-    the median then times subnormal arithmetic rather than the kernel, and the faster candidate is whichever
-    decayed slower. :func:`nestforge.arena.call_native` already restores; this path was missed.
-
-    Only the read-write intersection is snapshotted, not every input: an output the kernel fully overwrites
-    cannot accumulate, and at the profiling preset a blanket copy would double the child's peak RSS.
-
-    :param copy_outputs: ``False`` skips the RESULT snapshot for a pure-timing caller (same RSS reason); the
-        restore snapshot above is not optional, since it decides what the timing means."""
-    fn = ctypes.CDLL(str(so))[symbol]
-    fn.argtypes, fn.restype = argtypes, None
-
-    def build_args():
-        return [
-            inputs[a].ctypes.data_as(t) if a in inputs else t(sizes[a])  # t: c_int64 size / c_double value scalar
-            for a, t in zip(order, argtypes)
-        ]
-
-    snapshot = rewind_snapshot(boundary, inputs)
-    fn(*build_args())  # correctness run
-    outputs = {o: inputs[o].copy() for o in boundary.outputs} if copy_outputs else None
-    cargs = build_args()
-    rewind(snapshot)  # the warm call primes the caches from the same state a timed rep sees
-    fn(*cargs)  # warm
-    total = 0.0
-    for _ in range(reps):
-        rewind(snapshot)
-        t0 = time.perf_counter()
-        fn(*cargs)
-        total += time.perf_counter() - t0
-    return outputs, total / reps * 1e6
+    A thin re-export of :func:`nestforge.arena.call_native`, which is the one implementation of
+    bind-once / snapshot / rewind-per-rep. They were the same 30 lines twice and drifted: this path was
+    missing the per-rep restore entirely, so every in-place kernel it timed was decaying toward denormals.
+    ``copy_inputs=False`` is the only difference that remains -- a validating caller reads the results back
+    out of the buffers it passed in.
+    """
+    return call_native(so,
+                       symbol,
+                       order,
+                       argtypes,
+                       boundary,
+                       inputs,
+                       sizes,
+                       reps,
+                       copy_inputs=False,
+                       copy_outputs=copy_outputs)
 
 
 def native_symbol(text: str, expected: str) -> str:

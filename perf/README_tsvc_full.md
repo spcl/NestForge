@@ -47,7 +47,7 @@ cost — that must be **bit-exact** (`maxdiff == 0`) vs the numpy fp64 oracle. (
 reductions, so bit-exactness is only asserted for the sequential gate.)
 
 **Cell count per kernel** (before dedup), per compiler family:
-`2 opt × 3 lang × (3 par × 3 cost × 2 fp  +  1 gate)` = timing `2×3×3×3×2 = 108`, gate `2×3 = 6`,
+`3 opt × 3 lang × (3 par × 3 cost × 2 fp  +  1 gate)` = timing `3×3×3×3×2 = 162`, gate `3×3 = 9`,
 minus:
 - **cell dedup** (always on): identical flag sets are the SAME measurement, so they are timed **once**,
   not once per label — clang/icx/nvc `cheap` ≡ `default`, nvidia `assume-finite` ≡ `contract-fma`, … So a
@@ -118,7 +118,7 @@ FindMPI under srun's PMI.
 
 ## How to run
 
-Everything runs from **one phased sbatch job**, [`perf/daint_all.sh`](daint_all.sh). It executes four
+Everything runs from **one phased sbatch job**, [`perf/daint_all.sh`](daint_all.sh). It executes five
 independent phases in sequence; each is guarded (`|| echo`, partial results kept) so one failing phase
 never aborts the rest, and each is toggleable via a `RUN_<PHASE>` env var (all default **on**):
 
@@ -127,11 +127,12 @@ never aborts the rest, and each is toggleable via a `RUN_<PHASE>` env var (all d
 | **1** | `RUN_FULL` | `nestforge.perf.tsvc_full` | the full axis matrix documented above (**the primary job**) → `OUT_FULL` |
 | **2** | `RUN_CROSSLANG` | `nestforge.perf.crosslang_xl` | cross-language XL: both corpora at the XL size, every language × compiler → `OUT_XL` |
 | **3** | `RUN_OVERHEAD` | `nestforge.perf.staticlib_overhead` | static-lib compile overhead (external `.a` / monolithic) → `OUT_OVERHEAD` |
-| **4** | `RUN_PLOTS` | `plot_winners.py`, `plot_speedup_matrix.py`, `plot_vectorization.py`, `plot_overhead.py`, `plot_calloverhead.py` | winners + speedup matrix + **single-core vectorization** + overhead plots (rank 0; also rendered per-phase so a later hang never costs earlier plots) |
+| **4** | `RUN_CALLOVERHEAD` | `nestforge.perf.calloverhead` | runtime CALL overhead: inline vs external-`.a` vs external-LTO-`.a`, timed over 216 kernels × 3 link modes → `OUT_CALLOVERHEAD` |
+| **5** | `RUN_PLOTS` | `plot_winners.py`, `plot_speedup_matrix.py`, `plot_vectorization.py`, `plot_overhead.py`, `plot_calloverhead.py` | winners + speedup matrix + **single-core vectorization** + overhead plots (rank 0; also rendered per-phase so a later hang never costs earlier plots) |
 
-Phases 1–3 run under `srun --cpu-bind=cores` (kernels self-partition across ranks) with a rank-unique
+Phases 1–4 run under `srun --cpu-bind=cores` (kernels self-partition across ranks) with a rank-unique
 `DACE_default_build_folder`; each sweep is followed by its cross-rank `--tables-only` merge (plain
-`python3`, rank 0). Phase 4 also runs as plain `python3`.
+`python3`, rank 0). Phase 5 (the plots) runs as plain `python3`.
 
 ```bash
 # 1) pre-flight (1 node, 1 rank, few kernels, gcc, small `S` preset) -- ALWAYS run this first.
@@ -163,12 +164,14 @@ PYTHONPATH=. python -m nestforge.perf.tsvc_full --tables-only --out perf_results
   `REPS` (`11`), `COMPILE_JOBS` (`16`), `OUT_FULL` (`perf_results/tsvc_full`)
 - **phase 2:** `XL_PRESET` (`XL`), `XL_REPS` (`20`), `OUT_XL` (`perf_results/crosslang_xl`)
 - **phase 3:** `OVERHEAD_CXX` (`g++`), `OVERHEAD_REPS` (`5`), `OUT_OVERHEAD` (`perf_results/staticlib_overhead`)
+- **phase 4:** `CALLOVERHEAD_CC` (`gcc`), `CALLOVERHEAD_INNER` (`4000`), `CALLOVERHEAD_REPS` (`9`),
+  `CALLOVERHEAD_PRESET` (`M`), `OUT_CALLOVERHEAD` (`perf_results/calloverhead`)
 
 > **Phase 2 caveat:** `crosslang_xl` translates via numpyto's two AOT targets and accepts only `c` and
 > `fortran` for `--languages`. The shared `LANGUAGES` default includes `c++` (needed by phase 1), so with
-> the default, **phase 2 errors on `c++` and is skipped** (guarded — phases 3–4 still run). For a green
+> the default, **phase 2 errors on `c++` and is skipped** (guarded — phases 3–5 still run). For a green
 > phase 2 set `LANGUAGES="c fortran"`, or `RUN_CROSSLANG=0` to skip it. The smoke defaults to
-> `LANGUAGES="c fortran"` so all four phases stay green.
+> `LANGUAGES="c fortran"` so all five phases stay green.
 
 ## Results
 

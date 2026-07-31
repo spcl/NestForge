@@ -838,19 +838,35 @@ def body_or_pass(lines: List[str]) -> List[str]:
     return lines if any(not ln.lstrip().startswith("#") for ln in lines) else lines + ["pass"]
 
 
+def targets_continue(loop: LoopRegion) -> bool:
+    """True if some ``ContinueBlock`` inside ``loop`` targets ``loop`` itself (not an inner loop)."""
+    return any(isinstance(b, ContinueBlock) and innermost_loop(b) is loop for b in loop.all_control_flow_blocks())
+
+
 def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
     """Emit a ``LoopRegion`` as init + ``while`` (do-while when ``inverted``) around its body.
 
     Bounds come from DaCe's canonical ``init``/``condition``/``update`` statements, so a
     ``for t in range(...)`` round-trips as ``t = 1 / while (t < TSTEPS): ... / t = (t + 1)``.
     ``init``/``update`` are optional (a bare ``while``); the condition is required.
+
+    A ``continue`` needs the update carried to it. DaCe emits ``for (init; cond; update)``, where
+    ``continue`` still runs the update; python's ``while`` puts the update in the body, where ``continue``
+    skips it -- so the loop variable never advances and the emitted oracle HANGS instead of disagreeing.
+    The non-inverted form emits the update in front of each ``continue``; the inverted form cannot be
+    patched that way (its exit test lives in the body too, so a ``continue`` skips the test as well) and is
+    refused instead.
     """
     if loop.loop_condition is None:
         raise UnsupportedNest(f"loop {loop.label} has no condition")
     cond = normalize_casts(loop.loop_condition.as_string.strip())
     init = normalize_casts(loop.init_statement.as_string.strip()) if loop.init_statement is not None else None
     update = normalize_casts(loop.update_statement.as_string.strip()) if loop.update_statement is not None else None
-    body = body_or_pass(emit_region(loop, sdfg))
+    if loop.inverted and targets_continue(loop):
+        raise UnsupportedNest(f"loop {loop.label} is inverted (do-while) and contains a continue; the emitted "
+                              "`while True:` carries its exit test in the body, so a `continue` would skip the "
+                              "test and loop forever")
+    body = body_or_pass(emit_region(loop, sdfg, continue_update=None if loop.inverted else update))
     ind = "    "
 
     lines: List[str] = []
@@ -871,7 +887,7 @@ def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> List[str]:
     return lines
 
 
-def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str]:
+def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG, continue_update: Optional[str] = None) -> List[str]:
     """Emit a ``ConditionalBlock`` as ``if``/``elif``/``else`` over its branches.
 
     Branches are ``(condition, region)`` and DaCe takes the FIRST whose condition holds, so they are
@@ -898,7 +914,7 @@ def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG) -> List[str]
         else:
             lines.append(f"{keyword} {normalize_casts(condition.as_string.strip())}:")
             keyword = "elif"
-        lines += [ind + b for b in body_or_pass(emit_region(region, sdfg))]
+        lines += [ind + b for b in body_or_pass(emit_region(region, sdfg, continue_update))]
     return lines
 
 
@@ -949,12 +965,18 @@ def interstate_lines(region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG,
     return lines
 
 
-def emit_region(region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG) -> List[str]:
+def emit_region(region: dace.sdfg.state.ControlFlowRegion,
+                sdfg: dace.SDFG,
+                continue_update: Optional[str] = None) -> List[str]:
     """Numpy statements for every block of a control-flow region, in execution order.
 
     Each block is preceded by a ``# <kind> (<label>)`` provenance comment (``# state (S)`` /
     ``# loop region (L)`` / ``# conditional (C)``) so the emitted source stays anchored to the SDFG
     region it came from -- readable output, and a handle an agent can grep a subregion by.
+
+    ``continue_update`` is the enclosing loop's update statement, emitted in front of each ``continue``
+    (see :func:`emit_loop`). It stops at the next :func:`emit_loop`, which passes its OWN update down, so
+    a ``continue`` always advances the loop it actually targets.
     """
     lines: List[str] = []
     for block in ordered_blocks(region):
@@ -967,10 +989,12 @@ def emit_region(region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG) -> L
             lines.extend(emit_loop(block, sdfg))
         elif isinstance(block, ConditionalBlock):
             lines.append(f"# conditional ({block.label})")
-            lines.extend(emit_conditional(block, sdfg))
+            lines.extend(emit_conditional(block, sdfg, continue_update))
         elif isinstance(block, BreakBlock):
             lines.append("break")  # exits the enclosing while (emit_loop); its region-DFS successor is the loop exit
         elif isinstance(block, ContinueBlock):
+            if continue_update is not None:
+                lines.append(continue_update)  # python's while keeps the update in the body; continue would skip it
             lines.append("continue")
         elif isinstance(block, ReturnBlock):
             # Early return out of the SDFG. A whole-kernel python ``return`` matches this exactly (it exits
@@ -1167,15 +1191,31 @@ def reject_unsizable_scratch(sdfg: dace.SDFG, scratch: List[str], symbols: List[
                                   "cannot be pre-allocated C-style")
 
 
-def has_enclosing_loop(block: dace.sdfg.state.ControlFlowBlock) -> bool:
-    """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG -- the loop a ``break`` /
-    ``continue`` inside it would target (walks ``parent_graph`` up to the SDFG root)."""
+def innermost_loop(block: dace.sdfg.state.ControlFlowBlock) -> Optional[LoopRegion]:
+    """The ``LoopRegion`` a ``break`` / ``continue`` inside ``block`` targets, or ``None`` when the block
+    has no loop ancestor in its SDFG (walks ``parent_graph`` up to the root)."""
     region = block.parent_graph
     while region is not None:
         if isinstance(region, LoopRegion):
-            return True
+            return region
         region = region.parent_graph
-    return False
+    return None
+
+
+def has_enclosing_loop(block: dace.sdfg.state.ControlFlowBlock) -> bool:
+    """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG."""
+    return innermost_loop(block) is not None
+
+
+def reject_orphan_break_continue(sdfg: dace.SDFG) -> None:
+    """Refuse a ``break`` / ``continue`` with no enclosing ``LoopRegion``: the emitted statement would land
+    outside any loop -- a wrong target, or a python ``SyntaxError``. Applies to a whole-SDFG kernel too,
+    which is why it is separate from :func:`reject_nonexternalizable`'s early-return half."""
+    for block in sdfg.all_control_flow_blocks():
+        if isinstance(block, (BreakBlock, ContinueBlock)) and not has_enclosing_loop(block):
+            raise UnsupportedNest(
+                f"nest contains a {type(block).__name__} ({block.label}) whose target loop is outside the "
+                "extracted scope; externalize the loop it breaks out of, not an inner nest")
 
 
 def reject_nonexternalizable(sdfg: dace.SDFG) -> None:
@@ -1199,10 +1239,7 @@ def reject_nonexternalizable(sdfg: dace.SDFG) -> None:
         if isinstance(block, ReturnBlock):
             raise UnsupportedNest(f"nest contains an early return ({block.label}); a return out of the enclosing SDFG "
                                   "cannot be externalized into a standalone kernel")
-        if isinstance(block, (BreakBlock, ContinueBlock)) and not has_enclosing_loop(block):
-            raise UnsupportedNest(
-                f"nest contains a {type(block).__name__} ({block.label}) whose target loop is outside the "
-                "extracted scope; externalize the loop it breaks out of, not an inner nest")
+    reject_orphan_break_continue(sdfg)
 
 
 def render(fn_name: str, args: List[str], body: List[str]) -> str:
@@ -1254,6 +1291,7 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     Signature is the SDFG's own arguments (non-transient arrays + ``__return`` + scalars) followed by
     scratch transient buffers and size symbols -- all caller-allocated, all written in place.
     """
+    reject_orphan_break_continue(sdfg)  # a return IS emittable here (it exits the kernel == exits the SDFG)
     sdfg = expand_nested_sdfg_inputs(sdfg)
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
     sdfg = maxsize_loop_scratch(sdfg, symbols)

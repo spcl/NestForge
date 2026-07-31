@@ -17,19 +17,17 @@ from __future__ import annotations
 
 import copy
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from nestforge import build, tsvc
-from nestforge.arena import diff_stats, make_inputs, rewind, rewind_snapshot, run_oracle
+from nestforge.arena import make_inputs, run_oracle, validate_and_time
 from nestforge.extract import whole_program_boundary
 from nestforge.isolation import run_isolated
 from nestforge.libnode import ExternalCall, ExternLibEnv
 from nestforge.pass_lower import lower_nests_to_external_call
 from nestforge.perf import flags
-from nestforge.perf.harness import median
 from nestforge.translate import prepare_whole_program
 
 
@@ -143,47 +141,9 @@ def measure_in_context(kernel: tsvc.TsvcKernel,
         built = build.build_sdfg(lowered,
                                  out_dir / "build",
                                  opts=build.BuildOptions(extra_link=variant_link_args(variants)))
-        vbuf = {k: v.copy() for k, v in inputs.items()}
-        built.run(vbuf, sizes)
-        # NOT `if o in vbuf`: an output the lowering renamed or dropped would leave the comparison set
-        # silently narrower than the boundary, and a miscompile confined to that output would still read
-        # ok=True as long as the survivors matched. Missing means the run did not produce what the
-        # boundary declares, which is a failure, not a smaller comparison.
-        missing = [o for o in boundary.outputs if o not in vbuf]
-        outs = {} if missing else {o: vbuf[o] for o in boundary.outputs}
-        if missing:
-            verdict = {"ok": False, "maxdiff": float("inf"), "error": f"outputs absent from the run: {sorted(missing)}"}
-        elif outs:
-            ref = {o: oracle[o] for o in outs}
-            # Report the ABSOLUTE difference (that is what a reader of ContextResult.maxdiff expects), but
-            # GATE on the scaled one -- an absolute gate is unreachable for a reduction, see
-            # arena.relative_maxdiff. One pass over the diff computes both.
-            md, md_rel = diff_stats(ref, outs)
-            verdict = {"ok": bool(md_rel <= atol), "maxdiff": float(md)}
-        else:
-            verdict = {"ok": False, "maxdiff": float("inf")}
-        tbuf = {k: v.copy() for k, v in inputs.items()}
-        built.init(sizes)
-        try:
-            fn, cargs = built.bind_program(tbuf, sizes)
-            # Restore every buffer the program READS AND WRITES before each timed rep. Without this an
-            # in-place nest (a[:] = a[:] * b) feeds on its own previous output -- rep k computes a * b**k,
-            # which reaches Inf/denormals in a few reps, and denormal arithmetic rather than the kernel
-            # dominates the median. That silently biases the exact quantity E1 compares across granularity
-            # rungs. The restore writes in place (cargs holds these buffers) and sits OUTSIDE the timed
-            # region; arena.accumulating_outputs is the one definition of which buffers decay.
-            snapshot = rewind_snapshot(boundary, tbuf)
-            rewind(snapshot)
-            fn(*cargs)  # warm
-            samples: List[float] = []
-            for _ in range(reps):
-                rewind(snapshot)
-                t0 = time.perf_counter()
-                fn(*cargs)
-                samples.append((time.perf_counter() - t0) * 1e6)
-        finally:
-            built.close()
-        return {**verdict, "median_us": median(samples)}
+        # the same validate-then-time body the whole-program lane runs; see arena.validate_and_time for
+        # the three invariants (absent-output guard, absolute reported / relative gated, per-rep rewind)
+        return validate_and_time(built, boundary, inputs, sizes, oracle, atol, reps)
 
     res = run_isolated(work, timeout=timeout)
     if "error" in res:

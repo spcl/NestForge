@@ -7,7 +7,7 @@ loops under different parent regions, are separated by a control-flow dependency
 their enclosing regions merge. That merge is a distinct decision from fusing the nests themselves, so it
 is a distinct API:
 
-  * MAP barrier -- two adjacent ``SDFGState`` s. Merged by ``StateFusion`` (:func:`state_fusion_moves`).
+  * MAP barrier -- two adjacent ``SDFGState`` s. Merged by ``StateFusion`` (:func:`enumerate_region_fusions`).
     After the merge the maps that were in separate states are siblings and :mod:`nestforge.fusion_arms`
     can fuse them.
   * LOOP barrier -- two ``LoopRegion`` s under different parents. Merged by fusing the ENCLOSING loops,
@@ -40,10 +40,13 @@ class RegionMove:
         return f"{self.kind}({', '.join(str(b) for b in self.where.values())})"
 
 
-def state_fusion_moves(sdfg: dace.SDFG) -> List[RegionMove]:
-    """Adjacent ``SDFGState`` pairs ``StateFusion`` accepts -- the merge that dissolves the map barrier so
-    cross-state maps become fusable. Enumerated across every control-flow region (recursive), mirroring
-    :func:`nestforge.fusion_arms.enumerate_fusions`."""
+def enumerate_region_fusions(sdfg: dace.SDFG) -> List[RegionMove]:
+    """Every legal region merge right now: the adjacent ``SDFGState`` pairs ``StateFusion`` accepts -- the
+    merge that dissolves the map barrier so cross-state maps become fusable. Enumerated across every
+    control-flow region (recursive), mirroring :func:`nestforge.fusion_arms.enumerate_fusions`.
+
+    Loop-region merges ride the fusion arms instead (fuse the enclosing loops). Applying one move stales
+    the rest -- re-enumerate after each."""
     return [
         RegionMove("fuse-states", {
             "first_state": edge.src,
@@ -52,12 +55,6 @@ def state_fusion_moves(sdfg: dace.SDFG) -> List[RegionMove]:
         if isinstance(edge.src, SDFGState) and isinstance(edge.dst, SDFGState) and edge.src is not edge.dst
         and StateFusion.can_be_applied_to(sdfg, first_state=edge.src, second_state=edge.dst)
     ]
-
-
-def enumerate_region_fusions(sdfg: dace.SDFG) -> List[RegionMove]:
-    """Every legal region merge right now. Today that is the state-fusion set; loop-region merges ride the
-    fusion arms (fuse the enclosing loops). Applying one stales the rest -- re-enumerate after each."""
-    return state_fusion_moves(sdfg)
 
 
 def apply_region_fusion(sdfg: dace.SDFG, move: RegionMove) -> None:

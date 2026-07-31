@@ -39,7 +39,13 @@ matplotlib.use("Agg")  # headless: pick the non-interactive backend BEFORE impor
 
 import matplotlib.pyplot as plt  # noqa: E402 -- must follow matplotlib.use("Agg")
 
-from plot_common import finite, geomean, load_results  # noqa: E402
+from plot_common import (
+    PALETTE,
+    cell_axes,
+    geomean,
+    load_results,  # noqa: E402
+    time_by_nest,
+    timing_cells)
 
 #: The two vendor-default baselines, keyed by the tab label -> the compiler name whose default cell is it.
 BASELINES: Dict[str, str] = {"gcc": "gcc", "llvm": "clang"}
@@ -49,44 +55,13 @@ BASELINES: Dict[str, str] = {"gcc": "gcc", "llvm": "clang"}
 DEFAULT_PARALLEL, DEFAULT_COST, DEFAULT_FP, DEFAULT_LANG = "sequential", "default", "default-fp", "c"
 
 
-def timing_cells(kernel: dict) -> List[dict]:
-    """The validated, finite-median lane-3 timing cells of one kernel."""
-    return [
-        c for c in (kernel.get("cells") or [])
-        if c.get("role") == "timing" and c.get("ok") is True and finite(c.get("median_us"))
-    ]
-
-
-def kernel_time_by_nest(cells: List[dict], predicate) -> Optional[float]:
-    """A kernel's time for the cells matching ``predicate``, summed over its nests (each nest's own matching
-    cell). ``None`` unless EVERY nest the kernel timed has a matching validated cell -- so a partial match is
-    not mistaken for the whole kernel. A single-nest kernel is the usual case (one term)."""
-    matched = [c for c in cells if predicate(c)]
-    if not matched:
-        return None
-    nests = {c.get("nest", 0) for c in cells}
-    total = 0.0
-    for n in nests:
-        per_nest = [c for c in matched if c.get("nest", 0) == n]
-        if not per_nest:
-            return None  # this nest has no matching cell -> the whole-kernel time is undefined for this combo
-        total += min(c["median_us"] for c in per_nest)
-    return total
-
-
 def baseline_time(kernel: dict, compiler: str) -> Optional[float]:
     """The vendor-default whole-kernel time for ``compiler``: the C / sequential / default / default-fp cell,
     summed over nests. ``None`` if that compiler's default cell is absent or unvalidated for any nest."""
     cells = timing_cells(kernel)
-    return kernel_time_by_nest(
+    return time_by_nest(
         cells, lambda c: c.get("compiler") == compiler and c.get("language") == DEFAULT_LANG and c.get("parallel") ==
         DEFAULT_PARALLEL and c.get("cost_model") == DEFAULT_COST and c.get("fp_mode") == DEFAULT_FP)
-
-
-def cell_axes(cell: dict) -> Tuple[str, str, str, str, str]:
-    """The (compiler, language, parallel, cost, fp) coordinate of a cell -- a column/row key of the matrix."""
-    return (str(cell.get("compiler")), str(cell.get("language")), str(cell.get("parallel")),
-            str(cell.get("cost_model")), str(cell.get("fp_mode")))
 
 
 @dataclass
@@ -113,7 +88,7 @@ def build_matrix(kernels: List[dict], baseline_compiler: str, baseline_label: st
         coords = {cell_axes(c) for c in cells}
         for coord in coords:
             comp, lang, par, cost, fp = coord
-            t = kernel_time_by_nest(cells, lambda c, coord=coord: cell_axes(c) == coord)
+            t = time_by_nest(cells, lambda c, coord=coord: cell_axes(c) == coord)
             if t is not None and t > 0.0:
                 samples.setdefault(coord, []).append(base / t)
     geo = {k: g for k, sps in samples.items() if (g := geomean(sps)) is not None}
@@ -174,7 +149,7 @@ def scatter_speedups(kernels: List[dict], baseline_compiler: str) -> List[Tuple[
         coords = {cell_axes(c) for c in cells}
         best_t, best_comp = None, "—"
         for coord in coords:
-            t = kernel_time_by_nest(cells, lambda c, coord=coord: cell_axes(c) == coord)
+            t = time_by_nest(cells, lambda c, coord=coord: cell_axes(c) == coord)
             if t is not None and t > 0.0 and (best_t is None or t < best_t):
                 best_t, best_comp = t, coord[0]
         if best_t is not None:
@@ -198,10 +173,9 @@ def plot_scatter(points: List[Tuple[str, float, str]], baseline_label: str, out_
         plt.close(fig)
         return None
     pts = sorted(points, key=lambda p: p[1])
-    palette = {"gcc": "#4c72b0", "clang": "#dd8452", "nvhpc": "#55a868", "intel": "#c44e52"}
     xs = list(range(len(pts)))
     ys = [p[1] for p in pts]
-    cs = [palette.get(p[2], "#888888") for p in pts]
+    cs = [PALETTE.get(p[2], "#888888") for p in pts]
     ax.scatter(xs, ys, c=cs, s=18)
     ax.axhline(1.0, linestyle="--", linewidth=0.9, color="#888888")
     ax.set_yscale("log")
@@ -210,7 +184,7 @@ def plot_scatter(points: List[Tuple[str, float, str]], baseline_label: str, out_
     geo = geomean(ys)
     seen = {p[2] for p in pts}
     handles = [
-        plt.Line2D([0], [0], marker="o", linestyle="", color=palette.get(c, "#888888"), label=c) for c in sorted(seen)
+        plt.Line2D([0], [0], marker="o", linestyle="", color=PALETTE.get(c, "#888888"), label=c) for c in sorted(seen)
     ]
     ax.legend(handles=handles, title="winning compiler", fontsize=8, loc="upper left")
     ax.set_title(

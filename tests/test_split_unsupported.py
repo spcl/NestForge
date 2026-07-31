@@ -63,7 +63,7 @@ def linear_chain_sdfg():
 
 def test_isolate_into_own_state_produces_valid_three_way_split():
     sdfg, st, m = linear_chain_sdfg()
-    isolate_into_own_state(sdfg, st, m)
+    isolate_into_own_state(st, m)
     states = list(sdfg.states())
     assert len(states) == 3
     # the node's state holds only the node (plus its in/out access nodes) -- no other tasklet.

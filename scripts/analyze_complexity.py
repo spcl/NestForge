@@ -189,8 +189,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     classified = [r for r in rows if "k" in r]
     by_class = Counter((r["k"], r["symbol"]) for r in classified)
     print(f"\n{len(classified)}/{len(rows)} classified")
-    for (k, symbol), n in sorted(by_class.items()):
-        print(f"  {n:>4}  O(n^{k})  symbol={symbol}")
+    # a manifest may declare no size symbol at all (21 of the foundation 245 do), so `symbol` is None
+    # for those rows -- sorting the raw keys then raises TypeError and kills the summary AFTER the write
+    for (k, symbol), n in sorted(by_class.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
+        print(f"  {n:>4}  O(n^{k})  symbol={symbol or '-'}")
     print("->", args.out)
     return 0
 

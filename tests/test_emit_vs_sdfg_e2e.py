@@ -112,7 +112,7 @@ COMPILERS = {"c": ["gcc", "clang"], "fortran": ["gfortran"]}
 
 
 # ---- helpers ------------------------------------------------------------------------------------------
-def _rand(shape, dt, rng, center):
+def rand_buffer(shape, dt, rng, center):
     if np.issubdtype(dt, np.complexfloating):
         return (rng.random(shape) + 1j * rng.random(shape)).astype(dt)
     if np.issubdtype(dt, np.floating):
@@ -124,18 +124,18 @@ def _rand(shape, dt, rng, center):
     return np.zeros(shape, dt)
 
 
-def _dace_sizes(kernel, base=6):
+def dace_sizes(kernel, base=6):
     preset = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
     ranks = {v: i for i, v in enumerate(sorted(set(preset.values())))}
     return {k: base + ranks[v] for k, v in preset.items()}
 
 
-def _make_dace(short):
+def make_dace(short):
     kernel = {k.short_name: k for k in iter_dace_kernels()}[short]
-    return (lambda: kernel.to_sdfg(simplify=True)), _dace_sizes(kernel), 0.0  # linear algebra: inputs in [0,1)
+    return (lambda: kernel.to_sdfg(simplify=True)), dace_sizes(kernel), 0.0  # linear algebra: inputs in [0,1)
 
 
-def _make_tsvc(short, corpus):
+def make_tsvc(short, corpus):
     kernel = tsvc.iter_tsvc_kernels(only=[short], corpus=corpus)[0]
     probe = tsvc.build_sdfg(kernel, opt_mode="simplify-parallel")
     sizes = {str(s): 8 for s in probe.free_symbols}
@@ -143,7 +143,7 @@ def _make_tsvc(short, corpus):
         lambda: tsvc.build_sdfg(kernel, opt_mode="simplify-parallel")), sizes, 0.5  # centered: exercise sign branches
 
 
-def _base_inputs(sdfg, sizes, center, seed=0):
+def base_inputs(sdfg, sizes, center, seed=0):
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     rng = np.random.default_rng(seed)
     base = {}
@@ -151,11 +151,11 @@ def _base_inputs(sdfg, sizes, center, seed=0):
         if desc.transient:
             continue
         shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
-        base[name] = _rand(shape, np.dtype(desc.dtype.type), rng, center)
+        base[name] = rand_buffer(shape, np.dtype(desc.dtype.type), rng, center)
     return base
 
 
-def _run_oracle(make_sdfg, sizes, base, tmp):
+def run_oracle_nest(make_sdfg, sizes, base, tmp):
     """Build the SDFG through nest-forge (no dace.compile) and run it; returns the mutated buffers."""
     built = build_sdfg(make_sdfg(), tmp / "oracle", BuildOptions(compiler="g++"))
     out = {k: v.copy() for k, v in base.items()}
@@ -164,7 +164,7 @@ def _run_oracle(make_sdfg, sizes, base, tmp):
     return out
 
 
-def _run_emitted_numpy(make_sdfg, sizes, base):
+def run_emitted_numpy(make_sdfg, sizes, base):
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     sdfg = make_sdfg()
     src = sdfg_to_numpy(sdfg, "k")
@@ -185,7 +185,7 @@ def _run_emitted_numpy(make_sdfg, sizes, base):
     return call
 
 
-def _maxdiff(oracle, cand):
+def max_abs_diff(oracle, cand):
     worst = 0.0
     for name, want in oracle.items():
         got = np.asarray(cand[name]).ravel()
@@ -205,19 +205,19 @@ def _maxdiff(oracle, cand):
     return worst
 
 
-def _builder(kind, short):
-    return _make_dace(short) if kind == "dace" else _make_tsvc(short, kind)
+def builder_for(kind, short):
+    return make_dace(short) if kind == "dace" else make_tsvc(short, kind)
 
 
 def test_maxdiff_scores_nan_mismatch_as_divergence():
     """A kernel emitting NaN where the SDFG is finite must FAIL the gate, not be scored on the rest."""
     oracle = {"x": np.array([1.0, 2.0, 3.0])}
-    assert _maxdiff(oracle, {"x": np.array([1.0, np.nan, 3.0])}) == np.inf
-    assert _maxdiff({"x": np.array([1.0, np.nan, 3.0])}, oracle) == np.inf
+    assert max_abs_diff(oracle, {"x": np.array([1.0, np.nan, 3.0])}) == np.inf
+    assert max_abs_diff({"x": np.array([1.0, np.nan, 3.0])}, oracle) == np.inf
     # Reproducing the SDFG's NaN / inf at the same position is agreement, not divergence.
-    assert _maxdiff({"x": np.array([1.0, np.nan, np.inf])}, {"x": np.array([1.0, np.nan, np.inf])}) == 0.0
-    assert _maxdiff({"x": np.array([1.0 + 1j, np.nan + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == 0.0
-    assert _maxdiff({"x": np.array([1.0 + 1j, 2.0 + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == np.inf
+    assert max_abs_diff({"x": np.array([1.0, np.nan, np.inf])}, {"x": np.array([1.0, np.nan, np.inf])}) == 0.0
+    assert max_abs_diff({"x": np.array([1.0 + 1j, np.nan + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == 0.0
+    assert max_abs_diff({"x": np.array([1.0 + 1j, 2.0 + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == np.inf
 
 
 # ---- L1: emitted numpy == the SDFG --------------------------------------------------------------------
@@ -227,12 +227,12 @@ def test_maxdiff_scores_nan_mismatch_as_divergence():
 def test_emit_numpy_matches_sdfg(kind, short):
 
     def work():
-        make_sdfg, sizes, center = _builder(kind, short)
+        make_sdfg, sizes, center = builder_for(kind, short)
         with tempfile.TemporaryDirectory() as td:
-            base = _base_inputs(make_sdfg(), sizes, center)
-            oracle = _run_oracle(make_sdfg, sizes, base, Path(td))
-            cand = _run_emitted_numpy(make_sdfg, sizes, base)
-            return {"md": _maxdiff(oracle, cand)}
+            base = base_inputs(make_sdfg(), sizes, center)
+            oracle = run_oracle_nest(make_sdfg, sizes, base, Path(td))
+            cand = run_emitted_numpy(make_sdfg, sizes, base)
+            return {"md": max_abs_diff(oracle, cand)}
 
     res = run_isolated(work, timeout=600)
     assert "error" not in res, f"{short}: {res.get('error')}"
@@ -260,7 +260,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
         from nestforge.arena import make_inputs
         from nestforge.perf.crosslang_xl import signature_order
         from nestforge.perf.tsvc_arena import c_argtypes, call_c
-        make_sdfg, sizes, _ = _builder(kind, short)
+        make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg(), strategy="outer")
         suffix = {"c": ".c", "cpp": ".c", "fortran": ".f90"}[lang]
         target = {"c": "c", "cpp": "c", "fortran": "fortran"}[lang]  # C++ compiles the emitted C

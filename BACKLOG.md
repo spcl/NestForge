@@ -202,9 +202,12 @@ it, or rewrite the doc to say "planned". Do not leave them reading as fact.
       `family_of`'s codomain to the FP tables' real keys and pin the disagreement itself.
 - [x] **H2** DONE (already landed in `232ed3b`, "one fp vocabulary"): `arena` no longer carries its own
       tables; `ARENA_ATOL` derives from `flags.FP_ATOL`.
-- [x] **H3** DONE: renamed to `probe_source` / `run_probe`. The tree now has ZERO underscore-prefixed
-      functions or classes. (The ~58 underscore CONSTANTS remain a separate call; 13 of them are read
-      directly by tests, so the underscore is already a lie for those.)
+- [x] **H3** DONE: renamed to `probe_source` / `run_probe`. The claim "the tree now has ZERO
+      underscore-prefixed functions or classes" was FALSE when it was written -- `nestforge/`, `scripts/`
+      and `perf/` were clean, but 20 test helpers plus `examples/demo_gramschmidt_fma.py` were not. Those
+      21 are renamed now and `tests/test_setup_scripts.py` is where a regression would surface.
+      (The ~58 underscore CONSTANTS remain a separate call; 13 of them are read directly by tests, so the
+      underscore is already a lie for those.)
 - [ ] **H4** KEEP, reconsidered: `to_canonical_atoms` is a one-statement passthrough, but its name and
       docstring are the only place the P0 contract is stated (this IS the ladder's base, and it is
       idempotent on an already-canonical SDFG). Inlining it deletes that statement and leaves five call

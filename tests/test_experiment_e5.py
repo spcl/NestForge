@@ -152,9 +152,21 @@ def test_findings_are_keyed_by_backend_so_none_are_overwritten():
 
 
 def test_no_baseline_means_no_speedup_claim():
-    cells = [E1Cell("k", "gcc", "atoms", "map", 4.0, True)]
+    """TWO rungs measured but not the coarsest one: there is a real axis, just nothing to divide by."""
+    cells = [E1Cell("k", "gcc", "atoms", "map", 4.0, True), E1Cell("k", "gcc", "mid", "map", 5.0, True)]
     row = summarize("k", "gcc", False, "indirection", "maximal", cells)
     assert not row.ok and row.speedup == 0.0 and "no baseline" in row.error
+    assert non_affine_findings([row]) == {}
+
+
+def test_a_single_rung_is_not_a_search():
+    """ONE validated rung makes best == coarsest, so the ratio is a structural 1.0 that reads in the C2
+    table exactly like a searched kernel where nothing helped. Every fusion_depth-0 kernel lands here (all
+    5 non-affine kernels in the first 60 foundation kernels do), so publishing it would make 100% of that
+    slice a fabricated datapoint. E1/E3 already guard this via no_granularity_axis."""
+    cells = [E1Cell("k", "gcc", "atoms", "map", 4.0, True)]
+    row = summarize("k", "gcc", False, "indirection", "maximal", cells)
+    assert not row.ok and row.speedup == 0.0 and "one granularity rung" in row.error
     assert non_affine_findings([row]) == {}
 
 

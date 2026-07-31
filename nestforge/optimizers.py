@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from nestforge import tsvc
-from nestforge.device_profile import device_profile
 from nestforge.build import BuildOptions
 from nestforge.toolchain import DEFAULT_COMPILER
 from nestforge.perf import flags
@@ -114,7 +113,9 @@ class ExternalOptimizer(Optimizer):
     returns ``None`` and ``skip_reason`` records why, exactly as a variant is dropped with a reason today.
     """
 
-    __slots__ = ("language", "family", "compiler", "fp_mode", "cost_model", "veclib", "name", "flags", "skip_reason")
+    # no "family" slot: the constructor PARAMETER is load-bearing (lane_flags + the packed-math gate),
+    # the attribute was write-only
+    __slots__ = ("language", "compiler", "fp_mode", "cost_model", "veclib", "name", "flags", "skip_reason")
 
     def __init__(self,
                  language: str,
@@ -127,7 +128,6 @@ class ExternalOptimizer(Optimizer):
                  veclib: str = "none",
                  name: Optional[str] = None) -> None:
         self.language = language
-        self.family = family
         self.compiler = compiler
         self.fp_mode = fp_mode
         self.cost_model = cost_model
@@ -301,17 +301,6 @@ def run_agent_loop(agent: AgenticOptimizer, nest: Optional[object], measure: Cal
                        f"without stopping ({len(outcomes)} rounds measured)")
 
 
-def device_veclibs(compiler: str) -> Tuple[str, ...]:
-    """``none`` plus this device's accuracy-gated veclib winner, from the discovery phase.
-
-    veclib is a per-DEVICE property, not a per-nest one: which library is fastest inside the ULP budget is
-    a property of the hardware and the installed libraries, so searching it per cell multiplies the sweep
-    by ``len(VECLIBS)`` only to re-derive one constant. Returns just ``("none",)`` when nothing is
-    installed or compatible -- an empty axis, not a fabricated winner."""
-    winner = next((p.name for p in device_profile(compiler).veclib_ranking if p.ok), None)
-    return ("none", winner) if winner is not None else ("none", )
-
-
 def deterministic_optimizers(
         compilers: Sequence[str] = (DEFAULT_COMPILER, ),
         opt_modes: Sequence[str] = tsvc.OPT_MODES,
@@ -332,9 +321,10 @@ def deterministic_optimizers(
         for cc in compilers:
             out.append(DaceOptimizer(opt_mode, BuildOptions(compiler=cc)))
     for language, family, cc in external:
-        # Default is the scalar floor ONLY. veclib comes from the device-discovery phase, passed in as
-        # `veclibs=device_veclibs(cc)` -- never resolved here, because that probe compiles and times real
-        # binaries (measured: it turned this enumeration from instant into minutes).
+        # Default is the scalar floor ONLY. veclib is a per-DEVICE constant, resolved once by the
+        # discovery phase and passed in -- never probed here, because ranking veclibs compiles and times
+        # real binaries (measured: it turned this enumeration from instant into minutes). The live
+        # resolver is nestforge.perf.tsvc_full.resolve_veclibs, which the CLI wires.
         for veclib in (veclibs or ("none", )):
             for fp in fp_modes:
                 for cost in cost_models:

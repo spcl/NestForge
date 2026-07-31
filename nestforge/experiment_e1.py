@@ -92,17 +92,23 @@ def emit_nest_sources(calls: List[Tuple[ExternalCall, Boundary]], out_dir: Path)
     return emitted
 
 
+#: E1 pins the numerics rather than searching them: the granularity axis is what E1 measures, so every rung
+#: and every backend must compile under ONE FP regime or the heatmap mixes two variables. E2 relies on this
+#: too (its whole-program baseline is built at the same rung).
+E1_FP_MODE = "strict-ieee"
+#: The scalar floor. veclib is a per-DEVICE constant resolved by the discovery phase, not a per-rung knob.
+E1_VECLIB = "none"
+
+
 def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
                            backend_name: str,
                            backend_path: str,
                            out_dir: Path,
-                           fp_mode: str = "strict-ieee",
-                           emitted: Optional[List[EmittedNest]] = None,
-                           veclib: str = "none") -> Dict[str, NestVariant]:
+                           emitted: Optional[List[EmittedNest]] = None) -> Dict[str, NestVariant]:
     """Compile every nest of a lowered program with ONE backend and link them into a single shared lib.
 
     ``calls`` is the ``[(ExternalCall, Boundary)]`` from :func:`lower_nests_to_external_call`. Each nest is
-    compiled to an object with ``backend_path`` at ``fp_mode``, then all objects are linked into one shared
+    compiled to an object with ``backend_path`` at :data:`E1_FP_MODE`, then all objects are linked into one shared
     lib (:func:`~nestforge.arena.link_shared`) -- one ``.so`` per backend so ``ExternLibEnv`` links a single
     library (M0), and a ``.so`` resolves at load regardless of the parent's link order. Returns nest-name ->
     :class:`NestVariant`, all pointing at that one lib with their own extern-C symbol + ABI order.
@@ -111,8 +117,11 @@ def build_backend_variants(calls: List[Tuple[ExternalCall, Boundary]],
     out_dir.mkdir(parents=True, exist_ok=True)
     emitted = emit_nest_sources(calls, out_dir) if emitted is None else emitted
     # one veclib for BOTH steps: compiling with it and linking without leaves _ZGV* unresolved at dlopen
-    objs = [compile_object(backend_path, fp_mode, e.c_source, e.name, out_dir / e.name, veclib=veclib) for e in emitted]
-    lib = link_shared(objs, backend_name, out_dir, backend_path, veclib=veclib)
+    objs = [
+        compile_object(backend_path, E1_FP_MODE, e.c_source, e.name, out_dir / e.name, veclib=E1_VECLIB)
+        for e in emitted
+    ]
+    lib = link_shared(objs, backend_name, out_dir, backend_path, veclib=E1_VECLIB)
     return {e.name: NestVariant(str(lib), e.symbol, e.order) for e in emitted}
 
 
@@ -311,11 +320,6 @@ def granularity_of(cell: E1Cell) -> str:
     return cell.granularity
 
 
-def measured_rungs(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], Dict[str, float]]:
-    """``(kernel, backend) -> {granularity: median_us}`` over the cells that validated."""
-    return measured_by(cells, granularity_of)
-
-
 def best_granularity_per_backend(cells: Sequence[E1Cell]) -> Dict[Tuple[str, str], str]:
     """The C1 read-off: for each (kernel, backend), the granularity rung with the fastest valid time. When
     the optimum differs across the backend column for a kernel, that is the backend-dependence C1 claims.
@@ -336,7 +340,7 @@ def no_granularity_axis(cells: Sequence[E1Cell]) -> List[str]:
     as a confirmed result.
 
     Enumerated over every (kernel, backend) the sweep ATTEMPTED, not over the ones that measured:
-    :func:`measured_rungs` keys itself off validated cells only, so a pair whose every rung failed was
+    :func:`measured_by` keys itself off validated cells only, so a pair whose every rung failed was
     absent from it entirely and therefore appeared in neither table. Measured on s221, whose six cells all
     failed with the same lowering error: the exclusion list came back empty while the kernel silently
     vanished from the read-off -- the exact "reads as a null result" failure this list exists to prevent."""

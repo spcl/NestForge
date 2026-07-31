@@ -31,7 +31,9 @@ from nestforge.optimize import (DEFAULT_OPT_MODE, BuildOptions, DaceOptimizer, E
                                 OPT_MODES, optimization_choices)
 from nestforge.run import NestReport, ProgramReport, optimize_program
 from nestforge.strategies import Strategy, get_strategy, outer, register_strategy
-from nestforge.translator import BenchSpec, translate
+# `translate` (the function) is withheld for the reason `optimize` is, above: the name would bind
+# over the `nestforge.translate` SUBMODULE. Reach it as `from nestforge.translator import translate`.
+from nestforge.translator import BenchSpec
 
 __all__ = [
     "Boundary",
@@ -83,7 +85,6 @@ __all__ = [
     "ProgramReport",
     "NestReport",
     # native optarena surfaces
-    "translate",
     "BenchSpec",
     "CorpusKernel",
     "iter_dace_kernels",

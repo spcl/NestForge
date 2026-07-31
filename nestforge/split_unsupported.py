@@ -53,7 +53,7 @@ def mixed_with_other_compute(state: dace.SDFGState, node: nodes.Node) -> bool:
     return any(n is not node and not isinstance(n, nodes.AccessNode) for n in state.nodes())
 
 
-def isolate_into_own_state(sdfg: dace.SDFG, state: dace.SDFGState, node: nodes.Node) -> None:
+def isolate_into_own_state(state: dace.SDFGState, node: nodes.Node) -> None:
     """Fission ``state`` so ``node`` ends up alone (with its in/out access nodes) between a producers state
     and a consumers state. A node with no ancestors needs only the first fission.
 
@@ -86,7 +86,7 @@ def isolate_unsupported_library_nodes(sdfg: dace.SDFG) -> int:
                 break
         if target is None:
             return isolated
-        isolate_into_own_state(sdfg, target[0], target[1])
+        isolate_into_own_state(target[0], target[1])
         isolated += 1
     raise RuntimeError("isolate_unsupported_library_nodes did not converge; a state_fission failed to "
                        "separate an unsupported node from surrounding compute")
@@ -148,6 +148,18 @@ def whole_program_regions(sdfg: dace.SDFG) -> Tuple[List[List[dace.SDFGState]], 
     return regions, islands
 
 
+def arrays_named_on_edges(edges: List, arrays) -> Set[str]:
+    """Array names appearing in the assignments or condition of any of ``edges``.
+
+    Interstate edges carry python-ish expression TEXT, not memlets, so the only way to see an array named
+    there is to scan the text against the known array names."""
+    named: Set[str] = set()
+    for edge in edges:
+        for expr in list(edge.data.assignments.values()) + [str(edge.data.condition.as_string)]:
+            named |= set(re.findall(r"[A-Za-z_]\w*", expr)) & arrays
+    return named
+
+
 def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], name: str) -> dace.SDFG:
     """Copy one whole-program region (a set of connected pure-compute states) into a fresh, independently
     compilable SDFG that :func:`~nestforge.emit_numpy.sdfg_to_numpy` can emit on its own.
@@ -164,6 +176,14 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
         read, write = state.read_and_write_sets()
         outside_read |= read
         outside_write |= write
+    # Dataflow is only half the picture: an interstate edge LEAVING the region (`k = t0[0]`) reads the
+    # region's transient from outside it. Missed, the transient stays transient, extract.py filters it out
+    # of the interface, and the emitted kernel silently drops an output the rest of the program consumes.
+    # Read side only -- an interstate assignment TARGET is a symbol, never an array.
+    outside_edges = [
+        e for e in sdfg.all_interstate_edges() if e.src.label not in region_labels or e.dst.label not in region_labels
+    ]
+    outside_read |= arrays_named_on_edges(outside_edges, sdfg.arrays.keys())
 
     work = copy.deepcopy(sdfg)
     work.name = name
@@ -177,10 +197,7 @@ def region_to_standalone(sdfg: dace.SDFG, region_states: List[dace.SDFGState], n
         region_used |= read | write
     # An array may be referenced ONLY on an inter-state edge (`idx = offsets[k]`), which the dataflow-only
     # read_and_write_sets never reports -- dropping it leaves the kernel naming an undefined array.
-    for edge in work.all_interstate_edges():
-        expressions = list(edge.data.assignments.values()) + [str(edge.data.condition.as_string)]
-        for expr in expressions:
-            region_used |= set(re.findall(r"[A-Za-z_]\w*", expr)) & work.arrays.keys()
+    region_used |= arrays_named_on_edges(list(work.all_interstate_edges()), work.arrays.keys())
     for aname in list(work.arrays):
         if aname not in region_used:
             del work.arrays[aname]  # touched only outside the region (after orphan drop, no node references it)

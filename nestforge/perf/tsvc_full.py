@@ -80,7 +80,7 @@ from nestforge.extract import extract_nest_to_sdfg
 from nestforge.isolation import run_isolated
 from nestforge.perf import flags, pluto_lane, support_matrix
 from nestforge.perf.crosslang_xl import fortran_unmunge, lang_compilers
-from nestforge.perf.tsvc_arena import Toolchain, discover_toolchains
+from nestforge.toolchain import Toolchain, discover_toolchains
 from nestforge.perf.harness import (COMPILE_TIMEOUT_S, RUN_TIMEOUT_S, c_argtypes, c_call_args, call_c, finite, fmt_us,
                                     geomean, jsonable, load_results, my_slice, native_setup, native_symbol,
                                     rank_and_size, run_compile, signature_order)
@@ -227,8 +227,9 @@ def native_validate_work(so, symbol, sig, kernel, boundary, validate_sizes, orac
     outs = {o: buffers[o] for o in boundary.outputs if o in ptr_names}
     if not outs:  # nothing to compare -> UNCHECKED; never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "unchecked": True}
-    md = float(maxdiff({k: oracle[k] for k in outs}, outs))
-    return {"ok": bool(md <= 1e-6), "maxdiff": md}
+    ref = {k: oracle[k] for k in outs}
+    md = float(maxdiff(ref, outs))  # absolute is REPORTED, the scaled one is the gate (as every other lane)
+    return {"ok": bool(relative_maxdiff(ref, outs) <= flags.NATIVE_ATOL), "maxdiff": md}
 
 
 def native_timing_work(so, symbol, sig, kernel, boundary, time_inputs, time_sizes, reps) -> Dict:
@@ -349,10 +350,14 @@ def measure_dace_cpp_lane(tc: Toolchain,
     fam = tc.fp_family
     dace_flags = flags.base_flags(fam) + ["-std=" + cxx_std] + flags.fp_flags(fam, "strict-ieee", "c")
     try:
-        t0 = time.perf_counter()
-        built = dace_build_sdfg(boundary.standalone_sdfg, workdir,
-                                BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl))
-        compile_us = (time.perf_counter() - t0) * 1e6
+        # use_ccache=False and the BUILD's own split clocks: a wall-clock stopwatch around build_sdfg
+        # reported codegen+compile under a field every other lane fills with a raw compile, and ccache
+        # defaults to AUTO, so the second run of a kernel reported a ~0s cache hit as its compile time.
+        built = dace_build_sdfg(
+            boundary.standalone_sdfg, workdir,
+            BuildOptions(compiler=tc.cxx, flags=dace_flags, codegen_impl=codegen_impl, use_ccache=False))
+        compile_us = built.compile_seconds * 1e6
+        codegen_us = built.codegen_seconds * 1e6
     except Exception as e:  # a codegen/compile failure must not crash the kernel
         return {
             "ok": False,
@@ -372,6 +377,7 @@ def measure_dace_cpp_lane(tc: Toolchain,
             "ok": False,
             "error": res["error"],
             "compile_us": compile_us,
+            "codegen_us": codegen_us,
             "codegen_impl": codegen_impl,
             **summarize_times([])
         }
@@ -382,6 +388,7 @@ def measure_dace_cpp_lane(tc: Toolchain,
         "maxdiff": res["maxdiff"],
         "unchecked": res.get("unchecked", False),
         "compile_us": compile_us,
+        "codegen_us": codegen_us,
         "error": None,
         "median_us": res["median_us"],
         "min_us": res["min_us"],
@@ -401,7 +408,6 @@ def measure_dace_vectorized_lane(tc: Toolchain,
                                  cxx_std: str,
                                  workdir: Path,
                                  codegen_impl: Optional[str] = None,
-                                 rounds: int = 2,
                                  validate_fills=None) -> Dict:
     """DaCe lane with the multi-dim tile-op vectorizer: coordinate-descent over ``VectorizeConfig`` for
     the fastest config that still validates at ``contract-fma`` tolerance, so a mis-vectorization is
@@ -470,14 +476,17 @@ def measure_dace_vectorized_lane(tc: Toolchain,
             return None
         # Screen 2, on the ARTIFACT, as arena.run_arena does on the flag axis: two DIFFERENT sources can
         # still compile to the same code, which only the object shows. One objdump against reps x kernel.
-        # Named symbol, not the whole object: dedup.asm_body_key warns that a whole-object key also covers
-        # __dace_init_*/__dace_exit_* boilerplate, so a config differing only in a scratch allocation would
-        # key apart and the lane would re-time one identical build -- the re-timing this exists to stop.
-        key = variant_key(built.so_path, f"__program_{built.name}")
+        # WHOLE object, never `__program_<name>`: that entry point is a three-instruction trampoline into
+        # `__program_<name>_internal`, so it disassembles identically for every config and keying on it
+        # collapsed the whole descent onto the first cell. __dace_init_*/__dace_exit_* stay IN the key --
+        # init is where persistent storage is allocated, so a config that allocates differently really is a
+        # different build. Over-separating costs one extra measurement; over-collapsing deletes the axis.
+        key = variant_key(built.so_path)
         twin = twin_of(cfg, by_artifact, key)
         if twin is not None:
             built.unload()
-            return twin["median_us"]
+            by_codegen[code_key] = twin  # else this source stays unrecorded and the cheap screen holds
+            return twin["median_us"]  # one entry for the whole lane
         try:
             res = run_isolated(lambda: dace_run_work(built, boundary, validate_sizes, time_inputs, time_sizes, oracle,
                                                      atol, reps, validate_fills),
@@ -504,7 +513,7 @@ def measure_dace_vectorized_lane(tc: Toolchain,
     # no-op without an integer conditional -- it would measure the same build under a second name (verified
     # identical codegen; see docs/VECTORIZATION_KNOBS.md).
     axes = vv.descent_axes(live=vv.live_axes(boundary.standalone_sdfg))
-    best_cfg, best_t = vv.multistart_descent(vv.default_seeds(fp_mode=fp_mode), axes, measure, rounds)
+    best_cfg, best_t = vv.multistart_descent(vv.default_seeds(fp_mode=fp_mode), axes, measure)
     winner = results.get(vv.resolved_key(best_cfg)) if best_t is not None else None
     if winner is None:
         top = sorted(rejected.items(), key=lambda kv: -kv[1][0])[:3]
@@ -591,7 +600,8 @@ def emit_lang_sources(prep,
     :param name: per-nest base name; the emitted symbol is ``<name>_fp64``.
     :param parallel: emit the OpenMP variant (same symbol/signature). numpyto raises for a nest with no
         sound parallel form, which the caller reads as "no OpenMP lane".
-    :returns: ``{lang: (src_path, arg_order, argtypes)}``, omitting any language that failed to emit."""
+    :returns: ``{lang: (src_path, arg_order, argtypes)}``. An emit that fails RAISES -- a silently absent
+        language would read downstream as "this nest has no C lane" (see build_opt_context)."""
     symbol = f"{name}_fp64"
     names = list(boundary.standalone_sdfg.arrays) + list(validate_sizes)
     c_target = "c_omp" if parallel else "c"
@@ -869,8 +879,9 @@ def pluto_validate_work(so: Path,
     outs = {o: outputs[o] for o in boundary.outputs if o in outputs}
     if not outs:  # nothing to compare -> UNCHECKED, never report ok for an unvalidatable lane
         return {"ok": False, "maxdiff": float("inf"), "unchecked": True}
-    md = float(maxdiff({o: oracle[o] for o in outs}, outs))
-    return {"ok": bool(md <= 1e-6), "maxdiff": md}
+    ref = {o: oracle[o] for o in outs}
+    md = float(maxdiff(ref, outs))  # absolute is REPORTED, the scaled one is the gate (as every other lane)
+    return {"ok": bool(relative_maxdiff(ref, outs) <= flags.NATIVE_ATOL), "maxdiff": md}
 
 
 def measure_pluto_lane(nc: Dict, cc: Optional[str], reps: int, workdir: Path) -> Dict:
@@ -1402,7 +1413,7 @@ def resolved_axes(args, compilers: Sequence[str] = ("gcc", )) -> Dict:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="TSVC full-matrix job (native / DaCe-cpp / nest-forge sweep)")
-    # `foundation` is the hpcagent_bench track and the default: 220 kernels = 135 tsvc2 (as `tsvc_2_<key>`)
+    # `foundation` is the hpcagent_bench track and the default: mostly tsvc2 (as `tsvc_2_<key>`)
     # + 56 tsvc2_5 (bare) + 29 that exist nowhere else. NOT a superset -- 16 tsvc2 and 9 tsvc2_5 kernels
     # ship only in the standalone corpus modules -- so those stay selectable and the run reports the gap
     # rather than letting a narrower sweep read as full coverage.

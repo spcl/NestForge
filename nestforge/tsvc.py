@@ -209,7 +209,7 @@ def corpus_metadata() -> Dict[str, Tuple[str, Dict[str, int], frozenset]]:
     ``n1``/``n3``, s162's ``k``), and :func:`sample_sizes` raises on a work-deciding symbol it cannot size
     -- so without this the 11 kernels that have such parameters would drop out of a foundation sweep.
     ``regime``/``tags`` come along because they are reported per kernel and would otherwise read as "1d,
-    untagged" for all 245.
+    untagged" for every foundation kernel.
 
     BEST-EFFORT: a checkout without DaCe's corpus script still gets every foundation kernel, and only those
     11 fail loudly at sizing. Returning an empty map is therefore correct, not a silent degradation."""
@@ -222,11 +222,14 @@ def corpus_metadata() -> Dict[str, Tuple[str, Dict[str, int], frozenset]]:
 def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "foundation") -> List[TsvcKernel]:
     """Every kernel of a corpus, optionally filtered to the ``only`` short names.
 
-    ``foundation`` (the DEFAULT) is the installed hpcagent_bench track: 245 kernels, a measured superset of
-    both DaCe corpora (151 ``tsvc_2_*`` == all of tsvc2, plus tsvc2_5 and 29 more), and the only source
-    that ships each kernel's manifest and native baseline. It is the default because it is the corpus that
-    is actually installed with the project -- the two below are scripts inside a DaCe checkout, which a
-    bare clone need not have.
+    ``foundation`` (the DEFAULT) is the installed hpcagent_bench track and the only source that ships each
+    kernel's manifest and native baseline. It is the default because it is the corpus actually installed
+    with the project -- the two below are scripts inside a DaCe checkout, which a bare clone need not have.
+
+    It covers all of ``tsvc2`` but is NOT a superset of both: :func:`foundation_coverage_gap` reports
+    three ``tsvc2_5`` kernels missing from it (``ext_war_sym``, ``iv_additive``, ``iv_multiplicative``).
+    Ask that function rather than trusting a count written here -- it is the check, and it is what the
+    sweep scripts should gate on before telling an operator that one corpus subsumes another.
 
     ``tsvc2`` ships a ``KERNELS`` registry of descriptors (``s000_d_single`` -> key ``s000``, with
     regime/params/tags); ``tsvc2_5`` ships a ``collect()`` of bare ``@dace.program`` s (key = function
@@ -236,7 +239,7 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "foundatio
     if corpus == "foundation":
         # The whole hpcagent_bench track, TSVC included. Sizing, native baselines and manifests all hang
         # off `foundation_entry`, which resolves a bare <key> stem, so nothing below this line is
-        # TSVC-specific. Programs are materialized eagerly: measured ~2 ms each, ~0.5 s for all 220.
+        # TSVC-specific. Programs are materialized eagerly: measured ~2 ms each, ~0.5 s for the corpus.
         meta = corpus_metadata()
         for kernel in sorted(iter_dace_kernels("foundation"), key=lambda k: k.short_name):
             key = foundation_key(kernel.short_name.rsplit("/", 1)[-1])
@@ -266,9 +269,10 @@ def iter_tsvc_kernels(only: Optional[List[str]] = None, corpus: str = "foundatio
 def foundation_coverage_gap() -> Dict[str, List[str]]:
     """corpus -> keys it carries that the ``foundation`` track does not.
 
-    MEASURED empty for both corpora today (foundation 245 >= tsvc2 151 + tsvc2_5 65), but kept as a live
-    check rather than a claim: foundation is maintained independently, and a sweep that defaults to it and
-    says nothing would read as full corpus coverage while quietly omitting whatever drifted out.
+    NOT empty: measured today it returns three ``tsvc2_5`` keys (``ext_war_sym``, ``iv_additive``,
+    ``iv_multiplicative``). That is exactly why this is a live check rather than a claim -- foundation is
+    maintained independently, and a sweep that defaults to it and says nothing reads as full corpus
+    coverage while quietly omitting whatever drifted out.
 
     Keys are compared after :func:`foundation_key` normalisation, so the two sides speak the same names.
     """

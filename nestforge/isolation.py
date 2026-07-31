@@ -66,11 +66,11 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
 
 def quiet_fatal_signals() -> None:
     """In the forked child, drop the faulthandler inherited from pytest: on a segfault it dumps the
-    PARENT's stack into the captured output. The parent reports the crash from the child's exit signal."""
-    try:
-        faulthandler.disable()
-    except Exception:
-        pass
+    PARENT's stack into the captured output. The parent reports the crash from the child's exit signal.
+
+    No try/except: ``faulthandler.disable()`` returns a bool and has no error path (probed never-enabled,
+    closed-file, closed-fd, and inside a fork with a pending ``dump_traceback_later``)."""
+    faulthandler.disable()
 
 
 def run_isolated(work_fn: Callable[[], Dict], timeout: float = 900.0) -> Dict:

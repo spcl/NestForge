@@ -141,7 +141,6 @@ def build_and_time(cc: str,
                    kernel_c: Path,
                    symbol: str,
                    params: str,
-                   argnames: List[str],
                    order: List[str],
                    argtypes: list,
                    boundary,
@@ -160,9 +159,9 @@ def build_and_time(cc: str,
     inside the trampoline and must therefore be reported instead of silently averaged in."""
     cflags = flags.base_flags(family)
     builders = {
-        "inline": lambda d: build_inline(cc, cflags, kernel_c, symbol, params, argnames, d),
-        "external_lto": lambda d: build_external(cc, cflags, kernel_c, symbol, params, argnames, d, lto=True),
-        "external": lambda d: build_external(cc, cflags, kernel_c, symbol, params, argnames, d, lto=False),
+        "inline": lambda d: build_inline(cc, cflags, kernel_c, symbol, params, order, d),
+        "external_lto": lambda d: build_external(cc, cflags, kernel_c, symbol, params, order, d, lto=True),
+        "external": lambda d: build_external(cc, cflags, kernel_c, symbol, params, order, d, lto=False),
     }
     out: Dict[str, object] = {}
     for name, build in builders.items():
@@ -184,8 +183,7 @@ class CoNest:
     """One extracted nest plus its emitted C source and parsed signature. Single-nest kernels use
     ``<key>``/``<key>_fp64``; multi-nest kernels one per ``<key>_n<idx>``."""
     idx: int
-    name: str
-    symbol: str
+    symbol: str  # no `name`: it was write-only; multinest guarantees symbol == f"{name}_fp64"
     boundary: object
     sizes: Dict[str, int]
     src: Path
@@ -217,7 +215,7 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
             text = src.read_text()
             order = signature_order(text, symbol)
             units.append(
-                CoNest(idx, name, symbol, boundary, sizes, src, order, c_argtypes(order, boundary),
+                CoNest(idx, symbol, boundary, sizes, src, order, c_argtypes(order, boundary),
                        signature_params(text, symbol), nest_dir, tsvc.index_fills(kernel, boundary, sizes)))
     except Exception as e:  # noqa: BLE001
         return {**result, "skipped": f"emit: {type(e).__name__}: {str(e)[:150]}"}
@@ -227,9 +225,9 @@ def run_kernel(kernel: "tsvc.TsvcKernel", cc: str, family: str, opt_mode: str, p
     multi = len(units) > 1
     accumulating: List[str] = []
     for u in units:
-        # trampoline forwards params by name; abi_order gives exactly those names.
-        times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.order, u.argtypes, u.boundary, u.sizes,
-                               inner, reps, u.nest_dir, u.given)
+        # trampoline forwards params by name; abi_order gives exactly those names
+        times = build_and_time(cc, family, u.src, u.symbol, u.params, u.order, u.argtypes, u.boundary, u.sizes, inner,
+                               reps, u.nest_dir, u.given)
         for v in per_variant:
             per_variant[v].append(times.get(v))
         accumulating += [f"n{u.idx}:{a}" if multi else a for a in times.get("accumulating", ())]

@@ -23,13 +23,13 @@ def two_nest(a: dace.float64[N], out: dace.float64[N]):
         out[i] = tmp[i] + 1.0
 
 
-def _sdfg():
+def two_nest_sdfg():
     sdfg = two_nest.to_sdfg(simplify=True)
     return sdfg
 
 
 def test_whole_program_boundary_interface_from_read_write_sets():
-    b = whole_program_boundary(_sdfg())
+    b = whole_program_boundary(two_nest_sdfg())
     # a is read, out is written; tmp is a transient (scratch) -> excluded from the caller interface.
     assert "a" in b.inputs
     assert "out" in b.outputs
@@ -43,7 +43,7 @@ def test_whole_program_boundary_interface_from_read_write_sets():
 
 
 def test_prepare_whole_program_emits_named_numpy_and_manifest(tmp_path):
-    prep = prepare_whole_program(_sdfg(), "two_nest", tmp_path, sizes={"N": 64})
+    prep = prepare_whole_program(two_nest_sdfg(), "two_nest", tmp_path, sizes={"N": 64})
     # the whole-program numpy source is a single function over the un-split program.
     assert "def two_nest(" in prep.numpy_source
     assert prep.numpy_path.exists() and prep.yaml_path.exists()
@@ -54,7 +54,7 @@ def test_prepare_whole_program_emits_named_numpy_and_manifest(tmp_path):
 
 
 def test_whole_program_boundary_detaches_no_parent_links():
-    sdfg = _sdfg()
+    sdfg = two_nest_sdfg()
     b = whole_program_boundary(sdfg)
     # detached copy must not alias the source object (mutations in emit must not touch the original).
     assert b.standalone_sdfg is not sdfg
@@ -63,7 +63,7 @@ def test_whole_program_boundary_detaches_no_parent_links():
 
 def test_prepare_regions_pure_program_is_one_region(tmp_path):
     # a program with no unsupported node is a single externalizable region == the whole program.
-    prepared, islands = prepare_regions(_sdfg(), "two_nest", tmp_path, sizes={"N": 64})
+    prepared, islands = prepare_regions(two_nest_sdfg(), "two_nest", tmp_path, sizes={"N": 64})
     assert islands == []
     assert len(prepared) == 1
     assert "def two_nest(" in prepared[0].numpy_source
