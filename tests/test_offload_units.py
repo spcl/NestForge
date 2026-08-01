@@ -1,12 +1,15 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Offloading granularity UNITS (paper Axis 2): the structural unit each external call wraps -- cfg / state
-/ map, coarse -> fine. Unit set, no compile: candidate selection per unit, whole-state extraction, and
-that lowering each unit still yields a valid SDFG. Composition with Axis 1 (fusion granularity) is checked
-too -- finer fusion exposes more map-units."""
+/ map, coarse -> fine. Unit set, no compile: candidate selection per unit, whole-state extraction, that
+lowering each unit yields a valid SDFG, and -- the check that actually binds -- that it still computes the
+same VALUES, run through the emitted numpy. Composition with Axis 1 (fusion granularity) is checked too --
+finer fusion exposes more map-units."""
 import numpy as np
 import dace
+from dace import symbolic
 
+from nestforge.emit_numpy import load_emitted, nest_to_numpy, scratch_arrays
 from nestforge.offload import (OFFLOAD_UNITS, offload_candidates, offload_coarseness, offload_unit_axis)
 from nestforge.extract import extract_state_nest
 from nestforge.pass_lower import lower_nests_to_external_call
@@ -29,6 +32,33 @@ def two_map(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 def recur(A: dace.float64[N], B: dace.float64[N]):
     for i in range(1, N):  # loop-carried -> stays a LoopRegion (a cfg unit)
         B[i] = B[i - 1] + A[i]
+
+
+@dace.program
+def branchy(A: dace.float64[N], B: dace.float64[N], flag: dace.int64):
+    if flag > 0:  # a ConditionalBlock: the whole branch, both alternatives, is one cfg unit
+        for i in dace.map[0:N]:
+            B[i] = A[i] * 2.0
+    else:
+        for i in dace.map[0:N]:
+            B[i] = A[i] + 1.0
+
+
+def run_lowered(boundary, name, sizes, **args):
+    """Run one lowered nest's emitted numpy. Every non-scalar transient is a caller-allocated buffer
+    (the C-style contract), so anything the boundary names and the caller did not supply is scratch,
+    allocated from its own descriptor rather than assumed size-1."""
+    mod = load_emitted(nest_to_numpy(boundary, fn_name=name), name)
+    sdfg = boundary.standalone_sdfg
+    arrays = sdfg.arrays
+    named = set(boundary.inputs) | set(boundary.outputs) | set(scratch_arrays(sdfg))
+    scratch = {
+        s:
+        np.zeros(tuple(int(symbolic.evaluate(d, sizes)) for d in arrays[s].shape),
+                 dtype=arrays[s].dtype.as_numpy_dtype())
+        for s in named if s not in args
+    }
+    getattr(mod, name)(**args, **sizes, **scratch)
 
 
 def test_axis_is_coarse_to_fine():
@@ -67,11 +97,54 @@ def test_lowering_each_unit_keeps_the_sdfg_valid():
 
 
 def test_lowering_cfg_unit_keeps_the_sdfg_valid():
-    # the cfg lowering path (extract_loop_nest via the unit strategy) -- distinct from map/state.
+    # the cfg lowering path (extract_cfg_nest via the unit strategy) -- distinct from map/state.
     sdfg = recur.to_sdfg(simplify=True)
     lowered = lower_nests_to_external_call(sdfg, "cfg")
     assert len(lowered) == 1  # the one LoopRegion externalized
     sdfg.validate()
+
+
+def test_cfg_unit_selects_a_conditional_block():
+    """A ConditionalBlock is a cfg unit: it outlines whole, branches included. Skipped, a branchy kernel
+    reported ZERO cfg candidates -- indistinguishable from "this kernel has nothing to offload"."""
+    sdfg = branchy.to_sdfg(simplify=True)
+    cands = offload_candidates(sdfg, "cfg")
+    assert len(cands) == 1
+    assert "conditional" in cands[0].label and "2 branches" in cands[0].label
+    assert not cands[0].parallel  # a branch is not a parallel nest, whatever its bodies are
+
+
+def test_each_unit_computes_the_same_values_as_the_kernel():
+    """THE granularity check: lowering at a unit must not change what the program computes. Validity is
+    not the property that matters -- ``validate()`` passes on a nest that emits the wrong extent or drops
+    a write, and every earlier unit test asserted only that."""
+    rng = np.random.default_rng(0)
+    A, B = rng.random(16), rng.random(16)
+    want = A + B, (A + B) * 2.0  # T, then C
+
+    for unit, count in (("map", 2), ("state", 1)):
+        sdfg = two_map.to_sdfg(simplify=True)
+        calls = lower_nests_to_external_call(sdfg, unit)
+        assert len(calls) == count
+        C = np.zeros(16)
+        T = np.zeros(16)
+        for i, (ext, boundary) in enumerate(calls):
+            args = {k: v for k, v in dict(A=A, B=B, C=C, T=T).items() if k in boundary.inputs + boundary.outputs}
+            run_lowered(boundary, f"u_{unit}_{i}", dict(N=16), **args)
+        assert np.allclose(C, want[1]), f"{unit} unit changed the result"
+
+
+def test_the_conditional_unit_computes_both_branches_correctly():
+    """The branch is offloaded as ONE call, so the emitted kernel owns the selection: run it both ways."""
+    sdfg = branchy.to_sdfg(simplify=True)
+    calls = lower_nests_to_external_call(sdfg, "cfg")
+    assert len(calls) == 1
+    _ext, boundary = calls[0]
+    A = np.arange(8, dtype=np.float64)
+    for i, (flag, want) in enumerate(((1, A * 2.0), (0, A + 1.0))):
+        B = np.zeros(8)
+        run_lowered(boundary, f"cond_{i}", dict(N=8), A=A, B=B, flag=flag)
+        assert np.allclose(B, want), f"flag={flag}"
 
 
 def test_composes_with_fusion_granularity():

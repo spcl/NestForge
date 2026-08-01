@@ -58,6 +58,14 @@ lower_nests_to_external_call(sdfg, "innermost")   # finer: every leaf nest
 - `outer` — outermost nests, wrappers included.
 - `innermost` — every leaf nest (the vectorization-style unit), across nested SDFGs too.
 
+The structural UNIT axis (paper Axis 2), coarse → fine, is `cfg` → `state` → `map`:
+
+- `cfg` — one whole control-flow block: a `LoopRegion`, or a `ConditionalBlock` with all its branches.
+- `state` — one whole `SDFGState` and every map in it; a state whose only tasklets are connectorless
+  (DaCe's precondition traps) is not a unit — it crosses no data.
+- `map` — one `MapEntry`. Composes with Phase 1: `map` over the `atoms` partition puts each
+  statement-atom in its own call.
+
 Register a custom granularity with `register_strategy(name, fn)` where `fn: SDFG -> [(parent, node)]`.
 
 Coarsest granularity — the whole un-split program as one unit (no extraction):

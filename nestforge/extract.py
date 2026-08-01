@@ -19,11 +19,13 @@ import dace
 from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
-from dace.sdfg.state import LoopRegion, SDFGState
+from dace.sdfg.state import ConditionalBlock, LoopRegion, SDFGState
 from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
-NestNode = Union[nodes.MapEntry, LoopRegion, SDFGState]
+#: A control-flow block outlined whole: a loop, or a branch and all its alternatives.
+CfgNest = Union[LoopRegion, ConditionalBlock]
+NestNode = Union[nodes.MapEntry, CfgNest, SDFGState]
 
 
 @dataclass(slots=True)
@@ -92,14 +94,14 @@ def extract_state_nest(parent_sdfg: dace.SDFG, state: SDFGState, name: Optional[
     return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
 
 
-def nest_defined_symbols(loop: LoopRegion) -> set:
-    """Symbols DEFINED inside the loop nest: every loop variable plus every inter-state-edge assignment
+def nest_defined_symbols(region: CfgNest) -> set:
+    """Symbols DEFINED inside the nest: every loop variable plus every inter-state-edge assignment
     target. Mirrors the ``ndefined_symbols`` set ``helpers.nest_sdfg_subgraph`` builds."""
     syms = set()
-    for b in [loop, *loop.all_control_flow_blocks()]:
+    for b in [region, *region.all_control_flow_blocks()]:
         if isinstance(b, LoopRegion) and b.loop_variable and b.init_statement:
             syms.add(b.loop_variable)
-    for e in loop.all_interstate_edges():
+    for e in region.all_interstate_edges():
         syms.update(e.data.assignments.keys())
     return syms
 
@@ -121,14 +123,14 @@ def assignment_dtype(sdfg: dace.SDFG, rhs: str) -> dace.dtypes.typeclass:
     return inferred if isinstance(inferred, dace.dtypes.typeclass) else dace.int64
 
 
-def nest_defined_symbol_dtypes(sdfg: dace.SDFG, loop: LoopRegion) -> Dict[str, dace.dtypes.typeclass]:
+def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> Dict[str, dace.dtypes.typeclass]:
     """Every symbol :func:`nest_defined_symbols` reports, mapped to the dtype it should be declared with:
     ``int64`` for a loop variable, the inferred type of the assigned expression for an assignment target."""
     dtypes: Dict[str, dace.dtypes.typeclass] = {}
-    for b in [loop, *loop.all_control_flow_blocks()]:
+    for b in [region, *region.all_control_flow_blocks()]:
         if isinstance(b, LoopRegion) and b.loop_variable and b.init_statement:
             dtypes[b.loop_variable] = dace.int64
-    for e in loop.all_interstate_edges():
+    for e in region.all_interstate_edges():
         for target, rhs in e.data.assignments.items():
             if target not in dtypes:
                 dtypes[target] = assignment_dtype(sdfg, str(rhs))
@@ -171,15 +173,22 @@ def trip_count_symbols(sdfg: dace.SDFG) -> set:
     return syms
 
 
-def extract_loop_nest(parent_sdfg: dace.SDFG, loop: LoopRegion, name: Optional[str] = None) -> Boundary:
-    """Outline a CFG loop region into a standalone SDFG (M1)."""
+def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: Optional[str] = None) -> Boundary:
+    """Outline one control-flow block -- a ``LoopRegion`` or a ``ConditionalBlock`` with all its branches --
+    into a standalone SDFG (M1). This is the ``cfg`` offloading unit, the coarsest of the three.
+
+    Nothing here is loop-shaped: the outliner is a ``SubgraphView`` over the single block, and the symbol
+    pre-declaration walks ``all_control_flow_blocks``/``all_interstate_edges``, which every control-flow
+    block answers. A conditional therefore outlines whole, branches included, and the emitter renders it
+    as an ``if``/``else`` around the branch bodies.
+    """
     # pre-declare each nest-defined symbol: nest_sdfg_subgraph KeyErrors otherwise. The dtype is INFERRED,
     # not int64 by fiat -- nest_sdfg_subgraph's own type-inference fallback reads whatever is registered
     # here, so a float staged across an interstate edge would be locked to int64 and truncated silently.
-    for s, dtype in nest_defined_symbol_dtypes(parent_sdfg, loop).items():
+    for s, dtype in nest_defined_symbol_dtypes(parent_sdfg, region).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
-    subgraph = SubgraphView(parent_sdfg, [loop])
+    subgraph = SubgraphView(parent_sdfg, [region])
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     # find the NestedSDFG node in the state nest_sdfg_subgraph returned.
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
@@ -197,11 +206,12 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: Optional[
     """
     if isinstance(node, nodes.MapEntry):
         return extract_map_nest(parent_sdfg, node, name=name)
-    if isinstance(node, LoopRegion):
-        return extract_loop_nest(parent_sdfg, node, name=name)
+    if isinstance(node, (LoopRegion, ConditionalBlock)):
+        return extract_cfg_nest(parent_sdfg, node, name=name)
     if isinstance(node, SDFGState):
         return extract_state_nest(parent_sdfg, node, name=name)
-    raise TypeError(f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion or SDFGState")
+    raise TypeError(f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion, "
+                    "ConditionalBlock or SDFGState")
 
 
 def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:

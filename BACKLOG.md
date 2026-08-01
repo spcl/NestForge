@@ -157,10 +157,17 @@ scratch should not push that allocation onto the caller.
       unconditionally and `offload.state_has_compute` counts a `LibraryNode` AS compute, so the
       `state` unit externalizes a BLAS state that should stay a libnode.
 - [ ] **F2** Multi-node granularity (a line graph of consecutive blocks) through
-      `nest_sdfg_subgraph`; `extract_loop_nest` passes a single block today.
-- [ ] **F3** `ConditionalBlock` as a single-node granularity (currently a `TypeError`).
-- [ ] **F4** -> F2, F3. Numeric (oracle) checks per granularity. `tests/test_offload_units.py`
-      asserts SDFG validity only.
+      `nest_sdfg_subgraph`; `extract_cfg_nest` passes a single block today.
+- [x] **F3** DONE, and the machinery already handled it -- only the type gates did not. `extract_loop_nest`
+      outlines a `SubgraphView` over ONE block and pre-declares symbols through
+      `all_control_flow_blocks`/`all_interstate_edges`, which every control-flow block answers, so a
+      `ConditionalBlock` outlines whole (branches included) and emits as `if`/`else`. Renamed
+      `extract_cfg_nest` to match the unit it serves. The old `unit_refs` filter made a branchy kernel
+      report ZERO cfg candidates -- "nothing to offload" and "not expressible" were the same answer.
+- [ ] **F4** -> F2. Numeric (oracle) checks per granularity. DONE for the units that exist: the map,
+      state and conditional units each run their lowered nest's emitted numpy and assert VALUES
+      (`tests/test_offload_units.py`), because `validate()` passes on a nest that emits the wrong extent
+      or drops a write. Still open for F2's multi-node line-graph granularity, which does not exist yet.
 
 ## G. Documented-but-unbuilt — decide build vs. relabel
 
@@ -248,7 +255,11 @@ each carry ONE confirmed silent miscompile. Full report in memory
 ### K0 — CONFIRMED silent miscompiles (fix FIRST; all have exact patch + acceptance). Fixes touch
 dace canon pipeline → MUST run the npbench/polybench 108-gate + SplitStatements/fuse_loops suites after.
 
-- [ ] **K0a** *(default pipeline)* **statement-fission stale-snapshot** —
+**ALL FOUR LANDED in dace `extended` 2026-07-24** (`e17f44e31` = K0a+K0c, `81c8a596b` = K0b+K0d),
+each with a frontend-shaped value-preserving regression test. Kept here for the repro record; the boxes
+went unticked for a week, which is how they read as open work.
+
+- [x] **K0a** *(default pipeline)* **statement-fission stale-snapshot** —
       `dace/transformation/passes/canonicalize/split_statements.py:325-327`, `_snapshot_forward_reads`.
       Gate redirects a read to the pre-loop snapshot when the verdict SET merely *contains* `WAR` and
       lacks `RAW`/`complex`; a read that is `WAR` vs one sibling write but `'none'` (offset-0, same-index
@@ -257,7 +268,7 @@ dace canon pipeline → MUST run the npbench/polybench 108-gate + SplitStatement
       `canonicalize()`), `D==2*orig_A` not `2*E`. **Fix:** require EVERY verdict read-ahead —
       `if not (kinds and kinds <= {'WAR','WAR_symbolic'}): continue` (the sound gate already at
       `break_anti_dependence.py:802`). Accept: repro yields `D==2*E`; existing fission tests bit-exact.
-- [ ] **K0b** *(default pipeline)* **loop-fusion RAW-misread → illegal fusion** —
+- [x] **K0b** *(default pipeline)* **loop-fusion RAW-misread → illegal fusion** —
       `dace/transformation/interstate/fuse_loops.py:185` reads a `RAW` verdict as "read-behind, safe",
       but `break_anti_dependence._dep_class:317-319` dumps EVERY not-provably-nonneg symbolic offset into
       `RAW`. Unknown-sign read-ahead `a[i+K-M]` (K>M) gets fused. Repro: two same-`i` non-DOALL loops,
@@ -266,7 +277,7 @@ dace canon pipeline → MUST run the npbench/polybench 108-gate + SplitStatement
       `WAR_symbolic`; provably-nonpositive (new `_provably_nonpositive_under_nonneg_symbols`)→`RAW`;
       else→`('complex',None)`. No-op for the 3 in-module consumers (`:636,:802,:901` treat RAW==complex).
       Naive `319→'complex'` over-demotes legit `a[i-K]` read-behind, so the 3-way is required.
-- [ ] **K0c** *(opt-in `split_maps=True`, the nest-forge fission primitive — TOP priority for the agent
+- [x] **K0c** *(opt-in `split_maps=True`, the nest-forge fission primitive — TOP priority for the agent
       path)* **map-fission in-place RMW miscompile** —
       `split_statements.py` `_split_one_map` (root causes `196`+`278`). A map that reads an array via a
       local and writes it in place: `t=A[i]; A[i]=t+B[i]; C[i]=t*2` splits so the C-clone recomputes
@@ -274,7 +285,7 @@ dace canon pipeline → MUST run the npbench/polybench 108-gate + SplitStatement
       and C wrong; validate() passes. **Fix:** mirror the guard `SplitTasklets` already has for this RMW
       shape (`split_tasklets.py:555`): before nesting, `if read_arrays & write_arrays: return None`.
       Accept: repro no longer fires (or gives `A==A0+B0`, `C==A0*2`); `_two_out`/`_three_out` still 2/3.
-- [ ] **K0d** **dead twin `_break_mixed_forward_reads`** (`break_anti_dependence.py:900-965`, call
+- [x] **K0d** **dead twin `_break_mixed_forward_reads`** (`break_anti_dependence.py:900-965`, call
       commented at 965). Before ANYONE re-enables 965, apply K0a's sound gate at `901-903` AND switch its
       `expr` guard (`924-925`) to strict `expr-1`, or delete the function + probe. Accept: re-enabling
       does not reintroduce K0a.

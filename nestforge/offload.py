@@ -29,7 +29,7 @@ from typing import List, Tuple, Union
 
 import dace
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.state import ConditionalBlock, LoopRegion
 
 from nestforge.extract import NestNode, extract_nest_to_sdfg, whole_program_boundary
 from nestforge.pass_lower import lower_nests_to_external_call
@@ -49,6 +49,8 @@ def label_nest(node: NestNode) -> str:
         return f"map[{', '.join(node.map.params)}] over {node.map.range}"
     if isinstance(node, LoopRegion):
         return f"loop {node.label}"
+    if isinstance(node, ConditionalBlock):
+        return f"conditional {node.label} ({len(node.branches)} branches)"
     if isinstance(node, dace.SDFGState):
         return f"state {node.label}"
     raise TypeError(f"not an offload candidate: {type(node).__name__}")
@@ -77,7 +79,7 @@ def offload_candidates(sdfg: dace.SDFG,
 
 
 #: Offloading granularity UNITS (paper Axis 2), COARSE -> FINE. The structural unit each external call
-#: wraps, from the graph itself: a whole ``cfg`` (a control-flow region -- a ``LoopRegion``), a whole
+#: wraps, from the graph itself: a whole ``cfg`` (a ``LoopRegion`` or a ``ConditionalBlock``), a whole
 #: ``state`` (an ``SDFGState`` and all the maps it holds), or a single ``map`` (one ``MapEntry`` within a
 #: state). Coarser wraps more compute per call; finer isolates one map. A DISTINCT decision from fusion
 #: granularity (Axis 1, :mod:`nestforge.granularity`) and COMPOSES with it: a ``map`` offload over the
@@ -112,9 +114,12 @@ def unit_refs(sdfg: dace.SDFG, unit: str) -> List[Tuple[dace.SDFG, NestNode]]:
         return [(sub, me) for sub in sdfg.all_sdfgs_recursive() for st in sub.all_states()
                 for me in top_level_map_entries(st)]
     if unit == "cfg":
-        # top-level LoopRegions only: extract_loop_nest needs the loop's parent to BE the SDFG
-        # (SubgraphView(parent_sdfg, [loop])), so a loop nested inside another region is not a cfg unit.
-        return [(sub, r) for sub in sdfg.all_sdfgs_recursive() for r in sub.nodes() if isinstance(r, LoopRegion)]
+        # top-level blocks only: extract_cfg_nest needs the block's parent to BE the SDFG
+        # (SubgraphView(parent_sdfg, [block])), so a region nested inside another one is not a cfg unit.
+        # A ConditionalBlock counts: it outlines whole, branches included, and skipping it left a branchy
+        # kernel reporting ZERO cfg candidates -- "nothing to offload" where the truth was "not expressible".
+        return [(sub, r) for sub in sdfg.all_sdfgs_recursive() for r in sub.nodes()
+                if isinstance(r, (LoopRegion, ConditionalBlock))]
     if unit == "state":
         return [(sub, st) for sub in sdfg.all_sdfgs_recursive() for st in sub.all_states() if state_has_compute(st)]
     raise ValueError(f"unknown offload unit {unit!r}; known: {OFFLOAD_UNITS}")

@@ -12,7 +12,7 @@ Any region -> nested SDFG -> either `ExternalCall` (normal offload, via
 `extract_nest_to_sdfg` dispatches MapEntry, LoopRegion and SDFGState. Still missing:
 
 1. **Multiple nodes** — a line graph of consecutive blocks through `nest_sdfg_subgraph`.
-   `extract_loop_nest` only ever passes a single block. (`split_unsupported.region_to_standalone`
+   `extract_cfg_nest` only ever passes a single block. (`split_unsupported.region_to_standalone`
    does handle multi-state regions, but by deepcopy-and-prune into a *standalone* SDFG, not by
    nesting — a different mechanism with different boundary rules.)
 2. **`ConditionalBlock`** as a single-node granularity — currently a `TypeError`.
