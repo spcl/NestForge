@@ -138,13 +138,18 @@ def test_tsvc2_5_corpus_loads():
     assert len(only) == 1 and only[0].key == "ext_gather_load"
 
 
-def test_preset_sizes_scale():
+def test_preset_sizes_come_from_the_kernels_own_manifest():
+    """hpcagent_bench authors the ladder PER KERNEL from a work/depth model, so the global ``_PRESET``
+    table is a fallback, never the authority. It had drifted ~3000x under the real M and L rungs while
+    ``S`` still matched -- and S is the rung every test selects, so nothing caught it."""
     k = tsvc.iter_tsvc_kernels(only=["s000"])[0]
     sdfg = tsvc.build_sdfg(k, "simplify-parallel")
     parent, node = get_strategy("skip-taskloops")(sdfg)[0]
     b = extract_nest_to_sdfg(parent, node, name="s000")
-    assert tsvc.sample_sizes(k, b, preset="XL")["LEN_1D"] == tsvc._PRESET["LEN_1D"]["XL"]
-    assert tsvc.sample_sizes(k, b, preset="S")["LEN_1D"] == 512
+    manifest = tsvc.manifest_presets(k.yaml_path)["LEN_1D"]
+    assert tsvc.sample_sizes(k, b, preset="XL")["LEN_1D"] == manifest["XL"]
+    assert manifest["XL"] != tsvc._PRESET["LEN_1D"]["XL"], "fixture no longer discriminates the two sources"
+    assert tsvc.sample_sizes(k, b, preset="S")["LEN_1D"] == 512  # S is kept tiny by hpcagent_bench, on purpose
 
 
 def test_corpus_symbol_values_read_both_corpus_spellings():

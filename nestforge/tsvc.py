@@ -47,9 +47,11 @@ from nestforge.fusion import get_fusion_strategy
 #: Shape symbols the sizing logic samples/fixes; every other boundary symbol is a scalar loop
 #: parameter (taken from the kernel's registered ``params``) or the corpus multiplier ``S``.
 _SHAPE_SYMS = ("LEN_1D", "LEN_2D", "LEN_3D")
-#: fixed preset scale per shape symbol (mirrors the OptArena presets; ``XL`` ``LEN_1D`` is ~2 GiB fp64),
-#: so every compiler/language sees the same size for a preset. ``PROF`` sizes one fp64 array (~128 MiB)
-#: past the GH200 Grace L3 (~114 MB), keeping timings memory-bound; see perf/README_tsvc_full.md.
+#: FALLBACK preset scale, for a symbol the kernel's own manifest does not list and for ``PROF``, which no
+#: manifest defines (it sizes one fp64 array ~128 MiB past the GH200 Grace L3 ~114 MB, keeping timings
+#: memory-bound; see perf/README_tsvc_full.md). :func:`preset_size` prefers the manifest: hpcagent_bench
+#: authors the ladder PER KERNEL from a work/depth model (S ~10 KB, M ~1.3 GB, L ~4 GB, XL ~15 GB working
+#: set), so one global table cannot stand in for it -- as a mirror this was 3000x under M and L.
 _PRESET = {
     "LEN_1D": {
         "S": 512,
@@ -321,16 +323,19 @@ def build_sdfg(kernel: TsvcKernel, opt_mode: str = "simplify-parallel") -> dace.
 
 
 @functools.lru_cache(maxsize=None, typed=True)
-def manifest_presets(path: Path) -> Dict[str, List[int]]:
-    """``{shape_symbol: [preset sizes]}`` from an OptArena manifest yaml, skipping the ``XL`` preset.
-    Cached per path: the yaml read + parse is re-run for every arena cell over the same kernel otherwise."""
+def manifest_presets(path: Path) -> Dict[str, Dict[str, int]]:
+    """``{shape_symbol: {preset: size}}`` from an OptArena manifest yaml -- the AUTHORITATIVE ladder.
+    Preset NAMES are kept (an unnamed list cannot answer "how big is M here"), and no preset is dropped;
+    :func:`yaml_presets` applies ``_SKIP_PRESETS`` where sizes are SAMPLED, which is the only place a
+    rung's absence is a policy rather than a fact. Cached per path: the yaml read + parse is re-run for
+    every arena cell over the same kernel otherwise."""
     params = yaml.safe_load(path.read_text()).get("parameters", {})
-    presets: Dict[str, List[int]] = {}
+    presets: Dict[str, Dict[str, int]] = {}
     for name, mapping in params.items():
-        if name in _SKIP_PRESETS or not isinstance(mapping, dict):
+        if not isinstance(mapping, dict):
             continue
         for sym, size in mapping.items():
-            presets.setdefault(sym, []).append(int(size))
+            presets.setdefault(sym, {})[name] = int(size)
     return presets
 
 
@@ -338,7 +343,23 @@ def yaml_presets(kernel: TsvcKernel) -> Dict[str, List[int]]:
     """``{shape_symbol: [preset sizes]}`` from the kernel's OptArena yaml, skipping the ``XL`` preset."""
     if kernel.yaml_path is None:
         return {}
-    return manifest_presets(kernel.yaml_path)
+    return {
+        sym: [size for name, size in rungs.items() if name not in _SKIP_PRESETS]
+        for sym, rungs in manifest_presets(kernel.yaml_path).items()
+    }
+
+
+def preset_size(kernel: TsvcKernel, sym: str, preset: str) -> int:
+    """Size for one shape symbol at one preset, the kernel's own manifest deciding."""
+    if kernel.yaml_path is not None:
+        size = manifest_presets(kernel.yaml_path).get(sym, {}).get(preset)
+        if size is not None:
+            return size
+    fallback = _PRESET.get(sym, {}).get(preset)
+    if fallback is None:
+        raise ValueError(f"kernel {kernel.key!r}: no size for {sym!r} at preset {preset!r} -- neither its "
+                         f"manifest ({kernel.yaml_path}) nor the fallback table lists that rung")
+    return int(fallback)
 
 
 def key_seed(key: str) -> int:
@@ -397,8 +418,8 @@ def sample_sizes(kernel: TsvcKernel,
         elif sym in corpus_values and sym not in shape_syms:
             # Guarded on shape_syms: a corpus scalar that also sizes a buffer here is the sampler's to size.
             sizes[sym] = corpus_values[sym]
-        elif preset and sym in _PRESET:
-            sizes[sym] = int(_PRESET[sym][preset])
+        elif preset and (sym in _PRESET or sym in presets):
+            sizes[sym] = preset_size(kernel, sym, preset)
         elif sym in _SHAPE_SYMS and sym in shape_syms and sym in _SYM_RANGE:
             lo, hi = _SYM_RANGE[sym]
             if presets.get(sym):

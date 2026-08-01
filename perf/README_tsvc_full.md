@@ -81,12 +81,16 @@ minus:
 
 | purpose | preset | size | why |
 |---------|--------|------|-----|
-| correctness | `M` (cap) | LEN_1D = 32768 | the pure-Python O(N) oracle is slow; the `.so` is size-agnostic so small-validate + large-time exercises the same code |
+| correctness | `S` | ~10 KB working set | the pure-Python O(N) oracle is slow; the `.so` is size-agnostic so small-validate + large-time exercises the same code |
 | **profiling / timing** | `PROF` | LEN_1D = 2²⁴ = 16.7 M → **128 MiB/array** | one fp64 array clearly exceeds the **GH200 Grace L3 (~114 MB/socket)** → realistic **memory-bound** regime, but smaller than XL (whose alloc/first-touch dominates) |
-| submitted confirmation | `XL` | LEN_1D = 268 M (~2 GiB/array) | `PROFILE_PRESET=XL` (phase 1); phase 2 (`crosslang_xl`) also runs the corpora at XL |
+| submitted confirmation | `XL` | ~15 GB working set | `PROFILE_PRESET=XL` (phase 1); phase 2 (`crosslang_xl`) also runs the corpora at XL |
 
-`PROF` is defined in `tsvc._PRESET` for `LEN_1D`/`LEN_2D`/`LEN_3D` (each ≈128 MiB/array). The intent (per
-the plan): **profile at a size that does not fit L3, submit the confirmation at XL.**
+Every rung but `PROF` is **per kernel**, read from its hpcagent_bench manifest by `tsvc.preset_size` —
+authored there from a work/depth model and bounded in BOTH memory and time (`M` ≈ 1.3 GB / 0.4 s on one
+core, `L` the geometric midpoint, `XL` ≈ 15 GB / 2 s on a node). `S` is deliberately tiny: it is the rung
+every test selects. `tsvc._PRESET` is only the fallback for a symbol a manifest omits and for `PROF`,
+which no manifest defines (`LEN_1D`/`LEN_2D`/`LEN_3D`, each ≈128 MiB/array). The intent (per the plan):
+**profile at a size that does not fit L3, submit the confirmation at XL.**
 
 ## Timing method + speed strategy
 
