@@ -1,9 +1,9 @@
 # Kernel Dependencies
 
-[../README.md](../README.md) · code: `nestforge/ir/depends.py`
+[Overview](../README.md) · related: [2 Define Scopes](phases/2-define-scopes.md), [3 Offload](phases/3-offload.md)
 
-`kernel_dependencies(sdfg)` answers one question for every `ExternalCall` argument: which producers
-can reach it. It reads the lowered SDFG and never changes it.
+`kernel_dependencies(sdfg)` (`nestforge/ir/depends.py`) answers one question for every `ExternalCall`
+argument: which producers can reach it. It reads the lowered SDFG and never changes it.
 
 ```
 extcall_1: T <- extcall_0.T, N <- program

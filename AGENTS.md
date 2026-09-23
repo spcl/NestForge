@@ -7,7 +7,7 @@ Guide for LLM agents that drive NestForge and for coding agents that change it. 
 
 | Agent | Phases | Reads | Requests |
 |---|---|---|---|
-| scheduling | [1](docs/phases/1-shape-kernels.md), [2](docs/phases/2-define-scopes.md), [3](docs/phases/3-offload.md) | structure tree, kernel bodies, work/depth, OI | fusion/fission moves, kernel-to-device schedule |
+| scheduling | [1](docs/phases/1-shape-kernels.md), [2](docs/phases/2-define-scopes.md), [3](docs/phases/3-offload.md) | structure tree, kernel bodies, work/depth, OI | fusion, fission and interchange moves, kernel-to-device schedule |
 | kernel | [4](docs/phases/4-optimize-kernels.md) | one kernel as NumPy, C++ or Fortran, its boundary | a source file or `lib<kernel>.a` with the given C entry |
 | analysis | [feedback](docs/phases/feedback.md) | runtimes, placements, copy volume, OI | phase 1 moves, new phase 2 scopes, or stop |
 
@@ -42,9 +42,12 @@ Kernel agents also use the bench skills `lang-cpp`, `lang-cuda`, `lang-fortran`,
 
 ## Rules for coding agents
 
-- Setup: `pip install -e ".[dev]" && pre-commit install`. Unit tests:
-  `pytest -m "not integration and not gpu and not vendor"`.
+- Setup: `sudo bash scripts/setup_apt.sh`, then `pip install -e ".[dev]" && pre-commit install`. Unit tests:
+  `pytest -m "not integration and not gpu and not vendor"`; a failure that also fails on the base commit is
+  not yours to hide.
 - `pre-commit run --all-files` runs ruff check and ruff format (120 columns), as CI does.
+- `pyright` (configured in `pyproject.toml`) must report nothing but errors traced to DaCe's untyped library
+  decorators, which a pending `extended-fixes` change to DaCe removes.
 - Write Python as if statically typed: annotate every function, one name keeps one type, no
   `getattr`/`hasattr`, no leading-underscore names, absolute imports.
 - Keep each function's cyclomatic complexity at 20 or below (`radon cc -s`).

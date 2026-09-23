@@ -79,14 +79,15 @@ quickstart_out/
 ## Install and test
 
 ```bash
+sudo bash scripts/setup_apt.sh                            # compilers, libomp, BLAS/LAPACK, binutils (Ubuntu)
 pip install -e ".[dev]"                                   # dace @ extended, hpcagent-bench @ main
 pre-commit install                                        # ruff check and ruff format on every commit
-pytest -m "not integration and not gpu and not vendor"    # unit set
+pytest -m "not integration and not gpu and not vendor"    # unit set, as CI runs it
 pytest -m integration                                     # compiles and runs kernels
 ```
 
 NestForge assumes Linux. Benchmark kernels and the NumPy to C, C++ and Fortran translator come from
-[HPCAgent-Bench](https://github.com/spcl/HPCAgent-Bench). HPCAgent-Bench imports NestForge, so
+[HPCAgent-Bench](https://github.com/spcl/HPCAgent-Bench). HPCAgent-Bench drives NestForge, so
 `import nestforge` never loads HPCAgent-Bench; only the functions that need it do.
 
 ## Layout
@@ -94,14 +95,14 @@ NestForge assumes Linux. Benchmark kernels and the NumPy to C, C++ and Fortran t
 ```
 nestforge/
   session.py   the one API over all phases
-  phases/      normalize, schedule, scopes, offload, kernel, variants, feedback
+  phases/      normalize, schedule and region_moves, scopes, offload, kernel, variants, feedback
   ir/          extraction, NumPy emission, the ExternalCall library node, structure views
   build/       compile and link, compilers on PATH, FP flags, the validate-and-time arena
   corpus/      HPCAgent-Bench kernels and the translator bridge
 ```
 
-More: [emitter contract](docs/emitter.md), [build and runtime linking](docs/build.md),
-[FP modes and cost models](docs/fp-and-vectorization.md).
+More: [emitter contract](docs/emitter.md), [kernel dependencies](docs/depends.md),
+[build and runtime linking](docs/build.md), [FP modes and cost models](docs/fp-and-vectorization.md).
 
 ## References
 
