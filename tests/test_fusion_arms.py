@@ -91,19 +91,19 @@ def co_located(prog):
 
 def test_enumerate_finds_loop_fusion():
     sdfg = two_recurrences.to_sdfg(simplify=True)
-    moves = loop_fusion_moves(sdfg)
+    moves = list(loop_fusion_moves(sdfg))
     assert any(m.kind == "fuse-loops" for m in moves)
 
 
 def test_enumerate_finds_vertical_map_fusion():
     sdfg = co_located(producer_consumer_maps)
-    moves = vertical_map_moves(sdfg)
+    moves = list(vertical_map_moves(sdfg))
     assert any(m.kind == "fuse-map-vertical" for m in moves)
 
 
 def test_enumerate_finds_horizontal_map_fusion():
     sdfg = co_located(sibling_maps)
-    moves = horizontal_map_moves(sdfg)
+    moves = list(horizontal_map_moves(sdfg))
     assert any(m.kind == "fuse-map-horizontal" for m in moves)
 
 

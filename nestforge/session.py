@@ -228,10 +228,10 @@ class Session:
     def apply_move(self, kind: str, labels: Sequence[str], epoch: int) -> MoveResult:
         """Apply one scheduling move to the tree rows ``labels`` name, as read at ``epoch``.
 
-        :param kind: One of ``loop-fusion``, ``loop-fission``, ``map-fusion``, ``map-fission``,
-            ``interchange-loop-loop``, ``interchange-loop-map``, ``interchange-map-loop``, ``interchange-map-map``.
+        :param kind: A key of :data:`~nestforge.phases.schedule.MOVE_SHAPES`: a fusion, a fission or an
+            ``interchange-<outer>-<inner>`` of loops, maps and ifs.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
-            for an interchange.
+            for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.

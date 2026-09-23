@@ -14,13 +14,14 @@ import pytest
 import dace
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
-from dace.sdfg.state import ControlFlowBlock, LoopRegion
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
 
 from nestforge.ir.names import normalize_for_tree
 from nestforge.session import MoveResult, Session
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)
+K = dace.symbol("K", dtype=dace.int64)
 SIZE = 7
 STEPS = 5
 
@@ -118,6 +119,65 @@ def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
         B[i] = A[1, i] * 2.0
 
 
+@dace.program
+def two_recurrences(a: dace.float64[N], b: dace.float64[N]):
+    for i in range(1, N):
+        a[i] = a[i - 1] + 1.0
+        b[i] = b[i - 1] * 0.5
+
+
+@dace.program
+def coupled_recurrences(a: dace.float64[N], b: dace.float64[N]):
+    for i in range(1, N):
+        a[i] = a[i - 1] + b[i - 1]
+        b[i] = a[i] * 0.5
+
+
+@dace.program
+def long_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+    for i in dace.map[0:N]:
+        t = a[i] * 2.0
+        for k in range(3):
+            t = t + a[i]
+        b[i] = t
+        c[i] = b[i] + t
+
+
+@dace.program
+def map_loop(A: dace.float64[T, N]):
+    for i in dace.map[0:N]:
+        for t in range(1, T):
+            A[t, i] = A[t - 1, i] + 1.0
+
+
+@dace.program
+def map_triangle_loop(A: dace.float64[N, N]):
+    for i in dace.map[0:N]:
+        for t in range(i + 1, N):
+            A[t, i] = A[t - 1, i] + 1.0
+
+
+@dace.program
+def guarded_loop(a: dace.float64[N]):
+    if K > 0:
+        for i in range(1, N):
+            a[i] = a[i - 1] + 1.0
+
+
+@dace.program
+def loop_guard(a: dace.float64[N]):
+    for i in range(1, N):
+        if K > 0:
+            a[i] = a[i - 1] + 1.0
+
+
+@dace.program
+def loop_variant_guard(a: dace.float64[N]):
+    for i in range(1, N):
+        if i > K:
+            a[i] = a[i - 1] + 1.0
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -137,6 +197,15 @@ def digest(sdfg: dace.SDFG) -> str:
 def loops(sdfg: dace.SDFG) -> list[LoopRegion]:
     return [
         b for cfg in sdfg.all_control_flow_regions(recursive=True) for b in cfg.nodes() if isinstance(b, LoopRegion)
+    ]
+
+
+def conditionals(sdfg: dace.SDFG) -> list[ConditionalBlock]:
+    return [
+        b
+        for cfg in sdfg.all_control_flow_regions(recursive=True)
+        for b in cfg.nodes()
+        if isinstance(b, ConditionalBlock)
     ]
 
 
@@ -408,33 +477,157 @@ def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
     assert digest(sut.sdfg) == before
 
 
-# kinds without a DaCe transformation
+# loop fission
 
 
-@pytest.mark.parametrize(
-    "program, kind, labels",
-    [
-        (two_loops, "loop-fission", ["for0_0"]),
-        (two_loops, "interchange-loop-loop", ["for0_0", "for0_1"]),
-        (sweep, "interchange-map-loop", ["kernel2_0", "for0_0"]),
-    ],
-)
-def test_a_kind_without_a_dace_transformation_is_not_implemented_and_changes_nothing(program, kind, labels):
-    sut = Session(program.to_sdfg(simplify=True))
+def test_loop_fission_splits_independent_recurrences_into_one_loop_each():
+    sut, reference = session_and_reference(two_recurrences)
+
+    result = apply_listed(sut, "loop-fission")
+
+    assert (result.status, result.reason) == ("applied", "LoopFission")
+    writes = [{"a", "b"} & set(loop.read_and_write_sets()[1]) for loop in loops(sut.sdfg)]
+    assert writes == [{"a"}, {"b"}], writes
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,)), N=SIZE)
+
+
+def test_loop_fission_of_coupled_recurrences_is_illegal_and_changes_nothing():
+    sut = Session(coupled_recurrences.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
 
-    result = sut.apply_move(kind, labels, 0)
+    result = sut.apply_move("loop-fission", [loop.label], 0)
 
-    assert (result.status, result.kind, result.labels) == ("not-implemented", kind, tuple(labels))
-    assert result.reason
+    assert result.status == "illegal" and "LoopFission" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
-    assert sut.list_moves(kind) == []
+    assert sut.list_moves("loop-fission") == []
 
 
-def test_per_loop_fission_points_at_the_whole_program_fission():
-    result = Session(two_loops.to_sdfg(simplify=True)).apply_move("loop-fission", ["for0_0"], 0)
+# subgraph fission
 
-    assert "whole-SDFG" in result.reason and "fission_all" in result.reason, result
+
+@pytest.mark.parametrize("cut", [0, 1])
+def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut):
+    """The body is ``t = 2a; loop: t += a; b = t; c = b + t``: either cut hands ``t`` across, so it has to become
+    one element per map iteration."""
+    sut, reference = session_and_reference(long_body)
+    moves = sut.list_moves("subgraph-fission")
+    assert len(moves) == 2, moves
+
+    result = sut.apply_move(moves[cut]["kind"], moves[cut]["labels"], moves[cut]["epoch"])
+
+    assert (result.status, result.reason) == ("applied", "SubgraphFission")
+    assert len(top_level_maps(sut.sdfg)) == 2
+    assert [str(extent) for extent in sut.sdfg.arrays["t"].shape] == ["N"]
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
+
+
+def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing():
+    sut = Session(long_body.to_sdfg(simplify=True))
+    (entry,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.all_states() if entry in s.nodes())
+    (body,) = [n for n in state.scope_children()[entry] if isinstance(n, nodes.NestedSDFG)]
+    (last,) = body.sdfg.sink_nodes()
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("subgraph-fission", [entry.map.label, last.label], 0)
+
+    assert result.status == "illegal" and "before the last" in result.reason, result
+    assert (digest(sut.sdfg), sut.epoch) == (before, 0)
+
+
+# map-loop interchange
+
+
+def test_map_loop_interchange_puts_the_loop_outside_the_map():
+    sut, reference = session_and_reference(map_loop)
+
+    result = apply_listed(sut, "interchange-map-loop")
+
+    assert (result.status, result.reason) == ("applied", "MapLoopInterchange")
+    (loop,) = [block for block in sut.sdfg.nodes() if isinstance(block, LoopRegion)]
+    (state,) = loop.nodes()
+    assert [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
+def test_map_loop_interchange_undoes_loop_map_interchange():
+    sut, reference = session_and_reference(sweep)
+    apply_listed(sut, "interchange-loop-map")
+
+    result = apply_listed(sut, "interchange-map-loop")
+
+    assert result.status == "applied", result
+    assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
+def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_illegal():
+    """Each map iteration would run a different trip count, which one loop outside the map cannot express."""
+    sut = Session(map_triangle_loop.to_sdfg(simplify=True))
+    (entry,) = top_level_maps(sut.sdfg)
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-map-loop", [entry.map.label, loop.label], 0)
+
+    assert result.status == "illegal" and "varies across map iterations" in result.reason, result
+    assert (digest(sut.sdfg), sut.epoch) == (before, 0)
+
+
+# if-loop interchange
+
+
+def test_a_guard_moves_into_the_loop_it_guards():
+    sut, reference = session_and_reference(guarded_loop)
+
+    result = apply_listed(sut, "interchange-if-loop")
+
+    assert (result.status, result.reason) == ("applied", "MoveIfIntoLoop")
+    assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
+    for k in (0, 3):
+        assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
+
+
+def test_a_loop_invariant_guard_moves_out_of_its_loop():
+    sut, reference = session_and_reference(loop_guard)
+
+    result = apply_listed(sut, "interchange-loop-if")
+
+    assert (result.status, result.reason) == ("applied", "MoveLoopInvariantIfUp")
+    assert [type(block) for block in sut.sdfg.nodes()] == [ConditionalBlock]
+    for k in (0, 3):
+        assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
+
+
+def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
+    sut = Session(loop_variant_guard.to_sdfg(simplify=True))
+    (loop,), (cond,) = loops(sut.sdfg), conditionals(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-loop-if", [loop.label, cond.label], 0)
+
+    assert result.status == "illegal" and "MoveLoopInvariantIfUp" in result.reason, result
+    assert (digest(sut.sdfg), sut.epoch) == (before, 0)
+    assert sut.list_moves("interchange-loop-if") == []
+
+
+# kinds without an implementation
+
+
+def test_loop_loop_interchange_is_not_implemented_and_changes_nothing():
+    sut = Session(two_loops.to_sdfg(simplify=True))
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-loop-loop", ["for0_0", "for0_1"], 0)
+
+    assert (result.status, result.kind, result.labels) == (
+        "not-implemented",
+        "interchange-loop-loop",
+        ("for0_0", "for0_1"),
+    )
+    assert (digest(sut.sdfg), sut.epoch) == (before, 0)
+    assert sut.list_moves("interchange-loop-loop") == []
 
 
 # refusals that never touch the graph

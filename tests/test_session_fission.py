@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session's per-nest fission API (:meth:`Session.list_fissions`, :meth:`Session.fission`): the same
 id/epoch safety layer :mod:`test_session` proves for fusion, applied to the single-pair
-:func:`nestforge.phases.schedule.map_fission_moves` arm.
+:func:`nestforge.phases.schedule.enumerate_map_fissions` arm.
 """
 
 import numpy as np
@@ -41,7 +41,7 @@ def two_statement_map() -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
 
 def multi_statement_map_sdfg() -> dace.SDFG:
     """``two_statement_map`` with its body wrapped into a NestedSDFG -- MapFission's map-with-nested-SDFG
-    pattern, the shape :func:`map_fission_moves` enumerates."""
+    pattern, the shape :func:`enumerate_map_fissions` enumerates."""
     sdfg, state, me = two_statement_map()
     nest_state_subgraph(sdfg, state, state.scope_subgraph(me, include_entry=False, include_exit=False))
     sdfg.validate()

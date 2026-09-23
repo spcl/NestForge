@@ -16,7 +16,7 @@ from dace.sdfg import nodes
 from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge.phases.schedule import fission_to_statements, map_fission_moves
+from nestforge.phases.schedule import enumerate_map_fissions, fission_to_statements
 from nestforge.phases.schedule import apply_fusion, enumerate_fusions
 
 N = dace.symbol("N")
@@ -110,7 +110,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
 
 def map_with_nested_body():
     """A map whose sole body child is a NestedSDFG holding two independent output groups -- MapFission's
-    map-with-nested-SDFG pattern, which is the shape ``map_fission_moves`` exists to enumerate."""
+    map-with-nested-SDFG pattern, which is the shape ``enumerate_map_fissions`` exists to enumerate."""
     sdfg = dace.SDFG("map_with_nested_body")
     sdfg.add_array("a", [N], f64)
     sdfg.add_array("b", [N], f64)
@@ -132,15 +132,15 @@ def map_with_nested_body():
     return sdfg, me
 
 
-def test_map_fission_moves_enumerates_nested_sdfg_body():
+def test_map_fission_enumerates_a_nested_sdfg_body():
     # The arm must match MapFission's map-with-nested-SDFG pattern (expr_index=1). Matched against the
     # default map-with-subgraph pattern instead, the lone NestedSDFG body reads as a single component and
     # the arm offers no moves at all for the one shape it targets.
     sdfg, me = map_with_nested_body()
-    moves = map_fission_moves(sdfg)
+    moves = enumerate_map_fissions(sdfg)
 
     assert len(moves) == 1, "the map with an independent-group nested-SDFG body must be offered as a move"
-    entry, nsdfg = moves[0]
+    entry, nsdfg = moves[0].map_entry, moves[0].nested_sdfg
     assert entry is me
     assert isinstance(nsdfg, nodes.NestedSDFG)
     # The move must carry the pair that validated, so the documented apply_to cannot raise on it.
@@ -148,13 +148,13 @@ def test_map_fission_moves_enumerates_nested_sdfg_body():
     sdfg.validate()
 
 
-def test_map_fission_moves_value_preserving():
+def test_map_fission_preserves_values():
     inputs = mk(names=("a", "b", "c"))
     sdfg, _ = map_with_nested_body()
     ref = run(map_with_nested_body()[0], inputs, 48)
 
-    for entry, nsdfg in map_fission_moves(sdfg):
-        MapFission.apply_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg)
+    for move in enumerate_map_fissions(sdfg):
+        MapFission.apply_to(sdfg, expr_index=1, map_entry=move.map_entry, nested_sdfg=move.nested_sdfg)
     got = run(sdfg, inputs, 48)
     assert all(np.allclose(got[k], ref[k]) for k in inputs), "map fission changed the value"
 
@@ -166,7 +166,7 @@ def test_map_fission_no_moves_without_independent_groups():
         for i in dace.map[0:N]:
             b[i] = a[i] + 1.0
 
-    assert map_fission_moves(one_statement_map.to_sdfg(simplify=True)) == []
+    assert enumerate_map_fissions(one_statement_map.to_sdfg(simplify=True)) == []
 
 
 def test_fission_no_op_on_single_statement():
