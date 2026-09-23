@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Correctness and timing machinery shared by the build lanes: seeded inputs from a kernel's boundary, the
-NumPy oracle, the FP-rung gate, and the bind-once / rewind-per-rep ctypes call."""
+"""Validation and timing of a built kernel: seeded inputs, the NumPy oracle, the FP-mode gate, and the ctypes call
+that binds its arguments once and times repeated calls."""
 
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_
 from nestforge.ir.extract import Boundary
 from nestforge.corpus.translate import Prepared
 
-#: Strict rung overridden to bit-exact: a same-order NumPy oracle reaches 0.0, unlike whole-program FP_ATOL.
+#: A kernel evaluates in the oracle's order, so strict-ieee is bit-exact here.
 ARENA_ATOL: dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 0.0}
 
-# numpy dtype name -> ctypes scalar for the ABI (bool needed: DaCe lowers a comparison transient to C bool).
+#: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
 CTYPE = {
     "float64": ctypes.c_double,
     "float32": ctypes.c_float,
@@ -43,8 +43,7 @@ def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...
 
 
 def emitted_sdfg(boundary: Boundary) -> dace.SDFG:
-    """The descriptors the EMITTED kernel is written against (widened scratch included); sizing from the
-    raw nest allocates a buffer too small and overflows the heap."""
+    """The descriptors the emitted kernel indexes, widened scratch included; the raw nest's are too small."""
     return maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)
 
 
@@ -55,9 +54,11 @@ INPUT_HIGH = 0.25
 def make_inputs(
     boundary: Boundary, sizes: dict[str, int], seed: int = 0, given: dict[str, np.ndarray] | None = None
 ) -> dict[str, np.ndarray]:
-    """Random arrays for inputs; zeros for outputs and scratch buffers (all caller-pre-allocated).
-    :param given: ready-made values (e.g. index arrays) that must match the resolved shape/dtype exactly."""
-    sdfg = emitted_sdfg(boundary)  # widened scratch: allocate what the kernel indexes, not the raw shape
+    """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller.
+
+    :param given: Ready-made values, such as index arrays, of exactly the resolved shape and dtype.
+    """
+    sdfg = emitted_sdfg(boundary)
     rng = np.random.default_rng(seed)
     given = given or {}
     arrays: dict[str, np.ndarray] = {}
@@ -83,7 +84,7 @@ def make_inputs(
 def run_oracle(
     prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int]
 ) -> dict[str, np.ndarray]:
-    """Run the emitted numpy kernel to get reference outputs."""
+    """The outputs of the kernel's NumPy oracle on copies of ``inputs``."""
     missing = [s for s in boundary.symbols if s not in sizes]
     if missing:
         raise KeyError(
@@ -98,8 +99,8 @@ def run_oracle(
 
 
 def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
-    """ctype of a by-value kernel arg: float -> c_double; every integer is always int64_t regardless of the
-    SDFG's own width, since a narrower c_int leaves the upper register half garbage."""
+    """ctype of a by-value argument: a float is ``c_double``, any integer ``int64_t`` whatever its SDFG width,
+    since a narrower c_int leaves the upper register half undefined."""
     if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
         return ctypes.c_double
     return ctypes.c_int64
@@ -117,7 +118,7 @@ def rewind_snapshot(boundary: Boundary, buffers: dict[str, np.ndarray]) -> list[
 
 
 def rewind(snapshot: list[tuple[np.ndarray, np.ndarray]]) -> None:
-    """Restore the pristine contents of every accumulating buffer. Call OUTSIDE the timed region."""
+    """Restore the pristine contents of every accumulating buffer, outside the timed region."""
     for buf, pristine in snapshot:
         buf[...] = pristine
 
@@ -153,19 +154,19 @@ def call_native(
     copy_inputs: bool = True,
     copy_outputs: bool = True,
 ) -> tuple[dict[str, np.ndarray] | None, float]:
-    """Bind + call the compiled entry, then time ``reps`` calls on the same buffers.
-    ``order`` must be the EMITTED-signature order (not the manifest's), or same-typed buffers land in the
-    wrong slot silently. A read-write output is restored before every timed rep, outside the timed region,
-    since an unrestored in-place kernel decays into denormals within a few reps and times subnormal
-    arithmetic instead. ``copy_inputs=False`` runs on the caller's own buffers; ``copy_outputs=False`` skips
-    the result snapshot."""
+    """Call the compiled entry once and snapshot its outputs, then time ``reps`` calls on the same buffers.
+
+    ``order`` is the compiled signature's order, not the manifest's: same-typed buffers in the wrong slot go
+    unnoticed. A read-write output is restored before every timed call (see :func:`accumulating_outputs`).
+    ``copy_inputs=False`` works on the caller's buffers; ``copy_outputs=False`` skips the snapshot.
+    """
     lib = ctypes.CDLL(str(so))
     fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
     fn.argtypes = argtypes
     fn.restype = None
     work = {k: v.copy() for k, v in inputs.items()} if copy_inputs else inputs
 
-    # bind ONCE (every rep reuses these buffers): per-rep data_as would time Python marshaling
+    # bound once: per-call data_as would time Python marshaling
     args = bind_arguments(order, argtypes, work, sizes)
     snapshot = rewind_snapshot(boundary, work)
     fn(*args)  # correctness run
@@ -335,12 +336,9 @@ def rung_atol(mode: str, floor: float) -> float:
 
 
 def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float, float]:
-    """``(worst_abs, worst_scaled)`` in one pass over every array: the absolute elementwise difference, and
-    the same difference scaled by the magnitude of the values compared (the denominator floors at 1.0, since
-    an absolute gate is unreachable for a reduction -- fp64 ULP noise exceeds 1e-14 at reduction scale --
-    without loosening what fp64 actually promises at small magnitude). ``inf`` on a non-finite difference
-    (builtin ``max`` drops a non-first NaN, which would otherwise report a NaN-poisoned kernel as a perfect
-    match) and on a verdict that touched zero elements (an all-empty comparison is not a match either)."""
+    """``(worst_abs, worst_scaled)`` over every array: the largest elementwise difference, and the same scaled by
+    the larger magnitude compared, floored at 1.0 so a reduction's ULP noise passes while small values stay
+    absolute. Both are ``inf`` on a non-finite difference and on a comparison of zero elements."""
     worst_abs, worst_rel = 0.0, 0.0
     compared = False
     for k in a:
@@ -352,13 +350,12 @@ def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[floa
         if not np.isfinite(d_abs):
             return float("inf"), float("inf")
         scale = np.maximum(np.maximum(np.abs(a[k]), np.abs(b[k])), 1.0)
-        with np.errstate(invalid="ignore"):  # inf/inf -> nan, which is a FAILURE, not a warning
+        with np.errstate(invalid="ignore"):  # inf/inf is nan, a failure caught below
             d_rel = float(np.max(diff / scale))
         if not np.isfinite(d_rel):
             return float("inf"), float("inf")
         worst_abs = max(worst_abs, d_abs)
         worst_rel = max(worst_rel, d_rel)
     if not compared:
-        # a verdict read off zero elements must fail loudly, not report 0.0 as bit-exact
         return float("inf"), float("inf")
     return worst_abs, worst_rel

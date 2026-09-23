@@ -1,13 +1,13 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Extract any loop-nest (CFG ``LoopRegion``) or map-nest (``MapEntry``) into a standalone SDFG, via
-DaCe's ``nest_state_subgraph``/``nest_sdfg_subgraph`` outliners. :class:`Boundary` records the
-in/out data and symbols and keeps a handle on the placed node for a later ``ExternalCall`` swap."""
+"""Outline a map nest or a control-flow nest into a standalone SDFG with DaCe's nesting helpers. :class:`Boundary`
+records its data and symbols and the nested SDFG node that phase 2 replaces with an ``ExternalCall``."""
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from typing import cast
 
 import dace
 from dace.sdfg import nodes
@@ -17,12 +17,15 @@ from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
 CfgNest = LoopRegion | ConditionalBlock
+
+#: ``dace.int64``, which DaCe annotates as the NumPy type rather than its typeclass.
+INT64 = cast(dace.dtypes.typeclass, dace.int64)
 NestNode = nodes.MapEntry | CfgNest
 
 
 @dataclass(slots=True)
 class Boundary:
-    """The interface of an extracted nest, in the order the arena/libnode will use."""
+    """The interface of an extracted nest, in argument order."""
 
     inputs: list[str]
     outputs: list[str]
@@ -67,9 +70,8 @@ def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_s
 
 
 def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: str | None = None) -> Boundary:
-    """Outline a whole map scope (entry..exit + body) into a standalone SDFG. ``full_data=True`` nests
-    whole boundary arrays, not the accessed sub-range (else DaCe shrinks the connector and breaks the
-    generated C signature)."""
+    """Outline a map scope into a nested SDFG over whole boundary arrays; a shrunk connector would change the
+    kernel's C signature."""
     state = find_state_of_node(parent_sdfg, map_entry)
     subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
@@ -77,22 +79,19 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: st
 
 
 def assignment_dtype(sdfg: dace.SDFG, rhs: str) -> dace.dtypes.typeclass:
-    """dtype of an interstate assignment's RHS, inferred from ``sdfg``'s symbol/array tables; falls
-    back to ``int64`` (a float staged across an edge must not be silently truncated to it)."""
+    """dtype of an interstate assignment's right-hand side, ``int64`` when it cannot be inferred."""
     table = {s: t for s, t in sdfg.symbols.items()}
     table.update({name: desc.dtype for name, desc in sdfg.arrays.items()})
     try:
         inferred = infer_expr_type(rhs, table)
     except Exception:  # inference walks arbitrary expression ASTs; an untypeable RHS keeps the default
-        return dace.int64
-    return inferred if isinstance(inferred, dace.dtypes.typeclass) else dace.int64
+        return INT64
+    return inferred if isinstance(inferred, dace.dtypes.typeclass) else INT64
 
 
 def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, dace.dtypes.typeclass]:
-    """Every genuine interstate-edge assignment target defined inside the nest, mapped to the dtype it
-    should be pre-declared with. Loop iterators are scope symbols (never SDFG symbols): DaCe's own nest
-    helper types and exports them itself from the ``LoopRegion``, so they are excluded here rather than
-    hardcoded and pre-declared."""
+    """Each symbol an interstate assignment inside the nest defines, with its dtype. Loop iterators are scope
+    symbols, typed by DaCe's nesting helper, so they are left out."""
     loop_variables = {
         b.loop_variable
         for b in [region, *region.all_control_flow_blocks()]
@@ -108,26 +107,22 @@ def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, da
 
 
 def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None = None) -> Boundary:
-    """Outline one control-flow block -- a ``LoopRegion`` or a ``ConditionalBlock`` with all its branches
-    -- into a standalone SDFG; the coarsest of the three offload units."""
-    # pre-declare with the INFERRED dtype: int64 by fiat would truncate a float staged across an edge.
-    # Loop iterators are never pre-declared here (GOTCHA: scope symbols, not SDFG symbols).
+    """Outline a ``LoopRegion``, or a ``ConditionalBlock`` with all its branches, into a nested SDFG."""
+    # declare with the inferred dtype: int64 would truncate a float staged across an edge
     for s, dtype in nest_defined_symbol_dtypes(parent_sdfg, region).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
     subgraph = SubgraphView(parent_sdfg, [region])
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
-    # nest_sdfg_subgraph takes no name; apply it here or same-kernel nests collide in the build cache.
+    # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache
     if name:
-        nsdfg_node.sdfg.name = name
+        nsdfg_node.sdfg.name = name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     return boundary_from_nsdfg(nsdfg_node, inner_state, parent_sdfg)
 
 
 def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | None = None) -> Boundary:
-    """Extract any map-nest or loop-nest into a standalone SDFG.
-
-    :returns: a :class:`Boundary`; the standalone SDFG is ``boundary.nsdfg_node.sdfg``."""
+    """Outline a map nest or a control-flow nest; see :func:`extract_map_nest` and :func:`extract_cfg_nest`."""
     if isinstance(node, nodes.MapEntry):
         return extract_map_nest(parent_sdfg, node, name=name)
     if isinstance(node, (LoopRegion, ConditionalBlock)):
@@ -138,9 +133,7 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | Non
 
 
 def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
-    """A :class:`Boundary` wrapping the WHOLE (un-split) kernel SDFG, for tools that take the entire
-    program instead of one extracted nest. ``inputs``/``outputs`` come from the read/write sets,
-    restricted to non-transient arrays (transients are the kernel's own scratch)."""
+    """A :class:`Boundary` over the whole program: its non-transient arrays read and written, and its symbols."""
     detached = detach(sdfg)
     read, write = detached.read_and_write_sets()
     arrays = {n for n, desc in detached.arrays.items() if not desc.transient}

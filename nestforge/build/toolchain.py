@@ -1,13 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""What the machine's toolchains can actually do: compiler families, OpenMP runtimes, and
-C-signature parsing. No DaCe. Every answer is discovered rather than assumed, and subprocess probes
-are cached (``typed=True``)."""
+"""What this machine's toolchains can do: compiler families, OpenMP runtimes, CUDA toolkits, and C-signature
+parsing. Imports no DaCe; every answer is discovered, and subprocess probes are cached."""
 
 from __future__ import annotations
 
 import ctypes
-import ctypes.util  # a SUBMODULE: `import ctypes` alone does not bind it, and lib_findable needs it
+import ctypes.util  # a submodule `import ctypes` does not bind
 import functools
 import os
 import re
@@ -43,11 +42,10 @@ C_PTR = {
 
 DEFAULT_COMPILER = "g++"
 
-#: Records a shared library in DT_NEEDED only when something references it. Every link nest-forge performs
-#: passes it before its libraries, instead of trusting a distribution's default.
+#: Records a shared library in DT_NEEDED only when something references it; every link passes it explicitly.
 AS_NEEDED = "-Wl,--as-needed"
 
-#: The ONE C++ standard the whole tree compiles against; override per call only to TEST, never to ship.
+#: The C++ standard every build compiles against.
 CXX_STD = "c++20"
 
 DEFAULT_FLAGS = ["-O3", "-march=native", f"-std={CXX_STD}", "-fPIC", "-shared"]
@@ -83,8 +81,7 @@ class OpenMPRuntime:
     provides: frozenset = frozenset({"kmpc", "gomp"})
 
     def compatible(self, compiler: str) -> bool:
-        """True if ``compiler`` can LINK this runtime: llvm selects by name from the LLVM-selectable
-        set; gnu links any gomp-ABI runtime."""
+        """Whether ``compiler`` can link this runtime: llvm selects it by name, gnu links any gomp-ABI runtime."""
         fam = compiler_family(compiler)
         if fam == "llvm":
             return self.name in LLVM_SELECTABLE and COMPILER_ABI["llvm"] in self.provides
@@ -121,14 +118,14 @@ class OpenMPRuntime:
         return ["-fopenmp"]  # gnu: runtime fixed at link, not by this flag
 
     def link_flags(self, compiler: str) -> list[str]:
-        """Flags to link a program against THIS runtime only (avoids dual-runtime oversubscription)."""
+        """Flags to link against this runtime only, so no second runtime starts its own thread pool."""
         self.check(compiler)
         pinned, library = self.link_location(compiler)
         # -L alone leaves no RUNPATH; ctypes.CDLL fails to open the lib after build without -rpath too
         libdir = [f"-L{pinned}", f"-Wl,-rpath,{pinned}"] if pinned else []
         if compiler_family(compiler) == "llvm":
             return [f"-fopenmp={self.name}", *libdir]
-        # gnu: link the runtime EXPLICITLY (bare -fopenmp would pull libgomp instead)
+        # gnu: a bare -fopenmp would pull in libgomp
         return [*libdir, library]
 
     def link_location(self, compiler: str) -> tuple[str | None, str]:
@@ -139,7 +136,7 @@ class OpenMPRuntime:
         return linkable_lib_dir(self.soname, compiler), library_flag(self.soname, compiler)
 
 
-#: icx auto-links libsvml/libimf/libirng/libintlc off-path with NO RUNPATH; probing this one finds the set.
+#: icx links libsvml/libimf/libirng/libintlc from off the loader path without a RUNPATH; this one finds them all.
 SUPPORT_LIB_PROBE = "svml"
 
 
@@ -153,9 +150,8 @@ def support_rpath_flags(compiler: str) -> tuple[str, ...]:
 #: Ready-made OpenMP runtimes; libomp/libgomp/libiomp5 share the GOMP ABI.
 LIBOMP = OpenMPRuntime(name="libomp", soname="omp")
 
-LIBGOMP = OpenMPRuntime(
-    name="libgomp", soname="gomp", provides=frozenset({"gomp"})
-)  # GOMP-only; unusable by a kmpc compiler
+#: GOMP-only, so a kmpc compiler cannot use it.
+LIBGOMP = OpenMPRuntime(name="libgomp", soname="gomp", provides=frozenset({"gomp"}))
 
 LIBIOMP5 = OpenMPRuntime(name="libiomp5", soname="iomp5")
 
@@ -174,7 +170,7 @@ def env_library_dirs() -> list[str]:
 #: Drivers to ask where a runtime lives when the target compiler cannot find it; clang-first since libomp.
 LIB_PROBE_DRIVERS = ("clang++", "clang", "g++", "gcc")
 
-#: Ceiling on a toolchain PROBE (asking a driver/loader, not compiling); an unbounded one hangs the sweep.
+#: Ceiling on asking a driver or the loader something; an unbounded probe hangs the sweep.
 PROBE_TIMEOUT_S: float = 15.0
 
 
@@ -190,7 +186,7 @@ def driver_lib_path(soname: str, compiler: str) -> Path | None:
         return None
     if not out or out == f"lib{soname}.so":
         return None
-    # normalize LEXICALLY, never resolve(): libomp.so is often a symlink into another dir
+    # normalize lexically, never resolve(): libomp.so is often a symlink into another directory
     path = Path(os.path.normpath(out))
     return path if path.exists() else None
 
@@ -210,13 +206,13 @@ def driver_search_dirs(compiler: str) -> list[str]:
     return []
 
 
-#: ldconfig by name AND full path: /usr/sbin is off the default non-root PATH on Debian-family slim images.
+#: ldconfig by name and by full path: /usr/sbin is off the non-root PATH on slim Debian images.
 LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
 
 
 @functools.lru_cache(maxsize=None, typed=True)
 def ldconfig_output() -> str:
-    """``ldconfig -p`` output, or "". sbin is off the non-root PATH on slim images, so full paths are tried too."""
+    """``ldconfig -p`` output, or ``""``."""
     for exe in LDCONFIG_EXES:
         try:
             out = subprocess.run([exe, "-p"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S).stdout
@@ -258,8 +254,7 @@ def llvm_version(path: Path) -> tuple[int, ...]:
 
 
 def hint_dirs() -> list[str]:
-    """Guessed library dirs, newest LLVM first, ranked ACROSS roots (per-root sorting would put
-    /usr/lib/llvm-14 ahead of /usr/lib64/llvm-18) with path as a stable tiebreaker for glob order."""
+    """Guessed library dirs, newest LLVM first across all roots, ties broken by path for a stable order."""
     found = [p for root in LIB_DIR_HINT_ROOTS for p in Path(root).glob("llvm-*/lib*")]
     ranked = sorted({str(p) for p in found}, key=lambda d: (llvm_version(Path(d)), d), reverse=True)
     return ranked + [d for d in LIB_DIR_HINTS if d not in ranked]
@@ -359,9 +354,8 @@ def lib_findable(soname: str, lib_dir: str | None) -> bool:
 
 @functools.lru_cache(maxsize=None, typed=True)
 def usable_openmp(compiler: str) -> OpenMPRuntime | None:
-    """The ONE OpenMP runtime ``compiler`` can actually link, preferring libomp. Never a bare -fopenmp
-    (gcc/clang would each link a different default, doubling thread pools in a mixed-compiler sweep): a
-    runtime-less build makes the compiler silently drop the OpenMP pragma and run serial. None if nothing links."""
+    """The OpenMP runtime ``compiler`` can link, libomp first, or ``None``. Never a bare -fopenmp: gcc and clang
+    would each link their own default and a mixed-compiler program would run two thread pools."""
     for rt in OPENMP_RUNTIMES.values():  # deliberately libomp-first
         if not rt.compatible(compiler):
             continue
@@ -385,7 +379,7 @@ def parse_params(param_str: str) -> list[Param]:
     """Parse a C parameter list into typed params; skips the leading N_state_t *__state handle."""
     params: list[Param] = []
     for raw in split_params(param_str):
-        # strip qualifiers as whole WORDS: a substring strip would corrupt names like `const_term`
+        # strip qualifiers as whole words: a substring strip would corrupt names like `const_term`
         tok = re.sub(r"\b(?:const|__restrict__)\b", "", raw).strip()
         if not tok or tok.endswith("_state_t *__state") or tok.endswith("_state_t* __state"):
             continue
@@ -430,10 +424,8 @@ def split_params(param_str: str) -> list[str]:
 
 
 def raw_signature(text: str, symbol: str, lang: str = "c") -> str:
-    """The parameter-declaration text between the parens of the kernel entry, verbatim. One regex shared
-    by every consumer that parses a kernel entry definition, anchored on the ``void`` return and opening
-    brace since a looser ``\\b<symbol>\\s*\\(`` also matches a doc comment merely naming the function;
-    raises LookupError if the entry is absent."""
+    """The parameter text of the kernel entry's definition, verbatim; :class:`LookupError` if it is absent.
+    Anchored on ``void`` and the opening brace, since the bare name also matches a comment naming it."""
     if lang == "fortran":
         m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
     else:
@@ -452,8 +444,6 @@ def signature(code: str, symbol: str) -> str:
     return m.group(1)
 
 
-# whole-toolchain discovery, PATH only; lives here, not a perf driver, so querying "which compilers does
-# this box have" does not drag in a dace import via perf/tsvc_arena
 @dataclass(slots=True)
 class Toolchain:
     """One discovered toolchain family: C compiler, optional C++ compiler, and where it was found."""
@@ -484,7 +474,7 @@ ALIASES = {
     "gcc": "gcc", "g++": "gcc", "gnu": "gcc",
     "clang": "clang", "clang++": "clang", "llvm": "clang",
     "icx": "intel", "icpx": "intel", "intel": "intel", "oneapi": "intel",
-}  # yapf: disable
+}  # fmt: skip
 
 
 def discover_toolchains(requested: str = "auto") -> list[Toolchain]:
@@ -592,16 +582,16 @@ def needed_libraries(shared: Path) -> list[str]:
     return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out)
 
 
-#: The archiver every build uses; nothing in the tree passes -flto, so no LTO-plugin-aware ar/gcc-ar is needed.
+#: The archiver; no build uses -flto, so no plugin-aware gcc-ar is needed.
 AR = "ar"
 
-#: Wall-clock ceiling for a single compile/link/archive command; a stuck compile freezes the whole sweep rank.
+#: Wall-clock ceiling for one compile, link or archive command.
 COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 
-#: Distinct warning TEXTS reported per tool before the rest are only counted (unbounded dedup grows forever).
+#: Distinct warning kinds reported per tool before the rest are only counted.
 WARN_BUDGET: int = 5
 
-#: tool name -> (distinct texts already reported (insertion order, as a dict), total suppressed past the budget).
+#: tool -> (warning kinds reported, in order; how many more were only counted).
 WARNED: dict[str, tuple[dict[str, None], int]] = {}
 
 
@@ -612,9 +602,8 @@ def warning_kinds(stderr: str) -> str:
 
 
 def warn_once(tool: str, stderr: str) -> None:
-    """Report a SUCCEEDING command's warnings, bounded -- unbounded this printed a multi-KB block per
-    compiled cell (hundreds of MB across a sweep). Past budget, kinds are only counted; warning_summary
-    reports the total."""
+    """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool; a
+    sweep compiles hundreds of cells, and unbounded this printed hundreds of MB."""
     kinds = warning_kinds(stderr)
     seen, suppressed = WARNED.setdefault(tool, ({}, 0))
     if kinds in seen:
@@ -643,7 +632,7 @@ def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        # child already SIGKILLed; surface as a normal build failure so the sweep moves on
+        # the child is already killed; a normal build failure lets the sweep move on
         raise RuntimeError(
             f"command timed out after {timeout:.0f}s: {' '.join(cmd[:2])} ... "
             f"(pathological compile/link; ceiling is NF_COMPILE_TIMEOUT)"

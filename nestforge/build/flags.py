@@ -1,33 +1,31 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Shared compile-flag matrix for the variant sweep: FP-precision level axis crossed with a vectorizer
-cost-model axis, per compiler family, for C/C++ and Fortran. ``intel`` is split from ``llvm`` because
-icx/icpx/ifx default to ``-fp-model=fast``."""
+"""The compile-flag matrix phase 5 sweeps: FP mode crossed with vectorizer cost model, per compiler family.
+``intel`` is its own family because icx, icpx and ifx default to ``-fp-model=fast``."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-#: FP-precision levels, strictest first; the index is the ladder rung.
+#: FP modes, strictest first.
 FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma", "fast-math")
 
-#: Validation tolerance vs the numpy fp64 oracle, which isn't bit-reproducible itself (pairwise np.sum, BLAS
-#: dot, non-correctly-rounded libm), so even ``strict-ieee`` isn't atol 0.
+#: Tolerance against the NumPy float64 oracle, which is not bit-reproducible itself (pairwise np.sum, BLAS dot,
+#: libm), so even ``strict-ieee`` allows some error.
 FP_ATOL: dict[str, float] = {
     "strict-ieee": 1e-15,
     "contract-fma": 1e-13,
     "fast-math": 1e-5,
 }
 
-#: Relative tolerance floor per output dtype (about one ULP of that storage format), composed as
-#: ``max(rung, dtype)`` so a gate never demands more precision than the format can represent.
+#: Relative tolerance floor per output dtype, about one ULP; the gate is ``max(mode, dtype)``.
 DTYPE_ATOL: dict[str, float] = {
     "float64": 2.3e-16,
     "float32": 1.2e-7,
     "float16": 9.8e-4,
 }
 
-#: FP-mode flags per (family, level) -- C spellings; Fortran deltas applied by :func:`fortran_fp_flags`.
+#: FP-mode flags per family and mode, spelled for C; :func:`fortran_fp_flags` adapts them.
 FP: dict[str, dict[str, list[str]]] = {
     "gnu": {
         "strict-ieee": ["-ffp-contract=off", "-fexcess-precision=standard"],
@@ -40,34 +38,25 @@ FP: dict[str, dict[str, list[str]]] = {
         "fast-math": ["-ffast-math", "-mrecip"],
     },
     "intel": {
-        # icx/ifx default to -fp-model=fast, so each rung sets an explicit model to reset the baseline.
         "strict-ieee": ["-fp-model=strict"],
         "contract-fma": ["-fp-model=precise"],
         "fast-math": ["-fp-model=fast=2", "-ftz"],
     },
 }
 
-#: Native-tuning flag per family.
-ARCH: dict[str, str] = {
-    "gnu": "-march=native",
-    "llvm": "-march=native",
-    "intel": "-march=native",
-}
-
-#: Vectorizer cost-model axis: "default" = compiler's own model, "no-vec" = scalar floor, "cheap" = fewer
-#: vectorizations (only gcc has a direct knob).
+#: Vectorizer cost models: the compiler's own, fewer vectorizations (gcc only), and none.
 COST_MODELS: tuple[str, ...] = ("default", "cheap", "no-vec")
 
 
 def base_flags(family: str) -> list[str]:
-    """``-O3`` + native tuning + PIC/shared -- the common prefix every cell shares."""
-    return ["-O3", ARCH.get(family, "-march=native"), "-fPIC", "-shared"]
+    """The prefix every cell shares."""
+    return ["-O3", "-march=native", "-fPIC", "-shared"]
 
 
 def fortran_fp_flags(family: str, level: str) -> list[str]:
-    """FP-mode flags for a family's Fortran frontend; gfortran needs ``-fno-frontend-optimize``, since it
-    reassociates at ``-O`` even under ``-ffp-contract=off``."""
-    drop = {"-fno-math-errno", "-fexcess-precision=standard"}  # C-family flags the Fortran frontends reject
+    """FP-mode flags for a family's Fortran frontend; gfortran reassociates at ``-O`` even under
+    ``-ffp-contract=off`` unless ``-fno-frontend-optimize`` stops it."""
+    drop = {"-fno-math-errno", "-fexcess-precision=standard"}  # rejected by the Fortran frontends
     flags = [f for f in FP[family][level] if f not in drop]
     if family == "gnu":
         if level != "fast-math":
@@ -78,12 +67,12 @@ def fortran_fp_flags(family: str, level: str) -> list[str]:
 
 
 def fp_flags(family: str, level: str, lang: str = "c") -> list[str]:
-    """FP-mode flags for a (family, level), adjusted for ``lang`` ("c" or "fortran")."""
+    """FP-mode flags for ``family`` at ``level``, for ``lang`` ``"c"`` or ``"fortran"``."""
     return fortran_fp_flags(family, level) if lang == "fortran" else list(FP[family][level])
 
 
 def cost_flags(family: str, model: str) -> list[str]:
-    """Vectorizer cost-model flags for a family. Empty where the family has no equivalent knob."""
+    """Vectorizer cost-model flags for ``family``; empty where it has no such knob."""
     if model == "no-vec":
         return {
             "gnu": ["-fno-tree-vectorize"],
@@ -96,7 +85,7 @@ def cost_flags(family: str, model: str) -> list[str]:
 
 
 def flag_matrix(family: str, lang: str = "c") -> list[tuple[str, str, list[str]]]:
-    """``[(fp_level, cost_model, full_flags), ...]`` for a family/language, deduped by flag set."""
+    """``(fp_level, cost_model, flags)`` per cell for ``family``, one per distinct flag set."""
     matrix: list[tuple[str, str, list[str]]] = []
     seen: dict[tuple[str, ...], None] = {}
     base = base_flags(family)
@@ -111,26 +100,25 @@ def flag_matrix(family: str, lang: str = "c") -> list[tuple[str, str, list[str]]
     return matrix
 
 
-#: nvcc's FP rungs. The device has no fast-math switch, so a GPU kernel sweeps the two rungs nvcc expresses.
+#: The FP modes a GPU kernel sweeps; nvcc has no fast-math mode that matches the CPU one.
 CUDA_FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma")
 
-#: Device flag per rung (``--fmad`` fuses multiply-adds on the device), plus the host rung for the unit's host code.
+#: Device and host FP flags per mode; ``--fmad`` fuses multiply-adds on the device.
 CUDA_FP: dict[str, list[str]] = {
     "strict-ieee": ["--fmad=false", "-Xcompiler=-ffp-contract=off"],
     "contract-fma": ["--fmad=true", "-Xcompiler=-ffp-contract=fast"],
 }
 
-#: The cost-model value of a GPU cell: nvcc has no vectorizer cost model to sweep.
+#: The cost model of a GPU cell: nvcc has none to sweep.
 NO_COST_MODEL = "none"
 
 
 def cuda_base_flags(build_flags: Sequence[str]) -> list[str]:
-    """``build_flags`` (what CPF's CUDA unit needs) + ``-O3`` + native device arch + PIC/shared: the one place GPU
-    flags are composed, and the counterpart of :func:`base_flags`."""
+    """``build_flags`` (what a CPF CUDA unit needs), then the prefix every GPU cell shares."""
     return [*build_flags, "-O3", "-arch=native", "-Xcompiler=-fPIC", "-shared"]
 
 
 def cuda_flag_matrix(build_flags: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """``[(fp_level, full_flags), ...]`` for nvcc."""
+    """``(fp_level, flags)`` per GPU cell."""
     base = cuda_base_flags(build_flags)
     return [(level, base + CUDA_FP[level]) for level in CUDA_FP_LEVELS]

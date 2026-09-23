@@ -1,8 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emit a standalone numpy/python kernel from an extracted nest.
+"""Emit an extracted nest as a standalone NumPy kernel, its correctness oracle.
 
-C-style: every array is a pre-allocated buffer parameter written in place; no allocation, no return.
+Every array is a caller-allocated buffer parameter written in place; the kernel allocates and returns nothing.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import tempfile
 from pathlib import Path
 from types import ModuleType
 from collections.abc import Callable, Mapping
+from typing import cast
 
 import numpy
 import sympy
@@ -30,7 +31,16 @@ from dace import symbolic
 from dace.cpf_lowering import C_CTYPE_DTYPES
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.state import BreakBlock, ConditionalBlock, ContinueBlock, LoopRegion, ReturnBlock
+from dace.sdfg.graph import MultiConnectorEdge
+from dace.sdfg.state import (
+    BreakBlock,
+    ConditionalBlock,
+    ContinueBlock,
+    ControlFlowBlock,
+    ControlFlowRegion,
+    LoopRegion,
+    ReturnBlock,
+)
 from dace.sdfg.utils import dfs_topological_sort
 
 from nestforge.ir.emit_libnode import (
@@ -42,6 +52,7 @@ from nestforge.ir.emit_libnode import (
     scalar_local,
     write_lhs,
 )
+from nestforge.ir.dace_types import memlet_data, memlet_range, memlet_subset, other_subset
 from nestforge.ir.extract import Boundary
 
 try:
@@ -73,6 +84,7 @@ def sub_connectors(code: str, conn_expr: dict[str, str], pattern: re.Pattern | N
     if not conn_expr:
         return code
     pattern = pattern if pattern is not None else connector_pattern(conn_expr)
+    assert pattern is not None, "a non-empty mapping has a pattern"
     return pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
@@ -195,6 +207,7 @@ def load_emitted(source: str, name: str) -> ModuleType:
     path = emitted_dir() / f"{name}_{hashlib.sha256(source.encode()).hexdigest()[:16]}.py"
     path.write_text(source)
     spec = importlib.util.spec_from_file_location(f"nestforge_emitted.{name}", path)
+    assert spec is not None and spec.loader is not None, f"{path} is not importable"
     module = importlib.util.module_from_spec(spec)
     module.__dict__.update(EMITTED_BUILTINS)  # bound BEFORE exec: the source references them at call time
     spec.loader.exec_module(module)
@@ -320,12 +333,6 @@ def trap_guard_lines(tasklet: nodes.Tasklet) -> list[str] | None:
     return [f"if {cond}:", f"    raise AssertionError({f'violated assumption in {tasklet.label}'!r})"]
 
 
-@functools.lru_cache(maxsize=4096, typed=True)
-def reduction_type(wcr_str: str) -> dace.dtypes.ReductionType:
-    """Cached :func:`detect_reduction_type`; the same WCR string repeats across a reduction's edges."""
-    return detect_reduction_type(wcr_str)
-
-
 #: reduction type -> ``(accumulator, term) -> combined expression`` for a WCR (augmented) write.
 WCR_BINOP = {
     dace.dtypes.ReductionType.Sum: lambda acc, t: f"{acc} + {t}",
@@ -333,6 +340,13 @@ WCR_BINOP = {
     dace.dtypes.ReductionType.Max: lambda acc, t: f"np.maximum({acc}, {t})",
     dace.dtypes.ReductionType.Min: lambda acc, t: f"np.minimum({acc}, {t})",
 }
+
+
+@functools.lru_cache(maxsize=4096, typed=True)
+def wcr_combine(wcr: str) -> Callable[[str, str], str] | None:
+    """How a WCR combines accumulator and term, ``None`` when unsupported; one WCR repeats across edges."""
+    kind = detect_reduction_type(wcr)
+    return None if kind is None else WCR_BINOP.get(kind)
 
 
 def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> list[str]:
@@ -349,16 +363,16 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
     conn_expr: dict[str, str] = {}
     for e in state.in_edges(tasklet):
         if e.dst_conn is not None:
-            conn_expr[e.dst_conn] = access(sdfg, e.data.data, e.data.subset)
+            conn_expr[e.dst_conn] = access(sdfg, memlet_data(e.data), memlet_range(e.data))
     wcr_updates: list[str] = []
     for e in state.out_edges(tasklet):
         if e.src_conn is None:
             continue
-        target = access(sdfg, e.data.data, e.data.subset)
+        target = access(sdfg, memlet_data(e.data), memlet_range(e.data))
         if e.data.wcr is None:
             conn_expr[e.src_conn] = target
             continue
-        combine = WCR_BINOP.get(reduction_type(e.data.wcr))
+        combine = wcr_combine(e.data.wcr)
         if combine is None:
             raise UnsupportedNest(f"tasklet {tasklet.label} has an unsupported WCR {e.data.wcr!r}")
         temp = f"__wcr_{e.src_conn}"
@@ -381,7 +395,7 @@ def copy_side(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None) -> 
     return f"{name}[{index_str(subset)}]"  # keep_singleton default: length-1 axes collapse away
 
 
-def copy_direction(edge: dace.sdfg.graph.MultiConnectorEdge) -> tuple:
+def copy_direction(edge: MultiConnectorEdge) -> tuple:
     """``(src_name, src_subset, dst_subset)`` for one access-node -> access-node copy edge.
 
     Source is tested first: on an in-place copy both endpoints share one name, so this tie-break order
@@ -406,14 +420,14 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             src_name, src_sub, dst_sub = copy_direction(e)
         elif isinstance(e.src, nodes.MapEntry):
             # a staged in-map read (b_index = b[i]): the memlet names the outer source, not the scratch dest
-            src_name, src_sub, dst_sub = m.data, m.subset, m.other_subset
+            src_name, src_sub, dst_sub = memlet_data(m), memlet_subset(m), other_subset(m)
         else:
             # Tasklet/MapExit source WCRs are emitted at that edge's own owner (tasklet_lines /
             # map_exit_writes); a LibraryNode/NestedSDFG source is refused at its own emitter instead.
             continue
         lhs, rhs, dst_read = copy_sides(sdfg, dst.data, dst_sub, src_name, src_sub)
         if m.wcr is not None:  # a reduction copy (e.g. a privatized accumulator copied back): accumulate
-            combine = WCR_BINOP.get(reduction_type(m.wcr))
+            combine = wcr_combine(m.wcr)
             if combine is None:
                 raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} has an unsupported WCR {m.wcr!r}")
             rhs = combine(dst_read, rhs)
@@ -573,13 +587,13 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
                 )
             continue
         m = e.data
-        dst_name, dst_sub, src_sub = m.data, m.subset, m.other_subset
+        dst_name, dst_sub, src_sub = memlet_data(m), memlet_subset(m), other_subset(m)
         src_name = e.src.data
         if src_name == dst_name and m.wcr is None:
             continue  # a plain self-edge moves nothing; a WCR self-edge is an in-place reduction, not a no-op
         lhs, rhs, dst_read = copy_sides(sdfg, dst_name, dst_sub, src_name, src_sub)
         if m.wcr is not None:
-            combine = WCR_BINOP.get(reduction_type(m.wcr))
+            combine = wcr_combine(m.wcr)
             if combine is None:
                 raise UnsupportedNest(f"reduction (WCR) write-out into {dst_name} has an unsupported WCR {m.wcr!r}")
             rhs = combine(dst_read, rhs)
@@ -663,7 +677,7 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> list[str]:
     return lines
 
 
-def ordered_blocks(region: dace.sdfg.state.ControlFlowRegion) -> list:
+def ordered_blocks(region: ControlFlowRegion) -> list:
     """Blocks of a control-flow region (SDFG or LoopRegion) in execution order."""
     return list(dfs_topological_sort(region, [region.start_block]))
 
@@ -743,9 +757,7 @@ def strip_scalar_local_subscript(code: str, sdfg: dace.SDFG) -> str:
     return code
 
 
-def interstate_lines(
-    region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG, block: dace.sdfg.state.ControlFlowBlock
-) -> list[str]:
+def interstate_lines(region: ControlFlowRegion, sdfg: dace.SDFG, block: ControlFlowBlock) -> list[str]:
     """Assignments carried on the edge(s) entering ``block`` (e.g. an indirect index ``s = A[i]``)."""
     lines: list[str] = []
     carrying = []
@@ -769,9 +781,7 @@ def interstate_lines(
     return lines
 
 
-def emit_region(
-    region: dace.sdfg.state.ControlFlowRegion, sdfg: dace.SDFG, continue_update: str | None = None
-) -> list[str]:
+def emit_region(region: ControlFlowRegion, sdfg: dace.SDFG, continue_update: str | None = None) -> list[str]:
     """Numpy statements for every block of a control-flow region, in execution order.
 
     :param continue_update: the enclosing loop's update statement, emitted in front of each
@@ -815,10 +825,9 @@ DATA_READ_HEADS = frozenset({"Subscript", "Indexed"})
 
 
 def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> bool:
-    """Whether ``expr`` reads the CONTENTS of an array, so its value is unknown until the kernel runs.
+    """Whether ``expr`` reads array contents, so its value is unknown until the kernel runs.
 
-    Walks the expression tree; ``free_symbols`` alone is blind to this (an indexed array's name is
-    the Function head, e.g. ``A_indptr[i]`` has free symbols ``{i}``, not ``A_indptr``).
+    ``free_symbols`` cannot tell: an indexed array is a function head, so ``A_indptr[i]`` has free symbols ``{i}``.
     """
     for fn in expr.atoms(sympy.Function):
         if fn.func.__name__ in DATA_READ_HEADS or fn.func.__name__ in arrays:
@@ -827,10 +836,8 @@ def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> 
 
 
 def sizable(expr: sympy.Expr, known: set, arrays: Mapping[str, dace.data.Data]) -> bool:
-    """Whether the CALLER can evaluate ``expr`` to a buffer extent before the kernel runs.
-
-    True iff it reads no array data (:func:`reads_array_data`) and names no symbol outside ``known``;
-    a ``free_symbols``-only check misses the array-data case (see :func:`reads_array_data`).
+    """Whether the caller can evaluate ``expr`` to a buffer extent before the kernel runs: it reads no array data
+    and names no symbol outside ``known``.
     """
     if reads_array_data(expr, arrays):
         return False
@@ -860,12 +867,14 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
             rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
             var = cfg.loop_variable
             if isinstance(rel, (sympy.StrictLessThan, sympy.LessThan)) and str(rel.lhs) == var:
-                his.setdefault(var, []).append(rel.rhs + (1 if isinstance(rel, sympy.LessThan) else 0))
+                his.setdefault(var, []).append(
+                    cast(sympy.Expr, rel.rhs) + (1 if isinstance(rel, sympy.LessThan) else 0)
+                )
                 los.setdefault(var, []).append(loop_init_value(cfg))
         for e in cfg.edges():
             for var, rhs in e.data.assignments.items():
                 try:
-                    value = symbolic.pystr_to_symbolic(rhs)  # the config symbol takes exactly this value
+                    value = cast(sympy.Expr, symbolic.pystr_to_symbolic(rhs))  # the symbol takes exactly this value
                 except Exception:
                     continue  # a non-symbolic assignment is not a usable size bound
                 if reads_array_data(value, sdfg.arrays):
@@ -880,7 +889,7 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
                 name = str(sym)
                 if name in bounds and name not in seen:
                     parts = [r(b, seen | {name}) for b in bounds[name]]
-                    expr = expr.subs(sym, combine(*parts) if len(parts) > 1 else parts[0])
+                    expr = cast(sympy.Expr, expr.subs(sym, combine(*parts) if len(parts) > 1 else parts[0]))
             return expr
 
         return {v: r(combine(*bs) if len(bs) > 1 else bs[0], {v}) for v, bs in bounds.items()}
@@ -903,7 +912,7 @@ def max_over_loops(
         slope = sympy.diff(dim, s)
         if slope.free_symbols:
             return None  # non-constant slope -> monotonicity undetermined
-        result = result.subs(s, hi_of[str(s)] if slope.is_nonnegative else lo_of[str(s)])
+        result = cast(sympy.Expr, result.subs(s, hi_of[str(s)] if slope.is_nonnegative else lo_of[str(s)]))
     return result if sizable(result, known, arrays) else None
 
 
@@ -959,7 +968,7 @@ def reject_unsizable_scratch(sdfg: dace.SDFG, scratch: list[str], symbols: list[
             )
 
 
-def innermost_loop(block: dace.sdfg.state.ControlFlowBlock) -> LoopRegion | None:
+def innermost_loop(block: ControlFlowBlock) -> LoopRegion | None:
     """The ``LoopRegion`` a ``break`` / ``continue`` inside ``block`` targets, or ``None`` when the block
     has no loop ancestor in its SDFG (walks ``parent_graph`` up to the root)."""
     region = block.parent_graph
@@ -970,7 +979,7 @@ def innermost_loop(block: dace.sdfg.state.ControlFlowBlock) -> LoopRegion | None
     return None
 
 
-def has_enclosing_loop(block: dace.sdfg.state.ControlFlowBlock) -> bool:
+def has_enclosing_loop(block: ControlFlowBlock) -> bool:
     """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG."""
     return innermost_loop(block) is not None
 

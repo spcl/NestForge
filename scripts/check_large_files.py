@@ -1,71 +1,47 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pre-commit guard: reject a commit that stages an oversized file.
+"""Fail when a staged file exceeds ``--max-kb`` KiB, so build artifacts and datasets stay out of git.
 
-The repo keeps only source + small fixtures; large binaries (datasets, compiled
-artifacts, model dumps) belong out of git. This hook fails the commit when any
-staged file exceeds ``--max-kb`` kilobytes (default 500), so a stray artifact is
-caught before it lands rather than after it bloats history.
-
-Cross-platform by construction: pure ``pathlib``/``os.stat`` with no shell, so it
-runs identically on macOS, WSL, and Linux (``language: system`` in
-``.pre-commit-config.yaml`` -- no network fetch of a remote hook repo).
-
-pre-commit passes the staged files as positional arguments; run standalone with no
-arguments and the checker falls back to ``git diff --cached`` to find them itself.
-
-Exit status: 0 when every checked file is within the limit, 1 when one or more
-exceed it (each offender and its size are printed).
+pre-commit passes the staged files; without arguments, ``git diff --cached`` names them.
 """
 
 import argparse
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 DEFAULT_MAX_KB = 500
-BYTES_PER_KB = 1024
 
 
-def staged_files():
-    """Return the repo's currently-staged file paths (added / copied / modified)."""
+def staged_files() -> list[str]:
     out = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"], capture_output=True, text=True
     )
-    if out.returncode != 0:
-        return []
-    return [ln for ln in out.stdout.splitlines() if ln.strip()]
+    return [line for line in out.stdout.splitlines() if line.strip()] if out.returncode == 0 else []
 
 
-def oversized(paths, max_bytes):
-    """Yield ``(path, size_bytes)`` for each existing regular file over ``max_bytes``."""
+def oversized(paths: list[str], max_bytes: int) -> Iterator[tuple[str, int]]:
+    """``(path, size)`` of every existing file larger than ``max_bytes``."""
     for rel in paths:
         path = Path(rel)
-        if not path.is_file():  # deletions / submodules / gone paths
-            continue
-        size = path.stat().st_size
-        if size > max_bytes:
-            yield rel, size
+        if path.is_file() and path.stat().st_size > max_bytes:
+            yield rel, path.stat().st_size
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--max-kb", type=int, default=DEFAULT_MAX_KB, help="size limit in KiB (default: 500)")
-    ap.add_argument("files", nargs="*", help="files to check (default: the staged set)")
-    args = ap.parse_args(argv)
-
-    candidates = args.files if args.files else staged_files()
-    max_bytes = args.max_kb * BYTES_PER_KB
-    offenders = sorted(oversized(candidates, max_bytes))
-
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-kb", type=int, default=DEFAULT_MAX_KB, help="size limit in KiB (default: 500)")
+    parser.add_argument("files", nargs="*", help="files to check (default: the staged set)")
+    args = parser.parse_args(argv)
+    offenders = sorted(oversized(args.files or staged_files(), args.max_kb * 1024))
     if not offenders:
         return 0
-
-    print(f"error: {len(offenders)} staged file(s) exceed the {args.max_kb} KiB limit:\n", file=sys.stderr)
+    print(f"error: {len(offenders)} staged file(s) exceed the {args.max_kb} KiB limit:", file=sys.stderr)
     for rel, size in offenders:
-        print(f"  {rel}  ({size / BYTES_PER_KB:.0f} KiB)", file=sys.stderr)
-    print("\nKeep large artifacts out of git (see .gitignore), or raise --max-kb deliberately.", file=sys.stderr)
+        print(f"  {rel}  ({size / 1024:.0f} KiB)", file=sys.stderr)
+    print("Keep large artifacts out of git, or raise --max-kb deliberately.", file=sys.stderr)
     return 1
 
 

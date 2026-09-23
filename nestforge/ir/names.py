@@ -1,14 +1,15 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Normalize an SDFG into the canonical form the agent's text tree is projected from: no top-level
-nested SDFG, ``0:trip:1`` iteration domains, every computation inside a map, and canonical
-``<kind><level>_<index>`` labels for every block, map, transient, and map parameter."""
+"""The labels the structure tree prints, ``<kind><level>_<index>`` and unique across the program, and the tree's
+normal form: no top-level nested SDFG, ``0:trip:1`` domains, every computation inside a map, and canonical names
+for transients and map parameters."""
 
 from __future__ import annotations
 
 import copy
 import heapq
 import re
+from typing import Any
 
 import dace
 from dace import data as dt
@@ -39,9 +40,8 @@ CANONICAL_DATA = re.compile(r"[ts]\d+")
 
 
 def in_order(graph: ControlFlowRegion | SDFGState) -> list:
-    """A graph's nodes in topological order, ties broken by insertion order (Kahn, so two runs over
-    the same program give the same label assignment)."""
-    all_nodes = list(graph.nodes())
+    """A graph's nodes in topological order, ties broken by insertion order, so labels are deterministic."""
+    all_nodes: list[Any] = list(graph.nodes())  # blocks of a region or nodes of a state
     if not all_nodes:
         return []
     rank = {id(n): i for i, n in enumerate(all_nodes)}
@@ -66,18 +66,16 @@ def in_order(graph: ControlFlowRegion | SDFGState) -> list:
 
 
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
-    """Every ``NestedSDFG`` that sits outside all map scopes. One inside a map is a kernel body and is
-    left alone."""
+    """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
     out: list[tuple[SDFGState, nodes.NestedSDFG]] = []
     for state in sdfg.all_states():
-        sd = state.scope_dict()  # once per state: state.entry_node() rebuilds this per call
+        sd = state.scope_dict()
         out += [(state, node) for node in state.nodes() if isinstance(node, nodes.NestedSDFG) and sd[node] is None]
     return out
 
 
 def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
-    """Widen and inline every top-level nested SDFG, returning how many transformations that took;
-    0 without touching anything when there is none (a cheap scan avoids two pattern-match sweeps)."""
+    """Widen and inline every top-level nested SDFG; returns how many transformations applied."""
     if not top_level_nsdfgs(sdfg):
         return 0
     applied = sdfg.apply_transformations_repeated(
@@ -90,16 +88,14 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 
 
 def free_tasklets(state: SDFGState) -> list[nodes.Tasklet]:
-    """Tasklets in ``state`` that sit outside every map scope. A ``LibraryNode`` is not a ``Tasklet``
-    and so is never here -- by design: it already is a kernel."""
-    sd = state.scope_dict()  # once per state: state.entry_node() rebuilds this per call
+    """Tasklets of ``state`` outside every map scope; a library node already is a kernel."""
+    sd = state.scope_dict()
     return [n for n in state.nodes() if isinstance(n, nodes.Tasklet) and sd[n] is None]
 
 
 def wrap_groups(state: SDFGState) -> list[list[nodes.Tasklet]]:
-    """The free tasklets of ``state``, partitioned into the FEWEST groups each of which can become one
-    map: two tasklets share a group only if neither can reach the other (an antichain of the
-    reachability order), found by levelling each tasklet by its longest free-tasklet chain depth."""
+    """The free tasklets of ``state`` in the fewest groups that can each become one map: tasklets share a group
+    only when neither reaches the other, found by levelling each by its longest chain of free tasklets."""
     free = {id(t) for t in free_tasklets(state)}
     if not free:
         return []
@@ -117,7 +113,6 @@ def wrap_groups(state: SDFGState) -> list[list[nodes.Tasklet]]:
 
 def wrap_group(state: SDFGState, group: list[nodes.Tasklet], name: str) -> None:
     """Enclose ``group`` in one single-iteration map."""
-    # Sequential is a codegen choice only (a map is data-parallel by definition either way).
     entry, exit_node = state.add_map(name, {WRAP_PARAM: "0:1"}, schedule=dace.ScheduleType.Sequential)
     for tasklet in group:
         in_edges = list(state.in_edges(tasklet))
@@ -150,8 +145,7 @@ def wrap_group(state: SDFGState, group: list[nodes.Tasklet], name: str) -> None:
 
 
 def wrap_free_tasklets(sdfg: dace.SDFG) -> int:
-    """Wrap every free tasklet in the SDFG, returning how many maps that took (0 and untouched when
-    there were none); names given here are placeholders, renumbered later with every other map."""
+    """Wrap every free tasklet in a map; returns how many maps that took. Their names are placeholders."""
     added = 0
     for state in sdfg.all_states():
         for group in wrap_groups(state):
@@ -164,8 +158,7 @@ def wrap_free_tasklets(sdfg: dace.SDFG) -> int:
 
 
 def block_kind(block: ControlFlowBlock) -> str:
-    """The tree keyword for a control-flow block. A ``LoopRegion`` splits by shape, not class: one
-    carrying both an init and an update statement is a counted ``for``, anything else a ``while``."""
+    """The tree keyword of a block; a loop with both an init and an update statement is a ``for``."""
     if isinstance(block, LoopRegion):
         return "for" if block.init_statement is not None and block.update_statement is not None else "while"
     if isinstance(block, ConditionalBlock):
@@ -182,9 +175,8 @@ def block_kind(block: ControlFlowBlock) -> str:
 
 
 def normalize_labels(sdfg: dace.SDFG) -> None:
-    """Rename every control-flow block and every map to ``<kind><level>_<index>``, globally unique:
-    ``index`` counts per ``(kind, level)`` across the whole SDFG, not per CFG. A library node keeps its
-    label unless an earlier one already holds it."""
+    """Rename every block and map to ``<kind><level>_<index>``, counted per kind and level over the whole program.
+    A library node keeps its label unless an earlier one holds it."""
     relabel_cfg(sdfg, 0, {})
     unique_library_labels(sdfg)
 
@@ -224,14 +216,13 @@ def relabel_cfg(cfg: dace.SDFG | ControlFlowRegion, level: int, counters: dict[t
 
 
 def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
-    """Rename transient data to ``t<n>``/``s<n>``, returning the mapping (``{}`` if already canonical).
-    An already-canonical name KEEPS its index: renumbering would leave a tree id the agent already
-    holds pointing at a different array."""
+    """Rename transients to ``t<n>`` (arrays) and ``s<n>`` (scalars); returns the renames. A canonical name keeps
+    its index, so a label an agent holds keeps naming the same array."""
     targets = {n: ("s" if isinstance(desc, dt.Scalar) else "t") for n, desc in sdfg.arrays.items() if desc.transient}
     settled = {n for n, prefix in targets.items() if CANONICAL_DATA.fullmatch(n) and n[0] == prefix}
     taken = {prefix: {int(n[1:]) for n in settled if n[0] == prefix} for prefix in ("t", "s")}
     survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
-    # a mis-prefixed canonical-shaped name (Scalar "t0") still HOLDS "t0" until its own rename lands
+    # a mis-prefixed canonical name (a scalar "t0") holds its name until its own rename
     held = {n for n in targets if n not in settled}
     renames = {}
     for old, prefix in targets.items():
@@ -249,7 +240,7 @@ def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
 
 
 def enclosing_param_count(node: nodes.MapEntry, scope: dict) -> int:
-    """How many map parameters the ENCLOSING map chain of ``node`` already owns."""
+    """How many map parameters the maps enclosing ``node`` own."""
     count, parent = 0, scope[node]
     while parent is not None:
         count += len(parent.map.params)
@@ -258,9 +249,8 @@ def enclosing_param_count(node: nodes.MapEntry, scope: dict) -> int:
 
 
 def rename_map_params(sdfg: dace.SDFG) -> None:
-    """Rename map parameters to ``i0, i1, ...`` down the NESTING CHAIN, not per scope -- reusing an
-    ancestor's name would alias reads and silently compute the wrong answer. Renamed via a fresh
-    temporary in two passes, since renaming outer-then-inner (or the reverse) collides with the other."""
+    """Rename map parameters to ``i0, i1, ...`` down each nesting chain; reusing an ancestor's name would alias
+    it. Two passes through fresh names, since renaming in place collides in either order."""
     for state in sdfg.all_states():
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
@@ -272,24 +262,23 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
                 targets[node] = wanted
         if not targets:
             continue
-        # pass 1: every renamed param to a name nothing in this state can be holding
+        # first to names nothing in the state holds
         temps = {}
         for index, (node, wanted) in enumerate(targets.items()):
             temp = [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
-            # one simultaneous substitution per scope: a rename per pair could overwrite an earlier target
+            # one simultaneous substitution per scope
             replace_dict(state.scope_subgraph(node), dict(zip(node.map.params, temp)))
             node.map.params = temp
             temps[node] = temp
-        # pass 2: the temporaries to the final names, now that no live param can collide with one
+        # then to the final names
         for node, wanted in targets.items():
             replace_dict(state.scope_subgraph(node), dict(zip(temps[node], wanted)))
             node.map.params = wanted
 
 
 def relabel_state(state: SDFGState, level: int, counters: dict[tuple, int]) -> None:
-    """Name every map in ``state`` ``kernel<level>_<index>``, outermost first and one level deeper per
-    enclosing map, descending through any ``NestedSDFG`` so an inner map never keeps a frontend
-    source-line name (``inner_9_4``) that would rename a kernel that did not change."""
+    """Name every map of ``state`` ``kernel<level>_<index>``, one level deeper per enclosing map, including maps
+    inside nested SDFGs."""
     children = state.scope_children()
     rank = {id(n): i for i, n in enumerate(in_order(state))}
 
@@ -305,8 +294,8 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple, int]) -> N
 
 
 def normalize_reductions(sdfg: dace.SDFG) -> None:
-    """Put every reduction in one shape: accumulation on a body-local transient, cross-iteration fold
-    as a WCR on an ``AccessNode -> MapExit`` edge -- so there is one edge the tree can always ask."""
+    """Put every reduction in one shape: accumulate on a body-local transient, fold with a WCR on an
+    ``AccessNode -> MapExit`` edge."""
     NormalizeWCR().apply_pass(sdfg, {})
     NormalizeWCRSource().apply_pass(sdfg, {})
 
@@ -315,13 +304,12 @@ def normalize_reductions(sdfg: dace.SDFG) -> None:
 
 
 def normalize_for_tree(sdfg: dace.SDFG) -> None:
-    """Put ``sdfg`` in the tree's normal form, in place; idempotent, since the agent re-normalizes
-    after each fusion move."""
+    """Put ``sdfg`` in the tree's normal form, in place; idempotent."""
     inline_top_level_nsdfgs(sdfg)
     normalize_reductions(sdfg)
     NormalizeLoopsAndMaps().apply_pass(sdfg, {})
     wrap_free_tasklets(sdfg)
-    # names LAST: a wrap map and any transient the inline lifted out still need numbering with the rest
+    # names last: wrap maps and inlined transients are numbered with the rest
     rename_transient_data(sdfg)
     rename_map_params(sdfg)
     normalize_labels(sdfg)

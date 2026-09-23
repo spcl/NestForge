@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Run a compiled kernel in a forked child, so a segfault or runaway loop cannot take down the
-parent; a crash, timeout, or malformed result comes back as an ``{"error": ...}`` sentinel."""
+"""Run generated code in a child process, so a crash or a runaway loop becomes an ``{"error": ...}`` result
+instead of taking down the caller."""
 
 from __future__ import annotations
 
@@ -20,18 +20,18 @@ from typing import Any
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
 OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
 
-#: ``omp_pause_resource_t`` (OpenMP 5.0); ``hard`` also frees threadprivate data, so ``soft`` is default.
+#: ``omp_pause_resource_t`` (OpenMP 5.0); ``hard`` also frees threadprivate data.
 OMP_PAUSE_SOFT = 1
 OMP_PAUSE_HARD = 2
 
 OMP_PAUSE_MODES = {"soft": OMP_PAUSE_SOFT, "hard": OMP_PAUSE_HARD}
 
-#: must clear the longest wrapped subprocess message or the traceback is lost.
+#: Longest error text a child reports back.
 ERROR_CHARS = 4000
 
 
 def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
-    """Tear down every loaded OpenMP runtime's pool before a fork (a live pool deadlocks the child)."""
+    """Pause every loaded OpenMP runtime before a fork; a live libgomp pool deadlocks the child."""
     for soname in OMP_RUNTIME_SONAMES:
         try:
             lib = ctypes.CDLL(soname, mode=os.RTLD_NOLOAD)  # only pause a runtime already mapped
@@ -41,29 +41,24 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
             pause = lib.omp_pause_resource_all
         except AttributeError:
             warnings.warn(
-                f"{soname}: no omp_pause_resource_all (pre-OpenMP-5.0 runtime); its thread pool "
-                f"was NOT torn down before the fork -- fork safety for this runtime now rests on "
-                f"its own pthread_atfork handler, if it installs one (libgomp installs none)."
+                f"{soname}: no omp_pause_resource_all (pre-OpenMP-5.0); its pool stays up across the fork, "
+                "safe only if it installs a pthread_atfork handler (libgomp does not)"
             )
             continue
         pause.argtypes = [ctypes.c_int]
         pause.restype = ctypes.c_int
         if pause(mode) != 0:
-            warnings.warn(
-                f"{soname}: omp_pause_resource_all(mode={mode}) returned non-zero; its thread "
-                f"pool was NOT torn down before the fork."
-            )
+            warnings.warn(f"{soname}: omp_pause_resource_all(mode={mode}) failed; its pool stays up across the fork")
 
 
 def quiet_fatal_signals() -> None:
-    """Drop the pytest-inherited faulthandler so a segfault does not dump the parent's stack."""
+    """Disable an inherited faulthandler, so a child's segfault does not dump the parent's stack."""
     faulthandler.disable()
 
 
 def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = 900.0) -> dict:
-    """Run ``target(payload)`` in a freshly spawned interpreter rather than a fork: a CUDA context does not
-    survive fork, so device work in a child of a process that already used the GPU fails with CUDA status 3.
-    Same ``{"error": ...}`` contract as :func:`run_isolated`; ``target`` and ``payload`` must pickle."""
+    """:func:`run_isolated` in a freshly spawned interpreter: a CUDA context does not survive a fork. ``target``
+    and ``payload`` must pickle."""
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     child = context.Process(target=spawned_entry, args=(target, payload, sender))
@@ -91,7 +86,7 @@ def spawned_result(receiver: Any, child: Any, timeout: float) -> dict:
 
 
 def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> None:
-    """The spawned child's body: any Python-level failure comes back as an error (a segfault does not)."""
+    """The spawned child's body; a Python exception comes back as an error."""
     quiet_fatal_signals()
     try:
         result = target(payload)
@@ -102,8 +97,7 @@ def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> N
 
 
 def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
-    """Run ``work_fn`` in a forked child; returns its dict, or an ``{"error": ...}`` sentinel on
-    crash, timeout, or malformed output."""
+    """``work_fn()`` from a forked child, or ``{"error": ...}`` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
     r, w = os.pipe()
     pid = os.fork()
@@ -112,7 +106,7 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
         quiet_fatal_signals()
         try:
             payload = json.dumps(work_fn())
-        except BaseException as e:  # any Python-level failure comes back as an error (a segfault does not)
+        except BaseException as e:
             payload = json.dumps({"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"})
         try:
             os.write(w, payload.encode())
@@ -125,12 +119,12 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
         while True:
             remaining = timeout - (time.perf_counter() - start)
             if remaining <= 0:
-                break  # deadline hit -> timed_out stays True
+                break
             ready, _, _ = select.select([r], [], [], remaining)
             if not ready:
                 break
             chunk = os.read(r, 65536)
-            if not chunk:  # EOF: the child closed the pipe (finished writing, or died)
+            if not chunk:  # the child closed the pipe: done, or dead
                 timed_out = False
                 break
             buf += chunk
@@ -138,13 +132,13 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
         os.close(r)
     if timed_out:
         reaped, status = os.waitpid(pid, os.WNOHANG)
-        if reaped == 0:  # genuinely still running -> runaway; kill and reap
+        if reaped == 0:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
             return {"error": f"timeout after {timeout:.0f}s (runaway kernel)"}
     else:
-        _, status = os.waitpid(pid, 0)  # EOF seen: the child is exiting -> a blocking reap is safe
-    if os.WIFSIGNALED(status):  # a segfault etc. never reached the os.write, so buf is empty
+        _, status = os.waitpid(pid, 0)  # the child is exiting, so this returns
+    if os.WIFSIGNALED(status):
         return {"error": f"crashed (signal {os.WTERMSIG(status)})"}
     try:
         return json.loads(buf) if buf else {"error": "child produced no result"}

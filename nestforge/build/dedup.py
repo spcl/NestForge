@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from collections.abc import Mapping
 
+from nestforge.build.toolchain import needed_libraries
+
 SYMBOL_LINE = re.compile(r"^[0-9a-f]+ <([^>]+)>:$")  # objdump -d symbol header
 INSN_LINE = re.compile(r"^\s*[0-9a-f]+:\t(.*)$")  # objdump -d instruction line
 #: two+ spaces before ``#`` so an aarch64 one-space immediate (``mov x0, #1``) is never mistaken for one.
@@ -67,25 +69,14 @@ def asm_text(bodies: Mapping[str, str], obj: Path, symbol: str | None) -> str:
     return bodies[symbol]
 
 
-NEEDED_LINE = re.compile(r"^\s*NEEDED\s+(\S+)$")  # objdump -p dependency line
-
-
-def needed_libraries(path: Path) -> tuple[str, ...]:
-    """``DT_NEEDED`` of a linked artifact, sorted (a link-only axis the object key alone cannot see)."""
-    out = tool_stdout(["objdump", "-p", str(path)])
-    if out is None:
-        return ()
-    return tuple(sorted(m.group(1) for m in (NEEDED_LINE.match(ln) for ln in out.splitlines()) if m))
-
-
 def variant_key(artifact: Path, symbol: str | None = None) -> str | None:
-    """One key for a BUILT artifact: its code and its link together, or ``None`` when it cannot be
+    """One key for a built artifact: its code and its link together, or ``None`` when it cannot be
     read (a caller falls back to measuring; a failure to inspect must never read as "same as before")."""
     bodies = asm_bodies(artifact)
     if not bodies:
         return None
     code = hashlib.sha256(asm_text(bodies, artifact, symbol).encode()).hexdigest()
-    return hashlib.sha256("\n".join((code, *needed_libraries(artifact))).encode()).hexdigest()
+    return hashlib.sha256("\n".join((code, *sorted(needed_libraries(artifact)))).encode()).hexdigest()
 
 
 def collapse(keys: Mapping[str, str]) -> dict[str, list[str]]:

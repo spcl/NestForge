@@ -1,28 +1,10 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Enforce the two-line copyright / SPDX header on the core Python package.
+"""Require the copyright and SPDX header on every Python file under nestforge/, scripts/ and tests/.
 
-Every tracked ``.py`` file in scope must begin with the copyright + SPDX header::
-
-    # Copyright 2021 ETH Zurich and the NestForge authors.
-    # SPDX-License-Identifier: GPL-3.0-or-later
-
-(An optional ``#!`` shebang and/or a PEP 263 ``coding`` line may precede it; the
-header is then required immediately after.) A file that already carries this block
-block under a different copyright year -- or a different project's authors
-wording -- is accepted as-is and never rewritten, so ``--fix`` never stacks a
-second notice on top of an existing one. ``--fix`` inserts the canonical 2021
-header only into files that have no such block at all.
-
-Scope: ``nestforge/``, ``scripts/`` and ``tests/`` -- there is no separate
-``benchmarks/`` or ``numpy_translators/`` distribution in this repo to carve out.
-
-Run standalone with no arguments and the tool discovers the scope via
-``git ls-files``; pre-commit instead passes the staged files as positional
-arguments (already narrowed by the hook's path filter). ``--fix`` inserts the
-header in place; without it the tool only reports, exiting 1 when any in-scope
-file is missing the header (the offenders and the fix command are printed).
+The header follows an optional shebang and coding line. A header with another year or project name is accepted;
+``--fix`` adds the canonical one to files that have none. Without file arguments, every tracked file is checked.
 """
 
 import argparse
@@ -32,101 +14,66 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
 SPDX_LINE = "# SPDX-License-Identifier: GPL-3.0-or-later"
-# What --fix writes into a headerless file (the canonical year).
-HEADER = (
-    "# Copyright 2021 ETH Zurich and the NestForge authors.",
-    SPDX_LINE,
-)
-# A header is PRESENT when an ETH-Zurich copyright line is immediately followed by the
-# SPDX line. The year and the authors-org phrase are matched loosely so a pre-existing
-# notice -- any year, any project's authors wording -- counts as headered and is left
-# untouched rather than restamped or stacked under a second copy.
+HEADER = ("# Copyright 2021 ETH Zurich and the NestForge authors.", SPDX_LINE)
 COPYRIGHT_RE = re.compile(r"^# Copyright \d{4} ETH Zurich and the [\w.-]+ authors\.$")
-
-# Included roots. No sub-prefixes to carve out (there is no benchmarks/ or
-# numpy_translators/ distribution in this repo).
-SCOPE_PREFIXES = ("nestforge/", "scripts/", "tests/")
-EXCLUDE_PREFIXES = ()
-
 CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=]")
+SCOPE_PREFIXES = ("nestforge/", "scripts/", "tests/")
 
 
-def in_scope(rel):
+def in_scope(rel: str) -> bool:
     posix = rel.replace("\\", "/")
-    if not posix.endswith(".py"):
-        return False
-    if any(posix.startswith(p) for p in EXCLUDE_PREFIXES):
-        return False
-    return any(posix.startswith(p) for p in SCOPE_PREFIXES)
+    return posix.endswith(".py") and posix.startswith(SCOPE_PREFIXES)
 
 
-def tracked_python():
+def tracked_files() -> list[str]:
     out = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True)
-    return [ln for ln in out.stdout.splitlines() if ln.strip()] if out.returncode == 0 else []
+    return [line for line in out.stdout.splitlines() if line.strip()] if out.returncode == 0 else []
 
 
-def prefix_len(lines):
-    """Number of leading lines (shebang, then optional coding) the header goes after."""
-    idx = 0
-    if idx < len(lines) and lines[idx].startswith("#!"):
-        idx += 1
-    if idx < len(lines) and CODING_RE.match(lines[idx]):
-        idx += 1
-    return idx
+def prefix_len(lines: list[str]) -> int:
+    """How many leading lines (a shebang, then a coding line) precede the header."""
+    index = 1 if lines and lines[0].startswith("#!") else 0
+    return index + 1 if index < len(lines) and CODING_RE.match(lines[index]) else index
 
 
-def has_header(lines):
-    idx = prefix_len(lines)
-    seg = [line.rstrip("\n") for line in lines[idx : idx + 2]]
-    return len(seg) == 2 and COPYRIGHT_RE.match(seg[0]) is not None and seg[1] == SPDX_LINE
+def has_header(lines: list[str]) -> bool:
+    start = prefix_len(lines)
+    head = lines[start : start + 2]
+    return len(head) == 2 and COPYRIGHT_RE.match(head[0]) is not None and head[1] == SPDX_LINE
 
 
-def insert_header(path):
-    """Insert the header after any shebang/coding lines. Returns True when it wrote."""
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-    if has_header([ln.rstrip("\n") for ln in lines]):
+def insert_header(path: Path) -> bool:
+    """Add the header after any shebang and coding line; ``False`` when it was already there."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    bare = [line.rstrip("\r\n") for line in lines]
+    if has_header(bare):
         return False
-    idx = prefix_len([ln.rstrip("\n") for ln in lines])
-    # Preserve the newline style already used at the insertion point.
     newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
-    block = [line + newline for line in HEADER]
-    path.write_text("".join(lines[:idx] + block + lines[idx:]), encoding="utf-8")
+    start = prefix_len(bare)
+    path.write_text("".join([*lines[:start], *(line + newline for line in HEADER), *lines[start:]]), encoding="utf-8")
     return True
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--fix", action="store_true", help="insert the header in place instead of failing")
-    ap.add_argument("files", nargs="*", help="explicit files to check (default: all tracked in-scope .py)")
-    args = ap.parse_args(argv)
-
-    candidates = args.files if args.files else tracked_python()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fix", action="store_true", help="insert missing headers instead of failing")
+    parser.add_argument("files", nargs="*", help="files to check (default: every tracked file in scope)")
+    args = parser.parse_args(argv)
+    candidates = args.files or tracked_files()
     targets = [rel for rel in sorted(set(candidates)) if in_scope(rel) and (REPO_ROOT / rel).is_file()]
-
-    offenders = []
-    for rel in targets:
-        path = REPO_ROOT / rel
-        if args.fix:
-            if insert_header(path):
-                offenders.append(rel)
-        else:
-            lines = path.read_text(encoding="utf-8").splitlines()
-            if not has_header(lines):
-                offenders.append(rel)
-
     if args.fix:
-        print(f"check-headers: inserted the header into {len(offenders)} of {len(targets)} in-scope file(s)")
+        fixed = [rel for rel in targets if insert_header(REPO_ROOT / rel)]
+        print(f"check-headers: inserted the header into {len(fixed)} of {len(targets)} file(s)")
         return 0
-    if not offenders:
-        print(f"check-headers: {len(targets)} in-scope file(s) OK")
+    missing = [rel for rel in targets if not has_header((REPO_ROOT / rel).read_text(encoding="utf-8").splitlines())]
+    if not missing:
+        print(f"check-headers: {len(targets)} file(s) OK")
         return 0
-    print(f"check-headers: {len(offenders)} of {len(targets)} in-scope file(s) missing the copyright/SPDX header:\n")
-    for rel in offenders:
+    print(f"check-headers: {len(missing)} of {len(targets)} file(s) lack the copyright/SPDX header:")
+    for rel in missing:
         print(f"  {rel}")
-    print("\nFix with:  python scripts/check_headers.py --fix")
+    print("Fix with: python scripts/check_headers.py --fix")
     return 1
 
 

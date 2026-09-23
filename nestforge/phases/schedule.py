@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Any
+from typing import Any, cast
 
 import dace
 import sympy
@@ -43,13 +43,23 @@ from nestforge.phases.region_moves import (
 )
 
 
+#: A pattern transformation's ``PatternNode`` names and the nodes or blocks they match.
+Where = dict[str, nodes.Node | ControlFlowBlock]
+
+
+def map_exit(state: SDFGState, entry: nodes.MapEntry) -> nodes.MapExit:
+    exit_node = state.exit_node(entry)
+    assert isinstance(exit_node, nodes.MapExit), f"{entry} has no exit"
+    return exit_node
+
+
 @dataclass(slots=True)
 class FusionMove:
     """One legal pattern transformation (a fusion or an interchange); ``where`` maps the transformation's
     ``PatternNode`` names to the matched nodes, as ``apply_to`` takes them."""
 
     kind: str
-    where: dict[str, nodes.Node]
+    where: Where
     xform: type = field(repr=False)
 
     def label(self) -> str:
@@ -85,8 +95,10 @@ def vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
             for exit_node in producers:
                 for entry in consumers:
-                    where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
-                    if MapFusionVertical.can_be_applied_to(sdfg, **where):
+                    if MapFusionVertical.can_be_applied_to(
+                        sdfg, first_map_exit=exit_node, array=node, second_map_entry=entry
+                    ):
+                        where: Where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
                         yield FusionMove("fuse-map-vertical", where, MapFusionVertical)
 
 
@@ -97,8 +109,10 @@ def horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
         for i, first in enumerate(entries):
             for second in entries[i + 1 :]:
-                where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
-                if scope[first] is scope[second] and MapFusionHorizontal.can_be_applied_to(sdfg, **where):
+                if scope[first] is scope[second] and MapFusionHorizontal.can_be_applied_to(
+                    sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
+                ):
+                    where: Where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
                     yield FusionMove("fuse-map-horizontal", where, MapFusionHorizontal)
 
 
@@ -123,12 +137,12 @@ def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
 
 
 STATE_BARRIER = (
-    "nests are in different states, and map fusion never crosses a state boundary; merge the enclosing regions "
-    "first (fuse_regions)."
+    "nests are in different states, a control-flow dependency map fusion never crosses; merge the enclosing "
+    "regions first (fuse_regions)."
 )
 
 
-def can_fuse(sdfg: dace.SDFG, first: nodes.Node, second: nodes.Node) -> str:
+def can_fuse(sdfg: dace.SDFG, first: object, second: object) -> str:
     """``"yes"`` when a fusion move for the pair exists, else a one-line reason."""
     if isinstance(first, LoopRegion) and isinstance(second, LoopRegion):
         return fuse_loops_reason(sdfg, first, second)
@@ -178,28 +192,35 @@ def map_pair_fusion(
     horizontal when no data links them."""
     linked = False
     for producer, consumer in ((first, second), (second, first)):
-        exit_node = state.exit_node(producer)
+        exit_node = map_exit(state, producer)
         for arr in intermediates(state, exit_node, consumer):
             linked = True
-            where = {"first_map_exit": exit_node, "array": arr, "second_map_entry": consumer}
-            if sdfg.arrays[arr.data].transient and MapFusionVertical.can_be_applied_to(sdfg, **where):
+            if sdfg.arrays[arr.data].transient and MapFusionVertical.can_be_applied_to(
+                sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer
+            ):
+                where: Where = {"first_map_exit": exit_node, "array": arr, "second_map_entry": consumer}
                 return FusionMove("fuse-map-vertical", where, MapFusionVertical)
-    where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
-    if linked or not MapFusionHorizontal.can_be_applied_to(sdfg, **where):
+    if linked or not MapFusionHorizontal.can_be_applied_to(
+        sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
+    ):
         return None
-    return FusionMove("fuse-map-horizontal", where, MapFusionHorizontal)
+    return FusionMove(
+        "fuse-map-horizontal",
+        {"first_parallel_map_entry": first, "second_parallel_map_entry": second},
+        MapFusionHorizontal,
+    )
 
 
 def vertical_reason(
     sdfg: dace.SDFG, state: SDFGState, producer: nodes.MapEntry, consumer: nodes.MapEntry
 ) -> str | None:
     """``"yes"`` or a reason when ``producer`` feeds ``consumer``, ``None`` when no data path links them."""
-    exit_node = state.exit_node(producer)
+    exit_node = map_exit(state, producer)
     # every intermediate counts: one fusable transient is a move, as vertical_map_moves offers it
     reasons: list[str] = []
     for arr in intermediates(state, exit_node, consumer):
         if not sdfg.arrays[arr.data].transient:
-            reasons.append(f"intermediate '{arr.data}' is a program output; fusing would drop it")
+            reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
             continue
         if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer):
             return "yes"
@@ -222,7 +243,7 @@ def fission_to_statements(sdfg: dace.SDFG) -> int:
 
 def multi_output_fission(sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntry) -> dict[str, Any] | None:
     """The ``MapFission`` arguments that split a top-level map writing two or more outputs, if it applies."""
-    outputs = {e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data}
+    outputs = {e.data.data for e in state.in_edges(map_exit(state, entry)) if e.data.data}
     if len(outputs) < 2:
         return None
     bodies = [n for n in state.scope_subgraph(entry, False, False).nodes() if isinstance(n, nodes.NestedSDFG)]
@@ -336,9 +357,10 @@ def map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             if isinstance(e.src, nodes.MapEntry) and isinstance(e.dst, nodes.MapEntry)
         )
         for outer, inner in pairs:
-            where = {"outer_map_entry": outer, "inner_map_entry": inner}
-            if MapInterchange.can_be_applied_to(sdfg, **where):
-                yield FusionMove("interchange-map-map", where, MapInterchange)
+            if MapInterchange.can_be_applied_to(sdfg, outer_map_entry=outer, inner_map_entry=inner):
+                yield FusionMove(
+                    "interchange-map-map", {"outer_map_entry": outer, "inner_map_entry": inner}, MapInterchange
+                )
 
 
 def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -417,6 +439,7 @@ def move_labels(move: Move) -> tuple[str, ...]:
         return (move.map_entry.map.label,)
     if move.xform is MoveLoopIntoMap:
         loop = move.where["loop"]
+        assert isinstance(loop, LoopRegion)
         return loop.label, loop_maps(loop)[0].map.label
     return tuple(dict.fromkeys(tree_label(n) for n in move.where.values() if not isinstance(n, nodes.AccessNode)))
 
@@ -490,10 +513,11 @@ def plan_map_interchange(outer_row: Row, inner_row: Row) -> Planned | str:
         return (
             f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it."
         )
-    where = {"outer_map_entry": outer, "inner_map_entry": inner}
-    if not MapInterchange.can_be_applied_to(state.sdfg, **where):
+    if not MapInterchange.can_be_applied_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner):
         return MAP_INTERCHANGE_REFUSED
-    return state.sdfg, FusionMove("interchange-map-map", where, MapInterchange)
+    return state.sdfg, FusionMove(
+        "interchange-map-map", {"outer_map_entry": outer, "inner_map_entry": inner}, MapInterchange
+    )
 
 
 def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Planned | str:
@@ -572,10 +596,13 @@ def standalone_scope(sdfg: dace.SDFG, node: nodes.MapEntry | LoopRegion) -> dace
         state = find_state_of_node(sdfg, node)
         if state.entry_node(node) is not None:
             raise TypeError(f"map {node} is nested in another map; metrics are per top-level map")
-        twin_state = twin_sdfg.states()[sdfg.states().index(state)]
-        return extract_map_nest(twin_sdfg, twin_state.node(state.node_id(node))).standalone_sdfg
+        twin = twin_sdfg.states()[sdfg.states().index(state)].node(state.node_id(node))
+        assert isinstance(twin, nodes.MapEntry), "a deep copy keeps node ids"
+        return extract_map_nest(twin_sdfg, twin).standalone_sdfg
     if isinstance(node, LoopRegion) and node.parent_graph is sdfg:
-        return extract_cfg_nest(twin_sdfg, twin_sdfg.nodes()[sdfg.nodes().index(node)]).standalone_sdfg
+        twin_loop = twin_sdfg.nodes()[sdfg.nodes().index(node)]
+        assert isinstance(twin_loop, LoopRegion), "a deep copy keeps block order"
+        return extract_cfg_nest(twin_sdfg, twin_loop).standalone_sdfg
     raise TypeError(f"{node} is neither a top-level map of a state nor a loop at the top of the SDFG")
 
 
@@ -587,10 +614,13 @@ def scope_metrics(sdfg: dace.SDFG, node: nodes.MapEntry | LoopRegion) -> ScopeMe
     :returns: The metrics over ``sdfg``'s symbols, bytes under :data:`CACHE_MODEL`.
     """
     scope = standalone_scope(sdfg, node)
-    work, depth = work_depth.analyze_sdfg(scope, {}, work_depth.get_tasklet_work_depth, [], False)
+    # analyze_sdfg is unannotated and returns (work, depth) when not asked for average parallelism
+    work, depth = cast(
+        tuple[sympy.Expr, sympy.Expr], work_depth.analyze_sdfg(scope, {}, work_depth.get_tasklet_work_depth, [], False)
+    )
     read, write = total_volume.analyze_sdfg(scope, cache_model=CACHE_MODEL)
-    moved = dace.symbolic.simplify(read + write)
-    oi = dace.symbolic.simplify(work / moved) if moved != 0 else None
+    moved = cast(sympy.Expr, dace.symbolic.simplify(read + write))
+    oi = cast(sympy.Expr, dace.symbolic.simplify(work / moved)) if moved != 0 else None
     return ScopeMetrics(work, depth, moved, oi)
 
 

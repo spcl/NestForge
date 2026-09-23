@@ -13,13 +13,12 @@ from nestforge.build.flags import FP_LEVELS
 from nestforge.build.dedup import (
     asm_bodies,
     collapse,
-    needed_libraries,
     parse_disassembly,
     representatives,
     variant_key,
 )
 from nestforge.build.sdfg import BuildOptions, build_archive
-from nestforge.build.toolchain import compiler_family
+from nestforge.build.toolchain import compiler_family, needed_libraries
 
 SYMBOL = "k_fp64"
 #: A transcendental, in a loop the back end will vectorize, for the needed_libraries link-axis test.
@@ -42,7 +41,7 @@ assert shutil.which("objdump") is not None, "objdump not on PATH (setup_apt.sh: 
 
 
 def build(tmp_path: Path, source: str, fp_mode: str, tag: str = "v", compiler: str = "g++") -> Path:
-    """Build ``source`` the way a phase-4 variant is built and return the object the keys read."""
+    """Build ``source`` as a phase 5 variant is built; returns the object the key reads."""
     src = tmp_path / f"{tag}.cpp"
     src.write_text(source)
     family = compiler_family(compiler)
@@ -149,10 +148,7 @@ ADD_KERNEL = f"""extern "C" void {SYMBOL}(double *__restrict__ c, const double *
 
 
 def test_the_pruner_collapses_fp_rungs_a_kernel_cannot_tell_apart(tmp_path):
-    """The point of the module, on the arena's own axis. Every rung of the ladder compiles this kernel to
-    the same object, so a sweep that measures all four is timing one binary four times. Paired with
-    :func:`test_the_asm_key_separates_fp_rungs_the_cpp_key_cannot`, which shows a kernel that CAN tell
-    them apart is not collapsed -- otherwise "it collapses" would just mean the key is broken."""
+    """Every FP mode compiles this kernel to the same object, so the sweep measures it once."""
     keys = {rung: variant_key(build(tmp_path, ADD_KERNEL, rung, tag=rung), SYMBOL) for rung in FP_LEVELS}
     assert all(k is not None for k in keys.values()), keys
     groups = collapse(keys)

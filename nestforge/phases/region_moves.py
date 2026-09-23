@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import cast
 
 import dace
 from dace import symbolic
@@ -92,7 +93,8 @@ def plan_loop_fission(loop: LoopRegion) -> Rewrite | str:
 
 def plan_if_into_loop(cond: ConditionalBlock, loop: LoopRegion) -> Rewrite | str:
     """Push the guard ``cond`` into the ``loop`` its branch ends in: ``if c: for i: B`` -> ``for i: if c: B``."""
-    match = move_if_into_loop._match(cond)
+    # the match walks the regions it is handed, so handing it the one block scopes it
+    match = move_if_into_loop._match(cast(dace.SDFG, cond))
     if match is None or match[0] is not cond or loop.parent_graph is not match[2] or match[2].out_degree(loop):
         return IF_INTO_LOOP_REFUSED
 
@@ -106,7 +108,7 @@ def plan_if_into_loop(cond: ConditionalBlock, loop: LoopRegion) -> Rewrite | str
 def plan_if_out_of_loop(loop: LoopRegion, cond: ConditionalBlock) -> Rewrite | str:
     """Hoist the loop-invariant guard ``cond`` out of ``loop``: ``for i: if c: B`` -> ``if c: for i: B``."""
     sdfg = loop.sdfg
-    match = move_loop_invariant_if_up._match(loop)
+    match = move_loop_invariant_if_up._match(cast(dace.SDFG, loop))
     if match is None or match[0] is not loop or match[1] is not cond:
         return IF_OUT_OF_LOOP_REFUSED
 
@@ -161,8 +163,8 @@ def map_loop_refusal(state: SDFGState, entry: nodes.MapEntry, loop: LoopRegion) 
     scope = state.scope_children()[None]
     if any(not isinstance(n, nodes.AccessNode) for n in scope if n is not entry and n is not state.exit_node(entry)):
         return f"the state of {entry.map.label} holds more than the map; the loop would repeat it."
-    bounds = (loop.init_statement, loop.loop_condition, loop.update_statement)
-    for name in {str(s) for code in bounds for s in code.get_free_symbols()} - {loop.loop_variable}:
+    statements = [c for c in (loop.init_statement, loop.loop_condition, loop.update_statement) if c is not None]
+    for name in {str(s) for code in statements for s in code.get_free_symbols()} - {loop.loop_variable}:
         if name in entry.map.params or name in body.sdfg.arrays or str(body.symbol_mapping.get(name)) != name:
             return f"the loop bound {name} varies across map iterations."
     if any(isinstance(b, (BreakBlock, ContinueBlock, ReturnBlock)) for b in loop.all_control_flow_blocks()):
@@ -273,6 +275,7 @@ def plan_subgraph_fission(state: SDFGState, entry: nodes.MapEntry, cut: ControlF
     twin = detach(sdfg)
     twin_state = list(twin.all_states())[list(sdfg.all_states()).index(state)]
     twin_entry = twin_state.node(state.node_id(entry))
+    assert isinstance(twin_entry, nodes.MapEntry), "a deep copy keeps node ids"
     twin_body = map_body(twin_state, twin_entry)
     assert twin_body is not None, "a deep copy keeps the body"
     twin_cut = twin_body.sdfg.node(body.sdfg.node_id(cut))
@@ -327,9 +330,9 @@ def ifs_out_of_loops(sdfg: dace.SDFG) -> Iterator[Rewrite]:
 
 def map_loop_interchanges(sdfg: dace.SDFG) -> Iterator[Rewrite]:
     return rewrites(
-        plan_map_loop_interchange(state, entry, body.sdfg.nodes()[0])
+        plan_map_loop_interchange(state, entry, loop)
         for state, entry in map_entries(sdfg)
-        if (body := map_body(state, entry)) is not None and isinstance(body.sdfg.nodes()[0], LoopRegion)
+        if (body := map_body(state, entry)) is not None and isinstance(loop := body.sdfg.nodes()[0], LoopRegion)
     )
 
 

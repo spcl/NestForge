@@ -7,7 +7,7 @@ Operand resolution (read/write expressions, scalar handling) plus a flat class-n
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
 import sympy
@@ -17,6 +17,33 @@ from dace import symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.libraries.standard.nodes.scan import ScanOp
 from dace.sdfg import nodes
+from dace.sdfg.graph import MultiConnectorEdge
+
+from nestforge.ir.dace_types import bounds, memlet_data, memlet_subset
+
+if TYPE_CHECKING:
+    from dace.libraries.blas.nodes.axpy import Axpy
+    from dace.libraries.blas.nodes.batched_matmul import BatchedMatMul
+    from dace.libraries.blas.nodes.dot import Dot
+    from dace.libraries.blas.nodes.einsum import Einsum
+    from dace.libraries.blas.nodes.gemm import Gemm
+    from dace.libraries.blas.nodes.gemv import Gemv
+    from dace.libraries.blas.nodes.ger import Ger
+    from dace.libraries.blas.nodes.matmul import MatMul
+    from dace.libraries.blas.nodes.symm import Symm
+    from dace.libraries.blas.nodes.syr2k import Syr2k
+    from dace.libraries.blas.nodes.syrk import Syrk
+    from dace.libraries.fft.nodes.fft import FFT, IFFT
+    from dace.libraries.lapack.nodes.potrf import Potrf
+    from dace.libraries.linalg.nodes.cholesky import Cholesky
+    from dace.libraries.linalg.nodes.inv import Inv
+    from dace.libraries.linalg.nodes.solve import Solve
+    from dace.libraries.linalg.nodes.tensordot import TensorDot
+    from dace.libraries.linalg.nodes.transpose import Transpose
+    from dace.libraries.linalg.nodes.ttranspose import TensorTranspose
+    from dace.libraries.standard.nodes.arg_reduce import ArgReduce
+    from dace.libraries.standard.nodes.reduce import Reduce
+    from dace.libraries.standard.nodes.scan import Scan
 
 
 class UnsupportedLibraryNode(Exception):
@@ -26,7 +53,7 @@ class UnsupportedLibraryNode(Exception):
 def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
     """Format a subset as a numpy index/slice string (singleton range -> scalar unless ``keep_singleton``)."""
     parts = []
-    for beg, end, step in subset.ranges:
+    for beg, end, step in bounds(subset):
         if str(beg) == str(end):
             parts.append(
                 f"{symbolic.symstr(beg)}:{symbolic.symstr(beg + 1)}" if keep_singleton else symbolic.symstr(beg)
@@ -67,7 +94,7 @@ def covers_whole(subset: dace.subsets.Range, desc: dace.data.Data) -> bool:
     """True if ``subset`` spans the entire array descriptor (so no slice suffix is needed)."""
     if len(subset.ranges) != len(desc.shape):
         return False
-    for (beg, end, step), dim in zip(subset.ranges, desc.shape):
+    for (beg, end, step), dim in zip(bounds(subset), desc.shape):
         if str(beg) != "0" or str(step) != "1" or symbolic.symstr(end + 1) != symbolic.symstr(dim):
             return False
     return True
@@ -140,15 +167,15 @@ def operand_rank(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None) 
 
 def memlet_expr(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
     """Read expression for a memlet's data, keeping length-1 dims so a ``[N,1]`` column stays 2-D."""
-    return read_expr(sdfg, memlet.data, memlet.subset, keep_singleton=True)
+    return read_expr(sdfg, memlet_data(memlet), memlet_subset(memlet), keep_singleton=True)
 
 
 def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
     """Write target for a memlet's data, keeping length-1 dims to match the numpy op's result shape."""
-    return write_lhs(sdfg, memlet.data, memlet.subset, keep_singleton=True)
+    return write_lhs(sdfg, memlet_data(memlet), memlet_subset(memlet), keep_singleton=True)
 
 
-def data_edge(edges: list, node: nodes.Node, kind: str) -> dace.sdfg.graph.MultiConnectorEdge:
+def data_edge(edges: list, node: nodes.Node, kind: str) -> MultiConnectorEdge:
     """The first edge that carries data (skips empty happens-before/ordering edges, e.g. from StateFusion)."""
     for e in edges:
         if not e.data.is_empty():
@@ -158,7 +185,7 @@ def data_edge(edges: list, node: nodes.Node, kind: str) -> dace.sdfg.graph.Multi
     )
 
 
-def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> dace.sdfg.graph.MultiConnectorEdge:
+def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdge:
     """The in-edge on ``conn``; raises rather than a bare ``StopIteration`` when the connector is unwired."""
     edge = next((e for e in edges if e.dst_conn == conn), None)
     if edge is None:
@@ -166,7 +193,7 @@ def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> dace.sdfg.graph.Mu
     return edge
 
 
-def out_conn_edge(edges: list, node: nodes.Node, conn: str) -> dace.sdfg.graph.MultiConnectorEdge:
+def out_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdge:
     """The out-edge on ``conn`` (see :func:`in_conn_edge`)."""
     edge = next((e for e in edges if e.src_conn == conn), None)
     if edge is None:
@@ -237,7 +264,7 @@ def transposed(expr: str, trans: bool) -> str:
     return f"({expr}).T" if trans else expr
 
 
-def emit_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_matmul(node: MatMul, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * (opA(A) @ opB(B)) + beta * C``; beta reads the output edge (``MatMul`` has no ``_c`` input)."""
     in_edges, out_edges = list(state.in_edges(node)), list(state.out_edges(node))
     a = transposed(in_expr(state, node, "_a", sdfg, in_edges), node.transA)
@@ -248,7 +275,7 @@ def emit_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG)
     return f"{out_lhs(state, node, '_c', sdfg, out_edges)} = {expr}"
 
 
-def emit_gemm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_gemm(node: Gemm, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * (opA(A) @ opB(B)) + beta * C`` -- BLAS GEMM, connectors ``_a``/``_b``/``_c``."""
     reject_runtime_scalars(node, state)
     in_edges = list(state.in_edges(node))
@@ -260,7 +287,7 @@ def emit_gemm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     return f"{out_lhs(state, node, '_c', sdfg)} = {expr}"
 
 
-def emit_gemv(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_gemv(node: Gemv, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * (opA(A) @ x) + beta * y`` -- BLAS GEMV (matrix-vector), connectors ``_A``/``_x``/``_y``."""
     in_edges = list(state.in_edges(node))
     a = transposed(in_expr(state, node, "_A", sdfg, in_edges), node.transA)
@@ -271,7 +298,7 @@ def emit_gemv(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     return f"{out_lhs(state, node, '_y', sdfg)} = {expr}"
 
 
-def emit_ger(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_ger(node: Ger, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``alpha * outer(x, y) + A`` -- BLAS GER rank-1 update; connectors ``_x``/``_y``/``_A`` -> ``_res``."""
     in_edges = list(state.in_edges(node))
     x = in_expr(state, node, "_x", sdfg, in_edges)
@@ -280,7 +307,7 @@ def emit_ger(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) ->
     return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(f'np.outer({x}, {y})', node.alpha)} + {a}"
 
 
-def emit_axpy(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_axpy(node: Axpy, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``a * x + y`` -- BLAS AXPY; connectors ``_x``/``_y`` -> ``_res``."""
     in_edges = list(state.in_edges(node))
     x = in_expr(state, node, "_x", sdfg, in_edges)
@@ -288,7 +315,7 @@ def emit_axpy(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     return f"{out_lhs(state, node, '_res', sdfg)} = {scaled(x, node.a)} + {y}"
 
 
-def emit_batched_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_batched_matmul(node: BatchedMatMul, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Batched ``A @ B`` over the trailing two dims; ``beta != 0`` is refused (no ``_c`` input to accumulate)."""
     if not is_zero(node.beta):
         raise UnsupportedLibraryNode(f"BatchedMatMul with beta={node.beta} has no _c input to accumulate")
@@ -302,7 +329,7 @@ def emit_batched_matmul(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: da
     return f"{out_lhs(state, node, '_c', sdfg)} = {scaled(f'{a} @ {b}', node.alpha)}"
 
 
-def emit_einsum(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_einsum(node: Einsum, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.einsum`` over connectors sorted by name, with ``alpha``/``beta`` folded in."""
     coeff = {"_alpha": str(node.alpha), "_beta": str(node.beta)}
     operands = []
@@ -325,7 +352,7 @@ def emit_einsum(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG)
     return f"{out_lhs(state, node, None, sdfg)} = {expr}"
 
 
-def emit_tensordot(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_tensordot(node: TensorDot, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.tensordot`` with an optional output ``permutation`` transpose."""
     in_edges = list(state.in_edges(node))
     left = in_expr(state, node, "_left_tensor", sdfg, in_edges)
@@ -336,18 +363,18 @@ def emit_tensordot(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SD
     return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
 
 
-def emit_inv(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_inv(node: Inv, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.linalg.inv(A)`` -- matrix inverse; connectors ``_ain`` -> ``_aout``."""
     return f"{out_lhs(state, node, '_aout', sdfg)} = np.linalg.inv({in_expr(state, node, '_ain', sdfg)})"
 
 
-def emit_fft(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_fft(node: FFT, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``factor * np.fft.fft(x)`` (DaCe's forward DFT is unnormalized)."""
     inp = in_expr(state, node, "_inp", sdfg)
     return f"{out_lhs(state, node, '_out', sdfg)} = {scaled(f'np.fft.fft({inp})', node.factor)}"
 
 
-def emit_ifft(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_ifft(node: IFFT, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``factor * np.fft.ifft(x, norm='forward')`` (DaCe's inverse DFT has no built-in ``1/N``)."""
     inp = in_expr(state, node, "_inp", sdfg)
     call = f"np.fft.ifft({inp}, norm='forward')"
@@ -357,7 +384,7 @@ def emit_ifft(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
 ARGREDUCE_FUNC = {"max": ("np.argmax", "np.max"), "min": ("np.argmin", "np.min")}
 
 
-def emit_argreduce(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> list[str]:
+def emit_argreduce(node: ArgReduce, state: dace.SDFGState, sdfg: dace.SDFG) -> list[str]:
     """``np.argmax``/``np.argmin`` plus the extreme value, as two statements."""
     argfn, valfn = ARGREDUCE_FUNC[node.op]
     inp = in_expr(state, node, "_in", sdfg)
@@ -376,7 +403,7 @@ SCAN_FUNC = {
 }
 
 
-def emit_scan(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_scan(node: Scan, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Inclusive unit-stride unseeded scan -> a numpy accumulate; anything else is refused."""
     red = {
         ScanOp.SUM: dace.dtypes.ReductionType.Sum,
@@ -384,7 +411,7 @@ def emit_scan(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
         ScanOp.MIN: dace.dtypes.ReductionType.Min,
         ScanOp.MAX: dace.dtypes.ReductionType.Max,
     }.get(node.op)
-    func = SCAN_FUNC.get(red)
+    func = None if red is None else SCAN_FUNC.get(red)
     if func is None:
         raise UnsupportedLibraryNode(f"Scan with unsupported op {node.op}")
     if node.exclusive or str(node.stride) != "1" or "_scan_init" in node.in_connectors:
@@ -401,7 +428,7 @@ def emit_scatter_conflict_check(node: nodes.LibraryNode, state: dace.SDFGState, 
     """Duplicate count over a 1-D integer index array, via last-writer-wins ownership (TAGCOUNT form)."""
     idx = in_expr(state, node, "_idx_in", sdfg)
     count = out_lhs(state, node, "_count_out", sdfg)
-    tag = next(e for e in state.out_edges(node) if e.src_conn == "_count_out").data.data
+    tag = memlet_data(next(e for e in state.out_edges(node) if e.src_conn == "_count_out").data)
     mx, owner, i, acc = f"__scc_{tag}_max", f"__scc_{tag}_owner", f"__scc_{tag}_i", f"__scc_{tag}_count"
     return [
         f"{mx} = int(np.max({idx}))",
@@ -418,7 +445,7 @@ def emit_scatter_conflict_check(node: nodes.LibraryNode, state: dace.SDFGState, 
 
 def out_data_name(state: dace.SDFGState, node: nodes.Node, conn: str) -> str:
     """The array name an output connector writes."""
-    return next(e for e in state.out_edges(node) if e.src_conn == conn).data.data
+    return memlet_data(next(e for e in state.out_edges(node) if e.src_conn == conn).data)
 
 
 def reject_runtime_scalars(node: nodes.LibraryNode, state: dace.SDFGState) -> None:
@@ -436,7 +463,7 @@ def triangle_funcs(uplo: str) -> tuple[str, str, int]:
     return ("np.tril", "np.triu", 1) if uplo == "L" else ("np.triu", "np.tril", -1)
 
 
-def emit_syrk(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_syrk(node: Syrk, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYRK, updating only the ``uplo`` triangle of ``C``; the opposite triangle keeps its prior value."""
     reject_runtime_scalars(node, state)
     a = in_expr(state, node, "_a", sdfg)
@@ -449,7 +476,7 @@ def emit_syrk(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
 
 
-def emit_syr2k(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_syr2k(node: Syr2k, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYR2K, updating only the ``uplo`` triangle of ``C`` (``A``/``B`` read in full)."""
     reject_runtime_scalars(node, state)
     in_edges = list(state.in_edges(node))
@@ -464,7 +491,7 @@ def emit_syr2k(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) 
     return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
 
 
-def emit_symm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_symm(node: Symm, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYMM; ``A`` is symmetric and stored as only its ``uplo`` triangle, reconstructed to full first."""
     reject_runtime_scalars(node, state)
     in_edges = list(state.in_edges(node))
@@ -478,7 +505,7 @@ def emit_symm(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -
     return f"{out_lhs(state, node, '_c', sdfg)} = {rhs}"
 
 
-def emit_potrf(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> list[str]:
+def emit_potrf(node: Potrf, state: dace.SDFGState, sdfg: dace.SDFG) -> list[str]:
     """LAPACK POTRF -> ``np.linalg.cholesky``, mirroring :func:`emit_cholesky`; ``_res`` always reports success."""
     a = in_expr(state, node, "_xin", sdfg)
     expr = f"np.linalg.cholesky({a})"
@@ -491,26 +518,26 @@ def emit_potrf(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) 
     return lines
 
 
-def emit_dot(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_dot(node: Dot, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     in_edges = list(state.in_edges(node))
     x = in_expr(state, node, "_x", sdfg, in_edges)
     y = in_expr(state, node, "_y", sdfg, in_edges)
     return f"{out_lhs(state, node, '_result', sdfg)} = np.dot({x}, {y})"
 
 
-def emit_transpose(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_transpose(node: Transpose, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     inp = in_expr(state, node, "_inp", sdfg)
     return f"{out_lhs(state, node, '_out', sdfg)} = np.transpose({inp})"
 
 
-def emit_solve(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_solve(node: Solve, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     in_edges = list(state.in_edges(node))
     ain = in_expr(state, node, "_ain", sdfg, in_edges)
     bin_ = in_expr(state, node, "_bin", sdfg, in_edges)
     return f"{out_lhs(state, node, '_bout', sdfg)} = np.linalg.solve({ain}, {bin_})"
 
 
-def emit_cholesky(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_cholesky(node: Cholesky, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     a = in_expr(state, node, "_a", sdfg)
     # numpy returns the lower factor L (A = L @ L.conj().T); the upper factor is L.conj().T.
     expr = f"np.linalg.cholesky({a})"
@@ -519,7 +546,7 @@ def emit_cholesky(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDF
     return f"{out_lhs(state, node, '_b', sdfg)} = {expr}"
 
 
-def emit_tensortranspose(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_tensortranspose(node: TensorTranspose, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     inp = in_expr(state, node, "_inp_tensor", sdfg)
     if str(node.beta) not in ("0", "0.0"):
         raise UnsupportedLibraryNode(f"TensorTranspose with beta={node.beta} (accumulate) is not emitted")
@@ -529,9 +556,9 @@ def emit_tensortranspose(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: d
     return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
 
 
-def emit_reduce(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+def emit_reduce(node: Reduce, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     red = detect_reduction_type(node.wcr)
-    func = REDUCTION_FUNC.get(red)
+    func = None if red is None else REDUCTION_FUNC.get(red)
     if func is None:
         raise UnsupportedLibraryNode(f"Reduce with unsupported wcr {node.wcr!r} ({red})")
     in_edges, out_edges = list(state.in_edges(node)), list(state.out_edges(node))
@@ -541,8 +568,8 @@ def emit_reduce(node: nodes.LibraryNode, state: dace.SDFGState, sdfg: dace.SDFG)
     # operands, via operand_rank, since two buffers can share a descriptor rank while their renders differ).
     in_memlet = data_edge(in_edges, node, "input").data
     out_memlet = data_edge(out_edges, node, "output").data
-    in_rank = operand_rank(sdfg, in_memlet.data, in_memlet.subset)
-    out_rank = operand_rank(sdfg, out_memlet.data, out_memlet.subset)
+    in_rank = operand_rank(sdfg, memlet_data(in_memlet), memlet_subset(in_memlet))
+    out_rank = operand_rank(sdfg, memlet_data(out_memlet), memlet_subset(out_memlet))
     keepdims = axis is not None and out_rank == in_rank
     kd = ", keepdims=True" if keepdims else ""
     return f"{out_lhs(state, node, None, sdfg, out_edges)} = {func}.reduce({inp}, axis={axis}{kd})"

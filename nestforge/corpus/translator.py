@@ -1,7 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Translate a ``*_numpy.py`` kernel plus its ``BenchSpec`` into C / C++ / Fortran via
-hpcagent_bench's ``numpyto`` driver."""
+"""Translate a NumPy kernel and its ``BenchSpec`` to C, C++ or Fortran with HPCAgent-Bench's ``numpyto`` driver."""
 
 from __future__ import annotations
 
@@ -32,7 +31,9 @@ def translate(
 
     :returns: the generated source files, C then C++ then Fortran.
     """
-    from hpcagent_bench import emit_bridge  # deferred: hpcagent_bench imports nestforge at top level
+    from hpcagent_bench import (
+        emit_bridge,
+    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

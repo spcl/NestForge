@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Feedback edges (e) and (g): measured outcomes that decide whether to re-enter the inter-kernel schedule."""
+"""Feedback: re-enter phase 1 while a measured round keeps getting faster."""
 
 from __future__ import annotations
 

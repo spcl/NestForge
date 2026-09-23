@@ -1,17 +1,17 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Read-only structure inspection for the agent: ``describe_graph`` renders the SDFG as an ASCII
-tree of regions/loops/kernels (each named by its canonical normal-form label); ``nest_reads_writes``
-reports one nest's arrays without extracting it."""
+"""Read-only views of a program: the structure tree (:func:`describe_graph`), a kernel as NumPy, and the arrays a
+nest reads and writes."""
 
 from __future__ import annotations
 
 import ast
 import functools
-from typing import Any
+from typing import Any, cast
 from collections.abc import Callable
 
 import dace
+import sympy
 from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
@@ -19,6 +19,7 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegio
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
+from nestforge.ir.dace_types import bounds, memlet_subset, strings
 from nestforge.ir.emit_libnode import UnsupportedLibraryNode
 from nestforge.ir.emit_numpy import UnsupportedNest, map_body_lines, map_lines, standalone_source
 from nestforge.ir.names import in_order
@@ -79,7 +80,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
         if not used:
             break
         tree = Substitute({name: remaining.pop(name) for name in used}).visit(tree)
-    # ast.unparse, not astutils.unparse: this string is for a human/agent to READ, not re-parsed.
+    # ast.unparse: this string is read, never parsed again
     return ast.unparse(simplify_indices(tree)).strip()
 
 
@@ -104,12 +105,8 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
 
 
 def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: dict) -> list[str]:
-    """The numpy statements one kernel computes, without its ``for`` headers. Only a LEAF kernel gets
-    a body -- a kernel containing another is rendered with that one as its own child row -- and an
-    emitter refusal is reported on the line rather than raised, since the tree is read-only.
-
-    :param children: the caller's ``scope_children()``, passed in so a hundred-kernel state does not
-        rebuild the same scope tree once per kernel."""
+    """The NumPy statements a leaf kernel computes; an emitter refusal becomes the line's text. ``children`` is the
+    state's ``scope_children()``, built once by the caller."""
     if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
         return []
     try:
@@ -127,9 +124,7 @@ def kernel_args(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
 
 
 def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
-    """ONE kernel as a complete, runnable numpy module: the loop nest inside a ``def`` with a real
-    signature, on top of a preamble defining everything the body calls -- unlike ``kernel_body``'s
-    fragment, this can be pasted into a file, executed, and checked against the SDFG."""
+    """One kernel as a runnable NumPy module: a ``def`` with its signature, and the preamble its body calls."""
     return standalone_source(entry.map.label, kernel_args(state, entry), map_lines(state, sdfg, entry))
 
 
@@ -151,34 +146,34 @@ REDUCTION_SPELLING = {
 
 
 def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
-    """Every reduction leaving this map, as ``<op> over <axes> -> <target>``. The reduced axes are the
-    map parameters the OUTPUT subset does not mention -- a map over ``(i0, i1)`` writing ``C[i0]`` has
-    collapsed ``i1``."""
+    """Every reduction leaving this map, as ``<op> over <axes> -> <target>``; the reduced axes are the parameters
+    the written subset does not mention."""
     exit_node = state.exit_node(entry)
     params = set(entry.map.params)
     out: list[str] = []
-    # IN-edges of the exit: NormalizeWCRSource guarantees a WCR rides AccessNode -[wcr]-> MapExit.
+    # normalization puts every WCR on an AccessNode -> MapExit edge
     for edge in state.in_edges(exit_node):
         if edge.data is None or edge.data.wcr is None:
-            continue  # cheapest test first: most exit edges carry no WCR at all
+            continue
         kind = detect_reduction_type(edge.data.wcr)
-        op = REDUCTION_SPELLING.get(kind, kind.name.lower() if kind is not None else "?")
+        op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
+        subset = memlet_subset(edge.data)
         written = {
             str(s)
-            for r in (edge.data.subset.ranges if edge.data.subset else [])
+            for r in (bounds(subset) if subset else [])
             for b in r
             for s in dace.symbolic.pystr_to_symbolic(b).free_symbols
         }
-        collapsed = [p for p in entry.map.params if p in params - written]
+        collapsed = [p for p in strings(entry.map.params) if p in params - written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")
     return out
 
 
-def nest_reads_writes(container: SDFGState, node: nodes.Node) -> tuple[list[str], list[str]]:
-    """Arrays a nest reads and writes (the interface arrays), without outlining it. ``container`` is the
-    ``SDFGState`` holding a ``MapEntry``; ignored for a ``LoopRegion`` (which carries its own states)."""
+def nest_reads_writes(container: SDFGState | dace.SDFG, node: object) -> tuple[list[str], list[str]]:
+    """Arrays a nest reads and writes, without outlining it; ``container`` is the state of a ``MapEntry``."""
     if isinstance(node, nodes.MapEntry):
+        assert isinstance(container, SDFGState), "a map lives in a state"
         exit_node = container.exit_node(node)
         reads = sorted({e.data.data for e in container.in_edges(node) if e.data is not None and e.data.data})
         writes = sorted({e.data.data for e in container.out_edges(exit_node) if e.data is not None and e.data.data})
@@ -206,14 +201,12 @@ def loop_domain(loop: LoopRegion, defs: dict[str, str]) -> str:
 
 @functools.lru_cache(maxsize=4096, typed=True)
 def end_plus_one(end_text: str) -> str:
-    """``str(simplify(end + 1))`` for one END expression's string form -- render_range asks the same
-    bound repeatedly across a program's kernels."""
-    return str(dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(end_text) + 1))
+    """``end + 1``, simplified; the same bound recurs across a program's kernels."""
+    return str(dace.symbolic.simplify(cast(sympy.Expr, dace.symbolic.pystr_to_symbolic(end_text)) + 1))
 
 
 def render_range(rng: tuple[Any, Any, Any]) -> str:
-    """``begin:end:step`` with the two redundant parts dropped -- an inclusive end is rendered as the
-    exclusive bound a reader expects, and a unit step is left off."""
+    """``begin:end:step`` with an exclusive end and a unit step left off."""
     begin, end, step = rng
     text = f"{begin}:{end_plus_one(str(end))}"
     return text if step == 1 else f"{text}:{step}"
@@ -229,7 +222,7 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, tuple[Any, SDFGState | None]]:
             rows[block.label] = (block, None)
             if isinstance(block, SDFGState):
                 kernels = (n for n in block.nodes() if isinstance(n, (nodes.MapEntry, nodes.LibraryNode)))
-                rows.update((n.label, (n, block)) for n in kernels)
+                rows.update((n.map.label if isinstance(n, nodes.MapEntry) else n.label, (n, block)) for n in kernels)
     return rows
 
 
@@ -241,11 +234,14 @@ def describe_graph(
     notes: Notes | None = None,
     epoch: int | None = None,
 ) -> str:
-    """The SDFG as an ASCII tree for the agent. Each line is one block or kernel; the guides show
-    nesting. ``handle(kind, obj)``, when given, returns the session id to stamp on that line,
-    ``bodies=True`` also prints what each leaf kernel computes, as numpy, under its line,
-    ``metrics(entry)`` is appended to every top-level map's line, a line ``notes(node)`` returns
-    is printed under that library node's line, and ``epoch`` is shown on the first line."""
+    """The program as a text tree, one line per block or kernel.
+
+    :param handle: Returns the id to print on a row.
+    :param bodies: Also print what each leaf kernel computes, as NumPy.
+    :param metrics: Returns the suffix of a top-level map's row.
+    :param notes: Returns a line to print under a library node's row.
+    :param epoch: Printed on the first line.
+    """
     header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
     lines: list[str] = [header]
     walk_regions(sdfg, "", lines, handle, interstate_definitions(sdfg), bodies, metrics, notes)
@@ -312,7 +308,7 @@ def walk_state(
     """A state's kernels: every map nest plus any library node, nested scopes recursed into."""
     children = state.scope_children()
     if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
-        return  # a state with no kernels: do not pay for the topological order nobody will read
+        return
     rank = {id(n): i for i, n in enumerate(in_order(state))}
 
     def descend(scope: nodes.MapEntry | None, pad: str) -> None:
@@ -353,7 +349,7 @@ def block_line(block: ControlFlowBlock, defs: dict[str, str]) -> str:
     return block.label
 
 
-def kernel_line(state: SDFGState, node: nodes.Node) -> str:
+def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> str:
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     if isinstance(node, nodes.LibraryNode):
         reads = sorted({e.data.data for e in state.in_edges(node) if e.data is not None and e.data.data})
@@ -362,5 +358,4 @@ def kernel_line(state: SDFGState, node: nodes.Node) -> str:
     reads, writes = nest_reads_writes(state, node)
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
-    # a Map is data-parallel by definition, so no parallel/sequential column is needed here
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

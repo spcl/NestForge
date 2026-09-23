@@ -42,6 +42,7 @@ from nestforge.phases.schedule import (
     NOT_IMPLEMENTED,
     FissionMove,
     FusionMove,
+    Move,
     RegionMove,
     Row,
     apply_region_fusion,
@@ -57,6 +58,7 @@ from nestforge.phases.schedule import (
     legal_moves,
     plan_move,
     scope_metrics,
+    tree_label,
 )
 from nestforge.phases.scopes import (
     is_parallel_nest,
@@ -147,6 +149,13 @@ class Session:
             raise KeyError(f"id {hid!r} is not a {kind} handle")
         return self.handles[hid]
 
+    def resolve_as[T](self, hid: str, kind: str, cls: type[T]) -> T:
+        """:meth:`resolve`, checked to be a ``cls``."""
+        obj = self.resolve(hid, kind)
+        if not isinstance(obj, cls):
+            raise KeyError(f"id {hid!r} names a {type(obj).__name__}, not a {cls.__name__}")
+        return obj
+
     def bump(self) -> None:
         self.epoch += 1
         self.handles = {}
@@ -187,7 +196,7 @@ class Session:
         return scope_metrics(self.sdfg, entry).suffix()
 
     def tree_handle(self, kind: str, obj: object) -> str:
-        return self.mint("nest", obj) if kind == "nest" else f"region:{obj.label}"
+        return self.mint("nest", obj) if kind == "nest" else f"region:{tree_label(obj)}"
 
     def list_nests(self) -> list[dict]:
         """Every map-nest and loop-nest with an id, label, parallel flag and read/write sets."""
@@ -214,8 +223,7 @@ class Session:
         return [{"id": self.mint("move", m), "kind": m.kind, "label": m.label()} for m in enumerate_fusions(self.sdfg)]
 
     def fuse(self, move_id: str) -> str:
-        move: FusionMove = self.resolve(move_id, "move")
-        self.commit(self.sdfg, move)
+        self.commit(self.sdfg, self.resolve_as(move_id, "move", FusionMove))
         return self.describe()
 
     def list_moves(self, kind: str | None = None) -> list[dict]:
@@ -262,7 +270,7 @@ class Session:
             self.rows = tree_rows(self.sdfg)
         return self.rows
 
-    def commit(self, sdfg: dace.SDFG, move: FusionMove | FissionMove) -> str:
+    def commit(self, sdfg: dace.SDFG, move: Move) -> str:
         """Apply one move on the SDFG owning its nodes and start a new epoch; returns the transformation's name."""
         applied = commit_move(sdfg, move)
         self.bump()
@@ -276,8 +284,7 @@ class Session:
         ]
 
     def fuse_regions(self, move_id: str) -> str:
-        move: RegionMove = self.resolve(move_id, "regmove")
-        apply_region_fusion(self.sdfg, move)
+        apply_region_fusion(self.sdfg, self.resolve_as(move_id, "regmove", RegionMove))
         self.bump()
         return self.describe()
 
@@ -292,8 +299,7 @@ class Session:
         return [{"id": self.mint("fission", m), "label": m.label()} for m in enumerate_map_fissions(self.sdfg)]
 
     def fission(self, move_id: str) -> str:
-        move: FissionMove = self.resolve(move_id, "fission")
-        self.commit(self.sdfg, move)
+        self.commit(self.sdfg, self.resolve_as(move_id, "fission", FissionMove))
         return self.describe()
 
     def full_fusion(self) -> str:
@@ -333,8 +339,9 @@ class Session:
         state_index = list(self.sdfg.all_states()).index(state)
         node_index = list(state.nodes()).index(nest)
         work = detach(self.sdfg)
-        twin_state = list(work.all_states())[state_index]
-        return extract_map_nest(work, list(twin_state.nodes())[node_index], name=nest.map.label)
+        twin = list(list(work.all_states())[state_index].nodes())[node_index]
+        assert isinstance(twin, nodes.MapEntry), "a deep copy keeps node order"
+        return extract_map_nest(work, twin, name=nest.map.label)
 
     def map_nest(self, nest_id: str) -> tuple[SDFGState, nodes.MapEntry]:
         nest = self.resolve(nest_id, "nest")
@@ -432,7 +439,7 @@ class Session:
 
     def kernel_boundary(self, kernel_id: str) -> dict:
         """The kernel's interface; ``boundary_order`` is the argument order a library must accept."""
-        ext = self.resolve(kernel_id, "kernel")
+        ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
         inputs, outputs, symbols = kernel_arguments(ext)
         return {
             "name": ext.name,
@@ -448,7 +455,7 @@ class Session:
 
     def prepare_kernel(self, kernel_id: str) -> Prepared:
         if kernel_id not in self.prepared:
-            ext = self.resolve(kernel_id, "kernel")
+            ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
             self.prepared[kernel_id] = prepare(node_boundary(ext), ext.name, self.work_dir / ext.name)
         return self.prepared[kernel_id]
 
@@ -477,7 +484,7 @@ class Session:
     def scheduled_kernel(self, kernel_id: str) -> KernelSource:
         """The kernel's CPF unit for the device phase 3 placed it on, rendered once per epoch."""
         if kernel_id not in self.kernel_sources:
-            ext = self.resolve(kernel_id, "kernel")
+            ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
             self.kernel_sources[kernel_id] = schedule_kernel(
                 ext, node_boundary(ext), self.work_dir / ext.name / "kernel"
             )
@@ -486,7 +493,7 @@ class Session:
     def optimize_kernel(self, kernel_id: str) -> dict:
         """Phase 4 default: render the kernel's CPF unit, build it with the first configuration phase 5 sweeps for
         its device, and bind that library, with the runtimes it needs, to the kernel's ``ExternalCall``."""
-        ext = self.resolve(kernel_id, "kernel")
+        ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
         src = self.scheduled_kernel(kernel_id)
         variants = device_variants(src.device)
         if not variants:
@@ -515,7 +522,7 @@ class Session:
     ) -> dict:
         """Point a kernel at a compiled library exposing ``symbol``; ``abi_order`` must match its signature.
         ``runtime_libraries`` are the link items its runtimes need; libomp alone when ``None``."""
-        ext = self.resolve(kernel_id, "kernel")
+        ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
         runtime = runtime_libraries if runtime_libraries is not None else process_runtime_libraries()
         use_kernel_library(ext, Path(lib_path), symbol, abi_order, runtime)
         if fp_mode:
@@ -540,7 +547,7 @@ class Session:
             ones for the kernel's device when ``None``.
         """
         src = self.scheduled_kernel(kernel_id)
-        ext = self.resolve(kernel_id, "kernel")
+        ext = self.resolve_as(kernel_id, "kernel", ExternalCall)
         result = select_variant(
             src,
             self.prepare_kernel(kernel_id),
@@ -591,9 +598,10 @@ def winner_config(winner: VariantCell | None) -> dict:
     }
 
 
-def fusion_units(sdfg: dace.SDFG) -> list[tuple[object, nodes.MapEntry | LoopRegion]]:
+def fusion_units(sdfg: dace.SDFG) -> list[tuple[SDFGState | dace.SDFG, nodes.MapEntry | LoopRegion]]:
     """``(container, nest)`` for every loop-nest and every top-level map-nest, as :func:`can_fuse` accepts."""
     regions = sdfg.all_control_flow_regions(recursive=True)
-    loops = [(sdfg, node) for cfg in regions for node in cfg.nodes() if isinstance(node, LoopRegion)]
-    maps = [(state, entry) for state in sdfg.all_states() for entry in top_level_map_entries(state)]
-    return loops + maps
+    loops: list[tuple[SDFGState | dace.SDFG, nodes.MapEntry | LoopRegion]] = [
+        (sdfg, node) for cfg in regions for node in cfg.nodes() if isinstance(node, LoopRegion)
+    ]
+    return loops + [(state, entry) for state in sdfg.all_states() for entry in top_level_map_entries(state)]

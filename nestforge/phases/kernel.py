@@ -199,7 +199,7 @@ def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> Ker
     device = kernel_device(ext)
     form = FORMS[device]
     sdfg = form.schedule(boundary)
-    sdfg.name = ext.name
+    sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     rendering = cpf.render(sdfg, language=form.language)
     out_dir.mkdir(parents=True, exist_ok=True)
     unit = out_dir / f"{ext.name}{form.suffix}"

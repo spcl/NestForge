@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Extracted kernel -> numpy + manifest -> C/C++/Fortran sources through hpcagent_bench's translator."""
+"""An extracted kernel written as NumPy and a manifest, and translated to C, C++ or Fortran by HPCAgent-Bench."""
 
 from __future__ import annotations
 
@@ -40,7 +40,9 @@ def prepare(
     preset: str = "S",
 ) -> Prepared:
     """Write ``<name>_numpy.py`` + ``<name>.yaml`` for one extracted kernel and build its ``BenchSpec``."""
-    from hpcagent_bench.spec import BenchSpec  # deferred: hpcagent_bench imports nestforge at top level
+    from hpcagent_bench.spec import (
+        BenchSpec,
+    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -56,4 +58,4 @@ def prepare(
 
 def emit_sources(prep: Prepared, out_dir: os.PathLike, target: str = "c", precision: str = "float64") -> list[Path]:
     """Run the numpy translator; return the generated source files."""
-    return translate(prep.spec, prep.numpy_path, prep.name, out_dir, target=target, precision=precision)
+    return translate(prep.spec, prep.numpy_path, prep.name, Path(out_dir), target=target, precision=precision)

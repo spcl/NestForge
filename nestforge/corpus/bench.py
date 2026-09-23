@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Loads hpcagent_bench's benchmark tracks as SDFGs -- the nest-forge kernel corpus. Each kernel's
-``_dace.py`` binds hpcagent_bench's precision global, so it must be stamped to fp64 before import."""
+"""HPCAgent-Bench's kernels as SDFGs, the NestForge corpus. A kernel's ``_dace.py`` reads HPCAgent-Bench's precision
+global, which is set to float64 before it is imported."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from nestforge.ir.extract import Boundary
 
 if TYPE_CHECKING:
     from types import ModuleType
+
     from hpcagent_bench.spec import BenchSpec
 
 #: Tracks whose ``_dace.py`` this module generates on demand (gitignored, never committed).
@@ -28,8 +29,8 @@ DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning
 
 
 def set_precision_fp64() -> None:
-    """Fix hpcagent_bench's kernel dtype global to float64 before kernel modules import it."""
-    import hpcagent_bench.frameworks.dace_framework as dfw
+    """Set HPCAgent-Bench's kernel dtype global to float64 before a kernel module imports it."""
+    import hpcagent_bench.frameworks.dace_framework as dfw  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
 
     dfw.dc_float = dace.float64
     dfw.dc_complex_float = dace.complex128
@@ -37,7 +38,7 @@ def set_precision_fp64() -> None:
 
 @dataclass(slots=True)
 class CorpusKernel:
-    """One optarena kernel that ships a ``@dace.program`` dace impl."""
+    """One corpus kernel with a ``@dace.program`` implementation."""
 
     short_name: str  # registry key, e.g. "hpc/dense_linear_algebra/gemm/gemm"
     module_path: str  # canonical dotted name, used only as the sys.modules cache key
@@ -50,6 +51,7 @@ class CorpusKernel:
         if self.module_path in sys.modules:
             return sys.modules[self.module_path]
         spec = importlib.util.spec_from_file_location(self.module_path, self.dace_file)
+        assert spec is not None and spec.loader is not None, f"{self.dace_file} is not importable"
         module = importlib.util.module_from_spec(spec)
         sys.modules[self.module_path] = module
         spec.loader.exec_module(module)
@@ -79,9 +81,10 @@ def module_path(short_name: str) -> str:
 
 
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
-    """Yields every corpus kernel that ships a ``_dace.py`` impl, optionally filtered by track."""
-    # deferred: hpcagent_bench imports nestforge at top level
-    from hpcagent_bench import autogen
+    """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
+    from hpcagent_bench import (
+        autogen,
+    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
     for short_name in KERNELS:
@@ -102,10 +105,10 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
 
 
 def materialize_dace_corpus(track: str | None = None) -> None:
-    """Generates every missing ``_dace.py`` up front; call once, serially, before a parallel test run
-    -- concurrent xdist workers would otherwise race the same non-atomic write."""
-    # deferred: hpcagent_bench imports nestforge at top level
-    from hpcagent_bench import autogen
+    """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
+    from hpcagent_bench import (
+        autogen,
+    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
     from hpcagent_bench.spec import KERNELS
 
     for short_name in KERNELS:
@@ -121,22 +124,19 @@ def dace_kernel_names(track: str | None = None) -> list[str]:
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
-    """Concrete shape-symbol sizes for one preset rung, read from the kernel's manifest (skips
-    non-int fuzz-spec entries)."""
-    from hpcagent_bench.sizing import is_plain_int  # deferred: hpcagent_bench imports nestforge at top level
-
+    """The integer symbol sizes of one preset in the kernel's manifest."""
     rung = kernel.spec.parameters.get(preset, {})
-    return {sym: int(size) for sym, size in rung.items() if is_plain_int(size)}
+    return {sym: size for sym, size in rung.items() if isinstance(size, int) and not isinstance(size, bool)}
 
 
 def index_fills(
     manifest_name: str | None, boundary: Boundary, sizes: dict[str, int], seed: int | None = 0
 ) -> dict[str, np.ndarray]:
-    """Valid-subscript fill values for the nest's manifest-declared integer INDEX arrays, at the SDFG
-    descriptor's dtype -- a permutation fill, not the default all-zero uniform-float-cast fill that
-    would degrade a gather/scatter to a same-index race once lowered to a ``dace.map``."""
-    # deferred: hpcagent_bench imports nestforge at top level
-    from hpcagent_bench.initialize import fill_index_array
+    """Permutation fills for the integer index arrays the manifest declares; the default random fill cast to int
+    is all zeros, which turns a gather or scatter into a same-index race."""
+    from hpcagent_bench.initialize import (
+        fill_index_array,
+    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
     from hpcagent_bench.spec import BenchSpec
 
     if manifest_name is None:
@@ -153,5 +153,5 @@ def index_fills(
         dtype = np.dtype(arrays[name].dtype.type)
         if dtype.kind not in "iu":
             continue  # the manifest calls it an index but the nest holds it as a float: not a subscript
-        fills[name] = fill_index_array(resolve_shape(arrays[name].shape, sizes), dtype, rng=rng)
+        fills[name] = fill_index_array(resolve_shape(arrays[name].shape, sizes), dtype.name, rng=rng)
     return fills
