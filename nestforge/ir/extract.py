@@ -10,7 +10,6 @@ import copy
 from dataclasses import dataclass, field
 
 import dace
-from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.state import ConditionalBlock, LoopRegion, SDFGState
@@ -106,32 +105,6 @@ def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, da
                 continue
             dtypes[target] = assignment_dtype(sdfg, str(rhs))
     return dtypes
-
-
-def trip_count_symbols(sdfg: dace.SDFG) -> set[str]:
-    """Symbols that can change how much work ``sdfg`` does: loop init/condition/update statements, map
-    ranges, and interstate conditions (not assignments, which carry a value but never gate whether it
-    runs). Recurses into NestedSDFGs, translating each inner name back through ``symbol_mapping``."""
-    syms = set()
-    for block in sdfg.all_control_flow_blocks():
-        if isinstance(block, LoopRegion):
-            for stmt in (block.init_statement, block.loop_condition, block.update_statement):
-                if stmt is not None:
-                    syms.update(str(s) for s in stmt.get_free_symbols())
-    for state in sdfg.states():
-        for node in state.nodes():
-            if isinstance(node, nodes.MapEntry):
-                syms.update(str(s) for s in node.map.range.free_symbols)
-            elif isinstance(node, nodes.NestedSDFG):
-                for inner in trip_count_symbols(node.sdfg):
-                    bound_to = node.symbol_mapping.get(inner)
-                    if bound_to is None:
-                        syms.add(inner)  # not remapped: the parent knows it under the same name
-                    else:
-                        syms.update(str(s) for s in symbolic.pystr_to_symbolic(bound_to).free_symbols)
-    for edge in sdfg.all_interstate_edges():
-        syms.update(str(s) for s in edge.data.condition.get_free_symbols())
-    return syms
 
 
 def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None = None) -> Boundary:
