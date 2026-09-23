@@ -1,15 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Numpy emission for the BLAS / LinAlg / standard library nodes a DaCe SDFG can carry.
+"""NumPy emission of the BLAS, LinAlg and standard library nodes an SDFG can carry.
 
-Every optarena loop-nest that survives as a library node (rather than being lowered to maps) must
-re-emit as the equivalent numpy op so the extracted kernel stays dense and translatable. This covers
-the nodes a `@dc.program` / `auto_optimize` produces directly (MatMul/Dot/Transpose/Reduce/Solve/
-Cholesky) plus the ones a partially-expanded ``MatMul`` becomes (Gemm/Gemv/BatchedMatMul/Ger) and the
-explicit contraction / reduction / scan nodes (Einsum/TensorDot/ArgReduce/Scan/Inv).
-
-Each node is built minimally, wired to arrays, emitted via :func:`sdfg_to_numpy`, executed, and checked
-**bit-exact** against the numpy op it claims to be -- the emission is a rename, not an approximation.
+Each node is built alone, emitted with :func:`sdfg_to_numpy`, run, and compared bit for bit with the NumPy operation it
+stands for: the emission renames, it does not approximate.
 """
 
 import inspect
@@ -21,17 +15,14 @@ import dace as dc
 from dace import Memlet
 
 from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy
+from nestforge.ir.emit_libnode import scalar_elem
 
 N, M, K = (dc.symbol(s, dtype=dc.int64) for s in "NMK")
 F = dc.float64
 
 
 def build(name, node, arrays, in_wiring, out_wiring):
-    """A one-state SDFG holding ``node`` wired to freshly declared arrays.
-
-    ``arrays`` maps data name -> (shape, dtype); ``in_wiring`` / ``out_wiring`` are ``(connector, data)``
-    pairs. Connectors are forced so a name used as both input and output (a GEMM's ``_c``) coexists.
-    """
+    """A one-state SDFG with ``node`` wired to fresh arrays; forced connectors let one name be input and output."""
     sdfg = dc.SDFG(name)
     for data, (shape, dt) in arrays.items():
         sdfg.add_array(data, shape, dt)
@@ -433,3 +424,17 @@ def test_scatter_conflict_check_duplicates():
     buffers, _ = run(sdfg, "sccd", {"idx": idx.copy(), "cnt": np.zeros(1, np.int64)}, {"N": 9})
     assert buffers["cnt"][0] == 4
     assert buffers["cnt"][0] == idx.shape[0] - len(np.unique(idx))
+
+
+def desc_of_shape(shape):
+    sdfg = dc.SDFG("d")
+    sdfg.add_array("s", shape, dc.float64)
+    return sdfg.arrays["s"]
+
+
+def test_scalar_elem_indexes_every_dimension():
+    # is_scalar is rank-agnostic (total_size == 1), so a keepdims (1,1) buffer landed here too; name[0]
+    # selects a shape-(1,) SUB-ARRAY, not the element.
+    assert scalar_elem("s", desc_of_shape([1])) == "s[0]"
+    assert scalar_elem("s", desc_of_shape([1, 1])) == "s[0, 0]"
+    assert scalar_elem("s", desc_of_shape([1, 1, 1])) == "s[0, 0, 0]"

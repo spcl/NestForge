@@ -77,8 +77,7 @@ def test_skill_has_no_email_address(skill):
 
 
 def test_importing_nestforge_never_loads_hpcagent_bench():
-    """HPCAgent-Bench imports nest-forge at its own top level, so the reverse import must never fire --
-    a top-level `import hpcagent_bench` anywhere under nestforge/ would deadlock that cycle."""
+    """HPCAgent-Bench drives NestForge, so a top-level import the other way would close an import cycle."""
     script = (
         "import importlib, pkgutil, sys\n"
         "import nestforge\n"

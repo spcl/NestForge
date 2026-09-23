@@ -413,10 +413,7 @@ def test_fortran_lowers_through_the_fortran_backend():
 
 
 def test_lowering_a_kernel_does_not_mutate_the_live_sdfg():
-    """kernel_source is a projection: extraction outlines a map in place, so it must run on a COPY.
-    The tree structure and the state count are identical before and after -- and no epoch bump, since
-    a projection is not a mutation. (describe() mints fresh handle ids per call, so compare with those
-    stripped.)"""
+    """``kernel_source`` extracts on a copy and bumps no epoch; ids are stripped, since each describe mints new ones."""
     strip = lambda tree: re.sub(r"\[e\d+:nest:\d+\]", "[nest]", tree)
     sdfg, session, nest_id = session_and_first_nest(matvec)
     before, epoch_before = strip(session.describe()), session.epoch

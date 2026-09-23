@@ -1,19 +1,10 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""gramschmidt is the worked example for the FP-mode axis of the arena (see docs/fp-and-vectorization.md).
+"""gramschmidt shows when an FP mode matters (docs/fp-and-vectorization.md).
 
-Its two ``np.dot`` reductions (``nrm = A[:,k].A[:,k]`` and ``R[k,j] = Q[:,k].A[:,j]``) each lower to a
-sequential accumulate ``s += a[i]*b[i]``. Under ``-ffast-math`` the reduction is *reassociated*
-(split into vector partial sums), which changes the accumulation order. Whether that is dangerous is
-gated by the input's condition number, exactly as the summation/solver theory predicts:
-
-  * well-conditioned A  -> every mode agrees to ~machine-epsilon (reassociation is benign, kappa~1);
-  * ill-conditioned  A  -> a near-zero pivot ``R[k,k]`` divides ``A[:,k]``, amplifying the tiny
-    reassociation difference by ~1/R[k,k], so ``-ffast-math`` diverges by many orders of magnitude
-    while ieee-strict stays controlled.
-
-"Numerically stable" (the arena's acceptance metric) = relative error vs the ieee-strict *sequential*
-baseline does not explode. This test encodes both the mechanism and that stability definition.
+Its dot products reassociate under ``-ffast-math``. For a well-conditioned input every mode agrees to about machine
+epsilon; for an ill-conditioned one a near-zero pivot amplifies the reassociation, and fast-math diverges by orders
+of magnitude from the strict sequential result while strict-ieee stays close.
 """
 
 import ctypes

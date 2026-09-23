@@ -33,12 +33,7 @@ def if_else(flag: dc.int64, a: dc.float64[N], out: dc.float64[N]):
 
 
 def build_three_branch():
-    """A 3-branch ``ConditionalBlock`` (``if``/``elif``/``else``) built directly via the SDFG API.
-
-    The python frontend lowers ``if/elif/else`` into *nested* 2-branch blocks, so a genuine
-    multi-branch ``ConditionalBlock`` -- the case that exercises the emitter's ``elif`` -- has to be
-    assembled by hand. Each branch is ``out[i] = a[i] + delta`` for a distinct delta.
-    """
+    """An if/elif/else ``ConditionalBlock``; the frontend only makes nested two-branch blocks."""
     sdfg = dc.SDFG("switch3")
     sdfg.add_array("a", [N], dc.float64)
     sdfg.add_array("out", [N], dc.float64)
@@ -64,11 +59,7 @@ def build_three_branch():
 
 
 def build_switch(name, branches):
-    """A ``ConditionalBlock`` with the given ``(guard, delta)`` branches in the given order.
-
-    ``guard is None`` marks the unconditional (else) branch; each branch is ``out[i] = a[i] + delta``.
-    Lets a test control branch ordering (e.g. the unconditional branch stored first).
-    """
+    """A ``ConditionalBlock`` of ``(guard, delta)`` branches in order; ``guard=None`` is the else branch."""
     sdfg = dc.SDFG(name)
     sdfg.add_array("a", [N], dc.float64)
     sdfg.add_array("out", [N], dc.float64)
@@ -138,15 +129,8 @@ def test_branch_condition_is_normalized():
 
 
 def test_a_non_final_unconditional_branch_is_refused():
-    """An unconditional branch stored before a keyed one is REFUSED, because DaCe refuses it too.
-
-    This test used to assert the opposite -- that the emitter hoists the unconditional branch to a
-    trailing ``else`` -- and that was wrong. DaCe's own codegen raises ``Missing branch condition for
-    non-final conditional branch`` on this SDFG, so it never runs; the reordering therefore compared
-    the emitted kernel against semantics no DaCe build has. Worse, it made a keyed branch stored AFTER
-    the unconditional one live (DaCe takes the first matching branch, and an unconditional one always
-    matches), and two unconditional branches emitted two ``else:`` clauses -- a SyntaxError.
-    """
+    """DaCe's codegen refuses an unconditional branch before a keyed one; reordering it would make an
+    unreachable branch live."""
     from nestforge.ir.emit_numpy import UnsupportedNest
 
     sdfg = build_switch("else_first", [(None, 20.0), ("sel == 0", 10.0)])

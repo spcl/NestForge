@@ -1,13 +1,10 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Numpy emission for the symmetric-BLAS + LAPACK library nodes added to :mod:`nestforge.ir.emit_libnode`
-(Symm / Syrk / Syr2k / Potrf), plus the explicit refusal of nodes with no faithful single-process numpy
-form (MPI/pblas communication, sparse, FPGA-stream, LAPACK factorizations that output pivots).
+"""NumPy emission of the symmetric BLAS and LAPACK nodes (Symm, Syrk, Syr2k, Potrf), and the refusal of nodes with no
+single-process NumPy form (MPI, sparse, FPGA streams, pivoting factorizations).
 
-Each BLAS case builds a one-node SDFG, runs it two ways -- the DaCe ``pure`` expansion (the reference,
-compiled + run FORKED via :func:`run_isolated`) and the emitted numpy (``sdfg_to_numpy`` + ``load_emitted``) -- and
-asserts they agree to machine precision. Inputs are deliberately NON-symmetric so the uplo-triangle write
-(Syrk/Syr2k preserve the opposite triangle) and the full-symmetric reconstruction (Symm) are exercised.
+Each case compares the emitted NumPy with DaCe's ``pure`` expansion, run in a forked child. Inputs are not symmetric,
+so the triangle each node must leave untouched is checked too.
 """
 
 import numpy as np

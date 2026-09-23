@@ -1,15 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The gate that decides whether a measured kernel counts as CORRECT.
+"""The gate that admits a measured kernel as correct: ``arena.diff_stats`` against ``arena.rung_atol``.
 
-Every arena cell, every differential swap and every E-driver row is admitted or rejected by
-``arena.diff_stats`` and the tolerance ``arena.rung_atol`` hands it. A gate that is too tight silently
-deletes a whole kernel class from the corpus; one that is too loose admits a miscompile and reports
-it as a speed-up. Both failures are invisible in the tables they corrupt -- there is no red test, just
-a number that is wrong -- so the properties are pinned here rather than inferred from the sweeps.
-
-Each test names the failure it prevents. Two of them are regressions of bugs that shipped: a NaN that
-was reported as a PERFECT match, and a verdict read off zero elements.
+Too tight, it drops a whole kernel class from the sweep; too loose, it admits a miscompile as a speed-up. Neither
+shows up anywhere but here.
 """
 
 import numpy as np
@@ -69,10 +63,8 @@ def test_small_magnitudes_keep_the_strict_absolute_reading():
 
 
 def test_a_reduction_sized_result_is_judged_relatively_not_absolutely():
-    """Summing 32000 order-1 values lands near 1.6e4, where ONE fp64 ULP is ~1.8e-12 -- 180x the old
-    1e-14 absolute gate. A correctly vectorized reduce reassociates to a few ULP and was recorded
-    WRONG, so every reduction kernel vanished from the corpus silently. Scaled, it passes; the
-    absolute number is still REPORTED, because it is a measurement, not a verdict."""
+    """Summing 32000 values near 1 lands near 1.6e4, where one ULP is 180x an absolute 1e-14 gate: an absolute
+    gate would reject every correctly vectorized reduction."""
     total = 1.6e4
     a = {"sum": np.array([total])}
     b = {"sum": np.array([total + 14 * np.spacing(total)])}

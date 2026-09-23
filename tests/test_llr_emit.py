@@ -1,13 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emit + run loop_level_reasoning kernels that exercise harder control-flow / reduction paths.
-
-Each kernel is canonicalized, extracted, emitted to numpy, executed, and checked against a hand
-reference. These pin two emitter/extraction fixes:
-
-  * ``ext_break_find_first`` -- a ``break`` (BreakBlock) early-exit is emitted as ``break``;
-  * ``cond_reduce_sym``      -- a size-1 buffer is READ as ``x[0]`` (not the bare ``(1,)`` array, which a
-    NumPy-2 scalar assignment rejects), and its canonicalized WCR *copy* accumulates.
+"""Loop-level-reasoning kernels with harder control flow and reductions, emitted, run and checked against hand-written
+references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose WCR copy accumulates.
 """
 
 import inspect

@@ -1,23 +1,15 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ONE OpenMP runtime, globally, across every compiler -- the contract ``toolchain.OpenMPRuntime`` and
-``toolchain.usable_openmp`` give every owned build.
+"""Every kernel library and the program link one OpenMP runtime, whatever compiler built them.
 
-Every kernel library and the driver must link the SAME OpenMP runtime, so that libraries built by
-DIFFERENT compilers share one runtime and ONE thread pool. Left to a bare ``-fopenmp`` each family
-links its own default (gcc -> libgomp, clang -> libomp, icx -> libiomp5), which silently puts TWO
-runtimes with two thread pools in one process as soon as a sweep spans gcc and clang.
-
-These tests assert on the ARTIFACT, not on the flag list: ``readelf -d`` over a real ``.so`` says which
-runtime actually landed in DT_NEEDED. The violation these tests were written for was invisible to every
-flag-level assertion, because each family's flags looked correct in isolation.
-
-Most tests here only LINK -- linking is what selects a runtime, and it keeps this process free of the
-libgomp fork hazard. The one end-to-end test that must RUN both nests does so in a fresh interpreter,
-because a forked child inherits every mapping the worker already had.
+A bare ``-fopenmp`` links each family's default (gcc libgomp, clang libomp, icx libiomp5), and a program mixing them
+runs two thread pools. The flags of each family look right in isolation, so these tests read DT_NEEDED of real
+libraries. Most only link; the one that runs both kernels does so in a fresh interpreter.
 """
 
 import json
+from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -25,9 +17,12 @@ import sys
 import numpy as np
 import pytest
 
+import nestforge
+
 from nestforge.build.toolchain import (
     LIBOMP,
     OPENMP_RUNTIMES,
+    OpenMPRuntime,
     compiler_family,
     lib_linkable,
     runtime_library,
@@ -86,12 +81,7 @@ COMPILERS = ("gcc", "clang", "icx")
 
 
 def linked_openmp_runtimes(so):
-    """The OpenMP runtimes in ``so``'s DT_NEEDED, as soname stems.
-
-    DT_NEEDED records the SONAME of what the linker RESOLVED: distros ship ``libiomp5.so`` as a symlink onto
-    LLVM's ``libomp.so``, so the invariant is "exactly ONE runtime, the same for every compiler" rather than
-    "the name asked for".
-    """
+    """The OpenMP runtimes in ``so``'s DT_NEEDED, as soname stems; libiomp5 may resolve to libomp."""
     out = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True).stdout
     return {name for name in OMP_SONAMES if f"[{name}.so" in out}
 
@@ -102,12 +92,8 @@ OMP_FORK_SYMBOLS = ("kmpc_fork", "GOMP_parallel")
 
 
 def emits_parallel_region(so):
-    """True if ``so`` actually CALLS into an OpenMP runtime to open a parallel region.
-
-    ``clang -fopenmp=libgomp`` exits 0, records libgomp in DT_NEEDED -- and emits ZERO fork calls, because
-    clang generates only ``__kmpc_*`` and libgomp implements only ``GOMP_*``. The result computes the right
-    answer sequentially, so neither a correctness gate nor a DT_NEEDED check can catch it.
-    """
+    """Whether ``so`` calls into an OpenMP runtime: ``clang -fopenmp=libgomp`` links libgomp yet emits only
+    ``__kmpc_*`` calls, which libgomp lacks, and runs serially with correct results."""
     out = subprocess.run(["nm", "-u", str(so)], capture_output=True, text=True).stdout
     return any(sym in out for sym in OMP_FORK_SYMBOLS)
 
@@ -326,3 +312,32 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
     assert sorted(called - exported) == [], (
         f"libomp does not export these entries g++ calls: {sorted(called - exported)}"
     )
+
+
+def test_openmp_link_flags_carry_an_rpath_for_a_pinned_dir():
+    # -L satisfies the LINKER only; without -rpath the built .so has DT_NEEDED and no RUNPATH, so the
+    # ctypes.CDLL right after the build fails to find libomp.
+    runtime = OpenMPRuntime(name=LIBOMP.name, soname=LIBOMP.soname, lib_dir="/opt/llvm/lib")
+    linked = runtime.link_flags("clang")
+    assert "-L/opt/llvm/lib" in linked
+    assert "-Wl,-rpath,/opt/llvm/lib" in linked
+
+
+def test_openmp_link_flags_omit_libdir_when_not_pinned():
+    runtime = OpenMPRuntime(name=LIBOMP.name, soname=LIBOMP.soname, lib_dir="")
+    assert not [f for f in runtime.link_flags("clang") if f.startswith(("-L", "-Wl,-rpath"))]
+
+
+def test_every_link_search_path_is_paired_with_an_rpath():
+    """A ``-L`` without its ``-Wl,-rpath`` links, but the library then fails to load without LD_LIBRARY_PATH."""
+    package = Path(nestforge.__file__).parent
+    offenders = []
+    for path in sorted(package.rglob("*.py")):
+        lines = path.read_text().splitlines()
+        for num, line in enumerate(lines):
+            if not re.search(r"""["']-L""", line):
+                continue
+            window = " ".join(lines[num : num + 2])  # the flag list may wrap onto the next line
+            if "rpath" not in window:
+                offenders.append(f"{path.name}:{num + 1}: {line.strip()}")
+    assert not offenders, "a -L without a paired -Wl,-rpath:\n" + "\n".join(offenders)

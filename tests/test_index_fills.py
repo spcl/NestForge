@@ -1,13 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The nest's non-transient arrays come from the kernel's OptArena manifest
-(:func:`nestforge.corpus.bench.index_fills` + ``make_inputs(given=...)``), transients keep the random fill.
+"""Index arrays get permutation fills from the kernel's manifest (:func:`nestforge.corpus.bench.index_fills`).
 
-The case under test is the integer index array. The default uniform-float fill cast to an integer dtype
-collapses to ALL-ZEROS, which silently degrades a gather ``a[i] = b[ip[i]]`` into a single cached read of
-``b[0]`` and inverts a scatter ``a[ip[i]] = ...`` from hpcagent_bench's guaranteed conflict-FREE permutation
-into a maximal write conflict on ``a[0]``. Both are invisible to validation -- the oracle reads the same
-degenerate ``ip`` -- so only an explicit test pins the property.
+The default random fill cast to an integer is all zeros, which turns a gather into one repeated read and a
+conflict-free scatter into writes to one element; the oracle reads the same zeros, so validation cannot notice.
 """
 
 import numpy as np
@@ -55,8 +51,7 @@ def test_index_array_is_a_valid_subscript_permutation(key):
     ip = inputs[INDEX_ARRAY]
     n = ip.shape[0]
     assert ip.dtype.kind in "iu"
-    # a permutation of [0, n): every subscript in range, each used exactly once -> a real gather, and a
-    # conflict-free scatter (the property optarena/tests/test_foundation_scatter_conflict_free.py guards).
+    # a permutation of [0, n): every subscript in range and used once
     assert np.array_equal(np.sort(ip), np.arange(n, dtype=ip.dtype))
 
 

@@ -1,25 +1,10 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""End-to-end: nest-forge's emitted code reproduces the DaCe SDFG, on the most complex corpus kernels.
+"""End to end: the emitted code reproduces the DaCe SDFG on the hardest corpus kernels.
 
-nest-forge lowers a DaCe SDFG to standalone numpy (:func:`sdfg_to_numpy`), which hpcagent_bench's ``numpyto``
-then turns into C / C++ / Fortran. This suite checks that whole pipeline is a FAITHFUL translation of the
-SDFG, on the hardest loop_level_reasoning + level-3 scientific_computing kernels (control flow, reductions,
-recurrences, multi-nest, linear algebra). loop_level_reasoning is a superset of TSVC-2.
-
-The oracle is the SDFG built through nest-forge's OWN build (``dace.codegen`` -> our compiler, NEVER
-``dace.compile()`` -- see :mod:`nestforge.build.sdfg`), so this is literally "the emitted code vs the DaCe
-SDFG", compiled the way nest-forge ships it. Inputs are random; sizes are tiny (compile+run stays cheap)
-but distinct per dimension so an index / transpose bug is caught by the value comparison.
-
-L1 (:func:`test_emit_numpy_matches_sdfg`) -- every listed kernel: ``sdfg_to_numpy`` run in Python == the
-built SDFG.
-L2 (:func:`test_emit_compiled_matches_sdfg_across_compilers`) -- a curated subset: each extracted nest's
-numpyto {C, C++, Fortran} source, compiled with gcc / clang / gfortran BY US, == that nest's built SDFG.
-This is the cross-compiler coverage.
-
-Every listed case must pass (the CI unit set forbids skips); a build/emit/compile failure or a numerical
-mismatch is a hard FAILURE, run in a forked child so a miscompiled kernel cannot take down the worker.
+The reference is the SDFG built by :mod:`nestforge.build.sdfg`. L1 runs the emitted NumPy of every listed kernel; L2
+compiles each nest's translated C, C++ and Fortran with gcc, clang and gfortran. Sizes are small but distinct per
+dimension, so an index or transpose bug changes the values. Each case runs in a forked child.
 """
 
 import inspect
@@ -39,7 +24,7 @@ from nestforge.build.isolation import run_isolated
 
 ATOL = 1e-8
 
-# ---- the most complex corpus kernels that build + emit faithfully (from the emit-vs-SDFG sweep) --------
+# the most complex corpus kernels that build + emit faithfully (from the emit-vs-SDFG sweep)
 # level-3 (the hardest dwarf tier) + complex level-2 dense-linear-algebra / stencils.
 SC_L1 = [
     # level 3
@@ -116,7 +101,7 @@ LLR_L2 = ["tsvc_2_s000"]
 COMPILERS = {"c": ["gcc", "clang"], "fortran": ["gfortran"]}
 
 
-# ---- helpers ------------------------------------------------------------------------------------------
+# helpers
 def rand_buffer(shape, dt, rng, center):
     if np.issubdtype(dt, np.complexfloating):
         return (rng.random(shape) + 1j * rng.random(shape)).astype(dt)
@@ -239,7 +224,7 @@ def test_maxdiff_scores_nan_mismatch_as_divergence():
     assert max_abs_diff({"x": np.array([1.0 + 1j, 2.0 + 0j])}, {"x": np.array([1.0 + 1j, np.nan + 0j])}) == np.inf
 
 
-# ---- L1: emitted numpy == the SDFG --------------------------------------------------------------------
+# L1: emitted numpy == the SDFG
 @pytest.mark.parametrize(
     "kind,short", [("scientific_computing", s) for s in SC_L1] + [("loop_level_reasoning", s) for s in LLR_L1]
 )
@@ -258,7 +243,7 @@ def test_emit_numpy_matches_sdfg(kind, short):
     assert res["md"] <= ATOL, f"{short}: emitted numpy diverged from the SDFG (maxdiff {res['md']:g})"
 
 
-# ---- L2: emitted code compiled across compilers == the SDFG (per nest) --------------------------------
+# L2: emitted code compiled across compilers == the SDFG (per nest)
 @pytest.mark.parametrize(
     "kind,short,lang,compiler",
     [("scientific_computing", s, lang, cc) for s in SC_L2 for lang, ccs in COMPILERS.items() for cc in ccs]

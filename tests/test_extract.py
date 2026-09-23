@@ -56,10 +56,7 @@ def test_extract_map_nest_boundary_and_correctness():
 
 
 def loop_with_exported_int32_iterator():
-    """A counted loop whose iterator is genuinely used OUTSIDE it (an edge past the loop reads
-    ``loop_i``), forcing DaCe's nest helper to export it -- exactly the path extract_cfg_nest used to
-    clobber with a hardcoded ``int64``. Every bound is a real int32 symbol, not a literal, so DaCe's
-    own type inference has nothing left to widen to int64."""
+    """A loop whose int32 iterator is read after the loop, so DaCe's nesting helper exports it with its type."""
     sdfg = dace.SDFG("loopnest")
     sdfg.add_array("a", [20], dace.float64)
     sdfg.add_symbol("base", dace.int32)

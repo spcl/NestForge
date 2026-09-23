@@ -79,10 +79,8 @@ def test_wcr_at_map_exit_from_nested_map_raises():
 
 
 def test_wcr_at_map_exit_from_nested_sdfg_raises():
-    """A reduction (WCR) reaching a map exit from a NESTED SDFG is emitted by emit_nested_sdfg, which
-    only replays the inner body and never applies the out-edge WCR -- so the accumulate would silently
-    degrade to an overwrite. Refuse it so the ExternalCall falls back to the DaCe variant instead of a
-    wrong kernel (the Tasklet source stays exempt because tasklet_lines DOES accumulate)."""
+    """A nested SDFG's body is replayed without the exit edge's WCR, which would turn the reduction into an
+    overwrite."""
     inner = dc.SDFG("inner")
     inner.add_array("inp", [1], dc.float64)
     inner.add_array("res", [1], dc.float64)
@@ -169,10 +167,7 @@ def test_tasklet_wcr_combine_ops_at_map_exit(wcr, seed, reduce_fn, token):
 
 
 def test_tasklet_wcr_symbolic_index_target_is_normalized():
-    """A WCR whose write target has a derived index (``out[int_floor(i, 2)]`` -- pairwise reduction) renders
-    its subset through sympy's ``symstr``, which spells integer division as ``int_floor(a, b)``: not python.
-    The accumulate line must go through the same normalization as the tasklet body, or the emitted kernel
-    carries a bare ``int_floor(...)`` and dies with NameError at exec."""
+    """A derived WCR index renders as ``int_floor(i, 2)``, which is not Python unless normalized like the body."""
     sdfg = dc.SDFG("pairsum")
     sdfg.add_array("A", [N], dc.float64)
     sdfg.add_array("out", [M], dc.float64)

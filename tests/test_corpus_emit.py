@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emit numpy for real optarena dace kernels and check the library-node ops compute correctly.
+"""Emit NumPy for real corpus kernels and check the library-node ops compute correctly.
 
 Emission is C-style: the kernel allocates nothing, so the caller pre-allocates every buffer -- inputs,
 outputs, the DaCe ``__return`` value, and scratch transients -- and reads the results back out of the
@@ -14,7 +14,7 @@ import pytest
 
 from dace import symbolic
 
-from nestforge.corpus.bench import dace_kernel_names, iter_dace_kernels
+from nestforge.corpus.bench import dace_kernel_names, iter_dace_kernels, module_path
 from nestforge.ir.emit_libnode import symbol_scalar
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
@@ -42,11 +42,7 @@ def test_emit_numpy_labels_regions_and_states():
 
 
 def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
-    """Emit ``short``, allocate every buffer parameter C-style, run it, return the buffer dict.
-
-    ``sdfg`` lets a caller that must guard the BUILD separately (see the nbody test) hand in the SDFG it
-    already built, so the build is not repeated here.
-    """
+    """Emit ``short``, allocate every buffer parameter, run it, and return the buffers."""
     if sdfg is None:
         sdfg = kernels()[short].to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, fn_name)
@@ -78,7 +74,7 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
 
 
 def test_corpus_exposes_dace_kernels():
-    # optarena ships each _dace.py as a gitignored, regenerated-on-demand artifact
+    # HPCAgent-Bench regenerates each gitignored _dace.py on demand
     # (nestforge.corpus.materialize_dace_corpus); the corpus exposes every hpc/ml kernel whose numpy
     # reference numpyto can lower to dace. That emittable set grows as the translator improves, so assert a
     # floor plus the specific kernels this suite exercises -- not a brittle exact count tied to one machine's
@@ -535,3 +531,18 @@ def test_jacobi_1d_loopregion_emits_and_computes():
         Ar[1:-1] = 0.33333 * (Br[:-2] + Br[1:-1] + Br[2:])
     np.testing.assert_array_equal(call["A"], Ar)
     np.testing.assert_array_equal(call["B"], Br)
+
+
+def test_corpus_program_is_the_entry_not_a_helper():
+    ks = {k.short_name: k for k in iter_dace_kernels()}
+    # mlp_dace defines relu, softmax, then mlp; resnet has resnet_basicblock + a _gpu variant after it.
+    assert ks["machine_learning/mlp/mlp"].program().name.endswith("mlp")
+    assert ks["machine_learning/resnet/resnet"].program().name.endswith("resnet_basicblock")
+
+
+def test_corpus_module_path_independent_of_namespace_path():
+    # Derived from the registry key, not hpcagent_bench.benchmarks.__path__ (which can be stale/multi-root).
+    assert (
+        module_path("scientific_computing/dense_linear_algebra/gemm/gemm")
+        == "hpcagent_bench.benchmarks.scientific_computing.dense_linear_algebra.gemm.gemm_dace"
+    )

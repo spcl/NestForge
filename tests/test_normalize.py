@@ -98,7 +98,7 @@ def all_maps(sdfg):
     ]
 
 
-# --- labels ----------------------------------------------------------------------------------------
+# labels
 
 
 def test_every_block_and_map_gets_a_canonical_name():
@@ -190,7 +190,7 @@ def test_in_order_breaks_ties_by_insertion_order():
             assert (positions[id(first)] < positions[id(second)]) == (inserted[id(first)] < inserted[id(second)])
 
 
-# --- every computation inside a map ----------------------------------------------------------------
+# every computation inside a map
 
 
 def test_no_free_tasklet_survives():
@@ -270,7 +270,7 @@ def test_wrapping_nothing_changes_nothing():
     assert sdfg.to_json() == before
 
 
-# --- no top-level nested SDFG ----------------------------------------------------------------------
+# no top-level nested SDFG
 
 
 def test_a_top_level_nested_sdfg_is_inlined():
@@ -303,7 +303,7 @@ def test_inlining_bails_out_without_touching_an_already_inlined_sdfg():
     assert sdfg.to_json() == before
 
 
-# --- canonical iteration domains -------------------------------------------------------------------
+# canonical iteration domains
 
 
 def test_a_descending_loop_comes_out_with_a_positive_unit_step():
@@ -317,7 +317,7 @@ def loop_or_none(block):
     return block if isinstance(block, LoopRegion) else None
 
 
-# --- the numerics ----------------------------------------------------------------------------------
+# the numerics
 
 
 @pytest.mark.e2e
@@ -360,7 +360,7 @@ def test_normalization_preserves_the_result_of_a_descending_loop():
     assert np.array_equal(B, A * 2.0)
 
 
-# --- canonical data names --------------------------------------------------------------------------
+# canonical data names
 
 
 def test_transient_data_is_renamed_but_the_interface_is_not():
@@ -420,14 +420,8 @@ def shadowing_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N
 
 @pytest.mark.parametrize("program", [swapped_map_params, shadowing_map_params], ids=["permutation", "partial"])
 def test_renaming_params_that_shadow_their_targets_preserves_values(program):
-    """Renaming pair by pair collapses two index positions onto ONE symbol whenever a later param already
-    holds an earlier param's target name: ``['i1','i0']`` rewrote ``A[i1,i0]`` to ``A[i0,i0]`` and then to
-    ``A[i1,i1]``, so the map wrote only its diagonal -- ``validate()`` clean, no exception, 12 of 16
-    elements silently left at zero. normalize itself emits ``i0,i1,...``, so any later move that permutes
-    or merges params walks into it.
-
-    Values, not the params list: :func:`test_map_params_are_canonical` asserts that list and cannot see
-    this, because the list is force-set after the rename and reads correct in the broken pass too."""
+    """Renaming pair by pair turns ``A[i1, i0]`` into ``A[i1, i1]``; only the values show it, since the params
+    list is set after the rename."""
     sdfg = program.to_sdfg(simplify=True)
     entry = next(e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params)
     params = list(entry.map.params)
@@ -460,14 +454,8 @@ def nested_map_scopes(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
 
 
 def test_nested_map_scopes_do_not_collapse_onto_one_index():
-    """Numbering every map from ``i0`` inside its OWN scope hands an inner 1-D map the name its outer map
-    already holds: ``A[i, j]`` becomes ``A[i0, i0]`` and the nest writes only its diagonal. Measured before
-    the fix: ``B[0] == [1, 0, 0, 0]`` where ``A + 1`` wants ``[1, 2, 3, 4]`` -- ``validate()`` clean, no
-    exception, 12 of 16 elements silently left at zero.
-
-    The sibling fixtures above cannot see this: they use ONE 2-D map, where per-scope numbering is
-    correct. Values, not the params list -- the list is force-set after the rename and reads correct in
-    the broken pass too."""
+    """Numbering each scope from ``i0`` gives an inner map its outer map's name and the nest writes only its
+    diagonal; only the values show it."""
     sdfg = nested_map_scopes.to_sdfg(simplify=True)
     entries = [e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params]
     assert len(entries) == 2, f"fixture must nest two map scopes, got {len(entries)}"
@@ -511,7 +499,7 @@ def test_renaming_preserves_the_result():
     assert np.array_equal(got, expected)
 
 
-# --- reductions ------------------------------------------------------------------------------------
+# reductions
 
 
 @dc.program

@@ -58,7 +58,7 @@ def top_level_map_count(sdfg) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.all_states())
 
 
-# --- Level 2: nest fusion + the id/epoch safety layer ---------------------------------------------
+# Level 2: nest fusion + the id/epoch safety layer
 
 
 def test_list_nests_is_plain_data():
@@ -122,7 +122,7 @@ def test_unknown_id_at_current_epoch_is_not_stale():
     assert not isinstance(ei.value, StaleHandle)
 
 
-# --- Level 1: region structure (containers) + the merge-first ordering rule -----------------------
+# Level 1: region structure (containers) + the merge-first ordering rule
 
 
 def test_cross_state_nests_are_blocked_and_name_the_region_merge():
@@ -152,7 +152,7 @@ def test_fuse_regions_bumps_epoch_and_stales_prior_ids():
         s.fuse_regions(moves[0]["id"])
 
 
-# --- Phase 2/3: offload is a distinct axis from fusion --------------------------------------------
+# Phase 2/3: offload is a distinct axis from fusion
 
 
 def test_offload_candidates_are_distinct_from_nest_fusion():
@@ -238,7 +238,7 @@ def test_noop_define_scopes_does_not_strand_handles():
         session.resolve(moves[0]["id"], "move")  # the agent's ids survive a no-op
 
 
-# --- Phase 0/1: normalize -> full_fusion -> fission_all, structural checks -------------------------
+# Phase 0/1: normalize -> full_fusion -> fission_all, structural checks
 
 
 def test_normalize_then_full_fusion_bumps_epoch_each_time_and_reduces_top_level_maps():

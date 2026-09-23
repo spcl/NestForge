@@ -90,11 +90,7 @@ def test_owned_build_jacobi_matches_oracle():
 
 
 def without_search_paths(flags):
-    """``flags`` minus any discovery path -- ``-L`` AND the matching ``-Wl,-rpath,``: WHICH runtime is
-    selected, not WHERE it was found (the latter is host-dependent -- e.g. Ubuntu moves libomp-18-dev under
-    /usr/lib/llvm-18/lib, which makes ``link_flags`` emit BOTH). Filter rather than index since the
-    position varies by family.
-    """
+    """``flags`` without ``-L`` and ``-Wl,-rpath,`` entries: which runtime, not where it was found."""
     return [f for f in flags if not f.startswith("-L") and not f.startswith("-Wl,-rpath")]
 
 
@@ -125,14 +121,8 @@ def test_llvm_version_parses_the_number_not_the_string():
 
 
 def test_hint_dirs_rank_by_version_across_all_roots(tmp_path, monkeypatch):
-    """The ranking must be GLOBAL, not per root.
-
-    Two traps this pins, both of which shipped: sorting the glob as strings puts llvm-9 above llvm-21, and
-    sorting within each root then concatenating puts /usr/lib's llvm-14 above /usr/lib64's llvm-18 -- the
-    normal mixed-install layout. Real directories on disk, because the previous version of this test called
-    hint_dirs() on the host and passed identically with the buggy sort: the box simply had no single-digit
-    LLVM, so the assertion never discriminated.
-    """
+    """A string sort puts llvm-9 above llvm-21, and a per-root sort puts /usr/lib's llvm-14 above
+    /usr/lib64's llvm-18; real directories, since the host may have neither layout."""
     lib, lib64 = tmp_path / "lib", tmp_path / "lib64"
     for root, versions in ((lib, ("llvm-9", "llvm-21")), (lib64, ("llvm-14", "llvm-18"))):
         for v in versions:
@@ -455,13 +445,8 @@ def test_owned_build_reusable_handle_program():
 
 
 def test_toolchain_is_importable_without_dace():
-    """The point of splitting it out of `build`: asking whether ldconfig knows about libomp must not drag
-    in the DaCe codegen stack. `perf/flags` used to import `build` lazily for exactly this reason -- a
-    workaround that only held as long as nobody hoisted the import. Load the module file with nothing else
-    in sys.modules and assert dace never arrives."""
-    # A SUBPROCESS, not this interpreter: the test module imports dace at line 18, and every other test in
-    # the suite has too, so an in-process check could only ever assert `had_dace or ...` -- true before the
-    # module is even loaded. The isolation being tested only exists in a fresh interpreter.
+    """Asking which OpenMP runtime a compiler links must not load the DaCe code generator."""
+    # a fresh interpreter: this one imported dace long ago
     path = Path(__file__).resolve().parents[1] / "nestforge" / "build" / "toolchain.py"
     probe = textwrap.dedent(f"""
         import importlib.util, sys
@@ -526,12 +511,8 @@ def test_the_resolved_runtime_is_named_never_a_bare_fopenmp():
 
 
 def test_an_explicit_runtime_is_not_overridden(tmp_path, monkeypatch):
-    """A lane pinning a runtime (the support matrix sweeps them) must keep it THROUGH the compile.
-
-    The previous version asserted `BuildOptions(openmp=X).openmp is X` -- a dataclass readback that holds
-    for any implementation. Delete the `opts.openmp or` in build.compile and it still passed, while every
-    pinned lane silently linked the resolved default and the runtime sweep measured one runtime under four
-    names. This intercepts the flags the compile actually issues."""
+    """A pinned runtime must reach the compile command; otherwise a runtime sweep measures one runtime under
+    several names."""
     seen = []
     monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
     monkeypatch.setattr(build_mod, "usable_openmp", lambda compiler: toolchain_mod.LIBOMP)
@@ -547,10 +528,8 @@ def test_an_explicit_runtime_is_not_overridden(tmp_path, monkeypatch):
 
 
 def test_compiler_warnings_are_reported_but_bounded():
-    """-Wall on DaCe-generated C++ fires on nearly every cell, each with its own paths and line numbers.
-    `warnings.warn` dedups on exact TEXT, so it deduped nothing: a phase-1 sweep printed a distinct
-    multi-KB block per compiled cell and grew __warningregistry__ for the life of the rank. Keyed on the
-    warning KIND instead, and counted past a budget -- suppressed, never silently dropped."""
+    """-Wall fires on nearly every generated cell, each with its own paths, so warnings dedup by kind and
+    are counted, not printed, past a budget."""
     toolchain_mod.WARNED.clear()
     try:
         with warnings.catch_warnings(record=True) as seen:

@@ -1,19 +1,10 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Fuzz the Phase-2 arms: RANDOM programs x RANDOM fuse/fission sequences, asserting the three properties
-that make the arms safe for an agent to drive --
+"""Random programs under random fusion and fission sequences never crash, validate, and stay bit-exact.
 
-  1. no crash (enumeration and application never raise on a valid program),
-  2. ``sdfg.validate()`` holds after every sequence,
-  3. the result is bit-exact to the un-transformed reference.
-
-Deterministic: every case is seeded, and a failure reports the seed AND the generated source so it can be
-replayed and shrunk by hand. Bounded for a shared box: small sizes, few loops, capped case count, ``-n1``.
-
-The generator emits real ``@dace.program`` source into a temp module (the DaCe frontend parses a function's
-SOURCE, so an ``exec``-ed function would not work) over a statement grammar with the hazards that matter:
-recurrences (sequential), element-wise (DOALL), stencil reads, and cross-array producer/consumer chains --
-in sequential ``range`` loops and parallel ``dace.map`` loops.
+Every case is seeded and a failure reports the seed and the generated source. The generator writes real
+``@dace.program`` source to a module, since the frontend parses source, over recurrences, element-wise statements,
+stencil reads and producer-consumer chains, in both loops and maps.
 """
 
 import importlib.util
@@ -32,32 +23,12 @@ NCASES_FISSION = 8
 
 
 def gen_source(seed: int) -> str:
-    """A random but WELL-DEFINED ``@dace.program``: 2-4 loops, each with 1-2 statements from the grammar.
-    Every loop runs ``1:N-1`` so ``i-1`` / ``i+1`` stay in bounds for any N >= 3.
+    """A random, well-defined ``@dace.program`` of 2-4 loops over ``1:N-1``.
 
-    A ``dace.map`` is DATA PARALLEL by definition, so a map body must carry no cross-iteration dependence:
-    inside a map we never offset-read (``x[i+-1]``) an array that any statement of that same map writes --
-    that would be a race, making the program's own reference run order-dependent and the bit-exact
-    comparison meaningless. Same-index reads (``src[i]``) are fine even for an array written in the map
-    (an intra-iteration dependence the state's dataflow orders). Recurrences are sequential-only.
-
-    The grammar also emits a LOOP-INVARIANT scalar ``s``: a sequential loop may write it (``s = a[i]``,
-    last iteration wins) and any loop may read it. That shape is what a carried-offset dependence
-    classifier sees no offset for -- there is no iterator in the subset to carry one -- and reading that
-    as "no dependence" is a real fusion miscompile (a loop reading ``s`` unfused sees the FINAL value,
-    fused it sees the RUNNING one). An earlier grammar without it fuzzed green over a live bug.
-
-    One loop either READS ``s`` or WRITES it, never both, and only a sequential loop writes it. Writing
-    ``s`` from a map is a race on the scalar -- every iteration stores to one cell. Reading and writing it
-    in the same body (``d[i] = b[i] + s; ...; s = c[i]``) is perfectly well-defined and DaCe compiles it
-    correctly; it is excluded only because it chains every statement through ``s``, which makes the loop
-    un-fissionable and so exercises none of the granularity the fission arm exists to reach. (It did find
-    a real ``LoopFission`` miscompile on the way in -- fixed in DaCe, and pinned there by its own
-    regression test, which is where that belongs rather than in this generator.)
-
-    The write/read hazard the arms must handle is still generated -- it just spans two loops, which is
-    where fusion has to reason about it anyway.
-    """
+    A map never offset-reads an array it writes, which would be a race. A loop-invariant scalar ``s`` is
+    written by one sequential loop and read by others: a dependence with no iterator in its subset, which an
+    offset-based fusion check misses. No loop both reads and writes ``s``, since that chains every statement
+    and leaves nothing to fission."""
     rng = np.random.default_rng(seed)
     lines = [
         "import dace",

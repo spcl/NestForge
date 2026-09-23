@@ -1,15 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The manifest's stated invariant: ``input_args`` IS the emitted numpy kernel's positional signature.
+"""The manifest's ``input_args`` is the emitted NumPy kernel's positional signature.
 
-The two are consumed together (``translate.prepare`` writes the numpy source and the manifest side by
-side), and the translator derives its C parameter list -- which names are array pointers, which are
-scalars -- by walking ``input_args``. A name in the numpy signature but missing from ``input_args`` is
-therefore never declared, and the emitted C references an undeclared identifier.
-
-Scratch transients are the case that breaks the tie: the C-style memory model makes every non-scalar
-transient a caller-allocated parameter, so it sits in the numpy signature between the outputs and the size
-symbols and must appear in the manifest at exactly that position.
+The translator declares C parameters by walking ``input_args``, so a name missing there is never declared. Scratch
+transients are caller-allocated parameters between the outputs and the symbols, and must sit there in both.
 """
 
 import ast

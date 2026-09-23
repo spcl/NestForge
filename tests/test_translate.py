@@ -69,15 +69,8 @@ def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
 
 
 def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
-    """MapFusion stages the fused intermediate in a size-1 transient reached through a nested SDFG. That
-    connector is non-transient INSIDE and transient OUTSIDE, and ``transient`` is what picks the spelling
-    (scalar transient = bare local, everything else = indexed), so the two bodies disagreed: the inner one
-    wrote ``__map_fusion_T[0] = ...`` while the outer read it bare, and ``scratch_arrays`` allocated
-    neither. In numpy that is a NameError; translated to C it was an undeclared identifier.
-
-    Runs the emitted kernel rather than grepping the text: the spelling only matters because it decides
-    whether the value survives from the write to the read.
-    """
+    """MapFusion's size-1 intermediate is transient outside the nested SDFG and not inside, which decides its
+    spelling; run, not grepped, since what matters is that the value survives."""
     from nestforge.phases.normalize import Targets, normalize
     from nestforge.phases.schedule import full_fusion
     from nestforge.phases.scopes import lower_nests_to_external_call

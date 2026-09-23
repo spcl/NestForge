@@ -4,6 +4,7 @@
 
 import copy
 import hashlib
+import os
 import json
 import re
 from collections import Counter
@@ -224,6 +225,8 @@ def map_writes(sdfg: dace.SDFG) -> list[list[str]]:
 
 def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
+    # one build folder per xdist worker: two workers compiling one program name race on it
+    sdfg.name = f"{sdfg.name}_{os.getpid()}"
     reference = copy.deepcopy(sdfg)
     reference.name = f"{sdfg.name}_reference"
     return Session(sdfg), reference

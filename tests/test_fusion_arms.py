@@ -12,9 +12,11 @@ import pytest
 import dace
 from dace.transformation.interstate.state_fusion import StateFusion
 
+from nestforge.phases.scopes import top_level_map_entries
 from nestforge.phases.schedule import (
     FusionMove,
     apply_fusion,
+    can_fuse,
     enumerate_fusions,
     horizontal_map_moves,
     loop_fusion_moves,
@@ -50,7 +52,7 @@ def apply_to_fixpoint(sdfg, order="greedy", seed=0):
         applied += 1
 
 
-# --- programs exercising each arm (co-locate maps into one state so horizontal siblings can match) -------
+# programs exercising each arm (co-locate maps into one state so horizontal siblings can match)
 
 
 @dace.program
@@ -86,7 +88,7 @@ def co_located(prog):
     return sdfg
 
 
-# --- enumeration finds the right arm ----------------------------------------------------------------
+# enumeration finds the right arm
 
 
 def test_enumerate_finds_loop_fusion():
@@ -113,7 +115,7 @@ def test_enumerated_moves_carry_apply_kwargs():
         assert isinstance(m, FusionMove) and m.where and m.xform is not None
 
 
-# --- applying moves preserves value bit-for-bit -----------------------------------------------------
+# applying moves preserves value bit-for-bit
 
 
 @pytest.mark.parametrize(
@@ -165,3 +167,45 @@ def test_no_moves_on_a_single_map():
             b[i] = a[i] * 2.0
 
     assert enumerate_fusions(one_map.to_sdfg(simplify=True)) == []
+
+
+@dace.program
+def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.float64[N], C: dace.float64[N]):
+    T = np.empty_like(A)  # transient intermediate
+    for i in dace.map[0:N]:
+        T[i] = A[i] + B[i]
+        live_out[i] = A[i] * 3.0  # a NON-transient result of the same producer map
+    for i in dace.map[0:N]:
+        C[i] = T[i] * 2.0 + live_out[i]  # consumer reads BOTH intermediates
+
+
+def map_pairs(sdfg):
+    for state in sdfg.all_states():
+        entries = top_level_map_entries(state)
+        for first in entries:
+            for second in entries:
+                if first is not second:
+                    yield first, second
+
+
+def test_can_fuse_agrees_with_enumerate_fusions():
+    # THE contract: can_fuse == "yes" exactly when an applicable move exists. vertical_reason used to return
+    # on the FIRST intermediate, so a live (non-transient) output could mask a legal move that
+    # enumerate_fusions still offered via the transient -- the agent told "cannot fuse" about a listed move.
+    sdfg = live_and_transient.to_sdfg(simplify=True)
+    listed = enumerate_fusions(sdfg)
+    for first, second in map_pairs(sdfg):
+        verdict = can_fuse(sdfg, first, second)
+        if verdict == "yes":
+            assert listed, "can_fuse said yes but enumerate_fusions offered nothing"
+        else:
+            assert isinstance(verdict, str) and verdict  # always an explaining reason, never a bare False
+
+
+def test_live_output_does_not_mask_a_transient_fusion():
+    # the specific shape: if any move is offered for the producer/consumer pair, can_fuse must not report the
+    # live output as the blocker.
+    sdfg = live_and_transient.to_sdfg(simplify=True)
+    assert enumerate_fusions(sdfg), "fixture must produce a fusable pair, else it tests nothing"
+    verdicts = [can_fuse(sdfg, a, b) for a, b in map_pairs(sdfg)]
+    assert any(v == "yes" for v in verdicts), f"a move is offered but no pair says yes: {verdicts}"

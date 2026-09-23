@@ -1,15 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Early-return (``ReturnBlock``) emission and the non-externalizable control-flow refusals.
+"""Early returns and unstructured control flow in emission.
 
-Three contracts:
-
-  * a ``ReturnBlock`` in a **whole** SDFG (:func:`sdfg_to_numpy`) emits a python ``return`` and
-    short-circuits -- ``return`` exits the kernel function, which is exactly SDFG-return semantics;
-  * a nest carrying a ``ReturnBlock`` is **not externalizable** (:func:`nest_to_numpy`): the return
-    would exit only the extracted kernel, not the enclosing SDFG the original return targeted;
-  * an **unstructured goto** (a conditional inter-state edge, i.e. a state-machine branch DaCe did not
-    lift into a ``ConditionalBlock``) is refused rather than emitted as straight-line code.
+A ``ReturnBlock`` in a whole program emits ``return``; in an extracted nest it is refused, since it would exit only the
+kernel. A conditional interstate edge, a goto DaCe did not lift into a ``ConditionalBlock``, is refused.
 """
 
 import numpy as np

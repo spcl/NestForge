@@ -1,15 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``run_isolated`` is the net under every freshly-compiled kernel: the whole point is that a
-segfault, a hang or a malformed write in code the compiler produced five seconds ago becomes a RESULT
-the sweep can record, never a dead parent.
-
-The happy path is exercised constantly (every emit-and-validate test forks through here). The failure
-paths are what the function exists for, and none of them was asserted -- so this pins each one,
-including that the parent is still alive afterwards to report it.
-
-A child that dies takes its coverage data with it; that is why these tests assert on the returned
-dict rather than on lines executed inside the fork.
+"""``run_isolated`` turns a crash, a hang or a malformed result of fresh generated code into a result the sweep can
+record, and the parent survives each one. The assertions read the returned dict, since a dying child takes its
+coverage with it.
 """
 
 import os

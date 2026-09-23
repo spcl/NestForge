@@ -1,14 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Regression tests for LATENT emit bugs found in the full-repo audit -- the classes that produce a WRONG
-or uncompilable numpy oracle rather than an obvious crash. Unit set, no compile.
-
-Each test fails without its fix:
-  * sympy ``Max``/``Min``/``Abs`` reached the oracle verbatim (only ``np`` is in scope -> NameError);
-  * an empty (data=None) happens-before edge was taken as a library node's operand -> ``arrays[None]``;
-  * an unstructured join double-applied every predecessor's inter-state assignments;
-  * an array dtype with no extern-C spelling KeyError'd mid-codegen.
-"""
+"""NumPy emission bugs that produce a wrong or unloadable oracle instead of a crash: sympy functions reaching the
+source verbatim, ordering edges read as operands, a join applying every predecessor's assignments, and a dtype
+with no C spelling."""
 
 from dataclasses import dataclass
 
@@ -174,10 +168,7 @@ def test_unspellable_array_dtype_is_refused_not_keyerror():
     ],
 )
 def test_a_subscript_comma_does_not_split_an_argument(expr, want):
-    """``apply_call`` counted parens only, so the comma inside ``a[i, j]`` was read as an argument
-    separator: the rewrite got the wrong arity and the pieces spliced back with unmatched brackets.
-    That emitted C which would not parse (TSVC s1111/s1113), and where the arity raised, the call was
-    left unrewritten and leaked into C as an unresolved function (s111's ``int_ceil``)."""
+    """The comma in ``a[i, j]`` is not an argument separator; splitting there emits C that does not parse."""
     from nestforge.ir.emit_numpy import apply_call
 
     assert apply_call(expr, "int_floor", lambda a, b: f"(({a}) // ({b}))") == want
@@ -196,7 +187,7 @@ def test_multidim_subscript_survives_the_userfunc_fixpoint():
     assert out == "d[max(aa[i, j], 2)] = b[int_ceil(min(c[k, l], 4), 4)]", out
 
 
-# --- data-dependent scratch extents (the spmv CSR span) -----------------------------------------------
+# data-dependent scratch extents (the spmv CSR span)
 M_SYM = dace.symbol("M")
 NNZ_SYM = dace.symbol("NNZ")
 
@@ -239,13 +230,7 @@ def test_sizable_rejects_a_data_read_however_it_is_spelled(expr, want):
 
 
 def test_data_dependent_scratch_extent_is_refused_not_emitted():
-    """spmv used to EMIT, sizing ``row`` by ``A_indptr[M+1] - A_indptr[0]``.
-
-    ``pystr_to_symbolic("A_indptr[i]")`` succeeds, so ``symbol_ranges`` folded the interstate assignment
-    as a size bound and ``maxsize_loop_scratch`` widened the buffer to that CSR span. The old
-    ``free_symbols - known`` check then accepted it -- the residual was ``{M} - {M} = set()`` -- and the
-    caller was handed a signature whose buffer size only the data knows. Refuse, with a reason.
-    """
+    """A scratch extent such as ``A_indptr[M + 1] - A_indptr[0]`` depends on data, so no caller can allocate it."""
     from nestforge.ir.emit_numpy import UnsupportedNest, sdfg_to_numpy
 
     sdfg = spmv_row_scratch.to_sdfg(simplify=True)
@@ -265,7 +250,7 @@ def test_a_data_read_never_becomes_a_size_bound():
         assert not reads_array_data(sympy.sympify(dim), widened.arrays), f"widened to a data read: {dim}"
 
 
-# --- copy DIRECTION (the in-place-copy inversion) ------------------------------------------------------
+# copy DIRECTION (the in-place-copy inversion)
 @dace.program
 def shift_through_a_view(A: dace.float64[M_SYM]):
     """A slice-to-slice copy of ONE array: DaCe stages it through a view, so the copy edges are the
@@ -281,16 +266,8 @@ def elementwise_from_a_row(A: dace.float64[M_SYM, M_SYM]):
 
 @pytest.mark.parametrize("prog", [shift_through_a_view, elementwise_from_a_row], ids=["slice_copy", "element_copy"])
 def test_copy_direction_agrees_with_dace_on_every_real_copy_edge(prog):
-    """The emitter's direction must equal DaCe's OWN resolution on every access-node copy.
-
-    Order was the bug: the destination was tested first, so on a copy whose two endpoints name the same
-    array -- where both tests match -- ``subset`` was read as the destination. DaCe reads it as the
-    source (``Memlet.try_initialize`` prefers ``is_data_src=True`` for that case), so the emitted
-    assignment ran backwards. Every other copy has two distinct names and only one test can match, which
-    is why nothing else caught it.
-
-    Checked against DaCe rather than against a hand-built expectation, so the two cannot drift apart.
-    """
+    """When both ends of a copy name one array, DaCe reads ``subset`` as the source; checked against DaCe itself
+    so the two cannot drift apart."""
     from dace.sdfg import nodes as dnodes
     from nestforge.ir.emit_numpy import copy_direction
 
@@ -311,11 +288,7 @@ def test_copy_direction_agrees_with_dace_on_every_real_copy_edge(prog):
 
 
 def test_copy_direction_reads_subset_as_the_source_when_both_ends_are_one_array():
-    """The in-place case pinned directly, since the frontend stages most copies through a view.
-
-    ``copy_direction`` must return ``memlet.subset`` as the SOURCE range here. Getting it backwards
-    turns ``A[i] = A[j]`` into ``A[j] = A[i]`` -- a wrong answer with no error.
-    """
+    """Backwards, ``A[i] = A[j]`` becomes ``A[j] = A[i]``, a wrong answer with no error."""
     from nestforge.ir.emit_numpy import copy_direction
 
     sdfg = dace.SDFG("inplace_copy")
@@ -332,14 +305,8 @@ def test_copy_direction_reads_subset_as_the_source_when_both_ends_are_one_array(
 
 
 def test_two_kernels_of_equal_length_do_not_share_bytecode():
-    """``load_emitted`` used to name the file by a COUNTER, so two different kernels could land on one
-    path. CPython invalidates ``__pycache__`` on (mtime, size) only, so a same-second rewrite of equal
-    byte length serves the FIRST kernel's bytecode -- the caller then validates and times a kernel it
-    did not emit, silently. Forking made it worse: every child of one process inherited the same next
-    counter value, so `run_isolated` handed every emitted kernel the same file name.
-
-    Two sources of identical length, same name, back to back: each module must be its own kernel.
-    """
+    """CPython validates cached bytecode by mtime and size, so two equal-length kernels written to one path in the
+    same second would run the first one's code."""
     first = "def k():\n    return 'AAAA'\n"
     second = "def k():\n    return 'BBBB'\n"
     assert len(first) == len(second), "the fixture only reproduces the bug at equal byte length"
@@ -386,12 +353,8 @@ def test_a_descending_range_covers_its_last_element():
     ],
 )
 def test_index_str_slices_a_descending_range_to_its_last_element(rng, want):
-    """A numpy SLICE reads a negative stop as "count back from the end", not as its arithmetic value, so
-    the `end + sign` stop that is correct for `range()` renders `A[7:-1:-1]` -- which selects NOTHING.
-    A full reversal emitted a silent no-op (or a broadcast error against an ascending destination), in the
-    numpy ORACLE that every bit-exactness verdict is compared against.
-
-    Enumerated against real numpy rather than by re-deriving the formula: the formula was the bug."""
+    """A negative slice stop counts from the end, so ``A[7:-1:-1]`` selects nothing; checked against NumPy
+    itself, since the formula was the bug."""
     from nestforge.ir.emit_libnode import index_str
 
     a = np.arange(8)
@@ -407,7 +370,7 @@ def test_range_stop_refuses_a_step_of_unknown_sign():
         range_stop(symbolic.pystr_to_symbolic("N"), symbolic.pystr_to_symbolic("s"), "map parameter 'i'")
 
 
-# --- nested-SDFG binding + conditional branch order ---------------------------------------------------
+# nested-SDFG binding + conditional branch order
 def test_symbol_mapping_binds_simultaneously_when_the_bindings_interfere():
     """``symbol_mapping`` is a substitution applied all at once. Emitted as ordered assignments, a swap
     ``{i: j, j: i}`` runs ``i = j`` then ``j = i`` and both end up holding the old ``j``."""
@@ -428,14 +391,8 @@ def test_symbol_mapping_stays_plain_when_nothing_interferes():
 
 
 def test_a_non_final_unconditional_branch_is_refused():
-    """DaCe takes the FIRST branch whose condition holds, and an unconditional branch always holds --
-    so a branch stored after one is unreachable. DaCe does not merely tolerate that shape, its codegen
-    REFUSES it (``Missing branch condition for non-final conditional branch``), so the emitter refuses
-    it too rather than inventing an order.
-
-    The old behaviour hoisted every unconditional branch to a trailing ``else``, which made the
-    unreachable branch live and turned two unconditional branches into two ``else:`` clauses.
-    """
+    """DaCe's codegen refuses an unconditional branch before a keyed one; reordering it would make an
+    unreachable branch live."""
     from dace.properties import CodeBlock
     from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
     from nestforge.ir.emit_numpy import UnsupportedNest, emit_conditional
@@ -456,10 +413,8 @@ def test_a_non_final_unconditional_branch_is_refused():
 
 
 def test_int_floor_is_emitted_as_the_operator_not_a_call():
-    """``int_floor`` exists because sympy mis-simplifies a floor division, not because python needs a
-    helper: ``//`` is already floored for both signs. Emitting the operator keeps the numpy portable --
-    a translator reads ``ast.FloorDiv``, where a bare call is an unknown name. ``int_ceil`` has no
-    operator and stays a call."""
+    """``//`` already floors for both signs, and a translator reads ``ast.FloorDiv`` where a bare call is an
+    unknown name; ``int_ceil`` has no operator and stays a call."""
     assert normalize_casts("int_floor(a, b)") == "((a) // (b))"
     assert normalize_casts("A[int_floor(i, 2)]") == "A[((i) // (2))]"
     assert "int_ceil(" in normalize_casts("int_ceil(n, 4)")
@@ -473,11 +428,7 @@ def test_the_operator_agrees_with_the_helper_on_both_signs(a, b):
 
 
 def test_classic_c_scalar_cast_names_resolve_through_dace_own_alias_table():
-    """A tasklet may spell a cast the classic C way (``double``, ``long``, ``short``) instead of the
-    numpy-style ``dace.float64`` -- DaCe's own C++ codegen (``cppunparse``) accepts both spellings as
-    the same cast (verified against a compiled DaCe kernel: ``double``/``long``/``short`` truncate
-    exactly like ``.astype``). Before the fix these three were not in the cast table and reached the
-    oracle verbatim, dying with ``NameError`` at exec."""
+    """DaCe's C++ codegen accepts ``double``, ``long`` and ``short`` as casts, so the oracle must too."""
     sdfg = dace.SDFG("ccast")
     sdfg.add_array("a", [4], dace.float64)
     sdfg.add_array("out_double", [4], dace.float64)
@@ -508,10 +459,7 @@ def test_classic_c_scalar_cast_names_resolve_through_dace_own_alias_table():
 
 
 def test_bare_math_prefix_call_is_emitted_and_runnable():
-    """A raw tasklet body may call ``math.<fn>`` for an intrinsic DaCe's frontend does not lower to a
-    numpy replacement (``math.hypot`` has none); :func:`rewrite_math_prefix` leaves it as ``math.<fn>``
-    rather than guess a numpy name, so the emitted kernel needs ``math`` bound. Before the fix nothing
-    bound ``math`` and the oracle died with ``NameError: name 'math' is not defined``."""
+    """``math.hypot`` has no NumPy replacement and stays ``math.<fn>``, so the kernel needs ``math`` bound."""
     sdfg = dace.SDFG("mathcall")
     sdfg.add_array("a", [3], dace.float64)
     sdfg.add_array("out", [3], dace.float64)
