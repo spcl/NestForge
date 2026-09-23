@@ -48,11 +48,6 @@ def emitted_sdfg(boundary: Boundary) -> dace.SDFG:
     return maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)
 
 
-def scratch_names(boundary: Boundary) -> list[str]:
-    """Transient array buffers the C-style kernel expects the caller to pre-allocate."""
-    return scratch_arrays(emitted_sdfg(boundary))
-
-
 #: Upper bound of random inputs [0, INPUT_HIGH); must stay <= 1/4 so TSVC s232's squaring recurrence converges.
 INPUT_HIGH = 0.25
 
@@ -367,13 +362,3 @@ def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[floa
         # a verdict read off zero elements must fail loudly, not report 0.0 as bit-exact
         return float("inf"), float("inf")
     return worst_abs, worst_rel
-
-
-def maxdiff(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> float:
-    """The absolute half of :func:`diff_stats`."""
-    return diff_stats(a, b)[0]
-
-
-def relative_maxdiff(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> float:
-    """The scaled half of :func:`diff_stats`."""
-    return diff_stats(a, b)[1]

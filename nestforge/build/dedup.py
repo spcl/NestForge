@@ -1,7 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Collapse variants that are the same build twice, so the sweep measures each distinct build once:
-``cpp_body_key`` sees codegen only, ``asm_body_key`` sees the disassembly where flag duplicates show up."""
+"""Collapse variants that are the same build twice, so the sweep measures each distinct build once. The key reads
+the disassembly and the linked libraries: compile flags never reach the source, so a source-level key would call
+every FP mode the same variant."""
 
 from __future__ import annotations
 
@@ -28,52 +29,6 @@ def tool_stdout(cmd: list[str], stdin: str | None = None) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
-
-
-def clang_formatted(code: str) -> str:
-    """``code`` with clang-format's spelling, so a key means "same code", not "same layout"; falls
-    back to ``code`` unchanged when clang-format is absent."""
-    out = tool_stdout(["clang-format", "--assume-filename=nest.cpp"], stdin=code)
-    return out if out is not None else code
-
-
-def function_bodies(code: str) -> list[str]:
-    """Every top-level ``{...}`` block, brace-matched outside string/char literals and comments."""
-    bodies: list[str] = []
-    depth, start, i, n = 0, -1, 0, len(code)
-    while i < n:
-        c = code[i]
-        nxt = code[i + 1] if i + 1 < n else ""
-        if c == "/" and nxt == "/":
-            end = code.find("\n", i)
-            i = n if end < 0 else end
-        elif c == "/" and nxt == "*":
-            end = code.find("*/", i + 2)
-            i = n if end < 0 else end + 2
-        elif c in "\"'":
-            i += 1
-            while i < n and code[i] != c:
-                i += 2 if code[i] == "\\" else 1  # a backslash escapes the next char, including the quote
-            i += 1
-        else:
-            if c == "{":
-                if depth == 0:
-                    start = i
-                depth += 1
-            elif c == "}" and depth > 0:
-                depth -= 1
-                if depth == 0:
-                    bodies.append(code[start : i + 1])
-                    start = -1
-            i += 1
-    return bodies
-
-
-def cpp_body_key(code: str) -> str:
-    """Key over ``code``'s function bodies: equal keys mean the same source, flags aside."""
-    bodies = "\n".join(function_bodies(clang_formatted(code)))
-    # clang-format keeps blank lines (MaxEmptyLinesToKeep), and they are never semantic
-    return hashlib.sha256("\n".join(ln for ln in bodies.splitlines() if ln.strip()).encode()).hexdigest()
 
 
 def parse_disassembly(out: str) -> dict[str, str]:
@@ -112,15 +67,6 @@ def asm_text(bodies: Mapping[str, str], obj: Path, symbol: str | None) -> str:
     return bodies[symbol]
 
 
-def asm_body_key(obj: Path, symbol: str | None = None) -> str:
-    """Key over ``obj``'s disassembly -- one ``symbol`` or every symbol when ``None``; name a symbol
-    only when it is the code that RUNS (a DaCe trampoline disassembles the same regardless of body)."""
-    bodies = asm_bodies(obj)
-    if not bodies:
-        raise LookupError(f"no disassembly for {obj} (objdump missing, or the object has no code)")
-    return hashlib.sha256(asm_text(bodies, obj, symbol).encode()).hexdigest()
-
-
 NEEDED_LINE = re.compile(r"^\s*NEEDED\s+(\S+)$")  # objdump -p dependency line
 
 
@@ -135,7 +81,7 @@ def needed_libraries(path: Path) -> tuple[str, ...]:
 def variant_key(artifact: Path, symbol: str | None = None) -> str | None:
     """One key for a BUILT artifact: its code and its link together, or ``None`` when it cannot be
     read (a caller falls back to measuring; a failure to inspect must never read as "same as before")."""
-    bodies = asm_bodies(artifact)  # one objdump: going through asm_body_key would disassemble twice
+    bodies = asm_bodies(artifact)
     if not bodies:
         return None
     code = hashlib.sha256(asm_text(bodies, artifact, symbol).encode()).hexdigest()

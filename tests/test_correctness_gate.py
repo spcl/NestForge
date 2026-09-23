@@ -28,8 +28,6 @@ def test_a_nan_anywhere_fails_even_when_it_is_not_the_first_element():
         poisoned = good.copy()
         poisoned[position] = np.nan
         assert arena.diff_stats({"a": good}, {"a": poisoned}) == (float("inf"), float("inf"))
-        assert arena.maxdiff({"a": good}, {"a": poisoned}) == float("inf")
-        assert arena.relative_maxdiff({"a": good}, {"a": poisoned}) == float("inf")
 
 
 def test_a_nan_in_a_later_ARRAY_fails_too():
@@ -49,8 +47,6 @@ def test_a_comparison_that_touched_no_element_fails_instead_of_passing():
     outputs are all zero-size would be admitted as bit-exact having computed nothing."""
     empty = {"a": np.zeros(0), "b": np.zeros((0, 4))}
     assert arena.diff_stats(empty, empty) == (float("inf"), float("inf"))
-    assert arena.maxdiff(empty, empty) == float("inf")
-    assert arena.relative_maxdiff(empty, empty) == float("inf")
 
 
 def test_one_empty_array_is_skipped_but_a_real_one_beside_it_still_decides():
@@ -94,20 +90,6 @@ def test_the_gate_is_elementwise_and_a_single_bad_element_survives_averaging():
     worst_abs, worst_rel = arena.diff_stats(a, {"a": b})
     assert worst_abs == pytest.approx(1.0)
     assert worst_rel == pytest.approx(0.5)  # scaled by max(|1|, |2|, 1.0) = 2
-
-
-def test_maxdiff_and_relative_maxdiff_read_the_right_half_of_diff_stats():
-    """``maxdiff`` and ``relative_maxdiff`` are thin wrappers over ``diff_stats``; pin that each reads its
-    OWN half -- a swapped index would silently report the relative gate as the absolute one, or vice versa.
-    Chosen at reduction scale, where the two halves genuinely differ (see
-    test_a_reduction_sized_result_is_judged_relatively_not_absolutely), so a swap cannot pass by accident."""
-    total = 1.6e4
-    a = {"sum": np.array([total])}
-    b = {"sum": np.array([total + 14 * np.spacing(total)])}
-    worst_abs, worst_rel = arena.diff_stats(a, b)
-    assert worst_abs != worst_rel
-    assert arena.maxdiff(a, b) == worst_abs
-    assert arena.relative_maxdiff(a, b) == worst_rel
 
 
 def test_the_gate_is_never_tighter_than_the_output_dtype_can_express():

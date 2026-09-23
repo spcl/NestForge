@@ -163,11 +163,8 @@ class BuildOptions:
 
     compiler: str = DEFAULT_COMPILER
     flags: list[str] | None = None  # None -> DEFAULT_FLAGS
-    expand_libnodes: bool = False
     openmp: OpenMPRuntime | None = None
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
-    # object, not the vectorizer's own config type, to keep the vectorizer import lazy
-    vectorize: object | None = None
 
     def resolved_flags(self) -> list[str]:
         """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard and ``-Wall`` guaranteed."""
@@ -293,14 +290,6 @@ def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
             return sdfg.compile()
 
 
-def apply_vectorizer(sdfg: dace.SDFG, config: object) -> None:
-    """Apply the DaCe multi-dim tile-op CPU vectorizer to ``sdfg`` in place."""
-    import dataclasses  # lazy: closes an import cycle
-    from dace.transformation.passes.vectorization import VectorizeCPUMultiDim
-
-    VectorizeCPUMultiDim(dataclasses.replace(config, expand_tile_nodes=True)).apply_pass(sdfg, {})
-
-
 @dataclass(slots=True)
 class GeneratedProgram:
     """The optimization phase's output: emitted source, not yet compiled."""
@@ -315,16 +304,10 @@ class GeneratedProgram:
         return self.frame.parent.parent.parent  # <out>/src/cpu/x.cpp -> <out>
 
 
-def generate_program(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> GeneratedProgram:
-    """Run the optimization phase only: apply the configured passes and emit the program folder."""
-    opts = opts or BuildOptions()
+def generate_program(sdfg: dace.SDFG, out_dir: Path) -> GeneratedProgram:
+    """Emit the program folder of a copy of ``sdfg``, without compiling it."""
     t_opt = time.perf_counter()
-    sdfg = copy.deepcopy(sdfg)
-    if opts.expand_libnodes:
-        sdfg.expand_library_nodes()
-    if opts.vectorize is not None:
-        apply_vectorizer(sdfg, opts.vectorize)
-    frame, name = generate_program_folder(sdfg, out_dir)
+    frame, name = generate_program_folder(copy.deepcopy(sdfg), out_dir)
     return GeneratedProgram(
         frame=frame, name=name, source=frame.read_text(), codegen_seconds=time.perf_counter() - t_opt
     )
@@ -351,4 +334,4 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None)
     """Generate + compile + link an SDFG ourselves. Resolves a real OpenMP runtime by default, so a caller
     comparing against serial must pin ``OMP_NUM_THREADS=1`` rather than assume none is linked."""
     opts = opts or BuildOptions()
-    return compile_program(generate_program(sdfg, out_dir, opts), opts)
+    return compile_program(generate_program(sdfg, out_dir), opts)

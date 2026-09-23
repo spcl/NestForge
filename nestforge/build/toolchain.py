@@ -357,11 +357,6 @@ def lib_findable(soname: str, lib_dir: str | None) -> bool:
     return ctypes.util.find_library(soname) is not None
 
 
-def runtime_installed(rt: OpenMPRuntime) -> bool:
-    """True if the runtime's shared object can be found."""
-    return lib_findable(rt.soname, rt.lib_dir)
-
-
 @functools.lru_cache(maxsize=None, typed=True)
 def usable_openmp(compiler: str) -> OpenMPRuntime | None:
     """The ONE OpenMP runtime ``compiler`` can actually link, preferring libomp. Never a bare -fopenmp

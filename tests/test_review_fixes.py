@@ -7,7 +7,7 @@ import pytest
 import dace
 from dace.sdfg.state import LoopRegion
 
-from nestforge.build.arena import make_inputs, scratch_names
+from nestforge.build.arena import make_inputs
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, nest_to_numpy, sdfg_to_numpy
 from nestforge.ir.extract import Boundary
 from nestforge.phases.scopes import lower_nests_to_external_call
@@ -240,8 +240,6 @@ def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
     assert got.shape == (sizes["N"] + 1,), "scratch allocated from the raw (smaller) shape, not the emitted one"
 
 
-def test_scratch_names_reports_the_emitted_scratch_buffers():
-    # The scratch parameter list must come from the same widened SDFG the signature is rendered from.
+def test_the_emitted_signature_takes_the_scratch_buffer_the_caller_allocates():
     boundary = loop_scratch_boundary()
-    assert scratch_names(boundary) == ["tmp"]
     assert nest_to_numpy(boundary, "k").splitlines()[0] == "def k(a, tmp, N):"

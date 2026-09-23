@@ -28,6 +28,3 @@ ULP, combined as `max(mode, dtype)`. GPU variants use only `strict-ieee` and `co
 `COST_MODELS` holds three settings. `default` keeps the compiler's own model. `cheap` vectorizes less;
 only gcc has the knob (`-fvect-cost-model=cheap`), so the other compilers dedup it onto `default`.
 `no-vec` turns the vectorizer off as a scalar baseline.
-
-DaCe's tile-op vectorizer is not part of the pipeline; `BuildOptions.vectorize` still applies it to an
-owned DaCe program build.

@@ -275,7 +275,8 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
         from nestforge.phases.scopes import lower_nests_to_external_call
         from nestforge.corpus.translate import prepare, emit_sources
         from nestforge.build.arena import make_inputs
-        from nestforge.build.harness import c_argtypes, call_c, signature_order
+        from nestforge.build.arena import call_native
+        from nestforge.build.harness import c_argtypes, signature_order
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())
@@ -302,7 +303,8 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
                     check=True,
                 )
                 order = signature_order(src.read_text(), f"{name}_fp64", "fortran" if lang == "fortran" else "c")
-                outs, _ = call_c(so, f"{name}_fp64", order, c_argtypes(order, b), b, dict(inp), nsizes, 1)
+                argtypes = c_argtypes(order, b)
+                outs, _ = call_native(so, f"{name}_fp64", order, argtypes, b, dict(inp), nsizes, 1, copy_inputs=False)
                 # ``__sym_out_*`` are extraction sentinels (a nest's loop-exit index / carried scalar), not
                 # real kernel data -- DaCe's nest codegen and numpyto legitimately differ on them at the
                 # artificial nest boundary. Whole-kernel correctness (incl. loop-carried logic) is covered by

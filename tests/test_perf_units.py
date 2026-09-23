@@ -83,9 +83,9 @@ def test_run_isolated_passes_through_plain_dict():
     assert run_isolated(lambda: {"ok": True, "n": 7}) == {"ok": True, "n": 7}
 
 
-# call_c output snapshotting (harness.call_c)
+# call_native on the caller's buffers (copy_inputs=False)
 class CountingArray(np.ndarray):
-    """An ndarray that counts its own .copy() calls, so a test can assert call_c did not snapshot."""
+    """An ndarray that counts its own .copy() calls, so a test can assert call_native did not snapshot."""
 
     copies = 0
 
@@ -95,8 +95,8 @@ class CountingArray(np.ndarray):
 
 
 class FakeBoundary:
-    """Both halves of :class:`nestforge.extract.Boundary` that call_c reads. ``inputs`` is not optional
-    padding: their INTERSECTION with ``outputs`` is what call_c restores between timed reps, so a fixture
+    """Both halves of :class:`nestforge.extract.Boundary` that call_native reads. ``inputs`` is not optional
+    padding: their INTERSECTION with ``outputs`` is what call_native restores between timed reps, so a fixture
     carrying only ``outputs`` cannot express an in-place kernel at all."""
 
     def __init__(self, outputs, inputs=()):
@@ -116,43 +116,52 @@ class FakeKernel:
         self.calls += 1
 
 
-def call_c_on_stub(monkeypatch, reps, read_write=False, **kw):
-    """Drive harness.call_c against a stubbed .so -- the ABI marshalling is real, only the compiled entry
+def call_native_on_stub(monkeypatch, reps, read_write=False, **kw):
+    """Drive arena.call_native on the caller's buffers against a stubbed .so -- the ABI marshalling is real, only the compiled entry
     is faked, so no compiler/toolchain is needed. ``read_write`` marks ``a`` as an in-place buffer (read AND
     written), the case whose per-rep restore decides what the timing measures."""
     fn = FakeKernel()
-    monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
+    monkeypatch.setattr(arena.ctypes, "CDLL", lambda path: {"k_fp64": fn})
     buf = np.zeros(4, dtype=np.float64).view(CountingArray)
     inputs = {"a": buf}
     argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int64]
     boundary = FakeBoundary(["a"], inputs=["a"] if read_write else [])
-    out, us = harness.call_c(
-        Path("stub.so"), "k_fp64", ["a", "LEN_1D"], argtypes, boundary, inputs, {"LEN_1D": 4}, reps, **kw
+    out, us = arena.call_native(
+        Path("stub.so"),
+        "k_fp64",
+        ["a", "LEN_1D"],
+        argtypes,
+        boundary,
+        inputs,
+        {"LEN_1D": 4},
+        reps,
+        copy_inputs=False,
+        **kw,
     )
     return out, us, buf, fn
 
 
-def test_call_c_skips_the_output_snapshot_when_not_requested(monkeypatch):
+def test_call_native_skips_the_output_snapshot_when_not_requested(monkeypatch):
     # The timing path discards the outputs; at XL one output is GBs, so the snapshot must not be built.
-    out, _, buf, fn = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
+    out, _, buf, fn = call_native_on_stub(monkeypatch, reps=3, copy_outputs=False)
     assert out is None
     assert buf.copies == 0
     assert fn.calls == 5  # correctness + warm + reps
 
 
-def test_call_c_snapshots_outputs_by_default(monkeypatch):
+def test_call_native_snapshots_outputs_by_default(monkeypatch):
     # The validate path still needs the post-correctness-run values, snapshotted before timing mutates them.
-    out, _, buf, _ = call_c_on_stub(monkeypatch, reps=1)
+    out, _, buf, _ = call_native_on_stub(monkeypatch, reps=1)
     assert set(out) == {"a"} and buf.copies == 1
 
 
-def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
+def test_call_native_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
     """An array that is both read and written must start each timed rep from the same values. Without the
     restore an in-place kernel times ``a * b**k`` -- denormal arithmetic by a handful of reps -- and the
     ranking E1 reads off granularity rungs becomes "which candidate decayed slower"."""
     restored = []
     fn = FakeKernel()
-    monkeypatch.setattr(harness.ctypes, "CDLL", lambda path: {"k_fp64": fn})
+    monkeypatch.setattr(arena.ctypes, "CDLL", lambda path: {"k_fp64": fn})
     buf = np.zeros(4, dtype=np.float64)
 
     class Recorder(np.ndarray):
@@ -165,7 +174,7 @@ def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
     inputs = {"a": buf.view(Recorder)}
     inputs["a"][...] = 0.25  # the pristine values the restore must reinstate
     restored.clear()
-    harness.call_c(
+    arena.call_native(
         Path("stub.so"),
         "k_fp64",
         ["a", "LEN_1D"],
@@ -174,6 +183,7 @@ def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
         inputs,
         {"LEN_1D": 4},
         reps=3,
+        copy_inputs=False,
     )
     # 4 = one per rep, plus one before the WARM call so the call the CPU trains its caches and predictors
     # on starts from the same state the timed reps do.
@@ -182,10 +192,10 @@ def test_call_c_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
         np.testing.assert_array_equal(values, np.full(4, 0.25))
 
 
-def test_call_c_does_not_restore_a_write_only_buffer(monkeypatch):
+def test_call_native_does_not_restore_a_write_only_buffer(monkeypatch):
     """A fully-overwritten output cannot accumulate, so it must NOT be snapshotted: at the profiling preset
     a blanket copy of every output doubles the forked child's peak RSS for nothing."""
-    _, _, buf, _ = call_c_on_stub(monkeypatch, reps=3, copy_outputs=False)
+    _, _, buf, _ = call_native_on_stub(monkeypatch, reps=3, copy_outputs=False)
     assert buf.copies == 0
 
 

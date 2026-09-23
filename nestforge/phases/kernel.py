@@ -101,7 +101,7 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
 
 
 def build_cpu_library(unit: Path, compiler: str, flags: list[str] | None, archive: Path) -> None:
-    opts = BuildOptions(compiler=compiler, flags=flags, openmp=LIBOMP, link_external=True)
+    opts = BuildOptions(compiler=compiler, flags=flags, openmp=LIBOMP)
     build_archive([unit], None, archive, archive.with_suffix(".so"), opts)
 
 

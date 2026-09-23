@@ -1,11 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The two duplicate-variant keys, and the boundary between what each one can see.
-
-The pair exists because neither key subsumes the other, and using the wrong one silently erases a
-search axis: compile flags never reach the emitted C++, so a source-level key reports every fp rung as
-the same variant.
-"""
+"""The duplicate-variant key: two variants share it exactly when they are the same build."""
 
 import shutil
 import subprocess
@@ -17,10 +12,7 @@ from nestforge.build import flags as flags_mod
 from nestforge.build.flags import FP_LEVELS
 from nestforge.build.dedup import (
     asm_bodies,
-    asm_body_key,
     collapse,
-    cpp_body_key,
-    function_bodies,
     needed_libraries,
     parse_disassembly,
     representatives,
@@ -63,57 +55,15 @@ def build(tmp_path: Path, source: str, fp_mode: str, tag: str = "v", compiler: s
     return out / f"{tag}.o"
 
 
-# the C++ key and its blind spot
+# the key
 
 
-def test_the_cpp_key_cannot_see_compile_flags_and_the_asm_key_can(tmp_path):
-    """The whole reason there are two keys, stated as the grouping a sweep would actually do. One source,
-    two fp rungs: the source key puts them in ONE group (it never sees the command line), the object key
-    in two. A pruner on the source key alone would measure strict-ieee and report it as fast-math too."""
-    strict = build(tmp_path, SUM_KERNEL, "strict-ieee", tag="s_cpp")
-    fast = build(tmp_path, SUM_KERNEL, "fast-math", tag="f_cpp")
-    by_source = collapse({"strict": cpp_body_key(SUM_KERNEL), "fast": cpp_body_key(SUM_KERNEL)})
-    by_object = collapse({"strict": asm_body_key(strict, SYMBOL), "fast": asm_body_key(fast, SYMBOL)})
-    assert len(by_source) == 1, "the emitted source is identical -- flags are not an input to it"
-    assert len(by_object) == 2, "the objects are not, which is the axis the source key would erase"
-
-
-def test_the_cpp_key_separates_sources_that_differ_in_the_body():
-    other = SIN_KERNEL.replace("sin(b[i])", "cos(b[i])")
-    assert cpp_body_key(SIN_KERNEL) != cpp_body_key(other)
-
-
-def test_the_cpp_key_ignores_layout_and_the_includes_that_follow_the_build_dir():
-    """clang-format normalizes spelling, and only BODIES are hashed -- an emitted TU's include paths and
-    name comments follow the build directory, so hashing the whole file would never match twice."""
-    reflowed = SIN_KERNEL.replace("  for", "\n\n      for").replace("*__restrict__ a", "*__restrict__  a")
-    relocated = "#include <math.h>\n// generated into /tmp/build-abc123\n" + SIN_KERNEL.split("\n", 1)[1]
-    assert cpp_body_key(SIN_KERNEL) == cpp_body_key(reflowed)
-    assert cpp_body_key(SIN_KERNEL) == cpp_body_key(relocated)
-
-
-def test_function_bodies_does_not_desync_on_braces_inside_literals_or_comments():
-    """A generated TU carries error strings and comments; a brace in one would shift every body after it,
-    which makes the key depend on unrelated text."""
-    code = 'void f() { const char *s = "{ not code }"; /* } neither */ int x = 1; }\nvoid g() { int y = 2; }\n'
-    bodies = function_bodies(code)
-    assert len(bodies) == 2, bodies
-    assert "int x = 1;" in bodies[0] and "int y = 2;" in bodies[1]
-
-
-def test_function_bodies_keeps_an_escaped_quote_inside_a_literal():
-    code = r'void f() { const char *s = "he said \" { \" ok"; int x = 1; }' + "\n"
-    assert len(function_bodies(code)) == 1
-
-
-# the assembly key
-
-
-def test_the_asm_key_separates_fp_rungs_the_cpp_key_cannot(tmp_path):
-    """The complement of the blind spot above, on the same source: identical C++, different objects."""
+def test_the_key_separates_fp_rungs_of_one_source(tmp_path):
+    """Compile flags never reach the source, so only the object shows that reassociation changed the code."""
     strict = build(tmp_path, SUM_KERNEL, "strict-ieee", tag="strict")
     fast = build(tmp_path, SUM_KERNEL, "fast-math", tag="fast")
-    assert asm_body_key(strict, SYMBOL) != asm_body_key(fast, SYMBOL), "reassociation must change the code"
+    groups = collapse({"strict": variant_key(strict, SYMBOL) or "", "fast": variant_key(fast, SYMBOL) or ""})
+    assert len(groups) == 2, groups
 
 
 #: One objdump body, verbatim shape: an immediate, a rip-relative load with a relocation comment, and a
@@ -164,15 +114,14 @@ def test_naming_an_absent_symbol_is_an_error_not_a_silent_whole_object_key(tmp_p
     question than the caller asked."""
     obj = build(tmp_path, SUM_KERNEL, "strict-ieee", tag="missing")
     with pytest.raises(LookupError, match="nope"):
-        asm_body_key(obj, "nope")
+        variant_key(obj, "nope")
 
 
-def test_an_object_with_no_disassembly_raises_rather_than_hashing_nothing(tmp_path):
+def test_an_object_with_no_disassembly_has_no_key_rather_than_the_key_of_nothing(tmp_path):
     """Two unreadable objects both hashing the empty string would collapse into one measured variant."""
     empty = tmp_path / "not_an_object.o"
     empty.write_text("")
-    with pytest.raises(LookupError):
-        asm_body_key(empty, SYMBOL)
+    assert variant_key(empty, SYMBOL) is None
 
 
 def test_needed_libraries_reads_the_link_axis_the_object_key_misses(tmp_path):
@@ -186,9 +135,9 @@ def test_needed_libraries_reads_the_link_axis_the_object_key_misses(tmp_path):
         check=True,
         capture_output=True,
     )
-    assert asm_body_key(bare, SYMBOL) == asm_body_key(withlib, SYMBOL), "the code really is the same"
-    assert needed_libraries(bare) != needed_libraries(withlib), "the link really is not"
+    assert asm_bodies(bare)[SYMBOL] == asm_bodies(withlib)[SYMBOL], "the code really is the same"
     assert any("mvec" in soname for soname in needed_libraries(withlib))
+    assert variant_key(bare, SYMBOL) != variant_key(withlib, SYMBOL)
 
 
 #: No FMA to contract, no math call to relax, nothing to reassociate: the fp ladder cannot reach it.

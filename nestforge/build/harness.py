@@ -5,11 +5,9 @@
 from __future__ import annotations
 
 import ctypes
-from pathlib import Path
-
 import numpy as np
 
-from nestforge.build.arena import CTYPE, call_native, scalar_ctype
+from nestforge.build.arena import CTYPE, scalar_ctype
 from nestforge.build.toolchain import raw_signature
 
 
@@ -30,21 +28,3 @@ def c_argtypes(order: list[str], boundary) -> list:
         ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
         for a in order
     ]
-
-
-def call_c(
-    so: Path,
-    symbol: str,
-    order: list[str],
-    argtypes: list,
-    boundary,
-    inputs,
-    sizes,
-    reps: int,
-    copy_outputs: bool = True,
-) -> tuple[dict[str, np.ndarray] | None, float]:
-    """Bind by the C signature order, run once for correctness, then time ``reps`` calls, mutating
-    ``inputs`` in place. Callers must run this in a forked child."""
-    return call_native(
-        so, symbol, order, argtypes, boundary, inputs, sizes, reps, copy_inputs=False, copy_outputs=copy_outputs
-    )

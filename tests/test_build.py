@@ -24,7 +24,7 @@ import dace
 
 import nestforge.build.sdfg as build_mod
 import nestforge.build.toolchain as toolchain_mod
-from nestforge.build.toolchain import LIBOMP, runtime_library
+from nestforge.build.toolchain import LIBOMP, lib_findable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
@@ -44,7 +44,6 @@ from nestforge.build.toolchain import (
     linkable_lib_dir,
     llvm_version,
     parse_params,
-    runtime_installed,
 )
 
 
@@ -340,7 +339,9 @@ def test_parallel_map_emits_omp_pragma():
 def test_parallel_loop_links_openmp_across_compilers(compiler):
     assert shutil.which(compiler) is not None, f"{compiler} not on PATH"
     rt = LIBOMP
-    assert runtime_installed(rt), f"{rt.name} not installed here (no OpenMP runtime on PATH/LD_LIBRARY_PATH/ldconfig)"
+    assert lib_findable(rt.soname, rt.lib_dir), (
+        f"{rt.name} not installed here (no OpenMP runtime on PATH/LD_LIBRARY_PATH/ldconfig)"
+    )
     assert rt.compatible(compiler), f"{compiler} must be able to link {rt.name}"
     n = 256
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
@@ -451,18 +452,6 @@ def test_owned_build_reusable_handle_program():
         built.close()
     for o in oracle:
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
-
-
-def test_vectorized_owned_build_matches_oracle():
-    """The DaCe multi-dim tile-op vectorizer plugs into the owned build: a VectorizeConfig on BuildOptions
-    still matches the numpy oracle (AUTO resolves to the host ISA, so this stays host-agnostic)."""
-    from dace.transformation.passes.vectorization.config import VectorizeConfig
-
-    owned_build_matches_oracle(
-        "scientific_computing/structured_grids/jacobi_1d/jacobi_1d",
-        size=256,
-        opts=BuildOptions(vectorize=VectorizeConfig(widths=(8,), target_isa="AUTO")),
-    )
 
 
 def test_toolchain_is_importable_without_dace():
