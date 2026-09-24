@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 from collections.abc import Mapping
 
-from nestforge.build.toolchain import needed_libraries
+from nestforge.build.toolchain import needed_libraries, tool_stdout
 
 SYMBOL_LINE = re.compile(r"^[0-9a-f]+ <([^>]+)>:$")  # objdump -d symbol header
 INSN_LINE = re.compile(r"^\s*[0-9a-f]+:\t(.*)$")  # objdump -d instruction line
@@ -22,15 +22,6 @@ INSN_COMMENT = re.compile(r"\s{2,}#.*$")
 BRANCH_TARGET = re.compile(r"\b[0-9a-f]+ (?=<)")
 
 TOOL_TIMEOUT_S: float = 120.0
-
-
-def tool_stdout(cmd: list[str], stdin: str | None = None) -> str | None:
-    """stdout of ``cmd``, or ``None`` on failure -- callers must degrade to measuring, never collapsing."""
-    try:
-        done = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=TOOL_TIMEOUT_S)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return done.stdout if done.returncode == 0 else None
 
 
 def parse_disassembly(out: str) -> dict[str, str]:
@@ -53,7 +44,7 @@ def parse_disassembly(out: str) -> dict[str, str]:
 
 def asm_bodies(obj: Path) -> dict[str, str]:
     """symbol -> instruction text for ``obj``; empty when objdump is missing or the file has no code."""
-    out = tool_stdout(["objdump", "-d", "--no-show-raw-insn", str(obj)])
+    out = tool_stdout(["objdump", "-d", "--no-show-raw-insn", str(obj)], TOOL_TIMEOUT_S)
     return parse_disassembly(out) if out is not None else {}
 
 
