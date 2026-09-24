@@ -12,21 +12,21 @@ import numpy as np
 from nestforge.build import arena
 
 from nestforge.build import flags
-from nestforge.build import harness
+from helpers import signature_order
 from nestforge.build.toolchain import Toolchain
 
 
-# emitted-source signature order (harness.signature_order)
+# emitted-source signature order
 def test_signature_order_c_and_fortran_multiline():
     csrc = "void s000_fp64(double* a, double* out, int64_t N) {"
-    assert harness.signature_order(csrc, "s000_fp64", "c") == ["a", "out", "N"]
+    assert signature_order(csrc, "s000_fp64", "c") == ["a", "out", "N"]
     # a long Fortran arg list wraps with `&` continuations; they must be stripped, not become arg names.
     ftn = "subroutine s1115_fp64(aa, &\n  & bb_slice, cc, &\n  & LEN_2D) bind(c, name='s1115_fp64')\n"
-    assert harness.signature_order(ftn, "s1115_fp64", "fortran") == ["aa", "bb_slice", "cc", "LEN_2D"]
+    assert signature_order(ftn, "s1115_fp64", "fortran") == ["aa", "bb_slice", "cc", "LEN_2D"]
 
 
 def test_abi_order_pointer_star_stripped():
-    assert harness.signature_order("void k_fp64(double *a, double* b, int64_t N) {", "k_fp64") == ["a", "b", "N"]
+    assert signature_order("void k_fp64(double *a, double* b, int64_t N) {", "k_fp64") == ["a", "b", "N"]
 
 
 # flag composition (flags.*)

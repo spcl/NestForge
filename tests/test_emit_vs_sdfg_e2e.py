@@ -20,7 +20,7 @@ from dace.transformation.passes.canonicalize import canonicalize
 from nestforge.build.sdfg import BuildOptions, build_sdfg
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
-from helpers import corpus_kernel, loop_level_kernel
+from helpers import c_argtypes, corpus_kernel, loop_level_kernel, signature_order
 
 ATOL = 1e-8
 
@@ -254,7 +254,6 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
         from nestforge.corpus.translate import prepare, emit_sources
         from nestforge.build.arena import make_inputs
         from nestforge.build.arena import call_native
-        from nestforge.build.harness import c_argtypes, signature_order
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())

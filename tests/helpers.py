@@ -2,9 +2,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Helpers several test modules share."""
 
+import ctypes
+
 import numpy as np
 
+from nestforge.build.arena import CTYPE, scalar_ctype
+from nestforge.build.toolchain import CType, raw_signature
 from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels
+from nestforge.ir.extract import Boundary
 
 
 def corpus_kernel(short_name: str) -> CorpusKernel:
@@ -30,3 +35,21 @@ def run(sdfg, inputs: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
 def random_vectors(n: int = 48, names: tuple[str, ...] = ("a", "b", "c"), seed: int = 0) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
     return {k: rng.random(n) for k in names}
+
+
+def signature_order(text: str, symbol: str, lang: str = "c") -> list[str]:
+    """Parameter names of a translated kernel's entry, in declaration order: the emitted C order (sorted arrays,
+    then symbols) is not the manifest's ``input_args`` order, so arguments bind to this."""
+    params = raw_signature(text, symbol, lang)
+    if lang == "fortran":
+        return [a.strip() for a in params.replace("&", " ").split(",") if a.strip()]
+    return [p.strip().split()[-1].lstrip("*") for p in params.split(",") if p.strip() and p.strip() != "void"]
+
+
+def c_argtypes(order: list[str], boundary: Boundary) -> list[CType]:
+    """ctypes type per C parameter: an array is a pointer to its dtype, a float symbol a double, any other int64."""
+    sdfg = boundary.standalone_sdfg
+    return [
+        ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
+        for a in order
+    ]
