@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the NestForge authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Repo-wide pytest setup. With ``NESTFORGE_CI_NO_SKIP`` set, as in CI's unit job, a skipped test fails the run."""
 
 import os
@@ -20,8 +22,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if "NESTFORGE_CI_NO_SKIP" not in os.environ:
         return
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    skipped = reporter.stats.get("skipped", []) if reporter is not None else []
-    if reporter is None or not skipped:
+    if reporter is None:
+        return
+    skipped = reporter.stats.get("skipped", [])
+    if not skipped:
         return
     reporter.write_line(f"NESTFORGE_CI_NO_SKIP: {len(skipped)} skipped test(s) not allowed in the unit set:")
     for report in skipped:

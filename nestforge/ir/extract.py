@@ -45,6 +45,17 @@ def detach(sdfg: dace.SDFG) -> dace.SDFG:
     return det
 
 
+def detached_twin(
+    sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntry
+) -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
+    """A detached copy of ``sdfg`` and the copies of ``state`` and ``entry`` in it."""
+    twin = detach(sdfg)
+    twin_state = list(twin.all_states())[list(sdfg.all_states()).index(state)]
+    twin_entry = twin_state.node(state.node_id(entry))
+    assert isinstance(twin_entry, nodes.MapEntry), "a deep copy keeps node ids"
+    return twin, twin_state, twin_entry
+
+
 def find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
     """Return the ``SDFGState`` in ``sdfg`` that contains ``node``."""
     for state in sdfg.states():

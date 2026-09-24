@@ -26,7 +26,7 @@ from dace.transformation.interstate import move_loop_invariant_if_up
 from dace.transformation.interstate.multistate_inline import InlineMultistateSDFG
 from dace.transformation.passes import loop_fission, move_if_into_loop
 
-from nestforge.ir.extract import detach
+from nestforge.ir.extract import detached_twin
 from nestforge.ir.names import in_order
 
 LOOP_FISSION_REFUSED = "blocked by LoopFission: the loop body has no two independent statement groups."
@@ -266,16 +266,14 @@ def plan_subgraph_fission(state: SDFGState, entry: nodes.MapEntry, cut: ControlF
     if body is None or cut.parent_graph is not body.sdfg:
         return f"{cut.label} is not a top-level block of the body of {entry.map.label}."
     outs = body.sdfg.out_edges(cut)
-    if len(outs) != 1 or any(body.sdfg.in_degree(b) > 1 or body.sdfg.out_degree(b) > 1 for b in body.sdfg.nodes()):
-        return f"{cut.label} is not followed by more of one straight-line body; name a block before the last."
+    if len(outs) != 1:
+        return f"{cut.label} is the last block of the body of {entry.map.label}; name a block before the last."
+    if any(body.sdfg.in_degree(b) > 1 or body.sdfg.out_degree(b) > 1 for b in body.sdfg.nodes()):
+        return f"the body of {entry.map.label} branches; subgraph fission needs a straight-line body."
     if not outs[0].data.is_unconditional() or outs[0].data.assignments:
         return f"the edge after {cut.label} assigns or branches; the halves would lose it."
     # the split nests blocks before MapFission judges it, so it is tried on a copy first
-    sdfg = state.sdfg
-    twin = detach(sdfg)
-    twin_state = list(twin.all_states())[list(sdfg.all_states()).index(state)]
-    twin_entry = twin_state.node(state.node_id(entry))
-    assert isinstance(twin_entry, nodes.MapEntry), "a deep copy keeps node ids"
+    _, twin_state, twin_entry = detached_twin(state.sdfg, state, entry)
     twin_body = map_body(twin_state, twin_entry)
     assert twin_body is not None, "a deep copy keeps the body"
     twin_cut = twin_body.sdfg.node(body.sdfg.node_id(cut))

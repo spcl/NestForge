@@ -1,7 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """HPCAgent-Bench's kernels as SDFGs, the NestForge corpus. A kernel's ``_dace.py`` reads HPCAgent-Bench's precision
-global, which is set to float64 before it is imported."""
+global, which is set to float64 before it is imported.
+hpcagent_bench is imported inside functions, so importing nestforge never loads it."""
 
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning
 
 def set_precision_fp64() -> None:
     """Set HPCAgent-Bench's kernel dtype global to float64 before a kernel module imports it."""
-    import hpcagent_bench.frameworks.dace_framework as dfw  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
+    import hpcagent_bench.frameworks.dace_framework as dfw
 
     dfw.dc_float = dace.float64
     dfw.dc_complex_float = dace.complex128
@@ -58,8 +59,8 @@ class CorpusKernel:
         return module
 
     def program(self) -> dace.frontend.python.parser.DaceProgram:
-        """The kernel's entry ``@dace.program``, selected by the manifest's ``func_name`` (falls back
-        to the last-defined program, since a module may define helpers before it and a GPU variant after)."""
+        """The kernel's entry ``@dace.program``, named by the manifest's ``func_name``; without one, the last
+        program the module defines, since helpers precede the entry."""
         set_precision_fp64()
         module = self.module()
         entry = vars(module).get(self.spec.func_name)
@@ -68,7 +69,7 @@ class CorpusKernel:
         programs = [v for v in vars(module).values() if isinstance(v, dace.frontend.python.parser.DaceProgram)]
         if not programs:
             raise LookupError(f"no @dace.program found in {self.dace_file}")
-        return programs[-1]  # entry is defined after its helpers
+        return programs[-1]
 
     def to_sdfg(self, simplify: bool = True) -> dace.SDFG:
         return self.program().to_sdfg(simplify=simplify)
@@ -82,9 +83,7 @@ def module_path(short_name: str) -> str:
 
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
     """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
-    from hpcagent_bench import (
-        autogen,
-    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
+    from hpcagent_bench import autogen
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
     for short_name in KERNELS:
@@ -106,9 +105,7 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
 
 def materialize_dace_corpus(track: str | None = None) -> None:
     """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
-    from hpcagent_bench import (
-        autogen,
-    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
+    from hpcagent_bench import autogen
     from hpcagent_bench.spec import KERNELS
 
     for short_name in KERNELS:
@@ -134,9 +131,7 @@ def index_fills(
 ) -> dict[str, np.ndarray]:
     """Permutation fills for the integer index arrays the manifest declares; the default random fill cast to int
     is all zeros, which turns a gather or scatter into a same-index race."""
-    from hpcagent_bench.initialize import (
-        fill_index_array,
-    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
+    from hpcagent_bench.initialize import fill_index_array
     from hpcagent_bench.spec import BenchSpec
 
     if manifest_name is None:

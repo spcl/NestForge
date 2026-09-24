@@ -58,15 +58,11 @@ class OffloadCandidate:
     parent_sdfg: dace.SDFG
     node: nodes.MapEntry
     label: str
-    parallel: bool
 
 
 def offload_candidates(sdfg: dace.SDFG) -> list[OffloadCandidate]:
     """The maps phase 2 would turn into kernels, without changing ``sdfg``."""
-    return [
-        OffloadCandidate(parent, node, label_nest(node), is_parallel_nest(node))
-        for parent, node in parallel_top_level_maps(sdfg)
-    ]
+    return [OffloadCandidate(parent, node, label_nest(node)) for parent, node in parallel_top_level_maps(sdfg)]
 
 
 def reference_sdfg(boundary: Boundary) -> dace.SDFG:
@@ -180,14 +176,3 @@ def lower_nests_to_external_call(sdfg: dace.SDFG) -> list[tuple[ExternalCall, Bo
         ext = replace_nsdfg_with_external(boundary, name)
         out.append((ext, boundary))
     return out
-
-
-__all__ = [
-    "OffloadCandidate",
-    "offload_candidates",
-    "label_nest",
-    "parallel_top_level_maps",
-    "top_level_map_entries",
-    "is_parallel_nest",
-    "lower_nests_to_external_call",
-]

@@ -34,7 +34,7 @@ def default_fuse_step(sdfg: dace.SDFG) -> bool:
     move = first_fusion(sdfg)
     if move is None:
         return False
-    apply_fusion(sdfg, move)
+    apply_fusion(move)
     return True
 
 

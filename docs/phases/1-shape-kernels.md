@@ -12,8 +12,8 @@ nodes; it reads two views and requests moves.
   scope. OI divides work by the bytes a scope moves under a simple cache model: a map caches
   perfectly, a loop caches nothing.
 
-A move is one existing DaCe transformation, legal only when that transformation's `can_be_applied`
-accepts it. `list_moves(kind)` returns the legal moves as `{kind, labels, epoch}`. `apply_move(kind,
+Each move is legal only when its check accepts it: a DaCe transformation's `can_be_applied`, the
+per-region match of the DaCe pass it names, or, for `interchange-map-loop`, NestForge's own check. `list_moves(kind)` returns the legal moves as `{kind, labels, epoch}`. `apply_move(kind,
 labels, epoch)` applies one and returns a `MoveResult` whose status is `applied`, `illegal`,
 `not-implemented`, `not-found` or `stale`. Labels are the tree labels `describe()` prints, and its
 first line shows the epoch.

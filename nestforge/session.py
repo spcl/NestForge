@@ -14,7 +14,7 @@ import re
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import dace
 from dace.sdfg import nodes
@@ -22,11 +22,11 @@ from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.corpus.translate import Prepared, emit_sources, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
-from nestforge.ir.extract import Boundary, detach, extract_map_nest, find_state_of_node
+from nestforge.ir.extract import Boundary, detached_twin, extract_map_nest, find_state_of_node
 from nestforge.ir.libnode import ExternalCall
 from nestforge.ir.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes, tree_rows
 from nestforge.ir.names import normalize_labels
-from nestforge.phases.feedback import run_feedback_loop
+from nestforge.phases.feedback import Measure, run_feedback_loop
 from nestforge.phases.kernel import (
     KernelSource,
     build_kernel_library,
@@ -52,6 +52,7 @@ from nestforge.phases.schedule import (
     enumerate_fusions,
     enumerate_map_fissions,
     enumerate_region_fusions,
+    every_state,
     finish_schedule,
     fission_to_statements,
     full_fusion,
@@ -223,7 +224,7 @@ class Session:
         return [{"id": self.mint("move", m), "kind": m.kind, "label": m.label()} for m in enumerate_fusions(self.sdfg)]
 
     def fuse(self, move_id: str) -> str:
-        self.commit(self.sdfg, self.resolve_as(move_id, "move", FusionMove))
+        self.commit(self.resolve_as(move_id, "move", FusionMove))
         return self.describe()
 
     def list_moves(self, kind: str | None = None) -> list[dict]:
@@ -262,7 +263,7 @@ class Session:
         plan = plan_move(kind, [rows[name] for name in names])
         if isinstance(plan, str):
             return MoveResult("illegal", kind, names, plan)
-        return MoveResult("applied", kind, names, self.commit(*plan))
+        return MoveResult("applied", kind, names, self.commit(plan))
 
     def row_index(self) -> dict[str, Row]:
         """Tree label -> ``(block or node, state)``, built once per epoch."""
@@ -270,21 +271,21 @@ class Session:
             self.rows = tree_rows(self.sdfg)
         return self.rows
 
-    def commit(self, sdfg: dace.SDFG, move: Move) -> str:
+    def commit(self, move: Move) -> str:
         """Apply one move on the SDFG owning its nodes and start a new epoch; returns the transformation's name."""
-        applied = commit_move(sdfg, move)
+        applied = commit_move(move)
         self.bump()
         return applied
 
     def list_region_fusions(self) -> list[dict]:
         """Adjacent state pairs that may merge, so nests in them can fuse afterwards."""
         return [
-            {"id": self.mint("regmove", m), "kind": m.kind, "label": m.label()}
+            {"id": self.mint("regmove", m), "kind": "fuse-states", "label": m.label()}
             for m in enumerate_region_fusions(self.sdfg)
         ]
 
     def fuse_regions(self, move_id: str) -> str:
-        apply_region_fusion(self.sdfg, self.resolve_as(move_id, "regmove", RegionMove))
+        apply_region_fusion(self.resolve_as(move_id, "regmove", RegionMove))
         self.bump()
         return self.describe()
 
@@ -299,7 +300,7 @@ class Session:
         return [{"id": self.mint("fission", m), "label": m.label()} for m in enumerate_map_fissions(self.sdfg)]
 
     def fission(self, move_id: str) -> str:
-        self.commit(self.sdfg, self.resolve_as(move_id, "fission", FissionMove))
+        self.commit(self.resolve_as(move_id, "fission", FissionMove))
         return self.describe()
 
     def full_fusion(self) -> str:
@@ -335,12 +336,7 @@ class Session:
 
     def nest_boundary_copy(self, nest: nodes.MapEntry) -> Boundary:
         """Extract ``nest`` from a detached copy, so a read-only rendering leaves the live graph alone."""
-        state = find_state_of_node(self.sdfg, nest)
-        state_index = list(self.sdfg.all_states()).index(state)
-        node_index = list(state.nodes()).index(nest)
-        work = detach(self.sdfg)
-        twin = list(list(work.all_states())[state_index].nodes())[node_index]
-        assert isinstance(twin, nodes.MapEntry), "a deep copy keeps node order"
+        work, _, twin = detached_twin(self.sdfg, find_state_of_node(self.sdfg, nest), nest)
         return extract_map_nest(work, twin, name=nest.map.label)
 
     def map_nest(self, nest_id: str) -> tuple[SDFGState, nodes.MapEntry]:
@@ -361,7 +357,6 @@ class Session:
                 {
                     "id": self.mint("cand", cand),
                     "label": cand.label,
-                    "parallel": cand.parallel,
                     "reads": reads,
                     "writes": writes,
                 }
@@ -571,7 +566,7 @@ class Session:
 
     # Feedback
 
-    def feedback(self, measure: Callable, max_rounds: int = 8) -> dict:
+    def feedback(self, measure: Measure, max_rounds: int = 8) -> dict:
         """Re-fuse move by move until the measured time stops improving; keeps the best granularity."""
         res = run_feedback_loop(self.sdfg, measure, max_rounds=max_rounds)
         self.sdfg = res.sdfg
@@ -604,4 +599,4 @@ def fusion_units(sdfg: dace.SDFG) -> list[tuple[SDFGState | dace.SDFG, nodes.Map
     loops: list[tuple[SDFGState | dace.SDFG, nodes.MapEntry | LoopRegion]] = [
         (sdfg, node) for cfg in regions for node in cfg.nodes() if isinstance(node, LoopRegion)
     ]
-    return loops + [(state, entry) for state in sdfg.all_states() for entry in top_level_map_entries(state)]
+    return loops + [(state, entry) for state in every_state(sdfg) for entry in top_level_map_entries(state)]

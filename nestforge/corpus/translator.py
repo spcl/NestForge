@@ -1,6 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Translate a NumPy kernel and its ``BenchSpec`` to C, C++ or Fortran with HPCAgent-Bench's ``numpyto`` driver."""
+"""Translate a NumPy kernel and its ``BenchSpec`` to C, C++ or Fortran with HPCAgent-Bench's ``numpyto`` driver.
+hpcagent_bench is imported inside functions, so importing nestforge never loads it."""
 
 from __future__ import annotations
 
@@ -31,9 +32,7 @@ def translate(
 
     :returns: the generated source files, C then C++ then Fortran.
     """
-    from hpcagent_bench import (
-        emit_bridge,
-    )  # deferred: HPCAgent-Bench drives NestForge, so importing nestforge never loads it
+    from hpcagent_bench import emit_bridge
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -53,7 +52,6 @@ def translate(
             "--precision",
             precision,
         ]
-        # Bound the compile so a pathological kernel cannot hang the rank forever.
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
         except subprocess.TimeoutExpired:

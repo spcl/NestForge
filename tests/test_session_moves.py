@@ -179,6 +179,17 @@ def loop_variant_guard(a: dace.float64[N]):
             a[i] = a[i - 1] + 1.0
 
 
+@dace.program
+def steps_inside_a_map(A: dace.float64[N, T], C: dace.float64[N, T]):
+    for i in dace.map[0:N]:
+        for t in range(1, T):
+            tmp = np.empty(T, dace.float64)
+            for j in dace.map[0:T]:
+                tmp[j] = A[i, j] * t
+            for j in dace.map[0:T]:
+                C[i, j] = C[i, j] + tmp[j]
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -367,6 +378,16 @@ def test_map_fusion_of_independent_siblings_is_horizontal_and_leaves_one_map():
     assert len(top_level_maps(sut.sdfg)) == 1
     arrays = random_arrays(A=(SIZE,), B=(SIZE,), C=(SIZE,), D=(SIZE,))
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
+
+
+def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies():
+    """``apply_move`` reaches rows in nested SDFGs, so ``list_moves`` must offer the moves found there too."""
+    sut, reference = session_and_reference(steps_inside_a_map)
+
+    result = apply_listed(sut, "map-fusion")
+
+    assert result.status == "applied", result
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, STEPS), C=(SIZE, STEPS)), N=SIZE, T=STEPS)
 
 
 def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier():

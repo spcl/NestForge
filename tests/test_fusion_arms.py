@@ -48,7 +48,7 @@ def apply_to_fixpoint(sdfg, order="greedy", seed=0):
         if not moves:
             return applied
         move = moves[0] if order == "greedy" else moves[int(rng.integers(len(moves)))]
-        apply_fusion(sdfg, move)
+        apply_fusion(move)
         applied += 1
 
 

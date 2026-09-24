@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Require the copyright and SPDX header on every Python file under nestforge/, scripts/ and tests/.
+"""Require the copyright and SPDX header on every Python file under nestforge/, scripts/, tests/ and examples/, and
+on conftest.py.
 
 The header follows an optional shebang and coding line. A header with another year or project name is accepted;
 ``--fix`` adds the canonical one to files that have none. Without file arguments, every tracked file is checked.
@@ -18,12 +19,12 @@ SPDX_LINE = "# SPDX-License-Identifier: GPL-3.0-or-later"
 HEADER = ("# Copyright 2021 ETH Zurich and the NestForge authors.", SPDX_LINE)
 COPYRIGHT_RE = re.compile(r"^# Copyright \d{4} ETH Zurich and the [\w.-]+ authors\.$")
 CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=]")
-SCOPE_PREFIXES = ("nestforge/", "scripts/", "tests/")
+SCOPE_PREFIXES = ("nestforge/", "scripts/", "tests/", "examples/")
 
 
 def in_scope(rel: str) -> bool:
     posix = rel.replace("\\", "/")
-    return posix.endswith(".py") and posix.startswith(SCOPE_PREFIXES)
+    return posix.endswith(".py") and (posix.startswith(SCOPE_PREFIXES) or posix == "conftest.py")
 
 
 def tracked_files() -> list[str]:

@@ -38,7 +38,7 @@ def test_fusion_across_an_invariant_scalar_is_value_preserving():
 
     sdfg = invariant_scalar.to_sdfg(simplify=True)
     for move in enumerate_fusions(sdfg):
-        apply_fusion(sdfg, move)
+        apply_fusion(move)
     sdfg.validate()
     got = run(sdfg, a, d)
     # unfused: d[i] = d[i-1] + a[N-1]  (a prefix sum of the LAST element)

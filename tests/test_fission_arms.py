@@ -103,7 +103,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
         moves = enumerate_fusions(sdfg)
         if not moves:
             break
-        apply_fusion(sdfg, moves[0])
+        apply_fusion(moves[0])
     got = run(sdfg, inputs, 48)
     assert all(np.allclose(got[k], ref[k]) for k in inputs)
 

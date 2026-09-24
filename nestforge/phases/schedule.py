@@ -25,7 +25,7 @@ from dace.transformation.passes.canonicalize import canonicalize, stage_labels
 from dace.transformation.passes.canonicalize.split_statements import SplitStatements
 from dace.transformation.passes.loop_fission import LoopFission
 
-from nestforge.ir.extract import detach, extract_cfg_nest, extract_map_nest, find_state_of_node
+from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.names import inline_top_level_nsdfgs
 from nestforge.phases.normalize import FUSE_STAGE, Targets
 from nestforge.phases.region_moves import (
@@ -61,9 +61,16 @@ class FusionMove:
     kind: str
     where: Where
     xform: type = field(repr=False)
+    sdfg: dace.SDFG = field(repr=False)  # the SDFG owning the matched nodes, nested or not
 
     def label(self) -> str:
         return f"{self.kind}({', '.join(str(n) for n in self.where.values())})"
+
+
+def every_state(sdfg: dace.SDFG) -> Iterator[SDFGState]:
+    """Every state of ``sdfg`` and of the SDFGs nested in it; ``state.sdfg`` is the one that owns it."""
+    for owner in sdfg.all_sdfgs_recursive():
+        yield from owner.all_states()
 
 
 def loop_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -79,41 +86,42 @@ def loop_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             if (
                 isinstance(second, LoopRegion)
                 and second is not first
-                and FuseLoops.can_be_applied_to(sdfg, first=first, second=second)
+                and FuseLoops.can_be_applied_to(first.sdfg, first=first, second=second)
             ):
-                yield FusionMove("fuse-loops", {"first": first, "second": second}, FuseLoops)
+                yield FusionMove("fuse-loops", {"first": first, "second": second}, FuseLoops, first.sdfg)
 
 
 def vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Producer-consumer map pairs through a transient that ``MapFusionVertical`` accepts. A non-transient
     intermediate is a program output, which fusing would drop."""
-    for state in sdfg.all_states():
+    for state in every_state(sdfg):
+        owner = state.sdfg
         for node in state.nodes():
-            if not (isinstance(node, nodes.AccessNode) and sdfg.arrays[node.data].transient):
+            if not (isinstance(node, nodes.AccessNode) and owner.arrays[node.data].transient):
                 continue
             producers = [e.src for e in state.in_edges(node) if isinstance(e.src, nodes.MapExit)]
             consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
             for exit_node in producers:
                 for entry in consumers:
                     if MapFusionVertical.can_be_applied_to(
-                        sdfg, first_map_exit=exit_node, array=node, second_map_entry=entry
+                        owner, first_map_exit=exit_node, array=node, second_map_entry=entry
                     ):
                         where: Where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
-                        yield FusionMove("fuse-map-vertical", where, MapFusionVertical)
+                        yield FusionMove("fuse-map-vertical", where, MapFusionVertical, owner)
 
 
 def horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Sibling map pairs of one scope that ``MapFusionHorizontal`` accepts."""
-    for state in sdfg.all_states():
+    for state in every_state(sdfg):
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
         for i, first in enumerate(entries):
             for second in entries[i + 1 :]:
                 if scope[first] is scope[second] and MapFusionHorizontal.can_be_applied_to(
-                    sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
+                    state.sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
                 ):
                     where: Where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
-                    yield FusionMove("fuse-map-horizontal", where, MapFusionHorizontal)
+                    yield FusionMove("fuse-map-horizontal", where, MapFusionHorizontal, state.sdfg)
 
 
 def map_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -131,9 +139,9 @@ def first_fusion(sdfg: dace.SDFG) -> FusionMove | None:
     return next(chain(loop_fusion_moves(sdfg), map_fusion_moves(sdfg)), None)
 
 
-def apply_fusion(sdfg: dace.SDFG, move: FusionMove) -> None:
+def apply_fusion(move: FusionMove) -> None:
     """Commit a move from a current enumeration; the transformation re-verifies before applying."""
-    move.xform.apply_to(sdfg, verify=True, annotate=False, save=False, **move.where)
+    move.xform.apply_to(move.sdfg, verify=True, annotate=False, save=False, **move.where)
 
 
 STATE_BARRIER = (
@@ -199,7 +207,7 @@ def map_pair_fusion(
                 sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer
             ):
                 where: Where = {"first_map_exit": exit_node, "array": arr, "second_map_entry": consumer}
-                return FusionMove("fuse-map-vertical", where, MapFusionVertical)
+                return FusionMove("fuse-map-vertical", where, MapFusionVertical, sdfg)
     if linked or not MapFusionHorizontal.can_be_applied_to(
         sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
     ):
@@ -208,6 +216,7 @@ def map_pair_fusion(
         "fuse-map-horizontal",
         {"first_parallel_map_entry": first, "second_parallel_map_entry": second},
         MapFusionHorizontal,
+        sdfg,
     )
 
 
@@ -281,6 +290,7 @@ class FissionMove:
 
     map_entry: nodes.MapEntry
     nested_sdfg: nodes.NestedSDFG
+    sdfg: dace.SDFG = field(repr=False)  # the SDFG owning the map
 
     def label(self) -> str:
         return f"fission-map({self.map_entry}): splits nested body {self.nested_sdfg} into independent output groups"
@@ -291,7 +301,7 @@ def map_fissions_at(sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntry) ->
     # a map entry reaches its body over one edge per connector
     body = dict.fromkeys(e.dst for e in state.out_edges(entry) if isinstance(e.dst, nodes.NestedSDFG))
     return [
-        FissionMove(entry, nsdfg)
+        FissionMove(entry, nsdfg, sdfg)
         for nsdfg in body
         if MapFission.can_be_applied_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg)
     ]
@@ -300,16 +310,16 @@ def map_fissions_at(sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntry) ->
 def enumerate_map_fissions(sdfg: dace.SDFG) -> list[FissionMove]:
     return [
         move
-        for state in sdfg.all_states()
+        for state in every_state(sdfg)
         for node in state.nodes()
         if isinstance(node, nodes.MapEntry)
-        for move in map_fissions_at(sdfg, state, node)
+        for move in map_fissions_at(state.sdfg, state, node)
     ]
 
 
-def apply_map_fission(sdfg: dace.SDFG, move: FissionMove) -> None:
+def apply_map_fission(move: FissionMove) -> None:
     MapFission.apply_to(
-        sdfg,
+        move.sdfg,
         expr_index=1,
         verify=True,
         annotate=False,
@@ -321,46 +331,52 @@ def apply_map_fission(sdfg: dace.SDFG, move: FissionMove) -> None:
 
 @dataclass(slots=True)
 class RegionMove:
-    """One legal state merge; ``where`` maps ``StateFusion``'s pattern names to the two states."""
+    """One legal ``StateFusion`` of two adjacent states."""
 
-    kind: str
-    where: dict[str, object]
-    xform: type = field(repr=False)
+    first_state: SDFGState
+    second_state: SDFGState
 
     def label(self) -> str:
-        return f"{self.kind}({', '.join(str(b) for b in self.where.values())})"
+        return f"fuse-states({self.first_state}, {self.second_state})"
 
 
 def enumerate_region_fusions(sdfg: dace.SDFG) -> list[RegionMove]:
-    """Adjacent state pairs ``StateFusion`` accepts: merging them lets maps in both fuse."""
+    """Adjacent state pairs ``StateFusion`` accepts, each judged in the SDFG owning it: merging them lets maps in
+    both fuse."""
     return [
-        RegionMove("fuse-states", {"first_state": edge.src, "second_state": edge.dst}, StateFusion)
+        RegionMove(edge.src, edge.dst)
         for cfg in sdfg.all_control_flow_regions(recursive=True)
         for edge in cfg.edges()
         if isinstance(edge.src, SDFGState)
         and isinstance(edge.dst, SDFGState)
         and edge.src is not edge.dst
-        and StateFusion.can_be_applied_to(sdfg, first_state=edge.src, second_state=edge.dst)
+        and StateFusion.can_be_applied_to(edge.src.sdfg, first_state=edge.src, second_state=edge.dst)
     ]
 
 
-def apply_region_fusion(sdfg: dace.SDFG, move: RegionMove) -> None:
-    move.xform.apply_to(sdfg, verify=True, annotate=False, save=False, **move.where)
+def apply_region_fusion(move: RegionMove) -> None:
+    StateFusion.apply_to(
+        move.first_state.sdfg,
+        verify=True,
+        annotate=False,
+        save=False,
+        first_state=move.first_state,
+        second_state=move.second_state,
+    )
 
 
 def map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Map pairs, the outer one feeding the map directly inside it, that ``MapInterchange`` accepts."""
-    for state in sdfg.all_states():
+    for state in every_state(sdfg):
         pairs = dict.fromkeys(
             (e.src, e.dst)
             for e in state.edges()
             if isinstance(e.src, nodes.MapEntry) and isinstance(e.dst, nodes.MapEntry)
         )
         for outer, inner in pairs:
-            if MapInterchange.can_be_applied_to(sdfg, outer_map_entry=outer, inner_map_entry=inner):
-                yield FusionMove(
-                    "interchange-map-map", {"outer_map_entry": outer, "inner_map_entry": inner}, MapInterchange
-                )
+            if MapInterchange.can_be_applied_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner):
+                where: Where = {"outer_map_entry": outer, "inner_map_entry": inner}
+                yield FusionMove("interchange-map-map", where, MapInterchange, state.sdfg)
 
 
 def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -368,7 +384,7 @@ def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     for cfg in sdfg.all_control_flow_regions(recursive=True):
         for loop in cfg.nodes():
             if isinstance(loop, LoopRegion) and MoveLoopIntoMap.can_be_applied_to(loop.sdfg, loop=loop):
-                yield FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap)
+                yield FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
 
 
 #: A tree row: the block or node a label names, and the state holding it (``None`` for a block).
@@ -376,7 +392,7 @@ Row = tuple[Any, SDFGState | None]
 
 #: A legal move, and the SDFG owning its nodes.
 Move = FusionMove | FissionMove | Rewrite
-Planned = tuple[dace.SDFG, Move]
+Planned = Move
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -481,16 +497,12 @@ def node_state(row: Row) -> SDFGState:
     return state
 
 
-def planned(sdfg: dace.SDFG, plan: Rewrite | str) -> Planned | str:
-    return plan if isinstance(plan, str) else (sdfg, plan)
-
-
 def plan_loop_fusion(first: Row, second: Row) -> Planned | str:
     loop_a, loop_b = first[0], second[0]
     reason = fuse_loops_reason(loop_a.sdfg, loop_a, loop_b)
     if reason != "yes":
         return reason
-    return loop_a.sdfg, FusionMove("fuse-loops", {"first": loop_a, "second": loop_b}, FuseLoops)
+    return FusionMove("fuse-loops", {"first": loop_a, "second": loop_b}, FuseLoops, loop_a.sdfg)
 
 
 def plan_map_fusion(first: Row, second: Row) -> Planned | str:
@@ -498,13 +510,13 @@ def plan_map_fusion(first: Row, second: Row) -> Planned | str:
     if node_state(second) is not state:
         return STATE_BARRIER
     move = map_pair_fusion(state.sdfg, state, entry_a, entry_b)
-    return (state.sdfg, move) if move is not None else fuse_maps_reason(state.sdfg, entry_a, entry_b)
+    return move if move is not None else fuse_maps_reason(state.sdfg, entry_a, entry_b)
 
 
 def plan_map_fission(row: Row) -> Planned | str:
     state = node_state(row)
     moves = map_fissions_at(state.sdfg, state, row[0])
-    return (state.sdfg, moves[0]) if moves else MAP_FISSION_REFUSED
+    return moves[0] if moves else MAP_FISSION_REFUSED
 
 
 def plan_map_interchange(outer_row: Row, inner_row: Row) -> Planned | str:
@@ -515,9 +527,8 @@ def plan_map_interchange(outer_row: Row, inner_row: Row) -> Planned | str:
         )
     if not MapInterchange.can_be_applied_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner):
         return MAP_INTERCHANGE_REFUSED
-    return state.sdfg, FusionMove(
-        "interchange-map-map", {"outer_map_entry": outer, "inner_map_entry": inner}, MapInterchange
-    )
+    where: Where = {"outer_map_entry": outer, "inner_map_entry": inner}
+    return FusionMove("interchange-map-map", where, MapInterchange, state.sdfg)
 
 
 def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Planned | str:
@@ -527,24 +538,20 @@ def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Planned | str:
         return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that."
     if not MoveLoopIntoMap.can_be_applied_to(loop.sdfg, loop=loop):
         return LOOP_INTO_MAP_REFUSED
-    return loop.sdfg, FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap)
+    return FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
 
 
 MOVE_PLANNERS: dict[str, Callable[..., Planned | str]] = {
     "loop-fusion": plan_loop_fusion,
-    "loop-fission": lambda row: planned(row[0].sdfg, plan_loop_fission(row[0])),
+    "loop-fission": lambda row: plan_loop_fission(row[0]),
     "map-fusion": plan_map_fusion,
     "map-fission": plan_map_fission,
-    "subgraph-fission": lambda entry, cut: planned(
-        cut[0].sdfg, plan_subgraph_fission(node_state(entry), entry[0], cut[0])
-    ),
+    "subgraph-fission": lambda entry, cut: plan_subgraph_fission(node_state(entry), entry[0], cut[0]),
     "interchange-loop-map": plan_loop_map_interchange,
-    "interchange-map-loop": lambda entry, loop: planned(
-        loop[0].sdfg, plan_map_loop_interchange(node_state(entry), entry[0], loop[0])
-    ),
+    "interchange-map-loop": lambda entry, loop: plan_map_loop_interchange(node_state(entry), entry[0], loop[0]),
     "interchange-map-map": plan_map_interchange,
-    "interchange-if-loop": lambda cond, loop: planned(loop[0].sdfg, plan_if_into_loop(cond[0], loop[0])),
-    "interchange-loop-if": lambda loop, cond: planned(loop[0].sdfg, plan_if_out_of_loop(loop[0], cond[0])),
+    "interchange-if-loop": lambda cond, loop: plan_if_into_loop(cond[0], loop[0]),
+    "interchange-loop-if": lambda loop, cond: plan_if_out_of_loop(loop[0], cond[0]),
 }
 
 
@@ -558,15 +565,15 @@ def plan_move(kind: str, rows: Sequence[Row]) -> Planned | str:
     return MOVE_PLANNERS[kind](*rows)
 
 
-def commit_move(sdfg: dace.SDFG, move: Move) -> str:
+def commit_move(move: Move) -> str:
     """Commit one move on the SDFG owning its nodes; returns what ran."""
     if isinstance(move, Rewrite):
         move.commit()
         return move.name
     if isinstance(move, FissionMove):
-        apply_map_fission(sdfg, move)
+        apply_map_fission(move)
         return MapFission.__name__
-    apply_fusion(sdfg, move)
+    apply_fusion(move)
     return move.xform.__name__
 
 
@@ -591,15 +598,14 @@ class ScopeMetrics:
 
 
 def standalone_scope(sdfg: dace.SDFG, node: nodes.MapEntry | LoopRegion) -> dace.SDFG:
-    twin_sdfg = detach(sdfg)
     if isinstance(node, nodes.MapEntry):
         state = find_state_of_node(sdfg, node)
         if state.entry_node(node) is not None:
             raise TypeError(f"map {node} is nested in another map; metrics are per top-level map")
-        twin = twin_sdfg.states()[sdfg.states().index(state)].node(state.node_id(node))
-        assert isinstance(twin, nodes.MapEntry), "a deep copy keeps node ids"
+        twin_sdfg, _, twin = detached_twin(sdfg, state, node)
         return extract_map_nest(twin_sdfg, twin).standalone_sdfg
     if isinstance(node, LoopRegion) and node.parent_graph is sdfg:
+        twin_sdfg = detach(sdfg)
         twin_loop = twin_sdfg.nodes()[sdfg.nodes().index(node)]
         assert isinstance(twin_loop, LoopRegion), "a deep copy keeps block order"
         return extract_cfg_nest(twin_sdfg, twin_loop).standalone_sdfg

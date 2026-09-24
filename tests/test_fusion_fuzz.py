@@ -121,7 +121,7 @@ def random_fuse_to_fixpoint(sdfg, seed: int) -> int:
         moves = enumerate_fusions(sdfg)
         if not moves:
             return applied
-        apply_fusion(sdfg, moves[int(rng.integers(len(moves)))])
+        apply_fusion(moves[int(rng.integers(len(moves)))])
         applied += 1
     raise AssertionError("random fusion did not converge")
 

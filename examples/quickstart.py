@@ -77,7 +77,7 @@ def optimize_kernels(session: Session, kernels: list[dict], out: Path) -> None:
 
 
 def sweep_configurations(session: Session, kernels: list[dict], sizes: dict[str, int]) -> dict[str, dict]:
-    """Phase 5: per nest, the fastest configuration that matches its NumPy oracle."""
+    """Phase 5: per kernel, the fastest configuration that matches its NumPy oracle."""
     configs: dict[str, dict] = {}
     for kernel in kernels:
         result = session.sweep_configurations(kernel["id"], sizes)
