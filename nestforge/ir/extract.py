@@ -143,6 +143,9 @@ def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None =
 
 def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
     """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
+    if len(blocks) == 1 and isinstance(blocks[0], SDFGState):
+        # DaCe nests a lone state as itself, so its contents are nested instead
+        return extract_state_nodes(parent_sdfg, blocks[0], blocks[0].nodes(), name or "nest")
     # declare with the inferred dtype: int64 would truncate a float staged across an edge
     defined: dict[str, dace.dtypes.typeclass] = {}
     for block in blocks:

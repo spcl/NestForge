@@ -1,12 +1,13 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Phase 2: turn every parallel top-level map into an ``ExternalCall`` kernel."""
+"""Phase 2: lower parallel top-level maps, or a group of maps or blocks an agent names, into ``ExternalCall``
+kernels."""
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 
 import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
@@ -154,11 +155,16 @@ def is_host_length1_array(desc: dace.data.Data) -> bool:
     )
 
 
+def host_length1_reads(sdfg: dace.SDFG, reads: Iterable[str], writes: Collection[str]) -> list[str]:
+    """Read-only inputs that are length-1 arrays in host memory: a host kernel takes a scalar by value, and only a
+    device pointer may carry one."""
+    return [n for n in reads if n not in writes and n in sdfg.arrays and is_host_length1_array(sdfg.arrays[n])]
+
+
 def host_length1_inputs(sdfg: dace.SDFG, entry: nodes.MapEntry) -> list[str]:
-    """Read-only inputs of the nest at ``entry`` that are length-1 arrays in host memory."""
+    """:func:`host_length1_reads` of the nest at ``entry``."""
     state = find_state_of_node(sdfg, entry)
-    reads, writes = nest_reads_writes(state, entry)
-    return [name for name in reads if name not in writes and is_host_length1_array(state.sdfg.arrays[name])]
+    return host_length1_reads(state.sdfg, *nest_reads_writes(state, entry))
 
 
 def refuse_host_length1_inputs(refs: list[tuple[dace.SDFG, nodes.MapEntry]]) -> None:
@@ -232,15 +238,20 @@ def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> list[Con
     return order
 
 
-def group_inputs(sdfg: dace.SDFG, rows: Sequence[Row]) -> list[str]:
-    """What the named regions read, for the host length-1 check lowering makes."""
+def group_reads_writes(rows: Sequence[Row]) -> tuple[dict[str, None], dict[str, None]]:
+    """What the named regions read and write, in order."""
     reads: dict[str, None] = {}
+    writes: dict[str, None] = {}
     for obj, state in rows:
         if isinstance(obj, nodes.MapEntry) and state is not None:
-            reads.update(dict.fromkeys(nest_reads_writes(state, obj)[0]))
+            read, written = nest_reads_writes(state, obj)
         elif isinstance(obj, ControlFlowBlock):
-            reads.update(dict.fromkeys(obj.read_and_write_sets()[0]))
-    return [name for name in reads if name in sdfg.arrays]
+            read, written = obj.read_and_write_sets()
+        else:
+            continue
+        reads.update(dict.fromkeys(read))
+        writes.update(dict.fromkeys(written))
+    return reads, writes
 
 
 def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[ExternalCall, Boundary] | str:
@@ -250,6 +261,8 @@ def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[
     This is the scope an agent picks when no transformation fuses the regions: the kernel it writes in phase 4
     fuses them instead.
     """
+    if not rows:
+        return "name at least one map or block."
     entries = [obj for obj, _ in rows if isinstance(obj, nodes.MapEntry)]
     blocks = [obj for obj, _ in rows if isinstance(obj, ControlFlowBlock)]
     if len(entries) == len(rows):
@@ -281,7 +294,7 @@ def lower_group(
     sdfg: dace.SDFG, rows: Sequence[Row], extract: Callable[[str], Boundary]
 ) -> tuple[ExternalCall, Boundary] | str:
     """Extract a legal group under a fresh kernel name and put its ``ExternalCall`` in its place."""
-    host_scalars = [name for name in group_inputs(sdfg, rows) if is_host_length1_array(sdfg.arrays[name])]
+    host_scalars = host_length1_reads(sdfg, *group_reads_writes(rows))
     if host_scalars:
         return f"inputs {host_scalars} are length-1 arrays in host memory; declare each as a Scalar."
     (name,) = kernel_names(sdfg, 1)
