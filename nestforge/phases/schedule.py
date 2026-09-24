@@ -68,6 +68,11 @@ class FusionMove:
         return f"{self.kind}({', '.join(str(n) for n in self.where.values())})"
 
 
+def pattern_move(kind: str, xform: type, sdfg: dace.SDFG, where: Where) -> FusionMove | None:
+    """The move ``xform`` makes at ``where`` when DaCe's own check accepts it, else ``None``."""
+    return FusionMove(kind, where, xform, sdfg) if xform.can_be_applied_to(sdfg, **where) else None
+
+
 def every_state(sdfg: dace.SDFG) -> Iterator[SDFGState]:
     """Every state of ``sdfg`` and of the SDFGs nested in it; ``state.sdfg`` is the one that owns it."""
     for owner in sdfg.all_sdfgs_recursive():
@@ -84,12 +89,10 @@ def loop_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             if len(out) != 1:
                 continue
             second = out[0].dst
-            if (
-                isinstance(second, LoopRegion)
-                and second is not first
-                and FuseLoops.can_be_applied_to(first.sdfg, first=first, second=second)
-            ):
-                yield FusionMove("fuse-loops", {"first": first, "second": second}, FuseLoops, first.sdfg)
+            if isinstance(second, LoopRegion) and second is not first:
+                move = pattern_move("fuse-loops", FuseLoops, first.sdfg, {"first": first, "second": second})
+                if move is not None:
+                    yield move
 
 
 def vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -104,12 +107,28 @@ def vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
 def vertical_moves_through(state: SDFGState, node: nodes.AccessNode) -> Iterator[FusionMove]:
     producers = [e.src for e in state.in_edges(node) if isinstance(e.src, nodes.MapExit)]
     consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
-    for exit_node, entry in product(producers, consumers):
-        if MapFusionVertical.can_be_applied_to(
-            state.sdfg, first_map_exit=exit_node, array=node, second_map_entry=entry
-        ):
-            where: Where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
-            yield FusionMove("fuse-map-vertical", where, MapFusionVertical, state.sdfg)
+    yield from filter(None, (vertical_move(state.sdfg, x, node, entry) for x, entry in product(producers, consumers)))
+
+
+def vertical_move(
+    sdfg: dace.SDFG, exit_node: nodes.MapExit, array: nodes.AccessNode, entry: nodes.MapEntry
+) -> FusionMove | None:
+    where: Where = {"first_map_exit": exit_node, "array": array, "second_map_entry": entry}
+    return pattern_move("fuse-map-vertical", MapFusionVertical, sdfg, where)
+
+
+def horizontal_move(sdfg: dace.SDFG, first: nodes.MapEntry, second: nodes.MapEntry) -> FusionMove | None:
+    where: Where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
+    return pattern_move("fuse-map-horizontal", MapFusionHorizontal, sdfg, where)
+
+
+def map_interchange_move(sdfg: dace.SDFG, outer: nodes.MapEntry, inner: nodes.MapEntry) -> FusionMove | None:
+    where: Where = {"outer_map_entry": outer, "inner_map_entry": inner}
+    return pattern_move("interchange-map-map", MapInterchange, sdfg, where)
+
+
+def loop_into_map_move(loop: LoopRegion) -> FusionMove | None:
+    return pattern_move("interchange-loop-map", MoveLoopIntoMap, loop.sdfg, {"loop": loop})
 
 
 def horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -118,12 +137,8 @@ def horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
         for i, first in enumerate(entries):
-            for second in entries[i + 1 :]:
-                if scope[first] is scope[second] and MapFusionHorizontal.can_be_applied_to(
-                    state.sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
-                ):
-                    where: Where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
-                    yield FusionMove("fuse-map-horizontal", where, MapFusionHorizontal, state.sdfg)
+            pairs = (horizontal_move(state.sdfg, first, b) for b in entries[i + 1 :] if scope[first] is scope[b])
+            yield from filter(None, pairs)
 
 
 def map_fusion_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -197,19 +212,17 @@ def plan_map_pair(sdfg: dace.SDFG, state: SDFGState, first: nodes.MapEntry, seco
             if not sdfg.arrays[arr.data].transient:
                 reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
                 continue
-            if MapFusionVertical.can_be_applied_to(
-                sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer
-            ):
-                where: Where = {"first_map_exit": exit_node, "array": arr, "second_map_entry": consumer}
-                return FusionMove("fuse-map-vertical", where, MapFusionVertical, sdfg)
+            move = vertical_move(sdfg, exit_node, arr, consumer)
+            if move is not None:
+                return move
             reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
     if reasons:
         return "; ".join(reasons) + "."
     if state.scope_dict()[first] is not state.scope_dict()[second]:
         return "maps are in different scopes with no shared data; not a fusion pair."
-    if MapFusionHorizontal.can_be_applied_to(sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second):
-        where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
-        return FusionMove("fuse-map-horizontal", where, MapFusionHorizontal, sdfg)
+    move = horizontal_move(sdfg, first, second)
+    if move is not None:
+        return move
     if first.map.range != second.map.range:
         return f"different map ranges {first.map.range} and {second.map.range}; horizontal fusion needs one range."
     return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
@@ -339,18 +352,13 @@ def map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             for e in state.edges()
             if isinstance(e.src, nodes.MapEntry) and isinstance(e.dst, nodes.MapEntry)
         )
-        for outer, inner in pairs:
-            if MapInterchange.can_be_applied_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner):
-                where: Where = {"outer_map_entry": outer, "inner_map_entry": inner}
-                yield FusionMove("interchange-map-map", where, MapInterchange, state.sdfg)
+        yield from filter(None, (map_interchange_move(state.sdfg, outer, inner) for outer, inner in pairs))
 
 
 def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Loops ``MoveLoopIntoMap`` can move inside the one map they contain."""
     for cfg in sdfg.all_control_flow_regions(recursive=True):
-        for loop in cfg.nodes():
-            if isinstance(loop, LoopRegion) and MoveLoopIntoMap.can_be_applied_to(loop.sdfg, loop=loop):
-                yield FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
+        yield from filter(None, (loop_into_map_move(n) for n in cfg.nodes() if isinstance(n, LoopRegion)))
 
 
 #: A legal move, and the SDFG owning its nodes.
@@ -486,10 +494,7 @@ def plan_map_interchange(outer_row: Row, inner_row: Row) -> Move | str:
         return (
             f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it."
         )
-    if not MapInterchange.can_be_applied_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner):
-        return MAP_INTERCHANGE_REFUSED
-    where: Where = {"outer_map_entry": outer, "inner_map_entry": inner}
-    return FusionMove("interchange-map-map", where, MapInterchange, state.sdfg)
+    return map_interchange_move(state.sdfg, outer, inner) or MAP_INTERCHANGE_REFUSED
 
 
 def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Move | str:
@@ -497,9 +502,7 @@ def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Move | str:
     inside = loop_maps(loop)
     if len(inside) != 1 or inside[0] is not entry:
         return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that."
-    if not MoveLoopIntoMap.can_be_applied_to(loop.sdfg, loop=loop):
-        return LOOP_INTO_MAP_REFUSED
-    return FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
+    return loop_into_map_move(loop) or LOOP_INTO_MAP_REFUSED
 
 
 MOVE_PLANNERS: dict[str, Callable[..., Move | str]] = {
