@@ -13,7 +13,7 @@ from dace.sdfg import nodes
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
 
 from nestforge.ir.depends import ArgEdge, KernelGraph
-from nestforge.ir.libnode import ExternalCall
+from nestforge.ir.libnode import ExternalCall, external_calls
 from nestforge.phases.normalize import Targets
 
 
@@ -23,10 +23,6 @@ class Placement:
 
     devices: dict[str, str]
     copies: tuple[tuple[str, str], ...]
-
-
-def external_calls(sdfg: dace.SDFG) -> list[ExternalCall]:
-    return [node for node, _ in sdfg.all_nodes_recursive() if isinstance(node, ExternalCall)]
 
 
 def kernel_device(ext: ExternalCall) -> str:

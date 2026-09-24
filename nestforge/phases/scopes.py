@@ -19,7 +19,7 @@ from nestforge.ir.extract import Boundary, NestNode, extract_nest_to_sdfg, find_
 from nestforge.ir.introspect import nest_reads_writes
 from nestforge.ir.dace_types import strings
 from nestforge.ir.depends import kernel_symbols
-from nestforge.ir.libnode import ExternalCall, in_conn, out_conn
+from nestforge.ir.libnode import ExternalCall, external_calls, in_conn, out_conn
 
 
 def top_level_map_entries(state: dace.SDFGState) -> list[nodes.MapEntry]:
@@ -170,8 +170,10 @@ def lower_nests_to_external_call(sdfg: dace.SDFG) -> list[tuple[ExternalCall, Bo
     refs = parallel_top_level_maps(sdfg)
     refuse_host_length1_inputs(refs)
     out: list[tuple[ExternalCall, Boundary]] = []
-    for idx, (parent, node) in enumerate(refs):
-        name = f"extcall_{idx}"
+    # a kernel's name keys its library and work directory, so a second lowering numbers on from the first
+    taken = {ext.name for ext in external_calls(sdfg)}
+    names = (name for name in (f"extcall_{i}" for i in range(len(taken) + len(refs))) if name not in taken)
+    for (parent, node), name in zip(refs, names):
         boundary = extract_nest_to_sdfg(parent, node, name=name)
         ext = replace_nsdfg_with_external(boundary, name)
         out.append((ext, boundary))

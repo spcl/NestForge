@@ -44,17 +44,17 @@ These override convenience, a deadline, and a red suite.
 
 **Name it after the property, as a sentence.** The name is what a failure report shows:
 
-    def test_the_arm_language_is_the_identity_not_the_bodys_claim(...)
-    def test_a_row_that_already_carries_an_identity_is_copied_untouched(...)
-    def test_an_unregistered_packet_is_stable_and_warns(...)
+    def test_a_nested_sdfg_return_ends_only_the_nested_sdfg(...)
+    def test_a_second_lowering_names_its_kernels_after_the_first(...)
+    def test_bool_and_unsigned_outputs_compare_as_numbers(...)
 
 not `test_language`, `test_copy_2`, `test_edge_case`.
 
 **Docstring says WHY the property matters**, in one or two lines, and only when the name cannot
 carry it. State the failure the test prevents, not the steps it performs:
 
-    """The request body names its own language and an agent may put anything there, so the column
-    an experiment groups by has to come from the arm."""
+    """A kernel's name keys its library and work directory, so a map lowered later must not reuse
+    one."""
 
 Never restate the assertions in prose. Never write "Tests that ...".
 
@@ -78,12 +78,10 @@ when the value is not in the expression.
 
 ## Running them
 
-- Run the suite through the repo's wrapper (e.g. `tools/run_tests.sh`) rather than
-  `python -m pytest` by path. A bare interpreter invocation misses PATH, `PKG_CONFIG_PATH` and
-  `CPATH`, and the run then reports dozens of RED environment failures that are not the tree --
-  a false verdict that costs hours.
+- In NestForge, run `pytest -m "not integration and not gpu and not vendor"` from the repo root, as
+  CI does, after `scripts/setup_apt.sh` installed the toolchains; `pytest -m integration` compiles
+  whole programs. A missing compiler or runtime fails a test rather than skipping it.
 - `--maxfail=20`: enough to see a pattern, not so many that the log is unreadable.
-- A FULL suite belongs in a batch job on a compute node. A login node is for a targeted selection.
 - Before believing a failure is yours, check whether it pre-exists your change (compare against
   `git show HEAD:<file>`); say explicitly which failures are pre-existing rather than fixing
   unrelated things inside your change.

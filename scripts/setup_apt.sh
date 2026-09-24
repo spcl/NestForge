@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nest-forge apt setup for an Ubuntu machine (system toolchain only; spack is scripts/setup_spack.sh).
+# nest-forge apt setup for an Ubuntu machine (system toolchain only).
 #
 # Installs what nest-forge's owned build + arena need from apt: compilers (gcc/clang/gfortran, +flang),
 # the OpenMP runtimes (libomp/libgomp), BLAS/LAPACK, and the python/build tooling. Intel oneAPI is
@@ -43,18 +43,17 @@ apt_install() {
     if apt-cache show "$p" >/dev/null 2>&1; then ok+=("$p"); else miss+=("$p"); fi
   done
   [ "${#miss[@]}" -eq 0 ] || warn "not in apt on this release, skipping: ${miss[*]}"
-  # DEBIAN_FRONTEND must be set on apt-get's OWN environment: sudo's default env_reset would strip a
-  # var exported before it, so pass it THROUGH sudo (via env) -- else debconf can prompt and hang.
+  # pass DEBIAN_FRONTEND through sudo via env: sudo's env_reset strips an exported one, and debconf may then prompt
   [ "${#ok[@]}" -eq 0 ] || $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${ok[@]}"
 }
 
-# Fetch a repo signing key ATOMICALLY: dearmor into a temp file we own, verify it is non-empty, and only
+# Fetch a repo signing key atomically: dearmor into a temp file we own, verify it is non-empty, and only
 # then install it into place. Guards against a mid-download failure leaving a truncated key that the
 # `[ ! -f "$key" ]` guards would treat as "already done" forever. Returns nonzero on failure.
 install_gpg_key() {  # <url> <dest-keyring>
   local url="$1" dest="$2" tmp
   tmp=$(mktemp)
-  # The $SUDO install is part of the && chain, so ITS failure (read-only /usr, denied sudo) also drops to
+  # The $SUDO install is part of the && chain, so its failure (read-only /usr, denied sudo) also drops to
   # the failure branch -- the key is only reported installed if it truly landed in $dest.
   if curl -fsSL "$url" | gpg --dearmor >"$tmp" 2>/dev/null && [ -s "$tmp" ] && $SUDO install -m 0644 "$tmp" "$dest"; then
     rm -f "$tmp"; return 0
@@ -74,12 +73,7 @@ phase_oneapi() {
   fi
   apt_install intel-oneapi-compiler-dpcpp-cpp intel-oneapi-compiler-fortran \
               intel-oneapi-openmp intel-oneapi-mkl intel-oneapi-mkl-devel
-  if [ -f /opt/intel/oneapi/setvars.sh ]; then
-    log "sourcing oneAPI setvars.sh (puts icx/icpx/ifx + libiomp5/SVML on PATH for the rest of this run)"
-    set +u; # shellcheck disable=SC1091
-    . /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || warn "setvars.sh returned nonzero"; set -u
-  fi
-  warn "oneAPI env does NOT persist past this script -- add 'source /opt/intel/oneapi/setvars.sh' to your shell rc."
+  warn "add 'source /opt/intel/oneapi/setvars.sh' to your shell rc to use icx/icpx/ifx"
 }
 
 have_ubuntu() { command -v lsb_release >/dev/null 2>&1 && [ "$(lsb_release -is 2>/dev/null)" = "Ubuntu" ]; }

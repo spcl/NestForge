@@ -23,7 +23,7 @@ from dace.sdfg.state import LoopRegion, SDFGState
 from nestforge.corpus.translate import Prepared, emit_sources, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import Boundary, detached_twin, extract_map_nest, find_state_of_node
-from nestforge.ir.libnode import ExternalCall
+from nestforge.ir.libnode import ExternalCall, external_calls
 from nestforge.ir.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes, tree_rows
 from nestforge.ir.names import normalize_labels
 from nestforge.phases.feedback import Measure, run_feedback_loop
@@ -36,7 +36,7 @@ from nestforge.phases.kernel import (
     use_kernel_library,
 )
 from nestforge.phases.normalize import Targets, normalize
-from nestforge.phases.offload import external_calls, offload, transfers
+from nestforge.phases.offload import offload, transfers
 from nestforge.phases.schedule import (
     MOVE_SHAPES,
     NOT_IMPLEMENTED,

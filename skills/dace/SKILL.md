@@ -140,6 +140,7 @@ The cheapest way to check a claim about the graph model is to build the
 smallest program that exhibits it and look at the SDFG directly:
 
 ```python
+import json
 import dace, numpy as np
 
 N = dace.symbol('N', dtype=dace.int64)
@@ -161,7 +162,7 @@ To look at the result:
 ```python
 sdfg.save('k.sdfg', readable=True)   # JSON, diffable; open in an SDFG viewer
 sdfg.view()                          # opens it directly
-print(sdfg.to_json()[:2000])         # quick text inspection
+print(json.dumps(sdfg.to_json(), indent=1)[:2000])  # quick text inspection
 ```
 
 For explicit dataflow -- when the exact tasklet and memlet shape matters more

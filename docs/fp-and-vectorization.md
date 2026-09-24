@@ -12,11 +12,11 @@ vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` de
 float64 oracle (`FP_ATOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
 below applies to it.
 
-| Mode | tolerance | GNU / LLVM | oneAPI |
-|---|---|---|---|
-| `strict-ieee` | 0 | `-ffp-contract=off` | `-fp-model=strict` |
-| `contract-fma` | 1e-13 | `-ffp-contract=fast` | `-fp-model=precise` |
-| `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
+| Mode | tolerance | GNU | LLVM | oneAPI |
+|---|---|---|---|---|
+| `strict-ieee` | 0 | `-ffp-contract=off -fexcess-precision=standard` | `-ffp-contract=off` | `-fp-model=strict` |
+| `contract-fma` | 1e-13 | `-ffp-contract=fast -fexcess-precision=standard` | `-ffp-contract=fast` | `-fp-model=precise` |
+| `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
 
 oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model.
 `fortran_fp_flags` adds `-fno-frontend-optimize` for gfortran below `fast-math`, because its front end

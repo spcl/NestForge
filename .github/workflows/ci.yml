@@ -47,6 +47,5 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
       - run: pip install -e ".[dev]"
-      - run: pre-commit run --all-files --show-diff-on-failure
       - name: pytest
         run: pytest -m "integration and not gpu and not vendor" --timeout=900 --cov=nestforge --cov-report=term

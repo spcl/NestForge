@@ -3,14 +3,16 @@
 [Overview](../README.md) · related: [4 Optimize Kernels](phases/4-optimize-kernels.md),
 [5 Sweep Configurations](phases/5-sweep-configurations.md)
 
-`nestforge/build/` compiles with one chosen compiler and flag set and calls the result through
-ctypes, so timings compare generated code, free of `CompiledSDFG` marshaling.
+`nestforge/build/` compiles with one chosen compiler, flag set and OpenMP runtime, and calls kernels
+through ctypes, so timings compare generated code, free of `CompiledSDFG` marshaling.
 
 ## Program builds
 
 `generate_program_folder` writes DaCe's generated code to disk, and `sdfg.py` compiles it with DaCe's
 runtime headers on the include path. `BuiltSDFG` binds the three C entries of an SDFG `N`
-(`__dace_init_N`, `__program_N`, `__dace_exit_N`) and calls them in order; `unload` closes the `.so`. `compile_linked_program` builds a program that links kernel libraries.
+(`__dace_init_N`, `__program_N`, `__dace_exit_N`) and calls them in order; `unload` closes the `.so`.
+The tests use it as the reference build of a whole program. `compile_linked_program` builds a program
+that links kernel libraries.
 
 ## Kernel libraries
 

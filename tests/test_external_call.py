@@ -12,7 +12,7 @@ from nestforge.corpus.translate import prepare
 from nestforge.phases.scopes import lower_nests_to_external_call, node_boundary
 from nestforge.ir.emit_numpy import nest_to_numpy
 from nestforge.ir.emit_yaml import manifest_dict
-from nestforge.ir.libnode import ExternalCall
+from nestforge.ir.libnode import ExternalCall, external_calls
 
 N = dace.symbol("N")
 
@@ -161,3 +161,23 @@ def test_inplace_nest_reference_expansion_is_value_preserving():
     got = a.copy()
     sdfg(A=got, B=b.copy(), N=n)
     np.testing.assert_allclose(got, expected)
+
+
+def test_a_second_lowering_names_its_kernels_after_the_first():
+    """A kernel's name keys its library and work directory, so a map lowered later must not reuse one."""
+    sdfg = vadd.to_sdfg(simplify=True)
+    ((first, _),) = lower_nests_to_external_call(sdfg)
+    later = sdfg.add_state_after(sdfg.sink_nodes()[0], "later")
+    later.add_mapped_tasklet(
+        "double_c",
+        dict(i="0:N"),
+        dict(c=dace.Memlet("C[i]")),
+        "o = 2.0 * c",
+        dict(o=dace.Memlet("C[i]")),
+        external_edges=True,
+    )
+
+    ((second, _),) = lower_nests_to_external_call(sdfg)
+
+    assert [ext.name for ext in external_calls(sdfg)] == [first.name, second.name]
+    assert first.name != second.name

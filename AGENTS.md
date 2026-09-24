@@ -46,11 +46,12 @@ Kernel agents also use the bench skills `lang-cpp`, `lang-cuda`, `lang-fortran`,
   `pytest -m "not integration and not gpu and not vendor"`; a failure that also fails on the base commit is
   not yours to hide.
 - `pre-commit run --all-files` runs ruff check and ruff format (120 columns), as CI does.
-- `pyright` (configured in `pyproject.toml`) must report nothing but errors traced to DaCe's untyped library
-  decorators, which a pending `extended-fixes` change to DaCe removes.
+- `pyright` (configured in `pyproject.toml`) must report nothing but errors traced to DaCe: its untyped library
+  decorators and `can_be_applied_to`'s `Node | SDFGState` annotation, which rejects a `LoopRegion`. A pending
+  `extended-fixes` change to DaCe removes both.
 - Write Python as if statically typed: annotate every function, one name keeps one type, no
   `getattr`/`hasattr`, no leading-underscore names, absolute imports.
-- Keep each function's cyclomatic complexity at 20 or below (`radon cc -s`).
+- Keep each function's cyclomatic complexity at 20 or below (ruff's C901, which pre-commit runs).
 - Keep comments short (about one line per five lines of code); docstrings with `:param:` only on
   public functions.
 - Iterate `OrderedSet` or `dict`, never a plain `set`, where order can reach generated code.

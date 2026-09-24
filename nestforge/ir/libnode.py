@@ -276,3 +276,8 @@ class ExternalCall(nodes.LibraryNode):
     @standalone_sdfg.setter
     def standalone_sdfg(self, value: dace.SDFG | None) -> None:
         self._standalone_sdfg = value
+
+
+def external_calls(sdfg: dace.SDFG) -> list[ExternalCall]:
+    """Every kernel node of ``sdfg``, nested SDFGs included."""
+    return [node for node, _ in sdfg.all_nodes_recursive() if isinstance(node, ExternalCall)]

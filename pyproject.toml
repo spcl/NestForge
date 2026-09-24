@@ -53,8 +53,11 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-# Default rules plus pyupgrade, so annotations use builtin generics and `X | None`.
-select = ["E4", "E7", "E9", "F", "UP"]
+# Default rules plus pyupgrade, so annotations use builtin generics and `X | None`, and a complexity ceiling.
+select = ["E4", "E7", "E9", "F", "UP", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
 
 [tool.ruff.lint.per-file-ignores]
 # Tests import after a module-level skip guard, use lambda helpers, and keep the reference's math names.

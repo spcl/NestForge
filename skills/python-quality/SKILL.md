@@ -36,9 +36,8 @@ A non-empty diff is a failing gate. A project configured for yapf checks with
 ```bash
 ruff check --line-length 120 <file>.py
 ```
-Pass the project's own line length if it configures one; ruff defaults to 88,
-which disagrees with a 120-column formatter and produces a wall of false
-`E501` hits.
+Run it from the repo root so `pyproject.toml`'s `[tool.ruff]` applies (NestForge
+selects E4, E7, E9, F and UP at 120 columns).
 
 ### 3. Type check
 ```bash
@@ -68,11 +67,12 @@ passes with zero output.
 ## B. Writing rules that matter for kernels and small tools
 
 - **Type hints, always.** Every function signature -- every parameter and the
-  return -- plus every non-trivial local. Modern 3.10+ syntax: `X | None`
+  return -- plus every non-trivial local. Modern syntax: `X | None`
   (not `Optional[X]`), `list[int]` / `dict[str, int]` / `tuple[int, ...]`
-  (not `typing.List`/`Dict`/`Tuple`). Reach into `typing` only for what has no
-  builtin spelling (`Callable`, `Protocol`, `TypeVar`, `Iterable`, `Self`,
-  `Literal`).
+  (not `typing.List`/`Dict`/`Tuple`). Take `Callable`, `Iterable`, `Iterator`
+  and `Sequence` from `collections.abc`; on 3.12, as NestForge targets, write
+  PEP 695 type parameters (`def f[T](x: T) -> T`) instead of a `TypeVar`. Reach
+  into `typing` only for `Any`, `cast`, `Protocol`, `Self` and `Literal`.
 
 - **Convert explicitly, never rely on an implicit coercion.** Wrap with
   `int()` / `float()` / `str()` / `bool()` at the point a value's type
