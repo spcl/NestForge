@@ -590,19 +590,24 @@ def map_body_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry
         # scope_subgraph returns the whole subtree; skip a grandchild here, the recursion below emits it
         if state.entry_node(node) is not entry:
             continue
-        if isinstance(node, nodes.Tasklet):
-            body.extend(tasklet_lines(state, sdfg, node))
-        elif isinstance(node, nodes.AccessNode):
-            body.extend(copy_lines(state, sdfg, node))
-        elif isinstance(node, nodes.NestedSDFG):
-            body.extend(emit_nested_sdfg(state, sdfg, node))
-        elif isinstance(node, nodes.MapEntry):
-            body.extend(map_lines(state, sdfg, node))
-        elif isinstance(node, nodes.LibraryNode):
+        if isinstance(node, nodes.LibraryNode):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
-
+        body.extend(node_lines(state, sdfg, node))
     body.extend(map_exit_writes(state, sdfg, entry))
     return body
+
+
+def node_lines(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.Node) -> list[str]:
+    """What one tasklet, copy target, nested SDFG or map scope computes; nothing for any other node."""
+    if isinstance(node, nodes.Tasklet):
+        return tasklet_lines(state, sdfg, node)
+    if isinstance(node, nodes.AccessNode):
+        return copy_lines(state, sdfg, node)
+    if isinstance(node, nodes.NestedSDFG):
+        return emit_nested_sdfg(state, sdfg, node)
+    if isinstance(node, nodes.MapEntry):
+        return map_lines(state, sdfg, node)
+    return []
 
 
 def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> list[str]:
@@ -620,19 +625,13 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> list[str]:
     for node in dfs_topological_sort(state):
         if state.entry_node(node) is not None:
             continue  # emitted as part of its enclosing map scope
-        if isinstance(node, nodes.MapEntry):
-            lines.extend(map_lines(state, sdfg, node))
-        elif isinstance(node, nodes.LibraryNode):
-            try:
-                lines.extend(emit_library_node(node, state, sdfg))
-            except UnsupportedLibraryNode as exc:
-                raise UnsupportedNest(str(exc)) from exc
-        elif isinstance(node, nodes.Tasklet):
-            lines.extend(tasklet_lines(state, sdfg, node))
-        elif isinstance(node, nodes.AccessNode):
-            lines.extend(copy_lines(state, sdfg, node))
-        elif isinstance(node, nodes.NestedSDFG):
-            lines.extend(emit_nested_sdfg(state, sdfg, node))
+        if not isinstance(node, nodes.LibraryNode):
+            lines.extend(node_lines(state, sdfg, node))
+            continue
+        try:
+            lines.extend(emit_library_node(node, state, sdfg))
+        except UnsupportedLibraryNode as exc:
+            raise UnsupportedNest(str(exc)) from exc
     return lines
 
 

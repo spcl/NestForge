@@ -243,25 +243,25 @@ def transposed(expr: str, trans: bool) -> str:
     return f"({expr}).T" if trans else expr
 
 
-def emit_matmul(node: MatMul, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
-    """``alpha * (opA(A) @ opB(B)) + beta * C``; beta reads the output edge (``MatMul`` has no ``_c`` input)."""
+def matmul_update(node: MatMul | Gemm, state: dace.SDFGState, sdfg: dace.SDFG, read_c: Callable[..., str]) -> str:
+    """``alpha * (opA(A) @ opB(B)) + beta * C``, ``C`` read through ``read_c`` (:func:`in_expr` or :func:`out_expr`)."""
     a = transposed(in_expr(state, node, "_a", sdfg, keep_singleton=True), node.transA)
     b = transposed(in_expr(state, node, "_b", sdfg, keep_singleton=True), node.transB)
     expr = scaled(f"{a} @ {b}", node.alpha)
     if not is_zero(node.beta):
-        expr = f"{expr} + {node.beta} * {out_expr(state, node, '_c', sdfg, keep_singleton=True)}"
+        expr = f"{expr} + {node.beta} * {read_c(state, node, '_c', sdfg, keep_singleton=True)}"
     return f"{out_lhs(state, node, '_c', sdfg, keep_singleton=True)} = {expr}"
+
+
+def emit_matmul(node: MatMul, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
+    """Beta reads the output edge: ``MatMul`` has no ``_c`` input."""
+    return matmul_update(node, state, sdfg, out_expr)
 
 
 def emit_gemm(node: Gemm, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
-    """``alpha * (opA(A) @ opB(B)) + beta * C`` -- BLAS GEMM, connectors ``_a``/``_b``/``_c``."""
+    """BLAS GEMM, connectors ``_a``/``_b``/``_c``."""
     reject_runtime_scalars(node, state)
-    a = transposed(in_expr(state, node, "_a", sdfg, keep_singleton=True), node.transA)
-    b = transposed(in_expr(state, node, "_b", sdfg, keep_singleton=True), node.transB)
-    expr = scaled(f"{a} @ {b}", node.alpha)
-    if not is_zero(node.beta):
-        expr = f"{expr} + {node.beta} * {in_expr(state, node, '_c', sdfg, keep_singleton=True)}"
-    return f"{out_lhs(state, node, '_c', sdfg, keep_singleton=True)} = {expr}"
+    return matmul_update(node, state, sdfg, in_expr)
 
 
 def emit_gemv(node: Gemv, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
@@ -338,7 +338,8 @@ def emit_tensordot(node: TensorDot, state: dace.SDFGState, sdfg: dace.SDFG) -> s
 
 def emit_inv(node: Inv, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """``np.linalg.inv(A)`` -- matrix inverse; connectors ``_ain`` -> ``_aout``."""
-    return f"{out_lhs(state, node, '_aout', sdfg, keep_singleton=True)} = np.linalg.inv({in_expr(state, node, '_ain', sdfg, keep_singleton=True)})"
+    ain = in_expr(state, node, "_ain", sdfg, keep_singleton=True)
+    return f"{out_lhs(state, node, '_aout', sdfg, keep_singleton=True)} = np.linalg.inv({ain})"
 
 
 def fft_statement(node: FFT | IFFT, state: dace.SDFGState, sdfg: dace.SDFG, func: str, norm: str) -> str:
