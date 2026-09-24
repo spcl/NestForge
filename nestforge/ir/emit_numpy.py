@@ -31,7 +31,8 @@ from dace import symbolic
 from dace.cpf_lowering import C_CTYPE_DTYPES
 from dace.frontend.operations import detect_reduction_type
 from dace.sdfg import nodes
-from dace.sdfg.graph import MultiConnectorEdge
+from dace.sdfg.graph import Edge, MultiConnectorEdge
+from dace.sdfg.sdfg import InterstateEdge
 from dace.sdfg.state import (
     BreakBlock,
     ConditionalBlock,
@@ -50,6 +51,7 @@ from nestforge.ir.emit_libnode import (
     index_str,
     is_scalar,
     read_expr,
+    scalar_elem,
     scalar_local,
     write_lhs,
 )
@@ -70,20 +72,16 @@ def access(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range) -> str:
     return f"{name}[{index_str(subset)}]"
 
 
-def connector_pattern(conn_expr: dict[str, str]) -> re.Pattern | None:
+def connector_pattern(conn_expr: dict[str, str]) -> re.Pattern[str] | None:
     """Whole-word alternation pattern matching every connector name in ``conn_expr``, or ``None``."""
     if not conn_expr:
         return None
     return re.compile(r"\b(" + "|".join(re.escape(c) for c in sorted(conn_expr, key=len, reverse=True)) + r")\b")
 
 
-def sub_connectors(code: str, conn_expr: dict[str, str], pattern: re.Pattern | None = None) -> str:
+def sub_connectors(code: str, conn_expr: dict[str, str], pattern: re.Pattern[str] | None) -> str:
     """Replace whole-word connector tokens with their expressions, single-pass (no re-substitution)."""
-    if not conn_expr:
-        return code
-    pattern = pattern if pattern is not None else connector_pattern(conn_expr)
-    assert pattern is not None, "a non-empty mapping has a pattern"
-    return pattern.sub(lambda m: conn_expr[m.group(0)], code)
+    return code if pattern is None else pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
 #: DaCe dtype cast -> numpy scalar constructor. Fixed-width dtypes only, so a non-dtype ``dace.<attr>``
@@ -339,7 +337,7 @@ WCR_BINOP = {
 
 
 @functools.lru_cache(maxsize=4096, typed=True)
-def wcr_combine(wcr: str) -> Callable[[str, str], str] | None:
+def wcr_combine(wcr: str | ast.AST) -> Callable[[str, str], str] | None:
     """How a WCR combines accumulator and term, ``None`` when unsupported; one WCR repeats across edges."""
     kind = detect_reduction_type(wcr)
     return None if kind is None else WCR_BINOP.get(kind)
@@ -385,13 +383,15 @@ def copy_side(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None) -> 
         return name
     desc = sdfg.arrays[name]
     if is_scalar(desc):
-        return f"{name}[0]"
+        return scalar_elem(name, desc)
     if subset is None:
         subset = dace.subsets.Range.from_array(desc)
     return f"{name}[{index_str(subset)}]"  # keep_singleton default: length-1 axes collapse away
 
 
-def copy_direction(edge: MultiConnectorEdge) -> tuple:
+def copy_direction(
+    edge: MultiConnectorEdge,
+) -> tuple[str, dace.subsets.Range | None, dace.subsets.Range | None]:
     """``(src_name, src_subset, dst_subset)`` for one access-node -> access-node copy edge.
 
     Source is tested first: on an in-place copy both endpoints share one name, so this tie-break order
@@ -421,41 +421,35 @@ def copy_lines(state: dace.SDFGState, sdfg: dace.SDFG, dst: nodes.AccessNode) ->
             # Tasklet/MapExit source WCRs are emitted at that edge's own owner (tasklet_lines /
             # map_exit_writes); a LibraryNode/NestedSDFG source is refused at its own emitter instead.
             continue
-        lhs, rhs, dst_read = copy_sides(sdfg, dst.data, dst_sub, src_name, src_sub)
-        if m.wcr is not None:  # a reduction copy (e.g. a privatized accumulator copied back): accumulate
-            combine = wcr_combine(m.wcr)
-            if combine is None:
-                raise UnsupportedNest(f"reduction (WCR) copy into {dst.data} has an unsupported WCR {m.wcr!r}")
-            rhs = combine(dst_read, rhs)
-        lines.append(normalize_casts(f"{lhs} = {rhs}"))  # a strided subset may render an int_floor/int_ceil index
+        lines.append(copy_statement(sdfg, dst.data, dst_sub, src_name, src_sub, m.wcr))
     return lines
 
 
-def copy_sides(
+def copy_statement(
     sdfg: dace.SDFG,
     dst_name: str,
     dst_sub: dace.subsets.Range | None,
     src_name: str,
     src_sub: dace.subsets.Range | None,
-) -> tuple:
-    """``(lhs, rhs, dst_read)`` for one data copy -- the shared body of :func:`copy_lines` and
-    :func:`map_exit_writes`. ``dst_read`` is the destination rendered for reading (a WCR accumulates into it).
-    """
+    wcr: str | ast.AST | None,
+) -> str:
+    """``dst[..] = src[..]`` for one data copy, accumulated into ``dst`` under a ``wcr``."""
     if len(sdfg.arrays[src_name].shape) == len(sdfg.arrays[dst_name].shape):
         if sdfg.arrays[src_name].shape == sdfg.arrays[dst_name].shape:
             # mirror a missing subset only between equal shapes: a same-rank reshape must keep its own subset
             src_sub = src_sub if src_sub is not None else dst_sub
             dst_sub = dst_sub if dst_sub is not None else src_sub
-        return (
-            copy_side(sdfg, dst_name, dst_sub),
-            copy_side(sdfg, src_name, src_sub),
-            copy_side(sdfg, dst_name, dst_sub),
-        )
-    return (
-        reshape_side(sdfg, dst_name, dst_sub, write=True),
-        reshape_side(sdfg, src_name, src_sub, write=False),
-        reshape_side(sdfg, dst_name, dst_sub, write=False),
-    )
+        lhs, rhs = copy_side(sdfg, dst_name, dst_sub), copy_side(sdfg, src_name, src_sub)
+        dst_read = lhs
+    else:
+        lhs, rhs = reshape_side(sdfg, dst_name, dst_sub, write=True), reshape_side(sdfg, src_name, src_sub, write=False)
+        dst_read = reshape_side(sdfg, dst_name, dst_sub, write=False)
+    if wcr is not None:  # a reduction copy (e.g. a privatized accumulator copied back): accumulate
+        combine = wcr_combine(wcr)
+        if combine is None:
+            raise UnsupportedNest(f"reduction (WCR) into {dst_name} has an unsupported WCR {wcr!r}")
+        rhs = combine(dst_read, rhs)
+    return normalize_casts(f"{lhs} = {rhs}")  # a strided subset may render an int_floor/int_ceil index
 
 
 def reshape_side(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None, write: bool) -> str:
@@ -534,41 +528,36 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
         if outer in sdfg.arrays:
             reconcile_connector_descriptor(inner, sdfg, outer)
     reject_underranked_codeblock_index(inner)
-    # A private inner transient becomes a plain python local, which only works for a scalar: a private
-    # array transient appears in no outer signature and would be emitted undefined.
-    outer_names = set(sdfg.arrays)
     node_id = state.node_id(node)
+    rename_private_transients(inner, sdfg, conns, node_id)
+    return symbol_mapping_lines(node.symbol_mapping, node_id) + wrap_early_return(inner, emit_region(inner, inner))
+
+
+def rename_private_transients(inner: dace.SDFG, sdfg: dace.SDFG, conns: dict[str, str], node_id: int) -> None:
+    """A private inner transient becomes a plain python local, which only works for a scalar: a private array
+    transient appears in no outer signature and would be emitted undefined. One that collides with an outer
+    buffer would shadow it, so it is renamed."""
+    outer = conns.values()
     for name, desc in list(inner.arrays.items()):
-        if name in conns.values():
+        if name in outer:
             continue
         if not is_scalar(desc):
             raise UnsupportedNest(f"nested SDFG private transient {name!r} is a non-scalar array; not allocated")
-        # A private inner name that collides with an outer buffer would shadow it -- rename it.
-        if name in outer_names:
+        if name in sdfg.arrays:
             inner.replace(name, f"_ns{node_id}_{name}")
 
-    lines = symbol_mapping_lines(node.symbol_mapping, state.node_id(node))
-    body = emit_region(inner, inner)
+
+def wrap_early_return(inner: dace.SDFG, body: list[str]) -> list[str]:
+    """``body`` as is, or, when ``inner`` returns early, in a one-trip loop whose ``break`` ends only ``inner``."""
     returns = [b for b in inner.all_control_flow_blocks() if isinstance(b, ReturnBlock)]
     if not returns:
-        return lines + body
-    # a return ends only the nested SDFG, so its body runs in a one-trip loop the return breaks out of
-    if any(inside_loop(b, inner) for b in returns):
+        return body
+    if any(innermost_loop(b) is not None for b in returns):
         raise UnsupportedNest(f"nested SDFG {inner.name} returns from inside a loop; a break would leave only that")
-    lines.append(f"for _ in range(1):  # {inner.name}, which returns early")
-    return lines + [
-        "    " + (ln[: len(ln) - len(ln.lstrip())] + "break" if ln.strip() == "return" else ln) for ln in body
-    ]
-
-
-def inside_loop(block: ControlFlowBlock, root: ControlFlowRegion) -> bool:
-    """Whether ``block`` sits in a ``LoopRegion`` below ``root``."""
-    region = block.parent_graph
-    while region is not None and region is not root:
-        if isinstance(region, LoopRegion):
-            return True
-        region = region.parent_graph
-    return False
+    wrapped = [f"for _ in range(1):  # {inner.name}, which returns early"]
+    for ln in body:
+        wrapped.append("    " + (ln[: len(ln) - len(ln.lstrip())] + "break" if ln.strip() == "return" else ln))
+    return wrapped
 
 
 def symbol_mapping_lines(mapping: dict[str, object], node_id: int) -> list[str]:
@@ -577,7 +566,7 @@ def symbol_mapping_lines(mapping: dict[str, object], node_id: int) -> list[str]:
     if not binds:
         return []
     targets = {sym for sym, _ in binds}
-    reads = set()
+    reads: set[str] = set()
     for _, expr in binds:
         reads |= {str(s) for s in symbolic.pystr_to_symbolic(expr).free_symbols}
     if not (targets & reads):
@@ -600,17 +589,16 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
                 )
             continue
         m = e.data
-        dst_name, dst_sub, src_sub = memlet_data(m), memlet_subset(m), other_subset(m)
         src_name = e.src.data
+        dst_name, dst_sub, src_sub = memlet_data(m), memlet_subset(m), other_subset(m)
+        if dst_name == src_name and e.dst_conn is not None and e.dst_conn.startswith("IN_"):
+            # the memlet may name the in-scope source; the destination is what the exit's matching out-edge writes
+            outer = memlet_data(next(iter(state.out_edges_by_connector(e.dst, "OUT_" + e.dst_conn[3:]))).data)
+            if outer != src_name:
+                dst_name, dst_sub, src_sub = outer, src_sub, dst_sub
         if src_name == dst_name and m.wcr is None:
             continue  # a plain self-edge moves nothing; a WCR self-edge is an in-place reduction, not a no-op
-        lhs, rhs, dst_read = copy_sides(sdfg, dst_name, dst_sub, src_name, src_sub)
-        if m.wcr is not None:
-            combine = wcr_combine(m.wcr)
-            if combine is None:
-                raise UnsupportedNest(f"reduction (WCR) write-out into {dst_name} has an unsupported WCR {m.wcr!r}")
-            rhs = combine(dst_read, rhs)
-        lines.append(normalize_casts(f"{lhs} = {rhs}"))
+        lines.append(copy_statement(sdfg, dst_name, dst_sub, src_name, src_sub, m.wcr))
     return lines
 
 
@@ -690,7 +678,7 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> list[str]:
     return lines
 
 
-def ordered_blocks(region: ControlFlowRegion) -> list:
+def ordered_blocks(region: ControlFlowRegion) -> list[ControlFlowBlock]:
     """Blocks of a control-flow region (SDFG or LoopRegion) in execution order."""
     return list(dfs_topological_sort(region, [region.start_block]))
 
@@ -775,7 +763,7 @@ def control_expr(code: str, sdfg: dace.SDFG) -> str:
 def interstate_lines(region: ControlFlowRegion, sdfg: dace.SDFG, block: ControlFlowBlock) -> list[str]:
     """Assignments carried on the edge(s) entering ``block`` (e.g. an indirect index ``s = A[i]``)."""
     lines: list[str] = []
-    carrying = []
+    carrying: list[Edge[InterstateEdge]] = []
     for e in region.in_edges(block):
         if not e.data.is_unconditional():
             # a conditional inter-state edge is an unstructured goto; straight-line emission cannot model it
@@ -821,7 +809,7 @@ def emit_region(region: ControlFlowRegion, sdfg: dace.SDFG, continue_update: str
                 lines.append(continue_update)  # python's while keeps the update in the body; continue would skip it
             lines.append("continue")
         elif isinstance(block, ReturnBlock):
-            # exits the kernel, which is the whole SDFG here; reject_nonexternalizable refuses a sub-nest's return
+            # the kernel's return; wrap_early_return turns a nested SDFG's into a break
             lines.append("return")
         else:
             raise UnsupportedNest(f"control-flow block not yet emitted: {type(block).__name__}")
@@ -848,7 +836,7 @@ def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> 
     return any(str(s) in arrays for s in expr.free_symbols)
 
 
-def sizable(expr: sympy.Expr, known: set, arrays: Mapping[str, dace.data.Data]) -> bool:
+def sizable(expr: sympy.Expr, known: set[str], arrays: Mapping[str, dace.data.Data]) -> bool:
     """Whether the caller can evaluate ``expr`` to a buffer extent before the kernel runs: it reads no array data
     and names no symbol outside ``known``.
     """
@@ -867,14 +855,15 @@ def loop_init_value(loop: LoopRegion) -> sympy.Basic:
     return symbolic.pystr_to_symbolic(text.split("=", 1)[1])
 
 
-def symbol_ranges(sdfg: dace.SDFG) -> tuple:
-    """``(lo_of, hi_of)``: each non-argument symbol -> its min / max value, in kernel symbols.
+def symbol_ranges(sdfg: dace.SDFG) -> tuple[dict[str, sympy.Expr], dict[str, sympy.Expr]]:
+    """``(lo_of, hi_of)``: each non-argument symbol -> its minimum, and for a loop variable one past its maximum
+    (an assigned value is exact), in kernel symbols.
 
     A symbol's range comes from a loop's ``[init, condition-bound]`` and/or every value an inter-state
     edge assigns it; several sources take ``Min``/``Max``, resolved recursively into kernel symbols.
     """
-    los: dict[str, list] = {}
-    his: dict[str, list] = {}
+    los: dict[str, list[sympy.Expr]] = {}
+    his: dict[str, list[sympy.Expr]] = {}
     for cfg in sdfg.all_control_flow_regions():
         if isinstance(cfg, LoopRegion) and cfg.loop_condition is not None:
             rel = symbolic.pystr_to_symbolic(cfg.loop_condition.as_string)
@@ -883,7 +872,7 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
                 his.setdefault(var, []).append(
                     cast(sympy.Expr, rel.rhs) + (1 if isinstance(rel, sympy.LessThan) else 0)
                 )
-                los.setdefault(var, []).append(loop_init_value(cfg))
+                los.setdefault(var, []).append(cast(sympy.Expr, loop_init_value(cfg)))
         for e in cfg.edges():
             for var, rhs in e.data.assignments.items():
                 try:
@@ -895,9 +884,9 @@ def symbol_ranges(sdfg: dace.SDFG) -> tuple:
                 los.setdefault(var, []).append(value)
                 his.setdefault(var, []).append(value)
 
-    def resolve(bounds: dict[str, list], combine: Callable[..., sympy.Expr]) -> dict[str, sympy.Expr]:
+    def resolve(bounds: dict[str, list[sympy.Expr]], combine: Callable[..., sympy.Expr]) -> dict[str, sympy.Expr]:
 
-        def r(expr: sympy.Expr, seen: set) -> sympy.Expr:
+        def r(expr: sympy.Expr, seen: set[str]) -> sympy.Expr:
             for sym in list(expr.free_symbols):
                 name = str(sym)
                 if name in bounds and name not in seen:
@@ -914,7 +903,7 @@ def max_over_loops(
     dim: sympy.Expr,
     lo_of: dict[str, sympy.Expr],
     hi_of: dict[str, sympy.Expr],
-    known: set,
+    known: set[str],
     arrays: Mapping[str, dace.data.Data],
 ) -> sympy.Expr | None:
     """Largest value a shape dimension takes over the loop variables' ranges, or ``None`` if unresolved."""
@@ -942,9 +931,9 @@ def maxsize_loop_scratch(sdfg: dace.SDFG, symbols: list[str]) -> dace.SDFG:
         return sdfg
 
     lo_of, hi_of = symbol_ranges(sdfg)
-    resize: dict[str, tuple] = {}
+    resize: dict[str, tuple[sympy.Expr, ...]] = {}
     for name, desc in candidates:
-        new_shape = []
+        new_shape: list[sympy.Expr] = []
         for dim in desc.shape:
             sdim = sympy.sympify(dim)  # a literal-int dimension has no free symbols to widen
             if {str(s) for s in sdim.free_symbols} - known:
@@ -1055,16 +1044,3 @@ def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     reject_unsizable_scratch(standalone, scratch_arrays(standalone), boundary.symbols)
     args = kernel_args(boundary, kernel_arrays(boundary, standalone))
     return render(fn_name, args, emit_region(standalone, standalone))
-
-
-def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
-    """Standalone python source for a whole SDFG, whose non-array arguments are its symbols."""
-    reject_orphan_break_continue(sdfg)  # a return IS emittable here (it exits the kernel == exits the SDFG)
-    sdfg = expand_nested_sdfg_inputs(sdfg)
-    symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
-    sdfg = maxsize_loop_scratch(sdfg, symbols)
-    data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
-    scratch = scratch_arrays(sdfg)
-    reject_unsizable_scratch(sdfg, scratch, symbols)
-    args = data_args + scratch + symbols
-    return render(fn_name, args, emit_region(sdfg, sdfg))

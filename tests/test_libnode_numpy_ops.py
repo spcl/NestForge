@@ -14,8 +14,10 @@ import pytest
 import dace as dc
 from dace import Memlet
 
-from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy
+from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted
 from nestforge.ir.emit_libnode import scalar_elem
+
+from helpers import sdfg_to_numpy
 
 N, M, K = (dc.symbol(s, dtype=dc.int64) for s in "NMK")
 F = dc.float64
@@ -378,6 +380,117 @@ def test_scan_exclusive_refused():
     sdfg = build("scx", sc, {"si": ((N,), F), "so": ((N,), F)}, [("_scan_in", "si")], [("_scan_out", "so")])
     with pytest.raises(UnsupportedNest, match="inclusive"):
         sdfg_to_numpy(sdfg, "scx")
+
+
+def test_argreduce_over_the_absolute_value(rng):
+    from dace.libraries.standard.nodes.arg_reduce import ArgReduce
+
+    sdfg = build(
+        "ara",
+        ArgReduce("ara", op="max", transform="abs"),
+        {"inp": ((N,), F), "val": ((1,), F), "idx": ((1,), dc.int64)},
+        [("_in", "inp")],
+        [("_out_val", "val"), ("_out_idx", "idx")],
+    )
+    inp = np.array([0.5, -3.0, 1.0, 2.0])
+    buffers, _ = run(sdfg, "ara", {"inp": inp.copy(), "val": np.zeros(1), "idx": np.zeros(1, np.int64)}, {"N": 4})
+    assert buffers["idx"][0] == 1 and buffers["val"][0] == 3.0
+
+
+def test_argreduce_without_a_value_output_writes_the_index(rng):
+    from dace.libraries.standard.nodes.arg_reduce import ArgReduce
+
+    node = ArgReduce("ari", op="max")
+    node.remove_out_connector("_out_val")
+    sdfg = build("ari", node, {"inp": ((N,), F), "idx": ((1,), dc.int64)}, [("_in", "inp")], [("_out_idx", "idx")])
+    inp = rng.random(7)
+    buffers, src = run(sdfg, "ari", {"inp": inp.copy(), "idx": np.zeros(1, np.int64)}, {"N": 7})
+    assert buffers["idx"][0] == np.argmax(inp)
+    assert "np.max(" not in src
+
+
+def test_scan_emits_every_chain(rng):
+    from dace.libraries.standard.nodes.scan import Scan, ScanOp
+
+    sdfg = build(
+        "sc2",
+        Scan("sc2", op=ScanOp.SUM, chains=2),
+        {"a": ((N,), F), "b": ((N,), F), "oa": ((N,), F), "ob": ((N,), F)},
+        [("_scan_in", "a"), ("_scan_in_1", "b")],
+        [("_scan_out", "oa"), ("_scan_out_1", "ob")],
+    )
+    a, b = rng.random(5), rng.random(5)
+    buffers, _ = run(sdfg, "sc2", {"a": a.copy(), "b": b.copy(), "oa": np.zeros(5), "ob": np.zeros(5)}, {"N": 5})
+    np.testing.assert_array_equal(buffers["oa"], np.cumsum(a))
+    np.testing.assert_array_equal(buffers["ob"], np.cumsum(b))
+
+
+def build_on_row(name, node, in_conns, out_conn, out_shape):
+    """``node`` reading row 2 of ``A`` (5x5) on ``in_conns[0]`` and all of ``v`` on any other input, into ``o``."""
+    sdfg = dc.SDFG(name)
+    sdfg.add_array("A", (5, 5), F)
+    sdfg.add_array("v", (5,), F)
+    sdfg.add_array("o", out_shape, F)
+    st = sdfg.add_state()
+    st.add_node(node)
+    for i, conn in enumerate(in_conns):
+        node.add_in_connector(conn, force=True)
+        memlet = Memlet("A[2, 0:5]") if i == 0 else Memlet("v[0:5]")
+        st.add_edge(st.add_read("A" if i == 0 else "v"), None, node, conn, memlet)
+    node.add_out_connector(out_conn, force=True)
+    st.add_edge(node, out_conn, st.add_write("o"), None, Memlet.from_array("o", sdfg.arrays["o"]))
+    sdfg.validate()
+    return sdfg
+
+
+def row_nodes():
+    from dace.libraries.blas.nodes.dot import Dot
+    from dace.libraries.blas.nodes.einsum import Einsum
+    from dace.libraries.standard.nodes.scan import Scan, ScanOp
+
+    einsum = Einsum("es")
+    einsum.einsum_str = "k,k->k"
+    return {
+        "scan": (Scan("sc", op=ScanOp.MAX), ["_scan_in"], "_scan_out", (5,), lambda a, v: np.maximum.accumulate(a)),
+        "dot": (Dot("dot"), ["_x", "_y"], "_result", (1,), lambda a, v: np.array([a @ v])),
+        "einsum": (einsum, ["a", "b"], "o", (5,), lambda a, v: a * v),
+    }
+
+
+@pytest.mark.parametrize("kind", ["scan", "dot", "einsum"])
+def test_a_vector_node_reads_a_matrix_row_as_a_vector(kind, rng):
+    """DaCe squeezes a vector node's operands, so ``A[2, 0:5]`` is a 5-vector, not a 1x5 matrix."""
+    node, in_conns, out_conn, out_shape, reference = row_nodes()[kind]
+    sdfg = build_on_row(f"row_{kind}", node, in_conns, out_conn, out_shape)
+    A, v = np.array([[0.0] * 5, [0.0] * 5, [3.0, 1.0, 4.0, 1.0, 5.0], [0.0] * 5, [0.0] * 5]), rng.random(5)
+
+    buffers, _ = run(sdfg, f"row_{kind}", {"A": A.copy(), "v": v.copy(), "o": np.zeros(out_shape)}, {})
+
+    np.testing.assert_array_equal(buffers["o"], reference(A[2], v))
+
+
+def test_dot_conjugate_conjugates_the_first_operand(rng):
+    from dace.libraries.blas.nodes.dot import Dot
+
+    sdfg = build(
+        "dotc",
+        Dot("dotc", conjugate=True),
+        {"x": ((N,), C128), "y": ((N,), C128), "r": ((1,), C128)},
+        [("_x", "x"), ("_y", "y")],
+        [("_result", "r")],
+    )
+    x, y = rng.random(6) + 1j * rng.random(6), rng.random(6) + 1j * rng.random(6)
+    buffers, _ = run(sdfg, "dotc", {"x": x.copy(), "y": y.copy(), "r": np.zeros(1, complex)}, {"N": 6})
+    np.testing.assert_allclose(buffers["r"][0], np.vdot(x, y), rtol=1e-12, atol=0)
+
+
+def test_fft_without_axes_transforms_every_axis(rng):
+    from dace.libraries.fft.nodes.fft import FFT
+
+    sdfg = build("fft2", FFT("fft2"), {"x": ((N, N), C128), "y": ((N, N), C128)}, [("_inp", "x")], [("_out", "y")])
+    x = rng.random((4, 4)) + 1j * rng.random((4, 4))
+    buffers, _ = run(sdfg, "fft2", {"x": x.copy(), "y": np.zeros((4, 4), complex)}, {"N": 4})
+    np.testing.assert_allclose(buffers["y"], np.fft.fftn(x), rtol=1e-12, atol=1e-12)
 
 
 def test_integer_sort(rng):

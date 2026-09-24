@@ -8,8 +8,10 @@ import dace
 from dace.sdfg.state import LoopRegion
 
 from nestforge.build.arena import make_inputs
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, nest_to_numpy, sdfg_to_numpy
+from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, nest_to_numpy
 from nestforge.ir.extract import Boundary
+
+from helpers import sdfg_to_numpy
 
 N = dace.symbol("N")
 
@@ -32,7 +34,7 @@ def test_scalar_transient_consistent_between_libnode_and_tasklet():
     rng = np.random.default_rng(0)
     x, y, z, out = rng.random(n), rng.random(n), rng.random(n), np.zeros(n)
     run(src, "k", x=x, y=y, z=z, out=out, N=n)
-    np.testing.assert_allclose(out, z * (x @ y))
+    np.testing.assert_allclose(out, z * (x @ y), rtol=1e-12, atol=0)
 
 
 @dace.program
@@ -53,7 +55,7 @@ def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
     A, v = rng.random((n, n)), rng.random(n)
     ret = np.zeros(n)
     run(src, "k", A=A, v=v, __return=ret, N=n)
-    np.testing.assert_allclose(ret, A @ v)
+    np.testing.assert_allclose(ret, A @ v, rtol=1e-12, atol=0)
 
 
 def nested_map_sdfg():
@@ -81,7 +83,7 @@ def test_nested_map_in_map_emits_nested_for_loops():
     rng = np.random.default_rng(0)
     A, B = rng.random((n, n)), np.zeros((n, n))
     load_emitted(src, "k").k(A, B, n)
-    assert np.allclose(B, A * 2.0)
+    np.testing.assert_array_equal(B, A * 2.0)
 
 
 @dace.program
@@ -100,7 +102,7 @@ def test_indirect_gather_stages_map_entry_read():
     rng = np.random.default_rng(0)
     a, b, out = rng.random(n), rng.integers(0, n, size=n).astype(np.int64), np.zeros(n)
     run(src, "k", a=a, b=b, out=out, N=n)  # NameError here if the staged read is dropped
-    np.testing.assert_allclose(out, a[b])
+    np.testing.assert_array_equal(out, a[b])
 
 
 def loop_scratch_boundary():

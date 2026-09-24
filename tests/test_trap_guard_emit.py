@@ -18,7 +18,9 @@ from dace.transformation.passes.canonicalize.assume_symbols_nonnegative import (
 )
 from dace.transformation.passes.scatter_conflict_guard import insert_scatter_guard
 
-from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy, trap_guard_lines
+from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted, trap_guard_lines
+
+from helpers import sdfg_to_numpy
 
 N = dace.symbol("N")
 

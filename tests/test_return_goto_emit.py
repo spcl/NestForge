@@ -18,9 +18,10 @@ from nestforge.ir.emit_numpy import (
     load_emitted,
     nest_to_numpy,
     reject_nonexternalizable,
-    sdfg_to_numpy,
 )
 from nestforge.ir.extract import Boundary
+
+from helpers import sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 

@@ -29,12 +29,13 @@ from nestforge.ir.emit_numpy import (
     range_stop,
     reads_array_data,
     rewrite_userfuncs,
-    sdfg_to_numpy,
     sizable,
     symbol_mapping_lines,
     UnsupportedNest,
 )
 from nestforge.ir.libnode import ExternalCall, proto_and_call
+
+from helpers import sdfg_to_numpy
 
 I = sympy.Symbol("i")
 N = sympy.Symbol("N")
@@ -482,7 +483,7 @@ def test_bare_math_prefix_call_is_emitted_and_runnable():
     a = np.array([3.0, 4.0, 0.0])
     out = np.zeros(3)
     mod.mathcall(a, out)
-    np.testing.assert_allclose(out, np.hypot(a, 1.0))
+    np.testing.assert_allclose(out, np.hypot(a, 1.0), rtol=1e-12, atol=0)
 
 
 def test_loop_init_statement_without_assignment_is_refused_not_indexerror():
@@ -537,3 +538,41 @@ def test_a_branch_condition_reads_a_scalar_transient_as_its_local(a, want):
     kernel(A=np.array([a]), B=B)
 
     assert B[0] == want
+
+
+def test_a_map_exit_write_out_named_by_its_source_reaches_the_destination():
+    """A privatized ``t`` leaves the map through a memlet naming ``t``, not ``B``; the write-out must still land."""
+    sdfg = dace.SDFG("source_named_exit")
+    sdfg.add_array("A", [8], dace.float64)
+    sdfg.add_array("B", [8], dace.float64)
+    sdfg.add_scalar("t", dace.float64, transient=True)
+    state = sdfg.add_state()
+    entry, exit_ = state.add_map("m", {"i": "0:8"})
+    tasklet = state.add_tasklet("double", {"a"}, {"o"}, "o = a * 2")
+    t = state.add_access("t")
+    state.add_memlet_path(state.add_read("A"), entry, tasklet, dst_conn="a", memlet=dace.Memlet("A[i]"))
+    state.add_edge(tasklet, "o", t, None, dace.Memlet("t[0]"))
+    exit_.add_in_connector("IN_B")
+    exit_.add_out_connector("OUT_B")
+    state.add_edge(t, None, exit_, "IN_B", dace.Memlet(data="t", subset="0", other_subset="i"))
+    state.add_edge(exit_, "OUT_B", state.add_write("B"), None, dace.Memlet("B[0:8]"))
+    sdfg.validate()
+    A, B = np.arange(8, dtype=np.float64), np.zeros(8)
+
+    vars(load_emitted(sdfg_to_numpy(sdfg, "k"), "k"))["k"](A=A, B=B)
+
+    np.testing.assert_array_equal(B, A * 2)
+
+
+def test_a_copy_from_a_one_element_matrix_reads_its_element():
+    sdfg = dace.SDFG("one_by_one")
+    sdfg.add_array("A", [4, 5], dace.float64)
+    sdfg.add_array("B", [1, 1], dace.float64)
+    state = sdfg.add_state()
+    state.add_edge(state.add_read("B"), None, state.add_write("A"), None, dace.Memlet("B[0, 0]", other_subset="2, 3"))
+    sdfg.validate()
+    A, B = np.zeros((4, 5)), np.full((1, 1), 7.0)
+
+    vars(load_emitted(sdfg_to_numpy(sdfg, "k"), "k"))["k"](A=A, B=B)
+
+    assert A[2, 3] == 7.0 and np.count_nonzero(A) == 1

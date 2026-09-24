@@ -13,10 +13,10 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.ir.emit_numpy import load_emitted, sdfg_to_numpy
+from nestforge.ir.emit_numpy import load_emitted
 from nestforge.phases.scopes import top_level_map_entries
 
-from helpers import loop_level_kernel
+from helpers import loop_level_kernel, sdfg_to_numpy
 
 
 def top_level_nest(sdfg: dace.SDFG):

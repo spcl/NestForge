@@ -11,6 +11,15 @@ import dace
 
 from nestforge.build.toolchain import CType, raw_signature
 from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels
+from nestforge.ir.emit_numpy import (
+    emit_region,
+    expand_nested_sdfg_inputs,
+    maxsize_loop_scratch,
+    reject_orphan_break_continue,
+    reject_unsizable_scratch,
+    render,
+    scratch_arrays,
+)
 from nestforge.ir.extract import Boundary
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
@@ -75,3 +84,16 @@ def c_argtypes(order: list[str], boundary: Boundary) -> list[CType]:
         ctypes.POINTER(CTYPE[np.dtype(sdfg.arrays[a].dtype.type).name]) if a in sdfg.arrays else scalar_ctype(sdfg, a)
         for a in order
     ]
+
+
+def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
+    """Standalone python source for a whole SDFG, whose non-array arguments are its symbols."""
+    reject_orphan_break_continue(sdfg)  # a return exits the kernel, which is this whole SDFG
+    sdfg = expand_nested_sdfg_inputs(sdfg)
+    symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
+    sdfg = maxsize_loop_scratch(sdfg, symbols)
+    data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
+    scratch = scratch_arrays(sdfg)
+    reject_unsizable_scratch(sdfg, scratch, symbols)
+    args = data_args + scratch + symbols
+    return render(fn_name, args, emit_region(sdfg, sdfg))

@@ -7,6 +7,9 @@ Each case compares the emitted NumPy with DaCe's ``pure`` expansion, run in a fo
 so the triangle each node must leave untouched is checked too.
 """
 
+import importlib
+import re
+
 import numpy as np
 import pytest
 
@@ -17,8 +20,10 @@ from dace.libraries.blas.nodes.syr2k import Syr2k
 from dace.libraries.lapack.nodes.potrf import Potrf
 
 from nestforge.ir.emit_libnode import LIBNODE_EMITTERS, REFUSED_LIBRARY_NODES, UnsupportedLibraryNode, emit_library_node
-from nestforge.ir.emit_numpy import load_emitted, sdfg_to_numpy
+from nestforge.ir.emit_numpy import load_emitted
 from nestforge.build.isolation import run_isolated
+
+from helpers import sdfg_to_numpy
 
 DT = dace.float64
 
@@ -177,7 +182,7 @@ def test_potrf_factor_reconstructs_spd(lower):
     assert got["res"][0] == 0  # success info
 
 
-def test_new_blas_lapack_nodes_are_registered():
+def test_symm_syrk_syr2k_potrf_have_numpy_emitters():
     for name in ("Symm", "Syrk", "Syr2k", "Potrf"):
         assert name in LIBNODE_EMITTERS
 
@@ -220,7 +225,23 @@ def test_mpi_node_is_refused_by_module():
         emit_library_node(node, st, sdfg)
 
 
-def test_refused_set_names_the_unsupported_families():
-    # sparse, FPGA-stream, arbitrary stencil, and pivot/packed-LU LAPACK primitives are refused by name.
-    for name in ("CSRMM", "CSRMV", "Gearbox", "Stencil", "Getrf", "Getri", "Getrs"):
-        assert name in REFUSED_LIBRARY_NODES
+REFUSED_MODULES = {
+    "Getrf": "dace.libraries.lapack.nodes.getrf",
+    "Getri": "dace.libraries.lapack.nodes.getri",
+    "Getrs": "dace.libraries.lapack.nodes.getrs",
+    "CSRMM": "dace.libraries.sparse.nodes.csrmm",
+    "CSRMV": "dace.libraries.sparse.nodes.csrmv",
+    "Stencil": "dace.libraries.stencil.stencil",
+    "Gearbox": "dace.libraries.standard.nodes.gearbox",
+}
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED_MODULES))
+def test_a_refused_family_is_refused_with_its_reason(name):
+    """Sparse, FPGA-stream, arbitrary stencil, and pivot/packed-LU LAPACK nodes have no dense numpy form."""
+    node = getattr(importlib.import_module(REFUSED_MODULES[name]), name)(name.lower())
+    state = dace.SDFG(f"refused_{name}").add_state()
+    state.add_node(node)
+
+    with pytest.raises(UnsupportedLibraryNode, match=re.escape(REFUSED_LIBRARY_NODES[name])):
+        emit_library_node(node, state, state.sdfg)

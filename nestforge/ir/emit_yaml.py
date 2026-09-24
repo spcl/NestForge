@@ -37,9 +37,7 @@ def dtype_str(desc: dace.data.Data) -> str:
     return np.dtype(desc.dtype.type).name
 
 
-def manifest_dict(
-    boundary: Boundary, name: str, sizes: dict[str, int] | None = None, preset: str = "S"
-) -> dict[str, Any]:
+def manifest_dict(boundary: Boundary, name: str, sizes: dict[str, int] | None = None) -> dict[str, Any]:
     """The manifest of ``boundary``'s standalone SDFG."""
     sdfg = sized_standalone(boundary)
     arrays = kernel_arrays(boundary, sdfg)
@@ -47,7 +45,7 @@ def manifest_dict(
     for a in arrays:
         desc = sdfg.arrays[a]
         init_arrays[a] = {"shape": shape_str(desc.shape), "dtype": dtype_str(desc)}
-    sizes = sizes or dict.fromkeys(boundary.symbols, DEFAULT_SIZE)
+    sizes = sizes or {}
     int_params: dict[str, int] = {}
     float_scalars: dict[str, float] = {}
     for s in boundary.symbols:
@@ -64,7 +62,7 @@ def manifest_dict(
         "func_name": name,
         "relative_path": "extended",
         "level": 1,
-        "parameters": {preset: int_params},
+        "parameters": {"S": int_params},
         "input_args": kernel_args(boundary, arrays),
         "array_args": arrays,
         "output_args": list(boundary.outputs),

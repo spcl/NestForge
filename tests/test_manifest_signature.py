@@ -12,9 +12,11 @@ import numpy as np
 
 import dace
 
-from nestforge.ir.emit_numpy import scratch_arrays, sdfg_to_numpy
+from nestforge.ir.emit_numpy import scratch_arrays
 from nestforge.ir.emit_yaml import manifest_dict
 from nestforge.ir.extract import Boundary, detach
+
+from helpers import sdfg_to_numpy
 
 N = dace.symbol("N")
 

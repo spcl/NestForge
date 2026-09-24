@@ -16,9 +16,9 @@ from dace import symbolic
 
 from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_libnode import is_scalar
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch
 from nestforge.build.isolation import run_isolated
-from helpers import corpus_kernel
+from helpers import corpus_kernel, sdfg_to_numpy
 
 
 def symbol_scalar(sdfg, name):

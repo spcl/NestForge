@@ -15,7 +15,9 @@ import pytest
 import dace as dc
 from dace.sdfg import nodes
 
-from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted, sdfg_to_numpy
+from nestforge.ir.emit_numpy import UnsupportedNest, load_emitted
+
+from helpers import sdfg_to_numpy
 
 N = dc.symbol("N", dtype=dc.int64)
 M = dc.symbol("M", dtype=dc.int64)

@@ -250,28 +250,40 @@ def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[
     This is the scope an agent picks when no transformation fuses the regions: the kernel it writes in phase 4
     fuses them instead.
     """
-    objects = [obj for obj, _ in rows]
-    if all(isinstance(obj, nodes.MapEntry) for obj in objects):
-        states = dict.fromkeys(id(state) for _, state in rows)
-        state = rows[0][1]
-        if len(states) != 1 or state is None:
-            return "the named maps are in different states; name the blocks that hold them instead."
-        if state.sdfg is not sdfg:
-            return "the named maps sit inside a nested SDFG; kernels live at the top level."
-        group = map_group(state, [obj for obj in objects if isinstance(obj, nodes.MapEntry)])
-    elif all(isinstance(obj, ControlFlowBlock) for obj in objects):
-        group = block_group(sdfg, [obj for obj in objects if isinstance(obj, ControlFlowBlock)])
-    else:
-        return "name only maps or only control-flow blocks."
+    entries = [obj for obj, _ in rows if isinstance(obj, nodes.MapEntry)]
+    blocks = [obj for obj, _ in rows if isinstance(obj, ControlFlowBlock)]
+    if len(entries) == len(rows):
+        return lower_map_group(sdfg, rows, entries)
+    if len(blocks) == len(rows):
+        group = block_group(sdfg, blocks)
+        if isinstance(group, str):
+            return group
+        return lower_group(sdfg, rows, lambda name: extract_blocks(sdfg, group, name))
+    return "name only maps or only control-flow blocks."
+
+
+def lower_map_group(
+    sdfg: dace.SDFG, rows: Sequence[Row], entries: list[nodes.MapEntry]
+) -> tuple[ExternalCall, Boundary] | str:
+    """:func:`lower_group_to_external_call` for maps, which must share one top-level state."""
+    state = rows[0][1]
+    if state is None or any(other is not state for _, other in rows):
+        return "the named maps are in different states; name the blocks that hold them instead."
+    if state.sdfg is not sdfg:
+        return "the named maps sit inside a nested SDFG; kernels live at the top level."
+    group = map_group(state, entries)
     if isinstance(group, str):
         return group
+    return lower_group(sdfg, rows, lambda name: extract_state_nodes(sdfg, state, group, name))
+
+
+def lower_group(
+    sdfg: dace.SDFG, rows: Sequence[Row], extract: Callable[[str], Boundary]
+) -> tuple[ExternalCall, Boundary] | str:
+    """Extract a legal group under a fresh kernel name and put its ``ExternalCall`` in its place."""
     host_scalars = [name for name in group_inputs(sdfg, rows) if is_host_length1_array(sdfg.arrays[name])]
     if host_scalars:
         return f"inputs {host_scalars} are length-1 arrays in host memory; declare each as a Scalar."
     (name,) = kernel_names(sdfg, 1)
-    if isinstance(group[0], ControlFlowBlock):
-        boundary = extract_blocks(sdfg, [block for block in group if isinstance(block, ControlFlowBlock)], name)
-    else:
-        assert state is not None, "a map group has one state"
-        boundary = extract_state_nodes(sdfg, state, [node for node in group if isinstance(node, nodes.Node)], name)
+    boundary = extract(name)
     return replace_nsdfg_with_external(boundary, name), boundary

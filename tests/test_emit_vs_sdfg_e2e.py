@@ -18,9 +18,9 @@ from dace import symbolic
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.build.sdfg import BuildOptions, build_sdfg
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
+from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch
 from nestforge.build.isolation import run_isolated
-from helpers import c_argtypes, corpus_kernel, loop_level_kernel, signature_order
+from helpers import c_argtypes, corpus_kernel, loop_level_kernel, sdfg_to_numpy, signature_order
 
 ATOL = 1e-8
 
