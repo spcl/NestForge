@@ -1,10 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Index arrays get permutation fills from the kernel's manifest (:func:`nestforge.corpus.bench.index_fills`).
-
-The default random fill cast to an integer is all zeros, which turns a gather into one repeated read and a
-conflict-free scatter into writes to one element; the oracle reads the same zeros, so validation cannot notice.
-"""
+"""The default random fill of an integer index array is all zeros, which turns a gather into one repeated read
+and a conflict-free scatter into writes to one element; the oracle reads the same zeros, so validation cannot
+notice."""
 
 import numpy as np
 import pytest
@@ -12,7 +10,7 @@ import pytest
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.build.arena import make_inputs
-from nestforge.corpus.bench import index_fills, preset_sizes
+from nestforge.corpus.bench import preset_sizes
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.phases.scopes import parallel_top_level_maps
 
@@ -37,86 +35,10 @@ def first_nest(kernel):
 
 
 @pytest.mark.parametrize("key", GATHER_KERNELS)
-def test_index_array_is_a_valid_subscript_permutation(key):
-    kernel = loop_level_kernel(key)
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    inputs = make_inputs(boundary, sizes, seed=0, given=index_fills(kernel.short_name, boundary, sizes))
-
-    ip = inputs[INDEX_ARRAY]
-    n = ip.shape[0]
-    assert ip.dtype.kind in "iu"
-    # a permutation of [0, n): every subscript in range and used once
-    assert np.array_equal(np.sort(ip), np.arange(n, dtype=ip.dtype))
-
-
-@pytest.mark.parametrize("key", GATHER_KERNELS)
-def test_index_array_is_all_zeros_without_the_manifest_fill(key):
+def test_the_default_fill_of_an_index_array_is_all_zeros(key):
     # the plain float fill cast to an int dtype is all zeros, so every iteration reads b[0]
     kernel = loop_level_kernel(key)
     boundary = first_nest(kernel)
     sizes = preset_sizes(kernel, "S")
     ip = make_inputs(boundary, sizes, seed=0)[INDEX_ARRAY]
     assert ip.size > 1 and len(np.unique(ip)) == 1 and ip.ravel()[0] == 0
-
-
-@pytest.mark.parametrize("key", GATHER_KERNELS)
-def test_index_fills_are_seeded_so_oracle_and_candidate_agree(key):
-    # the oracle is built once and every cell validates against it: an unseeded fill would give the
-    # candidate a different `ip` than the oracle saw and break validation for every gather kernel.
-    kernel = loop_level_kernel(key)
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    a = index_fills(kernel.short_name, boundary, sizes)
-    b = index_fills(kernel.short_name, boundary, sizes)
-    assert np.array_equal(a[INDEX_ARRAY], b[INDEX_ARRAY])
-
-
-@pytest.mark.parametrize("key", GATHER_KERNELS)
-def test_index_fills_only_covers_manifest_declared_integer_arrays(key):
-    # an integer array is not automatically a subscript; only what the manifest declares gets a fill.
-    kernel = loop_level_kernel(key)
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    fills = index_fills(kernel.short_name, boundary, sizes)
-    assert set(fills) == {INDEX_ARRAY}  # not the float data arrays, and not the __sym_out_* output scalars
-
-
-def test_index_fills_empty_without_a_manifest_name():
-    # the None short-circuit: a boundary with no resolvable manifest name gets no fills.
-    kernel = loop_level_kernel("tsvc_2_vag")
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    assert index_fills(None, boundary, sizes) == {}
-
-
-def test_given_array_of_the_wrong_shape_is_rejected():
-    # `given` is passed straight across the ABI as the kernel's buffer, so a mismatch must raise here
-    # rather than corrupt memory in the compiled call.
-    kernel = loop_level_kernel("tsvc_2_vag")
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    bad = {"ip": np.arange(3, dtype=np.int32)}
-    with pytest.raises(ValueError, match="given array 'ip'"):
-        make_inputs(boundary, sizes, seed=0, given=bad)
-
-
-def test_given_array_of_the_wrong_dtype_is_rejected():
-    kernel = loop_level_kernel("tsvc_2_vag")
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    n = make_inputs(boundary, sizes, seed=0)["ip"].shape[0]
-    with pytest.raises(ValueError, match="given array 'ip'"):
-        make_inputs(boundary, sizes, seed=0, given={"ip": np.arange(n, dtype=np.float64)})
-
-
-def test_transient_scratch_keeps_its_own_fill():
-    # only manifest index arrays are given; every other array keeps its random fill
-    kernel = loop_level_kernel("tsvc_2_vag")
-    boundary = first_nest(kernel)
-    sizes = preset_sizes(kernel, "S")
-    plain = make_inputs(boundary, sizes, seed=0)
-    with_fills = make_inputs(boundary, sizes, seed=0, given=index_fills(kernel.short_name, boundary, sizes))
-    for name, value in plain.items():
-        if name != "ip":
-            assert np.array_equal(value, with_fills[name]), f"{name} changed but is not a manifest index array"

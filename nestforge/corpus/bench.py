@@ -13,12 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from collections.abc import Iterator
 
-import numpy as np
-
 import dace
-
-from nestforge.build.arena import resolve_shape
-from nestforge.ir.extract import Boundary
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -27,14 +22,6 @@ if TYPE_CHECKING:
 
 #: Tracks whose ``_dace.py`` this module generates on demand (gitignored, never committed).
 DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning")
-
-
-def set_precision_fp64() -> None:
-    """Set HPCAgent-Bench's kernel dtype global to float64 before a kernel module imports it."""
-    import hpcagent_bench.frameworks.dace_framework as dfw
-
-    dfw.dc_float = dace.float64
-    dfw.dc_complex_float = dace.complex128
 
 
 @dataclass(slots=True)
@@ -61,7 +48,11 @@ class CorpusKernel:
     def program(self) -> dace.frontend.python.parser.DaceProgram:
         """The kernel's entry ``@dace.program``, named by the manifest's ``func_name``; without one, the last
         program the module defines, since helpers precede the entry."""
-        set_precision_fp64()
+        import hpcagent_bench.frameworks.dace_framework as dfw
+
+        # the kernel module reads HPCAgent-Bench's dtype globals when it is imported
+        dfw.dc_float = dace.float64
+        dfw.dc_complex_float = dace.complex128
         module = self.module()
         entry = vars(module).get(self.spec.func_name)
         if isinstance(entry, dace.frontend.python.parser.DaceProgram):
@@ -88,16 +79,23 @@ def track_names(track: str | None) -> list[str]:
     return [name for name in KERNELS if track is None or name.startswith(f"{track}/")]
 
 
+def generate_dace_file(short_name: str) -> None:
+    """Regenerate hpcagent_bench's gitignored ``_dace.py`` of a :data:`DACE_TRACKS` kernel if it is missing."""
+    from hpcagent_bench import autogen
+
+    if short_name.split("/", 1)[0] in DACE_TRACKS:
+        autogen.ensure(short_name, ("dace",))
+
+
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
     """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
-    from hpcagent_bench import autogen
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
     for short_name in track_names(track):
         module_name = short_name.rsplit("/", 1)[-1]
         dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
-        if not dace_file.exists() and short_name.split("/", 1)[0] in DACE_TRACKS:
-            autogen.ensure(short_name, ("dace",))  # regenerate hpcagent_bench's gitignored _dace.py on demand
+        if not dace_file.exists():
+            generate_dace_file(short_name)
         if not dace_file.exists():
             continue
         yield CorpusKernel(
@@ -108,42 +106,13 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
         )
 
 
-def materialize_dace_corpus(track: str | None = None) -> None:
+def materialize_dace_corpus() -> None:
     """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
-    from hpcagent_bench import autogen
-
-    for short_name in track_names(track):
-        if short_name.split("/", 1)[0] in DACE_TRACKS:
-            autogen.ensure(short_name, ("dace",))
+    for short_name in track_names(None):
+        generate_dace_file(short_name)
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
     """The integer symbol sizes of one preset in the kernel's manifest."""
     rung = kernel.spec.parameters.get(preset, {})
     return {sym: size for sym, size in rung.items() if isinstance(size, int) and not isinstance(size, bool)}
-
-
-def index_fills(
-    manifest_name: str | None, boundary: Boundary, sizes: dict[str, int], seed: int | None = 0
-) -> dict[str, np.ndarray]:
-    """Permutation fills for the integer index arrays the manifest declares; the default random fill cast to int
-    is all zeros, which turns a gather or scatter into a same-index race."""
-    from hpcagent_bench.initialize import fill_index_array
-    from hpcagent_bench.spec import BenchSpec
-
-    if manifest_name is None:
-        return {}
-    spec = BenchSpec.load(manifest_name)
-    if spec.init is None:
-        return {}
-    rng = np.random.default_rng(seed)
-    arrays = boundary.standalone_sdfg.arrays
-    fills: dict[str, np.ndarray] = {}
-    for name, declared in sorted(spec.init.dtypes.items()):
-        if np.dtype(declared).kind not in "iu" or name not in boundary.inputs:
-            continue
-        dtype = np.dtype(arrays[name].dtype.type)
-        if dtype.kind not in "iu":
-            continue  # the manifest calls it an index but the nest holds it as a float: not a subscript
-        fills[name] = fill_index_array(resolve_shape(arrays[name].shape, sizes), dtype.name, rng=rng)
-    return fills

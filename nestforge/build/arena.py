@@ -33,16 +33,10 @@ def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...
 INPUT_HIGH = 0.25
 
 
-def make_inputs(
-    boundary: Boundary, sizes: dict[str, int], seed: int = 0, given: dict[str, np.ndarray] | None = None
-) -> dict[str, np.ndarray]:
-    """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller.
-
-    :param given: Ready-made values, such as index arrays, of exactly the resolved shape and dtype.
-    """
+def make_inputs(boundary: Boundary, sizes: dict[str, int], seed: int = 0) -> dict[str, np.ndarray]:
+    """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller."""
     sdfg = maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)  # the raw nest's scratch is too small
     rng = np.random.default_rng(seed)
-    given = given or {}
     arrays: dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]
     zero_filled = out_only + [s for s in scratch_arrays(sdfg) if s not in boundary.inputs]
@@ -50,16 +44,7 @@ def make_inputs(
         desc = sdfg.arrays[name]
         shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
-        if name in given:
-            value = given[name]
-            if value.shape != shape or value.dtype != dt:
-                raise ValueError(
-                    f"given array {name!r} is {value.dtype}{value.shape}, but the nest declares "
-                    f"{dt}{shape}; it is passed straight across the ABI, so it must match exactly"
-                )
-            arrays[name] = value.copy()
-        else:
-            arrays[name] = np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt)
+        arrays[name] = np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt)
     return arrays
 
 

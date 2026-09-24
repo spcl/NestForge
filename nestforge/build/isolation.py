@@ -20,17 +20,14 @@ from typing import Any
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
 OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
 
-#: ``omp_pause_resource_t`` (OpenMP 5.0); ``hard`` also frees threadprivate data.
+#: ``omp_soft_pause`` of ``omp_pause_resource_t`` (OpenMP 5.0); unlike a hard pause it keeps threadprivate data.
 OMP_PAUSE_SOFT = 1
-OMP_PAUSE_HARD = 2
-
-OMP_PAUSE_MODES = {"soft": OMP_PAUSE_SOFT, "hard": OMP_PAUSE_HARD}
 
 #: Longest exception message a child reports back, after its type name.
 ERROR_CHARS = 4000
 
 
-def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
+def pause_openmp_pools() -> None:
     """Pause every loaded OpenMP runtime before a fork; a live libgomp pool deadlocks the child."""
     for soname in OMP_RUNTIME_SONAMES:
         try:
@@ -47,8 +44,13 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
             continue
         pause.argtypes = [ctypes.c_int]
         pause.restype = ctypes.c_int
-        if pause(mode) != 0:
-            warnings.warn(f"{soname}: omp_pause_resource_all(mode={mode}) failed; its pool stays up across the fork")
+        if pause(OMP_PAUSE_SOFT) != 0:
+            warnings.warn(f"{soname}: omp_pause_resource_all(soft) failed; its pool stays up across the fork")
+
+
+def error_result(e: BaseException) -> dict:
+    """A child's exception as a result, its message cut to :data:`ERROR_CHARS`."""
+    return {"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"}
 
 
 def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = 900.0) -> dict:
@@ -86,7 +88,7 @@ def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> N
     try:
         result = target(payload)
     except BaseException as e:
-        result = {"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"}
+        result = error_result(e)
     sender.send(result)
     sender.close()
 
@@ -102,7 +104,7 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
         try:
             payload = json.dumps(work_fn())
         except BaseException as e:
-            payload = json.dumps({"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"})
+            payload = json.dumps(error_result(e))
         try:
             os.write(w, payload.encode())
         finally:
