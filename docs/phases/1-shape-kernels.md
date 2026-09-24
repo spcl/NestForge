@@ -37,8 +37,11 @@ is legal when the map body is exactly the loop, its bounds do not vary across ma
 or symbol inside the body carries a value between loop iterations; the refusal names which condition failed.
 A guard always moves into a loop; it moves out only when its condition is loop-invariant.
 
-When no move fuses two regions that should run as one, phase 2's `define_scope` makes them one kernel
-instead, and the kernel written in phase 4 fuses them.
+When a move is refused, or no move fuses two regions that should run as one, phase 2's `define_scope` makes
+them one kernel instead, and the kernel written in phase 4 performs the transformation. An `illegal` or
+`not-implemented` result carries in `fallback` the exact `define_scope(labels, epoch)` call for its regions:
+the named regions not inside another named one, else the outermost map around them, else their top-level
+blocks. It is empty when no such group is legal, for example when the regions read a length-1 host array.
 
 `fission_all` splits the whole program to statement granularity, loops included. The id-based calls
 stay: `list_fusions` / `fuse`, `list_fissions` / `fission` and state fusion via `fuse_regions`.

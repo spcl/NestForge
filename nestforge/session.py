@@ -68,6 +68,7 @@ from nestforge.phases.scopes import (
     lower_nests_to_external_call,
     node_boundary,
     offload_candidates,
+    scope_cover,
     top_level_map_entries,
 )
 from nestforge.phases.variants import VariantCell, device_variants, select_variant
@@ -83,12 +84,18 @@ class StaleHandle(KeyError):
 @dataclass(frozen=True, slots=True)
 class MoveResult:
     """What :meth:`Session.apply_move` did. ``status`` is ``applied`` (``reason`` names the transformation),
-    ``illegal``, ``not-implemented``, ``not-found`` or ``stale``; only ``applied`` changed the program."""
+    ``illegal``, ``not-implemented``, ``not-found`` or ``stale``; only ``applied`` changed the program.
+
+    ``fallback`` is set on an ``illegal`` or ``not-implemented`` move whose regions one kernel can hold: the exact
+    :meth:`Session.define_scope` call that wraps them into one ``ExternalCall``, so the refused transformation can be
+    written by hand in that kernel's source in phase 4. It is empty otherwise.
+    """
 
     status: str
     kind: str
     labels: tuple[str, ...]
     reason: str
+    fallback: str = ""
 
 
 class Session:
@@ -242,15 +249,14 @@ class Session:
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
-        :returns: The outcome; nothing but ``applied`` touches the program.
+        :returns: The outcome; nothing but ``applied`` touches the program. A refused move names in ``fallback`` the
+            :meth:`define_scope` call that makes its regions one kernel, when one can.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
         names = tuple(labels)
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
-        if kind in NOT_IMPLEMENTED:
-            return MoveResult("not-implemented", kind, names, NOT_IMPLEMENTED[kind])
         if epoch != self.epoch:
             reason = (
                 f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe or list moves again."
@@ -260,10 +266,20 @@ class Session:
         missing = [name for name in names if name not in rows]
         if missing:
             return MoveResult("not-found", kind, names, f"no tree row is labeled {', '.join(missing)}.")
-        plan = plan_move(kind, [rows[name] for name in names])
+        named = [rows[name] for name in names]
+        if kind in NOT_IMPLEMENTED:
+            return MoveResult("not-implemented", kind, names, NOT_IMPLEMENTED[kind], self.scope_fallback(named))
+        plan = plan_move(kind, named)
         if isinstance(plan, str):
-            return MoveResult("illegal", kind, names, plan)
+            return MoveResult("illegal", kind, names, plan, self.scope_fallback(named))
         return MoveResult("applied", kind, names, self.commit(plan))
+
+    def scope_fallback(self, rows: Sequence[Row]) -> str:
+        """The :meth:`define_scope` call that makes one kernel of the regions ``rows`` name, or ``""``."""
+        cover = scope_cover(self.sdfg, rows)
+        if cover is None:
+            return ""
+        return f"define_scope({[tree_label(obj) for obj, _ in cover]!r}, {self.epoch})"
 
     def row_index(self) -> dict[str, Row]:
         """Tree label -> ``(block or node, state)``, built once per epoch."""
