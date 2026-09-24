@@ -21,9 +21,9 @@ from dace import symbolic
 from dace.libraries.blas.nodes import Dot
 from dace.sdfg.state import LoopRegion
 
-from nestforge.corpus.bench import iter_dace_kernels
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.corpus.translate import prepare, emit_sources
+from helpers import corpus_kernel
 
 CTYPE_FOR_DTYPE = {"float64": ctypes.c_double, "int64": ctypes.c_int64}
 GCC_BASE_FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
@@ -50,13 +50,10 @@ def computes_nrm_reduction(loop: LoopRegion) -> bool:
 
 
 def prepare_compute_nest():
-    kernels = {k.short_name: k for k in iter_dace_kernels()}
-    sdfg = kernels["scientific_computing/dense_linear_algebra/gramschmidt/gramschmidt"].to_sdfg(simplify=True)
+    sdfg = corpus_kernel("scientific_computing/dense_linear_algebra/gramschmidt/gramschmidt").to_sdfg(simplify=True)
     # Select by content, not by phase-2 scope policy: the loop region whose body computes the nrm
-    # dot-product reduction. `parallel_top_level_maps` (nestforge/phases/scopes.py, since commit
-    # 9b186ad replaced the old ``outer()``) offers one candidate per parallel top-level MAP and never
-    # this loop -- both np.dot reductions here lower to ``Dot``/``MatMul`` library nodes, not Maps, so
-    # they are never candidates there.
+    # dot-product reduction. `parallel_top_level_maps` offers one candidate per parallel top-level map and
+    # never this loop: both np.dot reductions here lower to ``Dot``/``MatMul`` library nodes, not maps.
     loops = [n for n in sdfg.nodes() if isinstance(n, LoopRegion) and computes_nrm_reduction(n)]
     assert len(loops) == 1, f"expected one nrm-reduction loop, got {len(loops)}"
     return extract_nest_to_sdfg(sdfg, loops[0], name="gs_compute")

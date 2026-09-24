@@ -37,7 +37,7 @@ void kern(double *a, int n) {
 }
 """
 
-#: A SECOND, differently-shaped nest (a reduction lowers to ``parallel for reduction``), so a single kernel
+#: A second, differently-shaped nest (a reduction lowers to ``parallel for reduction``), so a single kernel
 #: cannot link one runtime by luck of its shape.
 OMP_SRC_REDUCE = """#include <omp.h>
 double kern2(const double *a, int n) {
@@ -86,7 +86,7 @@ def linked_openmp_runtimes(so):
     return {name for name in OMP_SONAMES if f"[{name}.so" in out}
 
 
-#: The runtime call a compiler emits to OPEN a parallel region: LLVM/Intel ``__kmpc_fork_call``, GNU
+#: The runtime call a compiler emits to open a parallel region: LLVM/Intel ``__kmpc_fork_call``, GNU
 #: ``GOMP_parallel``. Its presence is the only proof the region survived compilation.
 OMP_FORK_SYMBOLS = ("kmpc_fork", "GOMP_parallel")
 
@@ -144,9 +144,9 @@ def build_cell(tmp_path, compiler, runtime, src=OMP_SRC, tag="k"):
 
 
 def test_every_compiler_links_the_same_single_runtime(tmp_path):
-    """THE contract: across every available compiler, a cell links exactly ONE OpenMP runtime, and it is
-    the SAME one for all of them. Before the fix gcc's bare -fopenmp linked libgomp while clang's linked
-    libomp. The global runtime is libomp, what the owned build resolves for gcc, clang and icx."""
+    """Across every available compiler, a cell links exactly one OpenMP runtime, the same for all: a bare -fopenmp
+    links libgomp under gcc and libomp under clang. The global runtime is libomp, which the owned build resolves
+    for gcc, clang and icx."""
     assert all(usable_openmp(cc) is LIBOMP for cc in available_compilers() if compiler_family(cc) in ("gnu", "llvm"))
     seen = {}
     for cc in available_compilers():
@@ -162,7 +162,7 @@ def test_every_compiler_links_the_same_single_runtime(tmp_path):
 
 
 def test_two_different_nests_from_two_compilers_share_one_runtime(tmp_path):
-    """Two UNRELATED nests (elementwise map + reduction), each built by a different compiler, as they would be
+    """Two unrelated nests (elementwise map + reduction), each built by a different compiler, as they would be
     when linked into one program. The union over the pair must still be one runtime."""
     compilers = available_compilers()
     assert len(compilers) >= 2, f"needs two compiler families, found {compilers} (setup_apt.sh installs gcc+clang)"
@@ -177,7 +177,7 @@ def test_two_different_nests_from_two_compilers_share_one_runtime(tmp_path):
 
 @pytest.mark.parametrize("runtime_name", sorted(OPENMP_RUNTIMES))
 def test_the_runtime_is_choosable_and_prunes_what_cannot_link_it(tmp_path, runtime_name):
-    """The runtime is a KNOB: for a given choice each compiler either links exactly that one runtime or is
+    """The runtime is a knob: for a given choice each compiler either links exactly that one runtime or is
     pruned with a reason, never silently falling back to its own default. libgomp is gomp-ABI only, so
     clang cannot link it -- the reason the resolved runtime is libomp, which both families link."""
     runtime = OPENMP_RUNTIMES[runtime_name]
@@ -207,7 +207,7 @@ def test_libgomp_is_pruned_for_llvm_but_kept_for_gnu():
     assert compiler_family("icx") == "llvm" and libomp.compatible("icx")  # icx is clang-based: name-selects libomp
 
 
-#: Loads BOTH node libraries into one process, runs both nests, and reports what got mapped. Run via EXEC,
+#: Loads both node libraries into one process, runs both nests, and reports what got mapped. Run via EXEC,
 #: not fork: a forked child inherits runtimes other tests deliberately loaded.
 RUN_BOTH_SRC = """
 import ctypes, json, sys
@@ -234,7 +234,7 @@ print(json.dumps({"a": a.tolist(), "total": float(total), "runtimes": mapped(), 
 
 
 def run_both_in_a_clean_process(tmp_path, so_a, so_b, n):
-    """Run both nests in a FRESH interpreter and return its report (see :data:`RUN_BOTH_SRC`)."""
+    """Run both nests in a fresh interpreter and return its report (see :data:`RUN_BOTH_SRC`)."""
     script = tmp_path / "run_both.py"
     script.write_text(RUN_BOTH_SRC)
     proc = subprocess.run(
@@ -245,7 +245,7 @@ def run_both_in_a_clean_process(tmp_path, so_a, so_b, n):
 
 
 def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_path):
-    """One nest built by gcc and a different nest built by clang, loaded into ONE process and RUN -- sharing
+    """One nest built by gcc and a different nest built by clang, loaded into one process and run -- sharing
     a single OpenMP runtime, and computing the right answer."""
     assert shutil.which("gcc") and shutil.which("clang"), (
         f"needs gcc AND clang, found {available_compilers()} (setup_apt.sh installs both)"
@@ -269,7 +269,7 @@ def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_pat
 
 def test_a_kmpc_compiler_on_libgomp_would_be_caught_not_silently_serialized(tmp_path):
     """The trap itself: clang emitting kmpc, linked against gomp-only libgomp, and emits_parallel_region
-    SEES the serialization. If this ever emits a fork call, libgomp gained a kmpc layer and the prune can
+    sees the serialization. If this ever emits a fork call, libgomp gained a kmpc layer and the prune can
     be revisited -- deliberately."""
     assert shutil.which("clang"), "no clang on PATH (setup_apt.sh installs it)"
     csrc = tmp_path / "mismatch.c"
@@ -315,7 +315,7 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
 
 
 def test_openmp_link_flags_carry_an_rpath_for_a_pinned_dir():
-    # -L satisfies the LINKER only; without -rpath the built .so has DT_NEEDED and no RUNPATH, so the
+    # -L satisfies the linker only; without -rpath the built .so has DT_NEEDED and no RUNPATH, so the
     # ctypes.CDLL right after the build fails to find libomp.
     runtime = OpenMPRuntime(name=LIBOMP.name, soname=LIBOMP.soname, lib_dir="/opt/llvm/lib")
     linked = runtime.link_flags("clang")

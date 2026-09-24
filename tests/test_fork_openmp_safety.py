@@ -39,7 +39,6 @@ N = 4096
 #: Whether omp_pause_resource_all tears the pool down, measured as threads in /proc/self/task:
 #:     libgomp soft 16->1   libgomp hard 16->1   libomp soft 16->16   libomp hard 16->2
 #: libomp's soft pause keeps the pool and still returns 0; its fork is safe through its atfork handler instead.
-TEARS_DOWN_POOL = {("gomp", "soft"): True, ("gomp", "hard"): True, ("omp", "soft"): False, ("omp", "hard"): True}
 
 
 def thread_count():
@@ -63,7 +62,7 @@ def build(tmp_path, runtime):
     )
     assert proc.returncode == 0, proc.stderr[-800:]
     needed = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True).stdout
-    assert any(f"[lib{r}.so" in needed for r in (runtime, "omp")), f"expected lib{runtime} in DT_NEEDED, got:\n{needed}"
+    assert f"[lib{runtime}.so" in needed, f"expected lib{runtime} in DT_NEEDED, got:\n{needed}"
     return so
 
 
@@ -87,7 +86,7 @@ def call_kernel(so, n=N, threads=POOL_THREADS):
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
 def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path, runtime):
-    """Without pausing the pool, the libgomp child hangs until the 900 s timeout with nothing to read."""
+    """Without pausing the pool, the libgomp child hangs until the 60 s timeout with nothing to read."""
     so = build(tmp_path, runtime)
     call_kernel(so)  # the parent's pool is now live
     res = run_isolated(lambda: {"total": float(call_kernel(so).sum())}, timeout=60.0)
@@ -150,7 +149,6 @@ def mapped_omp():
 def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
     """The thread count, not a child that happened not to hang, shows the default (gomp, soft) pause tears the
     pool down; the libomp outlier cannot be isolated with both runtimes loaded, so it is only documented."""
-    assert TEARS_DOWN_POOL[("gomp", "soft")], "the default cell must be a genuine tear-down"
     so = build(tmp_path, "gomp")
     call_kernel(so)
     busy = thread_count()

@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""nest-forge owns the DaCe build (BUILD.md): generate DaCe's C++, compile+link it ourselves, call it via
+"""nest-forge owns the DaCe build (docs/build.md): generate DaCe's C++, compile+link it ourselves, call it via
 ctypes with manual init/program/exit -- not ``dace.compile``.
 
 Tests build real corpus nests through :mod:`nestforge.build.sdfg` and check the owned-built kernel matches the
@@ -12,7 +12,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import textwrap
 import warnings
 from pathlib import Path
@@ -28,7 +27,6 @@ from nestforge.build.toolchain import LIBOMP, lib_findable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
-from nestforge.corpus.bench import iter_dace_kernels
 from nestforge.phases.scopes import parallel_top_level_maps
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.corpus.translate import prepare
@@ -45,29 +43,30 @@ from nestforge.build.toolchain import (
     llvm_version,
     parse_params,
 )
-
-
-def kernels():
-    return {k.short_name: k for k in iter_dace_kernels()}
+from helpers import corpus_kernel
 
 
 def first_nest(short):
-    sdfg = kernels()[short].to_sdfg(simplify=True)
+    sdfg = corpus_kernel(short).to_sdfg(simplify=True)
     parent, node = parallel_top_level_maps(sdfg)[0]
     return extract_nest_to_sdfg(parent, node, name="nest")
 
 
-def owned_build_matches_oracle(short, size=48, opts=None):
+def prepared(short, size, seed, out_dir):
+    """The first nest of ``short``, its sizes (shape symbols at ``size``, the rest 0), inputs and NumPy oracle."""
     boundary = first_nest(short)
     shape_syms = {
         s for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
     }
     sizes = {s: (size if s in shape_syms else 0) for s in boundary.symbols}
-    inputs = make_inputs(boundary, sizes, seed=0)
-    prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
-    oracle = run_oracle(prep, boundary, inputs, sizes)
+    inputs = make_inputs(boundary, sizes, seed=seed)
+    oracle = run_oracle(prepare(boundary, "k", out_dir / "k"), boundary, inputs, sizes)
+    return boundary, sizes, inputs, oracle
 
-    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")), opts)
+
+def owned_build_matches_oracle(tmp_path, short, size=48, opts=None):
+    boundary, sizes, inputs, oracle = prepared(short, size, 0, tmp_path)
+    built = build_sdfg(boundary.standalone_sdfg, tmp_path / "build", opts)
     buf = {k: v.copy() for k, v in inputs.items()}
     built.run(buf, sizes)  # init -> program -> exit
     for o in oracle:
@@ -79,14 +78,14 @@ def test_dace_runtime_include_exists():
     assert (dace_runtime_include() / "dace" / "dace.h").exists()
 
 
-def test_owned_build_gemm_matches_oracle():
+def test_owned_build_gemm_matches_oracle(tmp_path):
     """gemm: int64_t size symbols + a Scalar (alpha/beta) passed by value through the owned build."""
-    owned_build_matches_oracle("scientific_computing/dense_linear_algebra/gemm/gemm")
+    owned_build_matches_oracle(tmp_path, "scientific_computing/dense_linear_algebra/gemm/gemm")
 
 
-def test_owned_build_jacobi_matches_oracle():
+def test_owned_build_jacobi_matches_oracle(tmp_path):
     """jacobi_1d: an ``int`` (not int64_t) size symbol -- guards the per-parameter ctype marshaling."""
-    owned_build_matches_oracle("scientific_computing/structured_grids/jacobi_1d/jacobi_1d")
+    owned_build_matches_oracle(tmp_path, "scientific_computing/structured_grids/jacobi_1d/jacobi_1d")
 
 
 def without_search_paths(flags):
@@ -95,7 +94,7 @@ def without_search_paths(flags):
 
 
 def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
-    """Where a runtime lives is ASKED (driver ``-print-search-dirs``, then the loader cache), because a
+    """Where a runtime lives is asked (driver ``-print-search-dirs``, then the loader cache), because a
     hardcoded distro ladder goes stale per distro and per toolchain version. Guessed layouts survive only
     as a last-resort hint, after every query."""
     cc = "g++" if shutil.which("g++") else "gcc"
@@ -103,7 +102,7 @@ def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
     assert dirs and all(os.path.isabs(d) for d in dirs), dirs
     assert driver_search_dirs("no-such-compiler-42") == ()  # a missing driver is empty, never a crash
     # libc is in the loader cache on every Linux box, so this exercises the parse without pinning a path.
-    # Assert NON-EMPTY: `all()` over [] passes, which would green-light a layer that found nothing at all
+    # Assert non-empty: `all()` over [] passes, which would green-light a layer that found nothing at all
     # (e.g. ldconfig unreachable because /usr/sbin is off PATH -- the exact failure this must catch).
     libc_dirs = ldconfig_dirs("c")
     assert libc_dirs and all(os.path.isabs(d) for d in libc_dirs), libc_dirs
@@ -115,7 +114,7 @@ def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
 def test_llvm_version_parses_the_number_not_the_string():
     assert llvm_version(Path("/usr/lib/llvm-21/lib")) == (21,)
     assert llvm_version(Path("/usr/lib/llvm-9/lib")) == (9,)
-    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == (18, 1)  # point release ranks ABOVE bare 18
+    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == (18, 1)  # point release ranks above bare 18
     assert llvm_version(Path("/usr/lib/llvm-18/lib")) < llvm_version(Path("/usr/lib/llvm-18.1/lib"))
     assert llvm_version(Path("/usr/lib/x86_64-linux-gnu")) == (-1,)  # not an llvm-N dir at all
 
@@ -146,39 +145,41 @@ def test_hint_dirs_is_a_total_order_so_two_identical_boxes_agree(tmp_path, monke
     monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINT_ROOTS", (str(root),))
     monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINTS", ())
 
-    assert hint_dirs() == hint_dirs()  # stable across calls
-    assert hint_dirs()[0].endswith("llvm-18.1/lib")  # newest first, ties broken by path
+    # newest first; the llvm-18 tie is broken by path, descending
+    assert hint_dirs() == [
+        str(root / "llvm-18.1" / "lib"),
+        str(root / "llvm-18" / "lib64"),
+        str(root / "llvm-18" / "lib"),
+    ]
 
 
-def test_ldconfig_candidates_are_version_ranked_before_first_match(monkeypatch):
-    """The loader cache lists dirs in ITS order, and linkable_lib_dir returns the FIRST hit -- so without
+def test_ldconfig_candidates_are_version_ranked_before_first_match(monkeypatch, cold_lookup_caches):
+    """The loader cache lists dirs in its order, and linkable_lib_dir returns the first hit -- so without
     ranking, the version fix in hint_dirs is unreachable whenever ldconfig knows any llvm dir at all."""
     monkeypatch.setattr(toolchain_mod, "linker_finds", lambda soname, compiler: False)
     monkeypatch.setattr(toolchain_mod, "env_library_dirs", lambda: [])
     monkeypatch.setattr(toolchain_mod, "driver_lib_path", lambda soname, compiler: None)
     monkeypatch.setattr(toolchain_mod, "driver_search_dirs", lambda compiler: [])
     monkeypatch.setattr(toolchain_mod, "llvm_config_libdir", lambda: None)
-    # cache order is deliberately oldest-first, the order that used to win
+    # cache order is deliberately oldest-first, so only ranking puts llvm-18 first
     monkeypatch.setattr(toolchain_mod, "ldconfig_dirs", lambda soname: ["/opt/llvm-14/lib", "/opt/llvm-18/lib"])
     monkeypatch.setattr(toolchain_mod.Path, "exists", lambda self: "llvm-" in str(self))
 
-    linkable_lib_dir.cache_clear()
     assert linkable_lib_dir("omp", "g++") == "/opt/llvm-18/lib"
-    linkable_lib_dir.cache_clear()
 
 
 def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
-    """The OpenMP runtime maps to the right flag PER COMPILER, so mixed-compiler builds share ONE runtime."""
+    """The OpenMP runtime maps to the right flag per compiler, so mixed-compiler builds share one runtime."""
     rt = OpenMPRuntime()  # default libomp
     assert compiler_family("gfortran") == "gnu" and compiler_family("flang") == "llvm"
     assert compiler_family("icx") == "llvm"
-    # LLVM family selects the runtime BY NAME (flang -fopenmp=libomp).
+    # LLVM family selects the runtime BY name (flang -fopenmp=libomp).
     assert rt.compile_flags("flang") == ["-fopenmp=libomp"]
     assert rt.compile_flags("clang++") == ["-fopenmp=libomp"]
     assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
     # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
     assert rt.compile_flags("g++") == ["-fopenmp"] and without_search_paths(rt.link_flags("g++")) == ["-lomp"]
-    # a lib_dir threads onto the link line as a -L/-rpath PAIR (so the .so is found at run time too),
+    # a lib_dir threads onto the link line as a -L/-rpath pair (so the .so is found at run time too),
     # and both are discovery, not selection -- without_search_paths must drop both.
     pinned = OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
     assert "-L/opt/omp/lib" in pinned and "-Wl,-rpath,/opt/omp/lib" in pinned
@@ -197,12 +198,12 @@ def test_openmp_runtime_registry_covers_the_popular_runtimes():
 
 
 def test_openmp_abi_compatibility_is_enforced():
-    """A runtime is usable only if the compiler can actually LINK it, which depends on HOW the family
+    """A runtime is usable only if the compiler can actually link it, which depends on how the family
     selects a runtime, not ABI alone: gcc links any gomp-capable runtime by soname; LLVM name-selects
     only libomp/libiomp5 (kmpc ABI). Mismatches raise."""
     from nestforge.build.toolchain import LIBGOMP, LIBIOMP5, LIBOMP
 
-    # clang name-selects libomp/libiomp5 but NOT libgomp (no __kmpc_*).
+    # clang name-selects libomp/libiomp5 but not libgomp (no __kmpc_*).
     assert LIBOMP.compatible("clang++") and LIBIOMP5.compatible("clang++")
     assert not LIBGOMP.compatible("clang++")
     with pytest.raises(ValueError, match="kmpc"):  # clang + libgomp: wrong ABI
@@ -212,31 +213,20 @@ def test_openmp_abi_compatibility_is_enforced():
         assert rt.compatible("g++")
 
 
-def test_gcc_compiled_kernel_links_against_libomp():
+def test_gcc_compiled_kernel_links_against_libomp(tmp_path):
     """A g++-compiled kernel (GOMP_* calls under -fopenmp) links + runs against libomp via its GOMP-compat
     ABI -- proof a GCC node library can share the same libomp a clang/flang node library uses."""
     assert ctypes.util.find_library("omp") is not None, "libomp not installed (setup_apt.sh: libomp-dev)"
-    boundary = first_nest("scientific_computing/dense_linear_algebra/gemm/gemm")
-    shape_syms = {
-        s for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
-    }
-    sizes = {s: (32 if s in shape_syms else 0) for s in boundary.symbols}
-    inputs = make_inputs(boundary, sizes, seed=0)
-    prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
-    oracle = run_oracle(prep, boundary, inputs, sizes)
-    built = build_sdfg(
-        boundary.standalone_sdfg,
-        Path(tempfile.mkdtemp(prefix="nf_omp_")),
-        BuildOptions(compiler="g++", openmp=OpenMPRuntime()),
-    )  # gcc object on libomp
-    buf = {k: v.copy() for k, v in inputs.items()}
-    built.run(buf, sizes)
-    for o in oracle:
-        np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
+    owned_build_matches_oracle(
+        tmp_path,
+        "scientific_computing/dense_linear_algebra/gemm/gemm",
+        size=32,
+        opts=BuildOptions(compiler="g++", openmp=OpenMPRuntime()),
+    )
 
 
 def parallel_axpy_sdfg(name="paxpy"):
-    """A minimal SDFG with ONE genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel for``):
+    """A minimal SDFG with one genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel for``):
     ``Z[i] = X[i] + Y[i]``. Hermetic, so the OpenMP link matrix tests a guaranteed-parallel loop."""
     N = dace.symbol("N", dace.int64)
     sdfg = dace.SDFG(name)
@@ -251,35 +241,29 @@ def parallel_axpy_sdfg(name="paxpy"):
     return sdfg
 
 
-def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch):
-    """REGRESSION: the linker and the loader don't search the same places, so "installed" doesn't imply
-    "-l<soname> resolves" -- e.g. Ubuntu's libomp-dev package moves the lib off the default linker path
-    across releases. Pinning the apt package can't fix that; finding the file can.
-    """
+def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch, cold_lookup_caches):
+    """The linker and the loader search different places, so "installed" does not imply "-l<soname> resolves":
+    Ubuntu's libomp-dev moves the library off the default linker path across releases."""
     (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
-    # LD_LIBRARY_PATH (not LIBRARY_PATH): the LOADER searches it, the LINKER does not -- exactly where a
+    # LD_LIBRARY_PATH (not LIBRARY_PATH): the loader searches it, the linker does not -- exactly where a
     # spack/module runtime lives. LIBRARY_PATH would prove nothing (the linker already searches that).
     monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
-    toolchain_mod.linkable_lib_dir.cache_clear()
     rt = OpenMPRuntime(name="libfakeomp", soname="fakeomp")
     assert not toolchain_mod.linker_finds("fakeomp", "g++"), "premise: the linker cannot find it unaided"
     assert f"-L{tmp_path}" in rt.link_flags("g++")
     assert toolchain_mod.lib_linkable("fakeomp", "g++")  # and the honest probe agrees it can be linked
-    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
-def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch):
+def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch, cold_lookup_caches):
     # Discovery must stay invisible when the lib is already on the default path. Forced rather than read
     # off this box, so the assertion means the same thing wherever it runs.
     monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: True)
-    toolchain_mod.linkable_lib_dir.cache_clear()
     assert OpenMPRuntime().link_flags("g++") == ["-lomp"]
-    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
 def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
     """``libomp.so`` IS a symlink (-> ``libomp.so.5``) and the two can live in different directories, so the
-    answer needs normalising WITHOUT following it: ``resolve()`` would follow the symlink to a directory
+    answer needs normalising without following it: ``resolve()`` would follow the symlink to a directory
     with no ``libomp.so``, so lexical normalisation is used instead.
     """
     link_dir, target_dir = tmp_path / "linkdir", tmp_path / "targetdir"
@@ -297,25 +281,23 @@ def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp
     assert got.parent == link_dir, "the -L must be the symlink's own dir, never its target's"
 
 
-def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch):
+def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch, cold_lookup_caches):
     # A spack/module runtime is pinned by hand and must win; "" means "I know: use a bare -l".
     monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: False)
-    toolchain_mod.linkable_lib_dir.cache_clear()
     assert "-L/opt/spack/omp" in OpenMPRuntime(lib_dir="/opt/spack/omp").link_flags("g++")
     assert OpenMPRuntime(lib_dir="").link_flags("g++") == ["-lomp"]
-    toolchain_mod.linkable_lib_dir.cache_clear()
 
 
-def test_parallel_map_emits_omp_pragma():
+def test_parallel_map_emits_omp_pragma(tmp_path):
     """The sanity nest is actually parallel: DaCe lowers ``CPU_Multicore`` to an OpenMP pragma in the
     generated C++ (so the cross-compiler tests below really exercise the runtime link)."""
     from nestforge.build.sdfg import generate_program_folder
 
-    frame = generate_program_folder(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
+    frame = generate_program_folder(parallel_axpy_sdfg(), tmp_path / "nf_omp_src")
     assert "#pragma omp parallel for" in frame.read_text()
 
 
-# Each compiler builds the SAME parallel nest, linking the ONE mandated runtime (libomp) -- the
+# Each compiler builds the same parallel nest, linking the one mandated runtime (libomp) -- the
 # mixed-compiler / single-runtime sanity matrix. icpx is a vendor compiler, only ever present in a
 # vendor-configured environment (setup_apt.sh --oneapi).
 @pytest.mark.parametrize(
@@ -326,7 +308,7 @@ def test_parallel_map_emits_omp_pragma():
         pytest.param("icpx", marks=pytest.mark.vendor),  # vendor compiler: absent on the CI runner
     ],
 )
-def test_parallel_loop_links_openmp_across_compilers(compiler):
+def test_parallel_loop_links_openmp_across_compilers(tmp_path, compiler):
     assert shutil.which(compiler) is not None, f"{compiler} not on PATH"
     rt = LIBOMP
     assert lib_findable(rt.soname, rt.lib_dir), (
@@ -338,25 +320,25 @@ def test_parallel_loop_links_openmp_across_compilers(compiler):
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     built = build_sdfg(
         parallel_axpy_sdfg(),
-        Path(tempfile.mkdtemp(prefix="nf_par_")),
+        tmp_path / "nf_par",
         BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++20"], openmp=rt),
     )
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
 
-def test_build_tracks_optimization_and_compile_time():
+def test_build_tracks_optimization_and_compile_time(tmp_path):
     """Every owned build records both the codegen (optimization) time and the compile (toolchain) time."""
-    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_time_")))
+    built = build_sdfg(parallel_axpy_sdfg(), tmp_path / "nf_time")
     assert built.codegen_seconds > 0.0
     assert built.compile_seconds > 0.0
 
 
-def test_unload_after_close_is_a_noop():
+def test_unload_after_close_is_a_noop(tmp_path):
     """The documented lifecycle -- ``run()`` (init -> program -> close) then ``unload()`` once the sweep is
     done with a kernel -- must not raise: by the time ``unload()`` runs, ``close()`` has already dropped the
     handle, so there is nothing left for ``unload`` to reconcile."""
-    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_unload_")))
+    built = build_sdfg(parallel_axpy_sdfg(), tmp_path / "nf_unload")
     n = 8
     buf = {"X": np.zeros(n), "Y": np.zeros(n), "Z": np.zeros(n)}
     built.run(buf, {"N": n})
@@ -365,29 +347,29 @@ def test_unload_after_close_is_a_noop():
     assert built.lib is None
 
 
-def test_close_after_unload_raises_when_a_handle_is_still_open():
+def test_close_after_unload_raises_when_a_handle_is_still_open(tmp_path):
     """Misuse case: unloading the library while a handle from ``init()`` is still open leaves nothing able
     to run ``__dace_exit`` on that handle. This must fail loudly rather than silently leak the handle or
     crash on a null CDLL lookup."""
-    built = build_sdfg(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_unload2_")))
+    built = build_sdfg(parallel_axpy_sdfg(), tmp_path / "nf_unload2")
     built.init({"N": 8})
     built.unload()
     with pytest.raises(RuntimeError, match="unload"):
         built.close()
 
 
-def test_external_linking_build_is_correct():
+def test_external_linking_build_is_correct(tmp_path):
     """A nest built as a separate static ``.a`` (link_external) and linked into the ``.so`` runs identically
     to the monolithic build -- external linking is correct, not merely timeable."""
     built = owned_build_matches_oracle(
-        "scientific_computing/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True)
+        tmp_path, "scientific_computing/dense_linear_algebra/gemm/gemm", opts=BuildOptions(link_external=True)
     )
     assert built.compile_seconds > 0.0
     assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
 
 
 def test_parse_params_strips_the_const_qualifier_only_as_a_word():
-    """``const`` is a QUALIFIER, not a substring: params literally named ``constant``/``const_term`` must
+    """``const`` is a qualifier, not a substring: params literally named ``constant``/``const_term`` must
     keep their name, or the ctypes bind looks them up under a mangled key."""
     params = parse_params("k_state_t *__state, const double * __restrict__ constant, const int const_term")
     assert [p.name for p in params] == ["constant", "const_term"]
@@ -396,14 +378,14 @@ def test_parse_params_strips_the_const_qualifier_only_as_a_word():
 
 
 def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
-    """An unmapped by-value type must fail LOUD: defaulting to int64 puts a float in a GP register (SysV
+    """An unmapped by-value type must fail loud: defaulting to int64 puts a float in a GP register (SysV
     ABI), so the callee reads garbage with no ctypes error."""
     with pytest.raises(ValueError, match="uint64_t"):
         parse_params("k_state_t *__state, uint64_t n")
 
 
 def test_parse_params_refuses_an_unmapped_pointer_base_type():
-    """An unmapped pointer base type must fail LOUD too, the same as the scalar branch: silently defaulting
+    """An unmapped pointer base type must fail loud too, the same as the scalar branch: silently defaulting
     to ``double*`` marshals a differently-sized element through the ABI with no ctypes error."""
     with pytest.raises(ValueError, match="uint64_t"):
         parse_params("k_state_t *__state, uint64_t *n")
@@ -420,19 +402,12 @@ def test_int_and_complex_pointers_bind_by_address():
     ]
 
 
-def test_owned_build_reusable_handle_program():
+def test_owned_build_reusable_handle_program(tmp_path):
     """After one init, __program can be called repeatedly in place (the timing path) on one handle, and
     every call still computes the right answer (this nest's output does not read its own prior value, so
     repeating the call is idempotent and one oracle run covers every rep)."""
-    boundary = first_nest("scientific_computing/dense_linear_algebra/gemm/gemm")
-    shape_syms = {
-        s for s in boundary.symbols if any(s in str(d.shape) for d in boundary.standalone_sdfg.arrays.values())
-    }
-    sizes = {s: (32 if s in shape_syms else 0) for s in boundary.symbols}
-    inputs = make_inputs(boundary, sizes, seed=1)
-    prep = prepare(boundary, "k", Path(tempfile.mkdtemp()))
-    oracle = run_oracle(prep, boundary, inputs, sizes)
-    built = build_sdfg(boundary.standalone_sdfg, Path(tempfile.mkdtemp(prefix="nf_build_")))
+    boundary, sizes, inputs, oracle = prepared("scientific_computing/dense_linear_algebra/gemm/gemm", 32, 1, tmp_path)
+    built = build_sdfg(boundary.standalone_sdfg, tmp_path / "build")
     buf = {k: v.copy() for k, v in inputs.items()}
     built.init(sizes)
     try:
@@ -464,7 +439,7 @@ def test_toolchain_is_importable_without_dace():
 
 # compiler diagnostics on the DaCe-generated C++
 def test_resolved_flags_guarantee_the_standard_and_warnings_without_forcing_them():
-    """Both are FILLED IN, not appended blindly: nearly every caller passes its own ``flags`` for one axis
+    """Both are filled IN, not appended blindly: nearly every caller passes its own ``flags`` for one axis
     (an -O level, an FP mode) and would otherwise lose them. ``-Werror`` is deliberately absent -- this
     compiles generated C++ we do not own, so a warning is a codegen signal, not a failed measurement."""
     assert BuildOptions().resolved_flags()[-1] == "-Wall"
@@ -493,19 +468,25 @@ def test_a_clean_compile_warns_about_nothing(tmp_path):
         toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "clean.o")])
 
 
-def test_a_cpu_build_links_an_openmp_runtime_by_default():
-    """dace emits `#pragma omp parallel for` for every multicore map. A build that passes no OpenMP flag
-    DROPS the pragma and runs the schedule serially -- silently, since the program is still correct. So the
-    runtime is resolved rather than left to the caller."""
-    rt = toolchain_mod.usable_openmp("g++")
-    assert rt is not None, "no OpenMP runtime linkable by g++ on this box"
-    assert "-fopenmp" in " ".join(rt.compile_flags("g++"))
+def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path, monkeypatch):
+    """DaCe emits ``#pragma omp parallel for`` for every multicore map; a build without an OpenMP flag drops the
+    pragma and runs serially, silently, so a build that names no runtime gets the resolved one."""
+    seen = []
+    monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
+    monkeypatch.setattr(build_mod, "usable_openmp", lambda compiler: toolchain_mod.LIBOMP)
+    src = tmp_path / "x.cpp"
+    src.write_text("int main() { return 0; }\n")
+
+    build_mod.compile(src, tmp_path, "x", BuildOptions())
+
+    issued = " ".join(t for cmd in seen for t in cmd)
+    assert "-fopenmp" in issued and "-lomp" in issued, issued
 
 
 def test_the_resolved_runtime_is_named_never_a_bare_fopenmp():
     """A bare -fopenmp lets each family link its own default (gcc->libgomp, clang->libomp), so a sweep
     spanning compilers ends up with two thread pools in one process. libomp is preferred because it is
-    LLVM-selectable AND GOMP-compatible, so gcc- and clang-built objects share one pool."""
+    LLVM-selectable and GOMP-compatible, so gcc- and clang-built objects share one pool."""
     assert toolchain_mod.usable_openmp("g++") is toolchain_mod.usable_openmp("clang++")
     assert toolchain_mod.usable_openmp("g++").name == "libomp"
 
@@ -534,13 +515,13 @@ def test_compiler_warnings_are_reported_but_bounded():
     try:
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter("always")
-            for cell in range(50):  # the same KIND, 50 different files
+            for cell in range(50):  # the same kind, 50 different files
                 toolchain_mod.warn_once("g++", f"/build/cell{cell}/x.cpp:{cell}:9: warning: unused [-Wunused-variable]")
         assert len(seen) == 1, f"one warning kind reported {len(seen)} times"
         summary = toolchain_mod.warning_summary()
         assert any("unused-variable" in line and "49 further" in line for line in summary), summary
 
-        # a genuinely NEW kind is still reported, up to the budget
+        # a genuinely new kind is still reported, up to the budget
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter("always")
             toolchain_mod.warn_once("g++", "x.cpp:1:1: warning: set but not used [-Wunused-but-set-variable]")
@@ -582,7 +563,13 @@ def isolate_lookup(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(toolchain_mod, "ldconfig_dirs", lambda soname: [])
     monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINT_ROOTS", ())
     monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINTS", ())
-    for cache in (toolchain_mod.driver_lib_path, toolchain_mod.llvm_config_libdir, toolchain_mod.linkable_lib_dir):
+    # a test may have looked up the real runtime before isolating, so drop what that cached
+    for cache in (
+        toolchain_mod.driver_lib_path,
+        toolchain_mod.driver_search_dirs,
+        toolchain_mod.llvm_config_libdir,
+        toolchain_mod.linkable_lib_dir,
+    ):
         cache.cache_clear()
     return bin_dir
 

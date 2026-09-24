@@ -20,7 +20,7 @@ f64 = dace.float64
 
 
 def two_statement_map() -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
-    """One flat map computing ``b = a + 1`` and ``c = a * 2`` -- both statements under ONE map."""
+    """One flat map computing ``b = a + 1`` and ``c = a * 2`` -- both statements under one map."""
     sdfg = dace.SDFG("multi_statement_map")
     sdfg.add_array("a", [N], f64)
     sdfg.add_array("b", [N], f64)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the epoch-stamped-id safety layer over the 4-phase API, and the three distinct decision axes
 it exposes -- region structure (Level 1), nest fusion (Level 2), and offload (Phase 2). These tests cover
-the layer Session ADDS -- id minting, the stale-handle guard on every mutation, kind-checking, the
+the layer Session adds -- id minting, the stale-handle guard on every mutation, kind-checking, the
 region/nest distinction, and that each tool returns plain JSON-able data (never a live node). The wrapped
 transforms have their own tests; here we only prove Session drives them safely.
 """
@@ -40,7 +40,7 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
     T = np.empty_like(A)  # transient producer output
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
-        live_out[i] = A[i] * 3.0  # a second, NON-transient producer output
+        live_out[i] = A[i] * 3.0  # a second, non-transient producer output
     for i in dace.map[0:N]:
         C[i] = T[i] * 2.0 + live_out[i]  # consumer reads both
 
@@ -99,7 +99,7 @@ def test_fission_all_bumps_epoch():
     stale = [m["id"] for m in s.list_fusions()]  # mint some epoch-0 handles
     s.fission_all()
     assert s.epoch == 1
-    # Every epoch-0 handle is gone. The dict is not EMPTY: fission_all returns the fresh tree, and
+    # Every epoch-0 handle is gone. The dict is not empty: fission_all returns the fresh tree, and
     # describe() stamps live epoch-1 ids on it so the agent can act on what it was just handed.
     assert not any(hid.startswith("e0:") for hid in s.handles)
     for hid in stale:
@@ -192,7 +192,7 @@ def test_set_kernel_sets_leaf_fields_without_bumping_epoch():
 
 def test_set_kernel_selects_the_extern_call_expansion():
     """The three leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion
-    would emit the numpy reference and Mode A would time the FRAMEWORK's kernel while reporting it as the
+    would emit the numpy reference and Mode A would time the framework's kernel while reporting it as the
     agent's. The outputs would still be correct and the number still plausible -- nothing else catches it."""
     s = make_session()
     kernel_id = s.define_scopes()[0]["id"]

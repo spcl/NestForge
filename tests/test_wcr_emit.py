@@ -70,7 +70,7 @@ def test_a_reduction_leaving_an_inner_map_is_applied_once():
     t = st.add_tasklet("t", {"inp"}, {"res"}, "res = inp")
     st.add_memlet_path(a, ome, ime, t, dst_conn="inp", memlet=dc.Memlet("A[i, j]"))
     st.add_edge(t, "res", acc, None, dc.Memlet("acc[0]"))
-    # acc reduces out through BOTH exits; the inner->outer exit edge carries the WCR from a MapExit source.
+    # acc reduces out through both exits; the inner->outer exit edge carries the WCR from a MapExit source.
     st.add_memlet_path(acc, imx, omx, o, memlet=dc.Memlet("out[i]", wcr="lambda x, y: x + y"))
     sdfg.validate()
     kernel = vars(load_emitted(sdfg_to_numpy(sdfg, "nested_wcr"), "nested_wcr"))["nested_wcr"]
@@ -202,7 +202,7 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
 
 
 def test_two_distinct_wcr_out_edges_from_one_tasklet():
-    """One tasklet with two output connectors carrying DIFFERENT WCRs (Sum + Max) must emit both
+    """One tasklet with two output connectors carrying different WCRs (Sum + Max) must emit both
     augmented assignments independently -- each accumulator reduces over the full range."""
     sdfg = dc.SDFG("multi_wcr")
     sdfg.add_array("A", [N], dc.float64)
@@ -325,9 +325,8 @@ def test_wcr_from_nested_sdfg_at_state_body_raises():
 
 
 def test_nonwcr_nested_map_passthrough_at_map_exit_still_emits():
-    """Regression: the map-exit guard must fire ONLY for wcr!=None. A plain (non-WCR) nested-map
-    write-out through the outer exit must still emit, proving the narrowing did not start rejecting
-    ordinary passthroughs from a non-Tasklet source."""
+    """The map-exit guard fires only on a WCR edge, so a plain nested-map write-out through the outer exit
+    still emits."""
     sdfg = dc.SDFG("nonwcr_nested_map")
     sdfg.add_array("A", [N, N], dc.float64)
     sdfg.add_array("out", [N], dc.float64)

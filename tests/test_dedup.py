@@ -79,7 +79,7 @@ def test_parsing_strips_the_address_column_the_reloc_comment_and_the_branch_slot
 
 def test_parsing_keeps_an_immediate_that_only_differs_in_value():
     """The exact risk :data:`BRANCH_TARGET` creates -- stripping a branch address must not strip an
-    IMMEDIATE. Asserted on the normalizer directly: two objects differing by one operand are hard to get
+    immediate. Asserted on the normalizer directly: two objects differing by one operand are hard to get
     out of a real compiler, which is what made an end-to-end version of this test pass vacuously."""
     two = parse_disassembly(DISASM)["k_fp64"]
     three = parse_disassembly(DISASM.replace("$0x2", "$0x3"))["k_fp64"]
@@ -87,7 +87,7 @@ def test_parsing_keeps_an_immediate_that_only_differs_in_value():
 
 
 def test_parsing_keeps_a_rip_offset_that_only_differs_in_value():
-    """Same argument one step out: the reloc COMMENT is dropped, the addressing operand is not."""
+    """Same argument one step out: the reloc comment is dropped, the addressing operand is not."""
     a = parse_disassembly(DISASM)["k_fp64"]
     b = parse_disassembly(DISASM.replace("0x0(%rip)", "0x8(%rip)"))["k_fp64"]
     assert a != b

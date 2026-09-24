@@ -18,6 +18,7 @@ from nestforge.corpus.bench import dace_kernel_names, iter_dace_kernels, module_
 from nestforge.ir.emit_libnode import is_scalar
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
+from helpers import corpus_kernel
 
 
 def symbol_scalar(sdfg, name):
@@ -28,10 +29,6 @@ def symbol_scalar(sdfg, name):
     return not any(e.data is not None and e.data.data == name for st in sdfg.all_states() for e in st.edges())
 
 
-def kernels():
-    return {k.short_name: k for k in iter_dace_kernels()}
-
-
 def test_emit_numpy_labels_regions_and_states():
     """Emitted numpy carries ``# loop region (label)`` / ``# state (label)`` provenance comments and stays
     valid python -- a block that emits only a comment (empty state/loop) must still get a ``pass``."""
@@ -40,7 +37,7 @@ def test_emit_numpy_labels_regions_and_states():
     from nestforge.ir.emit_numpy import body_or_pass
 
     src = sdfg_to_numpy(
-        kernels()["scientific_computing/map_reduce/azimint_hist/azimint_hist"].to_sdfg(simplify=True), "k"
+        corpus_kernel("scientific_computing/map_reduce/azimint_hist/azimint_hist").to_sdfg(simplify=True), "k"
     )
     ast.parse(src)  # valid python despite the interleaved comments
     assert "# loop region (" in src
@@ -52,7 +49,7 @@ def test_emit_numpy_labels_regions_and_states():
 def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
     """Emit ``short``, allocate every buffer parameter, run it, and return the buffers."""
     if sdfg is None:
-        sdfg = kernels()[short].to_sdfg(simplify=True)
+        sdfg = corpus_kernel(short).to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, fn_name)
     kernel = vars(load_emitted(src, fn_name))[fn_name]
     # size loop-shaped scratch exactly as the emitter widened it (a decreasing extent like M-i-1
@@ -82,30 +79,27 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
 
 
 def test_corpus_exposes_dace_kernels():
-    # HPCAgent-Bench regenerates each gitignored _dace.py on demand
-    # (nestforge.corpus.materialize_dace_corpus); the corpus exposes every hpc/ml kernel whose numpy
-    # reference numpyto can lower to dace. That emittable set grows as the translator improves, so assert a
-    # floor plus the specific kernels this suite exercises -- not a brittle exact count tied to one machine's
-    # partial generation.
-    hpc = set(dace_kernel_names("hpc"))
-    assert len(hpc) >= 50, len(hpc)
+    """HPCAgent-Bench regenerates each gitignored ``_dace.py`` on demand; the set it can lower grows with the
+    translator, so this asserts a floor plus the kernels this suite exercises, not an exact count."""
+    science = set(dace_kernel_names("scientific_computing"))
+    assert len(science) >= 50, len(science)
     assert {
         "scientific_computing/dense_linear_algebra/gemm/gemm",
         "scientific_computing/structured_grids/jacobi_1d/jacobi_1d",
         "scientific_computing/dense_linear_algebra/lu/lu",
-    } <= hpc
-    assert len(dace_kernel_names("ml")) >= 5, len(dace_kernel_names("ml"))
+    } <= science
+    assert len(dace_kernel_names("machine_learning")) >= 5, len(dace_kernel_names("machine_learning"))
 
 
-def test_foundation_track_reachable_via_iter_dace_kernels():
-    """Guards against foundation silently yielding 0 kernels again (it did until DACE_TRACKS included
-    it): sample the first two non-TSVC foundation kernels and check each still builds to an SDFG.
-    ``to_sdfg`` runs isolated -- a freshly-generated ``_dace.py`` can crash the codegen it drives."""
-    foundation = sorted(
-        (k for k in iter_dace_kernels("foundation") if "tsvc" not in k.short_name), key=lambda k: k.short_name
+def test_the_loop_level_track_builds_to_sdfgs():
+    """Every track in ``DACE_TRACKS`` must yield kernels; sample the first two non-TSVC loop-level kernels and check
+    each still builds. ``to_sdfg`` runs isolated, since a freshly generated ``_dace.py`` can crash codegen."""
+    loop_level = sorted(
+        (k for k in iter_dace_kernels("loop_level_reasoning") if "tsvc" not in k.short_name),
+        key=lambda k: k.short_name,
     )
-    assert foundation, "foundation track yielded no kernels"
-    for kernel in foundation[:2]:
+    assert loop_level, "loop_level_reasoning yielded no kernels"
+    for kernel in loop_level[:2]:
         result = run_isolated(lambda k=kernel: {"ok": k.program().to_sdfg(simplify=True) is not None})
         assert result.get("ok"), f"{kernel.short_name}: {result.get('error')}"
 
@@ -216,7 +210,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     masked ``if I[j,k]: Z[j,k] = Z[j,k]**2 + C[j,k]`` writes the outer buffer in place."""
     XN, YN = 20, 16
     scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
-    sdfg = kernels()["scientific_computing/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+    sdfg = corpus_kernel("scientific_computing/map_reduce/mandelbrot1/mandelbrot1").to_sdfg(simplify=True)
     src = sdfg_to_numpy(sdfg, "mandelbrot")
     mod = load_emitted(src, "mandelbrot")
     env = {symbolic.symbol("xn"): XN, symbolic.symbol("yn"): YN}
@@ -255,7 +249,7 @@ def test_emission_does_not_mutate_caller_sdfg():
     inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
     from dace.sdfg import nodes
 
-    sdfg = kernels()["scientific_computing/map_reduce/mandelbrot1/mandelbrot1"].to_sdfg(simplify=True)
+    sdfg = corpus_kernel("scientific_computing/map_reduce/mandelbrot1/mandelbrot1").to_sdfg(simplify=True)
 
     def nsdfg_in_subsets(g):
         return {
@@ -281,22 +275,22 @@ def test_nbody_nested_where_emits_and_computes():
     rng = np.random.default_rng(0)
     mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
     dt, G, soft = 0.01, 1.0, 0.1
-    # The stock-DaCe gaps below are BUILD failures, so guard the build ALONE. IndexError is also a
+    # The stock-DaCe gaps below are build failures, so guard the build alone. IndexError is also a
     # routine symptom of an emitter bug, and the emitter only runs after this point -- catching it
     # around the emit/run step too would turn a nest-forge regression into an xfail blamed on DaCe.
     #
-    # xfail, NOT skip: a skip is invisible to CI (which runs the unit set under NESTFORGE_CI_NO_SKIP)
+    # xfail, not skip: a skip is invisible to CI (which runs the unit set under NESTFORGE_CI_NO_SKIP)
     # and, worse, reads as "nothing to see here". These are known upstream gaps, which is what xfail
     # means. It is raised imperatively rather than via a decorator on purpose: a decorator would mark
-    # the WHOLE test expected-to-fail, so an emitter regression further down would land in the same
+    # the whole test expected-to-fail, so an emitter regression further down would land in the same
     # green xfail bucket and hide -- exactly what the meta-test below exists to prevent. Raised here,
     # it fires only for the build gap, and the day DaCe can build nbody the test simply runs and
     # validates, which is the notification.
     try:
-        sdfg = kernels()["scientific_computing/n_body_methods/nbody/nbody"].to_sdfg(simplify=True)
+        sdfg = corpus_kernel("scientific_computing/n_body_methods/nbody/nbody").to_sdfg(simplify=True)
     except (DaceSyntaxError, IndexError, FileExistsError) as e:
         # DaCe-frontend gaps (not nest-forge): the boolean-mask assignment lowers to index loops that trip an
-        # IndexError, and ``np.empty(Nt + 1)`` registers ``Nt_plus_1`` as BOTH a scalar and a shape symbol so
+        # IndexError, and ``np.empty(Nt + 1)`` registers ``Nt_plus_1`` as both a scalar and a shape symbol so
         # add_symbol raises FileExistsError. The test runs once DaCe promotes the scalar instead of colliding.
         pytest.xfail(
             f"stock DaCe cannot lower nbody's masked assignment / Nt+1 scalar-symbol collision: {type(e).__name__}"
@@ -352,12 +346,12 @@ def test_nbody_nested_where_emits_and_computes():
 
 
 def test_nbody_xfail_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):
-    """The nbody xfail must stay pinned to the stock-DaCe FRONTEND gap (an IndexError out of ``to_sdfg``).
+    """The nbody xfail must stay pinned to the stock-DaCe frontend gap (an IndexError out of ``to_sdfg``).
     An IndexError raised once the SDFG is built comes from the emitter -- a nest-forge regression that has
     to fail the suite, since an xfail attributed to DaCe would hide it from CI entirely."""
 
     class BuiltSdfg:
-        """A build that SUCCEEDS -- so the DaCe-frontend gap is out of the picture and anything raised
+        """A build that succeeds -- so the DaCe-frontend gap is out of the picture and anything raised
         afterwards is the emitter's."""
 
         def to_sdfg(self, simplify=True):
@@ -395,7 +389,7 @@ def test_azimint_hist_three_level_nested_return_and_computes():
         )
     except UnsupportedNest:
         # Genuine upstream gap, not a missing tool -- xfail (see the nbody test above for why xfail,
-        # never skip: CI's zero-skip unit set must stay green while a real fix still shows up as PASS.
+        # never skip: CI's zero-skip unit set must stay green while a real fix still shows up as pass.
         pytest.xfail("nested-SDFG emission unavailable in this DaCe")
 
     def hist(a, weights=None):
@@ -457,7 +451,7 @@ def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
         "scientific_computing/dense_linear_algebra/trisolv/trisolv", "trisolv", dict(N=N), dict(L=L, b=b)
     )
     assert "np.empty" not in src  # still C-style: no in-kernel allocation
-    x = call.get("x", call.get("__return"))
+    x = call["x"]
     np.testing.assert_allclose(x, np.linalg.solve(L, b))
 
 
@@ -468,7 +462,7 @@ def test_lu_loop_shaped_scratch_maxsized_and_computes():
     rng = np.random.default_rng(1)
     A0 = rng.random((N, N)) + N * np.eye(N)
     call, src = alloc_run("scientific_computing/dense_linear_algebra/lu/lu", "lu", dict(N=N), dict(A=A0.copy()))
-    A = call.get("A", call.get("__return"))
+    A = call["A"]
 
     ref = A0.copy()
     for i in range(N):
@@ -492,7 +486,7 @@ def test_covariance_decreasing_loop_scratch_and_computes():
         dict(M=M, N=Nrows),
         dict(data=data.copy(), float_n=np.array([fn])),
     )
-    cov = call.get("cov", call.get("__return"))
+    cov = call["cov"]
     d2 = data - data.mean(axis=0)
     ref = np.zeros((M, M))
     for i in range(M):
@@ -513,7 +507,7 @@ def test_syrk_increasing_loop_scratch_and_computes():
         dict(N=N, M=Mk),
         dict(A=A.copy(), C=C.copy(), alpha=np.array([alpha]), beta=np.array([beta])),
     )
-    Cout = call.get("C", call.get("__return"))
+    Cout = call["C"]
     ref = C.copy()
     for i in range(N):
         ref[i, : i + 1] *= beta
@@ -542,10 +536,9 @@ def test_jacobi_1d_loopregion_emits_and_computes():
 
 
 def test_corpus_program_is_the_entry_not_a_helper():
-    ks = {k.short_name: k for k in iter_dace_kernels()}
     # mlp_dace defines relu, softmax, then mlp; resnet has resnet_basicblock + a _gpu variant after it.
-    assert ks["machine_learning/mlp/mlp"].program().name.endswith("mlp")
-    assert ks["machine_learning/resnet/resnet"].program().name.endswith("resnet_basicblock")
+    assert corpus_kernel("machine_learning/mlp/mlp").program().name.endswith("mlp")
+    assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet_basicblock")
 
 
 def test_corpus_module_path_independent_of_namespace_path():

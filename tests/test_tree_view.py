@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ASCII tree the agent reads (:func:`nestforge.introspect.describe_graph`).
 
-The tree is the agent's whole view of the program, so its FORMAT is an interface: a change to it
+The tree is the agent's whole view of the program, so its format is an interface: a change to it
 changes what every agent prompt sees. The golden test below pins it in full, so a format change has
 to be made deliberately rather than drifting out of an unrelated edit.
 """
@@ -86,7 +86,7 @@ def test_indentation_tracks_the_level_in_the_label():
 
 
 def test_session_stamps_the_ids_that_act_on_each_line():
-    """B1: reading the tree and acting on it use ONE vocabulary. A nest line carries the very handle
+    """B1: reading the tree and acting on it use one vocabulary. A nest line carries the very handle
     can_fuse/fuse resolve -- not a label the agent has to match against a separate list_nests call."""
     sdfg = shaped.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
@@ -283,7 +283,7 @@ def test_a_reduction_is_named_on_the_kernel_line():
 
 
 def test_only_the_collapsed_axis_is_reported():
-    """The reduced axes are the map parameters the OUTPUT subset does not mention -- a map over
+    """The reduced axes are the map parameters the output subset does not mention -- a map over
     (i0, i1) writing C[i0] has collapsed i1 and only i1."""
     tree = tree_of(matvec)
     assert "over i1 ->" in tree and "over i0" not in tree, tree
@@ -344,7 +344,7 @@ def test_session_hands_back_one_kernel_body_by_its_tree_id():
 
 
 def test_a_reduction_body_is_folded():
-    """An explicit accumulate is the only POINT rendering of a reduction; `np.sum` is a whole-array
+    """An explicit accumulate is the only point rendering of a reduction; `np.sum` is a whole-array
     spelling that belongs to the slice form."""
     sdfg = matvec.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
@@ -365,7 +365,7 @@ def test_a_stale_id_does_not_silently_return_someone_elses_body():
         session.kernel_body(nest_id)
 
 
-# a kernel's REPRESENTATION: pure, runnable numpy
+# a kernel's representation: pure, runnable numpy
 
 
 def source_of_first_kernel(program):
@@ -378,7 +378,7 @@ def source_of_first_kernel(program):
 
 def test_a_kernel_source_is_a_whole_module_not_a_fragment():
     """`kernel_body` is the excerpt the tree prints; its statements reference loop variables that only
-    exist inside their headers. The REPRESENTATION has to be something an agent can run."""
+    exist inside their headers. The representation has to be something an agent can run."""
     _, _, source = source_of_first_kernel(shaped)
     assert source.startswith("import numpy as np")
     assert "\ndef kernel" in source
@@ -437,7 +437,7 @@ def test_cpp_is_the_cpp_half_of_the_one_c_family_emit():
     _, session, nest_id = session_and_first_nest(matvec)
     src = session.kernel_source(nest_id, lang="cpp")
     assert 'extern "C"' in src and "template" in src  # the templated C++ int_floor/int_ceil header
-    assert "#pragma omp" not in src  # NOT cpp_omp
+    assert "#pragma omp" not in src  # not cpp_omp
 
 
 def test_fortran_lowers_through_the_fortran_backend():

@@ -434,7 +434,7 @@ def desc_of_shape(shape):
 
 def test_scalar_elem_indexes_every_dimension():
     # is_scalar is rank-agnostic (total_size == 1), so a keepdims (1,1) buffer landed here too; name[0]
-    # selects a shape-(1,) SUB-ARRAY, not the element.
+    # selects a shape-(1,) sub-array, not the element.
     assert scalar_elem("s", desc_of_shape([1])) == "s[0]"
     assert scalar_elem("s", desc_of_shape([1, 1])) == "s[0, 0]"
     assert scalar_elem("s", desc_of_shape([1, 1, 1])) == "s[0, 0, 0]"

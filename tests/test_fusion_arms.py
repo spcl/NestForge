@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The Phase-2 fusion tool surface (:mod:`nestforge.phases.schedule`): enumerate legal fusion moves and apply
+"""The phase 1 fusion tool surface (:mod:`nestforge.phases.schedule`): enumerate legal fusion moves and apply
 them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
 against the un-fused reference. Exercises all three arms -- loop, vertical map, horizontal map -- and the
 agent's real pattern of applying a random legal sequence.
@@ -22,20 +22,10 @@ from nestforge.phases.schedule import (
     loop_fusion_moves,
     vertical_map_moves,
 )
+from helpers import random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64
-
-
-def run(sdfg, inputs, n):
-    bufs = {k: v.copy() for k, v in inputs.items()}
-    sdfg(**bufs, N=n)
-    return bufs
-
-
-def mk(n=48, names=("a", "b", "c"), seed=0):
-    rng = np.random.default_rng(seed)
-    return {k: rng.random(n) for k in names}
 
 
 def apply_to_fixpoint(sdfg, order="greedy", seed=0):
@@ -82,7 +72,7 @@ def sibling_maps(a: f64[N], b: f64[N], c: f64[N]):
 
 def co_located(prog):
     """Build the SDFG and StateFusion sequential states together, so producer/consumer and sibling maps
-    land in ONE state where the map-fusion arms can match them (mirrors the Phase-1 fusion-ready canon)."""
+    land in one state where the map-fusion arms can match them (mirrors the phase 1 fusion-ready canon)."""
     sdfg = prog.to_sdfg(simplify=True)
     sdfg.apply_transformations_repeated(StateFusion)
     return sdfg
@@ -127,13 +117,14 @@ def test_enumerated_moves_carry_apply_kwargs():
     ],
 )
 def test_apply_all_fusions_is_value_preserving(prog, names, colocate):
-    inputs = mk(names=names)
+    inputs = random_vectors(names=names)
     ref = run(prog.to_sdfg(simplify=True), inputs, 48)
     sdfg = co_located(prog) if colocate else prog.to_sdfg(simplify=True)
     applied = apply_to_fixpoint(sdfg, order="greedy")
     got = run(sdfg, inputs, 48)
     assert applied >= 1
-    assert all(np.allclose(got[k], ref[k]) for k in inputs)
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=k)
 
 
 @dace.program
@@ -151,12 +142,13 @@ def all_three_arms(a: f64[N], b: f64[N], c: f64[N], d: f64[N]):
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
 def test_random_fusion_sequence_is_value_preserving(seed):
-    inputs = mk(names=("a", "b", "c", "d"))
+    inputs = random_vectors(names=("a", "b", "c", "d"))
     ref = run(all_three_arms.to_sdfg(simplify=True), inputs, 48)
     sdfg = co_located(all_three_arms)
     apply_to_fixpoint(sdfg, order="random", seed=seed)
     got = run(sdfg, inputs, 48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs), f"seed {seed}: diverged from reference"
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=f"seed {seed}: diverged from reference")
 
 
 def test_no_moves_on_a_single_map():
@@ -174,9 +166,9 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
     T = np.empty_like(A)  # transient intermediate
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
-        live_out[i] = A[i] * 3.0  # a NON-transient result of the same producer map
+        live_out[i] = A[i] * 3.0  # a non-transient result of the same producer map
     for i in dace.map[0:N]:
-        C[i] = T[i] * 2.0 + live_out[i]  # consumer reads BOTH intermediates
+        C[i] = T[i] * 2.0 + live_out[i]  # consumer reads both intermediates
 
 
 def map_pairs(sdfg):
@@ -188,18 +180,29 @@ def map_pairs(sdfg):
                     yield first, second
 
 
+def offered_pairs(sdfg):
+    """The map-entry pairs ``enumerate_fusions`` lists, unordered."""
+    pairs = set()
+    for move in enumerate_fusions(sdfg):
+        if move.kind == "fuse-map-vertical":
+            exit_node = move.where["first_map_exit"]
+            state = next(s for s in sdfg.all_states() if exit_node in s.nodes())
+            pairs.add(frozenset({state.entry_node(exit_node), move.where["second_map_entry"]}))
+        elif move.kind == "fuse-map-horizontal":
+            pairs.add(frozenset({move.where["first_parallel_map_entry"], move.where["second_parallel_map_entry"]}))
+    return pairs
+
+
 def test_can_fuse_agrees_with_enumerate_fusions():
-    # THE contract: can_fuse == "yes" exactly when an applicable move exists. vertical_reason used to return
-    # on the FIRST intermediate, so a live (non-transient) output could mask a legal move that
-    # enumerate_fusions still offered via the transient -- the agent told "cannot fuse" about a listed move.
+    """``can_fuse`` says yes for exactly the pairs ``enumerate_fusions`` lists, and otherwise gives a reason: a live
+    output beside a fusable transient must not hide the listed move."""
     sdfg = live_and_transient.to_sdfg(simplify=True)
-    listed = enumerate_fusions(sdfg)
+    offered = offered_pairs(sdfg)
+    assert offered, "the fixture must offer a map fusion, else it tests nothing"
     for first, second in map_pairs(sdfg):
         verdict = can_fuse(sdfg, first, second)
-        if verdict == "yes":
-            assert listed, "can_fuse said yes but enumerate_fusions offered nothing"
-        else:
-            assert isinstance(verdict, str) and verdict  # always an explaining reason, never a bare False
+        assert (verdict == "yes") == (frozenset({first, second}) in offered), (first, second, verdict)
+        assert isinstance(verdict, str) and verdict
 
 
 def test_live_output_does_not_mask_a_transient_fusion():

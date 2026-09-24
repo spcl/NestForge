@@ -17,7 +17,7 @@ from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.phases.scopes import parallel_top_level_maps
 
 #: (kernel, index array). Every one is a gather/scatter whose index array is the whole point of the test;
-#: loop_level_reasoning is a superset of TSVC-2, so these are the same kernels the old TSVC corpus pinned.
+#: loop_level_reasoning is a superset of TSVC-2, so these are TSVC kernels.
 GATHER_KERNELS = ["tsvc_2_vag", "tsvc_2_s4113", "tsvc_2_s353", "reroll_gather"]
 INDEX_ARRAY = "ip"
 

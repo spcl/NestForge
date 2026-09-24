@@ -32,32 +32,6 @@ def if_else(flag: dc.int64, a: dc.float64[N], out: dc.float64[N]):
             out[i] = a[i] - 1.0
 
 
-def build_three_branch():
-    """An if/elif/else ``ConditionalBlock``; the frontend only makes nested two-branch blocks."""
-    sdfg = dc.SDFG("switch3")
-    sdfg.add_array("a", [N], dc.float64)
-    sdfg.add_array("out", [N], dc.float64)
-    sdfg.add_symbol("sel", dc.int64)
-    cond = ConditionalBlock("cond", sdfg=sdfg)
-    sdfg.add_node(cond, is_start_block=True)
-    for label, guard, delta in (("b0", "sel == 0", 10.0), ("b1", "sel == 1", 20.0), ("belse", None, 30.0)):
-        region = ControlFlowRegion(label, sdfg=sdfg)
-        st = region.add_state(label + "_s", is_start_block=True)
-        st.add_mapped_tasklet(
-            label + "_m",
-            dict(i="0:N"),
-            dict(inp=dc.Memlet("a[i]")),
-            f"o = inp + {delta}",
-            dict(o=dc.Memlet("out[i]")),
-            input_nodes={"a": st.add_read("a")},
-            output_nodes={"out": st.add_write("out")},
-            external_edges=True,
-        )
-        cond.add_branch(guard, region)
-    sdfg.validate()
-    return sdfg
-
-
 def build_switch(name, branches):
     """A ``ConditionalBlock`` of ``(guard, delta)`` branches in order; ``guard=None`` is the else branch."""
     sdfg = dc.SDFG(name)
@@ -101,7 +75,7 @@ def test_if_else_both_branches():
 
 
 def test_if_elif_else_selects_right_branch():
-    fn, src = emit(build_three_branch(), "switch3")
+    fn, src = emit(build_switch("switch3", [("sel == 0", 10.0), ("sel == 1", 20.0), (None, 30.0)]), "switch3")
     assert "elif " in src  # a genuine multi-branch block -> the middle branch is an elif
     a = np.arange(5, dtype=np.float64)
     for sel, delta in ((0, 10.0), (1, 20.0), (2, 30.0)):

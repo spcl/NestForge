@@ -14,9 +14,8 @@ from nestforge.build import flags
 
 
 def test_a_nan_anywhere_fails_even_when_it_is_not_the_first_element():
-    """Builtin ``max`` keeps its left operand when the right is NaN (``nan > x`` is False), so a NaN
-    that is not the FIRST thing compared used to leave ``worst`` at 0.0 -- a NaN-poisoned kernel
-    scored a perfect match and could win the arena. The position of the NaN must not matter."""
+    """Builtin ``max`` keeps its left operand when the right is NaN (``nan > x`` is False), so a NaN that is not
+    the first thing compared would leave ``worst`` at 0.0 and a NaN-poisoned kernel could win the arena."""
     good = np.ones(8)
     for position in (0, 3, 7):
         poisoned = good.copy()
@@ -37,7 +36,7 @@ def test_an_infinity_fails_rather_than_dominating_the_maximum():
 
 
 def test_a_comparison_that_touched_no_element_fails_instead_of_passing():
-    """The gate is ``<= atol``, so a verdict of 0.0 read off zero elements PASSES -- a kernel whose
+    """The gate is ``<= atol``, so a verdict of 0.0 read off zero elements passes -- a kernel whose
     outputs are all zero-size would be admitted as bit-exact having computed nothing."""
     empty = {"a": np.zeros(0), "b": np.zeros((0, 4))}
     assert arena.diff_stats(empty, empty) == (float("inf"), float("inf"))
@@ -59,7 +58,7 @@ def test_bool_and_unsigned_outputs_compare_as_numbers(want, got, expected):
 
 def test_one_empty_array_is_skipped_but_a_real_one_beside_it_still_decides():
     """Skipping an individual empty output is right (a kernel may legitimately declare one); letting
-    it suppress the array that DOES have elements is not."""
+    it suppress the array that does have elements is not."""
     a = {"empty": np.zeros(0), "real": np.ones(4)}
     b = {"empty": np.zeros(0), "real": np.array([1.0, 1.0, 1.25, 1.0])}
     worst_abs, _worst_rel = arena.diff_stats(a, b)
@@ -67,13 +66,13 @@ def test_one_empty_array_is_skipped_but_a_real_one_beside_it_still_decides():
 
 
 def test_small_magnitudes_keep_the_strict_absolute_reading():
-    """The relative denominator floors at 1.0, so the gate is never LOOSENED where fp64 can actually
-    deliver: at magnitude ~0.5 the scaled difference must equal the absolute one."""
+    """The relative denominator floors at 1.0, so the gate is never loosened where fp64 can deliver: at magnitude
+    ~0.5 the scaled difference must equal the absolute one."""
     a = {"a": np.array([0.5, 0.25, 0.125])}
     b = {"a": np.array([0.5 + 1e-13, 0.25, 0.125])}
     worst_abs, worst_rel = arena.diff_stats(a, b)
     assert worst_rel == pytest.approx(worst_abs)
-    assert worst_rel > 1e-14  # and it is still refused by the default rung
+    assert worst_rel > arena.rung_atol("strict-ieee", arena.dtype_floor(b)), "the default rung refuses it"
 
 
 def test_a_reduction_sized_result_is_judged_relatively_not_absolutely():
@@ -83,12 +82,12 @@ def test_a_reduction_sized_result_is_judged_relatively_not_absolutely():
     a = {"sum": np.array([total])}
     b = {"sum": np.array([total + 14 * np.spacing(total)])}
     worst_abs, worst_rel = arena.diff_stats(a, b)
-    assert worst_abs > 1e-14, "the absolute difference is genuinely larger than the old gate"
-    assert worst_rel < 1e-14, "scaled by its own magnitude the same result is correct"
+    assert worst_abs > 1e-14, "the absolute difference is larger than an absolute 1e-14 gate"
+    assert worst_rel <= arena.rung_atol("contract-fma", arena.dtype_floor(b)), "scaled, the contract-fma rung admits it"
 
 
 def test_the_gate_is_elementwise_and_a_single_bad_element_survives_averaging():
-    """NOT a norm: one wrong element among ten thousand right ones must show at full size, because a
+    """not a norm: one wrong element among ten thousand right ones must show at full size, because a
     miscompile that touches one index is still a miscompile."""
     a = {"a": np.ones(10_000)}
     b = np.ones(10_000)

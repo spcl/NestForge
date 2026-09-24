@@ -71,9 +71,8 @@ def nested_map_sdfg():
 
 
 def test_nested_map_in_map_emits_nested_for_loops():
-    """A map nested inside a map (the multi-nest kernels s2275 / s152 need this) is emitted as NESTED
-    ``for`` loops with the inner body at the deeper indent -- NOT dropped, and no longer refused. Guards the
-    ``map_lines`` recursion that un-skipped the nested-map corpus kernels."""
+    """A map nested inside a map (the multi-nest kernels s2275 / s152 need this) is emitted as nested ``for``
+    loops with the inner body at the deeper indent, neither dropped nor refused."""
     src = sdfg_to_numpy(nested_map_sdfg(), "k")
     assert "for i in range(0, N, 1):" in src and "for j in range(0, N, 1):" in src
     assert "B[i, j] = (A[i, j] * 2.0)" in src
@@ -105,7 +104,7 @@ def test_indirect_gather_stages_map_entry_read():
 
 
 def loop_scratch_boundary():
-    """A nest with a scratch transient shaped by the LOOP VARIABLE (``tmp[loop_i + 1]``) -- the shape the
+    """A nest with a scratch transient shaped by the loop variable (``tmp[loop_i + 1]``) -- the shape the
     emitter widens to ``N + 1`` so the buffer stays a caller-allocated parameter."""
     # A dedicated symbol name: ``i`` is a common loop variable, and dace's symbol registry rejects a
     # re-declaration with a different dtype, which would couple this test to whatever ran before it.
@@ -123,7 +122,7 @@ def loop_scratch_boundary():
 
 
 def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
-    """make_inputs sized scratch from the RAW descriptor while the emitted kernel is written against the
+    """make_inputs sized scratch from the raw descriptor while the emitted kernel is written against the
     ``maxsize_loop_scratch``-widened one, so the caller handed the kernel a buffer smaller than it indexes
     -- a write past the end of the allocation across the ABI (heap corruption in the forked child)."""
     boundary = loop_scratch_boundary()

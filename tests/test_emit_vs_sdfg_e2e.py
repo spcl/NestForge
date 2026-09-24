@@ -3,7 +3,7 @@
 """End to end: the emitted code reproduces the DaCe SDFG on the hardest corpus kernels.
 
 The reference is the SDFG built by :mod:`nestforge.build.sdfg`. L1 runs the emitted NumPy of every listed kernel; L2
-compiles each nest's translated C, C++ and Fortran with gcc, clang and gfortran. Sizes are small but distinct per
+compiles each nest's translated C with gcc and clang, and its Fortran with gfortran. Sizes are small but distinct per
 dimension, so an index or transpose bug changes the values. Each case runs in a forked child.
 """
 
@@ -18,9 +18,9 @@ from dace import symbolic
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.build.sdfg import BuildOptions, build_sdfg
-from nestforge.corpus.bench import iter_dace_kernels
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
+from helpers import corpus_kernel, loop_level_kernel
 
 ATOL = 1e-8
 
@@ -94,7 +94,7 @@ SC_L2 = [
     "scientific_computing/dense_linear_algebra/mvt/mvt",
     "scientific_computing/dense_linear_algebra/atax/atax",
 ]
-# Only straight-line nests translate + compile identically in EVERY language across gcc/clang/gfortran; a
+# Only straight-line nests translate + compile identically in every language across gcc/clang/gfortran; a
 # nest carrying loop state (recurrence / masked reduction) diverges at the artificial nest boundary or hits
 # a numpyto Fortran emit gap -- those kernels get their full cross-check from L1 (the whole-kernel oracle).
 LLR_L2 = ["tsvc_2_s000"]
@@ -120,20 +120,13 @@ def dace_sizes(kernel, base=6):
     return {k: base + ranks[v] for k, v in preset.items()}
 
 
-def find_llr_kernel(key):
-    for kernel in iter_dace_kernels("loop_level_reasoning"):
-        if kernel.short_name.rsplit("/", 1)[-1] == key:
-            return kernel
-    raise AssertionError(f"{key} is not in the loop_level_reasoning track -- the corpus this test pins has changed")
-
-
 def make_dace(short):
-    kernel = {k.short_name: k for k in iter_dace_kernels()}[short]
+    kernel = corpus_kernel(short)
     return (lambda: kernel.to_sdfg(simplify=True)), dace_sizes(kernel), 0.0  # linear algebra: inputs in [0,1)
 
 
 def make_llr(key):
-    kernel = find_llr_kernel(key)
+    kernel = loop_level_kernel(key)
 
     def build():
         sdfg = kernel.to_sdfg(simplify=True)
@@ -198,8 +191,8 @@ def max_abs_diff(oracle, cand):
             if cplx
             else (want.astype(np.float64), got.astype(np.float64))
         )
-        # ``a - b`` is NaN wherever either side is NaN (and for inf - inf). A NaN on only ONE side is a
-        # MAXIMAL disagreement -- exactly what this gate exists to catch -- so it scores as inf and can
+        # ``a - b`` is NaN wherever either side is NaN (and for inf - inf). A NaN on only one side is a
+        # maximal disagreement -- exactly what this gate exists to catch -- so it scores as inf and can
         # never be dropped. Positions that are bit-equal (incl. both NaN, or both +-inf) are genuine
         # agreement: the emitted code reproduced the SDFG's value, so they score 0.
         same = (a == b) | (np.isnan(a) & np.isnan(b))
@@ -214,7 +207,7 @@ def builder_for(kind, short):
 
 
 def test_maxdiff_scores_nan_mismatch_as_divergence():
-    """A kernel emitting NaN where the SDFG is finite must FAIL the gate, not be scored on the rest."""
+    """A kernel emitting NaN where the SDFG is finite must fail the gate, not be scored on the rest."""
     oracle = {"x": np.array([1.0, 2.0, 3.0])}
     assert max_abs_diff(oracle, {"x": np.array([1.0, np.nan, 3.0])}) == np.inf
     assert max_abs_diff({"x": np.array([1.0, np.nan, 3.0])}, oracle) == np.inf
@@ -265,8 +258,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())
-        suffix = {"c": ".c", "cpp": ".c", "fortran": ".f90"}[lang]
-        target = {"c": "c", "cpp": "c", "fortran": "fortran"}[lang]  # C++ compiles the emitted C
+        suffix = {"c": ".c", "fortran": ".f90"}[lang]
         worst = 0.0
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -279,7 +271,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
                 oracle = {k: v.copy() for k, v in inp.items()}
                 built.run(oracle, nsizes)
                 built.unload()
-                src = next(p for p in emit_sources(prep, d / f"{name}_{lang}", target=target) if p.suffix == suffix)
+                src = next(p for p in emit_sources(prep, d / f"{name}_{lang}", target=lang) if p.suffix == suffix)
                 so = d / f"{name}_{lang}_{compiler}.so"
                 subprocess.run(
                     [tool, "-O2", "-fPIC", "-shared", "-ffp-contract=off", str(src), "-o", str(so)],
@@ -293,18 +285,10 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
                 # ``__sym_out_*`` are extraction sentinels (a nest's loop-exit index / carried scalar), not
                 # real kernel data -- DaCe's nest codegen and numpyto legitimately differ on them at the
                 # artificial nest boundary. Whole-kernel correctness (incl. loop-carried logic) is covered by
-                # L1; L2 checks the real DATA outputs of the compiled nest match across compilers.
-                worst = max(
-                    worst,
-                    max(
-                        (
-                            float(np.max(np.abs(oracle[k] - outs[k])))
-                            for k in outs
-                            if k in oracle and not k.startswith("__sym_out")
-                        ),
-                        default=0.0,
-                    ),
-                )
+                # L1; L2 checks the real data outputs of the compiled nest match across compilers.
+                data = {k: oracle[k] for k in outs if k in oracle and not k.startswith("__sym_out")}
+                assert data, f"{name}: no data output compared"
+                worst = max(worst, max_abs_diff(data, outs))
         return {"md": worst}
 
     res = run_isolated(work, timeout=600)

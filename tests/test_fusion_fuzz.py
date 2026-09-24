@@ -16,6 +16,7 @@ from dace.transformation.interstate.state_fusion import StateFusion
 
 from nestforge.phases.schedule import fission_to_statements
 from nestforge.phases.schedule import apply_fusion, enumerate_fusions
+from helpers import run
 
 ARRAYS = ("a", "b", "c", "d")
 NCASES_FUSE = 12
@@ -49,7 +50,7 @@ def gen_source(seed: int) -> str:
         targets = list(rng.choice(ARRAYS, size=min(nstmt, len(ARRAYS)), replace=False))
         written = set(targets)
         safe_offset_srcs = [x for x in ARRAYS if x not in written]  # offset-readable without a race
-        # This loop's ONE relationship to the invariant scalar (never both -- see the docstring); only a
+        # This loop's one relationship to the invariant scalar (never both -- see the docstring); only a
         # sequential loop may write it.
         s_use = (
             ("read", "write", "none")[int(rng.integers(3))] if not parallel else ("read", "none")[int(rng.integers(2))]
@@ -61,7 +62,7 @@ def gen_source(seed: int) -> str:
                 forms = ["elementwise"] + (["stencil"] if safe_offset_srcs else [])
             else:
                 forms = ["elementwise", "stencil", "recurrence", "scaled_rec"]
-            # A loop that reads s reads it in its FIRST statement, rather than leaving it to the form
+            # A loop that reads s reads it in its first statement, rather than leaving it to the form
             # draw: the write-then-read pair is the hazard this grammar exists to reach, and letting the
             # RNG miss it made the shape rare enough to be worthless as coverage.
             form = "invariant_read" if (s_use == "read" and pos == 0) else forms[int(rng.integers(len(forms)))]
@@ -82,8 +83,8 @@ def gen_source(seed: int) -> str:
                 src = ARRAYS[int(rng.integers(len(ARRAYS)))]
                 body.append(f"        {tgt}[i] = {tgt}[i - 1] * 0.5 + {src}[i]")
         if s_use == "write":
-            # the invariant WRITE, sequential-only. Paired with an invariant_read in ANOTHER loop, this is
-            # the cross-loop fusion hazard; no statement of THIS body reads s, so the body stays ordered.
+            # the invariant write, sequential-only. Paired with an invariant_read in another loop, this is
+            # the cross-loop fusion hazard; no statement of this body reads s, so the body stays ordered.
             body.append(f"        s = {ARRAYS[int(rng.integers(len(ARRAYS)))]}[i]")
         lines.append("    for i in dace.map[1:N - 1]:" if parallel else "    for i in range(1, N - 1):")
         lines.extend(body)
@@ -106,14 +107,8 @@ def inputs_for(n=16, seed=0):
     return {x: rng.random(n) for x in ARRAYS}
 
 
-def run(sdfg, inputs, n):
-    bufs = {k: v.copy() for k, v in inputs.items()}
-    sdfg(**bufs, N=n)
-    return bufs
-
-
 def random_fuse_to_fixpoint(sdfg, seed: int) -> int:
-    """Apply a RANDOM legal fusion each round until none remain -- the agent's actual move pattern (and the
+    """Apply a random legal fusion each round until none remain -- the agent's actual move pattern (and the
     composition hazard: a fusion can invalidate or enable another)."""
     rng = np.random.default_rng(seed)
     applied = 0
@@ -139,14 +134,14 @@ def test_fuzz_random_fuse_sequence_is_value_preserving(seed, tmp_path):
     sdfg.validate()
     got = run(sdfg, inputs, n)
     for name in inputs:
-        assert np.allclose(got[name], ref[name], equal_nan=True), (
-            f"seed={seed} diverged on {name!r} after a random fusion sequence\n--- generated ---\n{src}"
+        np.testing.assert_array_equal(
+            got[name], ref[name], err_msg=f"seed={seed} diverged on {name!r} after a random fusion sequence\n{src}"
         )
 
 
 @pytest.mark.parametrize("seed", range(NCASES_FISSION))
 def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
-    # the full Phase-2 round trip on a random program: explode to statements, then fuse back up randomly.
+    # the full phase 1 round trip on a random program: explode to statements, then fuse back up randomly.
     prog, src = load_program(tmp_path, seed + 500)
     n = 16
     inputs = inputs_for(n, seed)
@@ -160,8 +155,8 @@ def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
     sdfg.validate()
     got = run(sdfg, inputs, n)
     for name in inputs:
-        assert np.allclose(got[name], ref[name], equal_nan=True), (
-            f"seed={seed} diverged on {name!r} after fission + random fusion\n--- generated ---\n{src}"
+        np.testing.assert_array_equal(
+            got[name], ref[name], err_msg=f"seed={seed} diverged on {name!r} after fission + random fusion\n{src}"
         )
 
 

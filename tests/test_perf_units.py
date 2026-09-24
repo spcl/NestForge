@@ -96,7 +96,7 @@ class CountingArray(np.ndarray):
 
 class FakeBoundary:
     """Both halves of :class:`nestforge.extract.Boundary` that call_native reads. ``inputs`` is not optional
-    padding: their INTERSECTION with ``outputs`` is what call_native restores between timed reps, so a fixture
+    padding: their intersection with ``outputs`` is what call_native restores between timed reps, so a fixture
     carrying only ``outputs`` cannot express an in-place kernel at all."""
 
     def __init__(self, outputs, inputs=()):
@@ -118,7 +118,7 @@ class FakeKernel:
 
 def call_native_on_stub(monkeypatch, reps, read_write=False, **kw):
     """Drive arena.call_native on the caller's buffers against a stubbed .so -- the ABI marshalling is real, only the compiled entry
-    is faked, so no compiler/toolchain is needed. ``read_write`` marks ``a`` as an in-place buffer (read AND
+    is faked, so no compiler/toolchain is needed. ``read_write`` marks ``a`` as an in-place buffer (read and
     written), the case whose per-rep restore decides what the timing measures."""
     fn = FakeKernel()
     monkeypatch.setattr(arena.ctypes, "CDLL", lambda path: {"k_fp64": fn})
@@ -165,7 +165,7 @@ def test_call_native_restores_an_in_place_buffer_before_every_timed_rep(monkeypa
     buf = np.zeros(4, dtype=np.float64)
 
     class Recorder(np.ndarray):
-        """Records what the restore writes back, so the assertion is on VALUES, not on a copy count."""
+        """Records what the restore writes back, so the assertion is on values, not on a copy count."""
 
         def __setitem__(self, key, value):
             restored.append(np.asarray(value).copy())
@@ -185,7 +185,7 @@ def test_call_native_restores_an_in_place_buffer_before_every_timed_rep(monkeypa
         reps=3,
         copy_inputs=False,
     )
-    # 4 = one per rep, plus one before the WARM call so the call the CPU trains its caches and predictors
+    # 4 = one per rep, plus one before the warm call so the call the CPU trains its caches and predictors
     # on starts from the same state the timed reps do.
     assert len(restored) == 4, f"expected one restore per rep plus the warm call, saw {len(restored)}"
     for values in restored:
@@ -193,7 +193,7 @@ def test_call_native_restores_an_in_place_buffer_before_every_timed_rep(monkeypa
 
 
 def test_call_native_does_not_restore_a_write_only_buffer(monkeypatch):
-    """A fully-overwritten output cannot accumulate, so it must NOT be snapshotted: at the profiling preset
+    """A fully-overwritten output cannot accumulate, so it must not be snapshotted: at the profiling preset
     a blanket copy of every output doubles the forked child's peak RSS for nothing."""
     _, _, buf, _ = call_native_on_stub(monkeypatch, reps=3, copy_outputs=False)
     assert buf.copies == 0
@@ -219,7 +219,7 @@ def test_rewind_restores_values_taken_before_the_kernel_ran():
 
 
 def test_rewind_snapshot_writes_through_to_the_bound_buffer():
-    """The pairs must hold the LIVE array, not a copy of it: every timing path binds its ctypes pointers
+    """The pairs must hold the live array, not a copy of it: every timing path binds its ctypes pointers
     once, before the rep loop, so a rewind into a detached array would restore nothing the kernel reads."""
     a = np.full(4, 0.25)
     snapshot = arena.rewind_snapshot(FakeBoundary(["a"], inputs=["a"]), {"a": a})
@@ -234,7 +234,7 @@ def test_toolchain_fp_family_only_ever_names_a_real_fp_family():
 
 
 def test_the_two_family_vocabularies_stay_apart():
-    """toolchain.compiler_family classifies an EXECUTABLE for its OpenMP ABI; Toolchain.fp_family classifies a
+    """toolchain.compiler_family classifies an executable for its OpenMP ABI; Toolchain.fp_family classifies a
     toolchain for the FP tables. They are not interchangeable, and this pins the exact disagreement that makes
     that true, so a future 'simplification' that collapses them fails here instead of in a sweep."""
     from nestforge.build.toolchain import compiler_family

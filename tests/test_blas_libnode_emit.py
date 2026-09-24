@@ -186,7 +186,7 @@ def test_new_blas_lapack_nodes_are_registered():
 def test_gemm_runtime_coefficient_connector_is_refused(conn):
     """A Gemm carrying a runtime ``_alpha``/``_beta`` connector must be refused, not emitted from the
     compile-time properties alone: the numpy oracle and the translated C both derive from the emission, so a
-    dropped runtime coefficient scales BOTH identically and maxdiff validation cannot catch it."""
+    dropped runtime coefficient scales both identically and maxdiff validation cannot catch it."""
     from dace.libraries.blas.nodes.gemm import Gemm
 
     n, m, k = 3, 5, 4

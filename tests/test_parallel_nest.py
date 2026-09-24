@@ -58,14 +58,14 @@ def test_real_parallel_map_kernel_is_parallel():
 # nested-map emission (map_lines recursion)
 def test_s2275_nested_map_emits_and_computes():
     # tsvc_2_s2275 baseline = an i-loop with an inner j-loop (2-D aa FMA) + an i-level 1-D statement.
-    # Canonicalization legally DISTRIBUTES the two (the yaml puzzle: interchange for the matrix update
+    # Canonicalization legally distributes the two (the yaml puzzle: interchange for the matrix update
     # is legal only once the vector statement is out of the i loop), so phase 2 sees two top-level
     # parallel maps; the 2-D aa update is the one that exercises map_lines' nested-for recursion.
     _, refs = nest_refs("tsvc_2_s2275")
     assert len(refs) == 2
     boundary = extract_nest_to_sdfg(refs[0][0], refs[0][1], name="s2275_aa")
     src = sdfg_to_numpy(boundary.standalone_sdfg, "s2275_aa")
-    assert src.count("for ") >= 2  # nested for-loops emitted, not the old UnsupportedNest raise
+    assert src.count("for ") >= 2  # nested for-loops, not a refusal
 
     kernel = load_emitted(src, "s2275_aa").s2275_aa
 

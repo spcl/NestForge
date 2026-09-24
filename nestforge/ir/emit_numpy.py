@@ -209,7 +209,7 @@ def load_emitted(source: str, name: str) -> ModuleType:
     spec = importlib.util.spec_from_file_location(f"nestforge_emitted.{name}", path)
     assert spec is not None and spec.loader is not None, f"{path} is not importable"
     module = importlib.util.module_from_spec(spec)
-    module.__dict__.update(EMITTED_BUILTINS)  # bound BEFORE exec: the source references them at call time
+    module.__dict__.update(EMITTED_BUILTINS)  # bound before exec: the source references them at call time
     spec.loader.exec_module(module)
     return module
 
@@ -519,7 +519,7 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
     """Inline a nested SDFG (e.g. one map iteration's sub-kernel) as flat statements, in place."""
     for e in state.out_edges(node):
         if e.data.wcr is not None:
-            # This replays the inner body only; it never applies a WCR on the OUTER output edge, which
+            # This replays the inner body only; it never applies a WCR on the outer output edge, which
             # would silently become an overwrite. map_exit_writes guards a map exit; this covers state body too.
             raise UnsupportedNest(
                 f"nested SDFG output into {e.data.data} carries a reduction (WCR) that emit_nested_sdfg does "

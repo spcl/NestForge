@@ -112,7 +112,7 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert boundary.outputs == ["__return"]
     prep = prepare(boundary, ext.name, tmp_path / "k")
-    # __return is an in-place buffer parameter in the numpy signature AND the manifest -- aligned.
+    # __return is an in-place buffer parameter in the numpy signature and the manifest -- aligned.
     assert "__return" in prep.numpy_source.splitlines()[0]
     assert "return " not in prep.numpy_source
     # the manifest is only usable while it matches the emitted signature: array_args, then symbols
@@ -124,18 +124,13 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     assert args == signature, f"manifest input_args {args} != emitted numpy signature {signature}"
     assert "__return" in prep.manifest["input_args"]
     sizes = {"N": 16}
-    out = run_oracle(prep, boundary, make_inputs(boundary, sizes), sizes)
-    assert "__return" in out
-
-
-@dace.program
-def scale_inplace(A: dace.float64[N], b: dace.float64[N]):
-    for i in dace.map[0:N]:
-        A[i] = A[i] * 2.0 + b[i]
+    inputs = make_inputs(boundary, sizes)
+    out = run_oracle(prep, boundary, inputs, sizes)
+    np.testing.assert_array_equal(out["__return"], inputs["A"] * 2.0)
 
 
 def inplace_lowered():
-    sdfg = scale_inplace.to_sdfg(simplify=True)
+    sdfg = scale_in_place.to_sdfg(simplify=True)
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert "A" in boundary.inputs and "A" in boundary.outputs, "A must be read+written for this to test anything"
     return sdfg, ext
@@ -164,5 +159,5 @@ def test_inplace_nest_reference_expansion_is_value_preserving():
 
     sdfg, _ = inplace_lowered()
     got = a.copy()
-    sdfg(A=got, b=b.copy(), N=n)
+    sdfg(A=got, B=b.copy(), N=n)
     np.testing.assert_allclose(got, expected)

@@ -73,7 +73,7 @@ def nested_call(A: dc.float64[20], B: dc.float64[20]):
 
 @dc.program
 def descending(A: dc.float64[20], B: dc.float64[20]):
-    """A loop that counts DOWN -- must come out of normalization with a positive unit step."""
+    """A loop that counts down -- must come out of normalization with a positive unit step."""
     for i in range(19, -1, -1):
         B[i] = A[i] * 2.0
 
@@ -120,7 +120,7 @@ def test_labels_are_globally_unique():
 
 
 def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
-    """Five kernels at depth 3 are kernel3_0..kernel3_4 -- the index counts that KIND at that level, so
+    """Five kernels at depth 3 are kernel3_0..kernel3_4 -- the index counts that kind at that level, so
     it never depends on how many blocks of another kind happen to sit beside them."""
     sdfg = two_maps.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
@@ -136,7 +136,7 @@ def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
 
 
 def test_a_frontend_source_line_label_does_not_survive():
-    """Frontend labels embed the source line (``inner_9_4``), so an edit ABOVE a nest renames a nest
+    """Frontend labels embed the source line (``inner_9_4``), so an edit above a nest renames a nest
     that did not change. That is the whole reason the tree cannot use them as ids."""
     sdfg = nested_call.to_sdfg(simplify=False)
     before = [e.map.label for e in all_maps(sdfg)]
@@ -413,7 +413,7 @@ def swapped_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N])
 
 @dc.program
 def shadowing_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
-    # params ['j','i0'] -- param 0's TARGET (i0) is param 1's current name: a partial overlap
+    # params ['j','i0'] -- param 0's target (i0) is param 1's current name: a partial overlap
     for j, i0 in dc.map[0:MAP_N, 0:MAP_N]:
         B[j, i0] = A[j, i0] * 2.0
 
@@ -447,7 +447,7 @@ def test_renaming_params_that_shadow_their_targets_preserves_values(program):
 
 @dc.program
 def nested_map_scopes(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
-    # two SEPARATE map scopes, one inside the other -- what LoopToMap produces for a nested loop
+    # two separate map scopes, one inside the other -- what LoopToMap produces for a nested loop
     for i in dc.map[0:MAP_N]:
         for j in dc.map[0:MAP_N]:
             B[i, j] = A[i, j] * 2.0
@@ -462,7 +462,7 @@ def test_nested_map_scopes_do_not_collapse_onto_one_index():
 
     rename_map_params(sdfg)
 
-    # numbered down the NESTING CHAIN, so the inner map starts where the outer stops
+    # numbered down the nesting chain, so the inner map starts where the outer stops
     assert sorted(p for e in entries for p in e.map.params) == ["i0", "i1"]
 
     def work():

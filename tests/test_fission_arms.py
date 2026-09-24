@@ -1,8 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The Phase-2 fission lever (:mod:`nestforge.phases.schedule`): explode a program to statement granularity by
+"""The phase 1 fission lever (:mod:`nestforge.phases.schedule`): explode a program to statement granularity by
 reusing the existing DaCe canon passes (SplitStatements + LoopFission + MapFission), and the agent's real
-Phase-2 flow -- fission then fuse back up. Value-preservation (bit-exact vs the un-fissioned reference) is
+phase 1 flow: fission, then fuse back up. Value-preservation (bit-exact vs the un-fissioned reference) is
 the invariant on every case.
 """
 
@@ -18,6 +18,7 @@ from dace.transformation.helpers import nest_state_subgraph
 
 from nestforge.phases.schedule import enumerate_map_fissions, fission_to_statements
 from nestforge.phases.schedule import apply_fusion, enumerate_fusions
+from helpers import random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -25,17 +26,6 @@ f64 = dace.float64
 
 def nloops(sdfg):
     return sum(1 for c in sdfg.all_control_flow_regions(recursive=True) if isinstance(c, LoopRegion))
-
-
-def run(sdfg, inputs, n):
-    bufs = {k: v.copy() for k, v in inputs.items()}
-    sdfg(**bufs, N=n)
-    return bufs
-
-
-def mk(n=48, names=("a", "b", "c"), seed=0):
-    rng = np.random.default_rng(seed)
-    return {k: rng.random(n) for k in names}
 
 
 @dace.program
@@ -65,14 +55,15 @@ def conditional_body(a: f64[N], b: f64[N], c: f64[N]):
 
 
 def test_fission_splits_independent_recurrences_value_preserving():
-    inputs = mk(names=("a", "b", "c"))
+    inputs = random_vectors(names=("a", "b", "c"))
     ref = run(two_independent_recurrences.to_sdfg(simplify=True), inputs, 48)
     sdfg = two_independent_recurrences.to_sdfg(simplify=True)
     before = nloops(sdfg)
     applied = fission_to_statements(sdfg)
     got = run(sdfg, inputs, 48)
     assert applied >= 1 and nloops(sdfg) > before  # the loop split into independent statements
-    assert all(np.allclose(got[k], ref[k]) for k in inputs)
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=k)
 
 
 @pytest.mark.parametrize(
@@ -84,18 +75,19 @@ def test_fission_splits_independent_recurrences_value_preserving():
     ],
 )
 def test_fission_is_value_preserving(prog, names):
-    inputs = mk(names=names)
+    inputs = random_vectors(names=names)
     ref = run(prog.to_sdfg(simplify=True), inputs, 48)
     sdfg = prog.to_sdfg(simplify=True)
     fission_to_statements(sdfg)
     got = run(sdfg, inputs, 48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs), f"{prog.name}: fission changed the value"
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=f"{prog.name}: fission changed the value")
 
 
 def test_fission_then_fuse_roundtrip_value_preserving():
-    # the agent's real Phase-2 flow: explode to statements, then fuse back up -- must land on the same
+    # the agent's real phase 1 flow: explode to statements, then fuse back up -- must land on the same
     # value as the original program whatever granularity it settles on.
-    inputs = mk(names=("a", "b", "c", "d"))
+    inputs = random_vectors(names=("a", "b", "c", "d"))
     ref = run(three_independent_statements.to_sdfg(simplify=True), inputs, 48)
     sdfg = three_independent_statements.to_sdfg(simplify=True)
     fission_to_statements(sdfg)
@@ -105,7 +97,8 @@ def test_fission_then_fuse_roundtrip_value_preserving():
             break
         apply_fusion(moves[0])
     got = run(sdfg, inputs, 48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs)
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=k)
 
 
 def map_with_nested_body():
@@ -149,14 +142,15 @@ def test_map_fission_enumerates_a_nested_sdfg_body():
 
 
 def test_map_fission_preserves_values():
-    inputs = mk(names=("a", "b", "c"))
+    inputs = random_vectors(names=("a", "b", "c"))
     sdfg, _ = map_with_nested_body()
     ref = run(map_with_nested_body()[0], inputs, 48)
 
     for move in enumerate_map_fissions(sdfg):
         MapFission.apply_to(sdfg, expr_index=1, map_entry=move.map_entry, nested_sdfg=move.nested_sdfg)
     got = run(sdfg, inputs, 48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs), "map fission changed the value"
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg="map fission changed the value")
 
 
 def test_map_fission_no_moves_without_independent_groups():
@@ -176,9 +170,10 @@ def test_fission_no_op_on_single_statement():
         for i in range(1, N):
             b[i] = b[i - 1] + a[i]
 
-    inputs = mk(names=("a", "b"))
+    inputs = random_vectors(names=("a", "b"))
     ref = run(one_statement.to_sdfg(simplify=True), inputs, 48)
     sdfg = one_statement.to_sdfg(simplify=True)
     fission_to_statements(sdfg)  # nothing independent to split
     got = run(sdfg, inputs, 48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs)
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=k)

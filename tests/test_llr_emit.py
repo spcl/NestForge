@@ -76,7 +76,7 @@ def test_ext_break_find_first_emits_break_and_stops():
             break
         ref[i] = ref[i] + b[i] * c[i]
     np.testing.assert_allclose(call["a"], ref, rtol=1e-12, atol=1e-12)
-    # The break lands at the right index, checked through the DATA: everything up to 17 is
+    # The break lands at the right index, checked through the data: everything up to 17 is
     # accumulated and everything from 17 on is untouched.
     assert not np.allclose(call["a"][:17], a[:17])  # accumulated before the break
     np.testing.assert_allclose(call["a"][17:], a[17:], rtol=1e-12, atol=1e-12)  # untouched after

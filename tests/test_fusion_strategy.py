@@ -40,16 +40,16 @@ def map_count(sdfg):
     )
 
 
-def test_full_fusion_reaches_a_state_with_no_legal_fusions_left():
-    """A vertical producer/consumer pair ends as one map, with no legal fuse move remaining."""
+def test_full_fusion_is_idempotent_on_an_already_fused_pair():
+    """normalize already folds a vertical producer/consumer pair to one map; full_fusion must leave it one map with
+    no legal fuse move remaining."""
     raw = producer_consumer_maps.to_sdfg(simplify=False)
     assert map_count(raw) == 2, "fixture must start with two separate maps"
 
     sdfg = producer_consumer_maps.to_sdfg(simplify=False)
     targets = Targets()
     normalize(sdfg, targets)
-    # normalize's own loop-fusion sub-stage already folds this pair to one map, before the
-    # map-level 'fuse' stage full_fusion runs -- so full_fusion is confirmed idempotent here.
+    assert map_count(sdfg) == 1, "normalize already fused the pair"
     full_fusion(sdfg, targets)
     assert map_count(sdfg) == 1
     assert enumerate_fusions(sdfg) == []
@@ -86,4 +86,5 @@ def test_full_fusion_is_value_preserving():
     full_fusion(sdfg, targets)
     got = {k: v.copy() for k, v in inputs.items()}
     sdfg(**got, N=48)
-    assert all(np.allclose(got[k], ref[k]) for k in inputs)
+    for k in inputs:
+        np.testing.assert_array_equal(got[k], ref[k], err_msg=k)

@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Phase-IV re-inlining: an externalized nest must come back FUSABLE, via ``full_fusion``.
+"""Feedback re-inlining: an externalized nest must come back fusable, via ``full_fusion``.
 
 A NestedSDFG hides its maps from ``MapFusion``, so a re-inlined program left nested fuses nothing and
 reports success while doing it. ``normalize`` + ``full_fusion`` already fold ``two_maps`` to one map, so
@@ -48,14 +48,14 @@ def externalized():
 
 
 def test_externalized_nest_keeps_its_own_sdfg_for_reinlining():
-    """(a) The material to re-inline with. Without it phase IV cannot start."""
+    """(a) The material to re-inline with. Without it feedback cannot start."""
     _, calls = externalized()
     for ext, _boundary in calls:
         assert ext.standalone_sdfg is not None, f"{ext.name} cannot be re-inlined: no standalone SDFG"
 
 
 def test_reinlined_nests_are_inlined_so_map_fusion_can_see_them():
-    """(b) The round trip. After expanding back to NestedSDFGs, ``full_fusion`` must reach ONE map."""
+    """(b) The round trip. After expanding back to NestedSDFGs, ``full_fusion`` must reach one map."""
     sdfg, _ = externalized()
     sdfg.expand_library_nodes()  # DaceReference: each nest returns as a NestedSDFG
     assert nested_in(sdfg), "fixture did not produce NestedSDFGs; the hazard under test is absent"

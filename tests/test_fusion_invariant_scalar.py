@@ -1,8 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Regression: a fusion must be REFUSED when loop1 writes a LOOP-INVARIANT location that loop2 reads.
+"""A fusion must be refused when loop1 writes a loop-invariant location that loop2 reads.
 
-Unfused, loop2 sees the FINAL value loop1 left in that location; fused, it sees the RUNNING value of the
+Unfused, loop2 sees the final value loop1 left in that location; fused, it sees the running value of the
 current iteration. That is a genuine dependence, and it is exactly the one a carried-offset dependence
 classifier reports no offset for -- there is no iterator in either subset to carry.
 """
@@ -41,6 +41,6 @@ def test_fusion_across_an_invariant_scalar_is_value_preserving():
         apply_fusion(move)
     sdfg.validate()
     got = run(sdfg, a, d)
-    # unfused: d[i] = d[i-1] + a[N-1]  (a prefix sum of the LAST element)
+    # unfused: d[i] = d[i-1] + a[N-1]  (a prefix sum of the last element)
     # fused:   d[i] = d[i-1] + a[i]    (a prefix sum of a) -- a silent miscompile
     assert np.array_equal(ref, got), f"fusion changed the value: reference {ref} vs fused {got}"

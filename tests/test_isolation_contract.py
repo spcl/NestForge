@@ -41,7 +41,7 @@ def test_the_error_text_is_truncated_so_one_bad_kernel_cannot_flood_the_report()
 
 
 def test_a_segfault_is_reported_as_a_signal_and_the_parent_survives():
-    """THE case the fork exists for: freshly-compiled code faults. The signal number is kept because
+    """the case the fork exists for: freshly-compiled code faults. The signal number is kept because
     it distinguishes a genuine memory fault from a kernel the runtime aborted."""
 
     def crash():
@@ -63,7 +63,7 @@ def test_a_child_that_exits_without_writing_is_an_error_not_an_empty_success():
 
 
 def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep():
-    """The timeout guards an infinite loop in generated code. It must also REAP: a sweep that leaks a
+    """The timeout guards an infinite loop in generated code. It must also reap: a sweep that leaks a
     zombie per runaway kernel exhausts the process table long before it finishes."""
 
     def runaway():
