@@ -72,7 +72,7 @@ def enumerate_variants(toolchains: Sequence[Toolchain]) -> list[Variant]:
         if tc.cxx is None:
             continue
         # flag_matrix already dedups a cost model the family has no knob for onto its default flags
-        for fp_mode, cost_model, composed in flags.flag_matrix(tc.fp_family, "c"):
+        for fp_mode, cost_model, composed in flags.flag_matrix(tc.fp_family):
             variants.setdefault(
                 (tc.cxx, fp_mode, tuple(composed)),
                 Variant(tc.cxx, fp_mode, cost_model, tuple(composed), Path(tc.cxx).name),

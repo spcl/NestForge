@@ -34,16 +34,6 @@ def test_every_cell_builds_an_optimized_native_shared_object():
     assert flags.BASE_FLAGS == ("-O3", "-march=native", "-fPIC", "-shared")
 
 
-def test_fortran_fp_flags_strip_unsupported_and_add_gfortran_guards():
-    # gfortran rejects -fexcess-precision=standard and -fno-math-errno; they must be dropped.
-    strict_f = flags.fp_flags("gnu", "strict-ieee", "fortran")
-    assert "-fexcess-precision=standard" not in strict_f and "-fno-math-errno" not in strict_f
-    assert "-fno-frontend-optimize" in strict_f  # gfortran reassociates at -O without this
-    assert "-fno-protect-parens" in flags.fp_flags("gnu", "fast-math", "fortran")  # only at the fast rung
-    # the C spelling keeps the flags the Fortran frontend rejects.
-    assert "-fexcess-precision=standard" in flags.fp_flags("gnu", "strict-ieee", "c")
-
-
 def test_cost_flags_no_vec_and_cheap_collapse():
     assert flags.cost_flags("gnu", "no-vec") == ["-fno-tree-vectorize"]
     assert flags.cost_flags("llvm", "no-vec") == ["-fno-vectorize", "-fno-slp-vectorize"]

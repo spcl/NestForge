@@ -18,9 +18,7 @@ below applies to it.
 | `contract-fma` | 1e-13 | `-ffp-contract=fast -fexcess-precision=standard` | `-ffp-contract=fast` | `-fp-model=precise` |
 | `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
 
-oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model.
-`fortran_fp_flags` adds `-fno-frontend-optimize` for gfortran below `fast-math`, because its front end
-reassociates at `-O` even with `-ffp-contract=off`. `DTYPE_ATOL` adds a per-dtype floor of about one
+oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model. `DTYPE_ATOL` adds a per-dtype floor of about one
 ULP, combined as `max(mode, dtype)`. GPU variants use only `strict-ieee` and `contract-fma`.
 
 ## Cost models

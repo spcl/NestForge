@@ -25,7 +25,7 @@ DTYPE_ATOL: dict[str, float] = {
     "float16": 9.8e-4,
 }
 
-#: FP-mode flags per family and mode, spelled for C; :func:`fortran_fp_flags` adapts them.
+#: FP-mode flags per family and mode.
 FP: dict[str, dict[str, list[str]]] = {
     "gnu": {
         "strict-ieee": ["-ffp-contract=off", "-fexcess-precision=standard"],
@@ -52,21 +52,9 @@ COST_MODELS: tuple[str, ...] = ("default", "cheap", "no-vec")
 BASE_FLAGS: tuple[str, ...] = ("-O3", "-march=native", "-fPIC", "-shared")
 
 
-def fortran_fp_flags(family: str, level: str) -> list[str]:
-    """FP-mode flags for a family's Fortran frontend; gfortran reassociates at ``-O`` even under
-    ``-ffp-contract=off`` unless ``-fno-frontend-optimize`` stops it."""
-    flags = [f for f in FP[family][level] if f != "-fexcess-precision=standard"]  # gfortran rejects it
-    if family == "gnu":
-        if level != "fast-math":
-            flags.append("-fno-frontend-optimize")
-        else:
-            flags.append("-fno-protect-parens")
-    return flags
-
-
-def fp_flags(family: str, level: str, lang: str = "c") -> list[str]:
-    """FP-mode flags for ``family`` at ``level``, for ``lang`` ``"c"`` or ``"fortran"``."""
-    return fortran_fp_flags(family, level) if lang == "fortran" else list(FP[family][level])
+def fp_flags(family: str, level: str) -> list[str]:
+    """FP-mode flags for ``family`` at ``level``."""
+    return list(FP[family][level])
 
 
 def cost_flags(family: str, model: str) -> list[str]:
@@ -82,14 +70,14 @@ def cost_flags(family: str, model: str) -> list[str]:
     return []
 
 
-def flag_matrix(family: str, lang: str = "c") -> list[tuple[str, str, list[str]]]:
+def flag_matrix(family: str) -> list[tuple[str, str, list[str]]]:
     """``(fp_level, cost_model, flags)`` per cell for ``family``, one per distinct flag set."""
     matrix: list[tuple[str, str, list[str]]] = []
     seen: dict[tuple[str, ...], None] = {}
     base = list(BASE_FLAGS)
     for level in FP_LEVELS:
         for model in COST_MODELS:
-            flags = base + fp_flags(family, level, lang) + cost_flags(family, model)
+            flags = base + fp_flags(family, level) + cost_flags(family, model)
             key = tuple(flags)
             if key in seen:
                 continue
