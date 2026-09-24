@@ -46,6 +46,7 @@ from dace.sdfg.utils import dfs_topological_sort
 from nestforge.ir.emit_libnode import (
     UnsupportedLibraryNode,
     emit_library_node,
+    exclusive_stop,
     index_str,
     is_scalar,
     read_expr,
@@ -55,10 +56,7 @@ from nestforge.ir.emit_libnode import (
 from nestforge.ir.dace_types import memlet_data, memlet_range, memlet_subset, other_subset
 from nestforge.ir.extract import Boundary
 
-try:
-    from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
-except ImportError:  # the pass ships only on the DaCe `extended` branch nest-forge targets
-    ExpandNestedSDFGInputs = None
+from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 
 
 class UnsupportedNest(Exception):
@@ -145,6 +143,8 @@ MATH_INTRINSICS = {
     "ceil": "np.ceil",
     "fabs": "np.abs",
     "sign": "np.sign",
+    "re": "np.real",  # the frontend spells ``z.real`` / ``z.imag`` as sympy's re/im
+    "im": "np.imag",
 }
 INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(MATH_INTRINSICS) + r")(?=\s*\()")
 
@@ -177,8 +177,8 @@ def int_ceil(a: int, b: int) -> int:
 #: alongside ``dace.*``) that :func:`rewrite_math_prefix` leaves unrewritten -- see :data:`NP_VERBATIM_MATH`.
 EMITTED_BUILTINS = {"np": numpy, "math": math, "int_floor": int_floor, "int_ceil": int_ceil}
 
-#: Same names as SOURCE, so a standalone kernel needs no injected namespace; generated from the
-#: functions above so an edit to ``int_ceil`` cannot drift from the emitted text.
+#: The names in :data:`EMITTED_BUILTINS`, defined inline so a standalone kernel needs no injected namespace;
+#: generated from the functions above so the emitted text cannot drift from them.
 STANDALONE_PREAMBLE = (
     "import numpy as np\nimport math\n\n\n"
     + "\n\n\n".join(inspect.getsource(fn).strip() for fn in (int_floor, int_ceil))
@@ -258,14 +258,10 @@ def apply_call(code: str, name: str, fn: Callable[..., str]) -> str:
 
 
 def rewrite_userfuncs(code: str) -> str:
-    """Rewrite DaCe sympy user-functions (:data:`USERFUNC_REWRITES`) to numpy/python, to a fixpoint."""
-    for _ in range(16):  # bounded: every rewrite strictly removes one user-function call
-        new = code
-        for name, fn in USERFUNC_REWRITES.items():
-            new = apply_call(new, name, fn)
-        if new == code:
-            return code
-        code = new
+    """Rewrite DaCe sympy user-functions (:data:`USERFUNC_REWRITES`) to numpy/python. One pass suffices:
+    :func:`apply_call` removes every call of a name, nested ones included, and no rewrite emits another."""
+    for name, fn in USERFUNC_REWRITES.items():
+        code = apply_call(code, name, fn)
     return code
 
 
@@ -529,8 +525,6 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
                 f"nested SDFG output into {e.data.data} carries a reduction (WCR) that emit_nested_sdfg does "
                 "not apply; not emittable as numpy -- fall back to the DaCe variant"
             )
-    if ExpandNestedSDFGInputs is None:
-        raise UnsupportedNest("nested SDFG emission needs ExpandNestedSDFGInputs (DaCe extended branch)")
     inner = copy.deepcopy(node.sdfg)
     conns = {e.dst_conn: e.data.data for e in state.in_edges(node) if e.data.data is not None}
     conns.update({e.src_conn: e.data.data for e in state.out_edges(node) if e.data.data is not None})
@@ -554,8 +548,27 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
             inner.replace(name, f"_ns{node_id}_{name}")
 
     lines = symbol_mapping_lines(node.symbol_mapping, state.node_id(node))
-    lines += emit_region(inner, inner)
-    return lines
+    body = emit_region(inner, inner)
+    returns = [b for b in inner.all_control_flow_blocks() if isinstance(b, ReturnBlock)]
+    if not returns:
+        return lines + body
+    # a return ends only the nested SDFG, so its body runs in a one-trip loop the return breaks out of
+    if any(inside_loop(b, inner) for b in returns):
+        raise UnsupportedNest(f"nested SDFG {inner.name} returns from inside a loop; a break would leave only that")
+    lines.append(f"for _ in range(1):  # {inner.name}, which returns early")
+    return lines + [
+        "    " + (ln[: len(ln) - len(ln.lstrip())] + "break" if ln.strip() == "return" else ln) for ln in body
+    ]
+
+
+def inside_loop(block: ControlFlowBlock, root: ControlFlowRegion) -> bool:
+    """Whether ``block`` sits in a ``LoopRegion`` below ``root``."""
+    region = block.parent_graph
+    while region is not None and region is not root:
+        if isinstance(region, LoopRegion):
+            return True
+        region = region.parent_graph
+    return False
 
 
 def symbol_mapping_lines(mapping: dict[str, object], node_id: int) -> list[str]:
@@ -578,9 +591,9 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
     lines: list[str] = []
     for e in state.in_edges(state.exit_node(entry)):
         if not isinstance(e.src, nodes.AccessNode) or state.entry_node(e.src) is not entry:
-            # A nested map/library/NestedSDFG source emits its body only and never applies an exit WCR,
-            # which would otherwise silently become an overwrite; refuse so the caller falls back to DaCe.
-            if e.data.wcr is not None and not isinstance(e.src, nodes.Tasklet):
+            # a tasklet or inner map applied its reduction already; a library node or nested SDFG never does,
+            # so its exit WCR would silently become an overwrite
+            if e.data.wcr is not None and not isinstance(e.src, (nodes.Tasklet, nodes.MapExit)):
                 raise UnsupportedNest(
                     f"reduction (WCR) leaves the map exit from a {type(e.src).__name__}, not an in-scope "
                     "accumulator access node; not emittable as numpy -- fall back to the DaCe variant"
@@ -604,10 +617,10 @@ def map_exit_writes(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntr
 def range_stop(end: sympy.Expr, step: sympy.Expr, what: str) -> sympy.Expr:
     """Python's exclusive ``range`` stop for a DaCe range whose ``end`` is inclusive: ``end +/- 1`` by
     step sign; a blanket ``+ 1`` would silently drop element 0 on a descending range."""
-    sign = sympy.sign(sympy.sympify(step))
-    if sign not in (1, -1):
+    stop = exclusive_stop(end, step)
+    if stop is None:
         raise UnsupportedNest(f"{what} has step {step} of undecidable sign; no sound python range stop")
-    return end + sign
+    return stop
 
 
 def map_headers(entry: nodes.MapEntry) -> list[str]:
@@ -651,7 +664,7 @@ def map_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> 
     headers = map_headers(entry)
     body = map_body_lines(state, sdfg, entry)
     lines = ["    " * depth + h for depth, h in enumerate(headers)]
-    lines += ["    " * len(headers) + bl for bl in (body or ["pass"])]
+    lines += ["    " * len(headers) + bl for bl in body_or_pass(body)]
     return lines
 
 
@@ -696,9 +709,9 @@ def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> list[str]:
     """Emit a ``LoopRegion`` as init + ``while`` (do-while when ``inverted``) around its body."""
     if loop.loop_condition is None:
         raise UnsupportedNest(f"loop {loop.label} has no condition")
-    cond = normalize_casts(loop.loop_condition.as_string.strip())
-    init = normalize_casts(loop.init_statement.as_string.strip()) if loop.init_statement is not None else None
-    update = normalize_casts(loop.update_statement.as_string.strip()) if loop.update_statement is not None else None
+    cond = control_expr(loop.loop_condition.as_string, sdfg)
+    init = control_expr(loop.init_statement.as_string, sdfg) if loop.init_statement is not None else None
+    update = control_expr(loop.update_statement.as_string, sdfg) if loop.update_statement is not None else None
     if loop.inverted and targets_continue(loop):
         # python's while puts the update/exit test in the body, where continue would skip both and hang forever
         raise UnsupportedNest(
@@ -743,15 +756,17 @@ def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG, continue_upd
         if condition is None:
             lines.append("else:")
         else:
-            lines.append(f"{keyword} {normalize_casts(condition.as_string.strip())}:")
+            lines.append(f"{keyword} {control_expr(condition.as_string, sdfg)}:")
             keyword = "elif"
         lines += [ind + b for b in body_or_pass(emit_region(region, sdfg, continue_update))]
     return lines
 
 
-def strip_scalar_local_subscript(code: str, sdfg: dace.SDFG) -> str:
-    """Drop the ``[0]`` index off a scalar-transient array in a raw DaCe code string."""
-    for name, desc in sdfg.arrays.items():
+def control_expr(code: str, sdfg: dace.SDFG) -> str:
+    """A loop statement, branch condition or interstate right-hand side as Python over the emitted locals: a
+    scalar transient is a plain local, so its ``[0]`` goes."""
+    code = normalize_casts(code.strip())
+    for name in sdfg.arrays:
         if scalar_local(sdfg, name):
             code = re.sub(rf"\b{re.escape(name)}\s*\[[^][]*\]", name, code)
     return code
@@ -777,7 +792,7 @@ def interstate_lines(region: ControlFlowRegion, sdfg: dace.SDFG, block: ControlF
         )
     for e in carrying:
         for lhs, rhs in e.data.assignments.items():
-            lines.append(f"{lhs} = {strip_scalar_local_subscript(normalize_casts(rhs), sdfg)}")
+            lines.append(f"{lhs} = {control_expr(rhs, sdfg)}")
     return lines
 
 
@@ -806,9 +821,7 @@ def emit_region(region: ControlFlowRegion, sdfg: dace.SDFG, continue_update: str
                 lines.append(continue_update)  # python's while keeps the update in the body; continue would skip it
             lines.append("continue")
         elif isinstance(block, ReturnBlock):
-            # Early return out of the SDFG. A whole-kernel python ``return`` matches this exactly (it exits
-            # the function == exits the SDFG). Externalizing a *sub-nest* that carries one is refused up
-            # front by ``reject_early_return`` (the return would only exit the nest, not the enclosing SDFG).
+            # exits the kernel, which is the whole SDFG here; reject_nonexternalizable refuses a sub-nest's return
             lines.append("return")
         else:
             raise UnsupportedNest(f"control-flow block not yet emitted: {type(block).__name__}")
@@ -979,15 +992,10 @@ def innermost_loop(block: ControlFlowBlock) -> LoopRegion | None:
     return None
 
 
-def has_enclosing_loop(block: ControlFlowBlock) -> bool:
-    """True if ``block`` has a ``LoopRegion`` ancestor within its SDFG."""
-    return innermost_loop(block) is not None
-
-
 def reject_orphan_break_continue(sdfg: dace.SDFG) -> None:
     """Refuse a ``break`` / ``continue`` with no enclosing ``LoopRegion``: it would land outside any loop."""
     for block in sdfg.all_control_flow_blocks():
-        if isinstance(block, (BreakBlock, ContinueBlock)) and not has_enclosing_loop(block):
+        if isinstance(block, (BreakBlock, ContinueBlock)) and innermost_loop(block) is None:
             raise UnsupportedNest(
                 f"nest contains a {type(block).__name__} ({block.label}) whose target loop is outside the "
                 "extracted scope; externalize the loop it breaks out of, not an inner nest"
@@ -1013,8 +1021,6 @@ def render(fn_name: str, args: list[str], body: list[str]) -> str:
 
 def expand_nested_sdfg_inputs(sdfg: dace.SDFG) -> dace.SDFG:
     """Return an SDFG (a copy) whose nested-SDFG in/out connectors are widened to the full outer arrays."""
-    if ExpandNestedSDFGInputs is None:
-        return sdfg
     if not any(isinstance(n, nodes.NestedSDFG) for state in sdfg.all_states() for n in state.nodes()):
         return sdfg
     widened = copy.deepcopy(sdfg)
@@ -1022,22 +1028,37 @@ def expand_nested_sdfg_inputs(sdfg: dace.SDFG) -> dace.SDFG:
     return widened
 
 
+def sized_standalone(boundary: Boundary) -> dace.SDFG:
+    """The SDFG a nest's kernel is emitted from: nested inputs widened first, then loop scratch sized, or the
+    shapes miss the kernel body."""
+    return maxsize_loop_scratch(expand_nested_sdfg_inputs(boundary.standalone_sdfg), boundary.symbols)
+
+
+def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
+    """The kernel's array arguments in signature order: inputs, then further outputs, then scratch, since a
+    kernel allocates nothing."""
+    names = list(boundary.inputs)
+    names += [o for o in boundary.outputs if o not in boundary.inputs]
+    names += [s for s in scratch_arrays(sdfg) if s not in names]
+    return names
+
+
+def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:
+    """Every kernel argument in signature order: :func:`kernel_arrays`, then the symbols."""
+    return [*arrays, *(s for s in boundary.symbols if s not in arrays)]
+
+
 def nest_to_numpy(boundary: Boundary, fn_name: str = "kernel") -> str:
     """Standalone python source ``def <fn_name>(<args>): ...`` for an extracted nest's boundary."""
     reject_nonexternalizable(boundary.standalone_sdfg)  # early return / orphan break cannot be externalized
-    standalone = expand_nested_sdfg_inputs(boundary.standalone_sdfg)
-    standalone = maxsize_loop_scratch(standalone, boundary.symbols)
-    scratch = scratch_arrays(standalone)
-    reject_unsizable_scratch(standalone, scratch, boundary.symbols)
-    args = list(boundary.inputs)
-    args += [o for o in boundary.outputs if o not in boundary.inputs]
-    args += [s for s in scratch if s not in args]
-    args += [s for s in boundary.symbols if s not in args]
+    standalone = sized_standalone(boundary)
+    reject_unsizable_scratch(standalone, scratch_arrays(standalone), boundary.symbols)
+    args = kernel_args(boundary, kernel_arrays(boundary, standalone))
     return render(fn_name, args, emit_region(standalone, standalone))
 
 
 def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
-    """Standalone python source for a whole SDFG -- the corpus entry point."""
+    """Standalone python source for a whole SDFG, whose non-array arguments are its symbols."""
     reject_orphan_break_continue(sdfg)  # a return IS emittable here (it exits the kernel == exits the SDFG)
     sdfg = expand_nested_sdfg_inputs(sdfg)
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]

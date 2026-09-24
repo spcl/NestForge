@@ -13,7 +13,7 @@ import numpy as np
 import dace
 from dace import symbolic
 
-from nestforge.ir.emit_numpy import expand_nested_sdfg_inputs, maxsize_loop_scratch, scratch_arrays
+from nestforge.ir.emit_numpy import kernel_args, kernel_arrays, sized_standalone
 from nestforge.ir.extract import Boundary
 
 DEFAULT_SIZE = 1 << 16
@@ -26,23 +26,6 @@ def symbol_dtype_name(sdfg: dace.SDFG, s: str) -> str:
     if s in sdfg.symbols:
         return np.dtype(sdfg.symbols[s].type).name
     return "int64"
-
-
-def sized_sdfg(boundary: Boundary) -> dace.SDFG:
-    # widen scratch after expanding nested inputs, or the shapes miss the kernel body
-    return maxsize_loop_scratch(expand_nested_sdfg_inputs(boundary.standalone_sdfg), boundary.symbols)
-
-
-def arg_order(boundary: Boundary, arrays: list[str]) -> list[str]:
-    return [*arrays, *(s for s in boundary.symbols if s not in arrays)]
-
-
-def array_names(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
-    # scratch transients are arguments too: a kernel allocates nothing
-    names = list(boundary.inputs)
-    names += [o for o in boundary.outputs if o not in boundary.inputs]
-    names += [s for s in scratch_arrays(sdfg) if s not in names]
-    return names
 
 
 def shape_str(shape: Sequence[Any]) -> str:
@@ -58,9 +41,9 @@ def manifest_dict(
     boundary: Boundary, name: str, sizes: dict[str, int] | None = None, preset: str = "S"
 ) -> dict[str, Any]:
     """The manifest of ``boundary``'s standalone SDFG."""
-    sdfg = sized_sdfg(boundary)
-    arrays = array_names(boundary, sdfg)
-    init_arrays = {}
+    sdfg = sized_standalone(boundary)
+    arrays = kernel_arrays(boundary, sdfg)
+    init_arrays: dict[str, dict[str, str]] = {}
     for a in arrays:
         desc = sdfg.arrays[a]
         init_arrays[a] = {"shape": shape_str(desc.shape), "dtype": dtype_str(desc)}
@@ -82,7 +65,7 @@ def manifest_dict(
         "relative_path": "extended",
         "level": 1,
         "parameters": {preset: int_params},
-        "input_args": arg_order(boundary, arrays),
+        "input_args": kernel_args(boundary, arrays),
         "array_args": arrays,
         "output_args": list(boundary.outputs),
         "init": init,

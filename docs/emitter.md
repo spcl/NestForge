@@ -16,8 +16,8 @@ the argument manifest.
   array data, such as a CSR span, is refused (`reject_unsizable_scratch`).
 - **Read-only.** Emission works on a deep copy and never mutates the caller's SDFG.
 - **Exact.** Bit-exact against NumPy wherever floating-point associativity allows.
-- **Signature parity.** `emit_yaml.array_names` and the NumPy signature list the same arguments in the
-  same order.
+- **One signature.** The NumPy kernel and the manifest both take their arguments from
+  `emit_numpy.kernel_args`, so they list the same arguments in the same order.
 
 ## Invariants
 

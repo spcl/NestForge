@@ -15,9 +15,17 @@ import pytest
 from dace import symbolic
 
 from nestforge.corpus.bench import dace_kernel_names, iter_dace_kernels, module_path
-from nestforge.ir.emit_libnode import symbol_scalar
+from nestforge.ir.emit_libnode import is_scalar
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
+
+
+def symbol_scalar(sdfg, name):
+    """A non-transient scalar read only as a free symbol, never through a memlet: the call passes it by value."""
+    desc = sdfg.arrays[name]
+    if desc.transient or not is_scalar(desc):
+        return False
+    return not any(e.data is not None and e.data.data == name for st in sdfg.all_states() for e in st.edges())
 
 
 def kernels():
@@ -68,7 +76,7 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
         shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
         # reshape inputs to the descriptor shape: a kernel may declare a param 2-D (nbody's mass is
         # [N,1]) while the caller supplies the flat (N,) array; sizes match, so reshape aligns them.
-        call[name] = inputs[name].astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
+        call[name] = np.asarray(inputs[name]).astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
     kernel(**call)
     return call, src
 

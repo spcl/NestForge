@@ -60,6 +60,32 @@ def test_early_return_whole_sdfg_emits_and_short_circuits():
         np.testing.assert_array_equal(out, expected)
 
 
+def test_a_nested_sdfg_return_ends_only_the_nested_sdfg():
+    """Spliced inline, the nested SDFG's ``return`` would end the whole kernel and skip what follows it."""
+    sdfg = dc.SDFG("calls_earlyret")
+    sdfg.add_array("a", [N], dc.float64)
+    sdfg.add_array("out", [N], dc.float64)
+    sdfg.add_array("after", [1], dc.float64)
+    sdfg.add_symbol("sel", dc.int64)
+    call = sdfg.add_state("call", is_start_block=True)
+    nested = call.add_nested_sdfg(build_early_return(), {"a": None}, {"out": None}, {"N": "N", "sel": "sel"})
+    call.add_edge(call.add_read("a"), None, nested, "a", dc.Memlet("a[0:N]"))
+    call.add_edge(nested, "out", call.add_write("out"), None, dc.Memlet("out[0:N]"))
+    tail = sdfg.add_state_after(call, "tail")
+    mark = tail.add_tasklet("mark", {}, {"o"}, "o = 1.0")
+    tail.add_edge(mark, "o", tail.add_write("after"), None, dc.Memlet("after[0]"))
+    sdfg.validate()
+    fn = load_emitted(sdfg_to_numpy(sdfg, "calls_earlyret"), "calls_earlyret").calls_earlyret
+    a = np.arange(5.0)
+    for sel, expected in ((1, a.copy()), (0, a + 1.0)):
+        out, after = np.zeros(5), np.zeros(1)
+
+        fn(a=a.copy(), out=out, after=after, sel=sel, N=5)
+
+        np.testing.assert_array_equal(out, expected)
+        assert after[0] == 1.0, f"sel={sel}: the kernel stopped at the nested return"
+
+
 def test_return_nest_is_not_externalizable():
     """Externalizing a nest that carries a return changes its target (nest-function vs enclosing SDFG),
     so :func:`nest_to_numpy` refuses it up front."""

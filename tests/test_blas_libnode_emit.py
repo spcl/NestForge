@@ -60,17 +60,19 @@ def assert_emit_matches_reference(build, inputs, tol=1e-9):
     assert res["md"] < tol, f"maxdiff {res['md']:.2e} exceeds {tol}"
 
 
-def syrk_sdfg(trans, uplo, alpha, beta, n=4, k=3):
+def syrk_sdfg(trans, uplo, alpha, beta, n=4, k=3, offset=0):
+    """A Syrk on the ``n x n`` block of ``C`` starting at ``(offset, offset)``."""
     ashape = [n, k] if trans == "N" else [k, n]
-    sdfg = dace.SDFG(f"syrk_{trans}_{uplo}_{str(beta).replace('.', 'p')}")
+    sdfg = dace.SDFG(f"syrk_{trans}_{uplo}_{str(beta).replace('.', 'p')}_{offset}")
     sdfg.add_array("A", ashape, DT)
-    sdfg.add_array("C", [n, n], DT)
+    sdfg.add_array("C", [n + 2 * offset, n + 2 * offset], DT)
     st = sdfg.add_state()
     node = Syrk("syrk", trans=trans, uplo=uplo, alpha=alpha, beta=beta)
+    block = f"C[{offset}:{offset + n}, {offset}:{offset + n}]"
     st.add_edge(st.add_read("A"), None, node, "_a", dace.Memlet(f"A[0:{ashape[0]}, 0:{ashape[1]}]"))
-    st.add_edge(node, "_c", st.add_write("C"), None, dace.Memlet(f"C[0:{n}, 0:{n}]"))
+    st.add_edge(node, "_c", st.add_write("C"), None, dace.Memlet(block))
     if beta != 0:
-        st.add_edge(st.add_read("C"), None, node, "_c", dace.Memlet(f"C[0:{n}, 0:{n}]"))
+        st.add_edge(st.add_read("C"), None, node, "_c", dace.Memlet(block))
     return sdfg
 
 
@@ -83,6 +85,14 @@ def test_syrk_matches_pure_expansion(trans, uplo, beta):
     ashape = (n, k) if trans == "N" else (k, n)
     inputs = {"A": rng.random(ashape), "C": rng.random((n, n))}
     assert_emit_matches_reference(lambda: syrk_sdfg(trans, uplo, 1.5, beta), inputs)
+
+
+@pytest.mark.parametrize("uplo", ["L", "U"])
+def test_syrk_on_a_block_of_a_larger_c_reads_and_keeps_that_block(uplo):
+    """``beta * C`` and the kept triangle read the block the node writes, not the whole array."""
+    rng = np.random.default_rng(0)
+    inputs = {"A": rng.random((4, 3)), "C": rng.random((6, 6))}
+    assert_emit_matches_reference(lambda: syrk_sdfg("N", uplo, 1.5, 0.5, offset=1), inputs)
 
 
 def syr2k_sdfg(trans, uplo, alpha, beta, n=4, k=3):

@@ -26,6 +26,16 @@ def ttrans(X: dc.float64[2, 3, 4], Y: dc.float64[3, 2, 4]):
     Y[:] = np.transpose(X, axes=[1, 0, 2])
 
 
+@dc.program
+def accumulate(A: dc.float64[N], o: dc.float64[1]):
+    dc.reduce(lambda a, b: a + b, A, o)
+
+
+@dc.program
+def running_max(A: dc.float64[N], o: dc.float64[1]):
+    dc.reduce(lambda a, b: max(a, b), A, o, identity=-np.inf)
+
+
 def emit(program, fn_name):
     src = sdfg_to_numpy(program.to_sdfg(simplify=True), fn_name)
     return vars(load_emitted(src, fn_name))[fn_name], src
@@ -50,3 +60,19 @@ def test_tensortranspose_libnode_emits_np_transpose():
     Y = np.zeros((3, 2, 4))
     fn(X=X.copy(), Y=Y)
     np.testing.assert_array_equal(Y, np.transpose(X, [1, 0, 2]))
+
+
+def test_a_reduce_without_identity_accumulates_into_the_output():
+    """DaCe folds the input into the output's current value when no identity is given."""
+    fn, _ = emit(accumulate, "accumulate")
+    A, o = np.arange(4.0), np.array([10.0])
+    fn(A=A, o=o, N=4)
+    np.testing.assert_array_equal(o, [16.0])
+
+
+def test_a_reduce_with_an_identity_starts_from_it():
+    fn, src = emit(running_max, "running_max")
+    assert "-np.inf" in src
+    A, o = np.array([-3.0, -1.0, -2.0]), np.array([100.0])
+    fn(A=A, o=o, N=3)
+    np.testing.assert_array_equal(o, [-1.0])

@@ -115,8 +115,7 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     # __return is an in-place buffer parameter in the numpy signature AND the manifest -- aligned.
     assert "__return" in prep.numpy_source.splitlines()[0]
     assert "return " not in prep.numpy_source
-    # emit_yaml.arg_order and emit_numpy.nest_to_numpy build the signature independently, so the manifest is
-    # only usable while they agree: arrays in array_args order (inputs, extra outputs, scratch), then symbols.
+    # the manifest is only usable while it matches the emitted signature: array_args, then symbols
     header = prep.numpy_source.splitlines()[0]
     signature = [a.strip() for a in header[header.index("(") + 1 : header.rindex(")")].split(",")]
     args = list(prep.manifest["input_args"])

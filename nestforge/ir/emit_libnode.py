@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
+import math
+
 import sympy
 
 import dace
@@ -66,20 +68,25 @@ def index_str(subset: dace.subsets.Range, keep_singleton: bool = False) -> str:
                 raise UnsupportedLibraryNode(
                     f"subset range ({beg}, {end}, {step}) has a step of undecidable sign; no sound numpy slice stop"
                 )
-            # numpy reads a negative slice stop as "count from the end", not its arithmetic value, so a
-            # provably-negative stop is refused rather than silently selecting nothing.
-            maybe_negative = stop is not None and not (stop >= 0)
-            if maybe_negative and symbolic.symstr(stop) != "-1":
-                raise UnsupportedLibraryNode(
-                    f"descending subset range ({beg}, {end}, {step}) has stop {symbolic.symstr(stop)}, which is not "
-                    "provably >= 0; numpy would read a negative value as an offset from the END of the axis "
-                    "and silently select nothing"
-                )
+            # numpy reads a negative slice stop as an offset from the end; only a descending stop can go negative
+            descending = sympy.sign(sympy.sympify(step)) == -1
             if symbolic.symstr(stop) == "-1":
                 parts.append(f"{symbolic.symstr(beg)}::{symbolic.symstr(step)}")
+            elif descending and sympy.sympify(stop >= 0) is not sympy.true:
+                raise UnsupportedLibraryNode(
+                    f"descending subset range ({beg}, {end}, {step}) has stop {symbolic.symstr(stop)}, which is not "
+                    "provably >= 0; numpy would read a negative value as an offset from the end of the axis"
+                )
             else:
                 parts.append(f"{symbolic.symstr(beg)}:{symbolic.symstr(stop)}:{symbolic.symstr(step)}")
     return ", ".join(parts)
+
+
+def literal(value: object) -> str:
+    """``value`` as Python source; an infinite float spells ``np.inf``."""
+    if isinstance(value, float) and math.isinf(value):
+        return "-np.inf" if value < 0 else "np.inf"
+    return repr(value)
 
 
 def exclusive_stop(end: sympy.Expr, step: sympy.Expr) -> sympy.Expr | None:
@@ -109,14 +116,6 @@ def scalar_local(sdfg: dace.SDFG, name: str) -> bool:
     """A *scalar transient* -- emitted as a plain python variable (a C local ``double``), not a buffer."""
     desc = sdfg.arrays[name]
     return desc.transient and is_scalar(desc)
-
-
-def symbol_scalar(sdfg: dace.SDFG, name: str) -> bool:
-    """True if ``name`` is a non-transient scalar read only as a free symbol, never through a memlet."""
-    desc = sdfg.arrays[name]
-    if desc.transient or not is_scalar(desc):
-        return False
-    return not any(e.data is not None and e.data.data == name for st in sdfg.all_states() for e in st.edges())
 
 
 def scalar_elem(name: str, desc: dace.data.Data) -> str:
@@ -175,7 +174,7 @@ def memlet_lhs(memlet: dace.Memlet, sdfg: dace.SDFG) -> str:
     return write_lhs(sdfg, memlet_data(memlet), memlet_subset(memlet), keep_singleton=True)
 
 
-def data_edge(edges: list, node: nodes.Node, kind: str) -> MultiConnectorEdge:
+def data_edge(edges: list[MultiConnectorEdge], node: nodes.Node, kind: str) -> MultiConnectorEdge:
     """The first edge that carries data (skips empty happens-before/ordering edges, e.g. from StateFusion)."""
     for e in edges:
         if not e.data.is_empty():
@@ -185,7 +184,7 @@ def data_edge(edges: list, node: nodes.Node, kind: str) -> MultiConnectorEdge:
     )
 
 
-def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdge:
+def in_conn_edge(edges: list[MultiConnectorEdge], node: nodes.Node, conn: str) -> MultiConnectorEdge:
     """The in-edge on ``conn``; raises rather than a bare ``StopIteration`` when the connector is unwired."""
     edge = next((e for e in edges if e.dst_conn == conn), None)
     if edge is None:
@@ -193,7 +192,7 @@ def in_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdge
     return edge
 
 
-def out_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdge:
+def out_conn_edge(edges: list[MultiConnectorEdge], node: nodes.Node, conn: str) -> MultiConnectorEdge:
     """The out-edge on ``conn`` (see :func:`in_conn_edge`)."""
     edge = next((e for e in edges if e.src_conn == conn), None)
     if edge is None:
@@ -202,7 +201,11 @@ def out_conn_edge(edges: list, node: nodes.Node, conn: str) -> MultiConnectorEdg
 
 
 def in_expr(
-    state: dace.SDFGState, node: nodes.Node, conn: str | None, sdfg: dace.SDFG, edges: list | None = None
+    state: dace.SDFGState,
+    node: nodes.Node,
+    conn: str | None,
+    sdfg: dace.SDFG,
+    edges: list[MultiConnectorEdge] | None = None,
 ) -> str:
     """Read expression for one input connector; pass a precomputed ``edges`` list to avoid rescanning."""
     edges = list(state.in_edges(node)) if edges is None else edges
@@ -211,7 +214,11 @@ def in_expr(
 
 
 def out_expr(
-    state: dace.SDFGState, node: nodes.Node, conn: str | None, sdfg: dace.SDFG, edges: list | None = None
+    state: dace.SDFGState,
+    node: nodes.Node,
+    conn: str | None,
+    sdfg: dace.SDFG,
+    edges: list[MultiConnectorEdge] | None = None,
 ) -> str:
     """Read expression for the buffer an output connector writes (for a ``beta`` accumulate with no input)."""
     edges = list(state.out_edges(node)) if edges is None else edges
@@ -220,7 +227,11 @@ def out_expr(
 
 
 def out_lhs(
-    state: dace.SDFGState, node: nodes.Node, conn: str | None, sdfg: dace.SDFG, edges: list | None = None
+    state: dace.SDFGState,
+    node: nodes.Node,
+    conn: str | None,
+    sdfg: dace.SDFG,
+    edges: list[MultiConnectorEdge] | None = None,
 ) -> str:
     """Write target for one output connector (see :func:`in_expr` for ``edges``)."""
     edges = list(state.out_edges(node)) if edges is None else edges
@@ -396,22 +407,16 @@ def emit_argreduce(node: ArgReduce, state: dace.SDFGState, sdfg: dace.SDFG) -> l
 
 
 SCAN_FUNC = {
-    dace.dtypes.ReductionType.Sum: "np.cumsum",
-    dace.dtypes.ReductionType.Product: "np.cumprod",
-    dace.dtypes.ReductionType.Max: "np.maximum.accumulate",
-    dace.dtypes.ReductionType.Min: "np.minimum.accumulate",
+    ScanOp.SUM: "np.cumsum",
+    ScanOp.PRODUCT: "np.cumprod",
+    ScanOp.MAX: "np.maximum.accumulate",
+    ScanOp.MIN: "np.minimum.accumulate",
 }
 
 
 def emit_scan(node: Scan, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """Inclusive unit-stride unseeded scan -> a numpy accumulate; anything else is refused."""
-    red = {
-        ScanOp.SUM: dace.dtypes.ReductionType.Sum,
-        ScanOp.PRODUCT: dace.dtypes.ReductionType.Product,
-        ScanOp.MIN: dace.dtypes.ReductionType.Min,
-        ScanOp.MAX: dace.dtypes.ReductionType.Max,
-    }.get(node.op)
-    func = None if red is None else SCAN_FUNC.get(red)
+    func = SCAN_FUNC.get(node.op)
     if func is None:
         raise UnsupportedLibraryNode(f"Scan with unsupported op {node.op}")
     if node.exclusive or str(node.stride) != "1" or "_scan_init" in node.in_connectors:
@@ -428,7 +433,7 @@ def emit_scatter_conflict_check(node: nodes.LibraryNode, state: dace.SDFGState, 
     """Duplicate count over a 1-D integer index array, via last-writer-wins ownership (TAGCOUNT form)."""
     idx = in_expr(state, node, "_idx_in", sdfg)
     count = out_lhs(state, node, "_count_out", sdfg)
-    tag = memlet_data(next(e for e in state.out_edges(node) if e.src_conn == "_count_out").data)
+    tag = memlet_data(out_conn_edge(list(state.out_edges(node)), node, "_count_out").data)
     mx, owner, i, acc = f"__scc_{tag}_max", f"__scc_{tag}_owner", f"__scc_{tag}_i", f"__scc_{tag}_count"
     return [
         f"{mx} = int(np.max({idx}))",
@@ -441,11 +446,6 @@ def emit_scatter_conflict_check(node: nodes.LibraryNode, state: dace.SDFGState, 
         f"        {acc} += 1",
         f"{count} = {acc}",
     ]
-
-
-def out_data_name(state: dace.SDFGState, node: nodes.Node, conn: str) -> str:
-    """The array name an output connector writes."""
-    return memlet_data(next(e for e in state.out_edges(node) if e.src_conn == conn).data)
 
 
 def reject_runtime_scalars(node: nodes.LibraryNode, state: dace.SDFGState) -> None:
@@ -463,17 +463,22 @@ def triangle_funcs(uplo: str) -> tuple[str, str, int]:
     return ("np.tril", "np.triu", 1) if uplo == "L" else ("np.triu", "np.tril", -1)
 
 
+def triangle_update(node: Syrk | Syr2k, state: dace.SDFGState, sdfg: dace.SDFG, prod: str) -> str:
+    """``C = alpha * prod + beta * C`` on the ``uplo`` triangle of the block ``_c`` writes; the other keeps ``C``."""
+    out_edges = list(state.out_edges(node))
+    c = out_expr(state, node, "_c", sdfg, out_edges)
+    rhs = scaled(f"({prod})", node.alpha)
+    if not is_zero(node.beta):
+        rhs = f"{rhs} + {node.beta} * {c}"
+    write, keep, off = triangle_funcs(node.uplo)
+    return f"{out_lhs(state, node, '_c', sdfg, out_edges)} = {write}({rhs}) + {keep}({c}, {off})"
+
+
 def emit_syrk(node: Syrk, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     """BLAS SYRK, updating only the ``uplo`` triangle of ``C``; the opposite triangle keeps its prior value."""
     reject_runtime_scalars(node, state)
     a = in_expr(state, node, "_a", sdfg)
-    prod = f"{a}.T @ {a}" if node.trans == "T" else f"{a} @ {a}.T"
-    rhs = scaled(f"({prod})", node.alpha)
-    c_buf = out_data_name(state, node, "_c")
-    if not is_zero(node.beta):
-        rhs = f"{rhs} + {node.beta} * {read_expr(sdfg, c_buf, None)}"
-    write, keep, off = triangle_funcs(node.uplo)
-    return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
+    return triangle_update(node, state, sdfg, f"{a}.T @ {a}" if node.trans == "T" else f"{a} @ {a}.T")
 
 
 def emit_syr2k(node: Syr2k, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
@@ -483,12 +488,7 @@ def emit_syr2k(node: Syr2k, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     a = in_expr(state, node, "_a", sdfg, in_edges)
     b = in_expr(state, node, "_b", sdfg, in_edges)
     prod = f"{a}.T @ {b} + {b}.T @ {a}" if node.trans == "T" else f"{a} @ {b}.T + {b} @ {a}.T"
-    rhs = scaled(f"({prod})", node.alpha)
-    c_buf = out_data_name(state, node, "_c")
-    if not is_zero(node.beta):
-        rhs = f"{rhs} + {node.beta} * {read_expr(sdfg, c_buf, None)}"
-    write, keep, off = triangle_funcs(node.uplo)
-    return f"{out_lhs(state, node, '_c', sdfg)} = {write}({rhs}) + {keep}({read_expr(sdfg, c_buf, None)}, {off})"
+    return triangle_update(node, state, sdfg, prod)
 
 
 def emit_symm(node: Symm, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
@@ -548,12 +548,9 @@ def emit_cholesky(node: Cholesky, state: dace.SDFGState, sdfg: dace.SDFG) -> str
 
 def emit_tensortranspose(node: TensorTranspose, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     inp = in_expr(state, node, "_inp_tensor", sdfg)
-    if str(node.beta) not in ("0", "0.0"):
+    if not is_zero(node.beta):
         raise UnsupportedLibraryNode(f"TensorTranspose with beta={node.beta} (accumulate) is not emitted")
-    expr = f"np.transpose({inp}, axes={list(node.axes)})"
-    if str(node.alpha) != "1":
-        expr = f"{node.alpha} * ({expr})"
-    return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {expr}"
+    return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {scaled(f'np.transpose({inp}, axes={list(node.axes)})', node.alpha)}"
 
 
 def emit_reduce(node: Reduce, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
@@ -572,11 +569,14 @@ def emit_reduce(node: Reduce, state: dace.SDFGState, sdfg: dace.SDFG) -> str:
     out_rank = operand_rank(sdfg, memlet_data(out_memlet), memlet_subset(out_memlet))
     keepdims = axis is not None and out_rank == in_rank
     kd = ", keepdims=True" if keepdims else ""
-    return f"{out_lhs(state, node, None, sdfg, out_edges)} = {func}.reduce({inp}, axis={axis}{kd})"
+    reduced = f"{func}.reduce({inp}, axis={axis}{kd})"
+    # without an identity DaCe accumulates into the output's current value
+    seed = out_expr(state, node, None, sdfg, out_edges) if node.identity is None else literal(node.identity)
+    return f"{out_lhs(state, node, None, sdfg, out_edges)} = {func}({seed}, {reduced})"
 
 
 #: class name -> emitter ``(node, state, sdfg) -> "lhs = rhs"`` (or a list of statements).
-LIBNODE_EMITTERS: dict[str, Callable] = {
+LIBNODE_EMITTERS: dict[str, Callable[[Any, dace.SDFGState, dace.SDFG], str | list[str]]] = {
     "MatMul": emit_matmul,
     "Gemm": emit_gemm,
     "Gemv": emit_gemv,

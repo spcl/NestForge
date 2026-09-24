@@ -54,10 +54,9 @@ def test_wcr_sum_reduction():
     np.testing.assert_allclose(call["out"][0], a.sum())
 
 
-def test_wcr_at_map_exit_from_nested_map_raises():
-    """A reduction (WCR) reaching a map exit from a NESTED map (not an in-scope accumulator access node)
-    is emitted by no numpy path -- silently dropping it would mis-emit the reduction as a no-op. Refuse
-    it so the ExternalCall falls back to the DaCe variant instead of a wrong kernel."""
+def test_a_reduction_leaving_an_inner_map_is_applied_once():
+    """The inner map's exit applies the reduction; the outer exit only passes it on, so applying it there too
+    would double it and refusing it would drop a common row-sum shape."""
     sdfg = dc.SDFG("nested_wcr")
     sdfg.add_array("A", [N, N], dc.float64)
     sdfg.add_array("out", [N], dc.float64)
@@ -74,8 +73,12 @@ def test_wcr_at_map_exit_from_nested_map_raises():
     # acc reduces out through BOTH exits; the inner->outer exit edge carries the WCR from a MapExit source.
     st.add_memlet_path(acc, imx, omx, o, memlet=dc.Memlet("out[i]", wcr="lambda x, y: x + y"))
     sdfg.validate()
-    with pytest.raises(UnsupportedNest, match="reduction"):
-        sdfg_to_numpy(sdfg, "nested_wcr")
+    kernel = vars(load_emitted(sdfg_to_numpy(sdfg, "nested_wcr"), "nested_wcr"))["nested_wcr"]
+    A, out = np.random.default_rng(0).random((5, 5)), np.zeros(5)
+
+    kernel(A=A, out=out, N=5)
+
+    np.testing.assert_allclose(out, A.sum(axis=1), rtol=1e-12, atol=0)
 
 
 def test_wcr_at_map_exit_from_nested_sdfg_raises():

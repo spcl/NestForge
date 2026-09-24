@@ -174,10 +174,9 @@ def test_a_subscript_comma_does_not_split_an_argument(expr, want):
     assert apply_call(expr, "int_floor", lambda a, b: f"(({a}) // ({b}))") == want
 
 
-def test_multidim_subscript_survives_the_userfunc_fixpoint():
-    """End to end through rewrite_userfuncs, where the real emitter routes it. ``int_floor``/``int_ceil``
-    are NOT in the rewrite table -- they stay calls for both back ends -- so a rewritten function
-    (variadic ``Max``) carries the subscript-comma case here."""
+def test_multidim_subscript_survives_the_userfunc_rewrite():
+    """End to end through rewrite_userfuncs: ``int_ceil`` is not rewritten and stays a call, so a variadic
+    ``Max`` carries the subscript-comma case here."""
     from nestforge.ir.emit_numpy import rewrite_userfuncs
 
     out = rewrite_userfuncs("d[Max(aa[i, j], 2)] = b[int_ceil(Min(c[k, l], 4), 4)]")
@@ -362,6 +361,23 @@ def test_index_str_slices_a_descending_range_to_its_last_element(rng, want):
     assert list(np.atleast_1d(got)) == want
 
 
+def test_a_strided_slice_with_a_symbolic_stop_is_emitted():
+    """An ascending stop is ``end + 1 >= 1``, so only a descending one needs proof; asking a relation on a symbol
+    for its truth value raised."""
+    from nestforge.ir.emit_libnode import index_str
+
+    n = dace.symbol("N")
+    assert index_str(dace.subsets.Range([(0, n - 1, 2)])) == "0:N:2"
+
+
+def test_a_descending_slice_whose_stop_may_be_negative_is_refused():
+    from nestforge.ir.emit_libnode import UnsupportedLibraryNode, index_str
+
+    n, m = dace.symbol("N"), dace.symbol("M")
+    with pytest.raises(UnsupportedLibraryNode, match="not provably >= 0"):
+        index_str(dace.subsets.Range([(n - 1, m, -1)]))
+
+
 def test_range_stop_refuses_a_step_of_unknown_sign():
     """No sound stop exists without a direction; guessing one silently drops or over-runs elements."""
     from nestforge.ir.emit_numpy import UnsupportedNest, range_stop
@@ -485,3 +501,49 @@ def test_loop_init_statement_without_assignment_is_refused_not_indexerror():
     loop = LoopRegion("loop", condition_expr="i < N", loop_var="i", initialize_expr="i")
     with pytest.raises(UnsupportedNest, match="init statement"):
         loop_init_value(loop)
+
+
+def test_a_map_whose_body_emits_only_comments_still_loads():
+    """A ``for`` whose body is only provenance comments is an IndentationError, so it needs a ``pass``."""
+    sdfg = dace.SDFG("noop_map")
+    sdfg.add_array("A", [4], dace.float64)
+    state = sdfg.add_state()
+    entry, exit_ = state.add_map("m", dict(i="0:4"))
+    tasklet = state.add_tasklet("noop", {}, {}, "pass")
+    state.add_nedge(entry, tasklet, dace.Memlet())
+    state.add_nedge(tasklet, exit_, dace.Memlet())
+
+    src = sdfg_to_numpy(sdfg, "noop_map")
+
+    assert "pass" in src
+    load_emitted(src, "noop_map")
+
+
+@pytest.mark.parametrize(("a", "want"), [(0.9, 1.0), (0.1, 7.0)])
+def test_a_branch_condition_reads_a_scalar_transient_as_its_local(a, want):
+    """A scalar transient is emitted as a plain local, so ``t[0]`` in a condition would index a float."""
+    from dace.properties import CodeBlock
+    from dace.sdfg.state import ConditionalBlock, ControlFlowRegion
+
+    sdfg = dace.SDFG("scalar_guard")
+    sdfg.add_array("A", [1], dace.float64)
+    sdfg.add_array("B", [1], dace.float64)
+    sdfg.add_scalar("t", dace.float64, transient=True)
+    load = sdfg.add_state("load", is_start_block=True)
+    tasklet = load.add_tasklet("load", {"a"}, {"o"}, "o = a")
+    load.add_edge(load.add_read("A"), None, tasklet, "a", dace.Memlet("A[0]"))
+    load.add_edge(tasklet, "o", load.add_write("t"), None, dace.Memlet("t[0]"))
+    guard = ConditionalBlock("guard", sdfg=sdfg)
+    sdfg.add_node(guard)
+    sdfg.add_edge(load, guard, dace.InterstateEdge())
+    body = ControlFlowRegion("then", sdfg=sdfg)
+    store = body.add_state("store", is_start_block=True)
+    one = store.add_tasklet("one", {}, {"o"}, "o = 1.0")
+    store.add_edge(one, "o", store.add_write("B"), None, dace.Memlet("B[0]"))
+    guard.add_branch(CodeBlock("t[0] > 0.5"), body)
+    kernel = vars(load_emitted(sdfg_to_numpy(sdfg, "scalar_guard"), "scalar_guard"))["scalar_guard"]
+    B = np.array([7.0])
+
+    kernel(A=np.array([a]), B=B)
+
+    assert B[0] == want
