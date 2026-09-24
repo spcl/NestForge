@@ -29,14 +29,6 @@ if TYPE_CHECKING:
 DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning")
 
 
-def set_precision_fp64() -> None:
-    """Set HPCAgent-Bench's kernel dtype global to float64 before a kernel module imports it."""
-    import hpcagent_bench.frameworks.dace_framework as dfw
-
-    dfw.dc_float = dace.float64
-    dfw.dc_complex_float = dace.complex128
-
-
 @dataclass(slots=True)
 class CorpusKernel:
     """One corpus kernel with a ``@dace.program`` implementation."""
@@ -61,7 +53,11 @@ class CorpusKernel:
     def program(self) -> dace.frontend.python.parser.DaceProgram:
         """The kernel's entry ``@dace.program``, named by the manifest's ``func_name``; without one, the last
         program the module defines, since helpers precede the entry."""
-        set_precision_fp64()
+        import hpcagent_bench.frameworks.dace_framework as dfw
+
+        # the kernel module reads HPCAgent-Bench's dtype globals when it is imported
+        dfw.dc_float = dace.float64
+        dfw.dc_complex_float = dace.complex128
         module = self.module()
         entry = vars(module).get(self.spec.func_name)
         if isinstance(entry, dace.frontend.python.parser.DaceProgram):
@@ -88,16 +84,23 @@ def track_names(track: str | None) -> list[str]:
     return [name for name in KERNELS if track is None or name.startswith(f"{track}/")]
 
 
+def generate_dace_file(short_name: str) -> None:
+    """Regenerate hpcagent_bench's gitignored ``_dace.py`` of a :data:`DACE_TRACKS` kernel if it is missing."""
+    from hpcagent_bench import autogen
+
+    if short_name.split("/", 1)[0] in DACE_TRACKS:
+        autogen.ensure(short_name, ("dace",))
+
+
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
     """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
-    from hpcagent_bench import autogen
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
     for short_name in track_names(track):
         module_name = short_name.rsplit("/", 1)[-1]
         dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
-        if not dace_file.exists() and short_name.split("/", 1)[0] in DACE_TRACKS:
-            autogen.ensure(short_name, ("dace",))  # regenerate hpcagent_bench's gitignored _dace.py on demand
+        if not dace_file.exists():
+            generate_dace_file(short_name)
         if not dace_file.exists():
             continue
         yield CorpusKernel(
@@ -108,13 +111,10 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
         )
 
 
-def materialize_dace_corpus(track: str | None = None) -> None:
+def materialize_dace_corpus() -> None:
     """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
-    from hpcagent_bench import autogen
-
-    for short_name in track_names(track):
-        if short_name.split("/", 1)[0] in DACE_TRACKS:
-            autogen.ensure(short_name, ("dace",))
+    for short_name in track_names(None):
+        generate_dace_file(short_name)
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
