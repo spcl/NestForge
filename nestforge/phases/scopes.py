@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from functools import partial
 from collections.abc import Callable, Collection, Iterable, Sequence
 
 import dace
@@ -146,48 +147,40 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     return ext
 
 
-def is_host_length1_array(desc: dace.data.Data) -> bool:
-    return (
-        isinstance(desc, dace.data.Array)
-        and not isinstance(desc, dace.data.View)
-        and desc.total_size == 1
-        and desc.storage not in GPU_RESIDENT_STORAGES
-    )
-
-
 def host_length1_reads(sdfg: dace.SDFG, reads: Iterable[str], writes: Collection[str]) -> list[str]:
     """Read-only inputs that are length-1 arrays in host memory: a host kernel takes a scalar by value, and only a
     device pointer may carry one."""
-    return [n for n in reads if n not in writes and n in sdfg.arrays and is_host_length1_array(sdfg.arrays[n])]
-
-
-def host_length1_inputs(sdfg: dace.SDFG, entry: nodes.MapEntry) -> list[str]:
-    """:func:`host_length1_reads` of the nest at ``entry``."""
-    state = find_state_of_node(sdfg, entry)
-    return host_length1_reads(state.sdfg, *nest_reads_writes(state, entry))
-
-
-def refuse_host_length1_inputs(refs: list[tuple[dace.SDFG, nodes.MapEntry]]) -> None:
-    """Refuse a length-1 host array input: a host kernel takes a scalar by value, and only a device pointer may
-    carry one."""
-    offenders = [(entry.map.label, name) for parent, entry in refs for name in host_length1_inputs(parent, entry)]
-    if offenders:
-        raise ValueError(
-            f"nest inputs {offenders} are length-1 arrays in host memory; declare each as a Scalar, which "
-            "crosses the kernel boundary by value"
-        )
+    return [
+        name
+        for name in reads
+        if name not in writes
+        and name in sdfg.arrays
+        and isinstance(desc := sdfg.arrays[name], dace.data.Array)
+        and not isinstance(desc, dace.data.View)
+        and desc.total_size == 1
+        and desc.storage not in GPU_RESIDENT_STORAGES
+    ]
 
 
 def lower_nests_to_external_call(sdfg: dace.SDFG) -> list[tuple[ExternalCall, Boundary]]:
     """Replace every parallel top-level map with an ``ExternalCall``; returns each call with its boundary. Refuses
     before changing anything if a nest reads a length-1 host array."""
     refs = parallel_top_level_maps(sdfg)
-    refuse_host_length1_inputs(refs)
+    offenders: list[tuple[str, str]] = []
+    for parent, entry in refs:
+        state = find_state_of_node(parent, entry)
+        offenders += [
+            (entry.map.label, name) for name in host_length1_reads(state.sdfg, *nest_reads_writes(state, entry))
+        ]
+    if offenders:
+        raise ValueError(
+            f"nest inputs {offenders} are length-1 arrays in host memory; declare each as a Scalar, which "
+            "crosses the kernel boundary by value"
+        )
     out: list[tuple[ExternalCall, Boundary]] = []
     for (parent, node), name in zip(refs, kernel_names(sdfg, len(refs))):
         boundary = extract_nest_to_sdfg(parent, node, name=name)
-        ext = replace_nsdfg_with_external(boundary, name)
-        out.append((ext, boundary))
+        out.append((replace_nsdfg_with_external(boundary, name), boundary))
     return out
 
 
@@ -195,6 +188,10 @@ def kernel_names(sdfg: dace.SDFG, count: int) -> list[str]:
     """``count`` kernel names no kernel of ``sdfg`` holds; a name keys a kernel's library and work directory."""
     taken = {ext.name for ext in external_calls(sdfg)}
     return [name for name in (f"extcall_{i}" for i in range(len(taken) + count)) if name not in taken][:count]
+
+
+#: Outlines a group into one nested SDFG under a kernel name.
+Extract = Callable[[str], Boundary]
 
 
 def map_group(state: SDFGState, entries: Sequence[nodes.MapEntry]) -> list[nodes.Node] | str:
@@ -211,18 +208,25 @@ def map_group(state: SDFGState, entries: Sequence[nodes.MapEntry]) -> list[nodes
     for node in state.data_nodes():
         if any(e.src in exits for e in state.in_edges(node)) and any(e.dst in entries for e in state.out_edges(node)):
             members[node] = None
-    # a node the group feeds that feeds the group back would have to run inside the kernel
+    between = runs_between(state, members)
+    if between is not None:
+        return f"{between} runs between the named maps; name it too, or name maps nothing runs between."
+    return list(members)
+
+
+def runs_between(state: SDFGState, members: dict[nodes.Node, None]) -> nodes.Node | None:
+    """A node outside ``members`` that the group feeds and that feeds the group back, so would run inside it."""
     frontier = [e.dst for member in members for e in state.out_edges(member) if e.dst not in members]
     seen = dict.fromkeys(frontier)
     while frontier:
         node = frontier.pop()
         for edge in state.out_edges(node):
             if edge.dst in members:
-                return f"{node} runs between the named maps; name it too, or name maps nothing runs between."
+                return node
             if edge.dst not in seen:
                 seen[edge.dst] = None
                 frontier.append(edge.dst)
-    return list(members)
+    return None
 
 
 def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> list[ControlFlowBlock] | str:
@@ -254,49 +258,112 @@ def group_reads_writes(rows: Sequence[Row]) -> tuple[dict[str, None], dict[str, 
     return reads, writes
 
 
-def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[ExternalCall, Boundary] | str:
-    """One ``ExternalCall`` kernel over the regions ``rows`` name: several top-level maps of one state, or a
-    straight run of top-level blocks. A reason, and nothing changed, when they cannot form one kernel.
-
-    This is the scope an agent picks when no transformation fuses the regions: the kernel it writes in phase 4
-    fuses them instead.
-    """
+def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
+    """How to outline the regions ``rows`` name into one kernel: several top-level maps of one state, or a straight
+    run of top-level blocks. The reason instead when they cannot form one. Changes nothing."""
     if not rows:
         return "name at least one map or block."
+    extract = plan_group(sdfg, rows)
+    if isinstance(extract, str):
+        return extract
+    host_scalars = host_length1_reads(sdfg, *group_reads_writes(rows))
+    if host_scalars:
+        return f"inputs {host_scalars} are length-1 arrays in host memory; declare each as a Scalar."
+    return extract
+
+
+def plan_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     entries = [obj for obj, _ in rows if isinstance(obj, nodes.MapEntry)]
-    blocks = [obj for obj, _ in rows if isinstance(obj, ControlFlowBlock)]
     if len(entries) == len(rows):
-        return lower_map_group(sdfg, rows, entries)
-    if len(blocks) == len(rows):
-        group = block_group(sdfg, blocks)
-        if isinstance(group, str):
-            return group
-        return lower_group(sdfg, rows, lambda name: extract_blocks(sdfg, group, name))
-    return "name only maps or only control-flow blocks."
+        return plan_map_group(sdfg, rows, entries)
+    blocks = [obj for obj, _ in rows if isinstance(obj, ControlFlowBlock)]
+    if len(blocks) != len(rows):
+        return "name only maps or only control-flow blocks."
+    group = block_group(sdfg, blocks)
+    return group if isinstance(group, str) else partial(extract_blocks, sdfg, group)
 
 
-def lower_map_group(
-    sdfg: dace.SDFG, rows: Sequence[Row], entries: list[nodes.MapEntry]
-) -> tuple[ExternalCall, Boundary] | str:
-    """:func:`lower_group_to_external_call` for maps, which must share one top-level state."""
+def plan_map_group(sdfg: dace.SDFG, rows: Sequence[Row], entries: list[nodes.MapEntry]) -> Extract | str:
+    """:func:`plan_scope` for maps, which must share one state of ``sdfg``."""
     state = rows[0][1]
     if state is None or any(other is not state for _, other in rows):
         return "the named maps are in different states; name the blocks that hold them instead."
     if state.sdfg is not sdfg:
         return "the named maps sit inside a nested SDFG; kernels live at the top level."
     group = map_group(state, entries)
-    if isinstance(group, str):
-        return group
-    return lower_group(sdfg, rows, lambda name: extract_state_nodes(sdfg, state, group, name))
+    return group if isinstance(group, str) else partial(extract_state_nodes, sdfg, state, group)
 
 
-def lower_group(
-    sdfg: dace.SDFG, rows: Sequence[Row], extract: Callable[[str], Boundary]
-) -> tuple[ExternalCall, Boundary] | str:
-    """Extract a legal group under a fresh kernel name and put its ``ExternalCall`` in its place."""
-    host_scalars = host_length1_reads(sdfg, *group_reads_writes(rows))
-    if host_scalars:
-        return f"inputs {host_scalars} are length-1 arrays in host memory; declare each as a Scalar."
+def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[ExternalCall, Boundary] | str:
+    """One ``ExternalCall`` kernel over the regions ``rows`` name, as :func:`plan_scope` accepts them. A reason, and
+    nothing changed, when they cannot form one kernel.
+
+    This is the scope an agent picks when no transformation fuses the regions: the kernel it writes in phase 4
+    fuses them instead.
+    """
+    extract = plan_scope(sdfg, rows)
+    if isinstance(extract, str):
+        return extract
     (name,) = kernel_names(sdfg, 1)
     boundary = extract(name)
     return replace_nsdfg_with_external(boundary, name), boundary
+
+
+def scope_rows(node: nodes.Node, state: SDFGState) -> list[Row]:
+    """``node``, when a tree row names it, then the maps around it in ``state``, innermost first."""
+    chain: list[Row] = []
+    around: nodes.Node | None = node
+    while around is not None:
+        if isinstance(around, (nodes.MapEntry, nodes.LibraryNode)):
+            chain.append((around, state))
+        around = state.entry_node(around)
+    return chain
+
+
+def enclosing_rows(sdfg: dace.SDFG, row: Row) -> list[Row]:
+    """``row``, then every map, library node and block around it, innermost first, up to a top-level block of
+    ``sdfg``; a nested SDFG continues at the node that holds it."""
+    block, state = row
+    chain: list[Row] = []
+    if state is not None:
+        chain, block = scope_rows(block, state), state
+    while True:
+        while not isinstance(block, dace.SDFG):
+            chain.append((block, None))
+            block = block.parent_graph
+        nsdfg, state = block.parent_nsdfg_node, block.parent
+        if block is sdfg or nsdfg is None or state is None:
+            return chain
+        chain += scope_rows(nsdfg, state)
+        block = state
+
+
+def scope_cover(sdfg: dace.SDFG, rows: Sequence[Row]) -> list[Row] | None:
+    """Regions :func:`plan_scope` accepts that hold everything ``rows`` name, or ``None``. Tried in turn: the named
+    regions not inside another named one, the outermost map of ``sdfg`` around each, the top-level block around
+    each."""
+    for candidate in cover_candidates(sdfg, rows):
+        group = list(dict.fromkeys(candidate))
+        if not isinstance(plan_scope(sdfg, group), str):
+            return group
+    return None
+
+
+def cover_candidates(sdfg: dace.SDFG, rows: Sequence[Row]) -> list[list[Row]]:
+    chains = [enclosing_rows(sdfg, row) for row in rows]
+    named = [obj for obj, _ in rows]
+    outermost = [chain[0] for chain in chains if not inside_any(chain, named)]
+    tops = [chain[-1] for chain in chains]
+    maps = [row for row in (outermost_map(sdfg, chain) for chain in chains) if row is not None]
+    return [outermost, maps, tops] if len(maps) == len(chains) else [outermost, tops]
+
+
+def inside_any(chain: list[Row], named: list[object]) -> bool:
+    """Whether a region around ``chain[0]`` is one of ``named``."""
+    return any(obj in named for obj, _ in chain[1:])
+
+
+def outermost_map(sdfg: dace.SDFG, chain: list[Row]) -> Row | None:
+    """The last map of ``chain`` in a state of ``sdfg`` itself, not of a nested SDFG."""
+    maps = [row for row in chain if isinstance(row[0], nodes.MapEntry) and row[1] is not None and row[1].sdfg is sdfg]
+    return maps[-1] if maps else None

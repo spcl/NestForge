@@ -140,7 +140,6 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
     """Every reduction leaving this map, as ``<op> over <axes> -> <target>``; the reduced axes are the parameters
     the written subset does not mention."""
     exit_node = state.exit_node(entry)
-    params = set(entry.map.params)
     out: list[str] = []
     # normalization puts every WCR on an AccessNode -> MapExit edge
     for edge in state.in_edges(exit_node):
@@ -150,7 +149,7 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
         op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
         subset = memlet_subset(edge.data)
         written = {str(s) for r in (bounds(subset) if subset else []) for b in r for s in b.free_symbols}
-        collapsed = [p for p in strings(entry.map.params) if p in params - written]
+        collapsed = [p for p in strings(entry.map.params) if p not in written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")
     return out

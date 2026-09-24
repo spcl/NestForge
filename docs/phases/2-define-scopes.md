@@ -15,6 +15,9 @@ kernel of several top-level maps of one state, or of a straight run of top-level
 out when the scheduling moves cannot fuse two regions that should run as one: the kernel written in
 phase 4 fuses them. The call is refused, and nothing changes, when something outside the group runs
 between its parts or the blocks do not follow each other; `define_scopes` then lowers the maps left.
+A single region is a valid group, including a purely sequential loop nest the default skips. A refused
+phase 1 move names the call to make in `MoveResult.fallback`; the offer and `define_scope` decide by the same
+`plan_scope` check, so an offered call is accepted.
 
 Scalar inputs cross the boundary by value. Lowering refuses a host length-1 array input; only a
 length-1 GPU array, a device pointer, may stand in for a scalar.

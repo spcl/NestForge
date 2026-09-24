@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import ctypes
 import functools
@@ -15,7 +14,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -69,22 +68,23 @@ class BuiltSDFG:
     compile_seconds: float = 0.0
     handle: ctypes.c_void_p | None = field(default=None, repr=False)
 
-    def init(self, sizes: dict[str, int]) -> None:
+    def function(self, symbol: str, restype: Any, argtypes: list[Any]) -> Any:
+        """The C function ``symbol`` of the mapped library, typed."""
         if self.lib is None:
-            raise RuntimeError(f"{self.name}: init() called after unload(); the compiled library is not mapped")
-        fn = self.lib[f"__dace_init_{self.name}"]  # ctypes CDLL indexing (not getattr) binds the entry point
-        fn.restype = ctypes.c_void_p
-        fn.argtypes = [p.ctype for p in self.init_params]
+            raise RuntimeError(f"{self.name}: {symbol} called after unload(); the compiled library is not mapped")
+        fn = self.lib[symbol]  # ctypes CDLL indexing (not getattr) binds the entry point
+        fn.restype = restype
+        fn.argtypes = argtypes
+        return fn
+
+    def init(self, sizes: dict[str, int]) -> None:
+        fn = self.function(f"__dace_init_{self.name}", ctypes.c_void_p, [p.ctype for p in self.init_params])
         # each parameter's own ctype: symbol widths differ between programs
         self.handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self.init_params]))
 
     def program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
         """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
-        if self.lib is None:
-            raise RuntimeError(f"{self.name}: program() called after unload(); the compiled library is not mapped")
-        fn = self.lib[f"__program_{self.name}"]
-        fn.restype = None
-        fn.argtypes = [ctypes.c_void_p] + [p.ctype for p in self.prog_params]
+        fn = self.function(f"__program_{self.name}", None, [ctypes.c_void_p] + [p.ctype for p in self.prog_params])
         args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
         fn(self.handle, *args)
 
@@ -98,12 +98,7 @@ class BuiltSDFG:
         """Run ``__dace_exit`` on the open handle, if any; call it before :meth:`unload`."""
         if self.handle is None:
             return
-        if self.lib is None:
-            raise RuntimeError(f"{self.name}: close() after unload() with a handle open; call close() first")
-        fn = self.lib[f"__dace_exit_{self.name}"]
-        fn.restype = ctypes.c_int
-        fn.argtypes = [ctypes.c_void_p]
-        fn(self.handle)
+        self.function(f"__dace_exit_{self.name}", ctypes.c_int, [ctypes.c_void_p])(self.handle)
         self.handle = None
 
     def run(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
@@ -115,29 +110,17 @@ class BuiltSDFG:
             self.close()
 
 
-@contextlib.contextmanager
-def codegen_config() -> Iterator[None]:
-    """Scope the DaCe codegen config for one ``generate_code`` call."""
-    with dace.config.temporary_config():
-        dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
-        yield
-
-
 def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
     """Write DaCe's source tree (``src/cpu/<name>.cpp`` and ``include/``) without compiling it."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    with codegen_config():
+    with dace.config.temporary_config():
+        dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
         code_objects = codegen.generate_code(sdfg)
     folder = Path(dace_compiler.generate_program_folder(sdfg, code_objects, str(out_dir)))
     frame = folder / "src" / "cpu" / f"{sdfg.name}.cpp"
     if not frame.exists():
         frame = next(folder.glob("src/cpu/*.cpp"))
     return frame
-
-
-def include_flags(folder: Path) -> list[str]:
-    """Header search paths: the generated ``include/`` and DaCe's runtime include."""
-    return [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"]
 
 
 @dataclass(slots=True)
@@ -179,13 +162,13 @@ def build_commands(folder: Path | None, opts: BuildOptions) -> BuildCommands:
         )
     omp_c = omp.compile_flags(compiler) if omp else []
     omp_l = omp.link_flags(compiler) if omp else []
-    # icx links libsvml/libimf from off the loader path without a RUNPATH
-    libs = [*omp_l, *support_rpath_flags(compiler)]
+    includes = [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"] if folder is not None else []
     return BuildCommands(
         compiler=compiler,
         cflags=[f for f in opts.resolved_flags() if f != "-shared"],
-        compile_extra=[*omp_c, *(include_flags(folder) if folder is not None else [])],
-        link_libs=libs,
+        compile_extra=[*omp_c, *includes],
+        # icx links libsvml/libimf from off the loader path without a RUNPATH
+        link_libs=[*omp_l, *support_rpath_flags(compiler)],
     )
 
 
@@ -296,12 +279,12 @@ def generate_program(sdfg: dace.SDFG, out_dir: Path) -> GeneratedProgram:
     )
 
 
-def compile_program(gen: GeneratedProgram, opts: BuildOptions | None = None) -> BuiltSDFG:
-    """Compile and link a generated program."""
-    opts = opts or BuildOptions()
+def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> BuiltSDFG:
+    """Generate, compile and link ``sdfg``; an OpenMP runtime is linked unless none is usable."""
+    gen = generate_program(sdfg, out_dir)
     init_params = parse_params(signature(gen.source, f"__dace_init_{gen.name}"))
     prog_params = parse_params(signature(gen.source, f"__program_{gen.name}"))
-    so, compile_seconds = compile(gen.frame, gen.folder, gen.name, opts)
+    so, compile_seconds = compile(gen.frame, gen.folder, gen.name, opts or BuildOptions())
     return BuiltSDFG(
         name=gen.name,
         so_path=so,
@@ -311,8 +294,3 @@ def compile_program(gen: GeneratedProgram, opts: BuildOptions | None = None) -> 
         codegen_seconds=gen.codegen_seconds,
         compile_seconds=compile_seconds,
     )
-
-
-def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> BuiltSDFG:
-    """Generate, compile and link ``sdfg``; an OpenMP runtime is linked unless none is usable."""
-    return compile_program(generate_program(sdfg, out_dir), opts)

@@ -11,8 +11,9 @@ import pytest
 
 import dace
 from dace.sdfg import nodes
+from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.libnode import external_calls
+from nestforge.ir.libnode import ExternalCall, external_calls
 from nestforge.phases.scopes import kernel_arguments
 from nestforge.session import Session
 
@@ -47,6 +48,32 @@ def dot_scale(A: dace.float64[N], C: dace.float64[N]):
         s[0] += A[i] * A[i]
     for i in dace.map[0:N]:
         C[i] = A[i] / s[0]
+
+
+@dace.program
+def column_prefix(A: dace.float64[N, N], B: dace.float64[N, N]):
+    for i in range(1, N):
+        for j in range(N):
+            A[i, j] = A[i - 1, j] + B[i, j]
+
+
+@dace.program
+def running_sum(x: dace.float64[N], out: dace.float64[N]):
+    for i in range(1, N):
+        out[i] = out[i - 1] + x[i]
+
+
+@dace.program
+def triangle(A: dace.float64[N, N]):
+    for i in dace.map[0:N]:
+        for t in range(i):
+            A[i, t] = A[i, t] * 0.5 + 1.0
+
+
+@dace.program
+def scale_by_cell(A: dace.float64[N], s: dace.float64[1], C: dace.float64[N]):
+    for i in dace.map[0:N]:
+        C[i] = A[i] * s[0]
 
 
 def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
@@ -210,3 +237,73 @@ def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_
     assert session.resolve(kernel_id, "kernel").implementation == "ExternCall"
     assert sorted(info["abi_order"]) == ["A", "C", "N", "T"]
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
+
+
+# the define_scope fallback of a refused move
+
+
+def top_level_kernels(session: Session) -> list[ExternalCall]:
+    return [n for state in session.sdfg.states() for n in state.nodes() if isinstance(n, ExternalCall)]
+
+
+def test_an_unimplemented_interchange_offers_to_scope_the_outer_loop_of_the_nest():
+    session, _ = session_and_reference(column_prefix)
+
+    result = session.apply_move("interchange-loop-loop", ["for0_0", "for1_0"], 0)
+
+    assert (result.status, result.fallback) == ("not-implemented", "define_scope(['for0_0'], 0)"), result
+
+
+def test_an_illegal_move_on_an_inner_loop_offers_to_scope_its_top_level_loop():
+    session, _ = session_and_reference(column_prefix)
+
+    result = session.apply_move("loop-fission", ["for1_0"], 0)
+
+    assert (result.status, result.fallback) == ("illegal", "define_scope(['for0_0'], 0)"), result
+
+
+def test_an_illegal_map_loop_interchange_offers_to_scope_the_map_around_the_loop():
+    session, _ = session_and_reference(triangle)
+
+    result = session.apply_move("interchange-map-loop", ["kernel1_0", "for2_0"], 0)
+
+    assert (result.status, result.fallback) == ("illegal", "define_scope(['kernel1_0'], 0)"), result
+
+
+def test_the_offered_scope_makes_one_kernel_that_computes_the_column_prefix_sum():
+    session, _ = session_and_reference(column_prefix)
+    rng = np.random.default_rng(0)
+    A, B = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
+    expected = A.copy()
+    expected[1:] = A[0] + np.cumsum(B[1:], axis=0)
+
+    result = session.define_scope(["for0_0"], 0)
+
+    assert result.status == "applied", result
+    (kernel,) = top_level_kernels(session)
+    assert session.resolve(result.reason, "kernel") is kernel
+    assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop nest left the program"
+    session.sdfg(A=A, B=B, N=SIZE)
+    np.testing.assert_allclose(A, expected, rtol=1e-12)
+
+
+def test_a_refusal_whose_map_reads_a_host_length1_array_offers_no_scope():
+    session, _ = session_and_reference(scale_by_cell)
+
+    result = session.apply_move("map-fission", ["kernel1_0"], 0)
+
+    assert (result.status, result.fallback) == ("illegal", ""), result
+
+
+def test_a_single_sequential_loop_nest_phase_2_skips_can_be_scoped_explicitly():
+    session, _ = session_and_reference(running_sum)
+    x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
+    assert session.list_scope_candidates() == [], "phase 2's default must skip the loop, else it tests nothing"
+
+    result = session.define_scope(["for0_0"], 0)
+
+    assert result.status == "applied", result
+    assert len(top_level_kernels(session)) == 1
+    assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop left the program"
+    session.sdfg(x=x, out=out, N=SIZE)
+    np.testing.assert_array_equal(out, [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0])

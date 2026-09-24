@@ -11,16 +11,16 @@ import ast
 import atexit
 import copy
 import functools
-import inspect
 import hashlib
 import importlib.util
+import inspect
 import math
 import re
 import shutil
 import tempfile
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
-from collections.abc import Callable, Mapping
 from typing import cast
 
 import numpy
@@ -30,6 +30,7 @@ import dace
 from dace import symbolic
 from dace.cpf_lowering import C_CTYPE_DTYPES
 from dace.frontend.operations import detect_reduction_type
+from dace.properties import CodeBlock
 from dace.sdfg import nodes
 from dace.sdfg.graph import Edge, MultiConnectorEdge
 from dace.sdfg.sdfg import InterstateEdge
@@ -43,6 +44,7 @@ from dace.sdfg.state import (
     ReturnBlock,
 )
 from dace.sdfg.utils import dfs_topological_sort
+from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 
 from nestforge.ir.emit_libnode import (
     UnsupportedLibraryNode,
@@ -58,8 +60,6 @@ from nestforge.ir.emit_libnode import (
 from nestforge.ir.dace_types import memlet_data, memlet_range, memlet_subset, other_subset
 from nestforge.ir.extract import Boundary
 
-from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
-
 
 class UnsupportedNest(Exception):
     """The nest uses a construct the numpy emitter does not handle."""
@@ -72,16 +72,12 @@ def access(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range) -> str:
     return f"{name}[{index_str(subset)}]"
 
 
-def connector_pattern(conn_expr: dict[str, str]) -> re.Pattern[str] | None:
-    """Whole-word alternation pattern matching every connector name in ``conn_expr``, or ``None``."""
-    if not conn_expr:
-        return None
-    return re.compile(r"\b(" + "|".join(re.escape(c) for c in sorted(conn_expr, key=len, reverse=True)) + r")\b")
-
-
-def sub_connectors(code: str, conn_expr: dict[str, str], pattern: re.Pattern[str] | None) -> str:
+def sub_connectors(code: str, conn_expr: dict[str, str]) -> str:
     """Replace whole-word connector tokens with their expressions, single-pass (no re-substitution)."""
-    return code if pattern is None else pattern.sub(lambda m: conn_expr[m.group(0)], code)
+    if not conn_expr:
+        return code
+    pattern = re.compile(r"\b(" + "|".join(re.escape(c) for c in sorted(conn_expr, key=len, reverse=True)) + r")\b")
+    return pattern.sub(lambda m: conn_expr[m.group(0)], code)
 
 
 #: DaCe dtype cast -> numpy scalar constructor. Fixed-width dtypes only, so a non-dtype ``dace.<attr>``
@@ -104,19 +100,15 @@ DACE_DTYPES = {
 }
 DACE_CAST = re.compile(r"\bdace\.(" + "|".join(DACE_DTYPES) + r")\b")
 
-#: classic single-token C scalar spelling (``double``, ``long``, ``int8_t``, ...) -> numpy scalar
-#: constructor, from DaCe's own C-scalar table (``dace.cpf_lowering.C_CTYPE_DTYPES``) -- the same
-#: names DaCe's own codegen accepts as a bare cast in tasklet code. Multi-word spellings
-#: (``long long``, ``unsigned int``) are dropped: they cannot appear as a python call target.
+#: C scalar spelling (``double``, ``int8_t``) -> numpy scalar constructor, from DaCe's own C-scalar table; a
+#: multi-word spelling (``long long``) cannot be a python call target, so it is left out.
 C_SCALAR_CAST_DTYPES = {name: DACE_DTYPES[dtype] for name, dtype in C_CTYPE_DTYPES.items() if name.isidentifier()}
-#: every bare cast name this emitter resolves -> the numpy scalar constructor it becomes.
 BARE_CAST_DTYPES = {**DACE_DTYPES, **C_SCALAR_CAST_DTYPES}
-#: a bare dtype cast (``int64(x)`` or the classic C spelling ``long(x)``, unprefixed) that
-#: ``symbolic.symstr``/DaCe codegen can produce; unmatched, it would raise ``NameError``. The
+#: An unprefixed cast (``int64(x)``, ``long(x)``) that ``symstr`` can produce and python would not resolve; the
 #: lookbehind skips a qualified ``x.int64(`` attribute.
 BARE_CAST = re.compile(r"(?<![\w.])(" + "|".join(sorted(BARE_CAST_DTYPES, key=len, reverse=True)) + r")\s*\(")
 
-#: bare math intrinsic (as DaCe exposes it in tasklet code) -> the numpy function that computes it.
+#: Bare math intrinsic in tasklet code -> its numpy function.
 MATH_INTRINSICS = {
     "sqrt": "np.sqrt",
     "cbrt": "np.cbrt",
@@ -146,10 +138,9 @@ MATH_INTRINSICS = {
 }
 INTRINSIC_CALL = re.compile(r"(?<![\w.])(" + "|".join(MATH_INTRINSICS) + r")(?=\s*\()")
 
-#: DaCe sympy user-function -> the numpy/python expression computing the same integer value.
-#: ``int_floor`` becomes ``//`` because sympy's own floor-division simplify is unsound, not because
-#: python lacks an operator; ``int_ceil`` has none and stays a call, bound via :data:`EMITTED_BUILTINS`.
-#: ``Max``/``Min`` map to python builtins, not numpy, to keep exact integer range/subscript semantics.
+#: DaCe sympy user-function -> the python expression computing the same integer value. ``int_ceil`` has no
+#: operator and stays a call (:data:`EMITTED_BUILTINS`); ``Max``/``Min`` are python builtins, not numpy, to keep
+#: exact integer range and subscript semantics.
 USERFUNC_REWRITES = {
     "int_floor": lambda a, b: f"(({a}) // ({b}))",
     "ipow": lambda a, b: f"(({a}) ** ({b}))",
@@ -170,13 +161,12 @@ def int_ceil(a: int, b: int) -> int:
     return -((-a) // b)
 
 
-#: Names an emitted kernel calls but does not define; :func:`load_emitted` binds them (never hand-roll this dict).
-#: ``math`` is bound because a tasklet may spell an intrinsic ``math.<fn>`` (DaCe's frontend accepts it
-#: alongside ``dace.*``) that :func:`rewrite_math_prefix` leaves unrewritten -- see :data:`NP_VERBATIM_MATH`.
+#: Names an emitted kernel calls but does not define, bound by :func:`load_emitted`; ``math`` for a ``math.<fn>``
+#: that :func:`rewrite_math_prefix` leaves as it is.
 EMITTED_BUILTINS = {"np": numpy, "math": math, "int_floor": int_floor, "int_ceil": int_ceil}
 
-#: The names in :data:`EMITTED_BUILTINS`, defined inline so a standalone kernel needs no injected namespace;
-#: generated from the functions above so the emitted text cannot drift from them.
+#: The names in :data:`EMITTED_BUILTINS`, defined inline from the functions above so a standalone kernel needs
+#: no injected namespace.
 STANDALONE_PREAMBLE = (
     "import numpy as np\nimport math\n\n\n"
     + "\n\n\n".join(inspect.getsource(fn).strip() for fn in (int_floor, int_ceil))
@@ -212,47 +202,30 @@ def load_emitted(source: str, name: str) -> ModuleType:
     return module
 
 
-#: qualified ``(dace.)?math.<fn>`` -> its numpy form; anything not listed here or in
-#: :data:`MATH_INTRINSICS` is left as ``math.<fn>`` rather than guess a bad name.
+#: A qualified ``(dace.)?math.<fn>`` spelled the same in numpy; anything else outside :data:`MATH_INTRINSICS`
+#: stays ``math.<fn>`` rather than guess a bad name.
 NP_VERBATIM_MATH = frozenset({"power", "arcsin", "arccos", "arctan", "arctan2", "maximum", "minimum", "abs"})
 MATH_PREFIX_CALL = re.compile(r"\b(?:dace\.)?math\.(\w+)(?=\s*\()")
 
 
 def apply_call(code: str, name: str, fn: Callable[..., str]) -> str:
-    """Rewrite every ``name(arg0, arg1)`` call in ``code`` via ``fn(arg0, arg1)``, matching balanced parens."""
+    """Rewrite every ``name(arg0, arg1)`` call in ``code`` via ``fn(arg0, arg1)``, matching balanced brackets."""
     pat = re.compile(rf"(?<![\w.]){re.escape(name)}\s*\(")
-    while True:
-        m = pat.search(code)
-        if not m:
-            return code
-        i, depth, bracket, cur, args = m.end(), 1, 0, "", []
-        while i < len(code) and depth > 0:
-            ch = code[i]
-            if ch == "(":
-                depth += 1
-                cur += ch
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    break
-                cur += ch
-            elif ch in "[{":
-                bracket += 1
-                cur += ch
-            elif ch in "]}":
-                bracket -= 1
-                cur += ch
-            elif ch == "," and depth == 1 and bracket == 0:
-                # Only a top-level comma separates arguments; a subscript comma (``a[i, j]``) stays inside one.
-                args.append(cur)
-                cur = ""
-            else:
-                cur += ch
-            i += 1
-        if depth != 0:
+    while (m := pat.search(code)) is not None:
+        depth, start, args = 1, m.end(), []
+        for i in range(m.end(), len(code)):
+            depth += (code[i] in "([{") - (code[i] in ")]}")
+            if depth == 0:
+                break
+            # only a top-level comma separates arguments; a subscript comma (``a[i, j]``) stays inside one
+            if code[i] == "," and depth == 1:
+                args.append(code[start:i])
+                start = i + 1
+        else:
             return code  # unbalanced (should not happen on emitted code): leave it for the caller to hit
-        args.append(cur)
+        args.append(code[start:i])
         code = code[: m.start()] + fn(*(a.strip() for a in args)) + code[i + 1 :]
+    return code
 
 
 def rewrite_userfuncs(code: str) -> str:
@@ -277,8 +250,7 @@ def rewrite_math_prefix(code: str) -> str:
     return MATH_PREFIX_CALL.sub(repl, code)
 
 
-#: strips a C++ ``decltype(<connector>)`` cast prefix DaCe emits to force a connector's type;
-#: numpy promotes types itself, so the cast is a no-op on the parenthesized value it leaves behind.
+#: A C++ ``decltype(<connector>)`` cast prefix; numpy promotes types itself, so it is dropped.
 DECLTYPE_CAST = re.compile(r"\bdecltype\s*\([^()]*\)")
 
 
@@ -294,9 +266,8 @@ def normalize_casts(code: str) -> str:
     return rewrite_userfuncs(code)
 
 
-#: Every DaCe precondition trap is a connectorless CPP tasklet holding this. Several canonicalization
-#: passes emit it (symbol-assumption guards, the scatter-conflict guard, break_anti_dependence,
-#: wavefront skew), so match the shape DaCe emits today (``std::abort()``), not a label.
+#: Every DaCe precondition trap is a connectorless CPP tasklet holding this; several passes emit one, so the
+#: shape (``std::abort()``) is matched, not a label.
 TRAP_GUARD = re.compile(r"^\s*if\s*\((?P<cond>.+)\)\s*\{\s*std::abort\s*\(\s*\)\s*;?\s*\}\s*;?\s*$", re.DOTALL)
 
 #: C spellings with a Python equivalent. ``!`` needs the lookahead so ``!=`` survives intact.
@@ -344,13 +315,10 @@ def wcr_combine(wcr: str | ast.AST) -> Callable[[str, str], str] | None:
 
 
 def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet) -> list[str]:
-    """Tasklet's Python code with connectors substituted by the array element they name.
-
-    :returns: for a WCR (reduction) output, an augmented assignment (body writes a temporary, then
-        the target is combined with it) rather than a plain overwrite.
-    """
+    """Tasklet's Python code with connectors substituted by the array element they name; a WCR output writes a
+    temporary that is then combined into its target."""
     if not tasklet.in_connectors and not tasklet.out_connectors:
-        # No connectors -> no data effect; the only meaningful case is the precondition trap.
+        # the only connectorless tasklet with an effect is a precondition trap
         return trap_guard_lines(tasklet) or [f"# no-op tasklet ({tasklet.label}): no connectors, no data effect"]
     if tasklet.code.language != dace.dtypes.Language.Python:
         raise UnsupportedNest(f"tasklet {tasklet.label} is not Python ({tasklet.code.language})")
@@ -370,10 +338,9 @@ def tasklet_lines(state: dace.SDFGState, sdfg: dace.SDFG, tasklet: nodes.Tasklet
         if combine is None:
             raise UnsupportedNest(f"tasklet {tasklet.label} has an unsupported WCR {e.data.wcr!r}")
         temp = f"__wcr_{e.src_conn}"
-        conn_expr[e.src_conn] = temp  # the body writes the temporary, then we accumulate into target
+        conn_expr[e.src_conn] = temp
         wcr_updates.append(f"{target} = {combine(target, temp)}")
-    pattern = connector_pattern(conn_expr)
-    lines = [normalize_casts(sub_connectors(line, conn_expr, pattern)) for line in tasklet.code.as_string.splitlines()]
+    lines = [normalize_casts(line) for line in sub_connectors(tasklet.code.as_string, conn_expr).splitlines()]
     return lines + [normalize_casts(u) for u in wcr_updates]  # a strided subset may render int_floor/int_ceil
 
 
@@ -392,11 +359,8 @@ def copy_side(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None) -> 
 def copy_direction(
     edge: MultiConnectorEdge,
 ) -> tuple[str, dace.subsets.Range | None, dace.subsets.Range | None]:
-    """``(src_name, src_subset, dst_subset)`` for one access-node -> access-node copy edge.
-
-    Source is tested first: on an in-place copy both endpoints share one name, so this tie-break order
-    (matching DaCe's own ``is_data_src=True`` preference) decides which side ``subset`` describes.
-    """
+    """``(src_name, src_subset, dst_subset)`` for one access-node -> access-node copy edge. The source is tested
+    first, as DaCe does: on an in-place copy both endpoints share one name."""
     m = edge.data
     if m.data == edge.src.data:
         return edge.src.data, m.subset, m.other_subset
@@ -461,43 +425,38 @@ def reshape_side(sdfg: dace.SDFG, name: str, subset: dace.subsets.Range | None, 
     return f"{name}[{index_str(subset)}]"
 
 
-def reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
-    """Refuse a nested SDFG whose inter-state code indexes a multi-dim array with too few indices.
-
-    ``ExpandNestedSDFGInputs`` offsets an inter-state condition/assignment by only the first map
-    dimension, so an under-indexed reference would emit a whole row where an element was meant.
-    """
-    for region in inner.all_control_flow_regions():
+def interstate_code(sdfg: dace.SDFG) -> Iterator[str]:
+    """Every inter-state assignment right-hand side and condition of ``sdfg``."""
+    for region in sdfg.all_control_flow_regions():
         for e in region.edges():
-            codes = list(e.data.assignments.values())
+            yield from e.data.assignments.values()
             if not e.data.is_unconditional():
-                codes.append(e.data.condition.as_string)
-            for code in codes:
-                try:
-                    tree = ast.parse(code)
-                except SyntaxError as exc:
-                    raise UnsupportedNest(f"inter-state code {code!r} is not parseable Python") from exc
-                for sub in ast.walk(tree):
-                    if not (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)):
-                        continue
-                    desc = inner.arrays.get(sub.value.id)
-                    if desc is None or len(desc.shape) <= 1:
-                        continue
-                    ndims = len(sub.slice.elts) if isinstance(sub.slice, ast.Tuple) else 1
-                    if ndims < len(desc.shape):
-                        raise UnsupportedNest(
-                            f"nested SDFG under-indexes {sub.value.id!r} ({ndims} of {len(desc.shape)} dims) "
-                            "in inter-state code -- ExpandNestedSDFGInputs offsets multi-dim conditions incompletely"
-                        )
+                yield e.data.condition.as_string
+
+
+def reject_underranked_codeblock_index(inner: dace.SDFG) -> None:
+    """Refuse a nested SDFG whose inter-state code indexes a multi-dim array with too few indices:
+    ``ExpandNestedSDFGInputs`` offsets such code by the first map dimension only."""
+    for code in interstate_code(inner):
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            raise UnsupportedNest(f"inter-state code {code!r} is not parseable Python") from exc
+        for sub in ast.walk(tree):
+            if not (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)):
+                continue
+            desc = inner.arrays.get(sub.value.id)
+            ndims = len(sub.slice.elts) if isinstance(sub.slice, ast.Tuple) else 1
+            if desc is not None and ndims < len(desc.shape):
+                raise UnsupportedNest(
+                    f"nested SDFG under-indexes {sub.value.id!r} ({ndims} of {len(desc.shape)} dims) "
+                    "in inter-state code -- ExpandNestedSDFGInputs offsets multi-dim conditions incompletely"
+                )
 
 
 def reconcile_connector_descriptor(inner: dace.SDFG, sdfg: dace.SDFG, outer: str) -> None:
-    """Make the inner descriptor for connector array ``outer`` agree with the buffer it aliases.
-
-    The connector adopts the outer descriptor outright: matching shapes alone are not enough, since
-    ``transient`` decides bare-local vs. indexed spelling and a connector is never transient inside.
-    Shapes that genuinely differ are refused unless both are single-element (a nested-return scalar).
-    """
+    """Give connector array ``outer`` the outer descriptor, ``transient`` included, since that decides its
+    spelling. Differing shapes are refused unless both are single-element (a nested-return scalar)."""
     inner_desc, outer_desc = inner.arrays[outer], sdfg.arrays[outer]
     same_shape = [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]
     if not same_shape and not (is_scalar(inner_desc) and is_scalar(outer_desc)):
@@ -513,8 +472,7 @@ def emit_nested_sdfg(state: dace.SDFGState, sdfg: dace.SDFG, node: nodes.NestedS
     """Inline a nested SDFG (e.g. one map iteration's sub-kernel) as flat statements, in place."""
     for e in state.out_edges(node):
         if e.data.wcr is not None:
-            # This replays the inner body only; it never applies a WCR on the outer output edge, which
-            # would silently become an overwrite. map_exit_writes guards a map exit; this covers state body too.
+            # the inner body is replayed as is, so an outer WCR would silently become an overwrite
             raise UnsupportedNest(
                 f"nested SDFG output into {e.data.data} carries a reduction (WCR) that emit_nested_sdfg does "
                 "not apply; not emittable as numpy -- fall back to the DaCe variant"
@@ -639,11 +597,11 @@ def map_body_lines(state: dace.SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry
         elif isinstance(node, nodes.NestedSDFG):
             body.extend(emit_nested_sdfg(state, sdfg, node))
         elif isinstance(node, nodes.MapEntry):
-            body.extend(map_lines(state, sdfg, node))  # a map nested in a map -> deeper for loops
+            body.extend(map_lines(state, sdfg, node))
         elif isinstance(node, nodes.LibraryNode):
             raise UnsupportedNest(f"{type(node).__name__} nested inside a map is not yet emitted")
 
-    body.extend(map_exit_writes(state, sdfg, entry))  # reductions/writes leaving the map via its exit
+    body.extend(map_exit_writes(state, sdfg, entry))
     return body
 
 
@@ -678,11 +636,6 @@ def state_body(sdfg: dace.SDFG, state: dace.SDFGState) -> list[str]:
     return lines
 
 
-def ordered_blocks(region: ControlFlowRegion) -> list[ControlFlowBlock]:
-    """Blocks of a control-flow region (SDFG or LoopRegion) in execution order."""
-    return list(dfs_topological_sort(region, [region.start_block]))
-
-
 def body_or_pass(lines: list[str]) -> list[str]:
     """Append ``pass`` if ``lines`` holds only provenance comments, so the block body is non-empty Python."""
     return lines if any(not ln.lstrip().startswith("#") for ln in lines) else lines + ["pass"]
@@ -698,8 +651,7 @@ def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> list[str]:
     if loop.loop_condition is None:
         raise UnsupportedNest(f"loop {loop.label} has no condition")
     cond = control_expr(loop.loop_condition.as_string, sdfg)
-    init = control_expr(loop.init_statement.as_string, sdfg) if loop.init_statement is not None else None
-    update = control_expr(loop.update_statement.as_string, sdfg) if loop.update_statement is not None else None
+    init, update = optional_expr(loop.init_statement, sdfg), optional_expr(loop.update_statement, sdfg)
     if loop.inverted and targets_continue(loop):
         # python's while puts the update/exit test in the body, where continue would skip both and hang forever
         raise UnsupportedNest(
@@ -708,24 +660,18 @@ def emit_loop(loop: LoopRegion, sdfg: dace.SDFG) -> list[str]:
             "test and loop forever"
         )
     body = body_or_pass(emit_region(loop, sdfg, continue_update=None if loop.inverted else update))
-    ind = "    "
-
-    lines: list[str] = []
-    if init is not None:
-        lines.append(init)
+    upd = [] if update is None else [update]
     if loop.inverted:  # do-while: body executes before the condition is tested
-        lines.append("while True:")
-        lines += [ind + b for b in body]
-        test = [f"{ind}if not ({cond}):", f"{ind}{ind}break"]
-        upd = [ind + update] if update is not None else []
-        # update_before_condition selects whether the increment precedes or follows the test.
-        lines += (upd + test) if loop.update_before_condition else (test + upd)
+        test = [f"if not ({cond}):", "    break"]
+        header, tail = "while True:", (upd + test) if loop.update_before_condition else (test + upd)
     else:
-        lines.append(f"while {cond}:")
-        lines += [ind + b for b in body]
-        if update is not None:
-            lines.append(ind + update)
-    return lines
+        header, tail = f"while {cond}:", upd
+    return ([] if init is None else [init]) + [header] + ["    " + ln for ln in body + tail]
+
+
+def optional_expr(code: CodeBlock | None, sdfg: dace.SDFG) -> str | None:
+    """A loop's init or update statement as Python (:func:`control_expr`), ``None`` when the loop has none."""
+    return None if code is None else control_expr(code.as_string, sdfg)
 
 
 def emit_conditional(cond_block: ConditionalBlock, sdfg: dace.SDFG, continue_update: str | None = None) -> list[str]:
@@ -785,13 +731,10 @@ def interstate_lines(region: ControlFlowRegion, sdfg: dace.SDFG, block: ControlF
 
 
 def emit_region(region: ControlFlowRegion, sdfg: dace.SDFG, continue_update: str | None = None) -> list[str]:
-    """Numpy statements for every block of a control-flow region, in execution order.
-
-    :param continue_update: the enclosing loop's update statement, emitted in front of each
-        ``continue`` since python's ``while`` keeps the update in the body.
-    """
+    """Numpy statements for every block of a control-flow region, in execution order. ``continue_update`` is the
+    enclosing loop's update, emitted before each ``continue`` since python's ``while`` keeps it in the body."""
     lines: list[str] = []
-    for block in ordered_blocks(region):
+    for block in dfs_topological_sort(region, [region.start_block]):
         lines.extend(interstate_lines(region, sdfg, block))
         if isinstance(block, dace.SDFGState):
             lines.append(f"# state ({block.label})")
@@ -806,7 +749,7 @@ def emit_region(region: ControlFlowRegion, sdfg: dace.SDFG, continue_update: str
             lines.append("break")  # exits the enclosing while (emit_loop); its region-DFS successor is the loop exit
         elif isinstance(block, ContinueBlock):
             if continue_update is not None:
-                lines.append(continue_update)  # python's while keeps the update in the body; continue would skip it
+                lines.append(continue_update)
             lines.append("continue")
         elif isinstance(block, ReturnBlock):
             # the kernel's return; wrap_early_return turns a nested SDFG's into a break
@@ -826,10 +769,8 @@ DATA_READ_HEADS = frozenset({"Subscript", "Indexed"})
 
 
 def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> bool:
-    """Whether ``expr`` reads array contents, so its value is unknown until the kernel runs.
-
-    ``free_symbols`` cannot tell: an indexed array is a function head, so ``A_indptr[i]`` has free symbols ``{i}``.
-    """
+    """Whether ``expr`` reads array contents. ``free_symbols`` cannot tell: an indexed array is a function head,
+    so ``A_indptr[i]`` has free symbols ``{i}``."""
     for fn in expr.atoms(sympy.Function):
         if fn.func.__name__ in DATA_READ_HEADS or fn.func.__name__ in arrays:
             return True
@@ -837,9 +778,7 @@ def reads_array_data(expr: sympy.Expr, arrays: Mapping[str, dace.data.Data]) -> 
 
 
 def sizable(expr: sympy.Expr, known: set[str], arrays: Mapping[str, dace.data.Data]) -> bool:
-    """Whether the caller can evaluate ``expr`` to a buffer extent before the kernel runs: it reads no array data
-    and names no symbol outside ``known``.
-    """
+    """Whether the caller can evaluate ``expr`` before the kernel runs: no array read, no symbol outside ``known``."""
     if reads_array_data(expr, arrays):
         return False
     return not {str(s) for s in expr.free_symbols} - known
@@ -856,12 +795,9 @@ def loop_init_value(loop: LoopRegion) -> sympy.Basic:
 
 
 def symbol_ranges(sdfg: dace.SDFG) -> tuple[dict[str, sympy.Expr], dict[str, sympy.Expr]]:
-    """``(lo_of, hi_of)``: each non-argument symbol -> its minimum, and for a loop variable one past its maximum
-    (an assigned value is exact), in kernel symbols.
-
-    A symbol's range comes from a loop's ``[init, condition-bound]`` and/or every value an inter-state
-    edge assigns it; several sources take ``Min``/``Max``, resolved recursively into kernel symbols.
-    """
+    """``(lo_of, hi_of)``: each non-argument symbol's minimum and, for a loop variable, one past its maximum, in
+    kernel symbols. Sources are a loop's ``[init, bound]`` and every value an inter-state edge assigns; several
+    take ``Min``/``Max``."""
     los: dict[str, list[sympy.Expr]] = {}
     his: dict[str, list[sympy.Expr]] = {}
     for cfg in sdfg.all_control_flow_regions():
@@ -918,6 +854,21 @@ def max_over_loops(
     return result if sizable(result, known, arrays) else None
 
 
+def widened_dim(
+    dim: sympy.Expr,
+    lo_of: dict[str, sympy.Expr],
+    hi_of: dict[str, sympy.Expr],
+    known: set[str],
+    arrays: Mapping[str, dace.data.Data],
+) -> sympy.Expr:
+    """``dim`` widened over the loop variables it reads, or unchanged when it reads none or cannot be widened."""
+    sdim = sympy.sympify(dim)  # a literal-int dimension has no free symbols to widen
+    if not {str(s) for s in sdim.free_symbols} - known:
+        return dim
+    widened = max_over_loops(sdim, lo_of, hi_of, known, arrays)
+    return dim if widened is None else widened
+
+
 def maxsize_loop_scratch(sdfg: dace.SDFG, symbols: list[str]) -> dace.SDFG:
     """Widen a scratch transient sized by loop variables to a caller-sizable bound; runs on a copy."""
     known = set(symbols)
@@ -933,14 +884,7 @@ def maxsize_loop_scratch(sdfg: dace.SDFG, symbols: list[str]) -> dace.SDFG:
     lo_of, hi_of = symbol_ranges(sdfg)
     resize: dict[str, tuple[sympy.Expr, ...]] = {}
     for name, desc in candidates:
-        new_shape: list[sympy.Expr] = []
-        for dim in desc.shape:
-            sdim = sympy.sympify(dim)  # a literal-int dimension has no free symbols to widen
-            if {str(s) for s in sdim.free_symbols} - known:
-                widened = max_over_loops(sdim, lo_of, hi_of, known, sdfg.arrays)
-                new_shape.append(widened if widened is not None else dim)
-            else:
-                new_shape.append(dim)
+        new_shape = [widened_dim(dim, lo_of, hi_of, known, sdfg.arrays) for dim in desc.shape]
         if new_shape != list(desc.shape):
             resize[name] = tuple(new_shape)
     if not resize:

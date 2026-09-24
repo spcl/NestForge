@@ -8,7 +8,6 @@ pool in the parent on purpose and check that the child still runs.
 """
 
 import ctypes
-import inspect
 import os
 import select
 import shutil
@@ -20,8 +19,6 @@ import pytest
 from nestforge.build.toolchain import OpenMPRuntime, lib_linkable
 from nestforge.build.isolation import (
     ERROR_CHARS,
-    OMP_PAUSE_MODES,
-    OMP_PAUSE_SOFT,
     OMP_RUNTIME_SONAMES,
     pause_openmp_pools,
     run_isolated,
@@ -36,8 +33,8 @@ void kern(double *a, int n) {
 
 N = 4096
 
-#: Whether omp_pause_resource_all tears the pool down, measured as threads in /proc/self/task:
-#:     libgomp soft 16->1   libgomp hard 16->1   libomp soft 16->16   libomp hard 16->2
+#: Whether the soft omp_pause_resource_all tears the pool down, measured as threads in /proc/self/task:
+#:     libgomp 16->1   libomp 16->16
 #: libomp's soft pause keeps the pool and still returns 0; its fork is safe through its atfork handler instead.
 
 
@@ -95,24 +92,22 @@ def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path, runtime
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
-@pytest.mark.parametrize("mode", sorted(OMP_PAUSE_MODES))
-def test_the_parent_can_still_use_openmp_after_pausing(tmp_path, runtime, mode):
+def test_the_parent_can_still_use_openmp_after_pausing(tmp_path, runtime):
     """A paused runtime restarts its pool on the next parallel region, so pausing costs the parent nothing."""
     so = build(tmp_path, runtime)
     call_kernel(so)
-    pause_openmp_pools(OMP_PAUSE_MODES[mode])
+    pause_openmp_pools()
     np.testing.assert_allclose(call_kernel(so), np.ones(N))  # pool rebuilt, still correct
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
-@pytest.mark.parametrize("mode", sorted(OMP_PAUSE_MODES))
-def test_both_teardown_modes_make_the_fork_safe(tmp_path, runtime, mode):
-    """Either pause mode makes the fork safe; the default is the weaker soft mode, so it has to be shown to."""
+def test_the_soft_pause_makes_the_fork_safe(tmp_path, runtime):
+    """The soft pause is the weaker teardown, so it has to be shown to make the fork safe."""
     so = build(tmp_path, runtime)
     call_kernel(so)
-    pause_openmp_pools(OMP_PAUSE_MODES[mode])
+    pause_openmp_pools()
 
-    # fork by hand: run_isolated would pause again with its own mode
+    # fork by hand: run_isolated would pause again
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:
@@ -129,7 +124,7 @@ def test_both_teardown_modes_make_the_fork_safe(tmp_path, runtime, mode):
         os.kill(pid, 9)
     os.waitpid(pid, 0)
     why = "produced nothing (hung on its parallel region, then was killed)" if not got else f"computed {got.decode()}"
-    assert got == b"ok", f"lib{runtime} + omp_pause_{mode}: child {why}"
+    assert got == b"ok", f"lib{runtime} + soft pause: child {why}"
 
 
 def test_pausing_is_safe_when_no_openmp_runtime_is_loaded():
@@ -156,12 +151,6 @@ def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
     assert thread_count() == busy, "the thread count moved with no pause -- the measurement is not stable"
     pause_openmp_pools()
     assert thread_count() < busy, f"(gomp, soft): pool not torn down, thread count stayed at {busy}"
-
-
-def test_the_default_pause_mode_is_soft():
-    """Soft keeps threadprivate data, which hard would discard on every fork."""
-    default = inspect.signature(pause_openmp_pools).parameters["mode"].default
-    assert default == OMP_PAUSE_SOFT, default
 
 
 def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypatch):

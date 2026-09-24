@@ -12,8 +12,8 @@ nodes; it reads two views and requests moves.
   scope. OI divides work by the bytes a scope moves under a simple cache model: a map caches
   perfectly, a loop caches nothing.
 
-Each move is legal only when its check accepts it: a DaCe transformation's `can_be_applied`, the
-per-region match of the DaCe pass it names, or, for `interchange-map-loop`, NestForge's own check. `list_moves(kind)` returns the legal moves as `{kind, labels, epoch}`. `apply_move(kind,
+Each move is legal only when its check accepts it: a DaCe transformation's `can_be_applied`, or the
+per-region match of the DaCe pass it names. `list_moves(kind)` returns the legal moves as `{kind, labels, epoch}`. `apply_move(kind,
 labels, epoch)` applies one and returns a `MoveResult` whose status is `applied`, `illegal`,
 `not-implemented`, `not-found` or `stale`. Labels are the tree labels `describe()` prints, and its
 first line shows the epoch.
@@ -24,10 +24,10 @@ first line shows the epoch.
 | `loop-fission` | loop | `LoopFission`'s split of one loop into independent statement groups |
 | `map-fusion` | two maps | `MapFusionVertical` through an intermediate, else `MapFusionHorizontal` |
 | `map-fission` | map | `MapFission` on a map whose body is one nested SDFG |
-| `subgraph-fission` | map, body block | nest the body before and after the block, then `MapFission`: two maps |
+| `subgraph-fission` | map, body block | `SubgraphFission`: the body before and after the block, one map each |
 | `interchange-map-map` | outer, inner map | `MapInterchange` |
 | `interchange-loop-map` | loop, its one map | `MoveLoopIntoMap`: the map becomes outer |
-| `interchange-map-loop` | map, its one loop | NestForge: the loop becomes outer |
+| `interchange-map-loop` | map, its one loop | `MapLoopInterchange`: the loop becomes outer |
 | `interchange-if-loop` | if, the loop it guards | `MoveIfIntoLoop`: the guard moves into the body |
 | `interchange-loop-if` | loop, its one if | `MoveLoopInvariantIfUp`: an invariant guard moves out |
 | `interchange-loop-loop` | | not implemented |
@@ -37,8 +37,11 @@ is legal when the map body is exactly the loop, its bounds do not vary across ma
 or symbol inside the body carries a value between loop iterations; the refusal names which condition failed.
 A guard always moves into a loop; it moves out only when its condition is loop-invariant.
 
-When no move fuses two regions that should run as one, phase 2's `define_scope` makes them one kernel
-instead, and the kernel written in phase 4 fuses them.
+When a move is refused, or no move fuses two regions that should run as one, phase 2's `define_scope` makes
+them one kernel instead, and the kernel written in phase 4 performs the transformation. An `illegal` or
+`not-implemented` result carries in `fallback` the exact `define_scope(labels, epoch)` call for its regions:
+the named regions not inside another named one, else the outermost map around them, else their top-level
+blocks. It is empty when no such group is legal, for example when the regions read a length-1 host array.
 
 `fission_all` splits the whole program to statement granularity, loops included. The id-based calls
 stay: `list_fusions` / `fuse`, `list_fissions` / `fission` and state fusion via `fuse_regions`.

@@ -20,8 +20,9 @@ Every phase has a deterministic default, so a run works with any subset of agent
 - Name nests by the labels `Session.describe()` prints. They are unique across the whole program,
   nested SDFGs included. Pass them with the epoch from the tree's first line or from `list_moves()`:
   `apply_move(kind, labels, epoch)`.
-- When no move fuses two regions that should run as one, `define_scope(labels, epoch)` makes them one kernel;
-  fuse them in the phase 4 kernel.
+- When a move is refused (`illegal` or `not-implemented`), or no move fuses two regions that should run as
+  one, `define_scope(labels, epoch)` makes them one kernel (an extcall); do the transformation by hand in that
+  kernel's phase 4 source. A refused move's `MoveResult.fallback` is that exact call, empty when none applies.
 - Labels and ids regenerate after every mutation. A move carrying an old epoch returns `stale`;
   describe or list again before the next move. Only an `applied` result changed the program.
 - A result counts only after it matches the kernel's NumPy oracle. Wrong and fast loses.

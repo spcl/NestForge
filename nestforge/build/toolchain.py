@@ -79,58 +79,53 @@ class OpenMPRuntime:
 
     def compatible(self, compiler: str) -> bool:
         """Whether ``compiler`` can link this runtime: llvm selects it by name, gnu links any gomp-ABI runtime."""
-        fam = compiler_family(compiler)
-        if fam == "llvm":
+        if compiler_family(compiler) == "llvm":
             return self.name in LLVM_SELECTABLE and COMPILER_ABI["llvm"] in self.provides
         return COMPILER_ABI["gnu"] in self.provides
 
     def check(self, compiler: str) -> None:
-        if self.compatible(compiler):
-            return
-        fam = compiler_family(compiler)
-        if fam == "llvm":
-            if COMPILER_ABI["llvm"] not in self.provides:
+        exe = Path(compiler).name
+        if compiler_family(compiler) == "gnu":
+            if COMPILER_ABI["gnu"] not in self.provides:
                 raise ValueError(
-                    f"{Path(compiler).name} emits the 'kmpc' OpenMP ABI, which {self.name} does not "
-                    f"implement (it provides {sorted(self.provides)}); libgomp is gomp-only. Use a "
-                    f"kmpc runtime (libomp/libiomp5)."
+                    f"{exe} emits the 'gomp' OpenMP ABI, which {self.name} does not implement "
+                    f"(it provides {sorted(self.provides)}). Use a gomp-capable runtime "
+                    f"(libomp/libiomp5 carry a GOMP-compat layer; libgomp is gomp-only)."
                 )
+        elif COMPILER_ABI["llvm"] not in self.provides:
             raise ValueError(
-                f"{Path(compiler).name} selects the OpenMP runtime by name and only knows "
+                f"{exe} emits the 'kmpc' OpenMP ABI, which {self.name} does not implement "
+                f"(it provides {sorted(self.provides)}); libgomp is gomp-only. Use a kmpc runtime (libomp/libiomp5)."
+            )
+        elif self.name not in LLVM_SELECTABLE:
+            raise ValueError(
+                f"{exe} selects the OpenMP runtime by name and only knows "
                 f"{sorted(LLVM_SELECTABLE)}; {self.name} is not name-selectable by an LLVM compiler. "
                 f"Use libomp/libiomp5, or build with gcc (which links {self.name} via -l{self.soname})."
             )
-        raise ValueError(
-            f"{Path(compiler).name} emits the 'gomp' OpenMP ABI, which {self.name} does not implement "
-            f"(it provides {sorted(self.provides)}). Use a gomp-capable runtime "
-            f"(libomp/libiomp5 carry a GOMP-compat layer; libgomp is gomp-only)."
-        )
 
     def compile_flags(self, compiler: str) -> list[str]:
         """Flags to compile a translation unit with OpenMP against this runtime."""
         self.check(compiler)
-        fam = compiler_family(compiler)
-        if fam == "llvm":  # pick the runtime by name
+        if compiler_family(compiler) == "llvm":  # pick the runtime by name
             return [f"-fopenmp={self.name}"]
         return ["-fopenmp"]  # gnu: runtime fixed at link, not by this flag
 
     def link_flags(self, compiler: str) -> list[str]:
-        """Flags to link against this runtime only, so no second runtime starts its own thread pool."""
+        """Flags to link against this runtime only, so no second runtime starts its own thread pool. An explicit
+        ``lib_dir`` wins (pin a spack/module runtime; ``""`` forces a bare ``-l<soname>``); otherwise the directory
+        and library are discovered, see :func:`runtime_library`."""
         self.check(compiler)
-        pinned, library = self.link_location(compiler)
+        if self.lib_dir is not None:
+            pinned, library = self.lib_dir, f"-l{self.soname}"
+        else:
+            pinned, library = linkable_lib_dir(self.soname, compiler), library_flag(self.soname, compiler)
         # -L alone leaves no RUNPATH; ctypes.CDLL fails to open the lib after build without -rpath too
         libdir = [f"-L{pinned}", f"-Wl,-rpath,{pinned}"] if pinned else []
         if compiler_family(compiler) == "llvm":
             return [f"-fopenmp={self.name}", *libdir]
         # gnu: a bare -fopenmp would pull in libgomp
         return [*libdir, library]
-
-    def link_location(self, compiler: str) -> tuple[str | None, str]:
-        """``(-L directory or None, library flag)``. An explicit ``lib_dir`` wins (pin a spack/module runtime; ``""``
-        forces a bare ``-l<soname>``); otherwise both are discovered, see :func:`runtime_library`."""
-        if self.lib_dir is not None:
-            return self.lib_dir, f"-l{self.soname}"
-        return linkable_lib_dir(self.soname, compiler), library_flag(self.soname, compiler)
 
 
 #: icx links libsvml/libimf/libirng/libintlc from off the loader path without a RUNPATH; this one finds them all.
@@ -164,23 +159,24 @@ def env_library_dirs() -> list[str]:
     return dirs
 
 
-#: Drivers to ask where a runtime lives when the target compiler cannot find it; clang-first since libomp.
-LIB_PROBE_DRIVERS = ("clang++", "clang", "g++", "gcc")
-
 #: Ceiling on asking a driver or the loader something; an unbounded probe hangs the sweep.
 PROBE_TIMEOUT_S: float = 15.0
+
+
+def tool_stdout(cmd: list[str], timeout: float = PROBE_TIMEOUT_S) -> str | None:
+    """stdout of ``cmd``, or ``None`` when it cannot run, times out or fails."""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
 
 
 @functools.lru_cache(maxsize=None, typed=True)
 def driver_lib_path(soname: str, compiler: str) -> Path | None:
     """Where ``compiler`` resolves ``lib<soname>.so``, or ``None`` (a different question from what
     ldconfig/find_library find); cached since it sits on the hot flag-composition path."""
-    try:
-        out = subprocess.run(
-            [compiler, f"-print-file-name=lib{soname}.so"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
+    out = (tool_stdout([compiler, f"-print-file-name=lib{soname}.so"]) or "").strip()
     if not out or out == f"lib{soname}.so":
         return None
     # normalize lexically, never resolve(): libomp.so is often a symlink into another directory
@@ -191,12 +187,7 @@ def driver_lib_path(soname: str, compiler: str) -> Path | None:
 @functools.lru_cache(maxsize=None, typed=True)
 def driver_search_dirs(compiler: str) -> tuple[str, ...]:
     """Library directories ``compiler`` itself searches, via -print-search-dirs."""
-    try:
-        out = subprocess.run(
-            [compiler, "-print-search-dirs"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ()
+    out = tool_stdout([compiler, "-print-search-dirs"]) or ""
     for line in out.splitlines():
         if line.startswith("libraries:"):
             raw = line.split(":", 1)[1].strip().lstrip("=")
@@ -212,10 +203,7 @@ LDCONFIG_EXES = ("ldconfig", "/usr/sbin/ldconfig", "/sbin/ldconfig")
 def ldconfig_output() -> str:
     """``ldconfig -p`` output, or ``""``."""
     for exe in LDCONFIG_EXES:
-        try:
-            out = subprocess.run([exe, "-p"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
+        out = tool_stdout([exe, "-p"])
         if out:
             return out
     return ""
@@ -265,17 +253,16 @@ def linker_finds(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
 #: LLVM drivers asked where an LLVM runtime lives: distributions install libomp under the LLVM prefix, off g++'s path.
 LLVM_DRIVERS = ("clang++", "clang")
 
+#: Drivers to ask where a runtime lives when the target compiler cannot find it; clang-first since libomp.
+LIB_PROBE_DRIVERS = (*LLVM_DRIVERS, "g++", "gcc")
+
 
 @functools.lru_cache(maxsize=None, typed=True)
 def llvm_config_libdir() -> str | None:
     """``llvm-config --libdir`` of the LLVM on PATH, or ``None``."""
     if shutil.which("llvm-config") is None:
         return None
-    try:
-        out = subprocess.run(["llvm-config", "--libdir"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip() or None
+    return (tool_stdout(["llvm-config", "--libdir"]) or "").strip() or None
 
 
 def shared_object_in(directory: str, soname: str) -> Path | None:
@@ -393,23 +380,15 @@ def parse_params(param_str: str) -> list[Param]:
         is_ptr = "*" in tok
         name = re.split(r"[\s*]+", tok)[-1]
         base = tok[: tok.rfind(name)].replace("*", "").strip()
-        if is_ptr:
-            # an unmapped base type would guess a width silently -- an ABI bug ctypes can't catch -- so refuse
-            ptr_ctype = C_PTR.get(base)
-            if ptr_ctype is None:
-                raise ValueError(
-                    f"parameter {name!r} of entry point is a pointer to C type {base!r}, which has no "
-                    f"ctypes mapping (known: {sorted(C_PTR)}); add it to C_PTR"
-                )
-            params.append(Param(name, ctypes.POINTER(ptr_ctype)))
-        else:
-            ctype = C_SCALAR.get(base)
-            if ctype is None:
-                raise ValueError(
-                    f"parameter {name!r} of entry point has C type {base!r}, which has no ctypes "
-                    f"mapping (known: {sorted(C_SCALAR)}); add it to C_SCALAR"
-                )
-            params.append(Param(name, ctype))
+        table, table_name = (C_PTR, "C_PTR") if is_ptr else (C_SCALAR, "C_SCALAR")
+        # an unmapped base type would guess a width silently -- an ABI bug ctypes can't catch -- so refuse
+        ctype = table.get(base)
+        if ctype is None:
+            raise ValueError(
+                f"parameter {name!r} of entry point has {'pointer to ' if is_ptr else ''}C type {base!r}, which has "
+                f"no ctypes mapping (known: {sorted(table)}); add it to {table_name}"
+            )
+        params.append(Param(name, ctypes.POINTER(ctype) if is_ptr else ctype))
     return params
 
 
