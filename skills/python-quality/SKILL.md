@@ -22,15 +22,15 @@ for a genuine third-party false positive).
 
 ## A. The gates
 
-### 1. Format -- yapf or the repo's own formatter
-Use the formatter the repository already configures (a `.style.yapf`,
-`pyproject.toml [tool.yapf]`, or an equivalent section for another
-formatter); do not introduce a different one into a project that already
-picked one. To check without editing:
+### 1. Format -- the repo's own formatter
+Use the formatter the repository already configures; do not introduce a
+different one. NestForge uses ruff format at 120 columns (pre-commit and CI).
+To check without editing:
 ```bash
-yapf --diff --style='{based_on_style: pep8, column_limit: 120}' <file>.py
+ruff format --check --line-length 120 <file>.py
 ```
-A non-empty diff is a failing gate.
+A non-empty diff is a failing gate. A project configured for yapf checks with
+`yapf --diff` instead.
 
 ### 2. Lint -- ruff
 ```bash

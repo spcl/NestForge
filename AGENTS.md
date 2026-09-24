@@ -29,7 +29,7 @@ Every phase has a deterministic default, so a run works with any subset of agent
 ## Skills
 
 Skills load from HPCAgent-Bench plus this repository's `skills/` (pruned `dace`, `python-quality`,
-`python-to-numpy`):
+`python-to-numpy`, and `unit-testing`):
 
 ```python
 from hpcagent_bench.harness.prompts import load_skills
