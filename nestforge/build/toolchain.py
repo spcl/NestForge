@@ -212,11 +212,8 @@ def ldconfig_output() -> str:
 def ldconfig_dirs(soname: str) -> list[str]:
     """Directories the loader cache lists for lib<soname>. The linker needs the -dev .so symlink, which
     ldconfig does not index, but it shares a directory with the versioned .so.N ldconfig does index."""
-    out = ldconfig_output()
-    if not out:
-        return []
     dirs: list[str] = []
-    for line in out.splitlines():
+    for line in ldconfig_output().splitlines():
         if f"lib{soname}.so" not in line or "=>" not in line:
             continue
         d = os.path.dirname(line.split("=>")[-1].strip())

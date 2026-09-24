@@ -66,13 +66,15 @@ def in_order(graph: AbstractControlFlowRegion | SDFGState) -> list[Any]:
 # no top-level nested SDFG
 
 
+def top_level_nodes[N: nodes.Node](state: SDFGState, kind: type[N]) -> list[N]:
+    """The ``kind`` nodes of ``state`` outside every map scope, in node order."""
+    scope = state.scope_dict()
+    return [node for node in state.nodes() if isinstance(node, kind) and scope[node] is None]
+
+
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
-    out: list[tuple[SDFGState, nodes.NestedSDFG]] = []
-    for state in sdfg.all_states():
-        sd = state.scope_dict()
-        out += [(state, node) for node in state.nodes() if isinstance(node, nodes.NestedSDFG) and sd[node] is None]
-    return out
+    return [(state, node) for state in sdfg.all_states() for node in top_level_nodes(state, nodes.NestedSDFG)]
 
 
 def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
@@ -100,8 +102,7 @@ def normalize_reductions(sdfg: dace.SDFG) -> None:
 
 def free_tasklets(state: SDFGState) -> list[nodes.Tasklet]:
     """Tasklets of ``state`` outside every map scope; a library node already is a kernel."""
-    sd = state.scope_dict()
-    return [n for n in state.nodes() if isinstance(n, nodes.Tasklet) and sd[n] is None]
+    return top_level_nodes(state, nodes.Tasklet)
 
 
 def wrap_groups(state: SDFGState) -> list[list[nodes.Tasklet]]:
@@ -128,25 +129,12 @@ def wrap_group(state: SDFGState, group: list[nodes.Tasklet], name: str) -> None:
     for tasklet in group:
         in_edges = list(state.in_edges(tasklet))
         out_edges = list(state.out_edges(tasklet))
-        for edge in in_edges:
+        # each edge rerouted through the map: in-edges via its entry, then out-edges via its exit
+        paths = [(e, (e.src, entry, tasklet)) for e in in_edges] + [(e, (tasklet, exit_node, e.dst)) for e in out_edges]
+        for edge, path in paths:
             state.remove_edge(edge)
             state.add_memlet_path(
-                edge.src,
-                entry,
-                tasklet,
-                memlet=copy.deepcopy(edge.data),
-                src_conn=edge.src_conn,
-                dst_conn=edge.dst_conn,
-            )
-        for edge in out_edges:
-            state.remove_edge(edge)
-            state.add_memlet_path(
-                tasklet,
-                exit_node,
-                edge.dst,
-                memlet=copy.deepcopy(edge.data),
-                src_conn=edge.src_conn,
-                dst_conn=edge.dst_conn,
+                *path, memlet=copy.deepcopy(edge.data), src_conn=edge.src_conn, dst_conn=edge.dst_conn
             )
         # a tasklet with no data on one side still needs holding, or it floats out of the map
         if not in_edges:

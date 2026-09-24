@@ -33,10 +33,6 @@ def shape_str(shape: Sequence[Any]) -> str:
     return "(" + ", ".join(dims) + ("," if len(dims) == 1 else "") + ")"
 
 
-def dtype_str(desc: dace.data.Data) -> str:
-    return np.dtype(desc.dtype.type).name
-
-
 def manifest_dict(boundary: Boundary, name: str, sizes: dict[str, int] | None = None) -> dict[str, Any]:
     """The manifest of ``boundary``'s standalone SDFG."""
     sdfg = sized_standalone(boundary)
@@ -44,7 +40,7 @@ def manifest_dict(boundary: Boundary, name: str, sizes: dict[str, int] | None = 
     init_arrays: dict[str, dict[str, str]] = {}
     for a in arrays:
         desc = sdfg.arrays[a]
-        init_arrays[a] = {"shape": shape_str(desc.shape), "dtype": dtype_str(desc)}
+        init_arrays[a] = {"shape": shape_str(desc.shape), "dtype": np.dtype(desc.dtype.type).name}
     sizes = sizes or {}
     int_params: dict[str, int] = {}
     float_scalars: dict[str, float] = {}

@@ -26,7 +26,7 @@ from dace.transformation.passes.canonicalize.split_statements import SplitStatem
 from dace.transformation.passes.loop_fission import LoopFission
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
-from nestforge.ir.names import inline_top_level_nsdfgs
+from nestforge.ir.names import inline_top_level_nsdfgs, top_level_nodes
 from nestforge.ir.introspect import Row
 from nestforge.phases.normalize import FUSE_STAGE, Targets
 from nestforge.phases.region_moves import (
@@ -257,12 +257,10 @@ def multi_output_fission(sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntr
 
 def next_multi_output_fission(sdfg: dace.SDFG) -> dict[str, Any] | None:
     for state in sdfg.all_states():
-        scope = state.scope_dict()
-        for entry in state.nodes():
-            if isinstance(entry, nodes.MapEntry) and scope[entry] is None:
-                target = multi_output_fission(sdfg, state, entry)
-                if target is not None:
-                    return target
+        for entry in top_level_nodes(state, nodes.MapEntry):
+            target = multi_output_fission(sdfg, state, entry)
+            if target is not None:
+                return target
     return None
 
 

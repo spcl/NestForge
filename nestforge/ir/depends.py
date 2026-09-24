@@ -5,6 +5,7 @@ reach it. Whole containers only: a read reads all of it, a write replaces all of
 
 from __future__ import annotations
 
+import functools
 import heapq
 from dataclasses import dataclass, field
 from typing import Literal
@@ -203,12 +204,7 @@ def union(first: Env, second: Env) -> Env:
 
 def join(*envs: Env | None) -> Env | None:
     present = [env for env in envs if env is not None]
-    if not present:
-        return None
-    joined = present[0]
-    for env in present[1:]:
-        joined = union(joined, env)
-    return joined
+    return functools.reduce(union, present) if present else None
 
 
 def join_outcomes(outcomes: list[Outcome], normal: Env | None) -> Outcome:
