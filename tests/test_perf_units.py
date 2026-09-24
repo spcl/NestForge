@@ -11,7 +11,6 @@ import numpy as np
 
 from nestforge.build import arena
 
-from nestforge.build.isolation import run_isolated
 from nestforge.build import flags
 from nestforge.build import harness
 from nestforge.build.toolchain import Toolchain
@@ -72,17 +71,6 @@ def test_toolchain_fp_family_maps_labels_to_fp_families():
     assert toolchain_labelled("unknown", "some-cc").fp_family == "gnu"  # safe default
 
 
-# fault isolation edge cases (run_isolated)
-def test_run_isolated_malformed_result_is_error_not_crash():
-    # a non-JSON-able return is caught in the child and comes back as an error sentinel; parent survives.
-    res = run_isolated(lambda: {"bad": {1, 2, 3}})  # a set is not JSON-serializable
-    assert "error" in res and "TypeError" in res["error"]
-
-
-def test_run_isolated_passes_through_plain_dict():
-    assert run_isolated(lambda: {"ok": True, "n": 7}) == {"ok": True, "n": 7}
-
-
 # call_native on the caller's buffers (copy_inputs=False)
 class CountingArray(np.ndarray):
     """An ndarray that counts its own .copy() calls, so a test can assert call_native did not snapshot."""
@@ -95,7 +83,7 @@ class CountingArray(np.ndarray):
 
 
 class FakeBoundary:
-    """Both halves of :class:`nestforge.extract.Boundary` that call_native reads. ``inputs`` is not optional
+    """Both halves of :class:`nestforge.ir.extract.Boundary` that call_native reads. ``inputs`` is not optional
     padding: their intersection with ``outputs`` is what call_native restores between timed reps, so a fixture
     carrying only ``outputs`` cannot express an in-place kernel at all."""
 
@@ -117,9 +105,9 @@ class FakeKernel:
 
 
 def call_native_on_stub(monkeypatch, reps, read_write=False, **kw):
-    """Drive arena.call_native on the caller's buffers against a stubbed .so -- the ABI marshalling is real, only the compiled entry
-    is faked, so no compiler/toolchain is needed. ``read_write`` marks ``a`` as an in-place buffer (read and
-    written), the case whose per-rep restore decides what the timing measures."""
+    """Drive arena.call_native on the caller's buffers against a stubbed .so: the ABI marshalling is real, only the
+    compiled entry is faked. ``read_write`` marks ``a`` as an in-place buffer, whose per-rep restore decides what
+    the timing measures."""
     fn = FakeKernel()
     monkeypatch.setattr(arena.ctypes, "CDLL", lambda path: {"k_fp64": fn})
     buf = np.zeros(4, dtype=np.float64).view(CountingArray)
@@ -158,7 +146,7 @@ def test_call_native_snapshots_outputs_by_default(monkeypatch):
 def test_call_native_restores_an_in_place_buffer_before_every_timed_rep(monkeypatch):
     """An array that is both read and written must start each timed rep from the same values. Without the
     restore an in-place kernel times ``a * b**k`` -- denormal arithmetic by a handful of reps -- and the
-    ranking E1 reads off granularity rungs becomes "which candidate decayed slower"."""
+    ranking compares how fast candidates decayed."""
     restored = []
     fn = FakeKernel()
     monkeypatch.setattr(arena.ctypes, "CDLL", lambda path: {"k_fp64": fn})

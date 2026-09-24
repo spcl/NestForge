@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 SKILLS = sorted((REPO / "skills").glob("*/SKILL.md"))
@@ -48,10 +49,10 @@ def test_skill_has_frontmatter_with_name_and_description(skill):
     """An agent selects a skill by its description, so both fields must be present and non-trivial."""
     text = skill.read_text()
     assert text.startswith("---\n"), f"{skill} has no YAML frontmatter"
-    front = text.split("---\n", 2)[1]
-    assert re.search(r"^name: \S+", front, re.M), f"{skill} frontmatter has no name"
-    described = re.search(r"^description: (.+)$", front, re.M | re.S)
-    assert described and len(described.group(1)) > 60, f"{skill} needs a description that says WHEN to use it"
+    meta = yaml.safe_load(text.split("---\n", 2)[1])
+    assert isinstance(meta.get("name"), str) and meta["name"], f"{skill} frontmatter has no name"
+    description = meta.get("description")
+    assert isinstance(description, str) and len(description) > 60, f"{skill} needs a description of when to use it"
 
 
 @pytest.mark.parametrize("skill", SKILLS, ids=lambda p: p.parent.name)

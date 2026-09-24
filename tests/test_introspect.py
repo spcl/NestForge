@@ -50,8 +50,7 @@ def test_describe_graph_lists_nests_with_read_write_sets():
     # This SDFG is not normalized, so the blocks keep their frontend labels -- describe_graph renders
     # whatever it is given, and normalize_for_tree is what makes those labels canonical.
     assert "`- MapState" in text  # the state the two nests share, as a tree row
-    assert "[i=0:N]" in text  # the iteration domain. There is no parallel/sequential column: a Map is
-    #                           data-parallel by definition, so that column said the same thing always
+    assert "[i=0:N]" in text  # the iteration domain
     assert "reads=['A', 'B'] writes=['T']" in text  # producer nest
     assert "reads=['T'] writes=['C']" in text  # consumer nest
 

@@ -50,7 +50,7 @@ def test_a_segfault_is_reported_as_a_signal_and_the_parent_survives():
 
     result = run_isolated(crash, timeout=60)
     assert result["error"] == f"crashed (signal {int(signal.SIGSEGV)})"
-    assert os.getpid() > 0  # the parent is still here to assert it
+    assert run_isolated(lambda: {"next": True}, timeout=60) == {"next": True}  # the sweep moves on
 
 
 def test_a_child_that_exits_without_writing_is_an_error_not_an_empty_success():

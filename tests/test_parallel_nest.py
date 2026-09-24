@@ -74,4 +74,4 @@ def test_s2275_nested_map_emits_and_computes():
     aa, bb, cc = (rng.random((n, n)) for _ in range(3))
     aa_ref = aa + bb * cc  # a fresh array; the in-place kernel below must reproduce it
     kernel(aa=aa, bb=bb, cc=cc, LEN_2D=n)
-    assert np.allclose(aa, aa_ref)
+    np.testing.assert_allclose(aa, aa_ref, rtol=1e-15, atol=0)

@@ -1,6 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Kernel optimization: render one kernel as a standalone CPF unit with one C entry, build and validate ``lib<kernel>.a``."""
+"""Kernel optimization: render one kernel as a standalone CPF unit with one C entry, then build and validate
+``lib<kernel>.a``."""
 
 from __future__ import annotations
 

@@ -58,7 +58,7 @@ def test_canonicalize_assumption_guard_is_emitted_as_a_python_assertion():
     a = np.arange(6, dtype=np.float64)
     b = np.zeros(6)
     compiled(src, "k")(a, b, 6)
-    np.testing.assert_allclose(b, a * 2.0)
+    np.testing.assert_array_equal(b, a * 2.0)
 
 
 def test_the_emitted_guard_actually_trips_on_a_violated_assumption():
@@ -72,8 +72,7 @@ def test_the_emitted_guard_actually_trips_on_a_violated_assumption():
 
 def test_a_guard_outside_the_canonicalize_guard_state_is_translated_too():
     """scatter_conflict_guard emits its own trap tasklet under its own state label, not the
-    canonicalize guard's label. Matching on the label -- what the emitter used to do -- missed it
-    and failed the nest as 'not Python'."""
+    canonicalize guard's, so a label match would miss it."""
     sdfg = dace.SDFG("scatter_guard")
     sdfg.add_array("idx", [3], dace.int64)
     sdfg.add_array("out", [1], dace.float64)

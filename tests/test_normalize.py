@@ -309,12 +309,10 @@ def test_inlining_bails_out_without_touching_an_already_inlined_sdfg():
 def test_a_descending_loop_comes_out_with_a_positive_unit_step():
     sdfg = descending.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
-    for loop in [b for b in all_blocks(sdfg) if isinstance(loop_or_none(b), LoopRegion)]:
+    loops = [b for b in all_blocks(sdfg) if isinstance(b, LoopRegion)]
+    assert loops, "fixture no longer has a loop"
+    for loop in loops:
         assert "-1" not in loop.update_statement.as_string, f"step stayed negative: {loop.update_statement.as_string}"
-
-
-def loop_or_none(block):
-    return block if isinstance(block, LoopRegion) else None
 
 
 # the numerics
@@ -442,7 +440,7 @@ def test_renaming_params_that_shadow_their_targets_preserves_values(program):
     res = run_isolated(work, timeout=300)
     assert "error" not in res, res["error"]
     assert entry.map.params == wanted
-    np.testing.assert_allclose(res["got"], res["want"])
+    np.testing.assert_array_equal(res["got"], res["want"])
 
 
 @dc.program
@@ -473,7 +471,7 @@ def test_nested_map_scopes_do_not_collapse_onto_one_index():
 
     res = run_isolated(work, timeout=300)
     assert "error" not in res, res["error"]
-    np.testing.assert_allclose(res["got"], res["want"])
+    np.testing.assert_array_equal(res["got"], res["want"])
 
 
 def test_renaming_nothing_changes_nothing():

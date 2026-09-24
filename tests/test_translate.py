@@ -1,5 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
+"""NumPy and C emission of an extracted nest, run and compared with NumPy."""
+
 import numpy as np
 import dace
 
@@ -31,7 +33,7 @@ def test_numpy_emit_runs():
     B = np.random.default_rng(1).random(32)
     C = np.zeros(32)
     mod.vadd(A=A, B=B, C=C, N=32)
-    np.testing.assert_allclose(C, A + B)
+    np.testing.assert_array_equal(C, A + B)
 
 
 def test_translate_to_c(tmp_path):
@@ -48,15 +50,6 @@ def test_translate_to_c(tmp_path):
     assert "int64_t N" in text
     assert "(A[i] + B[i])" in text
     assert "C[i] = " in text
-
-
-if __name__ == "__main__":
-    test_numpy_emit_runs()
-    import tempfile
-    import pathlib
-
-    test_translate_to_c(pathlib.Path(tempfile.mkdtemp()))
-    print("translate OK")
 
 
 @dace.program
@@ -79,7 +72,7 @@ def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
     full_fusion(normalize(sdfg, Targets()), Targets())
     calls = lower_nests_to_external_call(sdfg)
     assert calls, "nothing lowered; the fixture no longer produces an offloadable nest"
-    ext, b = calls[0]
+    _, b = calls[0]
     mod = load_emitted(nest_to_numpy(b, fn_name="fused"), "fused")
 
     rng = np.random.default_rng(0)
@@ -87,7 +80,7 @@ def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
     idx = rng.permutation(32).astype(np.int64)
     C = np.zeros(32)
     mod.fused(A=A, idx=idx, C=C, N=32)
-    np.testing.assert_allclose(C, A[idx] * 2.0)
+    np.testing.assert_array_equal(C, A[idx] * 2.0)
 
 
 def test_the_standalone_preamble_is_the_live_helpers():

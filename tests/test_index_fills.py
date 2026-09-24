@@ -57,8 +57,7 @@ def test_index_array_is_a_valid_subscript_permutation(key):
 
 @pytest.mark.parametrize("key", GATHER_KERNELS)
 def test_index_array_is_all_zeros_without_the_manifest_fill(key):
-    # pins the bug being fixed: the plain float fill cast to an int dtype degenerates to b[0] every
-    # iteration. If this ever stops holding, `given` has become dead weight and should go.
+    # the plain float fill cast to an int dtype is all zeros, so every iteration reads b[0]
     kernel = load(key)
     boundary = first_nest(kernel)
     sizes = preset_sizes(kernel, "S")
@@ -117,7 +116,7 @@ def test_given_array_of_the_wrong_dtype_is_rejected():
 
 
 def test_transient_scratch_keeps_its_own_fill():
-    # only the manifest's non-transient arrays are `given`; everything else is untouched by this change.
+    # only manifest index arrays are given; every other array keeps its random fill
     kernel = load("tsvc_2_vag")
     boundary = first_nest(kernel)
     sizes = preset_sizes(kernel, "S")

@@ -82,7 +82,7 @@ COMPILERS = ("gcc", "clang", "icx")
 
 def linked_openmp_runtimes(so):
     """The OpenMP runtimes in ``so``'s DT_NEEDED, as soname stems; libiomp5 may resolve to libomp."""
-    out = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True).stdout
+    out = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True, check=True).stdout
     return {name for name in OMP_SONAMES if f"[{name}.so" in out}
 
 
@@ -94,7 +94,7 @@ OMP_FORK_SYMBOLS = ("kmpc_fork", "GOMP_parallel")
 def emits_parallel_region(so):
     """Whether ``so`` calls into an OpenMP runtime: ``clang -fopenmp=libgomp`` links libgomp yet emits only
     ``__kmpc_*`` calls, which libgomp lacks, and runs serially with correct results."""
-    out = subprocess.run(["nm", "-u", str(so)], capture_output=True, text=True).stdout
+    out = subprocess.run(["nm", "-u", str(so)], capture_output=True, text=True, check=True).stdout
     return any(sym in out for sym in OMP_FORK_SYMBOLS)
 
 

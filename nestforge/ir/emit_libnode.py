@@ -550,7 +550,8 @@ def emit_tensortranspose(node: TensorTranspose, state: dace.SDFGState, sdfg: dac
     inp = in_expr(state, node, "_inp_tensor", sdfg)
     if not is_zero(node.beta):
         raise UnsupportedLibraryNode(f"TensorTranspose with beta={node.beta} (accumulate) is not emitted")
-    return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {scaled(f'np.transpose({inp}, axes={list(node.axes)})', node.alpha)}"
+    transposed_input = scaled(f"np.transpose({inp}, axes={list(node.axes)})", node.alpha)
+    return f"{out_lhs(state, node, '_out_tensor', sdfg)} = {transposed_input}"
 
 
 def emit_reduce(node: Reduce, state: dace.SDFGState, sdfg: dace.SDFG) -> str:

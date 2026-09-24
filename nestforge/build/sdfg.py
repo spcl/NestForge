@@ -260,8 +260,8 @@ def libomp_cmake_args(compiler: str) -> list[str]:
     library = runtime_library(LIBOMP.soname, compiler)
     if library is None:
         raise LookupError(
-            f"no lib{LIBOMP.soname} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search path "
-            "names one, and the process's one OpenMP runtime is libomp"
+            f"no lib{LIBOMP.soname} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search "
+            "path names one, and the process's one OpenMP runtime is libomp"
         )
     return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP.soname}", f"-DOpenMP_{LIBOMP.soname}_LIBRARY={library}"]
 

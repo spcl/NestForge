@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ASCII tree the agent reads (:func:`nestforge.introspect.describe_graph`).
+"""The ASCII tree the agent reads (:func:`nestforge.ir.introspect.describe_graph`).
 
 The tree is the agent's whole view of the program, so its format is an interface: a change to it
 changes what every agent prompt sees. The golden test below pins it in full, so a format change has
@@ -86,7 +86,7 @@ def test_indentation_tracks_the_level_in_the_label():
 
 
 def test_session_stamps_the_ids_that_act_on_each_line():
-    """B1: reading the tree and acting on it use one vocabulary. A nest line carries the very handle
+    """Reading the tree and acting on it use one vocabulary. A nest line carries the very handle
     can_fuse/fuse resolve -- not a label the agent has to match against a separate list_nests call."""
     sdfg = shaped.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
@@ -308,7 +308,7 @@ def test_the_reduction_op_is_read_off_the_wcr():
 
 
 def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
-    """BK2: the body comes from `map_body_lines`, not from dropping len(params) lines off `map_lines`
+    """The body comes from `map_body_lines`, not from dropping len(params) lines off `map_lines`
     and dedenting by 4 * len(params). That arithmetic held only while every header was exactly one
     line and every body line carried the full indent."""
     sdfg = shaped.to_sdfg(simplify=True)
@@ -385,7 +385,7 @@ def test_a_kernel_source_is_a_whole_module_not_a_fragment():
     compile(source, "<kernel>", "exec")  # syntactically a module, not a snippet
 
 
-def test_a_kernel_source_runs_with_NOTHING_injected():
+def test_a_kernel_source_runs_with_nothing_injected():
     """No EMITTED_BUILTINS, no `np` handed in -- pure numpy or it does not count."""
     _, _, source = source_of_first_kernel(matvec)
     namespace = {}

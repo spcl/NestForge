@@ -107,8 +107,8 @@ def test_fission_splits_the_map_by_statement_and_stales_prior_ids_and_matches_nu
     b = np.zeros(n)
     c = np.zeros(n)
     session.sdfg(a=a.copy(), b=b, c=c, N=n)
-    assert np.allclose(b, a + 1.0)
-    assert np.allclose(c, a * 2.0)
+    np.testing.assert_array_equal(b, a + 1.0)
+    np.testing.assert_array_equal(c, a * 2.0)
 
 
 def test_fission_resolve_rejects_wrong_kind():

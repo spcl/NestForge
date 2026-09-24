@@ -18,6 +18,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
 
 from nestforge.ir.names import normalize_for_tree
+from nestforge.phases.scopes import top_level_map_entries
 from nestforge.session import MoveResult, Session
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -222,7 +223,7 @@ def conditionals(sdfg: dace.SDFG) -> list[ConditionalBlock]:
 
 
 def top_level_maps(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
-    return [n for state in sdfg.all_states() for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
+    return [entry for state in sdfg.all_states() for entry in top_level_map_entries(state)]
 
 
 def map_writes(sdfg: dace.SDFG) -> list[list[str]]:

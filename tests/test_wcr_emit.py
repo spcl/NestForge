@@ -51,7 +51,7 @@ def test_wcr_sum_reduction():
     a = rng.random(32)
     call, src = run(reduce_sum, "reduce_sum", dict(N=32), dict(a=a.copy(), out=np.zeros(1)))
     assert "+ __wcr_" in src  # augmented assignment, not a plain overwrite
-    np.testing.assert_allclose(call["out"][0], a.sum())
+    np.testing.assert_allclose(call["out"][0], a.sum(), rtol=1e-12, atol=0)
 
 
 def test_a_reduction_leaving_an_inner_map_is_applied_once():
@@ -111,23 +111,15 @@ def test_wcr_at_map_exit_from_nested_sdfg_raises():
 
 
 def test_wcr_scatter_data_dependent_index():
-    """A scatter ``hist[idx[i]] += w[i]`` -- the histogram pattern -- accumulates into a data-dependent
-    element; on DaCe branches where the indirect write lowers to a nested SDFG it needs the widen pass."""
+    """A scatter ``hist[idx[i]] += w[i]``, the histogram pattern, accumulates into a data-dependent element."""
     rng = np.random.default_rng(1)
     Nv, Mv = 50, 6
     idx = rng.integers(0, Mv, Nv).astype(np.int64)
     w = rng.random(Nv)
-    try:
-        call, src = run(
-            hist_scatter, "hist_scatter", dict(N=Nv, M=Mv), dict(idx=idx.copy(), w=w.copy(), hist=np.zeros(Mv))
-        )
-    except UnsupportedNest:
-        # Genuine upstream gap, not a missing tool: xfail (not skip) so CI's zero-skip unit set stays
-        # green while the day this DaCe gains indirect-write nesting the test starts validating for real.
-        pytest.xfail("indirect-write nesting unavailable in this DaCe")
+    call, src = run(hist_scatter, "hist_scatter", dict(N=Nv, M=Mv), dict(idx=idx.copy(), w=w.copy(), hist=np.zeros(Mv)))
     ref = np.zeros(Mv)
     np.add.at(ref, idx, w)
-    np.testing.assert_allclose(call["hist"], ref)
+    np.testing.assert_allclose(call["hist"], ref, rtol=1e-12, atol=0)
 
 
 def tasklet_wcr_at_exit(name, wcr):
@@ -166,7 +158,7 @@ def test_tasklet_wcr_combine_ops_at_map_exit(wcr, seed, reduce_fn, token):
     a = rng.random(16)
     out = np.full(1, seed)
     mod.combine(A=a.copy(), out=out, N=16)
-    np.testing.assert_allclose(out[0], reduce_fn(a))
+    np.testing.assert_allclose(out[0], reduce_fn(a), rtol=1e-12, atol=0)
 
 
 def test_tasklet_wcr_symbolic_index_target_is_normalized():
@@ -198,7 +190,7 @@ def test_tasklet_wcr_symbolic_index_target_is_normalized():
     a = rng.random(16)
     out = np.zeros(8)
     mod.pairsum(A=a.copy(), out=out, M=8, N=16)
-    np.testing.assert_allclose(out, a.reshape(8, 2).sum(axis=1))
+    np.testing.assert_allclose(out, a.reshape(8, 2).sum(axis=1), rtol=1e-12, atol=0)
 
 
 def test_two_distinct_wcr_out_edges_from_one_tasklet():
@@ -225,8 +217,8 @@ def test_two_distinct_wcr_out_edges_from_one_tasklet():
     osum = np.zeros(1)
     omax = np.full(1, -np.inf)
     mod.multi(A=a.copy(), osum=osum, omax=omax, N=20)
-    np.testing.assert_allclose(osum[0], a.sum())
-    np.testing.assert_allclose(omax[0], a.max())
+    np.testing.assert_allclose(osum[0], a.sum(), rtol=1e-12, atol=0)
+    np.testing.assert_allclose(omax[0], a.max(), rtol=1e-12, atol=0)
 
 
 def test_inscope_accumulator_wcr_at_map_exit_accumulates():
@@ -253,7 +245,7 @@ def test_inscope_accumulator_wcr_at_map_exit_accumulates():
     a = rng.random(16)
     out = np.zeros(1)
     mod.inscope_acc(A=a.copy(), out=out, N=16)
-    np.testing.assert_allclose(out[0], a.sum())
+    np.testing.assert_allclose(out[0], a.sum(), rtol=1e-12, atol=0)
 
 
 def test_copy_edge_wcr_accumulates():
@@ -274,7 +266,7 @@ def test_copy_edge_wcr_accumulates():
     mod = load_emitted(src, "cp")
     dst = np.array([10.0])
     mod.cp(src=np.array([5.0]), dst=dst)
-    np.testing.assert_allclose(dst[0], 15.0)
+    assert dst[0] == 15.0
 
 
 @dc.program
@@ -302,7 +294,7 @@ def test_library_node_output_wcr_raises():
 def test_wcr_from_nested_sdfg_at_state_body_raises():
     """A NestedSDFG at state-body level (no enclosing map, so map_exit_writes never sees it) whose output
     edge carries a WCR must still raise: emit_nested_sdfg replays the inner body only and never applies the
-    outer-edge accumulate. Guards the level the map-exit fix does not cover."""
+    outer-edge accumulate."""
     inner = dc.SDFG("inner")
     inner.add_array("inp", [1], dc.float64)
     inner.add_array("res", [1], dc.float64)

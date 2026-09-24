@@ -1,10 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session: the epoch-stamped-id safety layer over the 4-phase API, and the three distinct decision axes
-it exposes -- region structure (Level 1), nest fusion (Level 2), and offload (Phase 2). These tests cover
-the layer Session adds -- id minting, the stale-handle guard on every mutation, kind-checking, the
-region/nest distinction, and that each tool returns plain JSON-able data (never a live node). The wrapped
-transforms have their own tests; here we only prove Session drives them safely.
+"""Session: the epoch-stamped id layer over the phase API: id minting, the stale-handle guard on every mutation,
+kind checks, the region/nest distinction, and plain JSON-able results. The wrapped transforms have their own tests.
 """
 
 import numpy as np
@@ -58,7 +55,7 @@ def top_level_map_count(sdfg) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.all_states())
 
 
-# Level 2: nest fusion + the id/epoch safety layer
+# nest fusion and the id/epoch layer
 
 
 def test_list_nests_is_plain_data():
@@ -122,7 +119,7 @@ def test_unknown_id_at_current_epoch_is_not_stale():
     assert not isinstance(ei.value, StaleHandle)
 
 
-# Level 1: region structure (containers) + the merge-first ordering rule
+# region fusion
 
 
 def test_cross_state_nests_are_blocked_and_name_the_region_merge():
@@ -152,10 +149,10 @@ def test_fuse_regions_bumps_epoch_and_stales_prior_ids():
         s.fuse_regions(moves[0]["id"])
 
 
-# Phase 2/3: offload is a distinct axis from fusion
+# phase 2: scopes
 
 
-def test_offload_candidates_are_distinct_from_nest_fusion():
+def test_scope_candidates_carry_their_own_id_kind_and_read_write_sets():
     s = make_session()
     cands = s.list_scope_candidates()
     assert cands and all(c["id"].startswith("e0:cand:") for c in cands)
@@ -192,8 +189,8 @@ def test_set_kernel_sets_leaf_fields_without_bumping_epoch():
 
 def test_set_kernel_selects_the_extern_call_expansion():
     """The three leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion
-    would emit the numpy reference and Mode A would time the framework's kernel while reporting it as the
-    agent's. The outputs would still be correct and the number still plausible -- nothing else catches it."""
+    would emit the numpy reference and the timing would measure it while reporting the agent's kernel. The outputs
+    would still be correct and the number plausible, so nothing else catches it."""
     s = make_session()
     kernel_id = s.define_scopes()[0]["id"]
     ext = s.resolve(kernel_id, "kernel")
@@ -228,14 +225,14 @@ def test_noop_define_scopes_does_not_strand_handles():
     # not bump the epoch -- bumping would silently invalidate every move id the agent had already
     # enumerated.
     sdfg = dace.SDFG("no_maps")
-    sdfg.add_state()
+    sdfg.add_state_after(sdfg.add_state())
     session = Session(sdfg)
-    moves = session.list_fusions()
+    moves = session.list_region_fusions()
+    assert moves, "the fixture offers no handle to strand"
     epoch_before = session.epoch
     assert session.define_scopes() == []
     assert session.epoch == epoch_before
-    if moves:
-        session.resolve(moves[0]["id"], "move")  # the agent's ids survive a no-op
+    session.resolve(moves[0]["id"], "regmove")  # the agent's ids survive a no-op
 
 
 # Phase 0/1: normalize -> full_fusion -> fission_all, structural checks

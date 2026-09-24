@@ -48,12 +48,16 @@ def run(sdfg, fn, buffers, sizes):
     return buffers, src
 
 
-rng = np.random.default_rng(0)
+@pytest.fixture
+def rng() -> np.random.Generator:
+    """Each test draws the same inputs whatever ran before it."""
+    return np.random.default_rng(0)
+
 
 # BLAS: the nodes a MatMul expands into
 
 
-def test_gemm_alpha_beta():
+def test_gemm_alpha_beta(rng):
     from dace.libraries.blas.nodes.gemm import Gemm
 
     g = Gemm("g")
@@ -71,7 +75,7 @@ def test_gemm_alpha_beta():
     np.testing.assert_array_equal(buffers["C"], 2 * (A @ B) + 3 * C)
 
 
-def test_gemm_transA_transB():
+def test_gemm_transA_transB(rng):
     from dace.libraries.blas.nodes.gemm import Gemm
 
     g = Gemm("g")
@@ -84,7 +88,7 @@ def test_gemm_transA_transB():
     np.testing.assert_array_equal(buffers["C"], A.T @ B.T)
 
 
-def test_gemv_alpha_beta_transA():
+def test_gemv_alpha_beta_transA(rng):
     from dace.libraries.blas.nodes.gemv import Gemv
 
     gv = Gemv("gv")
@@ -101,7 +105,7 @@ def test_gemv_alpha_beta_transA():
     np.testing.assert_array_equal(buffers["y"], 2 * (A @ x) + y)
 
 
-def test_ger_rank1_update():
+def test_ger_rank1_update(rng):
     from dace.libraries.blas.nodes.ger import Ger
 
     gr = Ger("gr")
@@ -121,7 +125,7 @@ def test_ger_rank1_update():
     np.testing.assert_array_equal(buffers["res"], 2 * np.outer(x, y) + A)
 
 
-def test_axpy():
+def test_axpy(rng):
     from dace.libraries.blas.nodes.axpy import Axpy
 
     ax = Axpy("ax")
@@ -134,7 +138,7 @@ def test_axpy():
     np.testing.assert_array_equal(buffers["res"], 3 * x + y)
 
 
-def test_batched_matmul():
+def test_batched_matmul(rng):
     from dace.libraries.blas.nodes.batched_matmul import BatchedMatMul
 
     sdfg = build(
@@ -149,7 +153,7 @@ def test_batched_matmul():
     np.testing.assert_array_equal(buffers["c"], a @ b)
 
 
-def test_batched_matmul_transB():
+def test_batched_matmul_transB(rng):
     from dace.libraries.blas.nodes.batched_matmul import BatchedMatMul
 
     bm = BatchedMatMul("bm")
@@ -186,7 +190,7 @@ def test_batched_matmul_beta_refused():
 # Einsum: operand order is by (sorted) connector name
 
 
-def test_einsum_three_operand():
+def test_einsum_three_operand(rng):
     from dace.libraries.blas.nodes.einsum import Einsum
 
     es = Einsum("es")
@@ -206,7 +210,7 @@ def test_einsum_three_operand():
     np.testing.assert_array_equal(buffers["o"], np.einsum("ik,kj,j->i", a, b, v))
 
 
-def test_einsum_alpha_beta_properties():
+def test_einsum_alpha_beta_properties(rng):
     """``out = alpha * einsum + beta * out_prior``; beta reads the output buffer in place (RHS-first)."""
     from dace.libraries.blas.nodes.einsum import Einsum
 
@@ -220,7 +224,7 @@ def test_einsum_alpha_beta_properties():
     np.testing.assert_array_equal(buffers["o"], 2 * np.einsum("ik,kj->ij", a, b) + 3 * o)
 
 
-def test_einsum_runtime_alpha_connector():
+def test_einsum_runtime_alpha_connector(rng):
     """A data-driven ``_alpha`` scalar connector multiplies the contraction (composes with the property)."""
     from dace.libraries.blas.nodes.einsum import Einsum
 
@@ -246,7 +250,7 @@ def test_einsum_runtime_alpha_connector():
 # TensorDot / Inv
 
 
-def test_tensordot_contract():
+def test_tensordot_contract(rng):
     from dace.libraries.linalg.nodes.tensordot import TensorDot
 
     sdfg = build(
@@ -262,7 +266,7 @@ def test_tensordot_contract():
     np.testing.assert_array_equal(buffers["o"], np.tensordot(L, R, axes=([2], [0])))
 
 
-def test_tensordot_permutation():
+def test_tensordot_permutation(rng):
     from dace.libraries.linalg.nodes.tensordot import TensorDot
 
     td = TensorDot("td", left_axes=[2], right_axes=[0])
@@ -279,7 +283,7 @@ def test_tensordot_permutation():
     np.testing.assert_array_equal(buffers["o"], np.transpose(np.tensordot(L, R, axes=([2], [0])), [2, 0, 1]))
 
 
-def test_inv():
+def test_inv(rng):
     from dace.libraries.linalg.nodes.inv import Inv
 
     sdfg = build("inv", Inv("inv"), {"ain": ((N, N), F), "aout": ((N, N), F)}, [("_ain", "ain")], [("_aout", "aout")])
@@ -294,7 +298,7 @@ def test_inv():
 C128 = dc.complex128
 
 
-def test_fft():
+def test_fft(rng):
     from dace.libraries.fft.nodes.fft import FFT
 
     sdfg = build("fft", FFT("fft"), {"x": ((N,), C128), "y": ((N,), C128)}, [("_inp", "x")], [("_out", "y")])
@@ -304,7 +308,7 @@ def test_fft():
     np.testing.assert_allclose(buffers["y"], np.fft.fft(x), rtol=1e-12)
 
 
-def test_ifft_omits_one_over_n():
+def test_ifft_omits_one_over_n(rng):
     """DaCe's IFFT is the raw inverse sum (no ``1/N``); numpy's ``ifft`` divides by N, so the match needs
     ``norm='forward'`` (== ``N * np.fft.ifft``)."""
     from dace.libraries.fft.nodes.fft import IFFT
@@ -316,7 +320,7 @@ def test_ifft_omits_one_over_n():
     np.testing.assert_allclose(buffers["y"], np.fft.ifft(x, norm="forward"), rtol=1e-12)
 
 
-def test_fft_factor_normalization():
+def test_fft_factor_normalization(rng):
     from dace.libraries.fft.nodes.fft import IFFT
 
     ifft = IFFT("ifft")
@@ -331,7 +335,7 @@ def test_fft_factor_normalization():
 
 
 @pytest.mark.parametrize("op, argfn, valfn", [("max", np.argmax, np.max), ("min", np.argmin, np.min)])
-def test_argreduce(op, argfn, valfn):
+def test_argreduce(op, argfn, valfn, rng):
     from dace.libraries.standard.nodes.arg_reduce import ArgReduce
 
     sdfg = build(
@@ -351,7 +355,7 @@ def test_argreduce(op, argfn, valfn):
     "scanop, ref",
     [("SUM", np.cumsum), ("PRODUCT", np.cumprod), ("MAX", np.maximum.accumulate), ("MIN", np.minimum.accumulate)],
 )
-def test_scan_inclusive(scanop, ref):
+def test_scan_inclusive(scanop, ref, rng):
     from dace.libraries.standard.nodes.scan import Scan, ScanOp
 
     sdfg = build(
@@ -376,7 +380,7 @@ def test_scan_exclusive_refused():
         sdfg_to_numpy(sdfg, "scx")
 
 
-def test_integer_sort():
+def test_integer_sort(rng):
     from dace.libraries.sort.nodes.integer_sort import IntegerSort
 
     sdfg = build(
@@ -407,7 +411,7 @@ def build_scatter_conflict_check(name):
     )
 
 
-def test_scatter_conflict_check_permutation():
+def test_scatter_conflict_check_permutation(rng):
     """A permutation has no duplicate values, so ``count == 0`` (the scatter is conflict-free)."""
     sdfg = build_scatter_conflict_check("sccp")
     idx = rng.permutation(9).astype(np.int64)
@@ -433,8 +437,7 @@ def desc_of_shape(shape):
 
 
 def test_scalar_elem_indexes_every_dimension():
-    # is_scalar is rank-agnostic (total_size == 1), so a keepdims (1,1) buffer landed here too; name[0]
-    # selects a shape-(1,) sub-array, not the element.
+    # a (1, 1) buffer is also a scalar (total_size == 1); name[0] would select a sub-array
     assert scalar_elem("s", desc_of_shape([1])) == "s[0]"
     assert scalar_elem("s", desc_of_shape([1, 1])) == "s[0, 0]"
     assert scalar_elem("s", desc_of_shape([1, 1, 1])) == "s[0, 0, 0]"

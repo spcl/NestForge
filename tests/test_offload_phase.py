@@ -126,7 +126,6 @@ def test_a_host_kernel_feeding_a_gpu_kernel_moves_only_the_value_between_them():
     ]
 
 
-@pytest.mark.gpu
 def test_gpu_offload_transfers_name_the_containers_its_copies_move(tmp_path):
     session, _ = kernel_session(True, tmp_path)
 
@@ -148,4 +147,4 @@ def test_offloaded_program_computes_on_the_gpu_what_numpy_computes(tmp_path):
 
     session.sdfg(a=a, b=b, c=c, N=256)
 
-    np.testing.assert_allclose(c, 2.0 * a + b)
+    np.testing.assert_allclose(c, 2.0 * a + b, rtol=1e-15, atol=0)
