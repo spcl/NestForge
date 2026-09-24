@@ -12,14 +12,14 @@ FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma", "fast-math")
 
 #: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` evaluates in the oracle's order, so only the
 #: dtype floor applies.
-FP_ATOL: dict[str, float] = {
+FP_RTOL: dict[str, float] = {
     "strict-ieee": 0.0,
     "contract-fma": 1e-13,
     "fast-math": 1e-5,
 }
 
 #: Relative tolerance floor per output dtype, about one ULP; the gate is ``max(mode, dtype)``.
-DTYPE_ATOL: dict[str, float] = {
+DTYPE_RTOL: dict[str, float] = {
     "float64": 2.3e-16,
     "float32": 1.2e-7,
     "float16": 9.8e-4,
@@ -86,10 +86,8 @@ def flag_matrix(family: str) -> list[tuple[str, str, list[str]]]:
     return matrix
 
 
-#: The FP modes a GPU kernel sweeps; nvcc has no fast-math mode that matches the CPU one.
-CUDA_FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma")
-
-#: Device and host FP flags per mode; ``--fmad`` fuses multiply-adds on the device.
+#: Device and host FP flags per mode a GPU kernel sweeps; ``--fmad`` fuses multiply-adds on the device. nvcc has
+#: no fast-math mode that matches the CPU one.
 CUDA_FP: dict[str, list[str]] = {
     "strict-ieee": ["--fmad=false", "-Xcompiler=-ffp-contract=off"],
     "contract-fma": ["--fmad=true", "-Xcompiler=-ffp-contract=fast"],
@@ -107,4 +105,4 @@ def cuda_base_flags(build_flags: Sequence[str]) -> list[str]:
 def cuda_flag_matrix(build_flags: Sequence[str]) -> list[tuple[str, list[str]]]:
     """``(fp_level, flags)`` per GPU cell."""
     base = cuda_base_flags(build_flags)
-    return [(level, base + CUDA_FP[level]) for level in CUDA_FP_LEVELS]
+    return [(level, base + fp) for level, fp in CUDA_FP.items()]

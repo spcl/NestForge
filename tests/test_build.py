@@ -23,7 +23,7 @@ import dace
 
 import nestforge.build.sdfg as build_mod
 import nestforge.build.toolchain as toolchain_mod
-from nestforge.build.toolchain import LIBOMP, lib_findable, runtime_library
+from nestforge.build.toolchain import LIBOMP, lib_linkable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
@@ -311,9 +311,7 @@ def test_parallel_map_emits_omp_pragma(tmp_path):
 def test_parallel_loop_links_openmp_across_compilers(tmp_path, compiler):
     assert shutil.which(compiler) is not None, f"{compiler} not on PATH"
     rt = LIBOMP
-    assert lib_findable(rt.soname, rt.lib_dir), (
-        f"{rt.name} not installed here (no OpenMP runtime on PATH/LD_LIBRARY_PATH/ldconfig)"
-    )
+    assert lib_linkable(rt.soname, compiler), f"{rt.name} is not linkable by {compiler} (setup_apt.sh installs libomp)"
     assert rt.compatible(compiler), f"{compiler} must be able to link {rt.name}"
     n = 256
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
@@ -373,8 +371,7 @@ def test_parse_params_strips_the_const_qualifier_only_as_a_word():
     keep their name, or the ctypes bind looks them up under a mangled key."""
     params = parse_params("k_state_t *__state, const double * __restrict__ constant, const int const_term")
     assert [p.name for p in params] == ["constant", "const_term"]
-    assert params[0].is_pointer and params[0].ctype == ctypes.POINTER(ctypes.c_double)
-    assert not params[1].is_pointer and params[1].ctype == ctypes.c_int
+    assert [p.ctype for p in params] == [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
 
 
 def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
@@ -431,7 +428,7 @@ def test_toolchain_is_importable_without_dace():
         spec.loader.exec_module(module)
         assert "dace" not in sys.modules, "importing nestforge.build.toolchain pulled in dace"
         assert module.compiler_family("icx") == "llvm"          # a real probe, not just an import
-        assert module.lib_findable("m", None) in (True, False)  # reaches ctypes.util, a SUBMODULE import
+        assert module.C_PTR["dace::complex128"] is module.C_SCALAR["double"]
     """)
     r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-800:]
@@ -509,8 +506,8 @@ def test_an_explicit_runtime_is_not_overridden(tmp_path, monkeypatch):
 
 
 def test_compiler_warnings_are_reported_but_bounded():
-    """-Wall fires on nearly every generated cell, each with its own paths, so warnings dedup by kind and
-    are counted, not printed, past a budget."""
+    """-Wall fires on nearly every generated cell, each with its own paths, so warnings dedup by kind and stop
+    past a budget of kinds."""
     toolchain_mod.WARNED.clear()
     try:
         with warnings.catch_warnings(record=True) as seen:
@@ -518,14 +515,13 @@ def test_compiler_warnings_are_reported_but_bounded():
             for cell in range(50):  # the same kind, 50 different files
                 toolchain_mod.warn_once("g++", f"/build/cell{cell}/x.cpp:{cell}:9: warning: unused [-Wunused-variable]")
         assert len(seen) == 1, f"one warning kind reported {len(seen)} times"
-        summary = toolchain_mod.warning_summary()
-        assert any("unused-variable" in line and "49 further" in line for line in summary), summary
 
         # a genuinely new kind is still reported, up to the budget
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter("always")
-            toolchain_mod.warn_once("g++", "x.cpp:1:1: warning: set but not used [-Wunused-but-set-variable]")
-        assert len(seen) == 1
+            for kind in range(10):
+                toolchain_mod.warn_once("g++", f"x.cpp:1:1: warning: kind {kind} [-Wkind{kind}]")
+        assert len(seen) == toolchain_mod.WARN_BUDGET - 1, len(seen)
     finally:
         toolchain_mod.WARNED.clear()
 

@@ -39,8 +39,8 @@ def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]):
         a[i] = b[i] + c[i]
 
 
-GCC = Toolchain(name="gcc", cc="gcc", cxx="g++")
-CLANG = Toolchain(name="clang", cc="clang", cxx="clang++")
+GCC = Toolchain(name="gcc", cxx="g++")
+CLANG = Toolchain(name="clang", cxx="clang++")
 NVCC_OLDER = CudaToolchain(nvcc="nvcc-a", release="13.1", cudart_dir="lib-a")
 NVCC_NEWER = CudaToolchain(nvcc="nvcc-b", release="13.3", cudart_dir="lib-b")
 
@@ -97,10 +97,6 @@ def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model():
     for v in variants:
         assert "-arch=native" in v.flags and set(cpf.CUDA_BUILD_FLAGS) <= set(v.flags), v.label
         assert ("--fmad=false" in v.flags) == (v.fp_mode == "strict-ieee"), v.label
-
-
-def test_a_toolchain_without_a_cxx_compiler_contributes_no_variant():
-    assert enumerate_variants([Toolchain(name="gcc", cc="gcc", cxx=None)]) == []
 
 
 def test_a_shared_measurement_is_gated_at_each_cells_own_rung():

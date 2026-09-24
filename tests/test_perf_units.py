@@ -44,14 +44,14 @@ def test_cost_flags_no_vec_and_cheap_collapse():
 
 def test_flag_matrix_atol_covers_every_level():
     # every emitted level has a validation tolerance, and strict is the tightest.
-    assert set(flags.FP_ATOL) == set(flags.FP_LEVELS)
-    assert flags.FP_ATOL["strict-ieee"] < flags.FP_ATOL["fast-math"]
+    assert set(flags.FP_RTOL) == set(flags.FP_LEVELS)
+    assert flags.FP_RTOL["strict-ieee"] < flags.FP_RTOL["fast-math"]
     for level, model, cflags in flags.flag_matrix("gnu"):
         assert cflags[:1] == ["-O3"] and level in flags.FP_LEVELS and model in flags.COST_MODELS
 
 
-def toolchain_labelled(label, cc):
-    return Toolchain(name=label, cc=cc, cxx=None)
+def toolchain_labelled(label, cxx):
+    return Toolchain(name=label, cxx=cxx)
 
 
 def test_toolchain_fp_family_maps_labels_to_fp_families():

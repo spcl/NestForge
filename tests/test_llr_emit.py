@@ -12,17 +12,11 @@ import dace
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 
-from nestforge.corpus.bench import iter_dace_kernels
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_numpy import load_emitted, sdfg_to_numpy
 from nestforge.phases.scopes import top_level_map_entries
 
-
-def load(key: str):
-    for kernel in iter_dace_kernels("loop_level_reasoning"):
-        if kernel.short_name.rsplit("/", 1)[-1] == key:
-            return kernel
-    raise AssertionError(f"{key} is not in the loop_level_reasoning track -- the corpus this test pins has changed")
+from helpers import loop_level_kernel
 
 
 def top_level_nest(sdfg: dace.SDFG):
@@ -41,7 +35,7 @@ def top_level_nest(sdfg: dace.SDFG):
 def emit_and_call(key: str, sizes: dict, inputs: dict):
     """Canonicalize + extract + emit ``key``, allocate every buffer C-style from the emitted signature,
     run it, return the call dict (buffers hold the results in place)."""
-    kernel = load(key)
+    kernel = loop_level_kernel(key)
     sdfg = kernel.to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     parent, node = top_level_nest(sdfg)
@@ -85,7 +79,7 @@ def test_ext_break_find_first_emits_break_and_stops():
 def test_cond_reduce_sym_scalar_read_and_wcr():
     """Size-1 buffer read as ``x[0]`` and WCR copy accumulates: out = sum of a[i] where a[i] > K."""
     n = 96
-    kernel = load("cond_reduce_sym")
+    kernel = loop_level_kernel("cond_reduce_sym")
     k_value = kernel.spec.pinned_config["K"]
     a = np.random.default_rng(0).random(n)
     call, _ = emit_and_call("cond_reduce_sym", dict(LEN_1D=n), dict(a=a.copy()))

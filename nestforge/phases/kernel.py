@@ -26,7 +26,7 @@ from nestforge.build.arena import (
     diff_stats,
     dtype_floor,
     make_inputs,
-    rung_atol,
+    rung_rtol,
     run_oracle,
 )
 from nestforge.build.flags import cuda_base_flags
@@ -67,7 +67,7 @@ class KernelVerdict:
 
     @property
     def ok(self) -> bool:
-        return not self.error and self.md_rel <= rung_atol(self.fp_mode, self.dtype_floor)
+        return not self.error and self.md_rel <= rung_rtol(self.fp_mode, self.dtype_floor)
 
 
 def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:

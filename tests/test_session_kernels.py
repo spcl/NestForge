@@ -126,6 +126,6 @@ def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path
     assert result["winner"] is not None
     config = result["config"]
     assert config["compiler"].startswith("nvcc-") and config["cost_model"] == flags.NO_COST_MODEL
-    assert config["fp_mode"] in flags.CUDA_FP_LEVELS and "-arch=native" in config["flags"]
+    assert config["fp_mode"] in flags.CUDA_FP and "-arch=native" in config["flags"]
     ext = session.resolve(kernel["id"], "kernel")
     assert ext.implementation == "ExternCall" and ext.lib_path.endswith(".a")

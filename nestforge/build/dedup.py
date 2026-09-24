@@ -37,18 +37,15 @@ def parse_disassembly(out: str) -> dict[str, str]:
     """``objdump -d --no-show-raw-insn`` text -> symbol -> its instruction text, with addresses and
     relocation comments dropped, but immediates left alone since they are what the key must see."""
     bodies: dict[str, list[str]] = {}
-    current: str | None = None
+    current = ""
     for line in out.splitlines():
         header = SYMBOL_LINE.match(line)
         if header:
-            symbol = header.group(1)
-            if not isinstance(symbol, str):
-                continue  # the pattern's one group is mandatory; unreachable on a real match, but narrows the type
-            current = symbol
+            current = header.group(1)
             bodies[current] = []
             continue
         insn = INSN_LINE.match(line)
-        if insn and current is not None:
+        if insn and current:
             text = BRANCH_TARGET.sub("", INSN_COMMENT.sub("", insn.group(1)))
             bodies[current].append(text.rstrip())
     return {name: "\n".join(lines) for name, lines in bodies.items()}

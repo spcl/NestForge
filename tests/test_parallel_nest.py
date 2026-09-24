@@ -13,21 +13,15 @@ import dace
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 
-from nestforge.corpus.bench import iter_dace_kernels
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_numpy import load_emitted, sdfg_to_numpy
 from nestforge.phases.scopes import is_parallel_nest, parallel_top_level_maps
 
-
-def load(key):
-    for kernel in iter_dace_kernels("loop_level_reasoning"):
-        if kernel.short_name.rsplit("/", 1)[-1] == key:
-            return kernel
-    raise AssertionError(f"{key} is not in the loop_level_reasoning track -- the corpus this test pins has changed")
+from helpers import loop_level_kernel
 
 
 def nest_refs(key):
-    sdfg = load(key).to_sdfg(simplify=True)
+    sdfg = loop_level_kernel(key).to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     return sdfg, parallel_top_level_maps(sdfg)
 

@@ -14,7 +14,7 @@ import pytest
 
 from dace import symbolic
 
-from nestforge.corpus.bench import dace_kernel_names, iter_dace_kernels, module_path
+from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_libnode import is_scalar
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, sdfg_to_numpy
 from nestforge.build.isolation import run_isolated
@@ -81,14 +81,15 @@ def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
 def test_corpus_exposes_dace_kernels():
     """HPCAgent-Bench regenerates each gitignored ``_dace.py`` on demand; the set it can lower grows with the
     translator, so this asserts a floor plus the kernels this suite exercises, not an exact count."""
-    science = set(dace_kernel_names("scientific_computing"))
+    science = {k.short_name for k in iter_dace_kernels("scientific_computing")}
     assert len(science) >= 50, len(science)
     assert {
         "scientific_computing/dense_linear_algebra/gemm/gemm",
         "scientific_computing/structured_grids/jacobi_1d/jacobi_1d",
         "scientific_computing/dense_linear_algebra/lu/lu",
     } <= science
-    assert len(dace_kernel_names("machine_learning")) >= 5, len(dace_kernel_names("machine_learning"))
+    learning = [k.short_name for k in iter_dace_kernels("machine_learning")]
+    assert len(learning) >= 5, learning
 
 
 def test_the_loop_level_track_builds_to_sdfgs():

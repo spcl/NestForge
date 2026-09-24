@@ -7,7 +7,6 @@ epsilon; for an ill-conditioned one a near-zero pivot amplifies the reassociatio
 of magnitude from the strict sequential result while strict-ieee stays close.
 """
 
-import ctypes
 import re
 import shutil
 import subprocess
@@ -21,11 +20,11 @@ from dace import symbolic
 from dace.libraries.blas.nodes import Dot
 from dace.sdfg.state import LoopRegion
 
+from nestforge.build.toolchain import bind_argument, entry
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.corpus.translate import prepare, emit_sources
-from helpers import corpus_kernel
+from helpers import c_argtypes, corpus_kernel
 
-CTYPE_FOR_DTYPE = {"float64": ctypes.c_double, "int64": ctypes.c_int64}
 GCC_BASE_FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
 FP_MODES = {
     "ieee-strict-seq": ["-ffp-contract=off", "-fno-tree-vectorize"],  # the stability baseline
@@ -80,18 +79,11 @@ def run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
             d = bsdfg.arrays[a]
             shape = tuple(int(symbolic.evaluate(x, env)) for x in d.shape)
             buffers[a] = A.copy() if a == "A" else np.zeros(shape, np.dtype(d.dtype.type))
-    argt = [
-        ctypes.POINTER(CTYPE_FOR_DTYPE[np.dtype(bsdfg.arrays[a].dtype.type).name])
-        if a in bsdfg.arrays
-        else ctypes.c_int64
-        for a in order
-    ]
+    argt = c_argtypes(order, boundary)
     so = tmp_path / f"lib_{tag}.so"
     subprocess.run([gcc, *GCC_BASE_FLAGS, *flags, str(csrc), "-o", str(so)], check=True, capture_output=True)
-    fn = ctypes.CDLL(str(so)).gs_compute_fp64
-    fn.argtypes = argt
-    fn.restype = None
-    fn(*[buffers[a].ctypes.data_as(t) if a in buffers else ctypes.c_int64(sizes[a]) for a, t in zip(order, argt)])
+    fn = entry(so, "gs_compute_fp64", argt)
+    fn(*[bind_argument(a, t, buffers, sizes) for a, t in zip(order, argt)])
     # gramschmidt is functional->in-place: its two outputs land in the named ``Q`` (orthonormal) and ``R``
     # (upper-triangular) buffers, not DaCe ``__return`` values. The relerr stability metric compares both.
     return {o: buffers[o].copy() for o in ("Q", "R")}

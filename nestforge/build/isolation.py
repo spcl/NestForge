@@ -26,7 +26,7 @@ OMP_PAUSE_HARD = 2
 
 OMP_PAUSE_MODES = {"soft": OMP_PAUSE_SOFT, "hard": OMP_PAUSE_HARD}
 
-#: Longest error text a child reports back.
+#: Longest exception message a child reports back, after its type name.
 ERROR_CHARS = 4000
 
 
@@ -49,11 +49,6 @@ def pause_openmp_pools(mode: int = OMP_PAUSE_SOFT) -> None:
         pause.restype = ctypes.c_int
         if pause(mode) != 0:
             warnings.warn(f"{soname}: omp_pause_resource_all(mode={mode}) failed; its pool stays up across the fork")
-
-
-def quiet_fatal_signals() -> None:
-    """Disable an inherited faulthandler, so a child's segfault does not dump the parent's stack."""
-    faulthandler.disable()
 
 
 def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = 900.0) -> dict:
@@ -87,7 +82,7 @@ def spawned_result(receiver: Any, child: Any, timeout: float) -> dict:
 
 def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> None:
     """The spawned child's body; a Python exception comes back as an error."""
-    quiet_fatal_signals()
+    faulthandler.disable()  # a child's segfault must not dump the parent's stack
     try:
         result = target(payload)
     except BaseException as e:
@@ -103,7 +98,7 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
     pid = os.fork()
     if pid == 0:
         os.close(r)
-        quiet_fatal_signals()
+        faulthandler.disable()  # a child's segfault must not dump the parent's stack
         try:
             payload = json.dumps(work_fn())
         except BaseException as e:

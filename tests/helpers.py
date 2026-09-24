@@ -3,13 +3,24 @@
 """Helpers several test modules share."""
 
 import ctypes
+import re
 
 import numpy as np
 
-from nestforge.build.arena import CTYPE, scalar_ctype
+import dace
+
 from nestforge.build.toolchain import CType, raw_signature
 from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels
 from nestforge.ir.extract import Boundary
+
+#: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
+CTYPE = {
+    "float64": ctypes.c_double,
+    "float32": ctypes.c_float,
+    "int64": ctypes.c_int64,
+    "int32": ctypes.c_int32,
+    "bool": ctypes.c_bool,
+}
 
 
 def corpus_kernel(short_name: str) -> CorpusKernel:
@@ -40,10 +51,21 @@ def random_vectors(n: int = 48, names: tuple[str, ...] = ("a", "b", "c"), seed: 
 def signature_order(text: str, symbol: str, lang: str = "c") -> list[str]:
     """Parameter names of a translated kernel's entry, in declaration order: the emitted C order (sorted arrays,
     then symbols) is not the manifest's ``input_args`` order, so arguments bind to this."""
-    params = raw_signature(text, symbol, lang)
     if lang == "fortran":
-        return [a.strip() for a in params.replace("&", " ").split(",") if a.strip()]
+        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
+        if not m:
+            raise LookupError(f"subroutine {symbol} not found")
+        return [a.strip() for a in m.group(1).replace("&", " ").split(",") if a.strip()]
+    params = raw_signature(text, symbol)
     return [p.strip().split()[-1].lstrip("*") for p in params.split(",") if p.strip() and p.strip() != "void"]
+
+
+def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
+    """ctype of a by-value argument: a float is ``c_double``, any integer ``int64_t`` whatever its SDFG width,
+    since a narrower c_int leaves the upper register half undefined."""
+    if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
+        return ctypes.c_double
+    return ctypes.c_int64
 
 
 def c_argtypes(order: list[str], boundary: Boundary) -> list[CType]:

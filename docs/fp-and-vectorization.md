@@ -9,7 +9,7 @@ vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` de
 ## FP modes
 
 `FP_LEVELS` lists three modes, strictest first. Each mode has a relative tolerance against the NumPy
-float64 oracle (`FP_ATOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
+float64 oracle (`FP_RTOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
 below applies to it.
 
 | Mode | tolerance | GNU | LLVM | oneAPI |
@@ -18,7 +18,7 @@ below applies to it.
 | `contract-fma` | 1e-13 | `-ffp-contract=fast -fexcess-precision=standard` | `-ffp-contract=fast` | `-fp-model=precise` |
 | `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
 
-oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model. `DTYPE_ATOL` adds a per-dtype floor of about one
+oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model. `DTYPE_RTOL` adds a per-dtype floor of about one
 ULP, combined as `max(mode, dtype)`. GPU variants use only `strict-ieee` and `contract-fma`.
 
 ## Cost models

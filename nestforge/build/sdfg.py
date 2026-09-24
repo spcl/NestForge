@@ -14,7 +14,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from collections.abc import Iterator, Sequence
 
 import numpy as np
@@ -32,6 +32,7 @@ from nestforge.build.toolchain import (
     LIBOMP,
     OpenMPRuntime,
     Param,
+    bind_argument,
     cudart_dir,
     cudart_link_flags,
     parse_params,
@@ -84,15 +85,8 @@ class BuiltSDFG:
         fn = self.lib[f"__program_{self.name}"]
         fn.restype = None
         fn.argtypes = [ctypes.c_void_p] + [p.ctype for p in self.prog_params]
-        args: list[Any] = [self.handle]
-        for p in self.prog_params:
-            if p.is_pointer:
-                args.append(buffers[p.name].ctypes.data_as(cast(type[ctypes._Pointer], p.ctype)))
-            elif p.name in buffers:  # a DaCe Scalar passed by value
-                args.append(p.ctype(buffers[p.name].item()))
-            else:  # a size symbol
-                args.append(p.ctype(int(sizes[p.name])))
-        fn(*args)
+        args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
+        fn(self.handle, *args)
 
     def unload(self) -> None:
         """Close the library, so a long sweep does not keep one mapping per kernel."""
@@ -321,5 +315,4 @@ def compile_program(gen: GeneratedProgram, opts: BuildOptions | None = None) -> 
 
 def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> BuiltSDFG:
     """Generate, compile and link ``sdfg``; an OpenMP runtime is linked unless none is usable."""
-    opts = opts or BuildOptions()
     return compile_program(generate_program(sdfg, out_dir), opts)

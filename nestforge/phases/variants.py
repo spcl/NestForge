@@ -69,8 +69,6 @@ def enumerate_variants(toolchains: Sequence[Toolchain]) -> list[Variant]:
     """Every compiler x FP mode x cost model cell the toolchains support, one per distinct flag set."""
     variants: dict[tuple[str, str, tuple[str, ...]], Variant] = {}
     for tc in toolchains:
-        if tc.cxx is None:
-            continue
         # flag_matrix already dedups a cost model the family has no knob for onto its default flags
         for fp_mode, cost_model, composed in flags.flag_matrix(tc.fp_family):
             variants.setdefault(

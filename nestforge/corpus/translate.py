@@ -5,6 +5,8 @@ hpcagent_bench is imported inside functions, so importing nestforge never loads 
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,7 +16,7 @@ import yaml
 from nestforge.ir.emit_numpy import nest_to_numpy
 from nestforge.ir.emit_yaml import manifest_dict
 from nestforge.ir.extract import Boundary
-from nestforge.corpus.translator import translate
+from nestforge.build.toolchain import COMPILE_TIMEOUT_S
 
 if TYPE_CHECKING:
     from hpcagent_bench.spec import BenchSpec
@@ -54,5 +56,24 @@ def prepare(
 
 
 def emit_sources(prep: Prepared, out_dir: str | Path, target: str = "c") -> list[Path]:
-    """Run the numpy translator; return the generated source files."""
-    return translate(prep.spec, prep.numpy_path, prep.name, Path(out_dir), target=target)
+    """Translate the kernel's NumPy source to ``target`` with HPCAgent-Bench's ``numpyto`` driver.
+
+    :returns: the generated source files, C then C++ then Fortran.
+    """
+    from hpcagent_bench import emit_bridge
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with emit_bridge.bench_info_tempfile(prep.spec) as bench_info:
+        cmd = [sys.executable, "-m", "numpyto_common.cli", "--target", target, "--kernel", str(prep.numpy_path)]
+        cmd += ["--bench-info", str(bench_info), "--out", str(out), "--precision", "float64"]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"numpyto timed out for {prep.name} (target={target}); the ceiling is NF_COMPILE_TIMEOUT"
+            )
+    if res.returncode != 0:
+        raise RuntimeError(f"numpyto failed for {prep.name} (target={target}):\n{res.stderr[-2000:]}")
+    name = prep.name
+    return sorted(out.glob(f"{name}_*.c")) + sorted(out.glob(f"{name}_*.cpp")) + sorted(out.glob(f"{name}_*.f90"))

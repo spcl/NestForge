@@ -2,13 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """NumPy and C emission of an extracted nest, run and compared with NumPy."""
 
+import subprocess
+
 import numpy as np
 import dace
 
 from nestforge.phases.scopes import parallel_top_level_maps
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_numpy import load_emitted, nest_to_numpy
+from nestforge.build.arena import call_native
 from nestforge.corpus.translate import prepare, emit_sources
+
+from helpers import c_argtypes, signature_order
 
 N = dace.symbol("N")
 
@@ -36,7 +41,7 @@ def test_numpy_emit_runs():
     np.testing.assert_array_equal(C, A + B)
 
 
-def test_translate_to_c(tmp_path):
+def test_the_translated_c_kernel_computes_what_numpy_computes(tmp_path):
     b = boundary()
     prep = prepare(b, "vadd", tmp_path / "kern")
     assert prep.numpy_path.exists() and prep.yaml_path.exists()
@@ -44,12 +49,17 @@ def test_translate_to_c(tmp_path):
     c_files = [p for p in srcs if p.suffix == ".c"]
     assert c_files, f"no C emitted; got {srcs}"
     text = c_files[0].read_text()
-    # correct ABI: three double* arrays + an int64 size (order = input_args)
-    assert "double *restrict A" in text
-    assert "double *restrict C" in text
-    assert "int64_t N" in text
-    assert "(A[i] + B[i])" in text
-    assert "C[i] = " in text
+    assert "double *restrict A" in text and "double *restrict C" in text and "int64_t N" in text
+    so = tmp_path / "libvadd.so"
+    subprocess.run(["gcc", "-O2", "-fPIC", "-shared", str(c_files[0]), "-o", str(so)], check=True)
+    order = signature_order(text, "vadd_fp64")
+    rng = np.random.default_rng(0)
+    inputs = {"A": rng.random(32), "B": rng.random(32), "C": np.zeros(32)}
+
+    outs, _ = call_native(so, "vadd_fp64", order, c_argtypes(order, b), b, inputs, {"N": 32}, reps=1)
+
+    assert outs is not None
+    np.testing.assert_array_equal(outs["C"], inputs["A"] + inputs["B"])
 
 
 @dace.program

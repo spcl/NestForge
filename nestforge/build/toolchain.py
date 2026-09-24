@@ -6,7 +6,6 @@ parsing. Imports no DaCe; every answer is discovered, and subprocess probes are 
 from __future__ import annotations
 
 import ctypes
-import ctypes.util  # a submodule `import ctypes` does not bind
 import functools
 import os
 import re
@@ -16,7 +15,10 @@ import tempfile
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from collections.abc import Iterator
+
+import numpy as np
 
 C_SCALAR = {
     "int32_t": ctypes.c_int32,
@@ -30,12 +32,7 @@ C_SCALAR = {
 #: Pointer element types. A pointer argument passes only the buffer address, so a complex buffer binds as a
 #: pointer to its component type.
 C_PTR = {
-    "float": ctypes.c_float,
-    "double": ctypes.c_double,
-    "int": ctypes.c_int,
-    "int32_t": ctypes.c_int32,
-    "int64_t": ctypes.c_int64,
-    "bool": ctypes.c_bool,
+    **C_SCALAR,
     "dace::complex64": ctypes.c_float,
     "dace::complex128": ctypes.c_double,
 }
@@ -344,23 +341,12 @@ def lib_linkable(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
     return linker_finds(soname, compiler) or linkable_lib_dir(soname, compiler) is not None
 
 
-def lib_findable(soname: str, lib_dir: str | None) -> bool:
-    """True if lib<soname> is in lib_dir, an env loader path, or the system loader path (matches .so.N too)."""
-    for d in ([lib_dir] if lib_dir else []) + env_library_dirs():
-        p = Path(d)
-        if (p / f"lib{soname}.a").exists() or any(p.glob(f"lib{soname}.so*")):
-            return True
-    return ctypes.util.find_library(soname) is not None
-
-
 @functools.lru_cache(maxsize=None, typed=True)
 def usable_openmp(compiler: str) -> OpenMPRuntime | None:
     """The OpenMP runtime ``compiler`` can link, libomp first, or ``None``. Never a bare -fopenmp: gcc and clang
     would each link their own default and a mixed-compiler program would run two thread pools."""
     for rt in OPENMP_RUNTIMES.values():  # deliberately libomp-first
-        if not rt.compatible(compiler):
-            continue
-        if lib_linkable(rt.soname, compiler):
+        if rt.compatible(compiler) and lib_linkable(rt.soname, compiler):
             return rt
     return None
 
@@ -373,7 +359,27 @@ CType = type[ctypes._SimpleCData] | type[ctypes._Pointer]
 class Param:
     name: str
     ctype: CType
-    is_pointer: bool
+
+
+#: ctypes' metaclass of every ``POINTER(T)``: tells a by-pointer parameter from a by-value one.
+POINTER_TYPE = type(ctypes.POINTER(ctypes.c_double))
+
+
+def bind_argument(arg: str, ctype: CType, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> object:
+    """One ctypes argument: a buffer by pointer, a Scalar's one-element buffer by value, else a size by value."""
+    if arg not in buffers:
+        return ctype(int(sizes[arg]))
+    if isinstance(ctype, POINTER_TYPE):
+        return buffers[arg].ctypes.data_as(ctype)
+    return ctype(buffers[arg].item())
+
+
+def entry(so: str | Path, symbol: str, argtypes: list[CType]) -> Any:
+    """The C function ``symbol`` of library ``so``, typed with ``argtypes`` and returning nothing."""
+    fn = ctypes.CDLL(str(so))[symbol]  # CDLL indexing, not getattr: any symbol name binds
+    fn.argtypes = argtypes
+    fn.restype = None
+    return fn
 
 
 def parse_params(param_str: str) -> list[Param]:
@@ -395,7 +401,7 @@ def parse_params(param_str: str) -> list[Param]:
                     f"parameter {name!r} of entry point is a pointer to C type {base!r}, which has no "
                     f"ctypes mapping (known: {sorted(C_PTR)}); add it to C_PTR"
                 )
-            params.append(Param(name, ctypes.POINTER(ptr_ctype), True))
+            params.append(Param(name, ctypes.POINTER(ptr_ctype)))
         else:
             ctype = C_SCALAR.get(base)
             if ctype is None:
@@ -403,7 +409,7 @@ def parse_params(param_str: str) -> list[Param]:
                     f"parameter {name!r} of entry point has C type {base!r}, which has no ctypes "
                     f"mapping (known: {sorted(C_SCALAR)}); add it to C_SCALAR"
                 )
-            params.append(Param(name, ctype, False))
+            params.append(Param(name, ctype))
     return params
 
 
@@ -424,16 +430,13 @@ def split_params(param_str: str) -> list[str]:
     return out
 
 
-def raw_signature(text: str, symbol: str, lang: str = "c") -> str:
+def raw_signature(text: str, symbol: str) -> str:
     """The parameter text of the kernel entry's definition, verbatim; :class:`LookupError` if it is absent.
     Anchored on ``void`` and the opening brace, since the bare name also matches a comment naming it."""
-    if lang == "fortran":
-        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
-    else:
-        # `[^)]*` not `(.*?)`: non-greedy backtracks across a preceding prototype, capturing a bogus span
-        m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.S)
+    # `[^)]*` not `(.*?)`: non-greedy backtracks across a preceding prototype, capturing a bogus span
+    m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.S)
     if not m:
-        raise LookupError(f"entry {symbol} not found in the emitted {lang} source")
+        raise LookupError(f"entry {symbol} not found in the emitted source")
     return m.group(1)
 
 
@@ -447,16 +450,15 @@ def signature(code: str, symbol: str) -> str:
 
 @dataclass(slots=True)
 class Toolchain:
-    """One discovered toolchain family: C compiler, optional C++ compiler, and where it was found."""
+    """One discovered toolchain family and its C++ compiler, which builds every variant."""
 
     name: str
-    cc: str
-    cxx: str | None  # None -> no native column
+    cxx: str
 
     @property
     def family(self) -> str:
-        """OpenMP-runtime family of the C compiler (icx -> llvm)."""
-        return compiler_family(self.cc)
+        """OpenMP-runtime family of the compiler (icpx -> llvm)."""
+        return compiler_family(self.cxx)
 
     @property
     def fp_family(self) -> str:
@@ -464,12 +466,8 @@ class Toolchain:
         return "intel" if self.name == "intel" else self.family
 
 
-#: family label -> (C compiler exe, C++ compiler exe).
-FAMILY_EXES = {
-    "gcc": ("gcc", "g++"),
-    "clang": ("clang", "clang++"),
-    "intel": ("icx", "icpx"),
-}
+#: family label -> its C++ compiler.
+FAMILY_EXES = {"gcc": "g++", "clang": "clang++", "intel": "icpx"}
 #: user tokens (compiler names/aliases) -> family label.
 ALIASES = {
     "gcc": "gcc", "g++": "gcc", "gnu": "gcc",
@@ -479,8 +477,7 @@ ALIASES = {
 
 
 def discover_toolchains(requested: str = "auto") -> list[Toolchain]:
-    """Discover toolchain families on PATH ("auto"/"all" -> gcc/clang/intel); C compiler required, C++
-    optional."""
+    """Discover toolchain families on PATH ("auto"/"all" -> gcc/clang/intel) whose C++ compiler is there."""
     tokens = list(FAMILY_EXES) if requested.strip() in ("", "auto", "all") else requested.split()
     families: list[str] = []
     for t in tokens:
@@ -491,15 +488,11 @@ def discover_toolchains(requested: str = "auto") -> list[Toolchain]:
             families.append(fam)
     out: list[Toolchain] = []
     for fam in families:
-        cc_exe, cxx_exe = FAMILY_EXES[fam]
-        cc = shutil.which(cc_exe)
-        if cc is None:
-            warnings.warn(f"{fam}: C compiler {cc_exe!r} not found on PATH; skipping this family")
-            continue
-        cxx = shutil.which(cxx_exe)
+        cxx = shutil.which(FAMILY_EXES[fam])
         if cxx is None:
-            warnings.warn(f"{fam}: C++ compiler {cxx_exe!r} not found; native-baseline column disabled for {fam}")
-        out.append(Toolchain(name=fam, cc=cc, cxx=cxx))
+            warnings.warn(f"{fam}: C++ compiler {FAMILY_EXES[fam]!r} not found on PATH; skipping this family")
+            continue
+        out.append(Toolchain(name=fam, cxx=cxx))
     return out
 
 
@@ -594,8 +587,8 @@ COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 #: Distinct warning kinds reported per tool before the rest are only counted.
 WARN_BUDGET: int = 5
 
-#: tool -> (warning kinds reported, in order; how many more were only counted).
-WARNED: dict[str, tuple[dict[str, None], int]] = {}
+#: tool -> the warning kinds reported, in order.
+WARNED: dict[str, dict[str, None]] = {}
 
 
 def warning_kinds(stderr: str) -> str:
@@ -608,24 +601,11 @@ def warn_once(tool: str, stderr: str) -> None:
     """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool, since
     a sweep compiles hundreds of cells."""
     kinds = warning_kinds(stderr)
-    seen, suppressed = WARNED.setdefault(tool, ({}, 0))
+    seen = WARNED.setdefault(tool, {})
     if kinds in seen or len(seen) >= WARN_BUDGET:
-        WARNED[tool] = (seen, suppressed + 1)
         return
     seen[kinds] = None
-    WARNED[tool] = (seen, suppressed)
     warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-2000:]}")
-
-
-def warning_summary() -> list[str]:
-    """One line per tool naming what was reported and how many further warnings were only counted."""
-    out = []
-    for tool, (seen, suppressed) in sorted(WARNED.items()):
-        line = f"{tool}: {len(seen)} warning kind(s) reported ({', '.join(sorted(seen))})"
-        if suppressed:
-            line += f"; {suppressed} further warning(s) suppressed"
-        out.append(line)
-    return out
 
 
 def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:

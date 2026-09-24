@@ -15,33 +15,18 @@ from collections.abc import Sequence
 
 import numpy as np
 
-import dace
 from dace import symbolic
 
 from nestforge.build import flags
-from nestforge.build.toolchain import needed_libraries, parse_params
+from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.ir.extract import Boundary
 from nestforge.corpus.translate import Prepared
-
-#: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
-CTYPE = {
-    "float64": ctypes.c_double,
-    "float32": ctypes.c_float,
-    "int64": ctypes.c_int64,
-    "int32": ctypes.c_int32,
-    "bool": ctypes.c_bool,
-}
 
 
 def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...]:
     env: dict[symbolic.symbol | str, int | float] = {symbolic.symbol(k): v for k, v in sizes.items()}
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
-
-
-def emitted_sdfg(boundary: Boundary) -> dace.SDFG:
-    """The descriptors the emitted kernel indexes, widened scratch included; the raw nest's are too small."""
-    return maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)
 
 
 #: Upper bound of random inputs [0, INPUT_HIGH); must stay <= 1/4 so TSVC s232's squaring recurrence converges.
@@ -55,7 +40,7 @@ def make_inputs(
 
     :param given: Ready-made values, such as index arrays, of exactly the resolved shape and dtype.
     """
-    sdfg = emitted_sdfg(boundary)
+    sdfg = maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)  # the raw nest's scratch is too small
     rng = np.random.default_rng(seed)
     given = given or {}
     arrays: dict[str, np.ndarray] = {}
@@ -95,14 +80,6 @@ def run_oracle(
     return {o: args[o] for o in boundary.outputs}
 
 
-def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
-    """ctype of a by-value argument: a float is ``c_double``, any integer ``int64_t`` whatever its SDFG width,
-    since a narrower c_int leaves the upper register half undefined."""
-    if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
-        return ctypes.c_double
-    return ctypes.c_int64
-
-
 def accumulating_outputs(boundary: Boundary, buffers: dict[str, np.ndarray]) -> list[str]:
     """Outputs the kernel both reads and writes; a timed rep loop restores these so an unrestored in-place
     kernel does not decay into denormals within a few reps and time subnormal arithmetic instead."""
@@ -120,30 +97,11 @@ def rewind(snapshot: list[tuple[np.ndarray, np.ndarray]]) -> None:
         buf[...] = pristine
 
 
-#: ctypes' metaclass of every ``POINTER(T)``: tells a by-pointer parameter from a by-value one.
-POINTER_TYPE = type(ctypes.POINTER(ctypes.c_double))
-
-
-def bind_argument(arg: str, ctype: type, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> object:
-    """One ctypes argument: a buffer by pointer, a Scalar's one-element buffer by value, else a size by value."""
-    if arg not in buffers:
-        return ctype(sizes[arg])
-    if isinstance(ctype, POINTER_TYPE):
-        return buffers[arg].ctypes.data_as(ctype)
-    return ctype(buffers[arg].item())
-
-
-def bind_arguments(
-    order: list[str], argtypes: list[type], buffers: dict[str, np.ndarray], sizes: dict[str, int]
-) -> list[object]:
-    return [bind_argument(arg, ctype, buffers, sizes) for arg, ctype in zip(order, argtypes)]
-
-
 def call_native(
     so: Path,
     symbol: str,
     order: list[str],
-    argtypes: list,
+    argtypes: list[CType],
     boundary: Boundary,
     inputs: dict[str, np.ndarray],
     sizes: dict[str, int],
@@ -157,14 +115,11 @@ def call_native(
     unnoticed. A read-write output is restored before every timed call (see :func:`accumulating_outputs`).
     ``copy_inputs=False`` works on the caller's buffers; ``copy_outputs=False`` skips the snapshot.
     """
-    lib = ctypes.CDLL(str(so))
-    fn = lib[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
-    fn.argtypes = argtypes
-    fn.restype = None
+    fn = entry(so, symbol, argtypes)
     work = {k: v.copy() for k, v in inputs.items()} if copy_inputs else inputs
 
     # bound once: per-call data_as would time Python marshaling
-    args = bind_arguments(order, argtypes, work, sizes)
+    args = [bind_argument(arg, ctype, work, sizes) for arg, ctype in zip(order, argtypes)]
     snapshot = rewind_snapshot(boundary, work)
     fn(*args)  # correctness run
     outputs = {o: work[o].copy() for o in boundary.outputs} if copy_outputs else None
@@ -278,9 +233,7 @@ def call_device(call: DeviceCall) -> dict[str, object]:
     """The spawned child's side of a device measurement: the kernel's outputs and its time per call. Every
     pointer argument is a device buffer, copied down once and read back once; scalars and sizes go by value."""
     argtypes = [param.ctype for param in parse_params(call.parameters)]
-    fn = ctypes.CDLL(call.shared)[call.symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
-    fn.argtypes = argtypes
-    fn.restype = None
+    fn = entry(call.shared, call.symbol, argtypes)
     host = {k: v.copy() for k, v in call.inputs.items()}
     on_device = [arg for arg, ctype in zip(call.order, argtypes) if arg in host and isinstance(ctype, POINTER_TYPE)]
     memory = device_memory(loaded_cudart(Path(call.shared)), host, on_device)
@@ -298,15 +251,15 @@ def call_device(call: DeviceCall) -> dict[str, object]:
 
 
 def dtype_floor(arrays: dict[str, np.ndarray]) -> float:
-    """The loosest :data:`flags.DTYPE_ATOL` floor among ``arrays`` (one ULP of the narrowest format present)."""
+    """The loosest :data:`flags.DTYPE_RTOL` floor among ``arrays`` (one ULP of the narrowest format present)."""
     return max(
-        (flags.DTYPE_ATOL[v.dtype.name] for v in arrays.values() if v.dtype.name in flags.DTYPE_ATOL), default=0.0
+        (flags.DTYPE_RTOL[v.dtype.name] for v in arrays.values() if v.dtype.name in flags.DTYPE_RTOL), default=0.0
     )
 
 
-def rung_atol(mode: str, floor: float) -> float:
+def rung_rtol(mode: str, floor: float) -> float:
     """The relative gate at FP rung ``mode``, never tighter than the dtype ``floor`` the outputs allow."""
-    return max(flags.FP_ATOL[mode], floor)
+    return max(flags.FP_RTOL[mode], floor)
 
 
 def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float, float]:
@@ -319,7 +272,8 @@ def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[floa
         if not a[k].size:
             continue
         compared = True
-        diff = np.abs(np.subtract(a[k], b[k], dtype=np.float64))  # bool cannot subtract, unsigned would wrap
+        # at least float64: bool cannot subtract and unsigned would wrap; complex keeps its magnitude
+        diff = np.abs(np.subtract(a[k], b[k], dtype=np.result_type(a[k], b[k], np.float64)))
         d_abs = float(np.max(diff))
         if not np.isfinite(d_abs):
             return float("inf"), float("inf")

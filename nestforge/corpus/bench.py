@@ -81,14 +81,19 @@ def module_path(short_name: str) -> str:
     return f"hpcagent_bench.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
 
 
+def track_names(track: str | None) -> list[str]:
+    """Short names of the corpus kernels of ``track``, or of every track."""
+    from hpcagent_bench.spec import KERNELS
+
+    return [name for name in KERNELS if track is None or name.startswith(f"{track}/")]
+
+
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
     """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
     from hpcagent_bench import autogen
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
-    for short_name in KERNELS:
-        if track is not None and not short_name.startswith(f"{track}/"):
-            continue
+    for short_name in track_names(track):
         module_name = short_name.rsplit("/", 1)[-1]
         dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
         if not dace_file.exists() and short_name.split("/", 1)[0] in DACE_TRACKS:
@@ -106,18 +111,10 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
 def materialize_dace_corpus(track: str | None = None) -> None:
     """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
     from hpcagent_bench import autogen
-    from hpcagent_bench.spec import KERNELS
 
-    for short_name in KERNELS:
-        if short_name.split("/", 1)[0] not in DACE_TRACKS:
-            continue
-        if track is not None and not short_name.startswith(f"{track}/"):
-            continue
-        autogen.ensure(short_name, ("dace",))
-
-
-def dace_kernel_names(track: str | None = None) -> list[str]:
-    return [k.short_name for k in iter_dace_kernels(track)]
+    for short_name in track_names(track):
+        if short_name.split("/", 1)[0] in DACE_TRACKS:
+            autogen.ensure(short_name, ("dace",))
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
