@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import functools
+from dataclasses import dataclass
 from typing import Any, cast
 from collections.abc import Callable
 
@@ -235,68 +236,52 @@ def describe_graph(
     :param epoch: Printed on the first line.
     """
     header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
-    lines: list[str] = [header]
-    walk_regions(sdfg, "", lines, handle, interstate_definitions(sdfg), bodies, metrics, notes)
-    return "\n".join(lines)
+    tree = Tree([header], handle, interstate_definitions(sdfg), bodies, metrics, notes)
+    walk_regions(tree, sdfg, "")
+    return "\n".join(tree.lines)
 
 
-def stamp(text: str, handle: Handle | None, kind: str, obj: object) -> str:
-    """Prefix a line's body with its session id, when there is one to prefix."""
-    return f"[{handle(kind, obj)}] {text}" if handle is not None else text
+@dataclass(frozen=True, slots=True)
+class Tree:
+    """The lines rendered so far and what :func:`describe_graph` was asked to print on them."""
+
+    lines: list[str]
+    handle: Handle | None
+    defs: dict[str, str]
+    bodies: bool
+    metrics: Metrics | None
+    notes: Notes | None
+
+    def stamp(self, text: str, kind: str, obj: object) -> str:
+        """Prefix a line's body with its session id, when there is one to prefix."""
+        return f"[{self.handle(kind, obj)}] {text}" if self.handle is not None else text
 
 
-def walk_regions(
-    cfg: dace.SDFG | ControlFlowRegion,
-    prefix: str,
-    lines: list[str],
-    handle: Handle | None,
-    defs: dict[str, str],
-    bodies: bool,
-    metrics: Metrics | None,
-    notes: Notes | None,
-) -> None:
+def walk_regions(tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str) -> None:
     """Render one CFG's blocks under ``prefix``, recursing."""
     blocks = in_order(cfg)
     for index, block in enumerate(blocks):
         last = index == len(blocks) - 1
-        lines.append(prefix + (ELBOW if last else TEE) + stamp(block_line(block, defs), handle, "region", block))
+        tree.lines.append(prefix + (ELBOW if last else TEE) + tree.stamp(block_line(block, tree.defs), "region", block))
         below = prefix + (BLANK if last else PIPE)
         if isinstance(block, SDFGState):
-            walk_state(block, below, lines, handle, bodies, metrics, notes)
+            walk_state(tree, block, below)
         elif isinstance(block, ConditionalBlock):
-            walk_branches(block, below, lines, handle, defs, bodies, metrics, notes)
+            walk_branches(tree, block, below)
         elif isinstance(block, ControlFlowRegion):
-            walk_regions(block, below, lines, handle, defs, bodies, metrics, notes)
+            walk_regions(tree, block, below)
 
 
-def walk_branches(
-    block: ConditionalBlock,
-    prefix: str,
-    lines: list[str],
-    handle: Handle | None,
-    defs: dict[str, str],
-    bodies: bool,
-    metrics: Metrics | None,
-    notes: Notes | None,
-) -> None:
+def walk_branches(tree: Tree, block: ConditionalBlock, prefix: str) -> None:
     """A conditional's branches, in stored order (the first matching one wins, so that is execution order)."""
     for index, (condition, branch) in enumerate(block.branches):
         last = index == len(block.branches) - 1
-        tag = "else" if condition is None else f"when {resolve_scalars(condition.as_string, defs)}"
-        body = stamp(f"{branch.label}  {tag}", handle, "region", branch)
-        lines.append(prefix + (ELBOW if last else TEE) + body)
-        walk_regions(branch, prefix + (BLANK if last else PIPE), lines, handle, defs, bodies, metrics, notes)
+        tag = "else" if condition is None else f"when {resolve_scalars(condition.as_string, tree.defs)}"
+        tree.lines.append(prefix + (ELBOW if last else TEE) + tree.stamp(f"{branch.label}  {tag}", "region", branch))
+        walk_regions(tree, branch, prefix + (BLANK if last else PIPE))
 
 
-def walk_state(
-    state: SDFGState,
-    prefix: str,
-    lines: list[str],
-    handle: Handle | None,
-    bodies: bool,
-    metrics: Metrics | None,
-    notes: Notes | None,
-) -> None:
+def walk_state(tree: Tree, state: SDFGState, prefix: str) -> None:
     """A state's kernels: every map nest plus any library node, nested scopes recursed into."""
     children = ordered_scope_children(state)
     if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
@@ -308,13 +293,13 @@ def walk_state(
             last = index == len(kernels) - 1
             below = pad + (BLANK if last else PIPE)
             text = kernel_line(state, node)
-            if metrics is not None and scope is None and isinstance(node, nodes.MapEntry):
-                text = f"{text}  {metrics(node)}"
-            lines.append(pad + (ELBOW if last else TEE) + stamp(text, handle, "nest", node))
-            lines.extend(note_lines(node, below, notes))
+            if tree.metrics is not None and scope is None and isinstance(node, nodes.MapEntry):
+                text = f"{text}  {tree.metrics(node)}"
+            tree.lines.append(pad + (ELBOW if last else TEE) + tree.stamp(text, "nest", node))
+            tree.lines.extend(note_lines(node, below, tree.notes))
             if isinstance(node, nodes.MapEntry):
-                if bodies:
-                    lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node, children))
+                if tree.bodies:
+                    tree.lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node, children))
                 descend(node, below)
 
     descend(None, prefix)
