@@ -141,12 +141,10 @@ def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None =
     return extract_blocks(parent_sdfg, [region], name)
 
 
-def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
-    """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
-    if len(blocks) == 1 and isinstance(blocks[0], SDFGState):
-        # DaCe nests a lone state as itself, so its contents are nested instead
-        return extract_state_nodes(parent_sdfg, blocks[0], blocks[0].nodes(), name or "nest")
-    # declare with the inferred dtype: int64 would truncate a float staged across an edge
+def blocks_defined_symbol_dtypes(
+    parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]
+) -> dict[str, dace.dtypes.typeclass]:
+    """Each symbol assigned inside ``blocks`` or on an edge between two of them, with its dtype."""
     defined: dict[str, dace.dtypes.typeclass] = {}
     for block in blocks:
         if isinstance(block, CfgNest):
@@ -156,7 +154,16 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
         if edge.src in blocks and edge.dst in blocks:
             for target, rhs in edge.data.assignments.items():
                 define_symbol(defined, table, target, str(rhs))
-    for s, dtype in defined.items():
+    return defined
+
+
+def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
+    """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
+    if len(blocks) == 1 and isinstance(blocks[0], SDFGState):
+        # DaCe nests a lone state as itself, so its contents are nested instead
+        return extract_state_nodes(parent_sdfg, blocks[0], blocks[0].nodes(), name or "nest")
+    # declare with the inferred dtype: int64 would truncate a float staged across an edge
+    for s, dtype in blocks_defined_symbol_dtypes(parent_sdfg, blocks).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
     subgraph = SubgraphView(parent_sdfg, list(blocks))
