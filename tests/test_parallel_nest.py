@@ -69,3 +69,17 @@ def test_s2275_nested_map_emits_and_computes():
     aa_ref = aa + bb * cc  # a fresh array; the in-place kernel below must reproduce it
     kernel(aa=aa, bb=bb, cc=cc, LEN_2D=n)
     np.testing.assert_allclose(aa, aa_ref, rtol=1e-15, atol=0)
+
+
+N = dace.symbol("N")
+
+
+@dace.program
+def single_map(A: dace.float64[N], B: dace.float64[N]):
+    for i in dace.map[0:N]:
+        B[i] = A[i] * 2.0
+
+
+def test_a_single_map_program_has_one_parallel_top_level_map():
+    ((_, node),) = parallel_top_level_maps(single_map.to_sdfg(simplify=True))
+    assert isinstance(node, dace.sdfg.nodes.MapEntry)

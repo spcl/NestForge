@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass, field
+from typing import Literal
 
 import dace
 from dace.properties import CodeBlock
@@ -38,11 +39,15 @@ class UnsupportedProgram(Exception):
     """The program holds a construct whose producers cannot be named at container level."""
 
 
+#: Why a kernel reads an argument: a data input or a symbol.
+Role = Literal["input", "symbol"]
+
+
 @dataclass(frozen=True, slots=True)
 class Producer:
     """Who wrote a value: ``program`` (never written), ``kernel`` (an ``ExternalCall`` output) or ``host``."""
 
-    kind: str
+    kind: Literal["program", "kernel", "host"]
     name: str = ""
     arg: str = ""
 
@@ -74,7 +79,7 @@ class ArgEdge:
 
     consumer: str
     arg: str
-    role: str
+    role: Role
     producers: tuple[Reach, ...]
     via: tuple[str, ...] = ()
 
@@ -92,7 +97,7 @@ class ArgEdge:
         """The distinct loops whose back edge a reaching value crossed."""
         return list(dict.fromkeys(loop for reach in self.producers for loop in reach.carried_by))
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, object]:
         """A plain, key-ordered dictionary."""
         producers = [
             {
@@ -143,7 +148,7 @@ class KernelGraph:
             out.append("exit: " + ", ".join(edge.text() for edge in self.exits))
         return out
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, object]:
         """A plain dictionary in the graph's sorted order."""
         return {
             "kernels": list(self.kernels),
@@ -286,7 +291,7 @@ def kernel_symbols(node: ExternalCall) -> list[str]:
     return sorted(arg for arg in manifest["input_args"] if arg not in manifest["array_args"])
 
 
-def record(tracker: Tracker, consumer: str, arg: str, role: str, fact: Fact) -> None:
+def record(tracker: Tracker, consumer: str, arg: str, role: Role, fact: Fact) -> None:
     tracker.edges[(consumer, role, arg)] = ArgEdge(consumer, arg, role, fact.reaches, fact.via)
 
 

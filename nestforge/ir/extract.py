@@ -103,6 +103,22 @@ def assignment_dtype(rhs: str, table: dict[str, dace.dtypes.typeclass]) -> dace.
     return inferred if isinstance(inferred, dace.dtypes.typeclass) else INT64
 
 
+def symbol_table(sdfg: dace.SDFG) -> dict[str, dace.dtypes.typeclass]:
+    """Every symbol and container of ``sdfg`` with its dtype, the names an assignment's right-hand side reads."""
+    return dict(sdfg.symbols) | {name: desc.dtype for name, desc in sdfg.arrays.items()}
+
+
+def define_symbol(
+    defined: dict[str, dace.dtypes.typeclass], table: dict[str, dace.dtypes.typeclass], target: str, rhs: str
+) -> None:
+    """Type ``target = rhs`` into ``defined`` and ``table``, widening an earlier assignment's dtype: an int first
+    value then a float one is a double, or the float would be truncated."""
+    inferred = assignment_dtype(rhs, table)
+    if target in defined:
+        inferred = dace.dtypes.result_type_of(defined[target], inferred)
+    defined[target] = table[target] = inferred
+
+
 def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, dace.dtypes.typeclass]:
     """Each symbol an interstate assignment inside the nest defines, with its dtype. Loop iterators are scope
     symbols, typed by DaCe's nesting helper, so they are left out."""
@@ -111,14 +127,12 @@ def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, da
         for b in [region, *region.all_control_flow_blocks()]
         if isinstance(b, LoopRegion) and b.loop_variable
     }
-    table = dict(sdfg.symbols) | {name: desc.dtype for name, desc in sdfg.arrays.items()}
+    table = symbol_table(sdfg)
     dtypes: dict[str, dace.dtypes.typeclass] = {}
     for e in region.all_interstate_edges():
         for target, rhs in e.data.assignments.items():
-            if target in loop_variables or target in dtypes:
-                continue
-            # a later right-hand side may read an earlier target
-            dtypes[target] = table[target] = assignment_dtype(str(rhs), table)
+            if target not in loop_variables:
+                define_symbol(dtypes, table, target, str(rhs))  # a later right-hand side may read this target
     return dtypes
 
 
@@ -132,13 +146,13 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
     # declare with the inferred dtype: int64 would truncate a float staged across an edge
     defined: dict[str, dace.dtypes.typeclass] = {}
     for block in blocks:
-        if isinstance(block, (LoopRegion, ConditionalBlock)):
+        if isinstance(block, CfgNest):
             defined |= nest_defined_symbol_dtypes(parent_sdfg, block)
-    table = dict(parent_sdfg.symbols) | {n: desc.dtype for n, desc in parent_sdfg.arrays.items()} | defined
+    table = symbol_table(parent_sdfg) | defined
     for edge in parent_sdfg.edges():
         if edge.src in blocks and edge.dst in blocks:
             for target, rhs in edge.data.assignments.items():
-                defined[target] = table[target] = assignment_dtype(str(rhs), table)
+                define_symbol(defined, table, target, str(rhs))
     for s, dtype in defined.items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
@@ -155,7 +169,7 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | Non
     """Outline a map nest or a control-flow nest; see :func:`extract_map_nest` and :func:`extract_cfg_nest`."""
     if isinstance(node, nodes.MapEntry):
         return extract_map_nest(parent_sdfg, node, name=name)
-    if isinstance(node, (LoopRegion, ConditionalBlock)):
+    if isinstance(node, CfgNest):
         return extract_cfg_nest(parent_sdfg, node, name=name)
     raise TypeError(
         f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion, or ConditionalBlock"

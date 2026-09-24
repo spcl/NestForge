@@ -535,3 +535,24 @@ def test_normalizing_a_reduction_preserves_the_result():
     C = np.zeros(8)
     sdfg(A=A, B=B, C=C)
     np.testing.assert_allclose(C, A @ B, rtol=1e-13, atol=0)
+
+
+def test_renaming_a_map_param_never_captures_a_program_symbol():
+    i1 = dc.symbol("i1", dtype=dc.float64)
+    N = dc.symbol("N", dtype=dc.int64)
+
+    @dc.program
+    def add_symbol(A: dc.float64[N, N]):
+        for j, k in dc.map[0:N, 0:N]:
+            A[j, k] = A[j, k] + i1
+
+    sdfg = add_symbol.to_sdfg(simplify=True)
+    rename_map_params(sdfg)
+    (entry,) = [n for s in sdfg.all_states() for n in s.nodes() if isinstance(n, nodes.MapEntry)]
+    A = np.arange(16, dtype=np.float64).reshape(4, 4).copy()
+    expected = A + 7.0
+
+    sdfg(A=A, N=4, i1=7.0)
+
+    assert "i1" not in entry.map.params, entry.map.params
+    np.testing.assert_array_equal(A, expected)

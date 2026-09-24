@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import os
 from dataclasses import dataclass
+from typing import Any
 from collections.abc import Collection, Sequence
 
 import numpy as np
@@ -41,7 +42,7 @@ def connector_for(arg: str, outputs: Collection[str]) -> str:
 
 def value_connectors(node: ExternalCall, state: dace.SDFGState) -> set[str]:
     """Connectors whose memlet covers one element: DaCe declares these as values, so the call takes their address."""
-    single = set()
+    single: set[str] = set()
     for edge in state.in_edges(node):
         if edge.dst_conn is not None and one_element(edge.data):
             single.add(edge.dst_conn)
@@ -109,11 +110,7 @@ def proto_and_call(node: ExternalCall, state: dace.SDFGState) -> tuple[str, str]
         raise ValueError(f"ExternalCall {node.name!r} has no manifest")
     arrays = set(manifest["array_args"])
     dtypes_map = {a: v["dtype"] for a, v in manifest["init"]["arrays"].items()}
-    # a scalar is a descriptor dict or a bare default value
-    scalar_dtypes = {
-        n: (v["dtype"] if isinstance(v, dict) else np.dtype(type(v)).name)
-        for n, v in (manifest["init"].get("scalars") or {}).items()
-    }
+    scalar_dtypes = {n: np.dtype(type(v)).name for n, v in manifest["init"].get("scalars", {}).items()}
     order = strings(node.abi_order or [])
     if not order:
         raise ValueError(
@@ -179,11 +176,8 @@ class ExternLibEnv:
         """Add one kernel's library and its runtimes to the link; every ``ExternalCall`` shares this class."""
         lib = os.path.abspath(lib_path)
         cls.cmake_libraries = with_new_items(cls.cmake_libraries, [lib, *runtime_libraries])
-        if not lib.endswith(".a"):
-            # a shared library needs an rpath
-            rpath = f"-Wl,-rpath,{os.path.dirname(lib)}"
-            if rpath not in cls.cmake_link_flags:
-                cls.cmake_link_flags = [*cls.cmake_link_flags, rpath]
+        if not lib.endswith(".a"):  # a shared library needs an rpath
+            cls.cmake_link_flags = with_new_items(cls.cmake_link_flags, [f"-Wl,-rpath,{os.path.dirname(lib)}"])
 
 
 @dace.library.expansion
@@ -258,9 +252,9 @@ class ExternalCall(nodes.LibraryNode):
         inputs: Sequence[str] | None = None,
         outputs: Sequence[str] | None = None,
         numpy_source: str = "",
-        config: dict | None = None,
+        config: dict[str, Any] | None = None,
         standalone_sdfg: dace.SDFG | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         super().__init__(name, inputs=list(inputs or []), outputs=list(outputs or []), **kwargs)
         self.numpy_source = numpy_source

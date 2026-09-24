@@ -99,7 +99,7 @@ def test_dace_reference_runs_correctly():
     A, B, ref = reference_outputs(n)
     C = np.zeros(n)
     sdfg(A=A, B=B, C=C, N=n)
-    np.testing.assert_allclose(C, ref)
+    np.testing.assert_allclose(C, ref, rtol=0, atol=0)
 
 
 @dace.program
@@ -144,7 +144,7 @@ def test_inplace_nest_reference_sdfg_declares_every_connector():
     for conn in set(ext.in_connectors) | set(ext.out_connectors):
         assert conn in arrays, f"connector {conn} has no descriptor in the reference SDFG: {sorted(arrays)}"
     sdfg.expand_library_nodes()
-    sdfg.validate()  # raised InvalidSDFGNodeError('Connector "_out_A" ... not a registered data descriptor')
+    sdfg.validate()
 
 
 @pytest.mark.integration  # compiles + runs the DaceReference expansion
@@ -160,7 +160,7 @@ def test_inplace_nest_reference_expansion_is_value_preserving():
     sdfg, _ = inplace_lowered()
     got = a.copy()
     sdfg(A=got, B=b.copy(), N=n)
-    np.testing.assert_allclose(got, expected)
+    np.testing.assert_allclose(got, expected, rtol=0, atol=0)
 
 
 def test_a_second_lowering_names_its_kernels_after_the_first():

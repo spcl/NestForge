@@ -5,7 +5,7 @@ import dace
 from dace.sdfg.state import LoopRegion
 
 from nestforge.phases.scopes import parallel_top_level_maps
-from nestforge.ir.extract import extract_nest_to_sdfg, nest_defined_symbol_dtypes
+from nestforge.ir.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbol_dtypes
 
 N = dace.symbol("N")
 
@@ -16,40 +16,35 @@ def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
         C[i] = A[i] + B[i]
 
 
-def test_outer_finds_the_map():
-    sdfg = vadd.to_sdfg(simplify=True)
-    refs = parallel_top_level_maps(sdfg)
-    assert len(refs) == 1
-    _, node = refs[0]
-    assert isinstance(node, dace.sdfg.nodes.MapEntry)
-
-
-def test_extract_map_nest_boundary_and_correctness():
+def extracted_vadd() -> tuple[dace.SDFG, Boundary]:
     sdfg = vadd.to_sdfg(simplify=True)
     psdfg, node = parallel_top_level_maps(sdfg)[0]
-    b = extract_nest_to_sdfg(psdfg, node, name="vadd_nest")
+    return sdfg, extract_nest_to_sdfg(psdfg, node, name="vadd_nest")
 
-    assert set(b.inputs) == {"A", "B"}
-    assert set(b.outputs) == {"C"}
-    assert "N" in b.symbols
 
-    standalone = b.standalone_sdfg
-    for name in ("A", "B", "C"):
-        assert name in standalone.arrays
-
-    # The parent SDFG (now holding the NestedSDFG) still computes vadd.
-    A = np.random.default_rng(0).random(16)
-    B = np.random.default_rng(1).random(16)
-    C = np.zeros(16)
+def run_vadd(sdfg: dace.SDFG, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    A, B, C = rng.random(16), rng.random(16), np.zeros(16)
     sdfg(A=A, B=B, C=C, N=16)
-    np.testing.assert_allclose(C, A + B)
+    np.testing.assert_allclose(C, A + B, rtol=0, atol=0)
 
-    # The standalone SDFG computes vadd on its own.
-    A2 = np.random.default_rng(2).random(16)
-    B2 = np.random.default_rng(3).random(16)
-    C2 = np.zeros(16)
-    standalone(A=A2, B=B2, C=C2, N=16)
-    np.testing.assert_allclose(C2, A2 + B2)
+
+def test_an_extracted_map_nest_reads_a_and_b_and_writes_c():
+    _, b = extracted_vadd()
+
+    assert (set(b.inputs), set(b.outputs)) == ({"A", "B"}, {"C"})
+    assert "N" in b.symbols
+    assert {"A", "B", "C"} <= set(b.standalone_sdfg.arrays)
+
+
+def test_the_parent_still_computes_after_extraction():
+    sdfg, _ = extracted_vadd()
+    run_vadd(sdfg, seed=0)
+
+
+def test_the_standalone_nest_computes_on_its_own():
+    _, b = extracted_vadd()
+    run_vadd(b.standalone_sdfg, seed=1)
 
 
 # loop iterators are scope symbols, never SDFG symbols
@@ -112,10 +107,20 @@ def test_extract_cfg_nest_still_types_a_genuine_interstate_assignment_target():
 
 
 def test_an_assignment_reading_an_earlier_target_gets_that_targets_dtype():
-    """``twice = scale * 2`` after ``scale = 1.5`` is a double; typed without ``scale`` it fell back to int64 and
-    the parent would truncate it."""
+    """``twice = scale * 2`` after ``scale = 1.5`` is typed from ``scale``, so it is a double."""
     sdfg, loop = loop_with_exported_float_assignment()
     after_body = next(b for b in loop.nodes() if b.label == "after_body")
     loop.add_state_after(after_body, "doubled", assignments={"twice": "scale * 2"})
 
     assert nest_defined_symbol_dtypes(sdfg, loop) == {"scale": dace.float64, "twice": dace.float64}
+
+
+def test_a_symbol_first_assigned_an_int_then_a_float_is_declared_double():
+    sdfg = dace.SDFG("widening")
+    loop = LoopRegion("loop", "loop_i < 10", "loop_i", "loop_i = 0", "loop_i = loop_i + 1")
+    sdfg.add_node(loop, is_start_block=True)
+    first = loop.add_state("first", is_start_block=True)
+    second = loop.add_state_after(first, "second", assignments={"acc": "0"})
+    loop.add_state_after(second, "third", assignments={"acc": "acc + 0.5"})
+
+    assert nest_defined_symbol_dtypes(sdfg, loop) == {"acc": dace.float64}

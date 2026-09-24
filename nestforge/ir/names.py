@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import heapq
+import itertools
 import re
 from typing import Any
 
@@ -64,7 +65,7 @@ def in_order(graph: AbstractControlFlowRegion | SDFGState) -> list[Any]:
     return ordered + [n for n in all_nodes if id(n) not in seen]
 
 
-# 1. no top-level nested SDFG
+# no top-level nested SDFG
 
 
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
@@ -86,7 +87,17 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
     return applied + sdfg.apply_transformations_repeated(InlineMultistateSDFG, validate=False)
 
 
-# 3. every computation inside a map
+# one reduction shape
+
+
+def normalize_reductions(sdfg: dace.SDFG) -> None:
+    """Put every reduction in one shape: accumulate on a body-local transient, fold with a WCR on an
+    ``AccessNode -> MapExit`` edge."""
+    NormalizeWCR().apply_pass(sdfg, {})
+    NormalizeWCRSource().apply_pass(sdfg, {})
+
+
+# every computation inside a map
 
 
 def free_tasklets(state: SDFGState) -> list[nodes.Tasklet]:
@@ -156,7 +167,7 @@ def wrap_free_tasklets(sdfg: dace.SDFG) -> int:
     return added
 
 
-# 4. canonical labels
+# canonical labels
 
 
 def block_kind(block: ControlFlowBlock) -> str:
@@ -236,25 +247,33 @@ def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
     return renames
 
 
-def enclosing_param_count(node: nodes.MapEntry, scope: dict) -> int:
+def enclosing_param_count(node: nodes.MapEntry, scope: dict[nodes.Node, SDFGState | nodes.Node | None]) -> int:
     """How many map parameters the maps enclosing ``node`` own."""
     count, parent = 0, scope[node]
-    while parent is not None:
+    while isinstance(parent, nodes.MapEntry):
         count += len(parent.map.params)
         parent = scope[parent]
     return count
 
 
+def param_names(sdfg: dace.SDFG, count: int) -> list[str]:
+    """The first ``count`` of ``i0, i1, ...`` that name no symbol or container of ``sdfg``: a parameter renamed
+    onto a symbol the body reads would hide it."""
+    reserved = {str(s) for s in sdfg.free_symbols} | set(sdfg.symbols) | set(sdfg.arrays)
+    return list(itertools.islice((f"i{k}" for k in itertools.count() if f"i{k}" not in reserved), count))
+
+
 def rename_map_params(sdfg: dace.SDFG) -> None:
-    """Rename map parameters to ``i0, i1, ...`` down each nesting chain; reusing an ancestor's name would alias
+    """Rename map parameters to ``i0, i1, ...`` (see :func:`param_names`) down each nesting chain; reusing an ancestor's name would alias
     it. Two passes through fresh names, since renaming in place collides in either order."""
     for state in sdfg.all_states():
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
+        bases = {node: enclosing_param_count(node, scope) for node in entries}
+        names = param_names(state.sdfg, max((bases[n] + len(n.map.params) for n in entries), default=0))
         targets: dict[nodes.MapEntry, list[str]] = {}
         for node in entries:
-            base = enclosing_param_count(node, scope)
-            wanted = [f"i{base + axis}" for axis in range(len(node.map.params))]
+            wanted = names[bases[node] : bases[node] + len(node.map.params)]
             if node.map.params != wanted:
                 targets[node] = wanted
         if not targets:
@@ -273,14 +292,23 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
             node.map.params = wanted
 
 
+#: Each scope's child nodes, keyed by its entry node, the top level by ``None``.
+ScopeChildren = dict[nodes.Node | SDFGState | None, list[nodes.Node]]
+
+
+def ordered_scope_children(state: SDFGState) -> ScopeChildren:
+    """Each scope's children in execution order (:func:`in_order`), the order labels are given and printed in."""
+    rank = {id(n): i for i, n in enumerate(in_order(state))}
+    return {scope: sorted(kids, key=lambda n: rank[id(n)]) for scope, kids in state.scope_children().items()}
+
+
 def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], int]) -> None:
     """Name every map of ``state`` ``kernel<level>_<index>``, one level deeper per enclosing map, including maps
     inside nested SDFGs."""
-    children = state.scope_children()
-    rank = {id(n): i for i, n in enumerate(in_order(state))}
+    children = ordered_scope_children(state)
 
     def descend(scope: nodes.MapEntry | None, depth: int) -> None:
-        for node in sorted(children[scope], key=lambda n: rank.get(id(n), 0)):
+        for node in children[scope]:
             if isinstance(node, nodes.MapEntry):
                 node.map.label = next_label("kernel", depth, counters)
                 descend(node, depth + 1)
@@ -288,13 +316,6 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], 
                 relabel_cfg(node.sdfg, depth, counters)
 
     descend(None, level)
-
-
-def normalize_reductions(sdfg: dace.SDFG) -> None:
-    """Put every reduction in one shape: accumulate on a body-local transient, fold with a WCR on an
-    ``AccessNode -> MapExit`` edge."""
-    NormalizeWCR().apply_pass(sdfg, {})
-    NormalizeWCRSource().apply_pass(sdfg, {})
 
 
 # the pipeline

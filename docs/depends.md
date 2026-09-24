@@ -7,7 +7,7 @@ argument: which producers can reach it. It reads the lowered SDFG and never chan
 
 ```
 extcall_1: T <- extcall_0.T, N <- program
-extcall_0: A <- extcall_1.A [carried: for_39] | program, N <- program
+extcall_0: A <- extcall_1.A [carried: for0_0] | program, N <- program
 exit: A <- extcall_1.A | program
 ```
 
@@ -35,7 +35,8 @@ and the binding edge itself moves no data.
 - Interstate `k = v`: `k` takes the producers of every name `v` reads, and `via` records the text.
 - Kernel symbols come from the manifest (`input_args` minus `array_args`).
 - Refused with `UnsupportedProgram`: `Reference` containers, a view that binds no container, an
-  `ExternalCall` inside a nested SDFG, an `ExternalCall` without a manifest.
+  `ExternalCall` inside a nested SDFG, an `ExternalCall` without a manifest, or a control-flow block it does
+  not model.
 
 ## Session
 

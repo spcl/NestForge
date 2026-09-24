@@ -414,6 +414,28 @@ def test_a_kernel_source_computes_what_the_sdfg_computes():
     assert np.array_equal(from_source, from_sdfg), (from_source, from_sdfg)
 
 
+N, M = dc.symbol("N", dtype=dc.int64), dc.symbol("M", dtype=dc.int64)
+
+
+@dc.program
+def last_column(A: dc.float64[N, M], B: dc.float64[N]):
+    for i in dc.map[0:N]:
+        B[i] = A[i, M - 1]
+
+
+def test_a_kernel_source_takes_a_symbol_only_its_body_reads():
+    """``M`` bounds no map, yet the body indexes with it, so the signature must take it."""
+    _, _, source = source_of_first_kernel(last_column)
+    namespace = {}
+    exec(source, namespace)
+    kernel = next(v for k, v in namespace.items() if k.startswith("kernel") and callable(v))
+    A, B = np.arange(12, dtype=np.float64).reshape(3, 4).copy(), np.zeros(3)
+
+    kernel(A=A, B=B, M=4, N=3)
+
+    np.testing.assert_array_equal(B, A[:, 3])
+
+
 def session_and_first_nest(program):
     sdfg = program.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)

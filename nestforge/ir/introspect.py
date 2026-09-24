@@ -22,7 +22,7 @@ from dace.transformation.passes.analysis import loop_analysis
 from nestforge.ir.dace_types import bounds, memlet_subset, strings
 from nestforge.ir.emit_libnode import UnsupportedLibraryNode
 from nestforge.ir.emit_numpy import UnsupportedNest, map_body_lines, map_lines, standalone_source
-from nestforge.ir.names import in_order
+from nestforge.ir.names import ScopeChildren, in_order, ordered_scope_children
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
@@ -82,7 +82,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
     return ast.unparse(simplify_indices(tree)).strip()
 
 
-@functools.lru_cache(maxsize=None, typed=True)
+@functools.lru_cache(maxsize=4096, typed=True)
 def simplified_index(text: str) -> str:
     """Cached sympy round-trip for one subscript's unparsed slice text."""
     return str(dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(text)))
@@ -91,10 +91,7 @@ def simplified_index(text: str) -> str:
 def simplify_indices(tree: ast.AST) -> ast.AST:
     """Rewrite every subscript index through sympy, so a hoisted read prints ``A[i + 1]`` rather than
     the ``A[(1 + (1 * i))]`` the frontend builds it as."""
-    subscripts = [node for node in ast.walk(tree) if isinstance(node, ast.Subscript)]
-    if not subscripts:
-        return tree
-    for node in subscripts:
+    for node in [node for node in ast.walk(tree) if isinstance(node, ast.Subscript)]:
         try:
             node.slice = ast.parse(simplified_index(astutils.unparse(node.slice)), mode="eval").body
         except (SyntaxError, TypeError, AttributeError):
@@ -102,7 +99,7 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
     return ast.fix_missing_locations(tree)
 
 
-def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: dict) -> list[str]:
+def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: ScopeChildren) -> list[str]:
     """The NumPy statements a leaf kernel computes; an emitter refusal becomes the line's text. ``children`` is the
     state's ``scope_children()``, built once by the caller."""
     if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
@@ -113,17 +110,13 @@ def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, childr
         return [f"<not emitted: {exc}>"]
 
 
-def kernel_args(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
-    """One kernel's parameters, sorted: the arrays it touches, then the symbols its domain needs."""
+def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
+    """One kernel as a runnable NumPy module: a ``def`` over the arrays it touches, then every symbol its scope
+    reads, each sorted, and the preamble its body calls."""
     reads, writes = nest_reads_writes(state, entry)
     arrays = sorted(set(reads) | set(writes))
-    symbols = sorted({str(sym) for sym in entry.map.range.free_symbols} - set(arrays))
-    return arrays + symbols
-
-
-def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
-    """One kernel as a runnable NumPy module: a ``def`` with its signature, and the preamble its body calls."""
-    return standalone_source(entry.map.label, kernel_args(state, entry), map_lines(state, sdfg, entry))
+    symbols = sorted({str(sym) for sym in state.scope_subgraph(entry).free_symbols} - set(arrays))
+    return standalone_source(entry.map.label, arrays + symbols, map_lines(state, sdfg, entry))
 
 
 #: ``ReductionType`` -> how the tree spells it; anything absent renders its lowercased enum name.
@@ -151,17 +144,12 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
     out: list[str] = []
     # normalization puts every WCR on an AccessNode -> MapExit edge
     for edge in state.in_edges(exit_node):
-        if edge.data is None or edge.data.wcr is None:
+        if edge.data.wcr is None:
             continue
         kind = detect_reduction_type(edge.data.wcr)
         op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
         subset = memlet_subset(edge.data)
-        written = {
-            str(s)
-            for r in (bounds(subset) if subset else [])
-            for b in r
-            for s in dace.symbolic.pystr_to_symbolic(b).free_symbols
-        }
+        written = {str(s) for r in (bounds(subset) if subset else []) for b in r for s in b.free_symbols}
         collapsed = [p for p in strings(entry.map.params) if p in params - written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")
@@ -169,12 +157,13 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
 
 
 def nest_reads_writes(container: SDFGState | dace.SDFG, node: object) -> tuple[list[str], list[str]]:
-    """Arrays a nest reads and writes, without outlining it; ``container`` is the state of a ``MapEntry``."""
-    if isinstance(node, nodes.MapEntry):
-        assert isinstance(container, SDFGState), "a map lives in a state"
-        exit_node = container.exit_node(node)
-        reads = sorted({e.data.data for e in container.in_edges(node) if e.data is not None and e.data.data})
-        writes = sorted({e.data.data for e in container.out_edges(exit_node) if e.data is not None and e.data.data})
+    """Arrays a nest or library node reads and writes, without outlining it; ``container`` is the state of a
+    ``MapEntry`` or ``LibraryNode``."""
+    if isinstance(node, (nodes.MapEntry, nodes.LibraryNode)):
+        assert isinstance(container, SDFGState), "a map or library node lives in a state"
+        last = container.exit_node(node) if isinstance(node, nodes.MapEntry) else node
+        reads = sorted({e.data.data for e in container.in_edges(node) if e.data.data})
+        writes = sorted({e.data.data for e in container.out_edges(last) if e.data.data})
         return reads, writes
     if isinstance(node, LoopRegion):
         reads, writes = node.read_and_write_sets()
@@ -310,17 +299,12 @@ def walk_state(
     notes: Notes | None,
 ) -> None:
     """A state's kernels: every map nest plus any library node, nested scopes recursed into."""
-    children = state.scope_children()
+    children = ordered_scope_children(state)
     if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
         return
-    rank = {id(n): i for i, n in enumerate(in_order(state))}
 
     def descend(scope: nodes.MapEntry | None, pad: str) -> None:
-        kernels = [
-            n
-            for n in sorted(children[scope], key=lambda n: rank.get(id(n), 0))
-            if isinstance(n, (nodes.MapEntry, nodes.LibraryNode))
-        ]
+        kernels = [n for n in children[scope] if isinstance(n, (nodes.MapEntry, nodes.LibraryNode))]
         for index, node in enumerate(kernels):
             last = index == len(kernels) - 1
             below = pad + (BLANK if last else PIPE)
@@ -355,11 +339,9 @@ def block_line(block: ControlFlowBlock, defs: dict[str, str]) -> str:
 
 def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> str:
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
-    if isinstance(node, nodes.LibraryNode):
-        reads = sorted({e.data.data for e in state.in_edges(node) if e.data is not None and e.data.data})
-        writes = sorted({e.data.data for e in state.out_edges(node) if e.data is not None and e.data.data})
-        return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
     reads, writes = nest_reads_writes(state, node)
+    if isinstance(node, nodes.LibraryNode):
+        return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"
