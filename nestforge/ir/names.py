@@ -32,6 +32,8 @@ from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from dace.transformation.passes.normalize_wcr_source import NormalizeWCRSource
 from dace.utils import find_new_name
 
+from nestforge.ir.dace_types import strings
+
 #: Iteration variable of a wrap map; shared by every wrap map since none of them ever read it.
 WRAP_PARAM = "__nf_wrap"
 
@@ -262,7 +264,7 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
         for index, (node, wanted) in enumerate(targets.items()):
             temp = [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
             # one simultaneous substitution per scope
-            replace_dict(state.scope_subgraph(node), dict(zip(node.map.params, temp)))
+            replace_dict(state.scope_subgraph(node), dict(zip(strings(node.map.params), temp)))
             node.map.params = temp
             temps[node] = temp
         # then to the final names

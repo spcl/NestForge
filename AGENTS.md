@@ -7,8 +7,8 @@ Guide for LLM agents that drive NestForge and for coding agents that change it. 
 
 | Agent | Phases | Reads | Requests |
 |---|---|---|---|
-| scheduling | [1](docs/phases/1-shape-kernels.md), [2](docs/phases/2-define-scopes.md), [3](docs/phases/3-offload.md) | structure tree, kernel bodies, work/depth, OI | fusion, fission and interchange moves, kernel-to-device schedule |
-| kernel | [4](docs/phases/4-optimize-kernels.md) | one kernel as NumPy, C++ or Fortran, its boundary | a source file or `lib<kernel>.a` with the given C entry |
+| scheduling | [1](docs/phases/1-shape-kernels.md), [2](docs/phases/2-define-scopes.md), [3](docs/phases/3-offload.md) | structure tree, kernel bodies, work/depth, OI | fusion, fission and interchange moves; one kernel over regions no move fuses |
+| kernel | [4](docs/phases/4-optimize-kernels.md) | one kernel as NumPy, C++ or Fortran, its boundary | `lib<kernel>.a` with the given C entry (`set_kernel`) |
 | analysis | [feedback](docs/phases/feedback.md) | runtimes, placements, copy volume, OI | phase 1 moves, new phase 2 scopes, or stop |
 
 Every phase has a deterministic default, so a run works with any subset of agents.
@@ -20,6 +20,8 @@ Every phase has a deterministic default, so a run works with any subset of agent
 - Name nests by the labels `Session.describe()` prints. They are unique across the whole program,
   nested SDFGs included. Pass them with the epoch from the tree's first line or from `list_moves()`:
   `apply_move(kind, labels, epoch)`.
+- When no move fuses two regions that should run as one, `define_scope(labels, epoch)` makes them one kernel;
+  fuse them in the phase 4 kernel.
 - Labels and ids regenerate after every mutation. A move carrying an old epoch returns `stale`;
   describe or list again before the next move. Only an `applied` result changed the program.
 - A result counts only after it matches the kernel's NumPy oracle. Wrong and fast loses.

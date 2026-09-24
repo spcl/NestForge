@@ -37,6 +37,9 @@ is legal when the map body is exactly the loop, its bounds do not vary across ma
 or symbol inside the body carries a value between loop iterations; the refusal names which condition failed.
 A guard always moves into a loop; it moves out only when its condition is loop-invariant.
 
+When no move fuses two regions that should run as one, phase 2's `define_scope` makes them one kernel
+instead, and the kernel written in phase 4 fuses them.
+
 `fission_all` splits the whole program to statement granularity, loops included. The id-based calls
 stay: `list_fusions` / `fuse`, `list_fissions` / `fission` and state fusion via `fuse_regions`.
 

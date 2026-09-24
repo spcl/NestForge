@@ -27,6 +27,7 @@ from dace.transformation.passes.loop_fission import LoopFission
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.names import inline_top_level_nsdfgs
+from nestforge.ir.introspect import Row
 from nestforge.phases.normalize import FUSE_STAGE, Targets
 from nestforge.phases.region_moves import (
     Rewrite,
@@ -386,9 +387,6 @@ def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
             if isinstance(loop, LoopRegion) and MoveLoopIntoMap.can_be_applied_to(loop.sdfg, loop=loop):
                 yield FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
 
-
-#: A tree row: the block or node a label names, and the state holding it (``None`` for a block).
-Row = tuple[Any, SDFGState | None]
 
 #: A legal move, and the SDFG owning its nodes.
 Move = FusionMove | FissionMove | Rewrite

@@ -7,8 +7,7 @@ every kernel stays on the CPU and the program is unchanged.
 
 With a GPU target the default runs DaCe's `OffloadToAccelerator`. Every kernel runs on the GPU and
 the data it touches moves to device memory: inputs are copied down, outputs are copied back, and an
-output the kernel overwrites in full is not copied down. An agent can supply its own kernel-to-device
-schedule instead.
+output the kernel overwrites in full is not copied down.
 
 `define_scopes` may run again after offloading to lower maps still left, and it keeps the placement.
 A placement that needs different kernel boundaries restarts from the phase 2 program; placements

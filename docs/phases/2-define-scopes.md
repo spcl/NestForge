@@ -10,12 +10,19 @@ DaCe's reference expansion.
 The default makes one kernel per parallel top-level map, wherever the map sits in the control flow,
 time loops included. A purely sequential nest yields no kernel.
 
+An agent may instead choose a scope that no move could create. `define_scope(labels, epoch)` makes one
+kernel of several top-level maps of one state, or of a straight run of top-level blocks. This is the way
+out when the scheduling moves cannot fuse two regions that should run as one: the kernel written in
+phase 4 fuses them. The call is refused, and nothing changes, when something outside the group runs
+between its parts or the blocks do not follow each other; `define_scopes` then lowers the maps left.
+
 Scalar inputs cross the boundary by value. Lowering refuses a host length-1 array input; only a
 length-1 GPU array, a device pointer, may stand in for a scalar.
 
 | | |
 |---|---|
 | default | `lower_nests_to_external_call(sdfg)` |
+| agent | `define_scope(labels, epoch)` over maps or blocks, returning a `MoveResult` whose `reason` is the kernel id |
 | preview | `offload_candidates(sdfg)` lists the parallel top-level maps without mutating |
 | code | `nestforge/phases/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/libnode.py` |
 

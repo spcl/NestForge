@@ -212,10 +212,14 @@ def render_range(rng: tuple[Any, Any, Any]) -> str:
     return text if step == 1 else f"{text}:{step}"
 
 
-def tree_rows(sdfg: dace.SDFG) -> dict[str, tuple[Any, SDFGState | None]]:
+#: A tree row: the block or node a label names, and the state holding it (``None`` for a block).
+Row = tuple[Any, SDFGState | None]
+
+
+def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
     """Every label a tree row can print -> ``(block or node, its state)``, the state ``None`` for a block. Covers
     conditional branches, maps and library nodes, nested SDFGs included."""
-    rows: dict[str, tuple[Any, SDFGState | None]] = {}
+    rows: dict[str, Row] = {}
     # a ConditionalBlock's nodes() are its branches, so the recursive walk reaches them
     for cfg in sdfg.all_control_flow_regions(recursive=True):
         for block in cfg.nodes():

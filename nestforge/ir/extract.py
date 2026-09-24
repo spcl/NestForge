@@ -6,13 +6,14 @@ records its data and symbols and the nested SDFG node that phase 2 replaces with
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
 import dace
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
-from dace.sdfg.state import ConditionalBlock, LoopRegion, SDFGState
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
@@ -82,8 +83,14 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: st
     """Outline a map scope into a nested SDFG over whole boundary arrays; a shrunk connector would change the
     kernel's C signature."""
     state = find_state_of_node(parent_sdfg, map_entry)
-    subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
-    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
+    return extract_state_nodes(parent_sdfg, state, state.scope_subgraph(map_entry).nodes(), name or "nest")
+
+
+def extract_state_nodes(parent_sdfg: dace.SDFG, state: SDFGState, members: Sequence[nodes.Node], name: str) -> Boundary:
+    """Outline ``members`` of ``state``, a convex set of whole map scopes and the access nodes between them, into
+    one nested SDFG over whole boundary arrays."""
+    subgraph = SubgraphView(state, list(members))
+    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name, full_data=True)
     return boundary_from_nsdfg(nsdfg_node, state)
 
 
@@ -117,11 +124,25 @@ def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, da
 
 def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None = None) -> Boundary:
     """Outline a ``LoopRegion``, or a ``ConditionalBlock`` with all its branches, into a nested SDFG."""
+    return extract_blocks(parent_sdfg, [region], name)
+
+
+def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
+    """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
     # declare with the inferred dtype: int64 would truncate a float staged across an edge
-    for s, dtype in nest_defined_symbol_dtypes(parent_sdfg, region).items():
+    defined: dict[str, dace.dtypes.typeclass] = {}
+    for block in blocks:
+        if isinstance(block, (LoopRegion, ConditionalBlock)):
+            defined |= nest_defined_symbol_dtypes(parent_sdfg, block)
+    table = dict(parent_sdfg.symbols) | {n: desc.dtype for n, desc in parent_sdfg.arrays.items()} | defined
+    for edge in parent_sdfg.edges():
+        if edge.src in blocks and edge.dst in blocks:
+            for target, rhs in edge.data.assignments.items():
+                defined[target] = table[target] = assignment_dtype(str(rhs), table)
+    for s, dtype in defined.items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
-    subgraph = SubgraphView(parent_sdfg, [region])
+    subgraph = SubgraphView(parent_sdfg, list(blocks))
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
     # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache

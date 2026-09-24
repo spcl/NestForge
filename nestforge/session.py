@@ -24,7 +24,7 @@ from nestforge.corpus.translate import Prepared, emit_sources, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import Boundary, detached_twin, extract_map_nest, find_state_of_node
 from nestforge.ir.libnode import ExternalCall, external_calls
-from nestforge.ir.introspect import describe_graph, kernel_body, kernel_source, nest_reads_writes, tree_rows
+from nestforge.ir.introspect import Row, describe_graph, kernel_body, kernel_source, nest_reads_writes, tree_rows
 from nestforge.ir.names import normalize_labels
 from nestforge.phases.feedback import Measure, run_feedback_loop
 from nestforge.phases.kernel import (
@@ -44,7 +44,6 @@ from nestforge.phases.schedule import (
     FusionMove,
     Move,
     RegionMove,
-    Row,
     apply_region_fusion,
     can_fuse,
     check_kind,
@@ -65,6 +64,7 @@ from nestforge.phases.scopes import (
     is_parallel_nest,
     kernel_arguments,
     label_nest,
+    lower_group_to_external_call,
     lower_nests_to_external_call,
     node_boundary,
     offload_candidates,
@@ -380,6 +380,29 @@ class Session:
         ]
         self.snapshot_kernel_graph()
         return kernels
+
+    def define_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
+        """Make one kernel of the regions ``labels`` name, when no scheduling move can fuse them: several top-level
+        maps of one state, or a straight run of top-level blocks. The kernel written in phase 4 fuses them.
+
+        :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them at ``epoch``.
+        :param epoch: The epoch those labels were read at.
+        :returns: ``applied`` with the new kernel's id as ``reason``, or why nothing changed.
+        """
+        names = tuple(labels)
+        if epoch != self.epoch:
+            reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe again."
+            return MoveResult("stale", "define-scope", names, reason)
+        rows = self.row_index()
+        missing = [name for name in names if name not in rows]
+        if missing:
+            return MoveResult("not-found", "define-scope", names, f"no tree row is labeled {', '.join(missing)}.")
+        lowered = lower_group_to_external_call(self.sdfg, [rows[name] for name in names])
+        if isinstance(lowered, str):
+            return MoveResult("illegal", "define-scope", names, lowered)
+        self.bump()
+        self.snapshot_kernel_graph()
+        return MoveResult("applied", "define-scope", names, self.kernel_id(lowered[0]))
 
     def kernel_id(self, ext: ExternalCall) -> str:
         """This epoch's id for the kernel node ``ext``, minted on first use; the node alone is what it names."""
