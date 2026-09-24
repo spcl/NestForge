@@ -16,7 +16,7 @@ DO_ONEAPI=0
 
 log()  { printf '\033[1;32m[apt]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[apt:warn]\033[0m %s\n' "$*" >&2; }
-# Print the leading comment block (everything after the shebang up to the first non-comment line) as help.
+# --help prints the leading comment block
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$0"; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
@@ -28,7 +28,6 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# Assume sudo: use it unless we are already root.
 SUDO=sudo
 [ "$(id -u)" -eq 0 ] && SUDO=""
 
@@ -47,14 +46,10 @@ apt_install() {
   [ "${#ok[@]}" -eq 0 ] || $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${ok[@]}"
 }
 
-# Fetch a repo signing key atomically: dearmor into a temp file we own, verify it is non-empty, and only
-# then install it into place. Guards against a mid-download failure leaving a truncated key that the
-# `[ ! -f "$key" ]` guards would treat as "already done" forever. Returns nonzero on failure.
+# Install a signing key only once it is fully fetched: a truncated key would pass the `[ ! -f "$key" ]` guard forever.
 install_gpg_key() {  # <url> <dest-keyring>
   local url="$1" dest="$2" tmp
   tmp=$(mktemp)
-  # The $SUDO install is part of the && chain, so its failure (read-only /usr, denied sudo) also drops to
-  # the failure branch -- the key is only reported installed if it truly landed in $dest.
   if curl -fsSL "$url" | gpg --dearmor >"$tmp" 2>/dev/null && [ -s "$tmp" ] && $SUDO install -m 0644 "$tmp" "$dest"; then
     rm -f "$tmp"; return 0
   fi
