@@ -380,23 +380,15 @@ def parse_params(param_str: str) -> list[Param]:
         is_ptr = "*" in tok
         name = re.split(r"[\s*]+", tok)[-1]
         base = tok[: tok.rfind(name)].replace("*", "").strip()
-        if is_ptr:
-            # an unmapped base type would guess a width silently -- an ABI bug ctypes can't catch -- so refuse
-            ptr_ctype = C_PTR.get(base)
-            if ptr_ctype is None:
-                raise ValueError(
-                    f"parameter {name!r} of entry point is a pointer to C type {base!r}, which has no "
-                    f"ctypes mapping (known: {sorted(C_PTR)}); add it to C_PTR"
-                )
-            params.append(Param(name, ctypes.POINTER(ptr_ctype)))
-        else:
-            ctype = C_SCALAR.get(base)
-            if ctype is None:
-                raise ValueError(
-                    f"parameter {name!r} of entry point has C type {base!r}, which has no ctypes "
-                    f"mapping (known: {sorted(C_SCALAR)}); add it to C_SCALAR"
-                )
-            params.append(Param(name, ctype))
+        table, table_name = (C_PTR, "C_PTR") if is_ptr else (C_SCALAR, "C_SCALAR")
+        # an unmapped base type would guess a width silently -- an ABI bug ctypes can't catch -- so refuse
+        ctype = table.get(base)
+        if ctype is None:
+            raise ValueError(
+                f"parameter {name!r} of entry point has {'pointer to ' if is_ptr else ''}C type {base!r}, which has "
+                f"no ctypes mapping (known: {sorted(table)}); add it to {table_name}"
+            )
+        params.append(Param(name, ctypes.POINTER(ctype) if is_ptr else ctype))
     return params
 
 
