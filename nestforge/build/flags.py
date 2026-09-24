@@ -10,10 +10,10 @@ from collections.abc import Sequence
 #: FP modes, strictest first.
 FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma", "fast-math")
 
-#: Tolerance against the NumPy float64 oracle, which is not bit-reproducible itself (pairwise np.sum, BLAS dot,
-#: libm), so even ``strict-ieee`` allows some error.
+#: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` evaluates in the oracle's order, so only the
+#: dtype floor applies.
 FP_ATOL: dict[str, float] = {
-    "strict-ieee": 1e-15,
+    "strict-ieee": 0.0,
     "contract-fma": 1e-13,
     "fast-math": 1e-5,
 }
@@ -48,16 +48,14 @@ FP: dict[str, dict[str, list[str]]] = {
 COST_MODELS: tuple[str, ...] = ("default", "cheap", "no-vec")
 
 
-def base_flags(family: str) -> list[str]:
-    """The prefix every cell shares."""
-    return ["-O3", "-march=native", "-fPIC", "-shared"]
+#: The prefix every cell shares.
+BASE_FLAGS: tuple[str, ...] = ("-O3", "-march=native", "-fPIC", "-shared")
 
 
 def fortran_fp_flags(family: str, level: str) -> list[str]:
     """FP-mode flags for a family's Fortran frontend; gfortran reassociates at ``-O`` even under
     ``-ffp-contract=off`` unless ``-fno-frontend-optimize`` stops it."""
-    drop = {"-fno-math-errno", "-fexcess-precision=standard"}  # rejected by the Fortran frontends
-    flags = [f for f in FP[family][level] if f not in drop]
+    flags = [f for f in FP[family][level] if f != "-fexcess-precision=standard"]  # gfortran rejects it
     if family == "gnu":
         if level != "fast-math":
             flags.append("-fno-frontend-optimize")
@@ -88,7 +86,7 @@ def flag_matrix(family: str, lang: str = "c") -> list[tuple[str, str, list[str]]
     """``(fp_level, cost_model, flags)`` per cell for ``family``, one per distinct flag set."""
     matrix: list[tuple[str, str, list[str]]] = []
     seen: dict[tuple[str, ...], None] = {}
-    base = base_flags(family)
+    base = list(BASE_FLAGS)
     for level in FP_LEVELS:
         for model in COST_MODELS:
             flags = base + fp_flags(family, level, lang) + cost_flags(family, model)

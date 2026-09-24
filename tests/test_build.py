@@ -101,7 +101,7 @@ def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
     cc = "g++" if shutil.which("g++") else "gcc"
     dirs = driver_search_dirs(cc)
     assert dirs and all(os.path.isabs(d) for d in dirs), dirs
-    assert driver_search_dirs("no-such-compiler-42") == []  # a missing driver is empty, never a crash
+    assert driver_search_dirs("no-such-compiler-42") == ()  # a missing driver is empty, never a crash
     # libc is in the loader cache on every Linux box, so this exercises the parse without pinning a path.
     # Assert NON-EMPTY: `all()` over [] passes, which would green-light a layer that found nothing at all
     # (e.g. ldconfig unreachable because /usr/sbin is off PATH -- the exact failure this must catch).
@@ -311,7 +311,7 @@ def test_parallel_map_emits_omp_pragma():
     generated C++ (so the cross-compiler tests below really exercise the runtime link)."""
     from nestforge.build.sdfg import generate_program_folder
 
-    frame, _ = generate_program_folder(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
+    frame = generate_program_folder(parallel_axpy_sdfg(), Path(tempfile.mkdtemp(prefix="nf_omp_src_")))
     assert "#pragma omp parallel for" in frame.read_text()
 
 
@@ -559,7 +559,12 @@ def write_tool(bin_dir: Path, name: str, answer: str) -> None:
 @pytest.fixture
 def cold_lookup_caches():
     """Runtime lookups are cached per name; a fake PATH must neither read nor leave a cached answer."""
-    caches = (toolchain_mod.driver_lib_path, toolchain_mod.llvm_config_libdir, toolchain_mod.linkable_lib_dir)
+    caches = (
+        toolchain_mod.driver_lib_path,
+        toolchain_mod.driver_search_dirs,
+        toolchain_mod.llvm_config_libdir,
+        toolchain_mod.linkable_lib_dir,
+    )
     for cache in caches:
         cache.cache_clear()
     yield

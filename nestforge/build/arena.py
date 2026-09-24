@@ -10,7 +10,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from collections.abc import Sequence
 
 import numpy as np
@@ -23,9 +23,6 @@ from nestforge.build.toolchain import needed_libraries, parse_params
 from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
 from nestforge.ir.extract import Boundary
 from nestforge.corpus.translate import Prepared
-
-#: A kernel evaluates in the oracle's order, so strict-ieee is bit-exact here.
-ARENA_ATOL: dict[str, float] = {**flags.FP_ATOL, "strict-ieee": 0.0}
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
 CTYPE = {
@@ -261,35 +258,6 @@ def time_device_reps(
     return outputs, total / reps * 1e6
 
 
-def call_on_device(
-    so: Path,
-    symbol: str,
-    order: list[str],
-    argtypes: list,
-    output_names: Sequence[str],
-    restore: Sequence[str],
-    inputs: dict[str, np.ndarray],
-    sizes: dict[str, int],
-    reps: int,
-) -> tuple[dict[str, np.ndarray], float]:
-    """:func:`call_native` for a device kernel: every pointer argument is a device buffer, copied down once and
-    read back once; scalars and sizes still go by value."""
-    fn = ctypes.CDLL(str(so))[symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
-    fn.argtypes = argtypes
-    fn.restype = None
-    host = {k: v.copy() for k, v in inputs.items()}
-    on_device = [arg for arg, ctype in zip(order, argtypes) if arg in host and isinstance(ctype, POINTER_TYPE)]
-    memory = device_memory(loaded_cudart(so), host, on_device)
-    args = [
-        ctypes.cast(memory.pointers[arg], ctype) if arg in memory.pointers else bind_argument(arg, ctype, host, sizes)
-        for arg, ctype in zip(order, argtypes)
-    ]
-    try:
-        return time_device_reps(fn, args, memory, output_names, restore, host, reps)
-    finally:
-        memory.free()
-
-
 @dataclass(frozen=True, slots=True)
 class DeviceCall:
     """A device kernel call a freshly spawned interpreter can make: every field pickles, and the entry's C
@@ -306,20 +274,26 @@ class DeviceCall:
     reps: int
 
 
-def call_device(call: DeviceCall) -> dict:
-    """The spawned child's side of a device measurement: the kernel's outputs and its time per call."""
+def call_device(call: DeviceCall) -> dict[str, object]:
+    """The spawned child's side of a device measurement: the kernel's outputs and its time per call. Every
+    pointer argument is a device buffer, copied down once and read back once; scalars and sizes go by value."""
     argtypes = [param.ctype for param in parse_params(call.parameters)]
-    outputs, time_us = call_on_device(
-        Path(call.shared),
-        call.symbol,
-        call.order,
-        argtypes,
-        call.output_names,
-        call.restore,
-        call.inputs,
-        call.sizes,
-        call.reps,
-    )
+    fn = ctypes.CDLL(call.shared)[call.symbol]  # ctypes CDLL indexing (not getattr) to bind the kernel symbol
+    fn.argtypes = argtypes
+    fn.restype = None
+    host = {k: v.copy() for k, v in call.inputs.items()}
+    on_device = [arg for arg, ctype in zip(call.order, argtypes) if arg in host and isinstance(ctype, POINTER_TYPE)]
+    memory = device_memory(loaded_cudart(Path(call.shared)), host, on_device)
+    args = [
+        ctypes.cast(memory.pointers[arg], cast(type[ctypes._Pointer], ctype))
+        if arg in memory.pointers
+        else bind_argument(arg, ctype, host, call.sizes)
+        for arg, ctype in zip(call.order, argtypes)
+    ]
+    try:
+        outputs, time_us = time_device_reps(fn, args, memory, call.output_names, call.restore, host, call.reps)
+    finally:
+        memory.free()
     return {"outputs": outputs, "time_us": time_us}
 
 
@@ -332,7 +306,7 @@ def dtype_floor(arrays: dict[str, np.ndarray]) -> float:
 
 def rung_atol(mode: str, floor: float) -> float:
     """The relative gate at FP rung ``mode``, never tighter than the dtype ``floor`` the outputs allow."""
-    return max(ARENA_ATOL[mode], floor)
+    return max(flags.FP_ATOL[mode], floor)
 
 
 def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float, float]:
@@ -345,7 +319,7 @@ def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[floa
         if not a[k].size:
             continue
         compared = True
-        diff = np.abs(a[k] - b[k])
+        diff = np.abs(np.subtract(a[k], b[k], dtype=np.float64))  # bool cannot subtract, unsigned would wrap
         d_abs = float(np.max(diff))
         if not np.isfinite(d_abs):
             return float("inf"), float("inf")

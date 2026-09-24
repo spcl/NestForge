@@ -10,13 +10,8 @@ import pytest
 
 from nestforge.build import flags as flags_mod
 from nestforge.build.flags import FP_LEVELS
-from nestforge.build.dedup import (
-    asm_bodies,
-    collapse,
-    parse_disassembly,
-    representatives,
-    variant_key,
-)
+from nestforge.build import dedup
+from nestforge.build.dedup import asm_bodies, collapse, collapse_notes, parse_disassembly, variant_key
 from nestforge.build.sdfg import BuildOptions, build_archive
 from nestforge.build.toolchain import compiler_family, needed_libraries
 
@@ -45,9 +40,7 @@ def build(tmp_path: Path, source: str, fp_mode: str, tag: str = "v", compiler: s
     src = tmp_path / f"{tag}.cpp"
     src.write_text(source)
     family = compiler_family(compiler)
-    composed = (
-        flags_mod.base_flags(family) + flags_mod.fp_flags(family, fp_mode) + flags_mod.cost_flags(family, "default")
-    )
+    composed = [*flags_mod.BASE_FLAGS, *flags_mod.fp_flags(family, fp_mode), *flags_mod.cost_flags(family, "default")]
     out = tmp_path / tag
     opts = BuildOptions(compiler=compiler, flags=composed)
     build_archive([src], out, out / f"lib{tag}.a", out / f"lib{tag}.so", opts)
@@ -150,11 +143,11 @@ ADD_KERNEL = f"""extern "C" void {SYMBOL}(double *__restrict__ c, const double *
 def test_the_pruner_collapses_fp_rungs_a_kernel_cannot_tell_apart(tmp_path):
     """Every FP mode compiles this kernel to the same object, so the sweep measures it once."""
     keys = {rung: variant_key(build(tmp_path, ADD_KERNEL, rung, tag=rung), SYMBOL) for rung in FP_LEVELS}
-    assert all(k is not None for k in keys.values()), keys
-    groups = collapse(keys)
+    readable = {rung: key for rung, key in keys.items() if key is not None}
+    assert readable == keys, keys
+    groups = collapse(readable)
     assert len(groups) < len(FP_LEVELS), f"no rung collapsed, so the pruner saves nothing here: {groups}"
-    picks, notes = representatives(keys)
-    assert len(picks) == len(groups) and notes
+    assert collapse_notes(groups)
 
 
 # grouping
@@ -165,13 +158,22 @@ def test_collapse_groups_by_key_and_keeps_the_first_as_representative():
     assert groups == {"k1": ["a", "c"], "k2": ["b"]}
 
 
-def test_representatives_reports_what_it_collapsed():
+def test_collapse_notes_report_what_was_collapsed():
     """A silent collapse reads exactly like a sweep that covered everything."""
-    picks, notes = representatives({"a": "k1", "b": "k2", "c": "k1"})
-    assert picks == ["a", "b"]
-    assert notes == ["a == c"]
+    assert collapse_notes(collapse({"a": "k1", "b": "k2", "c": "k1"})) == ["a == c"]
 
 
-def test_representatives_is_quiet_when_nothing_collapsed():
-    picks, notes = representatives({"a": "k1", "b": "k2"})
-    assert picks == ["a", "b"] and notes == []
+def test_collapse_notes_are_empty_when_nothing_collapsed():
+    assert collapse_notes(collapse({"a": "k1", "b": "k2"})) == []
+
+
+def test_an_artifact_whose_link_cannot_be_read_has_no_key(monkeypatch, tmp_path):
+    """A failing ``readelf`` must mean measuring the variant, not aborting the sweep."""
+
+    def unreadable(shared: Path) -> list[str]:
+        raise subprocess.CalledProcessError(1, ["readelf", "-d", str(shared)])
+
+    monkeypatch.setattr(dedup, "asm_bodies", lambda obj: {SYMBOL: "ret"})
+    monkeypatch.setattr(dedup, "needed_libraries", unreadable)
+
+    assert variant_key(tmp_path / "lib.so", SYMBOL) is None

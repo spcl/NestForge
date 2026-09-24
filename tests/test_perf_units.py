@@ -31,8 +31,8 @@ def test_abi_order_pointer_star_stripped():
 
 
 # flag composition (flags.*)
-def test_base_flags_native_tuning_per_family():
-    assert flags.base_flags("gnu") == ["-O3", "-march=native", "-fPIC", "-shared"]
+def test_every_cell_builds_an_optimized_native_shared_object():
+    assert flags.BASE_FLAGS == ("-O3", "-march=native", "-fPIC", "-shared")
 
 
 def test_fortran_fp_flags_strip_unsupported_and_add_gfortran_guards():
@@ -228,8 +228,7 @@ def test_rewind_snapshot_writes_through_to_the_bound_buffer():
 
 def test_toolchain_fp_family_only_ever_names_a_real_fp_family():
     """`Toolchain.fp_family` feeds `flags.flag_matrix`, which indexes the FP tables by family. A toolchain
-    it maps to a family those tables do not have would decline every cell -- or worse, `base_flags` would
-    silently fall back to `-march=native` and the cell would be measured under flags nobody chose."""
+    it maps to a family those tables do not have would decline every cell."""
     for label, cc in (("gcc", "gcc"), ("clang", "clang"), ("intel", "icx"), ("future", "fcc")):
         assert toolchain_labelled(label, cc).fp_family in flags.FP, label
 

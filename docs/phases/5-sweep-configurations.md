@@ -10,8 +10,8 @@ oracle, and keeps the fastest correct one.
 - **GPU.** Every nvcc on PATH × FP mode (strict-ieee, contract-fma), all with `-arch=native`; no cost
   model.
 
-Variants that compile to the same object are timed once. Each variant runs in a forked child, so a
-crash is a recorded result. The winner's compiler, FP mode, cost model, flags and time form the nest's
+Variants that compile to the same object are timed once. Each CPU variant runs in a forked child and
+each GPU variant in a spawned interpreter, so a crash is a recorded result. The winner's compiler, FP mode, cost model, flags and time form the nest's
 JSON configuration, and the session links the winner into the program. [FP modes](../fp-and-vectorization.md)
 lists the flags.
 

@@ -68,7 +68,7 @@ COMPILER_ABI = {"gnu": "gomp", "llvm": "kmpc"}
 LLVM_SELECTABLE = frozenset({"libomp", "libgomp", "libiomp5"})
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class OpenMPRuntime:
     """One OpenMP runtime the whole program links. ``libomp`` is default: LLVM-selectable by name and
     GOMP_*-compatible, so gcc- and clang-built libraries share one thread pool."""
@@ -78,7 +78,7 @@ class OpenMPRuntime:
     #: ``-L`` for the runtime; None -> discovered via linkable_lib_dir. ``""`` forces bare ``-l<soname>``.
     lib_dir: str | None = None
     #: ABIs this runtime implements; libgomp is GOMP_*-only, unusable by a kmpc compiler (clang/nvc++).
-    provides: frozenset = frozenset({"kmpc", "gomp"})
+    provides: frozenset[str] = frozenset({"kmpc", "gomp"})
 
     def compatible(self, compiler: str) -> bool:
         """Whether ``compiler`` can link this runtime: llvm selects it by name, gnu links any gomp-ABI runtime."""
@@ -191,19 +191,20 @@ def driver_lib_path(soname: str, compiler: str) -> Path | None:
     return path if path.exists() else None
 
 
-def driver_search_dirs(compiler: str) -> list[str]:
+@functools.lru_cache(maxsize=None, typed=True)
+def driver_search_dirs(compiler: str) -> tuple[str, ...]:
     """Library directories ``compiler`` itself searches, via -print-search-dirs."""
     try:
         out = subprocess.run(
             [compiler, "-print-search-dirs"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        return []
+        return ()
     for line in out.splitlines():
         if line.startswith("libraries:"):
             raw = line.split(":", 1)[1].strip().lstrip("=")
-            return [os.path.normpath(d) for d in raw.split(os.pathsep) if d]
-    return []
+            return tuple(os.path.normpath(d) for d in raw.split(os.pathsep) if d)
+    return ()
 
 
 #: ldconfig by name and by full path: /usr/sbin is off the non-root PATH on slim Debian images.
@@ -578,7 +579,9 @@ def cudart_link_flags(directory: str) -> list[str]:
 
 def needed_libraries(shared: Path) -> list[str]:
     """The ``NEEDED`` sonames of a shared object, in ``readelf -d`` order."""
-    out = subprocess.run(["readelf", "-d", str(shared)], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(
+        ["readelf", "-d", str(shared)], capture_output=True, text=True, check=True, timeout=PROBE_TIMEOUT_S
+    ).stdout
     return re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", out)
 
 
@@ -602,14 +605,11 @@ def warning_kinds(stderr: str) -> str:
 
 
 def warn_once(tool: str, stderr: str) -> None:
-    """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool; a
-    sweep compiles hundreds of cells, and unbounded this printed hundreds of MB."""
+    """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool, since
+    a sweep compiles hundreds of cells."""
     kinds = warning_kinds(stderr)
     seen, suppressed = WARNED.setdefault(tool, ({}, 0))
-    if kinds in seen:
-        WARNED[tool] = (seen, suppressed + 1)
-        return
-    if len(seen) >= WARN_BUDGET:
+    if kinds in seen or len(seen) >= WARN_BUDGET:
         WARNED[tool] = (seen, suppressed + 1)
         return
     seen[kinds] = None

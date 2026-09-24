@@ -12,7 +12,7 @@ from dace.codegen import cpf
 
 from nestforge.build import flags
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.dedup import collapse, representatives, variant_key
+from nestforge.build.dedup import collapse, collapse_notes, variant_key
 from nestforge.build.toolchain import CudaToolchain, Toolchain, discover_cuda_toolchains, discover_toolchains
 from nestforge.corpus.translate import Prepared
 from nestforge.phases.kernel import (
@@ -140,7 +140,8 @@ def select_variant(
     inputs = make_inputs(src.boundary, sizes)
     oracle = run_oracle(prep, src.boundary, inputs, sizes)
     cells, keys = build_variants(src, variants, out_dir)
-    for members in collapse(keys).values():
+    groups = collapse(keys)
+    for members in groups.values():
         head = cells[members[0]]
         archive = head.archive
         assert archive is not None, f"{members[0]} has an artifact key but no archive"
@@ -150,4 +151,4 @@ def select_variant(
             twin.verdict, twin.same_as = at_rung(head.verdict, twin.variant.fp_mode), members[0]
     correct = [cell for cell in cells.values() if cell.verdict.ok]
     winner = min(correct, key=lambda cell: cell.verdict.time_us) if correct else None
-    return VariantResult(list(cells.values()), representatives(keys)[1], winner, src.symbol, list(src.abi_order))
+    return VariantResult(list(cells.values()), collapse_notes(groups), winner, src.symbol, list(src.abi_order))

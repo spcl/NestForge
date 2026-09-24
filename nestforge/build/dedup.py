@@ -76,7 +76,11 @@ def variant_key(artifact: Path, symbol: str | None = None) -> str | None:
     if not bodies:
         return None
     code = hashlib.sha256(asm_text(bodies, artifact, symbol).encode()).hexdigest()
-    return hashlib.sha256("\n".join((code, *sorted(needed_libraries(artifact)))).encode()).hexdigest()
+    try:
+        libraries = needed_libraries(artifact)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return hashlib.sha256("\n".join((code, *sorted(libraries))).encode()).hexdigest()
 
 
 def collapse(keys: Mapping[str, str]) -> dict[str, list[str]]:
@@ -87,9 +91,6 @@ def collapse(keys: Mapping[str, str]) -> dict[str, list[str]]:
     return groups
 
 
-def representatives(keys: Mapping[str, str]) -> tuple[list[str], list[str]]:
-    """``(measure_these, collapsed_notes)``: notes record which variants were dropped, and why."""
-    groups = collapse(keys)
-    picks = [members[0] for members in groups.values()]
-    notes = [f"{members[0]} == {', '.join(members[1:])}" for members in groups.values() if len(members) > 1]
-    return picks, notes
+def collapse_notes(groups: Mapping[str, list[str]]) -> list[str]:
+    """One note per group of :func:`collapse` that dropped a variant, naming the one measured instead."""
+    return [f"{members[0]} == {', '.join(members[1:])}" for members in groups.values() if len(members) > 1]

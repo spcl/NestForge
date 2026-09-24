@@ -10,8 +10,7 @@ ctypes, so timings compare generated code, free of `CompiledSDFG` marshaling.
 
 `generate_program_folder` writes DaCe's generated code to disk, and `sdfg.py` compiles it with DaCe's
 runtime headers on the include path. `BuiltSDFG` binds the three C entries of an SDFG `N`
-(`__dace_init_N`, `__program_N`, `__dace_exit_N`), calls them in order and times only `__program_N`;
-`unload` closes the `.so`. `compile_linked_program` builds a program that links kernel libraries.
+(`__dace_init_N`, `__program_N`, `__dace_exit_N`) and calls them in order; `unload` closes the `.so`. `compile_linked_program` builds a program that links kernel libraries.
 
 ## Kernel libraries
 
@@ -24,7 +23,8 @@ shared archive would lose members.
 
 `run_isolated` (`isolation.py`) runs fresh code in a forked child under a wall-clock timeout, so a
 crash or hang in generated code becomes a recorded result. `os.fork()` copies only the calling
-thread, so `pause_openmp_pools` shuts down loaded OpenMP thread pools first.
+thread, so `pause_openmp_pools` shuts down loaded OpenMP thread pools first. A CUDA context does not
+survive a fork, so `run_spawned` measures device kernels in a freshly spawned interpreter instead.
 
 ## Runtime libraries
 

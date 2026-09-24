@@ -77,10 +77,10 @@ class BuiltSDFG:
         # each parameter's own ctype: symbol widths differ between programs
         self.handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self.init_params]))
 
-    def bind_program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> tuple[Any, list]:
-        """``__program_N`` and its bound arguments, so a timing loop calls ``fn(*args)`` without marshaling."""
+    def program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+        """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
         if self.lib is None:
-            raise RuntimeError(f"{self.name}: bind_program() called after unload(); the compiled library is not mapped")
+            raise RuntimeError(f"{self.name}: program() called after unload(); the compiled library is not mapped")
         fn = self.lib[f"__program_{self.name}"]
         fn.restype = None
         fn.argtypes = [ctypes.c_void_p] + [p.ctype for p in self.prog_params]
@@ -92,11 +92,6 @@ class BuiltSDFG:
                 args.append(p.ctype(buffers[p.name].item()))
             else:  # a size symbol
                 args.append(p.ctype(int(sizes[p.name])))
-        return fn, args
-
-    def program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
-        """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
-        fn, args = self.bind_program(buffers, sizes)
         fn(*args)
 
     def unload(self) -> None:
@@ -134,7 +129,7 @@ def codegen_config() -> Iterator[None]:
         yield
 
 
-def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> tuple[Path, str]:
+def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
     """Write DaCe's source tree (``src/cpu/<name>.cpp`` and ``include/``) without compiling it."""
     out_dir.mkdir(parents=True, exist_ok=True)
     with codegen_config():
@@ -143,7 +138,7 @@ def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> tuple[Path, str]:
     frame = folder / "src" / "cpu" / f"{sdfg.name}.cpp"
     if not frame.exists():
         frame = next(folder.glob("src/cpu/*.cpp"))
-    return frame, sdfg.name
+    return frame
 
 
 def include_flags(folder: Path) -> list[str]:
@@ -300,9 +295,10 @@ class GeneratedProgram:
 def generate_program(sdfg: dace.SDFG, out_dir: Path) -> GeneratedProgram:
     """Emit the program folder of a copy of ``sdfg``, without compiling it."""
     t_opt = time.perf_counter()
-    frame, name = generate_program_folder(copy.deepcopy(sdfg), out_dir)
+    sdfg = copy.deepcopy(sdfg)
+    frame = generate_program_folder(sdfg, out_dir)
     return GeneratedProgram(
-        frame=frame, name=name, source=frame.read_text(), codegen_seconds=time.perf_counter() - t_opt
+        frame=frame, name=sdfg.name, source=frame.read_text(), codegen_seconds=time.perf_counter() - t_opt
     )
 
 

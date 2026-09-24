@@ -43,6 +43,20 @@ def test_a_comparison_that_touched_no_element_fails_instead_of_passing():
     assert arena.diff_stats(empty, empty) == (float("inf"), float("inf"))
 
 
+@pytest.mark.parametrize(
+    ("want", "got", "expected"),
+    [
+        (np.array([True, False]), np.array([True, False]), (0.0, 0.0)),
+        (np.array([True, False]), np.array([True, True]), (1.0, 1.0)),
+        (np.array([1, 2], np.uint32), np.array([2, 2], np.uint32), (1.0, 0.5)),
+    ],
+    ids=["equal-bool", "one-bool-differs", "unsigned-below"],
+)
+def test_bool_and_unsigned_outputs_compare_as_numbers(want, got, expected):
+    """NumPy cannot subtract booleans, and an unsigned ``1 - 2`` wraps to ``2**32 - 1``."""
+    assert arena.diff_stats({"a": want}, {"a": got}) == expected
+
+
 def test_one_empty_array_is_skipped_but_a_real_one_beside_it_still_decides():
     """Skipping an individual empty output is right (a kernel may legitimately declare one); letting
     it suppress the array that DOES have elements is not."""

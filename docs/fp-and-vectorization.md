@@ -8,13 +8,13 @@ vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` de
 
 ## FP modes
 
-`FP_LEVELS` lists three modes, strictest first. Each mode has a tolerance against the NumPy float64
-oracle (`FP_ATOL`). The oracle is not bit-reproducible itself (pairwise `np.sum`, BLAS dot, libm), so
-even `strict-ieee` allows a small relative error.
+`FP_LEVELS` lists three modes, strictest first. Each mode has a relative tolerance against the NumPy
+float64 oracle (`FP_ATOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
+below applies to it.
 
-| Mode | atol | GNU / LLVM | oneAPI |
+| Mode | tolerance | GNU / LLVM | oneAPI |
 |---|---|---|---|
-| `strict-ieee` | 1e-15 | `-ffp-contract=off` | `-fp-model=strict` |
+| `strict-ieee` | 0 | `-ffp-contract=off` | `-fp-model=strict` |
 | `contract-fma` | 1e-13 | `-ffp-contract=fast` | `-fp-model=precise` |
 | `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
 
