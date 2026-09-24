@@ -13,12 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from collections.abc import Iterator
 
-import numpy as np
-
 import dace
-
-from nestforge.build.arena import resolve_shape
-from nestforge.ir.extract import Boundary
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -121,29 +116,3 @@ def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
     """The integer symbol sizes of one preset in the kernel's manifest."""
     rung = kernel.spec.parameters.get(preset, {})
     return {sym: size for sym, size in rung.items() if isinstance(size, int) and not isinstance(size, bool)}
-
-
-def index_fills(
-    manifest_name: str | None, boundary: Boundary, sizes: dict[str, int], seed: int | None = 0
-) -> dict[str, np.ndarray]:
-    """Permutation fills for the integer index arrays the manifest declares; the default random fill cast to int
-    is all zeros, which turns a gather or scatter into a same-index race."""
-    from hpcagent_bench.initialize import fill_index_array
-    from hpcagent_bench.spec import BenchSpec
-
-    if manifest_name is None:
-        return {}
-    spec = BenchSpec.load(manifest_name)
-    if spec.init is None:
-        return {}
-    rng = np.random.default_rng(seed)
-    arrays = boundary.standalone_sdfg.arrays
-    fills: dict[str, np.ndarray] = {}
-    for name, declared in sorted(spec.init.dtypes.items()):
-        if np.dtype(declared).kind not in "iu" or name not in boundary.inputs:
-            continue
-        dtype = np.dtype(arrays[name].dtype.type)
-        if dtype.kind not in "iu":
-            continue  # the manifest calls it an index but the nest holds it as a float: not a subscript
-        fills[name] = fill_index_array(resolve_shape(arrays[name].shape, sizes), dtype.name, rng=rng)
-    return fills
