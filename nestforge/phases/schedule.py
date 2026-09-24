@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from itertools import chain
+from itertools import chain, product
 from typing import Any, cast
 
 import dace
@@ -96,19 +96,20 @@ def vertical_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
     """Producer-consumer map pairs through a transient that ``MapFusionVertical`` accepts. A non-transient
     intermediate is a program output, which fusing would drop."""
     for state in every_state(sdfg):
-        owner = state.sdfg
-        for node in state.nodes():
-            if not (isinstance(node, nodes.AccessNode) and owner.arrays[node.data].transient):
-                continue
-            producers = [e.src for e in state.in_edges(node) if isinstance(e.src, nodes.MapExit)]
-            consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
-            for exit_node in producers:
-                for entry in consumers:
-                    if MapFusionVertical.can_be_applied_to(
-                        owner, first_map_exit=exit_node, array=node, second_map_entry=entry
-                    ):
-                        where: Where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
-                        yield FusionMove("fuse-map-vertical", where, MapFusionVertical, owner)
+        for node in state.data_nodes():
+            if state.sdfg.arrays[node.data].transient:
+                yield from vertical_moves_through(state, node)
+
+
+def vertical_moves_through(state: SDFGState, node: nodes.AccessNode) -> Iterator[FusionMove]:
+    producers = [e.src for e in state.in_edges(node) if isinstance(e.src, nodes.MapExit)]
+    consumers = [e.dst for e in state.out_edges(node) if isinstance(e.dst, nodes.MapEntry)]
+    for exit_node, entry in product(producers, consumers):
+        if MapFusionVertical.can_be_applied_to(
+            state.sdfg, first_map_exit=exit_node, array=node, second_map_entry=entry
+        ):
+            where: Where = {"first_map_exit": exit_node, "array": node, "second_map_entry": entry}
+            yield FusionMove("fuse-map-vertical", where, MapFusionVertical, state.sdfg)
 
 
 def horizontal_map_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
@@ -175,17 +176,8 @@ def fuse_maps_reason(sdfg: dace.SDFG, first: nodes.MapEntry, second: nodes.MapEn
     state = find_state_of_node(sdfg, first)
     if find_state_of_node(sdfg, second) is not state:
         return STATE_BARRIER
-    # a data path in either direction makes the pair vertical; only unlinked siblings fuse horizontally
-    vertical = vertical_reason(sdfg, state, first, second) or vertical_reason(sdfg, state, second, first)
-    if vertical is not None:
-        return vertical
-    if state.scope_dict()[first] is not state.scope_dict()[second]:
-        return "maps are in different scopes with no shared data; not a fusion pair."
-    if MapFusionHorizontal.can_be_applied_to(sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second):
-        return "yes"
-    if first.map.range != second.map.range:
-        return f"different map ranges {first.map.range} and {second.map.range}; horizontal fusion needs one range."
-    return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
+    plan = plan_map_pair(sdfg, state, first, second)
+    return plan if isinstance(plan, str) else "yes"
 
 
 def intermediates(state: SDFGState, exit_node: nodes.MapExit, consumer: nodes.MapEntry) -> list[nodes.AccessNode]:
@@ -194,48 +186,33 @@ def intermediates(state: SDFGState, exit_node: nodes.MapExit, consumer: nodes.Ma
     return [arr for arr in written if any(oe.dst is consumer for oe in state.out_edges(arr))]
 
 
-def map_pair_fusion(
-    sdfg: dace.SDFG, state: SDFGState, first: nodes.MapEntry, second: nodes.MapEntry
-) -> FusionMove | None:
-    """The fusion two maps of ``state`` admit: vertical through a transient in either data-flow order, else
-    horizontal when no data links them."""
-    linked = False
+def plan_map_pair(sdfg: dace.SDFG, state: SDFGState, first: nodes.MapEntry, second: nodes.MapEntry) -> FusionMove | str:
+    """The fusion two maps of ``state`` admit, or why none: vertical through a transient in either data-flow order,
+    else horizontal when no data links them."""
+    # every intermediate counts: one fusable transient is a move, as vertical_map_moves offers it
+    reasons: list[str] = []
     for producer, consumer in ((first, second), (second, first)):
         exit_node = map_exit(state, producer)
         for arr in intermediates(state, exit_node, consumer):
-            linked = True
-            if sdfg.arrays[arr.data].transient and MapFusionVertical.can_be_applied_to(
+            if not sdfg.arrays[arr.data].transient:
+                reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
+                continue
+            if MapFusionVertical.can_be_applied_to(
                 sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer
             ):
                 where: Where = {"first_map_exit": exit_node, "array": arr, "second_map_entry": consumer}
                 return FusionMove("fuse-map-vertical", where, MapFusionVertical, sdfg)
-    if linked or not MapFusionHorizontal.can_be_applied_to(
-        sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second
-    ):
-        return None
-    return FusionMove(
-        "fuse-map-horizontal",
-        {"first_parallel_map_entry": first, "second_parallel_map_entry": second},
-        MapFusionHorizontal,
-        sdfg,
-    )
-
-
-def vertical_reason(
-    sdfg: dace.SDFG, state: SDFGState, producer: nodes.MapEntry, consumer: nodes.MapEntry
-) -> str | None:
-    """``"yes"`` or a reason when ``producer`` feeds ``consumer``, ``None`` when no data path links them."""
-    exit_node = map_exit(state, producer)
-    # every intermediate counts: one fusable transient is a move, as vertical_map_moves offers it
-    reasons: list[str] = []
-    for arr in intermediates(state, exit_node, consumer):
-        if not sdfg.arrays[arr.data].transient:
-            reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
-            continue
-        if MapFusionVertical.can_be_applied_to(sdfg, first_map_exit=exit_node, array=arr, second_map_entry=consumer):
-            return "yes"
-        reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
-    return "; ".join(reasons) + "." if reasons else None
+            reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
+    if reasons:
+        return "; ".join(reasons) + "."
+    if state.scope_dict()[first] is not state.scope_dict()[second]:
+        return "maps are in different scopes with no shared data; not a fusion pair."
+    if MapFusionHorizontal.can_be_applied_to(sdfg, first_parallel_map_entry=first, second_parallel_map_entry=second):
+        where = {"first_parallel_map_entry": first, "second_parallel_map_entry": second}
+        return FusionMove("fuse-map-horizontal", where, MapFusionHorizontal, sdfg)
+    if first.map.range != second.map.range:
+        return f"different map ranges {first.map.range} and {second.map.range}; horizontal fusion needs one range."
+    return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
 
 
 def fission_to_statements(sdfg: dace.SDFG) -> int:
@@ -318,18 +295,6 @@ def enumerate_map_fissions(sdfg: dace.SDFG) -> list[FissionMove]:
     ]
 
 
-def apply_map_fission(move: FissionMove) -> None:
-    MapFission.apply_to(
-        move.sdfg,
-        expr_index=1,
-        verify=True,
-        annotate=False,
-        save=False,
-        map_entry=move.map_entry,
-        nested_sdfg=move.nested_sdfg,
-    )
-
-
 @dataclass(slots=True)
 class RegionMove:
     """One legal ``StateFusion`` of two adjacent states."""
@@ -390,7 +355,6 @@ def loop_map_interchange_moves(sdfg: dace.SDFG) -> Iterator[FusionMove]:
 
 #: A legal move, and the SDFG owning its nodes.
 Move = FusionMove | FissionMove | Rewrite
-Planned = Move
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -495,7 +459,7 @@ def node_state(row: Row) -> SDFGState:
     return state
 
 
-def plan_loop_fusion(first: Row, second: Row) -> Planned | str:
+def plan_loop_fusion(first: Row, second: Row) -> Move | str:
     loop_a, loop_b = first[0], second[0]
     reason = fuse_loops_reason(loop_a.sdfg, loop_a, loop_b)
     if reason != "yes":
@@ -503,21 +467,20 @@ def plan_loop_fusion(first: Row, second: Row) -> Planned | str:
     return FusionMove("fuse-loops", {"first": loop_a, "second": loop_b}, FuseLoops, loop_a.sdfg)
 
 
-def plan_map_fusion(first: Row, second: Row) -> Planned | str:
-    entry_a, entry_b, state = first[0], second[0], node_state(first)
+def plan_map_fusion(first: Row, second: Row) -> Move | str:
+    state = node_state(first)
     if node_state(second) is not state:
         return STATE_BARRIER
-    move = map_pair_fusion(state.sdfg, state, entry_a, entry_b)
-    return move if move is not None else fuse_maps_reason(state.sdfg, entry_a, entry_b)
+    return plan_map_pair(state.sdfg, state, first[0], second[0])
 
 
-def plan_map_fission(row: Row) -> Planned | str:
+def plan_map_fission(row: Row) -> Move | str:
     state = node_state(row)
     moves = map_fissions_at(state.sdfg, state, row[0])
     return moves[0] if moves else MAP_FISSION_REFUSED
 
 
-def plan_map_interchange(outer_row: Row, inner_row: Row) -> Planned | str:
+def plan_map_interchange(outer_row: Row, inner_row: Row) -> Move | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
     if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
         return (
@@ -529,7 +492,7 @@ def plan_map_interchange(outer_row: Row, inner_row: Row) -> Planned | str:
     return FusionMove("interchange-map-map", where, MapInterchange, state.sdfg)
 
 
-def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Planned | str:
+def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Move | str:
     loop, entry = loop_row[0], map_row[0]
     inside = loop_maps(loop)
     if len(inside) != 1 or inside[0] is not entry:
@@ -539,7 +502,7 @@ def plan_loop_map_interchange(loop_row: Row, map_row: Row) -> Planned | str:
     return FusionMove("interchange-loop-map", {"loop": loop}, MoveLoopIntoMap, loop.sdfg)
 
 
-MOVE_PLANNERS: dict[str, Callable[..., Planned | str]] = {
+MOVE_PLANNERS: dict[str, Callable[..., Move | str]] = {
     "loop-fusion": plan_loop_fusion,
     "loop-fission": lambda row: plan_loop_fission(row[0]),
     "map-fusion": plan_map_fusion,
@@ -553,7 +516,7 @@ MOVE_PLANNERS: dict[str, Callable[..., Planned | str]] = {
 }
 
 
-def plan_move(kind: str, rows: Sequence[Row]) -> Planned | str:
+def plan_move(kind: str, rows: Sequence[Row]) -> Move | str:
     """The move ``kind`` makes of ``rows`` (one per label, of an implemented kind), or why it is illegal. Legality
     is DaCe's own check; nothing is mutated."""
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
@@ -569,7 +532,9 @@ def commit_move(move: Move) -> str:
         move.commit()
         return move.name
     if isinstance(move, FissionMove):
-        apply_map_fission(move)
+        MapFission.apply_to(
+            move.sdfg, expr_index=1, annotate=False, save=False, map_entry=move.map_entry, nested_sdfg=move.nested_sdfg
+        )
         return MapFission.__name__
     apply_fusion(move)
     return move.xform.__name__

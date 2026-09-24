@@ -24,13 +24,9 @@ class Targets:
         return "gpu" if self.gpu else "cpu"
 
 
-def normalization_stages(targets: Targets) -> list[str]:
-    labels = stage_labels(targets.canon_target)
-    return labels[: labels.index(FUSE_STAGE)]
-
-
 def normalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     """Canonicalizes ``sdfg`` in place up to the fusion stage and returns it."""
     # The frontend binds derived loop bounds to fresh interstate symbols that extraction cannot pass in.
     SymbolPropagation().apply_pass(sdfg, {})
-    return canonicalize(sdfg, target=targets.canon_target, stages=normalization_stages(targets))
+    labels = stage_labels(targets.canon_target)
+    return canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
