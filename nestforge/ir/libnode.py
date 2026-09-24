@@ -207,7 +207,7 @@ class ExpandExternCall(ExpandTransformation):
             raise ValueError(f"ExternalCall {node.name} needs lib_path + symbol for ExpandExternCall")
         proto, call = proto_and_call(node, parent_state)
         ExternLibEnv.configure(node.lib_path, strings(node.runtime_libraries))
-        tasklet = nodes.Tasklet(
+        return nodes.Tasklet(
             node.name,
             node.in_connectors,
             node.out_connectors,
@@ -216,7 +216,6 @@ class ExpandExternCall(ExpandTransformation):
             code_global=proto,
             side_effects=True,
         )
-        return tasklet
 
 
 @dace.library.node

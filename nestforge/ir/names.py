@@ -45,8 +45,6 @@ CANONICAL_DATA = re.compile(r"[ts]\d+")
 def in_order(graph: AbstractControlFlowRegion | SDFGState) -> list[Any]:
     """A graph's nodes in topological order, ties broken by insertion order, so labels are deterministic."""
     all_nodes: list[Any] = list(graph.nodes())  # blocks of a region or nodes of a state
-    if not all_nodes:
-        return []
     rank = {id(n): i for i, n in enumerate(all_nodes)}
     indegree = {id(n): 0 for n in all_nodes}
     for edge in graph.edges():
@@ -229,21 +227,18 @@ def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
     targets = {n: ("s" if isinstance(desc, dt.Scalar) else "t") for n, desc in sdfg.arrays.items() if desc.transient}
     settled = {n for n, prefix in targets.items() if CANONICAL_DATA.fullmatch(n) and n[0] == prefix}
     taken = {prefix: {int(n[1:]) for n in settled if n[0] == prefix} for prefix in ("t", "s")}
-    survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
-    # a mis-prefixed canonical name (a scalar "t0") holds its name until its own rename
-    held = {n for n in targets if n not in settled}
+    # a non-transient or symbol keeps its name, and a mis-prefixed canonical name (a scalar "t0") holds its
+    # name until its own rename
+    blocked = {n for n in sdfg.arrays if n not in settled} | set(sdfg.symbols)
     renames: dict[str, str] = {}
     for old, prefix in targets.items():
         if old in settled:
             continue
-        index = 0
-        while index in taken[prefix] or f"{prefix}{index}" in (survivors | held):
-            index += 1
+        index = next(k for k in itertools.count() if k not in taken[prefix] and f"{prefix}{k}" not in blocked)
         taken[prefix].add(index)
         renames[old] = f"{prefix}{index}"
-    if not renames:
-        return {}
-    sdfg.replace_dict(renames)
+    if renames:
+        sdfg.replace_dict(renames)
     return renames
 
 
@@ -263,33 +258,31 @@ def param_names(sdfg: dace.SDFG, count: int) -> list[str]:
     return list(itertools.islice((f"i{k}" for k in itertools.count() if f"i{k}" not in reserved), count))
 
 
+def param_targets(state: SDFGState) -> dict[nodes.MapEntry, list[str]]:
+    """Each map of ``state`` whose parameters are not ``i0, i1, ...`` counted down its nesting chain (see
+    :func:`param_names`), with the names it should take; reusing an ancestor's name would alias it."""
+    scope = state.scope_dict()
+    entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
+    bases = {node: enclosing_param_count(node, scope) for node in entries}
+    names = param_names(state.sdfg, max((bases[n] + len(n.map.params) for n in entries), default=0))
+    wanted = {node: names[bases[node] : bases[node] + len(node.map.params)] for node in entries}
+    return {node: params for node, params in wanted.items() if node.map.params != params}
+
+
 def rename_map_params(sdfg: dace.SDFG) -> None:
-    """Rename map parameters to ``i0, i1, ...`` (see :func:`param_names`) down each nesting chain; reusing an ancestor's name would alias
-    it. Two passes through fresh names, since renaming in place collides in either order."""
+    """Rename map parameters as :func:`param_targets` says. Two passes through fresh names, since renaming in
+    place collides in either order."""
     for state in sdfg.all_states():
-        scope = state.scope_dict()
-        entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
-        bases = {node: enclosing_param_count(node, scope) for node in entries}
-        names = param_names(state.sdfg, max((bases[n] + len(n.map.params) for n in entries), default=0))
-        targets: dict[nodes.MapEntry, list[str]] = {}
-        for node in entries:
-            wanted = names[bases[node] : bases[node] + len(node.map.params)]
-            if node.map.params != wanted:
-                targets[node] = wanted
-        if not targets:
-            continue
-        # first to names nothing in the state holds
-        temps: dict[nodes.MapEntry, list[str]] = {}
-        for index, (node, wanted) in enumerate(targets.items()):
-            temp = [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
-            # one simultaneous substitution per scope
-            replace_dict(state.scope_subgraph(node), dict(zip(strings(node.map.params), temp)))
-            node.map.params = temp
-            temps[node] = temp
-        # then to the final names
-        for node, wanted in targets.items():
-            replace_dict(state.scope_subgraph(node), dict(zip(temps[node], wanted)))
-            node.map.params = wanted
+        targets = param_targets(state)
+        temps = {
+            node: [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
+            for index, (node, wanted) in enumerate(targets.items())
+        }
+        for renaming in (temps, targets):
+            for node, params in renaming.items():
+                # one simultaneous substitution per scope
+                replace_dict(state.scope_subgraph(node), dict(zip(strings(node.map.params), params)))
+                node.map.params = params
 
 
 #: Each scope's child nodes, keyed by its entry node, the top level by ``None``.
