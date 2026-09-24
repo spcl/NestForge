@@ -1,6 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Walk HPCAgent-Bench's fuse_diamond through the Session API, one call per phase, and save what each phase made."""
+"""Walk an HPCAgent-Bench kernel through the Session API, one call per phase, and save what each phase made.
+
+``fuse_diamond`` fuses into a single kernel. ``jacobi_1d`` keeps two maps in its time loop, one reading the other's
+neighbours, so it shows two kernels and the dependency carried between them."""
 
 import argparse
 import json
@@ -15,7 +18,10 @@ from nestforge.ir.introspect import describe_graph
 from nestforge.phases.normalize import Targets
 from nestforge.session import Session
 
-KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
+KERNELS = {
+    "fuse_diamond": "loop_level_reasoning/fuse_diamond/fuse_diamond",
+    "jacobi_1d": "scientific_computing/structured_grids/jacobi_1d/jacobi_1d",
+}
 PRESET = "S"
 
 
@@ -93,11 +99,13 @@ def sweep_configurations(session: Session, kernels: list[dict], sizes: dict[str,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
+    parser.add_argument("--kernel", choices=sorted(KERNELS), default="fuse_diamond")
     parser.add_argument("--out", type=Path, default=Path("quickstart_out"))
     args = parser.parse_args()
     out, work = args.out.resolve(), args.out.resolve() / "work"
     dace.Config.set("default_build_folder", value=str(work / "dacecache"))
-    kernel = next(k for k in iter_dace_kernels(KERNEL.split("/", 1)[0]) if k.short_name == KERNEL)
+    short_name = KERNELS[args.kernel]
+    kernel = next(k for k in iter_dace_kernels(short_name.split("/", 1)[0]) if k.short_name == short_name)
     sizes = preset_sizes(kernel, PRESET)
     print(f"{kernel.short_name}, preset {PRESET} {sizes}, device {args.device}")
     session = Session(kernel.to_sdfg(), targets=Targets(gpu=args.device == "gpu"), work_dir=str(work))

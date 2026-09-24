@@ -29,6 +29,7 @@ follow [AGENTS.md](AGENTS.md).
 ```bash
 python examples/quickstart.py --device cpu --out quickstart_out
 python examples/quickstart.py --device gpu --out quickstart_out
+python examples/quickstart.py --device cpu --kernel jacobi_1d --out quickstart_jacobi
 ```
 
 The script runs the default optimizer on HPCAgent-Bench's `fuse_diamond` at preset S (`LEN_1D=512`):
@@ -64,6 +65,28 @@ SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_d
 4. Optimize Kernels renders `extcall_0` as one CPF C++ or CUDA file and builds `libextcall_0.a`.
 5. Sweep Configurations times 15 CPU variants or 4 GPU variants (two nvcc toolkits, two FP modes) and
    keeps the fastest one that matches NumPy.
+
+`--kernel jacobi_1d` shows what happens when canonical parallel form leaves more than one nest. Each
+time step reads `A`'s neighbours into `B`, then `B`'s neighbours back into `A`; a map cannot fuse with
+one that reads its neighbours, so two maps remain inside the time loop:
+
+```
+`- for0_0  _loop_it_0=1:TSTEPS
+   `- state1_0
+      |- kernel2_0  [_loop_it_1=0:N - 2]  reads=['A'] writes=['B']
+      `- kernel2_1  [_loop_it_4=0:N - 2]  reads=['B'] writes=['A']
+```
+
+Phase 2 makes two kernels, and their dependency lines show the time loop carrying `A` from the second
+kernel back to the first; `program` is the value before the first step, and the loop may run zero times:
+
+```
+extcall_0: A <- extcall_1.A [carried: for0_0] | program, N <- program
+extcall_1: B <- extcall_0.B, N <- program
+exit: A <- extcall_1.A | program, B <- extcall_0.B | program
+```
+
+Phases 4 and 5 then build and sweep each kernel on its own.
 
 ```
 quickstart_out/

@@ -97,3 +97,50 @@ def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_tree
     assert nest_kinds(trees["1-cpf"]) == {"maps": 1, "loops": 0}
     assert nest_kinds(trees["2-shaped"]) == {"maps": 1, "loops": 0}
     assert all(tree.rstrip("\n") in stdout for tree in trees.values())
+
+
+@pytest.fixture(scope="module")
+def jacobi_run(tmp_path_factory) -> tuple[Path, str]:
+    """The CPU quick start on jacobi_1d, whose canonical form keeps two maps in its time loop."""
+    out = tmp_path_factory.mktemp("quickstart_jacobi")
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO), *sys.path])}
+    command = [
+        sys.executable,
+        str(REPO / "examples" / "quickstart.py"),
+        *("--device", "cpu", "--kernel", "jacobi_1d", "--out", str(out)),
+    ]
+    run = subprocess.run(command, capture_output=True, text=True, env=env, cwd=out, timeout=1800)
+    assert run.returncode == 0, run.stderr[-4000:]
+    return out, run.stdout
+
+
+def test_jacobi_keeps_two_maps_in_its_time_loop(jacobi_run):
+    out, _ = jacobi_run
+
+    shaped = (out / "trees" / "2-shaped.txt").read_text()
+
+    assert nest_kinds(shaped) == {"maps": 2, "loops": 1}
+
+
+def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
+    """The second kernel's A reaches the first only through the time loop's back edge."""
+    out, _ = jacobi_run
+
+    lines = (out / "kernel_deps.txt").read_text().splitlines()
+
+    assert lines == [
+        "extcall_0: A <- extcall_1.A [carried: for0_0] | program, N <- program",
+        "extcall_1: B <- extcall_0.B, N <- program",
+        "exit: A <- extcall_1.A | program, B <- extcall_0.B | program",
+    ]
+
+
+def test_jacobi_builds_and_sweeps_both_kernels(jacobi_run):
+    out, _ = jacobi_run
+
+    config = json.loads((out / "5-sweep-configurations.json").read_text())
+
+    assert list(config) == ["extcall_0", "extcall_1"]
+    assert all(
+        sorted(p.name for p in (out / "kernels" / name).iterdir()) == [f"{name}.cpp", f"lib{name}.a"] for name in config
+    )
