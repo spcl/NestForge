@@ -172,6 +172,40 @@ def with_bodies(program) -> str:
     return describe_graph(sdfg, bodies=True)
 
 
+def test_an_index_is_simplified_even_when_nothing_is_defined():
+    """Whether a program assigns anything elsewhere must not change how one condition prints."""
+    assert resolve_scalars("A[(1 + (1 * i))] > 0.0", {}) == "A[i + 1] > 0.0"
+
+
+def test_a_nested_sdfg_assignment_does_not_define_an_outer_name():
+    """A nested SDFG has its own symbol namespace, so its ``k = 7`` says nothing about the outer ``k``."""
+    inner = dc.SDFG("inner")
+    first = inner.add_state("first", is_start_block=True)
+    inner.add_state_after(first, "second", assignments={"k": "7"})
+    outer = dc.SDFG("outer")
+    outer.add_symbol("k", dc.int64)
+    outer.add_state("call", is_start_block=True).add_nested_sdfg(inner, {}, {})
+
+    assert "k" not in interstate_definitions(outer)
+
+
+@pytest.mark.parametrize(
+    ("init", "condition", "update", "want"),
+    [
+        ("i = 0", "i < 10", "i = i + 1", "i=0:10"),
+        ("i = 9", "i >= 0", "i = i - 1", "i=9:-1:-1"),
+    ],
+    ids=["ascending", "descending"],
+)
+def test_a_loop_range_ends_one_past_its_last_value_in_its_direction(init, condition, update, want):
+    """A descending loop printed with ``end + 1`` reads as stopping two values early."""
+    from dace.sdfg.state import LoopRegion
+
+    loop = LoopRegion("loop", condition, "i", init, update)
+
+    assert introspect.loop_domain(loop, {}) == want
+
+
 def test_bodies_are_off_by_default():
     """An emit per kernel is not free, and the structure alone is what a fusion decision needs."""
     assert not [line for line in tree_of(shaped).splitlines() if introspect.BODY in line]

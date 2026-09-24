@@ -30,7 +30,7 @@ TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
 #: Marks a numpy body line, so a statement is never mistaken for a tree row.
 BODY = ": "
 
-#: What a ``Handle`` is asked to name. ``region`` covers every control-flow block, ``nest`` every map.
+#: What a ``Handle`` is asked to name: kind ``region`` for a control-flow block, ``nest`` for a map or library node.
 Handle = Callable[[str, object], str]
 
 #: The suffix appended to a top-level map's kernel line, when metrics are asked for.
@@ -56,11 +56,11 @@ class Substitute(ast.NodeTransformer):
 def interstate_definitions(sdfg: dace.SDFG) -> dict[str, str]:
     """``name -> expression`` for every interstate assignment in the SDFG; a name assigned more than
     one distinct expression is dropped (which one reaches a block depends on the path taken)."""
-    assigned: dict[str, set] = {}
-    for cfg in sdfg.all_control_flow_regions(recursive=True):
-        for edge in cfg.edges():
-            for name, expression in edge.data.assignments.items():
-                assigned.setdefault(name, set()).add(expression)
+    assigned: dict[str, set[str]] = {}
+    # this SDFG's loops and branches only: a nested SDFG has its own symbol namespace
+    for edge in sdfg.all_interstate_edges():
+        for name, expression in edge.data.assignments.items():
+            assigned.setdefault(name, set()).add(expression)
     return {name: exprs.pop() for name, exprs in assigned.items() if len(exprs) == 1}
 
 
@@ -68,8 +68,6 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
     """Fold scalar definitions into ``expression`` until only arrays, non-transients and free symbols
     are left -- ``A_index > 0.0`` becomes ``A[i + 1] > 0.0``. Each name is substituted at most once,
     so a cyclic definition (``i = i + 1`` on a back edge) terminates rather than expanding forever."""
-    if not definitions:
-        return expression
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:  # a condition the frontend wrote in something other than python
@@ -200,15 +198,17 @@ def loop_domain(loop: LoopRegion, defs: dict[str, str]) -> str:
 
 
 @functools.lru_cache(maxsize=4096, typed=True)
-def end_plus_one(end_text: str) -> str:
-    """``end + 1``, simplified; the same bound recurs across a program's kernels."""
-    return str(dace.symbolic.simplify(cast(sympy.Expr, dace.symbolic.pystr_to_symbolic(end_text)) + 1))
+def exclusive_end(end_text: str, delta: int) -> str:
+    """``end + delta``, simplified; the same bound recurs across a program's kernels."""
+    return str(dace.symbolic.simplify(cast(sympy.Expr, dace.symbolic.pystr_to_symbolic(end_text)) + delta))
 
 
 def render_range(rng: tuple[Any, Any, Any]) -> str:
-    """``begin:end:step`` with an exclusive end and a unit step left off."""
+    """``begin:end:step`` as ``range`` reads it: an end one past the last value in the direction of travel, and
+    a unit step left off."""
     begin, end, step = rng
-    text = f"{begin}:{end_plus_one(str(end))}"
+    delta = -1 if sympy.sympify(step).is_negative is True else 1
+    text = f"{begin}:{exclusive_end(str(end), delta)}"
     return text if step == 1 else f"{text}:{step}"
 
 

@@ -120,6 +120,32 @@ def copy_between(A: dace.float64[N], T: dace.float64[N], U: dace.float64[N], C: 
         C[i] = U[i] * 2
 
 
+@dace.program
+def relax_or_skip(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]):
+    for t in range(3):
+        for i in dace.map[0:N]:
+            B[i] = A[i] + 1
+        if c[0] < 0:
+            continue
+        for i in dace.map[0:N]:
+            A[i] = B[i] * 0.5
+    for i in dace.map[0:N]:
+        C[i] = A[i] * 3
+
+
+@dace.program
+def relax_or_return(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]):
+    for t in range(3):
+        for i in dace.map[0:N]:
+            B[i] = A[i] + 1
+        if c[0] < 0:
+            return
+        for i in dace.map[0:N]:
+            A[i] = B[i] * 0.5
+    for i in dace.map[0:N]:
+        C[i] = A[i] * 3
+
+
 def lowered(program) -> tuple[dace.SDFG, dict[str, list[str]]]:
     """``program`` through phase 2, with the arguments each kernel writes (read off its out-connectors)."""
     sdfg = program.to_sdfg(simplify=True)
@@ -367,6 +393,37 @@ def test_a_break_before_the_second_kernel_leaves_with_the_value_the_loop_had():
     graph = kernel_dependencies(sdfg)
 
     assert reaching(graph)[("extcall_2", "A")] == ("extcall_1.A", f"extcall_1.A [carried: {loop}]", "program")
+
+
+def test_a_continue_lets_the_loop_entry_value_reach_past_the_loop():
+    """A continue skips the second kernel on the back edge, so even a loop proven to run may never write ``A``."""
+    sdfg, writes = lowered(relax_or_skip)
+    assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
+
+    after_loop = reaching(kernel_dependencies(sdfg))[("extcall_2", "A")]
+
+    assert "program" in after_loop and "extcall_1.A" in after_loop, after_loop
+
+
+def test_a_return_inside_the_loop_reaches_the_exit_without_the_last_kernel():
+    sdfg, writes = lowered(relax_or_return)
+    assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
+
+    at_exit = reaching(kernel_dependencies(sdfg))[("exit", "C")]
+
+    assert set(at_exit) == {"extcall_2.C", "program"}, at_exit
+
+
+def test_an_external_call_without_a_manifest_is_refused():
+    sdfg = dace.SDFG("no_manifest")
+    sdfg.add_array("x", [8], dace.float64)
+    sdfg.add_array("y", [8], dace.float64)
+    state = sdfg.add_state("only", is_start_block=True)
+    kernel = hand_kernel(sdfg, state, "extcall_0", ["x"], ["y"])
+    kernel.config = {}
+
+    with pytest.raises(UnsupportedProgram, match="manifest"):
+        kernel_dependencies(sdfg)
 
 
 def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel_and_the_assignment():

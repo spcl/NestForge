@@ -6,7 +6,7 @@ records its data and symbols and the nested SDFG node that phase 2 replaces with
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import cast
 
 import dace
@@ -30,10 +30,9 @@ class Boundary:
     inputs: list[str]
     outputs: list[str]
     symbols: list[str]
-    nsdfg_node: nodes.NestedSDFG | None  # placed in the parent; None for a whole-program boundary
-    state: SDFGState | None  # None for a whole-program boundary
+    nsdfg_node: nodes.NestedSDFG | None  # placed in the parent; None for a boundary built without one
+    state: SDFGState | None  # None for a boundary built without a parent
     standalone_sdfg: dace.SDFG  # detached, independently compilable copy of the nest
-    parent_sdfg: dace.SDFG | None = field(repr=False, default=None)
 
 
 def detach(sdfg: dace.SDFG) -> dace.SDFG:
@@ -54,7 +53,7 @@ def find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
     raise ValueError(f"node {node} not found in any state of SDFG {sdfg.label}")
 
 
-def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_sdfg: dace.SDFG) -> Boundary:
+def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> Boundary:
     inputs = sorted(nsdfg_node.in_connectors.keys())
     outputs = sorted(nsdfg_node.out_connectors.keys())
     symbols = sorted(str(s) for s in nsdfg_node.symbol_mapping.keys())
@@ -65,7 +64,6 @@ def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState, parent_s
         nsdfg_node=nsdfg_node,
         state=state,
         standalone_sdfg=detach(nsdfg_node.sdfg),
-        parent_sdfg=parent_sdfg,
     )
 
 
@@ -75,13 +73,11 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: st
     state = find_state_of_node(parent_sdfg, map_entry)
     subgraph = state.scope_subgraph(map_entry, include_entry=True, include_exit=True)
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name or "nest", full_data=True)
-    return boundary_from_nsdfg(nsdfg_node, state, parent_sdfg)
+    return boundary_from_nsdfg(nsdfg_node, state)
 
 
-def assignment_dtype(sdfg: dace.SDFG, rhs: str) -> dace.dtypes.typeclass:
-    """dtype of an interstate assignment's right-hand side, ``int64`` when it cannot be inferred."""
-    table = {s: t for s, t in sdfg.symbols.items()}
-    table.update({name: desc.dtype for name, desc in sdfg.arrays.items()})
+def assignment_dtype(rhs: str, table: dict[str, dace.dtypes.typeclass]) -> dace.dtypes.typeclass:
+    """dtype of an interstate assignment's right-hand side over ``table``, ``int64`` when it cannot be inferred."""
     try:
         inferred = infer_expr_type(rhs, table)
     except Exception:  # inference walks arbitrary expression ASTs; an untypeable RHS keeps the default
@@ -97,12 +93,14 @@ def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, da
         for b in [region, *region.all_control_flow_blocks()]
         if isinstance(b, LoopRegion) and b.loop_variable
     }
+    table = dict(sdfg.symbols) | {name: desc.dtype for name, desc in sdfg.arrays.items()}
     dtypes: dict[str, dace.dtypes.typeclass] = {}
     for e in region.all_interstate_edges():
         for target, rhs in e.data.assignments.items():
             if target in loop_variables or target in dtypes:
                 continue
-            dtypes[target] = assignment_dtype(sdfg, str(rhs))
+            # a later right-hand side may read an earlier target
+            dtypes[target] = table[target] = assignment_dtype(str(rhs), table)
     return dtypes
 
 
@@ -118,7 +116,7 @@ def extract_cfg_nest(parent_sdfg: dace.SDFG, region: CfgNest, name: str | None =
     # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache
     if name:
         nsdfg_node.sdfg.name = name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
-    return boundary_from_nsdfg(nsdfg_node, inner_state, parent_sdfg)
+    return boundary_from_nsdfg(nsdfg_node, inner_state)
 
 
 def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | None = None) -> Boundary:
@@ -129,23 +127,4 @@ def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | Non
         return extract_cfg_nest(parent_sdfg, node, name=name)
     raise TypeError(
         f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion, or ConditionalBlock"
-    )
-
-
-def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
-    """A :class:`Boundary` over the whole program: its non-transient arrays read and written, and its symbols."""
-    detached = detach(sdfg)
-    read, write = detached.read_and_write_sets()
-    arrays = {n for n, desc in detached.arrays.items() if not desc.transient}
-    inputs = sorted(a for a in arrays if a in read)
-    outputs = sorted(a for a in arrays if a in write)
-    symbols = [a for a in detached.arglist() if a not in detached.arrays]
-    return Boundary(
-        inputs=inputs,
-        outputs=outputs,
-        symbols=symbols,
-        nsdfg_node=None,
-        state=None,
-        standalone_sdfg=detached,
-        parent_sdfg=None,
     )

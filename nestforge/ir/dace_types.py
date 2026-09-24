@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Narrow DaCe properties whose annotations are looser than their values: each accessor checks what the caller
-relies on, so a surprise fails here instead of deep in emission."""
+"""Narrow DaCe properties whose annotations are looser than their values. The memlet accessors assert what the caller
+relies on, so a surprise fails here instead of deep in emission; ``bounds`` and ``strings`` only restate the type."""
 
 from __future__ import annotations
 

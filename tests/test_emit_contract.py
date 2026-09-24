@@ -119,9 +119,7 @@ def loop_scratch_boundary():
     body.add_edge(
         body.add_read("a"), None, body.add_tasklet("t", {"i0"}, {"o0"}, "o0 = i0 + 1.0"), "i0", dace.Memlet("a[0]")
     )
-    return Boundary(
-        inputs=["a"], outputs=["a"], symbols=["N"], nsdfg_node=None, state=None, standalone_sdfg=sdfg, parent_sdfg=None
-    )
+    return Boundary(inputs=["a"], outputs=["a"], symbols=["N"], nsdfg_node=None, state=None, standalone_sdfg=sdfg)
 
 
 def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():

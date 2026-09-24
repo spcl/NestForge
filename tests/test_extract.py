@@ -5,7 +5,7 @@ import dace
 from dace.sdfg.state import LoopRegion
 
 from nestforge.phases.scopes import parallel_top_level_maps
-from nestforge.ir.extract import extract_nest_to_sdfg
+from nestforge.ir.extract import extract_nest_to_sdfg, nest_defined_symbol_dtypes
 
 N = dace.symbol("N")
 
@@ -52,7 +52,7 @@ def test_extract_map_nest_boundary_and_correctness():
     np.testing.assert_allclose(C2, A2 + B2)
 
 
-# loop iterators are scope symbols, never SDFG symbols (dace skill GOTCHAS)
+# loop iterators are scope symbols, never SDFG symbols
 
 
 def loop_with_exported_int32_iterator():
@@ -73,17 +73,14 @@ def loop_with_exported_int32_iterator():
 
 
 def test_extract_cfg_nest_adds_no_symbol_for_the_loop_iterator():
-    """CRITICAL regression: extract_cfg_nest used to pre-declare every LoopRegion's iterator as an
-    int64 SDFG symbol before outlining. A loop iterator is a scope symbol and must never become one --
-    the leftover declaration used to survive extraction, with the wrong dtype, forever."""
+    """A loop iterator is a scope symbol, so outlining its loop declares no SDFG symbol for it."""
     sdfg, loop = loop_with_exported_int32_iterator()
     extract_nest_to_sdfg(sdfg, loop, name="loopnest_extracted")
     assert "loop_i" not in sdfg.symbols
 
 
 def test_extract_cfg_nest_keeps_a_non_int64_iterator_dtype():
-    """The hardcoded int64 clobbered the exported symbol's type even where DaCe's own inference (off
-    the loop's real int32 bounds) said int32 -- silently widening every exported counter to int64."""
+    """An exported iterator keeps the int32 DaCe infers from the loop bounds."""
     sdfg, loop = loop_with_exported_int32_iterator()
     boundary = extract_nest_to_sdfg(sdfg, loop, name="loopnest_extracted")
     exported = next(name for name in sdfg.arrays if "loop_i" in name)
@@ -92,9 +89,7 @@ def test_extract_cfg_nest_keeps_a_non_int64_iterator_dtype():
 
 
 def loop_with_exported_float_assignment():
-    """A LoopRegion whose body makes a genuine interstate-edge assignment (``scale = 1.5``, unrelated
-    to the loop counter) that is also read outside the loop -- the case extract_cfg_nest must keep
-    pre-declaring correctly while no longer touching the loop's own iterator."""
+    """A loop whose body assigns ``scale = 1.5`` on an interstate edge, read after the loop."""
     sdfg = dace.SDFG("floaty")
     sdfg.add_array("a", [20], dace.float64)
     loop = LoopRegion("loop", "loop_i < 10", "loop_i", "loop_i = 0", "loop_i = loop_i + 1")
@@ -110,8 +105,17 @@ def loop_with_exported_float_assignment():
 
 
 def test_extract_cfg_nest_still_types_a_genuine_interstate_assignment_target():
-    """A real interstate-assignment target (not a loop counter) must keep its inferred dtype -- the
-    part of the pre-declare loop this fix must NOT touch."""
+    """An interstate assignment target inside the nest is declared with its inferred dtype."""
     sdfg, loop = loop_with_exported_float_assignment()
     extract_nest_to_sdfg(sdfg, loop, name="floaty_extracted")
     assert sdfg.symbols["scale"] == dace.float64
+
+
+def test_an_assignment_reading_an_earlier_target_gets_that_targets_dtype():
+    """``twice = scale * 2`` after ``scale = 1.5`` is a double; typed without ``scale`` it fell back to int64 and
+    the parent would truncate it."""
+    sdfg, loop = loop_with_exported_float_assignment()
+    after_body = next(b for b in loop.nodes() if b.label == "after_body")
+    loop.add_state_after(after_body, "doubled", assignments={"twice": "scale * 2"})
+
+    assert nest_defined_symbol_dtypes(sdfg, loop) == {"scale": dace.float64, "twice": dace.float64}

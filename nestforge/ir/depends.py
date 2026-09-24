@@ -280,7 +280,7 @@ def access_flow(
 def kernel_symbols(node: ExternalCall) -> list[str]:
     # read once: a dace Property; dace.library.node erases the class type, hiding the property from pyright
     manifest = node.config  # pyright: ignore[reportAttributeAccessIssue]
-    if manifest is None:
+    if not manifest:
         raise UnsupportedProgram(f"ExternalCall {node.label!r} has no manifest, so its symbol arguments are unknown")
     # the manifest's non-array inputs are the symbols the kernel takes, body-only ones included
     return sorted(arg for arg in manifest["input_args"] if arg not in manifest["array_args"])
@@ -441,7 +441,8 @@ def kernel_dependencies(sdfg: dace.SDFG) -> KernelGraph:
 
     :param sdfg: The top-level SDFG holding the kernels; it is not modified.
     :returns: The kernel graph, sorted by kernel program order, then role, then argument name.
-    :raises UnsupportedProgram: On a ``Reference`` container or an ``ExternalCall`` inside a nested SDFG.
+    :raises UnsupportedProgram: On a ``Reference`` container, a view bound to no container, an ``ExternalCall``
+        inside a nested SDFG or without a manifest, or a control-flow block it does not model.
     """
     refuse_unsupported(sdfg)
     tracker = Tracker()

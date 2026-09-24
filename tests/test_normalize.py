@@ -536,4 +536,4 @@ def test_normalizing_a_reduction_preserves_the_result():
     B = np.linspace(1.0, 2.0, 4).copy()
     C = np.zeros(8)
     sdfg(A=A, B=B, C=C)
-    assert np.allclose(C, A @ B)
+    np.testing.assert_allclose(C, A @ B, rtol=1e-13, atol=0)

@@ -205,7 +205,7 @@ class ExpandExternCall(ExpandTransformation):
     """Expand to a C++ tasklet calling the linked library's entry."""
 
     # no __slots__: make_properties needs a __dict__
-    environments = []
+    environments = [ExternLibEnv]
 
     @staticmethod
     def expansion(node: ExternalCall, parent_state: dace.SDFGState, parent_sdfg: dace.SDFG) -> nodes.Tasklet:
@@ -213,7 +213,6 @@ class ExpandExternCall(ExpandTransformation):
             raise ValueError(f"ExternalCall {node.name} needs lib_path + symbol for ExpandExternCall")
         proto, call = proto_and_call(node, parent_state)
         ExternLibEnv.configure(node.lib_path, strings(node.runtime_libraries))
-        ExpandExternCall.environments = [ExternLibEnv]
         tasklet = nodes.Tasklet(
             node.name,
             node.in_connectors,

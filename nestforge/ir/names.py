@@ -16,11 +16,11 @@ from dace import data as dt
 from dace.sdfg import nodes
 from dace.sdfg.replace import replace_dict
 from dace.sdfg.state import (
+    AbstractControlFlowRegion,
     BreakBlock,
     ConditionalBlock,
     ContinueBlock,
     ControlFlowBlock,
-    ControlFlowRegion,
     LoopRegion,
     ReturnBlock,
     SDFGState,
@@ -39,7 +39,7 @@ WRAP_PARAM = "__nf_wrap"
 CANONICAL_DATA = re.compile(r"[ts]\d+")
 
 
-def in_order(graph: ControlFlowRegion | SDFGState) -> list:
+def in_order(graph: AbstractControlFlowRegion | SDFGState) -> list[Any]:
     """A graph's nodes in topological order, ties broken by insertion order, so labels are deterministic."""
     all_nodes: list[Any] = list(graph.nodes())  # blocks of a region or nodes of a state
     if not all_nodes:
@@ -50,7 +50,7 @@ def in_order(graph: ControlFlowRegion | SDFGState) -> list:
         indegree[id(edge.dst)] += 1
     ready = [rank[id(n)] for n in all_nodes if indegree[id(n)] == 0]
     heapq.heapify(ready)
-    ordered: list = []
+    ordered: list[Any] = []
     while ready:
         node = all_nodes[heapq.heappop(ready)]
         ordered.append(node)
@@ -193,25 +193,20 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
         taken[node.label] = None
 
 
-def next_label(kind: str, level: int, counters: dict[tuple, int]) -> str:
+def next_label(kind: str, level: int, counters: dict[tuple[str, int], int]) -> str:
     """The next free ``<kind><level>_<index>``, advancing that kind's counter at that level."""
     index = counters.get((kind, level), 0)
     counters[(kind, level)] = index + 1
     return f"{kind}{level}_{index}"
 
 
-def relabel_cfg(cfg: dace.SDFG | ControlFlowRegion, level: int, counters: dict[tuple, int]) -> None:
+def relabel_cfg(cfg: AbstractControlFlowRegion, level: int, counters: dict[tuple[str, int], int]) -> None:
     """Relabel one CFG's blocks at ``level``, recursing into the regions and states among them."""
     for block in in_order(cfg):
         block.label = next_label(block_kind(block), level, counters)
         if isinstance(block, SDFGState):
             relabel_state(block, level + 1, counters)
-        elif isinstance(block, ConditionalBlock):
-            # Branches live in ``_branches``, not in the graph, so the loop above never reaches them.
-            for _, branch in block.branches:
-                branch.label = next_label("block", level + 1, counters)
-                relabel_cfg(branch, level + 2, counters)
-        elif isinstance(block, ControlFlowRegion):
+        elif isinstance(block, AbstractControlFlowRegion):  # a ConditionalBlock's nodes are its branches
             relabel_cfg(block, level + 1, counters)
 
 
@@ -224,7 +219,7 @@ def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
     survivors = {n for n in sdfg.arrays if n not in targets} | set(sdfg.symbols)
     # a mis-prefixed canonical name (a scalar "t0") holds its name until its own rename
     held = {n for n in targets if n not in settled}
-    renames = {}
+    renames: dict[str, str] = {}
     for old, prefix in targets.items():
         if old in settled:
             continue
@@ -254,7 +249,7 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
     for state in sdfg.all_states():
         scope = state.scope_dict()
         entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry) and WRAP_PARAM not in n.map.params]
-        targets = {}
+        targets: dict[nodes.MapEntry, list[str]] = {}
         for node in entries:
             base = enclosing_param_count(node, scope)
             wanted = [f"i{base + axis}" for axis in range(len(node.map.params))]
@@ -263,7 +258,7 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
         if not targets:
             continue
         # first to names nothing in the state holds
-        temps = {}
+        temps: dict[nodes.MapEntry, list[str]] = {}
         for index, (node, wanted) in enumerate(targets.items()):
             temp = [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]
             # one simultaneous substitution per scope
@@ -276,7 +271,7 @@ def rename_map_params(sdfg: dace.SDFG) -> None:
             node.map.params = wanted
 
 
-def relabel_state(state: SDFGState, level: int, counters: dict[tuple, int]) -> None:
+def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], int]) -> None:
     """Name every map of ``state`` ``kernel<level>_<index>``, one level deeper per enclosing map, including maps
     inside nested SDFGs."""
     children = state.scope_children()

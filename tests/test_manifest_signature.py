@@ -14,7 +14,7 @@ import dace
 
 from nestforge.ir.emit_numpy import scratch_arrays, sdfg_to_numpy
 from nestforge.ir.emit_yaml import manifest_dict
-from nestforge.ir.extract import whole_program_boundary
+from nestforge.ir.extract import Boundary, detach
 
 N = dace.symbol("N")
 
@@ -28,6 +28,24 @@ def two_nest(a: dace.float64[N], out: dace.float64[N]):
         tmp[i] = a[i] * 2.0
     for i in dace.map[0:N]:
         out[i] = tmp[i] + 1.0
+
+
+def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
+    """A :class:`Boundary` over the whole program: its non-transient arrays read and written, and its symbols."""
+    detached = detach(sdfg)
+    read, write = detached.read_and_write_sets()
+    arrays = {n for n, desc in detached.arrays.items() if not desc.transient}
+    inputs = sorted(a for a in arrays if a in read)
+    outputs = sorted(a for a in arrays if a in write)
+    symbols = [a for a in detached.arglist() if a not in detached.arrays]
+    return Boundary(
+        inputs=inputs,
+        outputs=outputs,
+        symbols=symbols,
+        nsdfg_node=None,
+        state=None,
+        standalone_sdfg=detached,
+    )
 
 
 def signature_of(source: str) -> list:

@@ -58,10 +58,11 @@ def test_describe_graph_lists_nests_with_read_write_sets():
 
 def test_nest_reads_writes_matches_the_tree():
     sdfg = vertical_pair.to_sdfg(simplify=True)
-    entries = map_entries(sdfg)
-    reads_writes = [nest_reads_writes(st, me) for st, me in entries]
-    assert (["A", "B"], ["T"]) in reads_writes
-    assert (["T"], ["C"]) in reads_writes
+    reads_writes = [nest_reads_writes(st, me) for st, me in map_entries(sdfg)]
+
+    assert reads_writes == [(["A", "B"], ["T"]), (["T"], ["C"])]
+    text = describe_graph(sdfg)
+    assert all(f"reads={r} writes={w}" in text for r, w in reads_writes), text
 
 
 def test_can_fuse_yes_for_vertical_transient():
