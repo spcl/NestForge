@@ -257,22 +257,26 @@ class Session:
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
-        if epoch != self.epoch:
-            reason = (
-                f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe or list moves again."
-            )
-            return MoveResult("stale", kind, names, reason)
-        rows = self.row_index()
-        missing = [name for name in names if name not in rows]
-        if missing:
-            return MoveResult("not-found", kind, names, f"no tree row is labeled {', '.join(missing)}.")
-        named = [rows[name] for name in names]
+        named = self.named_rows(kind, names, epoch, "Describe or list moves again.")
+        if isinstance(named, MoveResult):
+            return named
         if kind in NOT_IMPLEMENTED:
             return MoveResult("not-implemented", kind, names, NOT_IMPLEMENTED[kind], self.scope_fallback(named))
         plan = plan_move(kind, named)
         if isinstance(plan, str):
             return MoveResult("illegal", kind, names, plan, self.scope_fallback(named))
         return MoveResult("applied", kind, names, self.commit(plan))
+
+    def named_rows(self, kind: str, names: tuple[str, ...], epoch: int, retry: str) -> list[Row] | MoveResult:
+        """The rows ``names`` label at ``epoch``, or the ``stale`` or ``not-found`` result; ``retry`` ends a stale one."""
+        if epoch != self.epoch:
+            reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. {retry}"
+            return MoveResult("stale", kind, names, reason)
+        rows = self.row_index()
+        missing = [name for name in names if name not in rows]
+        if missing:
+            return MoveResult("not-found", kind, names, f"no tree row is labeled {', '.join(missing)}.")
+        return [rows[name] for name in names]
 
     def scope_fallback(self, rows: Sequence[Row]) -> str:
         """The :meth:`define_scope` call that makes one kernel of the regions ``rows`` name, or ``""``."""
@@ -406,14 +410,10 @@ class Session:
         :returns: ``applied`` with the new kernel's id as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
-        if epoch != self.epoch:
-            reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe again."
-            return MoveResult("stale", "define-scope", names, reason)
-        rows = self.row_index()
-        missing = [name for name in names if name not in rows]
-        if missing:
-            return MoveResult("not-found", "define-scope", names, f"no tree row is labeled {', '.join(missing)}.")
-        lowered = lower_group_to_external_call(self.sdfg, [rows[name] for name in names])
+        named = self.named_rows("define-scope", names, epoch, "Describe again.")
+        if isinstance(named, MoveResult):
+            return named
+        lowered = lower_group_to_external_call(self.sdfg, named)
         if isinstance(lowered, str):
             return MoveResult("illegal", "define-scope", names, lowered)
         self.bump()
