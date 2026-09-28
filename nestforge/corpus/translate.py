@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 #: Size of an integer symbol the caller gave no value for.
 DEFAULT_SIZE = 1 << 16
+#: Characters of the translator's stderr kept in a failure message.
+STDERR_TAIL = 2000
 
 
 @dataclass(slots=True)
@@ -106,6 +108,6 @@ def emit_sources(prep: Prepared, out_dir: str | Path, target: str = "c") -> list
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"numpyto timed out for {prep.name} (target={target}); see NF_COMPILE_TIMEOUT") from exc
     if res.returncode != 0:
-        raise RuntimeError(f"numpyto failed for {prep.name} (target={target}):\n{res.stderr[-2000:]}")
+        raise RuntimeError(f"numpyto failed for {prep.name} (target={target}):\n{res.stderr[-STDERR_TAIL:]}")
     name = prep.name
     return sorted(out.glob(f"{name}_*.c")) + sorted(out.glob(f"{name}_*.cpp")) + sorted(out.glob(f"{name}_*.f90"))

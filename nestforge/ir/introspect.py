@@ -31,6 +31,9 @@ TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
 #: Marks a Python body line, so a statement is never mistaken for a tree row.
 BODY = ": "
 
+#: Entries of each cache of parsed index and bound texts; a program repeats a few hundred.
+CACHE_SIZE = 4096
+
 #: What a ``Handle`` is asked to name: kind ``region`` for a control-flow block, ``nest`` for a map or library node.
 Handle = Callable[[str, object], str]
 
@@ -83,7 +86,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
     return ast.unparse(simplify_indices(tree)).strip()
 
 
-@functools.lru_cache(maxsize=4096, typed=True)
+@functools.lru_cache(maxsize=CACHE_SIZE, typed=True)
 def simplified_index(text: str) -> str:
     """Cached sympy round-trip for one subscript's unparsed slice text."""
     return str(dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(text)))
@@ -192,7 +195,7 @@ def loop_domain(loop: LoopRegion, defs: dict[str, str]) -> str:
     return resolve_scalars(loop.loop_condition.as_string, defs) if loop.loop_condition is not None else ""
 
 
-@functools.lru_cache(maxsize=4096, typed=True)
+@functools.lru_cache(maxsize=CACHE_SIZE, typed=True)
 def exclusive_end(end_text: str, delta: int) -> str:
     """``end + delta``, simplified; the same bound recurs across a program's kernels."""
     return str(dace.symbolic.simplify(cast(sympy.Expr, dace.symbolic.pystr_to_symbolic(end_text)) + delta))
