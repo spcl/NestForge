@@ -22,7 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, cast
+from typing import Any
 
 import sympy
 
@@ -301,15 +301,6 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     unique_connectors(sdfg)
 
 
-def extreme(extent: sympy.Expr, var: sympy.Symbol, lo: Any, hi: Any) -> sympy.Expr:
-    """The largest ``extent`` over ``var`` in ``[lo, hi]``: the end its constant slope points to, so the manifest
-    names only declared symbols, else ``Max`` of both ends (monotone in ``var``)."""
-    slope = sympy.diff(extent, var)
-    if slope.is_number:
-        return cast(sympy.Expr, sympy.simplify(extent.subs(var, hi if slope >= 0 else lo)))
-    return sympy.Max(extent.subs(var, lo), extent.subs(var, hi))
-
-
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
     """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
     refuse one whose extent the caller cannot evaluate."""
@@ -330,7 +321,8 @@ def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
                 if not loop_vars:
                     break
                 for var in loop_vars:
-                    extent = extreme(extent, var, *ranges[str(var)])
+                    lo, hi = ranges[str(var)]
+                    extent = sympy.Max(extent.subs(var, lo), extent.subs(var, hi))  # monotone in var
             unknown = sorted(str(s) for s in extent.free_symbols if str(s) not in known)
             if unknown:
                 raise UnsupportedNest(f"scratch buffer {name!r} has extent {dim}, which depends on {unknown}")
