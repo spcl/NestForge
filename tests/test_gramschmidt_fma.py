@@ -33,6 +33,10 @@ FP_MODES = {
 }
 
 
+#: ulps a contracted multiply-add may move the result by against the two-rounding one.
+CONTRACTION_ULPS = 4
+
+
 def make_A(M, N, conditioning, seed=0):
     rng = np.random.default_rng(seed)
     if conditioning == "well":
@@ -111,12 +115,12 @@ def sweep(conditioning, tmp_path):
     return {m: relerr(outs[m], ref) for m in FP_MODES}
 
 
-def test_fma_contraction_alone_is_bit_exact(tmp_path):
-    """FMA contraction (``-ffp-contract=fast``, no reassociation) matches ieee-strict bit-for-bit here
-    -- so the divergence below is due to reassociation, not FMA. Refines "FMA is the danger" to
-    "reassociation is the danger"."""
+def test_fma_contraction_alone_stays_at_machine_epsilon(tmp_path):
+    """FMA contraction (``-ffp-contract=fast``, no reassociation) rounds a multiply-add once instead of twice, so it
+    may move the last bit but stays within a few ulps of ieee-strict -- so the divergence below is due to
+    reassociation, not FMA. Refines "FMA is the danger" to "reassociation is the danger"."""
     err = sweep("well", tmp_path)
-    assert err["contract-fast"] == 0.0
+    assert err["contract-fast"] <= CONTRACTION_ULPS * np.finfo(np.float64).eps
 
 
 def test_fastmath_is_stable_when_well_conditioned(tmp_path):
