@@ -1,9 +1,9 @@
 # FP modes and vectorization
 
-[Overview](../README.md) · related: [4 Optimize Kernels](phases/4-optimize-kernels.md),
-[5 Sweep Configurations](phases/5-sweep-configurations.md)
+[Overview](../README.md) · related: [5 Kernels](stages/5-kernels.md),
+[6 Variants](stages/6-variants.md)
 
-Phase 4 leaves vectorization to the compiler. Phase 5 sweeps compiler, FP mode and the compiler's
+Stage 5 leaves vectorization to the compiler. Stage 6 sweeps compiler, FP mode and the compiler's
 vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` defines both axes.
 
 ## FP modes

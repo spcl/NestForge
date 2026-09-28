@@ -1,7 +1,7 @@
 # Build
 
-[Overview](../README.md) · related: [4 Optimize Kernels](phases/4-optimize-kernels.md),
-[5 Sweep Configurations](phases/5-sweep-configurations.md)
+[Overview](../README.md) · related: [5 Kernels](stages/5-kernels.md),
+[6 Variants](stages/6-variants.md)
 
 `nestforge/build/` compiles with one chosen compiler, flag set and OpenMP runtime, and calls kernels
 through ctypes, so timings compare generated code, free of `CompiledSDFG` marshaling.
@@ -35,8 +35,8 @@ runtimes it needs by name instead of relying on the host process having them loa
 
 - **OpenMP.** LLVM libomp is the process's one runtime. It serves g++ code through its `GOMP_*` entry
   points and clang++ or icpx code through `__kmpc_*`, so every compiler shares one thread pool.
-  `OpenMPRuntime.check` refuses a compiler that cannot link the runtime. The program link swaps
-  DaCe's default runtime for libomp, for that compile only.
+  `openmp_compile_flags` and `openmp_link_flags` select it per compiler. The program link swaps DaCe's default
+  runtime for libomp, for that compile only.
 - **CUDA.** A GPU kernel links cudart from the nvcc that built it.
 
 `ExternalCall` carries these link items, and the program links them after its objects.

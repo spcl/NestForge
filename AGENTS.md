@@ -1,62 +1,45 @@
 # AGENTS.md
 
-Guide for LLM agents that drive NestForge and for coding agents that change it. Phase details live in
-[docs/phases](docs/phases/).
+Guide for LLM agents that drive NestForge and for coding agents that change it. Stage details live in
+[docs/stages](docs/stages/); the built-in loop is [docs/agent.md](docs/agent.md).
 
-## Agent roles
+## Driving NestForge
 
-| Agent | Phases | Reads | Requests |
-|---|---|---|---|
-| scheduling | [1](docs/phases/1-shape-kernels.md), [2](docs/phases/2-define-scopes.md), [3](docs/phases/3-offload.md) | structure tree, kernel bodies, work/depth, OI | fusion, fission and interchange moves; one kernel over regions no move fuses |
-| kernel | [4](docs/phases/4-optimize-kernels.md) | one kernel as NumPy, C++ or Fortran, its boundary | `lib<kernel>.a` with the given C entry (`set_kernel`) |
-| analysis | [feedback](docs/phases/feedback.md) | runtimes, placements, copy volume, OI | phase 1 moves, new phase 2 scopes, or stop |
+| Stage | Agent calls | Reads |
+|---|---|---|
+| [2 Moves](docs/stages/2-moves.md) | `list_moves`, `apply_move`, `metrics` | structure tree |
+| [3 Scopes](docs/stages/3-scopes.md) | `define_scope` | structure tree |
+| [4 Placement](docs/stages/4-placement.md) | `place` | kernels, devices, kernel DAG |
+| [5 Kernels](docs/stages/5-kernels.md) | `set_kernel_source`, `metrics` | kernel sources, [feedback](docs/stages/7-feedback.md) |
 
-Every phase has a deterministic default, so a run works with any subset of agents.
+Stages 1 and 6 are deterministic only. Every stage has a deterministic default, so a run works with any subset of
+agents.
 
-## Rules for driving agents
+- Never edit SDFG nodes or memlets; request moves. Each move is checked for legality before it applies.
+- Name rows by the labels `describe()` prints, unique across the whole program, with the epoch from its first line.
+  Labels regenerate after every change: an old epoch returns `stale`. Only `applied` changed the program.
+- When no move fuses two regions that should run as one, `define_scope` makes them one kernel; write the fusion in
+  that kernel's stage 5 source.
+- A kernel source keeps its `extern "C"` entry and argument order. It counts only after it matches the oracle:
+  wrong and fast loses.
 
-- Never edit SDFG nodes or memlets. Request moves through the Session API; each move is checked for
-  legality before it applies.
-- Name nests by the labels `Session.describe()` prints. They are unique across the whole program,
-  nested SDFGs included. Pass them with the epoch from the tree's first line or from `list_moves()`:
-  `apply_move(kind, labels, epoch)`.
-- When a move is refused (`illegal` or `not-implemented`), or no move fuses two regions that should run as
-  one, `define_scope(labels, epoch)` makes them one kernel (an extcall); do the transformation by hand in that
-  kernel's phase 4 source. A refused move's `MoveResult.fallback` is that exact call, empty when none applies.
-- Labels and ids regenerate after every mutation. A move carrying an old epoch returns `stale`;
-  describe or list again before the next move. Only an `applied` result changed the program.
-- A result counts only after it matches the kernel's NumPy oracle. Wrong and fast loses.
-- A kernel library keeps the C entry and argument order it was given; a different order corrupts the
-  call silently.
+## Changing NestForge
 
-## Skills
-
-Skills load from HPCAgent-Bench plus this repository's `skills/` (pruned `dace`, `python-quality`,
-`python-to-numpy`, and `unit-testing`):
-
-```python
-from hpcagent_bench.harness.prompts import load_skills
-
-skills = load_skills(["path/to/nest-forge"])
-```
-
-Kernel agents also use the bench skills `lang-cpp`, `lang-cuda`, `lang-fortran`, `lang-python`,
-`canonical-parallel-form`, `profiling` and `opt-reports`.
-
-## Rules for coding agents
-
-- Setup: `sudo bash scripts/setup_apt.sh`, then `pip install -e ".[dev]" && pre-commit install`. Unit tests:
-  `pytest -m "not integration and not gpu and not vendor"`; a failure that also fails on the base commit is
-  not yours to hide.
-- `pre-commit run --all-files` runs ruff check and ruff format (120 columns), as CI does.
-- `pyright` (configured in `pyproject.toml`) must report nothing but errors traced to DaCe: its untyped library
-  decorators and `can_be_applied_to`'s `Node | SDFGState` annotation, which rejects a `LoopRegion`. A pending
-  `extended-fixes` change to DaCe removes both.
-- Write Python as if statically typed: annotate every function, one name keeps one type, no
-  `getattr`/`hasattr`, no leading-underscore names, absolute imports.
-- Keep each function's cyclomatic complexity at 20 or below (ruff's C901, which pre-commit runs).
-- Keep comments short (about one line per five lines of code); docstrings with `:param:` only on
-  public functions.
-- Iterate `OrderedSet` or `dict`, never a plain `set`, where order can reach generated code.
-- Tests assert structure as well as values; a failing test gets fixed, never weakened or deleted.
-- Docs stay brief, one page per concept, linked from the README.
+- Setup: `sudo bash scripts/setup_apt.sh`, then `pip install -e ".[dev,agent]"` (or `uv pip install`) and
+  `pre-commit install`. Unit tests: `pytest -m "not integration and not gpu and not vendor"`; integration:
+  `pytest -m integration`.
+- DaCe and HPCAgent-Bench are pinned to commit SHAs in `pyproject.toml`. `python scripts/bump_deps.py` moves both
+  to their branch tips; bump whenever DaCe extended gains a transformation or fix NestForge needs.
+- `pre-commit run --all-files` runs ruff check and ruff format (120 columns) and the header check, as CI does.
+- Python is written as if statically typed: annotate everything, one name keeps one type, absolute imports, no
+  leading-underscore names.
+- No `getattr`/`hasattr`: declare every attribute with its type, `X | None` when it may be absent.
+- Every class is slotted (`@dataclass(slots=True)` or `__slots__`); DaCe library nodes, whose properties need an
+  instance `__dict__`, are the exception.
+- Small, well-named helpers; cyclomatic complexity at most 15 (ruff C901).
+- Nothing hardcoded but the repository root, derived from the package. No magic numbers: every numeric constant is
+  a named module-level constant with a one-line comment.
+- Iterate `dict` or `OrderedSet`, never a plain `set`, where order can reach generated code.
+- Reuse DaCe (canonicalize, transformations, CPF codegen, analyses) before writing anything new.
+- Comments short; docstrings with `:param:` only on public functions. Docs stay brief, one page per concept.
+- Every bug fix gets a test. Tests assert structure as well as values; a failing test is fixed, never weakened.
