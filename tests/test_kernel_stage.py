@@ -9,7 +9,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,6 +22,7 @@ from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
 from nestforge.ir.libnode import proto_and_call
+from nestforge.paths import REPO_ROOT
 from nestforge.stages.kernel import (
     build_kernel_library,
     gpu_schedule,
@@ -436,7 +436,7 @@ def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_cuda_contex
     that already used the GPU. A fresh interpreter keeps this test's context out of the rest of the suite."""
     script = tmp_path / "cuda_initialized_parent.py"
     script.write_text(CUDA_INITIALIZED_PARENT)
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[1]), *sys.path])}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
 
     run = subprocess.run(
         [sys.executable, str(script), str(tmp_path)], capture_output=True, text=True, env=env, timeout=900

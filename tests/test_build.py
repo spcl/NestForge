@@ -42,6 +42,8 @@ from nestforge.build.toolchain import (
 )
 from helpers import corpus_kernel
 
+from nestforge.paths import REPO_ROOT
+
 
 def first_nest(short):
     sdfg = corpus_kernel(short).to_sdfg(simplify=True)
@@ -298,7 +300,7 @@ def test_owned_build_reusable_handle_program(tmp_path):
 def test_toolchain_is_importable_without_dace():
     """Asking which OpenMP runtime a compiler links must not load the DaCe code generator."""
     # a fresh interpreter: this one imported dace long ago
-    path = Path(__file__).resolve().parents[1] / "nestforge" / "build" / "toolchain.py"
+    path = REPO_ROOT / "nestforge" / "build" / "toolchain.py"
     probe = textwrap.dedent(f"""
         import importlib.util, sys
         spec = importlib.util.spec_from_file_location("nf_toolchain_isolated", {str(path)!r})

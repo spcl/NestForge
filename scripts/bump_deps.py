@@ -9,9 +9,10 @@ Run after DaCe extended gains a transformation or fix NestForge needs, then rein
 
 import re
 import subprocess
-from pathlib import Path
 
-PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
+from nestforge.paths import REPO_ROOT
+
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 #: package -> (repository, tracked branch)
 TRACKED = {
     "dace": ("https://github.com/spcl/dace.git", "extended"),

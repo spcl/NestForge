@@ -8,12 +8,12 @@ that skipped pre-commit is caught by the tests too)."""
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parent.parent
-SCRIPTS = REPO / "scripts"
+from nestforge.paths import REPO_ROOT
+
+SCRIPTS = REPO_ROOT / "scripts"
 SH_SCRIPTS = ["setup_apt.sh"]
 
 
@@ -42,5 +42,5 @@ def test_script_rejects_unknown_flag(name):
 @pytest.mark.parametrize("check", [["format", "--check"], ["check"]], ids=["format", "lint"])
 def test_committed_tree_is_ruff_clean(check):
     """The pre-commit ruff hooks would leave the tree unchanged: formatted and lint-clean."""
-    r = subprocess.run([sys.executable, "-m", "ruff", *check, str(REPO)], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-m", "ruff", *check, str(REPO_ROOT)], capture_output=True, text=True)
     assert r.returncode == 0, f"ruff {' '.join(check)} failed -- run pre-commit run --all-files\n{r.stdout}{r.stderr}"

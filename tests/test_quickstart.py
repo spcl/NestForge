@@ -13,7 +13,8 @@ import pytest
 
 from nestforge.build import flags
 
-REPO = Path(__file__).resolve().parents[1]
+from nestforge.paths import REPO_ROOT
+
 
 pytestmark = pytest.mark.integration
 
@@ -46,8 +47,8 @@ def lib_paths(node):
 def quickstart_run(tmp_path_factory) -> tuple[Path, str]:
     """The CPU quick start, run once for every test here: its output folder and what it printed."""
     out = tmp_path_factory.mktemp("quickstart")
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO), *sys.path])}
-    command = [sys.executable, str(REPO / "examples" / "quickstart.py"), "--device", "cpu", "--out", str(out)]
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
+    command = [sys.executable, str(REPO_ROOT / "examples" / "quickstart.py"), "--device", "cpu", "--out", str(out)]
     run = subprocess.run(command, capture_output=True, text=True, env=env, cwd=out, timeout=1800)
     assert run.returncode == 0, run.stderr[-4000:]
     return out, run.stdout
@@ -105,10 +106,10 @@ def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_tree
 def jacobi_run(tmp_path_factory) -> tuple[Path, str]:
     """The CPU quick start on jacobi_1d, whose canonical form keeps two maps in its time loop."""
     out = tmp_path_factory.mktemp("quickstart_jacobi")
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO), *sys.path])}
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
     command = [
         sys.executable,
-        str(REPO / "examples" / "quickstart.py"),
+        str(REPO_ROOT / "examples" / "quickstart.py"),
         *("--device", "cpu", "--kernel", "jacobi_1d", "--out", str(out)),
     ]
     run = subprocess.run(command, capture_output=True, text=True, env=env, cwd=out, timeout=1800)

@@ -14,7 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from nestforge.paths import REPO_ROOT
+
 SPDX_LINE = "# SPDX-License-Identifier: GPL-3.0-or-later"
 HEADER = ("# Copyright 2021 ETH Zurich and the NestForge authors.", SPDX_LINE)
 COPYRIGHT_RE = re.compile(r"^# Copyright \d{4} ETH Zurich and the [\w.-]+ authors\.$")
