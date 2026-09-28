@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""NumPy and C emission of an extracted nest, run and compared with NumPy."""
+"""Python and C emission of an extracted nest, run and compared with NumPy."""
 
 import subprocess
 
@@ -9,7 +9,7 @@ import dace
 
 from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.ir.emit_numpy import load_emitted, nest_to_numpy
+from nestforge.ir.emit_python import load_emitted, nest_to_python
 from nestforge.build.arena import call_native
 from nestforge.corpus.translate import prepare, emit_sources
 
@@ -30,9 +30,9 @@ def boundary():
     return extract_nest_to_sdfg(psdfg, node, name="vadd_nest")
 
 
-def test_numpy_emit_runs():
+def test_the_python_oracle_runs():
     b = boundary()
-    src = nest_to_numpy(b, fn_name="vadd")
+    src = nest_to_python(b, fn_name="vadd")
     mod = load_emitted(src, "vadd")
     A = np.random.default_rng(0).random(32)
     B = np.random.default_rng(1).random(32)
@@ -83,7 +83,7 @@ def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
     calls = lower_nests_to_external_call(sdfg)
     assert calls, "nothing lowered; the fixture no longer produces an offloadable nest"
     _, b = calls[0]
-    mod = load_emitted(nest_to_numpy(b, fn_name="fused"), "fused")
+    mod = load_emitted(nest_to_python(b, fn_name="fused"), "fused")
 
     rng = np.random.default_rng(0)
     A = rng.random(32)
@@ -91,16 +91,3 @@ def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
     C = np.zeros(32)
     mod.fused(A=A, idx=idx, C=C, N=32)
     np.testing.assert_array_equal(C, A[idx] * 2.0)
-
-
-def test_the_standalone_preamble_is_the_live_helpers():
-    """An emitted standalone kernel must compute what the validated in-process one computes. The preamble
-    is generated from int_floor/int_ceil rather than hand-copied, so an edit to either cannot leave the
-    emitted text behind -- assert the property, not the generation trick."""
-    from nestforge.ir import emit_numpy
-
-    namespace = {}
-    exec(emit_numpy.STANDALONE_PREAMBLE, namespace)  # noqa: S102 -- the point is that it is runnable
-    for a, b in ((7, 2), (-7, 2), (7, -2), (-7, -2), (8, 4), (0, 3)):
-        assert namespace["int_floor"](a, b) == emit_numpy.int_floor(a, b), (a, b)
-        assert namespace["int_ceil"](a, b) == emit_numpy.int_ceil(a, b), (a, b)

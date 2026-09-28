@@ -14,8 +14,7 @@ from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
 
-from nestforge.ir.emit_numpy import nest_to_numpy
-from nestforge.ir.emit_yaml import manifest_dict
+from nestforge.corpus.translate import python_and_manifest
 from nestforge.ir.extract import (
     Boundary,
     NestNode,
@@ -116,12 +115,13 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     state, nsdfg = boundary.state, boundary.nsdfg_node
     if state is None or nsdfg is None:
         raise ValueError("replace_nsdfg_with_external needs an extracted-nest Boundary (state + nsdfg_node)")
+    source, manifest = python_and_manifest(boundary, name)
     ext = ExternalCall(
         name,
         inputs=[in_conn(i) for i in boundary.inputs],
         outputs=[out_conn(o) for o in boundary.outputs],
-        numpy_source=nest_to_numpy(boundary, fn_name=name),
-        config=manifest_dict(boundary, name),
+        numpy_source=source,
+        config=manifest,
         standalone_sdfg=reference_sdfg(boundary),
     )
     state.add_node(ext)

@@ -6,8 +6,6 @@ transfers the kernel DAG implies. Default: parallel kernels on the GPU when it i
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
-
 import dace
 from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
@@ -118,12 +116,9 @@ def transfers(graph: KernelGraph, devices: dict[str, str]) -> list[Transfer]:
     """Every kernel input and program exit whose producer sits in the other memory space. Program inputs, host
     code and the program exit are host memory; ``devices`` maps each kernel to ``cpu`` or ``gpu``."""
     moves: list[Transfer] = []
-    for kernel in graph.kernels:
-        for edge in graph.arguments(kernel):
-            if edge.role == "input":
-                moves += crossings(edge.arg, edge.labels(), kernel, devices[kernel], devices)
-    # the exit edges are only in the JSON form of the graph
-    for edge in cast(list[dict[str, Any]], graph.to_json()["exits"]):
-        kernels = [f"{p['name']}.{p['arg']}" for p in edge["producers"] if p["kind"] == "kernel"]
-        moves += crossings(edge["arg"], list(dict.fromkeys(kernels)), "exit", "cpu", devices)
+    for edge in graph.edges:
+        if edge.role == "input":
+            moves += crossings(edge.arg, edge.labels(), edge.consumer, devices[edge.consumer], devices)
+    for edge in graph.exits:
+        moves += crossings(edge.arg, edge.labels(), "exit", "cpu", devices)
     return moves

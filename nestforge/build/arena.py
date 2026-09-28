@@ -19,7 +19,7 @@ from dace import symbolic
 
 from nestforge.build import flags
 from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, scratch_arrays
+from nestforge.ir.emit_python import load_emitted, oracle_sdfg, scratch_arrays
 from nestforge.ir.extract import Boundary
 from nestforge.corpus.translate import Prepared
 
@@ -35,7 +35,7 @@ INPUT_HIGH = 0.25
 
 def make_inputs(boundary: Boundary, sizes: dict[str, int], seed: int = 0) -> dict[str, np.ndarray]:
     """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller."""
-    sdfg = maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols)  # the raw nest's scratch is too small
+    sdfg = oracle_sdfg(boundary)  # the raw nest's scratch is too small
     rng = np.random.default_rng(seed)
     arrays: dict[str, np.ndarray] = {}
     out_only = [o for o in boundary.outputs if o not in boundary.inputs]

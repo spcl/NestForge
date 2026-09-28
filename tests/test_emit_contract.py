@@ -1,17 +1,16 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The emitter contract of docs/emitter.md: the caller allocates every buffer, the NumPy signature matches the
+"""The emitter contract of docs/emitter.md: the caller allocates every buffer, the Python signature matches the
 manifest, and the caller sizes scratch the way the emitter widened it."""
 
 import numpy as np
 import dace
 from dace.sdfg.state import LoopRegion
 
-from nestforge.build.arena import make_inputs
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch, nest_to_numpy
+from nestforge.ir.emit_python import load_emitted, nest_to_python, oracle_sdfg
 from nestforge.ir.extract import Boundary
 
-from helpers import sdfg_to_numpy
+from helpers import sdfg_to_python
 
 N = dace.symbol("N")
 
@@ -29,7 +28,7 @@ def dot_scale(x: dace.float64[N], y: dace.float64[N], z: dace.float64[N], out: d
 
 def test_scalar_transient_consistent_between_libnode_and_tasklet():
     # Dot writes a scalar transient `s`; the map tasklet reads it. Both must name it identically.
-    src = sdfg_to_numpy(dot_scale.to_sdfg(simplify=True), "k")
+    src, _ = sdfg_to_python(dot_scale.to_sdfg(simplify=True), "k")
     n = 6
     rng = np.random.default_rng(0)
     x, y, z, out = rng.random(n), rng.random(n), rng.random(n), np.zeros(n)
@@ -44,11 +43,11 @@ def matvec_return(A: dace.float64[N, N], v: dace.float64[N]):
 
 def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
     sdfg = matvec_return.to_sdfg(simplify=True)
-    src = sdfg_to_numpy(sdfg, "k")
+    src, _ = sdfg_to_python(sdfg, "k")
     assert "np.empty" not in src and "np.zeros" not in src, "C-style: caller pre-allocates, kernel must not"
     assert "return " not in src, "C-style: __return is an in-place output buffer param, not a python return"
     # __return is a parameter written in place.
-    header = src.splitlines()[0]
+    header = next(line for line in src.splitlines() if line.startswith("def k("))
     assert "__return" in header
     n = 5
     rng = np.random.default_rng(1)
@@ -75,9 +74,9 @@ def nested_map_sdfg():
 def test_nested_map_in_map_emits_nested_for_loops():
     """A map nested inside a map (the multi-nest kernels s2275 / s152 need this) is emitted as nested ``for``
     loops with the inner body at the deeper indent, neither dropped nor refused."""
-    src = sdfg_to_numpy(nested_map_sdfg(), "k")
-    assert "for i in range(0, N, 1):" in src and "for j in range(0, N, 1):" in src
-    assert "B[i, j] = (A[i, j] * 2.0)" in src
+    src, _ = sdfg_to_python(nested_map_sdfg(), "k")
+    assert "    for i in range(0, N):  # parallel\n        for j in range(0, N):  # parallel\n" in src
+    assert "            B[i, j] = A[i, j] * 2.0" in src
     # numerically correct: exec the emitted kernel and compare to B = A * 2.
     n = 6
     rng = np.random.default_rng(0)
@@ -96,7 +95,7 @@ def test_indirect_gather_stages_map_entry_read():
     """``a[b[i]]`` is staged as ``<sym> = b[i]`` fed by the map entry; without that load the gather names an
     undefined symbol."""
     sdfg = gather.to_sdfg(simplify=True)
-    src = sdfg_to_numpy(sdfg, "k")
+    src, _ = sdfg_to_python(sdfg, "k")
     assert "= b[i]" in src, f"map-entry-sourced staging load not emitted:\n{src}"
     n = 8
     rng = np.random.default_rng(0)
@@ -107,7 +106,7 @@ def test_indirect_gather_stages_map_entry_read():
 
 def loop_scratch_boundary():
     """A nest with a scratch transient shaped by the loop variable (``tmp[loop_i + 1]``) -- the shape the
-    emitter widens to ``N + 1`` so the buffer stays a caller-allocated parameter."""
+    emitter widens to its largest value, ``N``, so the buffer stays a caller-allocated parameter."""
     # A dedicated symbol name: ``i`` is a common loop variable, and dace's symbol registry rejects a
     # re-declaration with a different dtype, which would couple this test to whatever ran before it.
     loop_i = dace.symbol("loop_i", dace.int64)
@@ -125,17 +124,20 @@ def loop_scratch_boundary():
 
 def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
     """make_inputs sized scratch from the raw descriptor while the emitted kernel is written against the
-    ``maxsize_loop_scratch``-widened one, so the caller handed the kernel a buffer smaller than it indexes
-    -- a write past the end of the allocation across the ABI (heap corruption in the forked child)."""
+    widened one, so the caller handed the kernel a buffer smaller than it indexes -- a write past the end
+    of the allocation across the ABI (heap corruption in the forked child)."""
+    from nestforge.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
+
     boundary = loop_scratch_boundary()
     sizes = {"N": 4}
-    widened = maxsize_loop_scratch(boundary.standalone_sdfg, boundary.symbols).arrays["tmp"]
-    assert str(widened.shape[0]) == "N + 1"  # the extent the emitted kernel addresses
+    widened = oracle_sdfg(boundary).arrays["tmp"]
+    # the extent the emitted kernel addresses: loop_i + 1 at loop_i = N - 1
+    assert dace.symbolic.evaluate(widened.shape[0], {dace.symbol("N"): sizes["N"]}) == sizes["N"]
 
     got = make_inputs(boundary, sizes, seed=0)["tmp"]
-    assert got.shape == (sizes["N"] + 1,), "scratch allocated from the raw (smaller) shape, not the emitted one"
+    assert got.shape == (sizes["N"],), "scratch allocated from the raw (smaller) shape, not the emitted one"
 
 
 def test_the_emitted_signature_takes_the_scratch_buffer_the_caller_allocates():
     boundary = loop_scratch_boundary()
-    assert nest_to_numpy(boundary, "k").splitlines()[0] == "def k(a, tmp, N):"
+    assert "\ndef k(a, tmp, N):\n" in nest_to_python(boundary, "k")

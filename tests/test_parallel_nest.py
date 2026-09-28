@@ -14,10 +14,10 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.ir.emit_numpy import load_emitted
+from nestforge.ir.emit_python import load_emitted
 from nestforge.stages.scopes import is_parallel_nest, parallel_top_level_maps
 
-from helpers import loop_level_kernel, sdfg_to_numpy
+from helpers import loop_level_kernel, sdfg_to_python
 
 
 def nest_refs(key):
@@ -54,11 +54,11 @@ def test_s2275_nested_map_emits_and_computes():
     # tsvc_2_s2275 baseline = an i-loop with an inner j-loop (2-D aa FMA) + an i-level 1-D statement.
     # Canonicalization legally distributes the two (the yaml puzzle: interchange for the matrix update
     # is legal only once the vector statement is out of the i loop), so phase 2 sees two top-level
-    # parallel maps; the 2-D aa update is the one that exercises map_lines' nested-for recursion.
+    # parallel maps; the 2-D aa update is the one that exercises nested-for emission.
     _, refs = nest_refs("tsvc_2_s2275")
     assert len(refs) == 2
     boundary = extract_nest_to_sdfg(refs[0][0], refs[0][1], name="s2275_aa")
-    src = sdfg_to_numpy(boundary.standalone_sdfg, "s2275_aa")
+    src, _ = sdfg_to_python(boundary.standalone_sdfg, "s2275_aa")
     assert src.count("for ") >= 2  # nested for-loops, not a refusal
 
     kernel = load_emitted(src, "s2275_aa").s2275_aa

@@ -1,11 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Read-only views of a program: the structure tree (:func:`describe_graph`), a kernel as NumPy, and the arrays a
+"""Read-only views of a program: the structure tree (:func:`describe_graph`), a kernel as Python, and the arrays a
 nest reads and writes."""
 
 from __future__ import annotations
 
 import ast
+import copy
 import functools
 from dataclasses import dataclass
 from typing import Any, cast
@@ -20,16 +21,18 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegio
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
-from nestforge.ir.dace_types import bounds, memlet_subset, strings
-from nestforge.ir.emit_libnode import UnsupportedLibraryNode
-from nestforge.ir.emit_numpy import UnsupportedNest, map_body_lines, map_lines, standalone_source
+from nestforge.ir.dace_types import strings
+from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
 from nestforge.ir.names import ScopeChildren, in_order, ordered_scope_children
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
 
-#: Marks a numpy body line, so a statement is never mistaken for a tree row.
+#: Marks a Python body line, so a statement is never mistaken for a tree row.
 BODY = ": "
+
+#: Entries of each cache of parsed index and bound texts; a program repeats a few hundred.
+CACHE_SIZE = 4096
 
 #: What a ``Handle`` is asked to name: kind ``region`` for a control-flow block, ``nest`` for a map or library node.
 Handle = Callable[[str, object], str]
@@ -83,7 +86,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
     return ast.unparse(simplify_indices(tree)).strip()
 
 
-@functools.lru_cache(maxsize=4096, typed=True)
+@functools.lru_cache(maxsize=CACHE_SIZE, typed=True)
 def simplified_index(text: str) -> str:
     """Cached sympy round-trip for one subscript's unparsed slice text."""
     return str(dace.symbolic.simplify(dace.symbolic.pystr_to_symbolic(text)))
@@ -100,41 +103,47 @@ def simplify_indices(tree: ast.AST) -> ast.AST:
     return ast.fix_missing_locations(tree)
 
 
-def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: ScopeChildren) -> list[str]:
-    """The NumPy statements a leaf kernel computes; an emitter refusal becomes the line's text. ``children`` is the
-    state's ``scope_children()``, built once by the caller."""
-    if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
-        return []
+#: A live node's id -> its copy in a twin lowered for emission (:func:`lowered_twin`).
+Twin = dict[int, Any]
+
+
+def lowered_twin(sdfg: dace.SDFG) -> Twin:
+    """A copy of ``sdfg`` lowered for Python emission, found by the ids of the live states and nodes; emission never
+    touches the live program."""
+    twin = copy.deepcopy(sdfg)
+    pairs: Twin = {id(a): b for a, b in zip(sdfg.all_states(), twin.all_states())}
+    pairs |= {id(pair[0]): copied[0] for pair, copied in zip(sdfg.all_nodes_recursive(), twin.all_nodes_recursive())}
+    lower(twin, expand=False)
+    return pairs
+
+
+def body_lines(twin: Twin, state: SDFGState, entry: nodes.MapEntry) -> list[str]:
+    """What one iteration of ``entry`` computes, as Python; an emitter refusal becomes the line's text."""
     try:
-        return map_body_lines(state, sdfg, entry)
-    except (UnsupportedNest, UnsupportedLibraryNode) as exc:
+        return map_python(twin[id(state)], twin[id(entry)], body_only=True)
+    except UnsupportedNest as exc:
         return [f"<not emitted: {exc}>"]
 
 
+def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: ScopeChildren) -> list[str]:
+    """The Python statements a leaf kernel computes. ``children`` is the state's ``scope_children()``."""
+    if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
+        return []
+    return body_lines(lowered_twin(sdfg), state, entry)
+
+
 def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
-    """One kernel as a runnable NumPy module: a ``def`` over the arrays it touches, then every symbol its scope
-    reads, each sorted, and the preamble its body calls."""
+    """One kernel as a runnable Python module: a ``def`` over the arrays it touches, then every symbol its scope
+    reads, each sorted."""
     reads, writes = nest_reads_writes(state, entry)
     arrays = sorted(set(reads) | set(writes))
     symbols = sorted({str(sym) for sym in state.scope_subgraph(entry).free_symbols} - set(arrays))
-    return standalone_source(entry.map.label, arrays + symbols, map_lines(state, sdfg, entry))
+    twin = lowered_twin(sdfg)
+    return module(entry.map.label, arrays + symbols, map_python(twin[id(state)], twin[id(entry)]))
 
 
 #: ``ReductionType`` -> how the tree spells it; anything absent renders its lowercased enum name.
-REDUCTION_SPELLING = {
-    dtypes.ReductionType.Sum: "+",
-    dtypes.ReductionType.Product: "*",
-    dtypes.ReductionType.Min: "min",
-    dtypes.ReductionType.Max: "max",
-    dtypes.ReductionType.Sub: "-",
-    dtypes.ReductionType.Div: "/",
-    dtypes.ReductionType.Logical_And: "and",
-    dtypes.ReductionType.Logical_Or: "or",
-    dtypes.ReductionType.Logical_Xor: "xor",
-    dtypes.ReductionType.Bitwise_And: "&",
-    dtypes.ReductionType.Bitwise_Or: "|",
-    dtypes.ReductionType.Bitwise_Xor: "^",
-}
+REDUCTION_SPELLING = {dtypes.ReductionType.Sum: "+", dtypes.ReductionType.Product: "*"}
 
 
 def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
@@ -148,8 +157,8 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
             continue
         kind = detect_reduction_type(edge.data.wcr)
         op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
-        subset = memlet_subset(edge.data)
-        written = {str(s) for r in (bounds(subset) if subset else []) for b in r for s in b.free_symbols}
+        subset = edge.data.subset
+        written = subset.free_symbols if isinstance(subset, dace.subsets.Subset) else set()
         collapsed = [p for p in strings(entry.map.params) if p not in written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")
@@ -186,7 +195,7 @@ def loop_domain(loop: LoopRegion, defs: dict[str, str]) -> str:
     return resolve_scalars(loop.loop_condition.as_string, defs) if loop.loop_condition is not None else ""
 
 
-@functools.lru_cache(maxsize=4096, typed=True)
+@functools.lru_cache(maxsize=CACHE_SIZE, typed=True)
 def exclusive_end(end_text: str, delta: int) -> str:
     """``end + delta``, simplified; the same bound recurs across a program's kernels."""
     return str(dace.symbolic.simplify(cast(sympy.Expr, dace.symbolic.pystr_to_symbolic(end_text)) + delta))
@@ -230,13 +239,14 @@ def describe_graph(
     """The program as a text tree, one line per block or kernel.
 
     :param handle: Returns the id to print on a row.
-    :param bodies: Also print what each leaf kernel computes, as NumPy.
+    :param bodies: Also print what each leaf kernel computes, as Python.
     :param metrics: Returns the suffix of a top-level map's row.
     :param notes: Returns a line to print under a library node's row.
     :param epoch: Printed on the first line.
     """
     header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
-    tree = Tree([header], handle, interstate_definitions(sdfg), bodies, metrics, notes)
+    twin = lowered_twin(sdfg) if bodies else None
+    tree = Tree([header], handle, interstate_definitions(sdfg), twin, metrics, notes)
     walk_regions(tree, sdfg, "")
     return "\n".join(tree.lines)
 
@@ -248,7 +258,7 @@ class Tree:
     lines: list[str]
     handle: Handle | None
     defs: dict[str, str]
-    bodies: bool
+    twin: Twin | None
     metrics: Metrics | None
     notes: Notes | None
 
@@ -298,8 +308,9 @@ def walk_state(tree: Tree, state: SDFGState, prefix: str) -> None:
             tree.lines.append(pad + (ELBOW if last else TEE) + tree.stamp(text, "nest", node))
             tree.lines.extend(note_lines(node, below, tree.notes))
             if isinstance(node, nodes.MapEntry):
-                if tree.bodies:
-                    tree.lines.extend(below + BODY + line for line in kernel_body(state, state.sdfg, node, children))
+                leaf = not any(isinstance(child, nodes.MapEntry) for child in children[node])
+                if tree.twin is not None and leaf:
+                    tree.lines.extend(below + BODY + line for line in body_lines(tree.twin, state, node))
                 descend(node, below)
 
     descend(None, prefix)

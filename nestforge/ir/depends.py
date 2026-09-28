@@ -1,17 +1,16 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Container-level dataflow between kernels: for every ``ExternalCall`` argument, the producers whose value can
-reach it. Whole containers only: a read reads all of it, a write replaces all of it (``docs/depends.md``)."""
+"""The kernel DAG: for every ``ExternalCall`` argument, the producers whose value can reach it (the program, a
+kernel output, or a host state) and the loops it is carried around. Whole containers only: a read reads all of
+it, a write replaces all of it."""
 
 from __future__ import annotations
 
 import functools
-import heapq
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 import dace
-from dace.properties import CodeBlock
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
@@ -33,15 +32,15 @@ from nestforge.ir.names import in_order
 
 INPUT_PREFIX = in_conn("")
 OUTPUT_PREFIX = out_conn("")
-ROLE_ORDER = {"input": 0, "symbol": 1}
+
+#: Why a kernel reads an argument: a data input or a symbol.
+Role = Literal["input", "symbol"]
 
 
 class UnsupportedProgram(Exception):
     """The program holds a construct whose producers cannot be named at container level."""
 
-
-#: Why a kernel reads an argument: a data input or a symbol.
-Role = Literal["input", "symbol"]
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,24 +53,15 @@ class Producer:
 
     def label(self) -> str:
         """``program``, ``<kernel>.<arg>`` or ``host:<state>``."""
-        if self.kind == "kernel":
-            return f"{self.name}.{self.arg}"
-        if self.kind == "host":
-            return f"host:{self.name}"
-        return self.kind
+        return {"kernel": f"{self.name}.{self.arg}", "host": f"host:{self.name}"}.get(self.kind, self.kind)
 
 
 @dataclass(frozen=True, slots=True)
-class Reach:
-    """A producer reaching a use; ``carried_by`` names each loop whose back edge the value crossed."""
+class Fact:
+    """The producers reaching a name, and the loops whose back edge one of them crossed."""
 
-    producer: Producer
-    carried_by: tuple[str, ...] = ()
-
-    def text(self) -> str:
-        """The producer label, with ``[carried: <loops>]`` when the value crossed a back edge."""
-        carried = f" [carried: {' > '.join(self.carried_by)}]" if self.carried_by else ""
-        return self.producer.label() + carried
+    producers: tuple[Producer, ...] = ()
+    carried: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,40 +71,30 @@ class ArgEdge:
     consumer: str
     arg: str
     role: Role
-    producers: tuple[Reach, ...]
-    via: tuple[str, ...] = ()
+    producers: tuple[Producer, ...]
+    carried: tuple[str, ...] = ()
 
     def text(self) -> str:
-        """``arg <- p0 | p1`` plus the interstate assignments the value flowed through."""
-        producers = " | ".join(reach.text() for reach in self.producers) or "none"
-        via = " via " + "; ".join(f'"{text}"' for text in self.via) if self.via else ""
-        return f"{self.arg} <- {producers}{via}"
+        """``arg <- p0 | p1``, with ``[carried: <loops>]`` when a value crossed a loop's back edge."""
+        carried = f" [carried: {' > '.join(self.carried)}]" if self.carried else ""
+        return f"{self.arg} <- {' | '.join(self.labels()) or 'none'}{carried}"
 
     def labels(self) -> list[str]:
-        """The distinct producer labels, carried or not, in producer order."""
-        return list(dict.fromkeys(reach.producer.label() for reach in self.producers))
+        """The producer labels, in order."""
+        return [producer.label() for producer in self.producers]
 
     def loops(self) -> list[str]:
-        """The distinct loops whose back edge a reaching value crossed."""
-        return list(dict.fromkeys(loop for reach in self.producers for loop in reach.carried_by))
+        """The loops whose back edge a reaching value crossed."""
+        return list(self.carried)
 
     def to_json(self) -> dict[str, object]:
         """A plain, key-ordered dictionary."""
-        producers = [
-            {
-                "kind": reach.producer.kind,
-                "name": reach.producer.name,
-                "arg": reach.producer.arg,
-                "carried_by": list(reach.carried_by),
-            }
-            for reach in self.producers
-        ]
         return {
             "consumer": self.consumer,
             "arg": self.arg,
             "role": self.role,
-            "producers": producers,
-            "via": list(self.via),
+            "producers": self.labels(),
+            "carried": self.loops(),
         }
 
 
@@ -128,11 +108,7 @@ class KernelGraph:
 
     def consumers_of(self, kernel: str) -> tuple[ArgEdge, ...]:
         """Every kernel argument edge that ``kernel`` can produce."""
-        return tuple(
-            edge
-            for edge in self.edges
-            if any(reach.producer.kind == "kernel" and reach.producer.name == kernel for reach in edge.producers)
-        )
+        return tuple(e for e in self.edges if any(p.kind == "kernel" and p.name == kernel for p in e.producers))
 
     def arguments(self, kernel: str) -> tuple[ArgEdge, ...]:
         """The argument edges of ``kernel``, inputs then symbols."""
@@ -144,13 +120,11 @@ class KernelGraph:
 
     def lines(self) -> list[str]:
         """One :meth:`line` per kernel, then one ``exit:`` line."""
-        out = [self.line(kernel) for kernel in self.kernels]
-        if self.exits:
-            out.append("exit: " + ", ".join(edge.text() for edge in self.exits))
-        return out
+        exits = ["exit: " + ", ".join(edge.text() for edge in self.exits)] if self.exits else []
+        return [self.line(kernel) for kernel in self.kernels] + exits
 
     def to_json(self) -> dict[str, object]:
-        """A plain dictionary in the graph's sorted order."""
+        """A plain dictionary in the graph's order."""
         return {
             "kernels": list(self.kernels),
             "edges": [edge.to_json() for edge in self.edges],
@@ -158,21 +132,28 @@ class KernelGraph:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class Fact:
-    reaches: tuple[Reach, ...] = ()
-    via: tuple[str, ...] = ()
-
-
 #: What reaches each container or symbol name at one program point; an absent name has no producer.
 Env = dict[str, Fact]
+PROGRAM = Fact((Producer("program"),))
 
-EMPTY = Fact()
-PROGRAM = Fact((Reach(Producer("program")),))
+
+def merge(*facts: Fact) -> Fact:
+    producers = dict.fromkeys(p for fact in facts for p in fact.producers)
+    carried = dict.fromkeys(loop for fact in facts for loop in fact.carried)
+    return Fact(tuple(sorted(producers, key=Producer.label)), tuple(carried))
+
+
+def join(*envs: Env | None) -> Env | None:
+    present = [env for env in envs if env is not None]
+    if not present:
+        return None
+    return functools.reduce(lambda a, b: {n: merge(a.get(n, Fact()), b.get(n, Fact())) for n in {**a, **b}}, present)
 
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
+    """The environments leaving a block normally and through a break, a continue or a return."""
+
     normal: Env | None = None
     breaks: Env | None = None
     continues: Env | None = None
@@ -181,223 +162,125 @@ class Outcome:
 
 @dataclass(slots=True)
 class Tracker:
-    kernels: dict[str, None] = field(default_factory=dict)
-    # (consumer, role, arg) -> edge; the last visit is the fixpoint's
-    edges: dict[tuple[str, str, str], ArgEdge] = field(default_factory=dict)
-    written: dict[str, None] = field(default_factory=dict)
+    """Kernels in visit order and each ``(consumer, role, arg)`` edge; a loop's last visit is its fixpoint."""
 
-
-def reach_key(reach: Reach) -> tuple[str, tuple[str, ...]]:
-    return reach.producer.label(), reach.carried_by
-
-
-def merge(*facts: Fact) -> Fact:
-    reaches = dict.fromkeys(reach for fact in facts for reach in fact.reaches)
-    via = dict.fromkeys(text for fact in facts for text in fact.via)
-    return Fact(tuple(sorted(reaches, key=reach_key)), tuple(sorted(via)))
-
-
-def union(first: Env, second: Env) -> Env:
-    names = dict.fromkeys([*first, *second])
-    return {name: merge(first.get(name, EMPTY), second.get(name, EMPTY)) for name in names}
-
-
-def join(*envs: Env | None) -> Env | None:
-    present = [env for env in envs if env is not None]
-    return functools.reduce(union, present) if present else None
-
-
-def join_outcomes(outcomes: list[Outcome], normal: Env | None) -> Outcome:
-    return Outcome(
-        normal,
-        join(*(outcome.breaks for outcome in outcomes)),
-        join(*(outcome.continues for outcome in outcomes)),
-        join(*(outcome.returns for outcome in outcomes)),
-    )
+    kernels: dict[str, None]
+    edges: dict[tuple[str, str, str], ArgEdge]
+    written: dict[str, None]
 
 
 def assign(env: Env, assignments: dict[str, str]) -> Env:
-    if not assignments:
-        return env
     env = dict(env)
-    # sequential, as codegen emits them: a later assignment reads an earlier one's target
-    for name, text in assignments.items():
-        read = [env[read_name] for read_name in sorted(names_read_by_text(text)) if read_name in env]
-        env[name] = merge(*read, Fact(via=(f"{name} = {text}",)))
+    for name, text in assignments.items():  # in order: a later assignment reads an earlier one's target
+        env[name] = merge(*(env[read] for read in sorted(names_read_by_text(text)) if read in env))
     return env
 
 
-def kernel_fact(node: ExternalCall, connector: str) -> Fact:
-    return Fact((Reach(Producer("kernel", node.label, connector.removeprefix(OUTPUT_PREFIX))),))
-
-
-def source_fact(state: SDFGState, edge: MultiConnectorEdge, facts: dict[int, Fact]) -> Fact:
-    source = edge.src
-    if isinstance(source, ExternalCall) and edge.src_conn is not None and edge.src_conn.startswith(OUTPUT_PREFIX):
-        return kernel_fact(source, edge.src_conn)
-    if isinstance(source, nodes.AccessNode):
-        # an AccessNode -> AccessNode copy forwards its source, so offload copies stay invisible
-        return facts[id(source)]
-    return Fact((Reach(Producer("host", state.label)),))
-
-
-@dataclass(frozen=True, slots=True)
-class Views:
-    # ids of the edges binding a view to what it views, and each view node's root array
-    bindings: dict[int, None]
-    roots: dict[int, str]
-
-
-def state_views(state: SDFGState) -> Views:
-    bindings: dict[int, None] = {}
-    roots: dict[int, str] = {}
-    for node in state.data_nodes():
-        if not isinstance(node.desc(state.sdfg), dace.data.View):
-            continue
-        binding = sdutil.get_view_edge(state, node)
-        root = sdutil.get_last_view_node(state, node)
-        if binding is None or root is None:
-            raise UnsupportedProgram(f"view {node.data!r} in state {state.label!r} binds no container")
-        bindings[id(binding)] = None
-        roots[id(node)] = root.data
-    return Views(bindings, roots)
-
-
-def access_flow(
-    state: SDFGState, node: nodes.AccessNode, views: Views, env: Env, facts: dict[int, Fact], tracker: Tracker
-) -> None:
-    # a view reads and writes its root array; the binding edge itself moves no data
-    container = views.roots.get(id(node), node.data)
-    writes = [edge for edge in state.in_edges(node) if not edge.data.is_empty() and id(edge) not in views.bindings]
-    if not writes:
-        facts[id(node)] = env.get(container, EMPTY)
-        return
-    fact = merge(*(source_fact(state, edge, facts) for edge in writes))
-    facts[id(node)] = fact
-    env[container] = fact
-    tracker.written[container] = None
-
-
 def kernel_symbols(node: ExternalCall) -> list[str]:
-    # read once: a dace Property; dace.library.node erases the class type, hiding the property from pyright
-    manifest = node.config  # pyright: ignore[reportAttributeAccessIssue]
+    """The symbol arguments of a kernel: its manifest's non-array inputs."""
+    manifest = node.config  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe property
     if not manifest:
         raise UnsupportedProgram(f"ExternalCall {node.label!r} has no manifest, so its symbol arguments are unknown")
-    # the manifest's non-array inputs are the symbols the kernel takes, body-only ones included
     return sorted(arg for arg in manifest["input_args"] if arg not in manifest["array_args"])
 
 
 def record(tracker: Tracker, consumer: str, arg: str, role: Role, fact: Fact) -> None:
-    tracker.edges[(consumer, role, arg)] = ArgEdge(consumer, arg, role, fact.reaches, fact.via)
-
-
-def kernel_flow(state: SDFGState, node: ExternalCall, env: Env, facts: dict[int, Fact], tracker: Tracker) -> None:
-    tracker.kernels[node.label] = None
-    for edge in state.in_edges(node):
-        connector = edge.dst_conn
-        if connector is None or not connector.startswith(INPUT_PREFIX):
-            continue
-        record(tracker, node.label, connector.removeprefix(INPUT_PREFIX), "input", source_fact(state, edge, facts))
-    for name in kernel_symbols(node):
-        record(tracker, node.label, name, "symbol", env.get(name, EMPTY))
+    tracker.edges[(consumer, role, arg)] = ArgEdge(consumer, arg, role, fact.producers, fact.carried)
 
 
 def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
+    """Writes of one state: a kernel output, a copy (which forwards its source), or any other host writer."""
     env = dict(env)
     facts: dict[int, Fact] = {}
-    views = state_views(state)
+    bindings: dict[int, None] = {}  # edges binding a view to what it views; they move no data
+    roots: dict[int, str] = {}
+    for node in state.data_nodes():
+        if isinstance(node.desc(state.sdfg), dace.data.View):
+            binding, root = sdutil.get_view_edge(state, node), sdutil.get_last_view_node(state, node)
+            if binding is None or root is None:
+                raise UnsupportedProgram(f"view {node.data!r} in state {state.label!r} binds no container")
+            bindings[id(binding)] = None
+            roots[id(node)] = root.data
+
+    def source(edge: MultiConnectorEdge) -> Fact:
+        if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUTPUT_PREFIX):
+            return Fact((Producer("kernel", edge.src.label, edge.src_conn.removeprefix(OUTPUT_PREFIX)),))
+        if isinstance(edge.src, nodes.AccessNode):
+            return facts[id(edge.src)]
+        return Fact((Producer("host", state.label),))
+
     for node in in_order(state):
         if isinstance(node, nodes.AccessNode):
-            access_flow(state, node, views, env, facts, tracker)
+            container = roots.get(id(node), node.data)
+            writes = [e for e in state.in_edges(node) if not e.data.is_empty() and id(e) not in bindings]
+            facts[id(node)] = merge(*map(source, writes)) if writes else env.get(container, Fact())
+            if writes:
+                env[container] = facts[id(node)]
+                tracker.written[container] = None
         elif isinstance(node, ExternalCall):
-            kernel_flow(state, node, env, facts, tracker)
+            tracker.kernels[node.label] = None
+            for edge in state.in_edges(node):
+                if edge.dst_conn and edge.dst_conn.startswith(INPUT_PREFIX):
+                    record(tracker, node.label, edge.dst_conn.removeprefix(INPUT_PREFIX), "input", source(edge))
+            for name in kernel_symbols(node):
+                record(tracker, node.label, name, "symbol", env.get(name, Fact()))
     return env
 
 
-def block_input(
-    region: ControlFlowRegion, block: ControlFlowBlock, entry: Env, edge_envs: dict[int, Env | None]
-) -> Env | None:
-    arriving = [edge_envs.get(id(edge)) for edge in region.in_edges(block)]
-    return join(entry if block is region.start_block else None, *arriving)
-
-
-def region_exit(region: ControlFlowRegion, blocks: list[ControlFlowBlock], outcomes: dict[int, Outcome]) -> Outcome:
-    reached = [(block, outcomes[index]) for index, block in enumerate(blocks) if index in outcomes]
-    sinks = [outcome.normal for block, outcome in reached if region.out_degree(block) == 0]
-    return join_outcomes([outcome for _, outcome in reached], join(*sinks))
-
-
 def region_flow(region: ControlFlowRegion, entry: Env, tracker: Tracker) -> Outcome:
+    """Blocks in order, each entered with the join of the edges reaching it; a structured region has no cycle."""
     blocks = in_order(region)
+    rank = {id(block): index for index, block in enumerate(blocks)}
+    if any(rank[id(e.dst)] <= rank[id(e.src)] for e in region.edges()):
+        raise UnsupportedProgram(f"region {region.label!r} has a cycle outside a loop region")
+    leaving: dict[int, Env | None] = {}
+    outcomes: list[Outcome] = []
+    sinks: list[Env | None] = []
+    for block in blocks:
+        start = entry if block is region.start_block else None
+        env = join(start, *(leaving.get(id(e)) for e in region.in_edges(block)))
+        if env is None:
+            continue
+        outcome = block_flow(block, env, tracker)
+        outcomes.append(outcome)
+        for edge in region.out_edges(block):
+            leaving[id(edge)] = None if outcome.normal is None else assign(outcome.normal, edge.data.assignments)
+        if region.out_degree(block) == 0:
+            sinks.append(outcome.normal)
     if not blocks:
         return Outcome(normal=entry)
-    rank = {id(block): index for index, block in enumerate(blocks)}
-    start = rank[id(region.start_block)]
-    inputs: dict[int, Env] = {start: entry}
-    outcomes: dict[int, Outcome] = {}
-    edge_envs: dict[int, Env | None] = {}
-    queue, queued = [start], {start: None}
-    # worklist in block order: a block reruns whenever its input grows, so its last visit sees the fixpoint
-    while queue:
-        index = heapq.heappop(queue)
-        del queued[index]
-        block = blocks[index]
-        outcome = block_flow(block, inputs[index], tracker)
-        outcomes[index] = outcome
-        for edge in region.out_edges(block):
-            leaving = outcome.normal
-            edge_envs[id(edge)] = None if leaving is None else assign(leaving, edge.data.assignments)
-            target = rank[id(edge.dst)]
-            arriving = block_input(region, edge.dst, entry, edge_envs)
-            if arriving is None or (target in inputs and inputs[target] == arriving):
-                continue
-            inputs[target] = arriving
-            if target not in queued:
-                queued[target] = None
-                heapq.heappush(queue, target)
-    return region_exit(region, blocks, outcomes)
-
-
-def carry(back: Env, incoming: Env, label: str) -> Env:
-    carried: Env = {}
-    for name, fact in back.items():
-        known = incoming.get(name, EMPTY).reaches
-        # a reach that also enters from outside the loop is the same value, not a carried one
-        fresh = [reach for reach in fact.reaches if reach not in known]
-        tagged = tuple(
-            reach if label in reach.carried_by else Reach(reach.producer, (*reach.carried_by, label)) for reach in fresh
-        )
-        carried[name] = Fact(tagged, fact.via)
-    return carried
-
-
-def loop_assign(loop: LoopRegion, statement: CodeBlock | None, env: Env) -> Env:
-    text = loop_analysis.assignment_text(statement, loop.loop_variable)
-    return env if text is None else assign(env, {loop.loop_variable: text})
+    return Outcome(
+        join(*sinks),
+        join(*(o.breaks for o in outcomes)),
+        join(*(o.continues for o in outcomes)),
+        join(*(o.returns for o in outcomes)),
+    )
 
 
 def loop_flow(loop: LoopRegion, env: Env, tracker: Tracker) -> Outcome:
-    incoming = loop_assign(loop, loop.init_statement, env)
-    back: Env | None = None
+    """Iterate the body until the head stops growing; a producer arriving fresh over the back edge is carried."""
+    init = loop_analysis.assignment_text(loop.init_statement, loop.loop_variable)
+    update = loop_analysis.assignment_text(loop.update_statement, loop.loop_variable)
+    incoming = env if init is None else assign(env, {loop.loop_variable: init})
+    head = incoming
     while True:
-        head = incoming if back is None else union(incoming, carry(back, incoming, loop.label))
         body = region_flow(loop, head, tracker)
-        ending = join(body.normal, body.continues)
-        latch = None if ending is None else loop_assign(loop, loop.update_statement, ending)
-        if latch == back:
+        latch = join(body.normal, body.continues)
+        if latch is not None and update is not None:
+            latch = assign(latch, {loop.loop_variable: update})
+        back: Env = {}
+        for name, fact in (latch or {}).items():
+            fresh = tuple(p for p in fact.producers if p not in incoming.get(name, Fact()).producers)
+            if fresh:
+                back[name] = Fact(fresh, (*fact.carried, loop.label))
+        grown = join(incoming, back) or incoming
+        if grown == head:
             break
-        back = latch
+        head = grown
     leaving = join(latch, body.breaks)
     if not loop_analysis.loop_provably_at_least_one_iteration(loop):
         leaving = join(leaving, incoming)
     return Outcome(normal=leaving, returns=body.returns)
-
-
-def conditional_flow(block: ConditionalBlock, env: Env, tracker: Tracker) -> Outcome:
-    outcomes = [region_flow(branch, env, tracker) for _, branch in block.branches]
-    has_else = any(condition is None for condition, _ in block.branches)
-    normal = join(*(outcome.normal for outcome in outcomes), None if has_else else env)
-    return join_outcomes(outcomes, normal)
 
 
 def block_flow(block: ControlFlowBlock, env: Env, tracker: Tracker) -> Outcome:
@@ -412,49 +295,43 @@ def block_flow(block: ControlFlowBlock, env: Env, tracker: Tracker) -> Outcome:
     if isinstance(block, LoopRegion):
         return loop_flow(block, env, tracker)
     if isinstance(block, ConditionalBlock):
-        return conditional_flow(block, env, tracker)
+        outcomes = [region_flow(branch, env, tracker) for _, branch in block.branches]
+        has_else = any(condition is None for condition, _ in block.branches)
+        return Outcome(
+            join(*(o.normal for o in outcomes), None if has_else else env),
+            join(*(o.breaks for o in outcomes)),
+            join(*(o.continues for o in outcomes)),
+            join(*(o.returns for o in outcomes)),
+        )
     if isinstance(block, ControlFlowRegion):
         return region_flow(block, env, tracker)
     raise UnsupportedProgram(f"control-flow block {block.label!r} ({type(block).__name__}) is not modeled")
-
-
-def refuse_unsupported(sdfg: dace.SDFG) -> None:
-    for sd in sdfg.all_sdfgs_recursive():
-        for name, desc in sd.arrays.items():
-            if isinstance(desc, dace.data.Reference):
-                raise UnsupportedProgram(
-                    f"container {name!r} of SDFG {sd.name!r} is a Reference: its target is bound at run time, "
-                    "so no producer can be named for it"
-                )
-        if sd is sdfg:
-            continue
-        for state in sd.all_states():
-            kernel = next((node for node in state.nodes() if isinstance(node, ExternalCall)), None)
-            if kernel is not None:
-                raise UnsupportedProgram(
-                    f"ExternalCall {kernel.label!r} sits inside nested SDFG {sd.name!r}: kernels are analyzed "
-                    "in the top-level SDFG only"
-                )
 
 
 def kernel_dependencies(sdfg: dace.SDFG) -> KernelGraph:
     """The producers reaching every ``ExternalCall`` argument of ``sdfg``, and every program output at exit.
 
     :param sdfg: The top-level SDFG holding the kernels; it is not modified.
-    :returns: The kernel graph, sorted by kernel program order, then role, then argument name.
+    :returns: The kernel graph, in kernel program order, then role, then argument name.
     :raises UnsupportedProgram: On a ``Reference`` container, a view bound to no container, an ``ExternalCall``
-        inside a nested SDFG or without a manifest, or a control-flow block it does not model.
+        inside a nested SDFG or without a manifest, or a control-flow cycle outside a loop region.
     """
-    refuse_unsupported(sdfg)
-    tracker = Tracker()
+    for sd in sdfg.all_sdfgs_recursive():
+        for name, desc in sd.arrays.items():
+            if isinstance(desc, dace.data.Reference):
+                raise UnsupportedProgram(f"container {name!r} of SDFG {sd.name!r} is a Reference, bound at run time")
+        kernels = [n for state in sd.all_states() for n in state.nodes() if isinstance(n, ExternalCall)]
+        if sd is not sdfg and kernels:
+            raise UnsupportedProgram(f"ExternalCall {kernels[0].label!r} sits inside nested SDFG {sd.name!r}")
+    tracker = Tracker({}, {}, {})
     names = [name for name, desc in sdfg.arrays.items() if not desc.transient] + sorted(sdfg.free_symbols)
     outcome = region_flow(sdfg, dict.fromkeys(names, PROGRAM), tracker)
     final = join(outcome.normal, outcome.returns) or {}
     order = {kernel: index for index, kernel in enumerate(tracker.kernels)}
-    edges = sorted(tracker.edges.values(), key=lambda edge: (order[edge.consumer], ROLE_ORDER[edge.role], edge.arg))
-    exits = []
-    for name in sorted(tracker.written):
-        if not sdfg.arrays[name].transient:
-            fact = final.get(name, EMPTY)
-            exits.append(ArgEdge("exit", name, "input", fact.reaches, fact.via))
+    edges = sorted(tracker.edges.values(), key=lambda e: (order[e.consumer], e.role != "input", e.arg))
+    exits = [
+        ArgEdge("exit", name, "input", final.get(name, Fact()).producers, final.get(name, Fact()).carried)
+        for name in sorted(tracker.written)
+        if not sdfg.arrays[name].transient
+    ]
     return KernelGraph(tuple(tracker.kernels), tuple(edges), tuple(exits))

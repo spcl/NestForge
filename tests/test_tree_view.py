@@ -236,13 +236,13 @@ def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
 
 
 def test_an_emitter_refusal_is_reported_on_the_line_not_raised(monkeypatch):
-    """The tree is a read-only view. A nest the numpy projection cannot express is exactly what the
+    """The tree is a read-only view. A nest the Python projection cannot express is exactly what the
     agent needs to be told about, so it must not take the whole tree down."""
 
-    def refuse(state, sdfg, entry):
+    def refuse(state, entry, body_only=False):
         raise introspect.UnsupportedNest("no emitter for this")
 
-    monkeypatch.setattr(introspect, "map_body_lines", refuse)
+    monkeypatch.setattr(introspect, "map_python", refuse)
     tree = with_bodies(shaped)
     assert "<not emitted: no emitter for this>" in tree
 
@@ -291,9 +291,8 @@ def test_the_reduction_op_is_read_off_the_wcr():
 
 
 def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
-    """The body comes from `map_body_lines`, not from dropping len(params) lines off `map_lines`
-    and dedenting by 4 * len(params). That arithmetic held only while every header was exactly one
-    line and every body line carried the full indent."""
+    """The body is emitted as one iteration's statements, not recovered by dropping len(params) lines off the
+    emitted loop block and dedenting by 4 * len(params)."""
     sdfg = shaped.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
     state, entry = next(
@@ -308,8 +307,8 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
         assert not line.startswith(" "), f"a body line arrived still indented: {line!r}"
         assert not line.startswith("for "), f"a header leaked into the body: {line!r}"
     # and it agrees with the full block the emitter produces for the same kernel
-    full = introspect.map_body_lines(state, sdfg, entry)
-    assert body == full
+    full = introspect.kernel_source(state, sdfg, entry)
+    assert all(f"    {line}\n" in full for line in body), (body, full)
 
 
 # one kernel's body
@@ -357,11 +356,11 @@ def test_a_kernel_source_is_a_whole_module_not_a_fragment():
 
 
 def test_a_kernel_source_runs_with_nothing_injected():
-    """No EMITTED_BUILTINS, no `np` handed in -- pure numpy or it does not count."""
+    """No `np` handed in -- the source imports what it calls or it does not count."""
     _, _, source = source_of_first_kernel(matvec)
     namespace = {}
     exec(source, namespace)  # a bare dict: only what the source itself defines
-    assert "int_floor" in namespace and "np" in namespace
+    assert "np" in namespace and any(k.startswith("kernel") and callable(v) for k, v in namespace.items())
 
 
 def test_a_kernel_source_computes_what_the_sdfg_computes():

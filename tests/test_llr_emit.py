@@ -4,8 +4,6 @@
 references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose WCR copy accumulates.
 """
 
-import inspect
-
 import numpy as np
 
 import dace
@@ -13,10 +11,9 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.ir.emit_numpy import load_emitted
 from nestforge.stages.scopes import top_level_map_entries
 
-from helpers import loop_level_kernel, sdfg_to_numpy
+from helpers import loop_level_kernel, run_emitted, sdfg_to_python
 
 
 def top_level_nest(sdfg: dace.SDFG):
@@ -40,18 +37,8 @@ def emit_and_call(key: str, sizes: dict, inputs: dict):
     canonicalize(sdfg, target="cpu")
     parent, node = top_level_nest(sdfg)
     boundary = extract_nest_to_sdfg(parent, node, name=key)
-    src = sdfg_to_numpy(boundary.standalone_sdfg, key)
-    fn = vars(load_emitted(src, key))[key]
-    call = {}
-    for name in inspect.signature(fn).parameters:
-        if name in sizes:
-            call[name] = sizes[name]
-            continue
-        desc = boundary.standalone_sdfg.arrays[name]
-        shape = tuple(int(str(d)) if str(d).isdigit() else sizes["LEN_1D"] for d in desc.shape)
-        dt = np.dtype(desc.dtype.type)
-        call[name] = inputs[name].astype(dt) if name in inputs else np.zeros(shape, dt)
-    fn(**call)
+    src, lowered = sdfg_to_python(boundary.standalone_sdfg, key)
+    call = run_emitted(src, key, lowered, inputs, sizes)
     return call, src
 
 
