@@ -59,6 +59,12 @@ from nestforge.stages.scopes import (
 )
 from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
 
+#: Timed calls per measurement.
+TIMED_REPS = 10
+
+#: Characters of a failed build's error text a caller gets back.
+ERROR_TAIL = 1500
+
 #: The kernel source language each device's kernels are written in.
 LANGUAGES = {"cpu": "cpp", "gpu": "cuda"}
 
@@ -402,7 +408,7 @@ class Session:
         build = self.builds.get(name)
         return (build.source if build is not None else self.default_kernel(name)).unit.read_text()
 
-    def set_kernel_source(self, name: str, source: str, language: str, reps: int = 10) -> dict:
+    def set_kernel_source(self, name: str, source: str, language: str, reps: int = TIMED_REPS) -> dict:
         """Build a kernel source with the kernel's entry, validate it against the kernel's Python oracle, and link it
         when it matches.
 
@@ -430,7 +436,7 @@ class Session:
         try:
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
         except RuntimeError as err:
-            return self.kernel_outcome(name, "build-failed", str(err)[-1500:])
+            return self.kernel_outcome(name, "build-failed", str(err)[-ERROR_TAIL:])
         verdict = validate_kernel(archive, src, self.prepare_kernel(name), self.need_sizes(), reps, variant.fp_mode)
         if not verdict.ok:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
@@ -489,7 +495,7 @@ class Session:
 
     # Stage 6: variants
 
-    def sweep(self, name: str, reps: int = 10, compilers: list[str] | None = None) -> dict:
+    def sweep(self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None) -> dict:
         """Build and time the kernel's current source under every configuration of its device, link the fastest
         correct one, and summarize the sweep; ``config`` is the winner's compiler, FP mode, cost model, flags, time.
 
@@ -514,7 +520,7 @@ class Session:
 
     # Stage 7: feedback
 
-    def feedback(self, reps: int = 10) -> str:
+    def feedback(self, reps: int = TIMED_REPS) -> str:
         """A few lines of hints for the next round, most important first, from every kernel's current library:
         its validation and time, the compiler's vectorizer or register remarks, and its operational intensity."""
         try:

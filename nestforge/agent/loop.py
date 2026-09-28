@@ -26,6 +26,9 @@ ANALYST = (
     "optimization step, most important first. Keep kernel names and numbers."
 )
 
+#: Characters of a tool result one log line keeps.
+LOG_LINE = 160
+
 LABELS = {"type": "array", "items": {"type": "string"}}
 EPOCH = {"type": "integer"}
 
@@ -196,7 +199,7 @@ def run(session: Session, chat: Chat, task: str, turns: int = 4, analyst: bool =
             for call in reply.calls:
                 result = act(session, call)
                 applied = applied or result.startswith(("applied", "ok"))
-                log.append(f"[{stage.name}] {summary(call)} -> {result.splitlines()[0][:160] if result else ''}")
+                log.append(f"[{stage.name}] {summary(call)} -> {result.splitlines()[0][:LOG_LINE] if result else ''}")
                 last.append(f"{summary(call)}:\n{result}")
             if stage.name == "kernels" and any(c.name == "set_kernel_source" for c in reply.calls):
                 report = analyzed(chat, session.feedback(), analyst)

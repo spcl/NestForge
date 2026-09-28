@@ -28,6 +28,15 @@ HOT_SHARE = 0.5
 #: Hints a report keeps.
 REPORT_LINES = 8
 
+#: Characters of an error line a hint quotes.
+HINT_TEXT = 160
+
+#: Distinct vectorizer reasons a kernel's hints quote.
+VECTOR_REASONS = 2
+
+#: Hint ranks, most important first.
+FAILED, WRONG, HOT, SPILLS, MEMORY_BOUND, NOT_VECTORIZED = range(6)
+
 #: Vectorizer reasons, by a phrase they contain, and what to try.
 VECTOR_ADVICE: tuple[tuple[str, str], ...] = (
     ("control flow", "move the condition out of the loop (interchange-loop-if) or make the body branch-free"),
@@ -117,21 +126,29 @@ def hints(ev: Evidence, share: float) -> list[tuple[int, str]]:
     """``(rank, text)`` for every rule ``ev`` triggers; a lower rank is more important."""
     k, verdict = ev.kernel, ev.verdict
     if verdict.error:
-        return [(0, f"{k}: failed: {verdict.error.splitlines()[0][:160]} -> fix the kernel so it builds and runs.")]
+        return [
+            (
+                FAILED,
+                f"{k}: failed: {verdict.error.splitlines()[0][:HINT_TEXT]} -> fix the kernel so it builds and runs.",
+            )
+        ]
     out: list[tuple[int, str]] = []
     if not verdict.ok:
         wrong = f"{k}: wrong result, max rel err {verdict.md_rel:.2g} at {verdict.fp_mode}"
-        out.append((1, f"{wrong} -> check index bounds, races and reduction order."))
+        out.append((WRONG, f"{wrong} -> check index bounds, races and reduction order."))
     if share >= HOT_SHARE:
-        out.append((2, f"{k} is {share:.0%} of kernel time ({verdict.time_us:.1f} us) -> optimize it first."))
+        out.append((HOT, f"{k} is {share:.0%} of kernel time ({verdict.time_us:.1f} us) -> optimize it first."))
     registers, spilled = spills(ev.remarks)
     if spilled:
-        out.append((3, f"{k}: {spilled} bytes spilled at {registers} registers -> loop body too big, try fission."))
+        out.append(
+            (SPILLS, f"{k}: {spilled} bytes spilled at {registers} registers -> loop body too big, try fission.")
+        )
     if ev.oi is not None and ev.oi < MEMORY_BOUND_OI:
         partners = [f"producer {p}" for p in ev.producers] + [f"consumer {c}" for c in ev.consumers]
         cure = f"fuse with {' or '.join(partners)}" if partners else "reuse loaded data, drop temporaries"
-        out.append((4, f"{k}: OI {ev.oi:.2g} flop/B, memory-bound -> {cure}."))
-    out += [(5, f"{k}: loop not vectorized: {r} -> {vector_advice(r)}.") for r in vectorizer_reasons(ev.remarks)[:2]]
+        out.append((MEMORY_BOUND, f"{k}: OI {ev.oi:.2g} flop/B, memory-bound -> {cure}."))
+    reasons = vectorizer_reasons(ev.remarks)[:VECTOR_REASONS]
+    out += [(NOT_VECTORIZED, f"{k}: loop not vectorized: {r} -> {vector_advice(r)}.") for r in reasons]
     return out
 
 

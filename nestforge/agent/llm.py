@@ -11,6 +11,9 @@ from typing import Any, Literal
 
 Provider = Literal["openai", "anthropic"]
 
+#: Longest reply an Anthropic call may produce; the API requires a bound.
+MAX_TOKENS = 4096
+
 
 @dataclass(frozen=True, slots=True)
 class Tool:
@@ -40,7 +43,7 @@ class Client:
     provider: Provider
     model: str
     base_url: str | None = None
-    max_tokens: int = 4096
+    max_tokens: int = MAX_TOKENS
     sdk: Any = field(default=None, repr=False)  # created on the first call
 
     def connect(self) -> Any:
