@@ -20,6 +20,9 @@ from typing import Any
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
 OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
 
+#: Sonames of LLVM libomp (``libiomp5`` is its Intel alias).
+LIBOMP_SONAMES = ("libomp.so.5", "libomp.so", "libiomp5.so")
+
 #: ``omp_soft_pause`` of ``omp_pause_resource_t`` (OpenMP 5.0); unlike a hard pause it keeps threadprivate data.
 OMP_PAUSE_SOFT = 1
 
@@ -35,6 +38,7 @@ PIPE_CHUNK = 65536
 
 def pause_openmp_pools() -> None:
     """Pause every loaded OpenMP runtime before a fork; a live libgomp pool deadlocks the child."""
+    paused: dict[int | None, None] = {}  # one runtime loads under several sonames; a second pause fails
     for soname in OMP_RUNTIME_SONAMES:
         try:
             lib = ctypes.CDLL(soname, mode=os.RTLD_NOLOAD)  # only pause a runtime already mapped
@@ -48,9 +52,14 @@ def pause_openmp_pools() -> None:
                 "safe only if it installs a pthread_atfork handler (libgomp does not)"
             )
             continue
+        address = ctypes.cast(pause, ctypes.c_void_p).value
+        if address in paused:
+            continue
+        paused[address] = None
         pause.argtypes = [ctypes.c_int]
         pause.restype = ctypes.c_int
-        if pause(OMP_PAUSE_SOFT) != 0:
+        # LLVM libomp refuses only when it has no pool (never initialized) or already paused: nothing to pause
+        if pause(OMP_PAUSE_SOFT) != 0 and soname not in LIBOMP_SONAMES:
             warnings.warn(f"{soname}: omp_pause_resource_all(soft) failed; its pool stays up across the fork")
 
 
@@ -103,7 +112,12 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) ->
     """``work_fn()`` from a forked child, or ``{"error": ...}`` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
     r, w = os.pipe()
-    pid = os.fork()
+    with warnings.catch_warnings():
+        # the fork is the point: the child runs only work_fn, and the OpenMP pools were paused above
+        warnings.filterwarnings(
+            "ignore", message=".*use of fork\\(\\) may lead to deadlocks", category=DeprecationWarning
+        )
+        pid = os.fork()
     if pid == 0:
         os.close(r)
         faulthandler.disable()  # a child's segfault must not dump the parent's stack

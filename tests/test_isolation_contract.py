@@ -5,13 +5,20 @@ record, and the parent survives each one. The assertions read the returned dict,
 coverage with it.
 """
 
+import ctypes
 import os
 import signal
+import threading
 import time
+import warnings
 
 import pytest
 
 from nestforge.build.isolation import ERROR_CHARS, run_isolated
+
+
+#: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
+ISOLATION_WAIT_S = 5.0
 
 
 def test_a_result_comes_back_from_the_child_unchanged():
@@ -84,3 +91,14 @@ def test_a_child_returning_something_unserialisable_reports_the_reason():
     back named rather than as a silent empty result."""
     result = run_isolated(lambda: {"array": object()}, timeout=60)
     assert "error" in result and "TypeError" in result["error"]
+
+
+def test_isolation_warns_nothing_when_openmp_is_loaded():
+    """A loaded, initialized libomp is paused once and the fork is deliberate, so neither warns."""
+    libomp = ctypes.CDLL("libomp.so.5")  # RTLD_LOCAL: later tests must not bind GOMP_* to it
+    libomp.omp_get_max_threads()  # initialize the runtime
+    worker = threading.Thread(target=threading.Event().wait, args=(ISOLATION_WAIT_S,), daemon=True)
+    worker.start()  # a live thread is what makes Python warn about fork
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert run_isolated(lambda: {"ok": 1}) == {"ok": 1}
