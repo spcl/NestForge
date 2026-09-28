@@ -131,7 +131,7 @@ def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
     lines = (out / "kernel_deps.txt").read_text().splitlines()
 
     assert lines == [
-        "extcall_0: A <- extcall_1.A [carried: for0_0] | program, N <- program",
+        "extcall_0: A <- extcall_1.A | program [carried: for0_0], N <- program",
         "extcall_1: B <- extcall_0.B, N <- program",
         "exit: A <- extcall_1.A | program, B <- extcall_0.B | program",
     ]
