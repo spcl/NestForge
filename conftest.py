@@ -5,6 +5,7 @@
 import os
 from collections.abc import Iterator
 
+import dace
 import pytest
 
 from nestforge.corpus.bench import materialize_dace_corpus
@@ -40,3 +41,11 @@ def reset_extern_lib_env() -> Iterator[None]:
     ExternLibEnv.reset()
     yield
     ExternLibEnv.reset()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def private_dace_build_folder(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Each xdist worker compiles SDFGs into its own folder: two workers building a same-named program in the shared
+    ``.dacecache`` overwrite each other's objects mid-build."""
+    with dace.config.set_temporary("default_build_folder", value=str(tmp_path_factory.mktemp("dacecache"))):
+        yield
