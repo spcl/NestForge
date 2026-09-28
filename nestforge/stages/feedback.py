@@ -49,6 +49,9 @@ VECTOR_ADVICE: tuple[tuple[str, str], ...] = (
 )
 DEFAULT_VECTOR_ADVICE = "simplify the loop body, or split it with fission"
 
+#: A vectorizer remark that only reports the cost model's choice, which stage 6 already sweeps.
+COST_MODEL_VERDICT = "not profitable"
+
 
 @dataclass(frozen=True, slots=True)
 class Evidence:
@@ -105,10 +108,22 @@ def neighbours(graph: KernelGraph, kernel: str) -> tuple[tuple[str, ...], tuple[
     return producers, tuple(dict.fromkeys(name for name in consumed if name in graph.kernels and name != kernel))
 
 
+def partners(ev: Evidence) -> list[str]:
+    """The kernels ``ev`` could fuse with, each named once; ``producer``/``consumer`` only says which side it is."""
+    both = [k for k in ev.producers if k in ev.consumers]
+    return (
+        both
+        + [f"producer {k}" for k in ev.producers if k not in both]
+        + [f"consumer {k}" for k in ev.consumers if k not in both]
+    )
+
+
 def vectorizer_reasons(remarks: str) -> list[str]:
-    """Distinct reasons gcc or clang gave for a loop it did not vectorize."""
+    """Distinct reasons gcc or clang gave for a loop it did not vectorize; the cost model's own verdict is left to
+    stage 6, which sweeps the cost model."""
     found = re.findall(r"not vectorized: ([^\[\n]+)", remarks)
-    return list(dict.fromkeys(reason.strip().rstrip(".") for reason in found))
+    reasons = (reason.strip().rstrip(".") for reason in found)
+    return list(dict.fromkeys(r for r in reasons if COST_MODEL_VERDICT not in r))
 
 
 def vector_advice(reason: str) -> str:
@@ -144,8 +159,7 @@ def hints(ev: Evidence, share: float) -> list[tuple[int, str]]:
             (SPILLS, f"{k}: {spilled} bytes spilled at {registers} registers -> loop body too big, try fission.")
         )
     if ev.oi is not None and ev.oi < MEMORY_BOUND_OI:
-        partners = [f"producer {p}" for p in ev.producers] + [f"consumer {c}" for c in ev.consumers]
-        cure = f"fuse with {' or '.join(partners)}" if partners else "reuse loaded data, drop temporaries"
+        cure = f"fuse with {' or '.join(partners(ev))}" if partners(ev) else "reuse loaded data, drop temporaries"
         out.append((MEMORY_BOUND, f"{k}: OI {ev.oi:.2g} flop/B, memory-bound -> {cure}."))
     reasons = vectorizer_reasons(ev.remarks)[:VECTOR_REASONS]
     out += [(NOT_VECTORIZED, f"{k}: loop not vectorized: {r} -> {vector_advice(r)}.") for r in reasons]

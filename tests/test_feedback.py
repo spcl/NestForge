@@ -83,6 +83,21 @@ def test_a_memory_bound_kernel_is_told_which_neighbours_to_fuse_with():
     assert "extcall_1: OI 0.12 flop/B, memory-bound -> fuse with producer extcall_0 or consumer extcall_2." in text
 
 
+def test_a_kernel_that_is_both_producer_and_consumer_is_named_once():
+    """In a time loop two kernels feed each other; the hint names the partner once, not as producer and consumer."""
+    text = report([evidence("extcall_0", oi=0.19, producers=("extcall_1",), consumers=("extcall_1",))])
+
+    assert "memory-bound -> fuse with extcall_1." in text
+    assert "producer" not in text and "consumer" not in text
+
+
+def test_the_cost_model_verdict_is_no_vectorizer_hint():
+    """ "Not profitable" is the cost model's call, which stage 6 sweeps; only a real blocker becomes a hint."""
+    remarks = "k.cpp:3:5: missed: not vectorized: vectorization is not profitable.\n" + GCC_REMARKS
+
+    assert vectorizer_reasons(remarks) == ["control flow in loop", "complicated access pattern"]
+
+
 def test_register_spills_suggest_fission_and_vectorizer_reasons_carry_their_advice():
     text = report([evidence(remarks=PTXAS_REMARKS + GCC_REMARKS)])
 
