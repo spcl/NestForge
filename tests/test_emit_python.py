@@ -292,6 +292,84 @@ def test_a_connector_named_like_an_array_is_renamed_not_assigned_over_it():
     np.testing.assert_array_equal(call["out"], [3.0, 7.0])
 
 
+def nested_connector_clash_sdfg() -> dace.SDFG:
+    """A nested tasklet ``y = a`` whose connector ``a`` reads a scalar and whose output binds the OUTER array ``a``."""
+    inner = dace.SDFG("clash_inner")
+    inner.add_array("out", [3], dace.float64)
+    inner.add_scalar("acc", dace.float64, transient=True)
+    state = inner.add_state()
+    seed = state.add_tasklet("seed", {}, {"s": None}, "s = 7.0")
+    copy = state.add_tasklet("copy", {"a": None}, {"y": None}, "y = a")
+    acc = state.add_access("acc")
+    state.add_edge(seed, "s", acc, None, dace.Memlet("acc[0]"))
+    state.add_edge(acc, None, copy, "a", dace.Memlet("acc[0]"))
+    state.add_edge(copy, "y", state.add_write("out"), None, dace.Memlet("out[1]"))
+    outer = dace.SDFG("clash")
+    outer.add_array("a", [3], dace.float64)
+    ostate = outer.add_state()
+    node = ostate.add_nested_sdfg(inner, {}, {"out": None})
+    ostate.add_edge(node, "out", ostate.add_write("a"), None, dace.Memlet("a[0:3]"))
+    return outer
+
+
+def test_a_nested_connector_named_like_the_outer_array_it_writes_stays_a_connector():
+    call, _ = emit_and_run(nested_connector_clash_sdfg(), {"a": np.zeros(3)}, {})
+
+    np.testing.assert_array_equal(call["a"], [0.0, 7.0, 0.0])
+
+
+def nested_symbol_clash_sdfg() -> dace.SDFG:
+    """``s = 2``, then a nested SDFG binding its own ``s = 7`` to write ``inner_out``, then ``out[0] = s``."""
+    inner = dace.SDFG("symbol_inner")
+    inner.add_array("inner_out", [1], dace.float64)
+    first = inner.add_state("first", is_start_block=True)
+    second = inner.add_state("second")
+    inner.add_edge(first, second, dace.InterstateEdge(assignments={"s": "7"}))
+    t = second.add_tasklet("use", {}, {"o": None}, "o = s")
+    second.add_edge(t, "o", second.add_write("inner_out"), None, dace.Memlet("inner_out[0]"))
+    outer = dace.SDFG("symbol_clash")
+    outer.add_array("mid", [1], dace.float64)
+    outer.add_array("out", [1], dace.float64)
+    outer.add_symbol("s", dace.int64)
+    start = outer.add_state("start", is_start_block=True)
+    call = outer.add_state("call")
+    outer.add_edge(start, call, dace.InterstateEdge(assignments={"s": "2"}))
+    node = call.add_nested_sdfg(inner, {}, {"inner_out": None})
+    call.add_edge(node, "inner_out", call.add_write("mid"), None, dace.Memlet("mid[0]"))
+    after = outer.add_state_after(call, "after")
+    t = after.add_tasklet("read", {}, {"o": None}, "o = s")
+    after.add_edge(t, "o", after.add_write("out"), None, dace.Memlet("out[0]"))
+    return outer
+
+
+def test_a_symbol_a_nested_sdfg_binds_itself_leaves_the_outer_value_alone():
+    call, _ = emit_and_run(nested_symbol_clash_sdfg(), {}, {})
+
+    assert (call["mid"][0], call["out"][0]) == (7.0, 2.0)
+
+
+def tag_write_sdfg() -> dace.SDFG:
+    """``tags[idx[i]] = i`` through a tasklet whose output connector is the whole, dynamically written array."""
+    sdfg = dace.SDFG("tag_write")
+    sdfg.add_array("idx", [N], dace.int64)
+    sdfg.add_array("tags", [M], dace.int64)
+    state = sdfg.add_state()
+    entry, exit_node = state.add_map("tag", {"i": "0:N"}, schedule=dace.ScheduleType.Sequential)
+    t = state.add_tasklet("tag", {"v": None}, {"t": None}, "t[v] = i")
+    state.add_memlet_path(state.add_read("idx"), entry, t, dst_conn="v", memlet=dace.Memlet("idx[i]"))
+    state.add_memlet_path(
+        t, exit_node, state.add_write("tags"), src_conn="t", memlet=dace.Memlet("tags[0:M]", dynamic=True)
+    )
+    return sdfg
+
+
+def test_a_tasklet_writing_into_a_range_writes_through_to_the_array():
+    call, source = emit_and_run(tag_write_sdfg(), {"idx": np.array([2, 0, 3])}, {"N": 3, "M": 5})
+
+    assert "tags[0:M] = " not in source  # written through its view, not copied back
+    np.testing.assert_array_equal(call["tags"], [1, 0, 0, 2, 0])
+
+
 def guarded_sdfg(language: dace.Language, code: str) -> dace.SDFG:
     """A precondition guard on the scalar ``x`` before ``out[0] = x``."""
     sdfg = dace.SDFG("guarded")

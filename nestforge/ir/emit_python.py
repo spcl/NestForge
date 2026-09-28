@@ -249,6 +249,46 @@ def program_names(sdfg: dace.SDFG) -> set[str]:
     return taken
 
 
+def own_bindings(sdfg: dace.SDFG) -> dict[str, None]:
+    """The symbols ``sdfg`` itself binds, nested SDFGs excluded: interstate assignment targets and loop variables."""
+    bound = dict.fromkeys(k for e in sdfg.all_interstate_edges() for k in e.data.assignments)
+    for region in sdfg.all_control_flow_regions():
+        if isinstance(region, LoopRegion) and region.loop_variable:
+            bound[region.loop_variable] = None
+    return bound
+
+
+def fresh_name(base: str, taken: set[str]) -> str:
+    """``base_<k>`` for the first ``k`` not in ``taken``, which it then joins."""
+    name = next(f"{base}_{k}" for k in range(len(taken) + 1) if f"{base}_{k}" not in taken)
+    taken.add(name)
+    return name
+
+
+def own_names(sdfg: dace.SDFG) -> set[str]:
+    """The data, symbols, bindings and map parameters of ``sdfg`` itself, nested SDFGs excluded."""
+    names = set(sdfg.arrays) | set(sdfg.symbols) | own_bindings(sdfg).keys()
+    return names | {p for e, s in placed(sdfg, nodes.MapEntry) if s.sdfg is sdfg for p in strings(e.map.params)}
+
+
+def unique_nested_bindings(sdfg: dace.SDFG) -> None:
+    """Rename a symbol a nested SDFG binds itself when an enclosing SDFG uses the name: in one flat Python
+    function the nested binding would overwrite the outer value."""
+    taken = program_names(sdfg)
+    for sd in list(sdfg.all_sdfgs_recursive()):  # parents first, so a renamed parent is what a child sees
+        node = sd.parent_nsdfg_node
+        if node is None:
+            continue
+        enclosing: set[str] = set()
+        parent = sd.parent_sdfg
+        while parent is not None:
+            enclosing |= own_names(parent)
+            parent = parent.parent_sdfg
+        clashes = [n for n in own_bindings(sd) if n in enclosing and n not in node.symbol_mapping]
+        if clashes:
+            sd.replace_dict({name: fresh_name(name, taken) for name in clashes})
+
+
 def unique_connectors(sdfg: dace.SDFG) -> None:
     """Rename every connector a tasklet body still reads or writes to a name unique across the program."""
     taken = program_names(sdfg)
@@ -260,9 +300,7 @@ def unique_connectors(sdfg: dace.SDFG) -> None:
         renames: dict[str, str] = {}
         for conn in dict.fromkeys([*node.in_connectors, *node.out_connectors]):
             if conn in used:
-                base = conn.strip("_") or "c"
-                renames[conn] = next(f"{base}_{k}" for k in range(len(taken) + 1) if f"{base}_{k}" not in taken)
-                taken.add(renames[conn])
+                renames[conn] = fresh_name(conn.strip("_") or "c", taken)
         if not renames:
             continue
         for name_node in ast.walk(tree):
@@ -294,11 +332,14 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
         expand_to_pure(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
+    # before nested data takes outer names, which a nested tasklet's connector may carry
+    unique_connectors(sdfg)
+    unique_nested_bindings(sdfg)
+    if placed(sdfg, nodes.NestedSDFG):
         refuse_strided_connectors(sdfg)
         sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs, validate=False)
         bind_nested_data(sdfg)
     InlineTaskletConnectors().apply_pass(sdfg, {})
-    unique_connectors(sdfg)
 
 
 def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
@@ -429,9 +470,15 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
     for edge in state.out_edges(node):
         if edge.src_conn not in used or edge.data.is_empty() or isinstance(edge.dst, nodes.Tasklet):
             continue
-        target = access(scope, *memlet_parts(edge.data)[:2])
-        value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
-        after.append(f"{target} = {value}")
+        data, subset, other = memlet_parts(edge.data)
+        target = access(scope, data, subset)
+        single = not isinstance(subset, (subsets.Range, subsets.Indices)) or subset.num_elements() == 1
+        # the body writes some elements of a range, or may skip a dynamic write: start from what is there
+        if edge.data.dynamic or not single:
+            before.append(f"{edge.src_conn} = {target}")
+        if single or edge.data.wcr is not None:  # a range is written through its view
+            value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
+            after.append(f"{target} = {value}")
     return (
         [line for text in before for line in python(text, scope.names)]
         + body
