@@ -39,6 +39,8 @@ Role = Literal["input", "symbol"]
 class UnsupportedProgram(Exception):
     """The program holds a construct whose producers cannot be named at container level."""
 
+    __slots__ = ()
+
 
 @dataclass(frozen=True, slots=True)
 class Producer:

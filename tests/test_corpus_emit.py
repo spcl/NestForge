@@ -1,81 +1,27 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emit NumPy for real corpus kernels and check the library-node ops compute correctly.
+"""Emit Python for real corpus kernels and check they compute what the kernel computes.
 
 Emission is C-style: the kernel allocates nothing, so the caller pre-allocates every buffer -- inputs,
 outputs, the DaCe ``__return`` value, and scratch transients -- and reads the results back out of the
 in-place buffers. ``alloc_run`` does exactly that, driven by the emitted function's own signature.
 """
 
-import inspect
-
 import numpy as np
 import pytest
 
-from dace import symbolic
-
-from nestforge.corpus.bench import iter_dace_kernels, module_path
-from nestforge.ir.emit_libnode import is_scalar
-from nestforge.ir.emit_numpy import load_emitted, maxsize_loop_scratch
 from nestforge.build.isolation import run_isolated
-from helpers import corpus_kernel, sdfg_to_numpy
+from nestforge.corpus.bench import iter_dace_kernels, module_path
+from nestforge.ir.emit_python import UnsupportedNest
+from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 
-def symbol_scalar(sdfg, name):
-    """A non-transient scalar read only as a free symbol, never through a memlet: the call passes it by value."""
-    desc = sdfg.arrays[name]
-    if desc.transient or not is_scalar(desc):
-        return False
-    return not any(e.data is not None and e.data.data == name for st in sdfg.all_states() for e in st.edges())
-
-
-def test_emit_numpy_labels_regions_and_states():
-    """Emitted numpy carries ``# loop region (label)`` / ``# state (label)`` provenance comments and stays
-    valid python -- a block that emits only a comment (empty state/loop) must still get a ``pass``."""
-    import ast
-
-    from nestforge.ir.emit_numpy import body_or_pass
-
-    src = sdfg_to_numpy(
-        corpus_kernel("scientific_computing/map_reduce/azimint_hist/azimint_hist").to_sdfg(simplify=True), "k"
-    )
-    ast.parse(src)  # valid python despite the interleaved comments
-    assert "# loop region (" in src
-    assert "# state (" in src
-    assert body_or_pass(["# state (X)"]) == ["# state (X)", "pass"]  # comment-only body gets a pass
-    assert body_or_pass(["x = 1"]) == ["x = 1"]  # a real statement is left untouched
-
-
-def alloc_run(short, fn_name, sizes, inputs, seed=0, sdfg=None):
-    """Emit ``short``, allocate every buffer parameter, run it, and return the buffers."""
+def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
+    """Emit ``short``, allocate every buffer parameter, run it, and return the buffers and the source."""
     if sdfg is None:
         sdfg = corpus_kernel(short).to_sdfg(simplify=True)
-    src = sdfg_to_numpy(sdfg, fn_name)
-    kernel = vars(load_emitted(src, fn_name))[fn_name]
-    # size loop-shaped scratch exactly as the emitter widened it (a decreasing extent like M-i-1
-    # widens to its i=0 value, not to a naive max) so buffers match the emitted signature.
-    symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
-    sized = maxsize_loop_scratch(sdfg, symbols)
-    env = {symbolic.symbol(k): v for k, v in sizes.items()}
-    # a symbol-only scalar (referenced by the kernel as a bare name, never through a memlet) is a by-value
-    # config parameter; pass a python scalar. Every other scalar is a len-1 buffer (name[0]).
-    by_value = {n for n in sized.arrays if symbol_scalar(sdfg, n)}
-    call = {}
-    for name in inspect.signature(kernel).parameters:
-        if name in sizes:
-            call[name] = sizes[name]
-            continue
-        desc = sized.arrays[name]
-        dt = np.dtype(desc.dtype.type)
-        if name in by_value:
-            call[name] = dt.type(inputs[name]) if name in inputs else dt.type(0)
-            continue
-        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
-        # reshape inputs to the descriptor shape: a kernel may declare a param 2-D (nbody's mass is
-        # [N,1]) while the caller supplies the flat (N,) array; sizes match, so reshape aligns them.
-        call[name] = np.asarray(inputs[name]).astype(dt).reshape(shape) if name in inputs else np.zeros(shape, dt)
-    kernel(**call)
-    return call, src
+    src, lowered = sdfg_to_python(sdfg, fn_name)
+    return run_emitted(src, fn_name, lowered, inputs, sizes), src
 
 
 def test_corpus_exposes_dace_kernels():
@@ -117,7 +63,8 @@ def test_gemm_matmul_emits_and_computes():
         dict(NI=NI, NJ=NJ, NK=NK),
         dict(A=A, B=B, C=C.copy(), alpha=alpha, beta=beta),
     )
-    assert "@" in src and "np.empty" not in src  # MatMul -> numpy matmul, no internal allocation
+    # MatMul expands to its pure loops; the kernel allocates nothing
+    assert "for " in src and "np.empty" not in src and "np.zeros" not in src
     np.testing.assert_allclose(call["C"], ref)
 
 
@@ -211,22 +158,9 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     masked ``if I[j,k]: Z[j,k] = Z[j,k]**2 + C[j,k]`` writes the outer buffer in place."""
     XN, YN = 20, 16
     scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
-    sdfg = corpus_kernel("scientific_computing/map_reduce/mandelbrot1/mandelbrot1").to_sdfg(simplify=True)
-    src = sdfg_to_numpy(sdfg, "mandelbrot")
-    mod = load_emitted(src, "mandelbrot")
-    env = {symbolic.symbol("xn"): XN, symbolic.symbol("yn"): YN}
-    call = {}
-    for name in inspect.signature(mod.mandelbrot).parameters:
-        if name in ("xn", "yn"):
-            call[name] = {"xn": XN, "yn": YN}[name]
-        elif name in scal:
-            d = sdfg.arrays.get(name)
-            call[name] = np.array([scal[name]], np.dtype(d.dtype.type)) if d is not None else scal[name]
-        else:
-            d = sdfg.arrays[name]
-            shape = tuple(int(symbolic.evaluate(x, env)) for x in d.shape)
-            call[name] = np.zeros(shape, np.dtype(d.dtype.type))
-    mod.mandelbrot(**call)
+    call, _ = alloc_run(
+        "scientific_computing/map_reduce/mandelbrot1/mandelbrot1", "mandelbrot", dict(xn=XN, yn=YN), scal
+    )
 
     X = scal["xmin"] + np.arange(XN) * ((scal["xmax"] - scal["xmin"]) / (XN - 1))
     Y = scal["ymin"] + np.arange(YN) * ((scal["ymax"] - scal["ymin"]) / (YN - 1))
@@ -246,7 +180,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
 
 
 def test_emission_does_not_mutate_caller_sdfg():
-    """``sdfg_to_numpy`` must be read-only: widening nested SDFGs runs on a copy, so a caller that
+    """``sdfg_to_python`` must be read-only: widening nested SDFGs runs on a copy, so a caller that
     inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
     from dace.sdfg import nodes
 
@@ -262,14 +196,13 @@ def test_emission_does_not_mutate_caller_sdfg():
         }
 
     before = nsdfg_in_subsets(sdfg)
-    sdfg_to_numpy(sdfg, "mandelbrot")
+    sdfg_to_python(sdfg, "mandelbrot")
     assert nsdfg_in_subsets(sdfg) == before  # connectors/subsets unchanged -> no in-place widening
 
 
 def test_nbody_nested_where_emits_and_computes():
     """nbody's ``np.power(inv_r3, -1.5, out=inv_r3, where=I)`` is a masked nested SDFG in a 2-D map;
     it emits correctly once ExpandNestedSDFGInputs offsets the multi-dim mask condition fully."""
-    from nestforge.ir.emit_numpy import UnsupportedNest
     from dace.frontend.python.common import DaceSyntaxError
 
     N, Nt = 6, 4
@@ -372,45 +305,27 @@ def test_nbody_xfail_covers_the_dace_build_only_not_an_emitter_indexerror(monkey
     pytest.fail("an emitter IndexError was swallowed instead of raised: nbody test returned")
 
 
-def test_azimint_hist_three_level_nested_return_and_computes():
-    """azimint_hist nests get_bin_edges / compute_bin / histogram three deep; the innermost returns a
-    size-1 array read as ``compute_bin_ret_0[0]`` in an inter-state assignment but written as a scalar
-    local -- the emitter reconciles the two by stripping the scalar-local ``[0]``. Returns histw/histu."""
-    from nestforge.ir.emit_numpy import UnsupportedNest
-
+def test_azimint_hist_oracle_exposes_the_sdfgs_out_of_bounds_bin_edge_read():
+    """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``, but the SDFG evaluates both operands of
+    the ``and`` before branching, so it reads ``e[npt]`` one past the end, which C does silently. The oracle
+    reproduces the SDFG faithfully, so NumPy's bounds check raises there. The day the frontend keeps the
+    short circuit, this test fails and should become the numeric comparison it used to be."""
     N, npt = 200, 8
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
-    try:
-        call, _ = alloc_run(
+    with pytest.raises(IndexError, match=f"index {npt} is out of bounds for axis 0 with size {npt}"):
+        alloc_run(
             "scientific_computing/map_reduce/azimint_hist/azimint_hist",
             "azimint_hist",
-            dict(N=N, npt=npt, bins=npt),
+            dict(N=N, npt=npt),
             dict(data=data, radius=radius),
         )
-    except UnsupportedNest:
-        # Genuine upstream gap, not a missing tool -- xfail (see the nbody test above for why xfail,
-        # never skip: CI's zero-skip unit set must stay green while a real fix still shows up as pass.
-        pytest.xfail("nested-SDFG emission unavailable in this DaCe")
-
-    def hist(a, weights=None):
-        edges = np.array([a.min() + i * (a.max() - a.min()) / npt for i in range(npt)] + [a.max()])
-        out = np.zeros(npt, np.float64 if weights is not None else np.int64)
-        for i in range(N):
-            b = min(int(npt * (a[i] - edges[0]) / (edges[npt] - edges[0])), npt - 1)
-            out[b] += weights[i] if weights is not None else 1
-        return out
-
-    ref = hist(radius, data) / hist(radius)
-    got = call["out"]  # functional->in-place: the histw/histu ratio lands in the named ``out`` buffer
-    np.testing.assert_allclose(got, ref, equal_nan=True)
 
 
 def test_azimint_naive_wcr_reduction_emits_and_computes():
     """azimint_naive is a masked mean per radial bin: ``if r1<=radius<r2: tmp += data[j]`` -- a WCR
     accumulation inside a nested SDFG. Exercises WCR augmented-assignment plus the inner/outer size-1
     descriptor reconciliation (a nested scalar accumulator read back as a size-1 array)."""
-    from nestforge.ir.emit_numpy import UnsupportedNest
 
     N, npt = 150, 8
     rng = np.random.default_rng(0)

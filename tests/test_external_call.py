@@ -8,10 +8,8 @@ import pytest
 import dace
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.corpus.translate import prepare
 from nestforge.phases.scopes import lower_nests_to_external_call, node_boundary
-from nestforge.ir.emit_numpy import nest_to_numpy
-from nestforge.ir.emit_yaml import manifest_dict
+from nestforge.corpus.translate import prepare, python_and_manifest
 from nestforge.ir.libnode import ExternalCall, external_calls
 
 N = dace.symbol("N")
@@ -86,8 +84,9 @@ def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_
     rebuilt = node_boundary(ext)
 
     assert (rebuilt.inputs, rebuilt.outputs, rebuilt.symbols) == (boundary.inputs, boundary.outputs, boundary.symbols)
-    assert manifest_dict(rebuilt, ext.name) == ext.config
-    assert nest_to_numpy(rebuilt, fn_name=ext.name) == ext.numpy_source
+    source, manifest = python_and_manifest(rebuilt, ext.name)
+    assert manifest == ext.config
+    assert source == ext.numpy_source
 
 
 def test_dace_reference_runs_correctly():
@@ -112,16 +111,16 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert boundary.outputs == ["__return"]
     prep = prepare(boundary, ext.name, tmp_path / "k")
-    # __return is an in-place buffer parameter in the numpy signature and the manifest -- aligned.
-    assert "__return" in prep.numpy_source.splitlines()[0]
+    # __return is an in-place buffer parameter in the Python signature and the manifest -- aligned.
+    header = next(line for line in prep.numpy_source.splitlines() if line.startswith(f"def {ext.name}("))
+    assert "__return" in header
     assert "return " not in prep.numpy_source
     # the manifest is only usable while it matches the emitted signature: array_args, then symbols
-    header = prep.numpy_source.splitlines()[0]
     signature = [a.strip() for a in header[header.index("(") + 1 : header.rindex(")")].split(",")]
     args = list(prep.manifest["input_args"])
     arrays = list(prep.manifest["array_args"])
     assert args == arrays + [s for s in boundary.symbols if s not in arrays]
-    assert args == signature, f"manifest input_args {args} != emitted numpy signature {signature}"
+    assert args == signature, f"manifest input_args {args} != emitted Python signature {signature}"
     assert "__return" in prep.manifest["input_args"]
     sizes = {"N": 16}
     inputs = make_inputs(boundary, sizes)

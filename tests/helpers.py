@@ -2,24 +2,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Helpers several test modules share."""
 
+import copy
 import ctypes
+import inspect
 import re
 
 import numpy as np
 
 import dace
+from dace import symbolic
 
 from nestforge.build.toolchain import CType, raw_signature
 from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels
-from nestforge.ir.emit_numpy import (
-    emit_region,
-    expand_nested_sdfg_inputs,
-    maxsize_loop_scratch,
-    reject_orphan_break_continue,
-    reject_unsizable_scratch,
-    render,
-    scratch_arrays,
-)
+from nestforge.ir.emit_python import load_emitted, lower, render, scratch_arrays, widen_scratch
 from nestforge.ir.extract import Boundary
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
@@ -86,14 +81,47 @@ def c_argtypes(order: list[str], boundary: Boundary) -> list[CType]:
     ]
 
 
-def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
-    """Standalone python source for a whole SDFG, whose non-array arguments are its symbols."""
-    reject_orphan_break_continue(sdfg)  # a return exits the kernel, which is this whole SDFG
-    sdfg = expand_nested_sdfg_inputs(sdfg)
+def sdfg_to_python(sdfg: dace.SDFG, fn_name: str = "kernel") -> tuple[str, dace.SDFG]:
+    """Standalone Python source for a whole SDFG, whose non-array arguments are its symbols, and the lowered copy it
+    was emitted from (its descriptors size the scratch buffers the caller allocates)."""
     symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
-    sdfg = maxsize_loop_scratch(sdfg, symbols)
+    lowered = copy.deepcopy(sdfg)
+    lower(lowered)
+    widen_scratch(lowered, symbols)
     data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
-    scratch = scratch_arrays(sdfg)
-    reject_unsizable_scratch(sdfg, scratch, symbols)
-    args = data_args + scratch + symbols
-    return render(fn_name, args, emit_region(sdfg, sdfg))
+    args = data_args + [s for s in scratch_arrays(lowered) if s not in data_args] + symbols
+    return render(fn_name, args, lowered), lowered
+
+
+def run_emitted(source: str, fn_name: str, lowered: dace.SDFG, inputs: dict, sizes: dict[str, int]) -> dict:
+    """Call an emitted kernel C-style: every buffer its signature names is allocated here, from ``inputs`` (cast and
+    reshaped to the descriptor; a scalar is a 1-element buffer) or zeroed; returns the buffers after the call."""
+    kernel = vars(load_emitted(source, fn_name))[fn_name]
+    env = {symbolic.symbol(k): v for k, v in sizes.items()}
+    call = {}
+    for name in inspect.signature(kernel).parameters:
+        if name in sizes or name not in lowered.arrays:  # a symbol, by value
+            call[name] = sizes[name] if name in sizes else inputs[name]
+            continue
+        desc = lowered.arrays[name]
+        shape = tuple(int(symbolic.evaluate(d, env)) for d in desc.shape)
+        dtype = np.dtype(desc.dtype.type)
+        given = inputs.get(name)
+        call[name] = np.zeros(shape, dtype) if given is None else np.array(given, dtype).reshape(shape)
+    kernel(**call)
+    return call
+
+
+def drop_cpp_abort_guards(sdfg: dace.SDFG) -> int:
+    """Remove canonicalization's C++ ``std::abort()`` precondition guards, which the Python emitter refuses by
+    language; DaCe extended turns them into Python ``abort()`` tasklets, after which this finds none."""
+    guards = [
+        (node, state)
+        for node, state in sdfg.all_nodes_recursive()
+        if isinstance(node, dace.nodes.Tasklet)
+        and node.code.language != dace.Language.Python
+        and "abort" in node.code.as_string
+    ]
+    for node, state in guards:
+        state.remove_node(node)
+    return len(guards)
