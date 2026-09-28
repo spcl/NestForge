@@ -13,12 +13,16 @@ import time
 import warnings
 
 import pytest
+from pathlib import Path
 
-from nestforge.build.isolation import ERROR_CHARS, run_isolated
+from nestforge.build.isolation import ERROR_CHARS, OPENMP_REGISTRATION, run_isolated
 
 
 #: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
 ISOLATION_WAIT_S = 5.0
+
+#: Isolated runs of the registration-leak test; one leak per run would show as that many files.
+ISOLATED_RUNS = 3
 
 
 def test_a_result_comes_back_from_the_child_unchanged():
@@ -102,3 +106,18 @@ def test_isolation_warns_nothing_when_openmp_is_loaded():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert run_isolated(lambda: {"ok": 1}) == {"ok": 1}
+
+
+def test_a_child_using_libomp_leaves_no_registration_behind():
+    """libomp registers every process in shared memory and unregisters only at a normal exit; the isolated child
+    leaves through ``os._exit``, so the parent removes what it left."""
+    pids: list[int] = []
+
+    def work() -> dict:
+        ctypes.CDLL("libomp.so.5").omp_get_max_threads()  # initializes libomp, which registers this process
+        return {"pid": os.getpid()}
+
+    for _ in range(ISOLATED_RUNS):
+        pids.append(run_isolated(work)["pid"])
+    left = [pid for pid in pids if Path(OPENMP_REGISTRATION.format(pid=pid, uid=os.getuid())).exists()]
+    assert not left, f"children {left} left their libomp registration in shared memory"

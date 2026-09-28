@@ -15,6 +15,7 @@ import signal
 import time
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
@@ -31,6 +32,10 @@ ERROR_CHARS = 4000
 
 #: Wall-clock seconds an isolated child may run before it counts as hung.
 RUN_TIMEOUT_S = 900.0
+
+#: The shared-memory file LLVM libomp registers per process and removes only at a normal exit; a child that
+#: leaves through ``os._exit``, a signal or a kill leaves it behind.
+OPENMP_REGISTRATION = "/dev/shm/__KMP_REGISTERED_LIB_{pid}_{uid}"
 
 #: Bytes read from a child's result pipe at a time.
 PIPE_CHUNK = 65536
@@ -63,6 +68,11 @@ def pause_openmp_pools() -> None:
             warnings.warn(f"{soname}: omp_pause_resource_all(soft) failed; its pool stays up across the fork")
 
 
+def drop_openmp_registration(pid: int) -> None:
+    """Remove the libomp registration a finished child ``pid`` may have left in shared memory."""
+    Path(OPENMP_REGISTRATION.format(pid=pid, uid=os.getuid())).unlink(missing_ok=True)
+
+
 def error_result(e: BaseException) -> dict:
     """A child's exception as a result, its message cut to :data:`ERROR_CHARS`."""
     return {"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"}
@@ -80,6 +90,7 @@ def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = RU
         return spawned_result(receiver, child, timeout)
     finally:
         receiver.close()
+        drop_openmp_registration(child.pid)
 
 
 def spawned_result(receiver: Any, child: Any, timeout: float) -> dict:
@@ -131,6 +142,15 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) ->
             os.close(w)
             os._exit(0)
     os.close(w)
+    try:
+        return forked_result(pid, r, timeout)
+    finally:
+        drop_openmp_registration(pid)
+
+
+def forked_result(pid: int, r: int, timeout: float) -> dict:
+    """The forked child's dict read from pipe ``r``, or an error when it crashes, hangs past ``timeout`` or writes
+    no valid result; the child is reaped either way."""
     start, buf, timed_out = time.perf_counter(), b"", True
     try:
         while True:

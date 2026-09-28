@@ -10,7 +10,9 @@ acting on a moved graph. Every stage has a deterministic default; the agent call
 from __future__ import annotations
 
 import copy
+import atexit
 import json
+import shutil
 import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -91,6 +93,13 @@ class KernelBuild:
     verdict: KernelVerdict | None = None
 
 
+def scratch_dir() -> Path:
+    """A work directory of the session's own, removed when the process exits."""
+    path = Path(tempfile.mkdtemp(prefix="nfsession_"))
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
 class Session:
     """Owner of one program SDFG, driven stage by stage."""
 
@@ -125,7 +134,7 @@ class Session:
         self.epoch = 0
         normalize_labels(sdfg)
         self.rows: dict[str, Row] | None = None
-        self.work_dir = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="nfsession_"))
+        self.work_dir = Path(work_dir) if work_dir else scratch_dir()
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
         self.unplaced: dace.SDFG | None = None
