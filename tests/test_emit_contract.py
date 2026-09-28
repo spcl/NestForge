@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The emitter contract of docs/emitter.md: the caller allocates every buffer, the Python signature matches the
+"""The emitter contract of docs/oracle.md: the caller allocates every buffer, the Python signature matches the
 manifest, and the caller sizes scratch the way the emitter widened it."""
 
 import numpy as np
