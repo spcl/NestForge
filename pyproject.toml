@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nest-forge"
 version = "0.0.1"
-description = "Phased whole-program optimization of DaCe programs for deterministic, human and agent drivers."
+description = "Agentic optimization harness for DaCe programs: seven stages, each with a deterministic default."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Yakup Budanaz", email = "budanaz.yakup@gmail.com" }]
-keywords = ["dace", "sdfg", "loop-nest", "code-generation", "compilers", "autotuning", "hpc"]
+keywords = ["dace", "sdfg", "loop-nest", "code-generation", "compilers", "autotuning", "hpc", "llm-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -24,12 +24,15 @@ dependencies = [
     "numpy",
     "pyyaml",
     "sympy",
-    # Branches, not pins: DaCe tracks extended, HPCAgent-Bench tracks main.
-    "dace @ git+https://github.com/spcl/dace.git@extended",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@main",
+    # Pinned tips of dace@extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both to the
+    # current tips. Bump whenever DaCe extended gains a transformation or fix NestForge needs.
+    "dace @ git+https://github.com/spcl/dace.git@221e8277ad16feff0699b9b79b02572e9d0ef7d7",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@990dbe62ab0db42f40f3fdadb8df5374e69522a2",
 ]
 
 [project.optional-dependencies]
+# The agent loop's LLM clients; install one or both.
+agent = ["anthropic", "openai"]
 dev = [
     "pre-commit",
     "pyright",
@@ -57,7 +60,7 @@ target-version = "py312"
 select = ["E4", "E7", "E9", "F", "UP", "C901"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 20
+max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 # Tests import after a module-level skip guard, use lambda helpers, and keep the reference's math names.
@@ -69,7 +72,7 @@ pythonVersion = "3.12"
 typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
-addopts = "-q -p no:cacheprovider"
+addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
 markers = [
     "integration: compiles and runs kernels; slow, its own CI job",
