@@ -21,7 +21,7 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegio
 from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
-from nestforge.ir.dace_types import bounds, memlet_subset, strings
+from nestforge.ir.dace_types import strings
 from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
 from nestforge.ir.names import ScopeChildren, in_order, ordered_scope_children
 
@@ -140,20 +140,7 @@ def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> s
 
 
 #: ``ReductionType`` -> how the tree spells it; anything absent renders its lowercased enum name.
-REDUCTION_SPELLING = {
-    dtypes.ReductionType.Sum: "+",
-    dtypes.ReductionType.Product: "*",
-    dtypes.ReductionType.Min: "min",
-    dtypes.ReductionType.Max: "max",
-    dtypes.ReductionType.Sub: "-",
-    dtypes.ReductionType.Div: "/",
-    dtypes.ReductionType.Logical_And: "and",
-    dtypes.ReductionType.Logical_Or: "or",
-    dtypes.ReductionType.Logical_Xor: "xor",
-    dtypes.ReductionType.Bitwise_And: "&",
-    dtypes.ReductionType.Bitwise_Or: "|",
-    dtypes.ReductionType.Bitwise_Xor: "^",
-}
+REDUCTION_SPELLING = {dtypes.ReductionType.Sum: "+", dtypes.ReductionType.Product: "*"}
 
 
 def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
@@ -167,8 +154,7 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
             continue
         kind = detect_reduction_type(edge.data.wcr)
         op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
-        subset = memlet_subset(edge.data)
-        written = {str(s) for r in (bounds(subset) if subset else []) for b in r for s in b.free_symbols}
+        written = edge.data.subset.free_symbols if edge.data.subset is not None else set()
         collapsed = [p for p in strings(entry.map.params) if p not in written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")

@@ -87,16 +87,6 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
     return applied + sdfg.apply_transformations_repeated(InlineMultistateSDFG, validate=False)
 
 
-# one reduction shape
-
-
-def normalize_reductions(sdfg: dace.SDFG) -> None:
-    """Put every reduction in one shape: accumulate on a body-local transient, fold with a WCR on an
-    ``AccessNode -> MapExit`` edge."""
-    NormalizeWCR().apply_pass(sdfg, {})
-    NormalizeWCRSource().apply_pass(sdfg, {})
-
-
 # every computation inside a map
 
 
@@ -305,7 +295,9 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], 
 def normalize_for_tree(sdfg: dace.SDFG) -> None:
     """Put ``sdfg`` in the tree's normal form, in place; idempotent."""
     inline_top_level_nsdfgs(sdfg)
-    normalize_reductions(sdfg)
+    # one reduction shape: accumulate on a body-local transient, fold with a WCR on an AccessNode -> MapExit edge
+    NormalizeWCR().apply_pass(sdfg, {})
+    NormalizeWCRSource().apply_pass(sdfg, {})
     NormalizeLoopsAndMaps().apply_pass(sdfg, {})
     wrap_free_tasklets(sdfg)
     # names last: wrap maps and inlined transients are numbered with the rest
