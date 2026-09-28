@@ -20,6 +20,7 @@ from nestforge.ir.emit_python import (
     Names,
     UnsupportedNest,
     expr,
+    index,
     indexed_shape,
     load_emitted,
     nest_to_python,
@@ -512,3 +513,10 @@ def test_a_rank_changing_copy_reshapes_to_a_literal_shape():
     column = subsets.Range([(0, M - 1, 1), (3, 3, 1)])
     assert indexed_shape(column) == "(M, )"
     assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_floor(N - 1, 2) + 1), )"
+
+
+def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have():
+    """A Python ``int`` begin prints as ``(0)`` and a SymPy ``Zero`` end as ``0``; the axis is still one element."""
+    subset = subsets.Range([(0, dace.symbol("N") - 1, 1), (0, sympy.Integer(0), 1)])
+
+    assert index(subset) == "0:N, 0"

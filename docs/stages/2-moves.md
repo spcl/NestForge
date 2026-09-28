@@ -28,5 +28,5 @@ work, depth, bytes and operational intensity (DaCe's `work_depth` and `total_vol
 | | |
 |---|---|
 | default | `default_moves()`: canonicalization's `fuse` stage and the stages after it |
-| agent | moves, then `finish_moves()` runs the stages after `fuse` |
+| agent | moves, then `finish_moves()` runs the stages after `fuse` but `fuse_final`, keeping the chosen maps |
 | code | `nestforge/stages/moves.py` |

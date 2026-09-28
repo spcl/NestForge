@@ -15,6 +15,7 @@ from dace.transformation.passes.symbol_propagation import SymbolPropagation
 from nestforge.ir.names import inline_top_level_nsdfgs
 
 FUSE_STAGE = "fuse"
+FINAL_FUSE_STAGE = "fuse_final"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,5 +50,6 @@ def fuse_and_finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
 
 
 def finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
-    """The stages after fusion, once moves chose the granularity by hand."""
-    return dace_canonicalize(sdfg, target=targets.canon_target, stages=after_fusion(targets))
+    """The stages after fusion but the terminal re-fusion, once moves chose the granularity by hand."""
+    stages = [label for label in after_fusion(targets) if label != FINAL_FUSE_STAGE]
+    return dace_canonicalize(sdfg, target=targets.canon_target, stages=stages)

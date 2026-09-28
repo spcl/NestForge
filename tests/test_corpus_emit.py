@@ -201,42 +201,15 @@ def test_emission_does_not_mutate_caller_sdfg():
 
 
 def test_nbody_nested_where_emits_and_computes():
-    """nbody's ``np.power(inv_r3, -1.5, out=inv_r3, where=I)`` is a masked nested SDFG in a 2-D map;
-    it emits correctly once ExpandNestedSDFGInputs offsets the multi-dim mask condition fully."""
-    from dace.frontend.python.common import DaceSyntaxError
-
+    """nbody's ``np.power(inv_r3, -1.5, out=inv_r3, where=I)`` is a masked nested SDFG in a 2-D map, and its
+    ``np.reshape(mass, (N, 1))`` binds a whole ``(N, 1)`` array as an ``(N,)`` library connector."""
     N, Nt = 6, 4
     rng = np.random.default_rng(0)
     mass, pos, vel = rng.random(N) + 0.5, rng.random((N, 3)), rng.random((N, 3))
     dt, G, soft = 0.01, 1.0, 0.1
-    # The stock-DaCe gaps below are build failures, so guard the build alone. IndexError is also a
-    # routine symptom of an emitter bug, and the emitter only runs after this point -- catching it
-    # around the emit/run step too would turn a nest-forge regression into an xfail blamed on DaCe.
-    #
-    # xfail, not skip: a skip is invisible to CI (which runs the unit set under NESTFORGE_CI_NO_SKIP)
-    # and, worse, reads as "nothing to see here". These are known upstream gaps, which is what xfail
-    # means. It is raised imperatively rather than via a decorator on purpose: a decorator would mark
-    # the whole test expected-to-fail, so an emitter regression further down would land in the same
-    # green xfail bucket and hide -- exactly what the meta-test below exists to prevent. Raised here,
-    # it fires only for the build gap, and the day DaCe can build nbody the test simply runs and
-    # validates, which is the notification.
-    try:
-        sdfg = corpus_kernel("scientific_computing/n_body_methods/nbody/nbody").to_sdfg(simplify=True)
-    except (DaceSyntaxError, IndexError, FileExistsError) as e:
-        # DaCe-frontend gaps (not nest-forge): the boolean-mask assignment lowers to index loops that trip an
-        # IndexError, and ``np.empty(Nt + 1)`` registers ``Nt_plus_1`` as both a scalar and a shape symbol so
-        # add_symbol raises FileExistsError. The test runs once DaCe promotes the scalar instead of colliding.
-        pytest.xfail(
-            f"stock DaCe cannot lower nbody's masked assignment / Nt+1 scalar-symbol collision: {type(e).__name__}"
-        )
+    sdfg = corpus_kernel("scientific_computing/n_body_methods/nbody/nbody").to_sdfg(simplify=True)
     inputs = dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft]))
-    try:
-        call, _ = alloc_run(
-            "scientific_computing/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg
-        )
-    except UnsupportedNest:
-        # The emitter's own explicit refusal: it names the DaCe-side ExpandNestedSDFGInputs gap it hit.
-        pytest.xfail("ExpandNestedSDFGInputs multi-dim condition offset not fixed in this DaCe")
+    call, _ = alloc_run("scientific_computing/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg)
 
     def getAcc(pos, mass, G, softening):
         x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
@@ -277,32 +250,6 @@ def test_nbody_nested_where_emits_and_computes():
     # vs numpy's pairwise ``np.sum``/``@``, so allow the default allclose tolerance.
     np.testing.assert_allclose(call["KE"], KE, rtol=1e-5, atol=1e-8)
     np.testing.assert_allclose(call["PE"], PE, rtol=1e-5, atol=1e-8)
-
-
-def test_nbody_xfail_covers_the_dace_build_only_not_an_emitter_indexerror(monkeypatch):
-    """The nbody xfail must stay pinned to the stock-DaCe frontend gap (an IndexError out of ``to_sdfg``).
-    An IndexError raised once the SDFG is built comes from the emitter -- a nest-forge regression that has
-    to fail the suite, since an xfail attributed to DaCe would hide it from CI entirely."""
-
-    class BuiltSdfg:
-        """A build that succeeds -- so the DaCe-frontend gap is out of the picture and anything raised
-        afterwards is the emitter's."""
-
-        def to_sdfg(self, simplify=True):
-            return self
-
-    def emitter_indexerror(*args, **kwargs):
-        raise IndexError("list index out of range")  # the shape stock DaCe's frontend gap also takes
-
-    monkeypatch.setitem(globals(), "kernels", lambda: {"scientific_computing/n_body_methods/nbody/nbody": BuiltSdfg()})
-    monkeypatch.setitem(globals(), "alloc_run", emitter_indexerror)
-    try:
-        test_nbody_nested_where_emits_and_computes()
-    except IndexError:
-        return  # propagated to the caller: the regression is visible
-    except BaseException as exc:  # pytest's Skipped/XFailed outcomes derive from BaseException, not Exception
-        pytest.fail(f"an emitter IndexError was swallowed instead of raised: {type(exc).__name__}: {exc}")
-    pytest.fail("an emitter IndexError was swallowed instead of raised: nbody test returned")
 
 
 def test_azimint_hist_oracle_exposes_the_sdfgs_out_of_bounds_bin_edge_read():

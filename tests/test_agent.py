@@ -122,10 +122,6 @@ def test_an_applied_move_and_the_refused_calls_after_it_are_logged_not_raised(tm
 
 
 @pytest.mark.e2e
-@pytest.mark.xfail(
-    strict=True,
-    reason="DaCe canonicalize's 'end' stage runs FuseMaps, so the post-fusion stages fuse a hand fission back",
-)
 def test_finishing_hand_chosen_moves_keeps_their_granularity(tmp_path):
     sut = session(tmp_path)
 

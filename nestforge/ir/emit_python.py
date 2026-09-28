@@ -384,7 +384,7 @@ def index(subset: subsets.Subset) -> str:
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
-        if begin_text == symbolic.symstr(end, cpp_mode=False):
+        if sympy.sympify(end - begin) == 0:
             parts.append(begin_text)
             continue
         if sympy.sympify(step).is_positive is not True:

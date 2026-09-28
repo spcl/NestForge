@@ -8,9 +8,7 @@ dist/
 *.so
 *.o
 *.a
-.nestforge_cache/
 _dacegraphs/
-perf_results/
 
 # Never commit key / secret material anywhere in this repo.
 *.pem
@@ -25,10 +23,7 @@ id_ecdsa*
 *.pfx
 .cache/
 
-# Winner dataset (nestforge/dataset.py): append-only JSONL a sweep leaves behind. Job output, not source.
-.results/
-
-# coverage (CI phase 5 writes these; the report is an artifact, not a tracked file)
+# coverage (CI writes these)
 .coverage
 coverage.txt
 coverage.xml

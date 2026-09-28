@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Container-level kernel dependencies: which producers reach each ``ExternalCall`` argument, on programs lowered
-by phase 2 and on hand-built SDFGs where the frontend cannot express the case. Structural only; nothing compiles."""
+by stage 3 and on hand-built SDFGs where the frontend cannot express the case. Structural only; nothing compiles."""
 
 import copy
 import json
@@ -147,7 +147,7 @@ def relax_or_return(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], 
 
 
 def lowered(program) -> tuple[dace.SDFG, dict[str, list[str]]]:
-    """``program`` through phase 2, with the arguments each kernel writes (read off its out-connectors)."""
+    """``program`` through stage 3, with the arguments each kernel writes (read off its out-connectors)."""
     sdfg = program.to_sdfg(simplify=True)
     kernels = lower_nests_to_external_call(sdfg)
     writes = {ext.label: sorted(c.removeprefix(out_conn("")) for c in ext.out_connectors) for ext, _ in kernels}
@@ -186,7 +186,7 @@ def hand_kernel(
 
 
 def bare_kernel(name: str, reads: Sequence[str], writes: Sequence[str], symbols: Sequence[str] = ()) -> ExternalCall:
-    """An ``ExternalCall`` with the connectors and manifest phase 2 would give it, wired to nothing."""
+    """An ``ExternalCall`` with the connectors and manifest stage 3 would give it, wired to nothing."""
     manifest = {"input_args": [*reads, *writes, *symbols], "array_args": [*reads, *writes], "output_args": [*writes]}
     return ExternalCall(
         name,

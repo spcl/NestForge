@@ -20,7 +20,7 @@ from helpers import loop_level_kernel, run_emitted, sdfg_to_python
 
 
 def top_level_nest(sdfg: dace.SDFG):
-    """The SDFG's first top-level compute unit (a loop region or a map) -- independent of phase 2's
+    """The SDFG's first top-level compute unit (a loop region or a map) -- independent of stage 3's
     parallel-only scope policy, since this file exercises extraction/emission, not scope selection."""
     for block in sdfg.nodes():
         if isinstance(block, LoopRegion):

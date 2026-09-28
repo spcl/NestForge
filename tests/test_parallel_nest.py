@@ -53,7 +53,7 @@ def test_real_parallel_map_kernel_is_parallel():
 def test_s2275_nested_map_emits_and_computes():
     # tsvc_2_s2275 baseline = an i-loop with an inner j-loop (2-D aa FMA) + an i-level 1-D statement.
     # Canonicalization legally distributes the two (the yaml puzzle: interchange for the matrix update
-    # is legal only once the vector statement is out of the i loop), so phase 2 sees two top-level
+    # is legal only once the vector statement is out of the i loop), so stage 3 sees two top-level
     # parallel maps; the 2-D aa update is the one that exercises nested-for emission.
     _, refs = nest_refs("tsvc_2_s2275")
     assert len(refs) == 2

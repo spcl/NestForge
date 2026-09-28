@@ -50,7 +50,7 @@ def computes_nrm_reduction(loop: LoopRegion) -> bool:
 
 def prepare_compute_nest():
     sdfg = corpus_kernel("scientific_computing/dense_linear_algebra/gramschmidt/gramschmidt").to_sdfg(simplify=True)
-    # Select by content, not by phase-2 scope policy: the loop region whose body computes the nrm
+    # Select by content, not by stage-3 scope policy: the loop region whose body computes the nrm
     # dot-product reduction. `parallel_top_level_maps` offers one candidate per parallel top-level map and
     # never this loop: both np.dot reductions here lower to ``Dot``/``MatMul`` library nodes, not maps.
     loops = [n for n in sdfg.nodes() if isinstance(n, LoopRegion) and computes_nrm_reduction(n)]
