@@ -33,3 +33,6 @@ id_ecdsa*
 coverage.txt
 coverage.xml
 htmlcov/
+
+# Claude Code local state (agent worktrees)
+.claude/
