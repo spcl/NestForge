@@ -9,6 +9,7 @@ pool in the parent on purpose and check that the child still runs.
 
 import ctypes
 import os
+import warnings
 import select
 import shutil
 import subprocess
@@ -109,7 +110,9 @@ def test_the_soft_pause_makes_the_fork_safe(tmp_path, runtime):
 
     # fork by hand: run_isolated would pause again
     r, w = os.pipe()
-    pid = os.fork()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*use of fork", category=DeprecationWarning)  # the fork is the test
+        pid = os.fork()
     if pid == 0:
         os.close(r)
         try:

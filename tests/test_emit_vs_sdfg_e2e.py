@@ -187,7 +187,8 @@ def max_abs_diff(oracle, cand):
         # never be dropped. Positions that are bit-equal (incl. both NaN, or both +-inf) are genuine
         # agreement: the emitted code reproduced the SDFG's value, so they score 0.
         same = (a == b) | (np.isnan(a) & np.isnan(b))
-        d = np.abs(a - b)
+        with np.errstate(invalid="ignore"):  # NaN and inf - inf are scored just below
+            d = np.abs(a - b)
         d = np.where(same, 0.0, np.where(np.isnan(d), np.inf, d))
         worst = max(worst, float(d.max()) if d.size else 0.0)
     return worst

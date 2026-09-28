@@ -125,7 +125,7 @@ def parallel_axpy_sdfg(name="paxpy"):
         sdfg.add_array(a, [N], dace.float64)
     st = sdfg.add_state()
     me, mx = st.add_map("m", {"i": "0:N"}, schedule=dace.ScheduleType.CPU_Multicore)
-    t = st.add_tasklet("t", {"x", "y"}, {"z"}, "z = x + y")
+    t = st.add_tasklet("t", {"x": None, "y": None}, {"z": None}, "z = x + y")
     st.add_memlet_path(st.add_read("X"), me, t, dst_conn="x", memlet=dace.Memlet("X[i]"))
     st.add_memlet_path(st.add_read("Y"), me, t, dst_conn="y", memlet=dace.Memlet("Y[i]"))
     st.add_memlet_path(t, mx, st.add_write("Z"), src_conn="z", memlet=dace.Memlet("Z[i]"))

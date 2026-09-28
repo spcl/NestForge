@@ -82,6 +82,16 @@ log "compilers: gcc/g++/gfortran, clang/llvm, flang"
 apt_install gcc g++ gfortran clang clang-tools llvm llvm-dev
 apt_install flang        # optional: LLVM Fortran, not on every release
 
+# GCC 13's vectorizer mislowers masked selects (DaCe refuses to trust it), so gcc/g++/c++ point at GCC 14 or newer.
+MIN_GCC=14
+ALT_PRIORITY=100  # above the distro g++ entry of the c++ alternative
+if [ "$(gcc -dumpversion 2>/dev/null | cut -d. -f1)" -lt "$MIN_GCC" ] 2>/dev/null; then
+  apt_install "gcc-$MIN_GCC" "g++-$MIN_GCC"
+  $SUDO update-alternatives --install /usr/bin/gcc gcc "/usr/bin/gcc-$MIN_GCC" "$ALT_PRIORITY" \
+    --slave /usr/bin/g++ g++ "/usr/bin/g++-$MIN_GCC"
+  $SUDO update-alternatives --install /usr/bin/c++ c++ "/usr/bin/g++-$MIN_GCC" "$ALT_PRIORITY"
+fi
+
 log "OpenMP runtimes: libomp (LLVM/clang), libgomp (ships with gcc)"
 apt_install libomp-dev libgomp1
 
