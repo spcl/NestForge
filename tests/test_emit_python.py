@@ -348,6 +348,78 @@ def test_a_symbol_a_nested_sdfg_binds_itself_leaves_the_outer_value_alone():
     assert (call["mid"][0], call["out"][0]) == (7.0, 2.0)
 
 
+WINDOW = 4
+
+
+def strided_window_sdfg(inner: dace.SDFG, read: str, write: str) -> dace.SDFG:
+    """``inner`` bound to the window ``read`` of ``a`` as ``x`` and the window ``write`` of ``b`` as ``y``."""
+    outer = dace.SDFG("strided_outer")
+    outer.add_array("a", [16], dace.float64)
+    outer.add_array("b", [16], dace.float64)
+    state = outer.add_state()
+    node = state.add_nested_sdfg(inner, {"x"}, {"y"})
+    state.add_edge(state.add_read("a"), None, node, "x", dace.Memlet(read))
+    state.add_edge(node, "y", state.add_write("b"), None, dace.Memlet(write))
+    return outer
+
+
+def window_arrays(inner: dace.SDFG, x_stride: int, y_stride: int) -> None:
+    inner.add_array("x", [WINDOW], dace.float64, strides=[x_stride])
+    inner.add_array("y", [WINDOW], dace.float64, strides=[y_stride])
+
+
+def two_state_window(x_stride: int, y_stride: int) -> dace.SDFG:
+    """``y = 2 * x``, then ``y[3] = x[3] + 100`` in a second state, so the nest is not inlined as one state."""
+    inner = dace.SDFG("window")
+    window_arrays(inner, x_stride, y_stride)
+    first = inner.add_state(is_start_block=True)
+    first.add_mapped_tasklet(
+        "twice",
+        {"i": f"0:{WINDOW}"},
+        {"v": dace.Memlet("x[i]")},
+        "w = 2 * v",
+        {"w": dace.Memlet("y[i]")},
+        external_edges=True,
+    )
+    second = inner.add_state_after(first)
+    last = second.add_tasklet("last", {"v"}, {"w"}, "w = v + 100")
+    second.add_edge(second.add_read("x"), None, last, "v", dace.Memlet("x[3]"))
+    second.add_edge(last, "w", second.add_write("y"), None, dace.Memlet("y[3]"))
+    return inner
+
+
+def test_a_strided_nested_window_scales_its_indices_by_the_stride():
+    """The windows ``a[2::3]`` and ``b[1::2]`` read and write every third and every second element."""
+    a = np.arange(16.0)
+
+    call, source = emit_and_run(strided_window_sdfg(two_state_window(3, 2), "a[2:12:3]", "b[1:8:2]"), {"a": a}, {})
+
+    assert "b[2 * i + 1] = 2 * a[3 * i + 2]" in source and "b[7] = a[11] + 100" in source
+    expected = np.zeros(16)
+    expected[1:8:2] = 2 * a[2:12:3]
+    expected[7] = a[11] + 100
+    np.testing.assert_array_equal(call["b"], expected)
+
+
+def indexed_read_window(x_stride: int) -> dace.SDFG:
+    """``y[0] = x[1]`` through an interstate symbol, whose index ``ExpandNestedSDFGInputs`` leaves unshifted."""
+    inner = dace.SDFG("indexed")
+    window_arrays(inner, x_stride, 1)
+    inner.add_symbol("t", dace.float64)
+    first = inner.add_state(is_start_block=True)
+    second = inner.add_state()
+    inner.add_edge(first, second, dace.InterstateEdge(assignments={"t": "x[1]"}))
+    write = second.add_tasklet("write", {}, {"o"}, "o = t")
+    second.add_edge(write, "o", second.add_write("y"), None, dace.Memlet("y[0]"))
+    return inner
+
+
+@pytest.mark.parametrize("x_stride, read", [(2, "a[1:8:2]"), (1, "a[2:6]")])
+def test_a_shifted_window_read_by_index_outside_dataflow_is_refused(x_stride, read):
+    with pytest.raises(UnsupportedNest, match="offset or strided connectors"):
+        sdfg_to_python(strided_window_sdfg(indexed_read_window(x_stride), read, "b[0:4]"), "k")
+
+
 def tag_write_sdfg() -> dace.SDFG:
     """``tags[idx[i]] = i`` through a tasklet whose output connector is the whole, dynamically written array."""
     sdfg = dace.SDFG("tag_write")

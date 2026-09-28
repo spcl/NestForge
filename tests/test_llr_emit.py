@@ -4,6 +4,9 @@
 references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose WCR copy accumulates.
 """
 
+import re
+import runpy
+
 import numpy as np
 
 import dace
@@ -72,3 +75,23 @@ def test_cond_reduce_sym_scalar_read_and_wcr():
     call, _ = emit_and_call("cond_reduce_sym", dict(LEN_1D=n), dict(a=a.copy()))
     acc = next(call[k] for k in call if k in ("out", "_priv_out") or k.endswith("_out"))
     np.testing.assert_allclose(float(np.ravel(acc)[0]), a[a > k_value].sum(), rtol=1e-12, atol=1e-12)
+
+
+def test_s318_strided_argmax_indexes_by_its_stride_and_matches_the_oracle():
+    """s318's ``a[k]`` with ``k += inc`` canonicalizes to an arg-reduction over ``a[0::inc]``; its expansion indexes
+    ``a`` by the stride ``inc``, which stays an argument."""
+    kernel = loop_level_kernel("tsvc_2_s318")
+    oracle = runpy.run_path(str(kernel.dace_file.with_name("tsvc_2_s318_numpy.py")))["s318"]
+    assert kernel.spec.init is not None
+    n, inc = 64, int(kernel.spec.init.scalars["inc"])
+    a = np.random.default_rng(4).standard_normal(n)
+    sdfg = kernel.to_sdfg(simplify=True)
+    canonicalize(sdfg, target="cpu")
+
+    src, lowered = sdfg_to_python(sdfg, "s318")
+    call = run_emitted(src, "s318", lowered, dict(a=a.copy()), dict(LEN_1D=n, inc=inc))
+
+    assert re.search(r"def s318\(.*\binc\b.*\):", src) and re.search(r"a\[\w+ \* inc\]", src)
+    expected = np.zeros(1)
+    oracle(a.copy(), expected, inc, n)
+    np.testing.assert_allclose(call["result"], expected, rtol=1e-12, atol=1e-12)

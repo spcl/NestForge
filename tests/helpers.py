@@ -86,12 +86,14 @@ def c_argtypes(order: list[str], boundary: Boundary) -> list[CType]:
 
 def sdfg_to_python(sdfg: dace.SDFG, fn_name: str = "kernel") -> tuple[str, dace.SDFG]:
     """Standalone Python source for a whole SDFG, whose non-array arguments are its symbols, and the lowered copy it
-    was emitted from (its descriptors size the scratch buffers the caller allocates)."""
-    symbols = [a for a in sdfg.arglist() if a not in sdfg.arrays]
+    was emitted from (its descriptors size the scratch buffers the caller allocates). The symbols are every free
+    symbol: ``arglist`` alone drops one only a library node's memlet step reads, which its expansion then indexes by."""
+    arglist = sdfg.arglist(free_symbols=sdfg.free_symbols)
+    symbols = [a for a in arglist if a not in sdfg.arrays]
     lowered = copy.deepcopy(sdfg)
     lower(lowered)
     widen_scratch(lowered, symbols)
-    data_args = [a for a in sdfg.arglist() if a in sdfg.arrays]
+    data_args = [a for a in arglist if a in sdfg.arrays]
     args = data_args + [s for s in scratch_arrays(lowered) if s not in data_args] + symbols
     return render(fn_name, args, lowered), lowered
 
