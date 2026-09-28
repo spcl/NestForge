@@ -115,21 +115,6 @@ def run_emitted(source: str, fn_name: str, lowered: dace.SDFG, inputs: dict, siz
     return call
 
 
-def drop_cpp_abort_guards(sdfg: dace.SDFG) -> int:
-    """Remove canonicalization's C++ ``std::abort()`` precondition guards, which the Python emitter refuses by
-    language; DaCe extended turns them into Python ``abort()`` tasklets, after which this finds none."""
-    guards = [
-        (node, state)
-        for node, state in sdfg.all_nodes_recursive()
-        if isinstance(node, dace.nodes.Tasklet)
-        and node.code.language != dace.Language.Python
-        and "abort" in node.code.as_string
-    ]
-    for node, state in guards:
-        state.remove_node(node)
-    return len(guards)
-
-
 def fusion_moves(sdfg: dace.SDFG) -> list[tuple[str, tuple[str, ...]]]:
     """Every legal loop or map fusion of ``sdfg`` as ``(kind, labels)``, after making its tree labels unique."""
     normalize_labels(sdfg)

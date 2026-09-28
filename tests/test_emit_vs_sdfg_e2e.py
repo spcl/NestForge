@@ -21,7 +21,6 @@ from nestforge.build.isolation import run_isolated
 from helpers import (
     c_argtypes,
     corpus_kernel,
-    drop_cpp_abort_guards,
     loop_level_kernel,
     run_emitted,
     sdfg_to_python,
@@ -139,7 +138,6 @@ def make_llr(key):
     def build():
         sdfg = kernel.to_sdfg(simplify=True)
         canonicalize(sdfg, target="cpu")
-        drop_cpp_abort_guards(sdfg)  # both sides run the same guard-free SDFG
         return sdfg
 
     sizes = {str(s): 8 for s in build().free_symbols}
