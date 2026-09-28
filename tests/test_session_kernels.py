@@ -10,8 +10,10 @@ import pytest
 import dace
 
 from nestforge.build import flags
+from nestforge.ir.libnode import ExternalCall
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.scopes import kernel_arguments
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -22,6 +24,11 @@ pytestmark = pytest.mark.e2e
 def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
     for i in dace.map[0:N]:
         c[i] = 2.0 * a[i] + b[i]
+
+
+def boundary_order(kernel: ExternalCall) -> list[str]:
+    inputs, outputs, symbols = kernel_arguments(kernel)
+    return [*inputs, *outputs, *symbols]
 
 
 def one_kernel_session(tmp_path, n: int = 256) -> tuple:
@@ -47,7 +54,7 @@ def test_optimize_kernel_writes_one_c_entry_with_the_boundary_arguments(tmp_path
     assert text.count('extern "C"') == 1
     assert f"void {info['symbol']}(" in text
     assert info["entry"] == f"{info['symbol']}({', '.join(info['abi_order'])})"
-    assert sorted(info["abi_order"]) == sorted(session.kernel_boundary(name)["boundary_order"])
+    assert sorted(info["abi_order"]) == sorted(boundary_order(session.kernel(name)))
 
 
 def test_optimize_kernel_binds_its_default_library_and_the_program_still_computes(tmp_path):
@@ -73,7 +80,7 @@ def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tm
 
     ext = fresh.kernel(kernel["name"])
     assert ext.implementation == "ExternCall" and ext.lib_path == info["library"]
-    assert sorted(info["abi_order"]) == sorted(fresh.kernel_boundary(kernel["name"])["boundary_order"])
+    assert sorted(info["abi_order"]) == sorted(boundary_order(fresh.kernel(kernel["name"])))
     assert_program_computes(sdfg)
 
 

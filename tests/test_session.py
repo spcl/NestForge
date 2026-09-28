@@ -60,41 +60,6 @@ def test_define_scopes_bumps_the_epoch_and_names_kernels_with_their_boundary_set
     assert producer["reads"] == ["A", "B"] and producer["symbols"] == ["N"] and producer["parallel"]
 
 
-def test_kernel_boundary_exposes_abi_order_target():
-    s = make_session()
-    name = s.define_scopes()[0]["name"]
-    info = s.kernel_boundary(name)
-    assert info["boundary_order"] == info["inputs"] + info["outputs"] + info["symbols"]
-
-
-def test_set_kernel_sets_leaf_fields_without_bumping_epoch():
-    s = make_session()
-    name = s.define_scopes()[0]["name"]
-    epoch = s.epoch
-    out = s.set_kernel(name, "/abs/libk.a", "k", ["A", "B", "T", "N"])
-    assert s.epoch == epoch
-    assert out["abi_order"] == ["A", "B", "T", "N"]
-
-
-def test_set_kernel_selects_the_extern_call_expansion():
-    """The leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion would emit the
-    reference and the timing would measure it while reporting the agent's kernel."""
-    s = make_session()
-    name = s.define_scopes()[0]["name"]
-    ext = s.kernel(name)
-    assert ext.implementation != "ExternCall", "fixture already selects the expansion; test would be vacuous"
-    s.set_kernel(name, "/abs/libk.a", "k", ["A", "B", "T", "N"])
-    assert ext.implementation == "ExternCall"
-
-
-def test_emit_reference_writes_the_python_oracle(tmp_path):
-    s = make_session(tmp_path)
-    path = s.emit_reference(s.define_scopes()[0]["name"])
-    assert path.endswith(".py")
-    with open(path) as f:
-        assert "def " in f.read()
-
-
 def test_a_no_op_define_scopes_keeps_the_epoch_so_labels_stay_valid():
     sdfg = dace.SDFG("no_maps")
     sdfg.add_state_after(sdfg.add_state())

@@ -107,7 +107,7 @@ def test_two_maps_no_fusion_accepts_become_one_kernel():
     assert result.status == "applied", result
     (kernel,) = external_calls(session.sdfg)
     assert session.kernel(result.reason) is kernel
-    assert sorted(session.kernel_boundary(result.reason)["outputs"]) == ["C", "T"]
+    assert sorted(kernel_arguments(kernel)[1]) == ["C", "T"]
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 

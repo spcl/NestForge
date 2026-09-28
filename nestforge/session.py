@@ -37,7 +37,6 @@ from nestforge.stages.kernel import (
     KernelVerdict,
     build_kernel_library,
     kernel_runtime_libraries,
-    process_runtime_libraries,
     schedule_kernel,
     use_kernel_library,
     validate_kernel,
@@ -55,7 +54,6 @@ from nestforge.stages.moves import (
 from nestforge.stages.placement import check_devices, default_devices, kernel_device, place, transfers
 from nestforge.stages.scopes import (
     is_parallel_kernel,
-    kernel_arguments,
     lower_group_to_external_call,
     lower_nests_to_external_call,
     node_boundary,
@@ -457,41 +455,6 @@ class Session:
     @staticmethod
     def kernel_outcome(name: str, status: str, reason: str, time_us: float | None = None) -> dict:
         return {"kernel": name, "status": status, "reason": reason, "time_us": time_us}
-
-    def set_kernel(
-        self,
-        name: str,
-        lib_path: str,
-        symbol: str,
-        abi_order: list[str],
-        fp_mode: str = "",
-        runtime_libraries: list[str] | None = None,
-    ) -> dict:
-        """Point a kernel at a library built elsewhere, exposing ``symbol`` with parameters in ``abi_order``.
-        ``runtime_libraries`` are the link items its runtimes need; libomp alone when ``None``."""
-        ext = self.kernel(name)
-        runtime = runtime_libraries if runtime_libraries is not None else process_runtime_libraries()
-        use_kernel_library(ext, Path(lib_path), symbol, abi_order, runtime)
-        if fp_mode:
-            ext.fp_mode = fp_mode
-        self.builds.pop(name, None)
-        inputs, outputs, symbols = kernel_arguments(ext)
-        return {"kernel": name, "abi_order": list(ext.abi_order), "boundary_order": [*inputs, *outputs, *symbols]}
-
-    def kernel_boundary(self, name: str) -> dict:
-        """The kernel's interface; ``boundary_order`` is the argument order of its Python oracle."""
-        inputs, outputs, symbols = kernel_arguments(self.kernel(name))
-        return {
-            "name": name,
-            "inputs": inputs,
-            "outputs": outputs,
-            "symbols": symbols,
-            "boundary_order": [*inputs, *outputs, *symbols],
-        }
-
-    def emit_reference(self, name: str) -> str:
-        """Write the kernel's Python oracle and return its path."""
-        return str(self.prepare_kernel(name).numpy_path)
 
     def prepare_kernel(self, name: str) -> Prepared:
         if name not in self.prepared:
