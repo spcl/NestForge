@@ -2,9 +2,9 @@
 
 [Overview](../README.md) · feedback: [7 Feedback](stages/7-feedback.md)
 
-`nestforge/agent/` is a minimal loop that lets one model drive stages 2 to 5 through the `Session`. It follows
-the finding of *Better Feedback, Smaller Agents*: the consistent gain comes from what the model reads between
-attempts, a concise analyzed report and a compact prompt, not from more tools, skills or history.
+`nestforge/agent/` is a minimal loop that lets one model drive stages 2 to 5 through the `Session`. It is built on
+one principle: what the model reads between attempts, a concise analyzed report and a compact prompt, matters more
+than more tools, skills or history.
 
 - **One call per turn.** Every turn is one system + user message. The prompt is rebuilt from the task, the stage
   goal and epoch, the current view (tree, kernels with devices and dependencies, or kernel sources), the latest

@@ -1,28 +1,25 @@
 # NestForge
 
-NestForge optimizes whole DaCe programs for CPU and GPU. It takes an SDFG from the Python or Fortran
-frontend, turns its loop nests into standalone kernels, gives each kernel a device, a canonical parallel
-form (CPF) implementation and a compiler configuration, and links the kernels back into one program.
-Every kernel is checked against its NumPy oracle.
+NestForge is an agentic optimization harness for whole DaCe programs on CPU and GPU. It canonicalizes a program,
+lets a small agent reshape its loop nests with legal transformations, cuts the program into kernels, places each
+kernel on a device, builds and sweeps each kernel, and reports back what to change. Every result is checked against
+the kernel's Python oracle.
 
-The work runs in six phases. Each phase makes one decision and ships a deterministic default. A scripted
-optimizer, a human and an LLM agent drive the same `Session` API, so an agent can take over any phase
-while the defaults run the rest.
+Each stage makes one decision and ships a deterministic default, so a run works with no agent, one agent, or a
+human driving the same `Session` API.
 
-[![NestForge phases](docs/figures/pipeline.png)](docs/figures/pipeline.svg)
-
-| Phase | Decides | Default optimizer | Agent |
+| Stage | Decides | Default | Agent |
 |---|---|---|---|
-| [0 Normalize](docs/phases/0-normalize.md) | canonical parallel form for the enabled targets | canonicalize up to fusion | none |
-| [1 Shape Kernels](docs/phases/1-shape-kernels.md) | fusion and fission granularity | fuse all legal loops | scheduling |
-| [2 Define Scopes](docs/phases/2-define-scopes.md) | which nests become external kernels | one scope per parallel top-level map | scheduling |
-| [3 Offload](docs/phases/3-offload.md) | device per kernel, host/device copies | all scopes on the GPU with a GPU target | scheduling |
-| [4 Optimize Kernels](docs/phases/4-optimize-kernels.md) | each kernel's code, one `lib<kernel>.a` | standalone CPF kernel: C++ on CPU, CUDA on GPU | kernel |
-| [5 Sweep Configurations](docs/phases/5-sweep-configurations.md) | compiler, FP mode, vectorizer cost model | keep the fastest correct variant | none |
+| [1 Canonicalize](docs/stages/1-canonicalize.md) | canonical parallel form (CPF) | DaCe canonicalization up to fusion | none |
+| [2 Moves](docs/stages/2-moves.md) | fusion, fission, interchange | canonicalization's fusion stage | `apply_move` |
+| [3 Scopes](docs/stages/3-scopes.md) | which regions become kernels | one per parallel top-level map | `define_scope` |
+| [4 Placement](docs/stages/4-placement.md) | device per kernel | parallel on GPU, sequential on CPU | `place` |
+| [5 Kernels](docs/stages/5-kernels.md) | each kernel's code | CPF C++ (CPU) or CUDA (GPU) | `set_kernel_source` |
+| [6 Variants](docs/stages/6-variants.md) | compiler, FP mode, cost model | fastest variant that matches the oracle | none |
+| [7 Feedback](docs/stages/7-feedback.md) | what to try next | ranked hints from times and compiler remarks | optional analyst |
 
-Two analysis agents [request changes](docs/phases/feedback.md): one reads runtimes and sends phase 1
-back to reshape kernels, the other reads placements and sends phase 2 back to redefine scopes. Agents
-follow [AGENTS.md](AGENTS.md).
+The built-in [agent loop](docs/agent.md) drives stages 2 to 5 with the OpenAI or Anthropic API, rebuilding a
+compact prompt every turn from the program view and the latest feedback.
 
 ## Quick start
 
@@ -30,14 +27,14 @@ follow [AGENTS.md](AGENTS.md).
 python examples/quickstart.py --device cpu --out quickstart_out
 python examples/quickstart.py --device gpu --out quickstart_out
 python examples/quickstart.py --device cpu --kernel jacobi_1d --out quickstart_jacobi
+python examples/quickstart.py --device cpu --agent anthropic --model claude-opus-5-5 --out quickstart_agent
 ```
 
-The script runs the default optimizer on HPCAgent-Bench's `fuse_diamond` at preset S (`LEN_1D=512`):
-four loops where `t = a*a` feeds `u = t + 1` and `v = t - 1`, then `out = u*v`. It prints the structure
-tree before phase 0:
+The first runs every default on HPCAgent-Bench's `fuse_diamond` at preset S (`LEN_1D=512`): four loops where
+`t = a*a` feeds `u = t + 1` and `v = t - 1`, then `out = u*v`. It prints the structure tree before stage 1:
 
 ```
-SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'
+SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=0
 |- for0_0  i=0:LEN_1D
 |  `- state1_0
 |- for0_1  i=0:LEN_1D
@@ -48,27 +45,19 @@ SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_d
    `- state1_3
 ```
 
-and after phase 0, in canonical parallel form:
+and after it, where the four sequential loops are one parallel map:
 
 ```
-SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'
+SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=1
 `- state0_0
    `- kernel1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
 ```
 
-0. Normalize fuses the four sequential loops into one parallel map that reads `a` and writes `out`.
-1. Shape Kernels finds nothing left to fuse.
-2. Define Scopes turns the map into one kernel, `extcall_0`, and lists where its inputs come from:
-   `extcall_0: a <- program, LEN_1D <- program`.
-3. Offload keeps the kernel on the host for CPU; for GPU it runs on the device, with `a` copied in and
-   `out` copied back.
-4. Optimize Kernels renders `extcall_0` as one CPF C++ or CUDA file and builds `libextcall_0.a`.
-5. Sweep Configurations times 15 CPU variants or 4 GPU variants (two nvcc toolkits, two FP modes) and
-   keeps the fastest one that matches NumPy.
+Stage 2 finds nothing left to fuse, stage 3 makes the map one kernel `extcall_0`, stage 4 keeps it on the CPU,
+stage 5 renders it as one CPF C++ unit with `extern "C" extcall_0(a, out, LEN_1D)`, and stage 6 times 15 CPU
+variants. Stage 7 reports that the kernel is memory-bound (0.25 flop/B).
 
-`--kernel jacobi_1d` shows what happens when canonical parallel form leaves more than one nest. Each
-time step reads `A`'s neighbours into `B`, then `B`'s neighbours back into `A`; a map cannot fuse with
-one that reads its neighbours, so two maps remain inside the time loop:
+`--kernel jacobi_1d` keeps two maps in the time loop, since each reads the other's neighbours:
 
 ```
 `- for0_0  _loop_it_0=1:TSTEPS
@@ -77,60 +66,52 @@ one that reads its neighbours, so two maps remain inside the time loop:
       `- kernel2_1  [_loop_it_4=0:N - 2]  reads=['B'] writes=['A']
 ```
 
-Phase 2 makes two kernels, and their dependency lines show the time loop carrying `A` from the second
-kernel back to the first; `program` is the value before the first step, and the loop may run zero times:
+Stage 3 makes two kernels. The [kernel DAG](docs/depends.md) shows the time loop carrying `A` from the second
+kernel back to the first; `program` is the value before the first step:
 
 ```
-extcall_0: A <- extcall_1.A [carried: for0_0] | program, N <- program
+extcall_0: A <- extcall_1.A | program [carried: for0_0], N <- program
 extcall_1: B <- extcall_0.B, N <- program
 exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 ```
 
-Phases 4 and 5 then build and sweep each kernel on its own.
-
-```
-quickstart_out/
-  0-normalize.sdfg ... 4-optimize-kernels.sdfg   program SDFG per phase (3 only with --device gpu)
-  5-sweep-configurations.json                    per nest: compiler, FP mode, cost model, flags, time
-  trees/                                         structure before phase 0, after phase 0, after phase 1
-  kernel_deps.txt                                where each kernel's inputs come from
-  kernels/extcall_0/                             CPF unit (.cpp or .cu) and libextcall_0.a
-  program/                                       the program's generated code
-  work/                                          build tree
-```
+and stage 7 tells the agent to fuse the two memory-bound kernels. The script saves one `.sdfg` per stage, the
+structure trees, the kernel DAG, each kernel's unit and `lib<kernel>.a`, the program's generated code, the winning
+stage 6 configuration as JSON and the feedback report.
 
 ## Install and test
 
 ```bash
-sudo bash scripts/setup_apt.sh                            # compilers, libomp, BLAS/LAPACK, binutils (Ubuntu)
-pip install -e ".[dev]"                                   # dace @ extended, hpcagent-bench @ main
-pre-commit install                                        # ruff check and ruff format on every commit
-pytest -m "not integration and not gpu and not vendor"    # unit set, as CI runs it
-pytest -m integration                                     # compiles and runs kernels
+sudo bash scripts/setup_apt.sh                           # compilers, libomp, BLAS/LAPACK, binutils (Ubuntu)
+pip install -e ".[dev,agent]"                            # or: uv pip install -e ".[dev,agent]"
+pre-commit install                                       # ruff check, ruff format, headers
+pytest -m "not integration and not gpu and not vendor"   # unit set, as CI runs it
+pytest -m integration                                    # compiles and runs kernels
 ```
 
-NestForge assumes Linux. Benchmark kernels and the NumPy to C, C++ and Fortran translator come from
-[HPCAgent-Bench](https://github.com/spcl/HPCAgent-Bench). HPCAgent-Bench drives NestForge, so
-`import nestforge` never loads HPCAgent-Bench; only the functions that need it do.
+DaCe (`extended`) and HPCAgent-Bench (`main`) are pinned to commit SHAs in `pyproject.toml`;
+`python scripts/bump_deps.py` moves both to their branch tips. NestForge assumes Linux. HPCAgent-Bench drives
+NestForge, so `import nestforge` never loads HPCAgent-Bench.
 
 ## Layout
 
 ```
 nestforge/
-  session.py   the one API over all phases
-  phases/      normalize, schedule and region_moves, scopes, offload, kernel, variants, feedback
-  ir/          extraction, NumPy emission, the ExternalCall library node, structure views
-  build/       compile and link, compilers on PATH, FP flags, the validate-and-time arena
+  session.py   the one API over all stages
+  stages/      canonicalize, moves, scopes, placement, kernel, variants, feedback
+  agent/       the minimal OpenAI / Anthropic agent loop
+  ir/          extraction, the Python oracle, the kernel DAG, the ExternalCall node, structure trees
+  build/       compile and link, compilers on PATH, FP flags, validate-and-time, fork isolation
   corpus/      HPCAgent-Bench kernels and the translator bridge
 ```
 
-More: [emitter contract](docs/emitter.md), [kernel dependencies](docs/depends.md),
-[build and runtime linking](docs/build.md), [FP modes and cost models](docs/fp-and-vectorization.md).
+More: [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md), [build and runtime linking](docs/build.md),
+[FP modes and cost models](docs/fp-and-vectorization.md). Contributors and agents follow [AGENTS.md](AGENTS.md).
 
 ## References
 
-- Phase 0 builds on *The Canonical Parallel Form as a Substrate for Parallelizing Compilers and
-  Agentic Optimizers*, which defines the canonical parallel form (CPF).
-- Phase 4 agents and the kernel corpus come from *HPCAgent-Bench*.
-- Phase 5 is the variant search of *The Data Must Flow (To Vector Processors): Searching Program
-  Variants to Improve Compiler Auto-Vectorization Capabilities* (ICS'26).
+- Stage 1 builds on *The Canonical Parallel Form as a Substrate for Parallelizing Compilers and Agentic
+  Optimizers*, which defines CPF.
+- The benchmark kernels and translators come from *HPCAgent-Bench*.
+- Stage 6 is the variant search of *The Data Must Flow (To Vector Processors): Searching Program Variants to
+  Improve Compiler Auto-Vectorization Capabilities* (ICS'26).
