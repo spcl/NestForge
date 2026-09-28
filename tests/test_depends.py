@@ -13,7 +13,7 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, Reach, UnsupportedProgram, kernel_dependencies
+from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.libnode import ExternalCall, in_conn, out_conn
 from nestforge.phases.scopes import lower_nests_to_external_call
 
@@ -155,7 +155,11 @@ def lowered(program) -> tuple[dace.SDFG, dict[str, list[str]]]:
 
 
 def reaching(graph: KernelGraph) -> dict[tuple[str, str], tuple[str, ...]]:
-    return {(edge.consumer, edge.arg): tuple(r.text() for r in edge.producers) for edge in (*graph.edges, *graph.exits)}
+    return {(edge.consumer, edge.arg): tuple(edge.labels()) for edge in (*graph.edges, *graph.exits)}
+
+
+def carried(graph: KernelGraph) -> dict[tuple[str, str], list[str]]:
+    return {(edge.consumer, edge.arg): edge.loops() for edge in (*graph.edges, *graph.exits) if edge.loops()}
 
 
 def loop_label(sdfg: dace.SDFG) -> str:
@@ -288,7 +292,7 @@ def test_a_symbol_read_only_in_the_kernel_body_is_a_kernel_argument():
 
     graph = kernel_dependencies(sdfg)
 
-    assert ArgEdge("extcall_0", "K", "symbol", (Reach(Producer("program")),)) in graph.edges
+    assert ArgEdge("extcall_0", "K", "symbol", (Producer("program"),)) in graph.edges
 
 
 def test_a_second_write_kills_the_first_writer():
@@ -351,9 +355,11 @@ def test_a_loop_carries_the_last_kernels_output_back_to_the_first():
     graph = kernel_dependencies(sdfg)
 
     first_reads = next(edge for edge in graph.edges if (edge.consumer, edge.arg) == ("extcall_0", "A"))
-    assert first_reads.producers == (Reach(Producer("kernel", "extcall_1", "A"), (loop,)), Reach(Producer("program")))
+    assert first_reads.producers == (Producer("kernel", "extcall_1", "A"), Producer("program"))
+    assert first_reads.text() == f"A <- extcall_1.A | program [carried: {loop}]"
+    assert carried(graph) == {("extcall_0", "A"): [loop]}
     assert reaching(graph) == {
-        ("extcall_0", "A"): (f"extcall_1.A [carried: {loop}]", "program"),
+        ("extcall_0", "A"): ("extcall_1.A", "program"),
         ("extcall_0", "N"): ("program",),
         ("extcall_1", "B"): ("extcall_0.B",),
         ("extcall_1", "N"): ("program",),
@@ -372,8 +378,9 @@ def test_a_loop_proven_to_run_drops_the_value_it_was_entered_with():
 
     graph = kernel_dependencies(sdfg)
 
+    assert carried(graph) == {("extcall_0", "A"): [loop]}
     assert reaching(graph) == {
-        ("extcall_0", "A"): (f"extcall_1.A [carried: {loop}]", "program"),
+        ("extcall_0", "A"): ("extcall_1.A", "program"),
         ("extcall_0", "N"): ("program",),
         ("extcall_1", "B"): ("extcall_0.B",),
         ("extcall_1", "N"): ("program",),
@@ -392,7 +399,8 @@ def test_a_break_before_the_second_kernel_leaves_with_the_value_the_loop_had():
 
     graph = kernel_dependencies(sdfg)
 
-    assert reaching(graph)[("extcall_2", "A")] == ("extcall_1.A", f"extcall_1.A [carried: {loop}]", "program")
+    assert reaching(graph)[("extcall_2", "A")] == ("extcall_1.A", "program")
+    assert carried(graph)[("extcall_2", "A")] == [loop]
 
 
 def test_a_continue_lets_the_loop_entry_value_reach_past_the_loop():
@@ -426,7 +434,7 @@ def test_an_external_call_without_a_manifest_is_refused():
         kernel_dependencies(sdfg)
 
 
-def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel_and_the_assignment():
+def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel():
     sdfg = dace.SDFG("symbol_from_output")
     for name in ("x", "y", "z"):
         sdfg.add_array(name, [8], dace.float64)
@@ -440,9 +448,9 @@ def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel_and_the_assign
     graph = kernel_dependencies(sdfg)
 
     assert graph.edges == (
-        ArgEdge("extcall_0", "x", "input", (Reach(Producer("program")),)),
-        ArgEdge("extcall_1", "y", "input", (Reach(Producer("program")),)),
-        ArgEdge("extcall_1", "M", "symbol", (Reach(Producer("kernel", "extcall_0", "cnt")),), ("M = cnt[2]",)),
+        ArgEdge("extcall_0", "x", "input", (Producer("program"),)),
+        ArgEdge("extcall_1", "y", "input", (Producer("program"),)),
+        ArgEdge("extcall_1", "M", "symbol", (Producer("kernel", "extcall_0", "cnt"),)),
     )
 
 
