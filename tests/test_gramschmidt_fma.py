@@ -99,8 +99,8 @@ def sweep(conditioning, tmp_path):
     boundary = prepare_compute_nest()
     prep, csrc, order = emit(boundary, tmp_path)
     # nrm is a local scalar inside the extracted loop (never crosses the boundary), so the reduction
-    # lowers to a plain assignment; guards that it is still present and still a np.dot reduction.
-    assert "nrm = np.dot" in prep.numpy_source
+    # lowers to a plain accumulation; guards that it is still present and still a sum reduction.
+    assert "nrm = nrm + " in prep.numpy_source
     M, N = 128, 40
     sizes = {"M": M, "N": N, "j": 0, "k": 0}
     A = make_A(M, N, conditioning)
