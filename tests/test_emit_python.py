@@ -402,7 +402,7 @@ def test_a_strided_nested_window_scales_its_indices_by_the_stride():
 
 
 def indexed_read_window(x_stride: int) -> dace.SDFG:
-    """``y[0] = x[1]`` through an interstate symbol, whose index ``ExpandNestedSDFGInputs`` leaves unshifted."""
+    """``y[0] = x[1]`` through an interstate symbol, whose index moves with the window."""
     inner = dace.SDFG("indexed")
     window_arrays(inner, x_stride, 1)
     inner.add_symbol("t", dace.float64)
@@ -415,9 +415,13 @@ def indexed_read_window(x_stride: int) -> dace.SDFG:
 
 
 @pytest.mark.parametrize("x_stride, read", [(2, "a[1:8:2]"), (1, "a[2:6]")])
-def test_a_shifted_window_read_by_index_outside_dataflow_is_refused(x_stride, read):
-    with pytest.raises(UnsupportedNest, match="offset or strided connectors"):
-        sdfg_to_python(strided_window_sdfg(indexed_read_window(x_stride), read, "b[0:4]"), "k")
+def test_a_shifted_window_read_by_index_outside_dataflow_reads_the_outer_element(x_stride, read):
+    a = np.arange(16.0)
+
+    call, source = emit_and_run(strided_window_sdfg(indexed_read_window(x_stride), read, "b[0:4]"), {"a": a}, {})
+
+    assert "a[3]" in source and "x[" not in source
+    assert call["b"][0] == a[3]
 
 
 def tag_write_sdfg() -> dace.SDFG:

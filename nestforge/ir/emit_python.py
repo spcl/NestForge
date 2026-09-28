@@ -206,39 +206,6 @@ def expand_to_pure(sdfg: dace.SDFG) -> None:
     raise UnsupportedNest(f"library nodes of {sdfg.name} still expand to library nodes after {attempt + 1} rounds")
 
 
-def moved(subset: subsets.Subset | None) -> bool:
-    """Whether a connector subset starts off the origin or strides along an axis it keeps."""
-    ranges = subset.ranges if isinstance(subset, subsets.Range) else []
-    return any(begin != end and (begin != 0 or step != 1) for begin, end, step in ranges)
-
-
-def symbolic_reads(sdfg: dace.SDFG) -> set[str]:
-    """Names ``sdfg`` itself reads outside dataflow: interstate edges, loop and branch heads, memlet subsets."""
-    reads = {name for e in sdfg.all_interstate_edges() for name in e.data.read_symbols()}
-    for block in sdfg.all_control_flow_blocks():
-        if isinstance(block, (LoopRegion, ConditionalBlock)):
-            reads |= block.used_symbols(all_symbols=True, with_contents=False)
-    for state in sdfg.all_states():
-        for edge in state.edges():
-            for subset in (edge.data.subset, edge.data.other_subset):
-                reads |= {str(s) for s in subset.free_symbols} if isinstance(subset, subsets.Subset) else set()
-    return reads
-
-
-def refuse_moved_symbolic_reads(sdfg: dace.SDFG, outer_moved: frozenset[str] = frozenset()) -> None:
-    """``ExpandNestedSDFGInputs`` offsets and scales a widened connector's memlets, but not its indices in
-    interstate edges, loop and branch heads or other memlets' subsets; refuse a moved connector read there."""
-    for node, state in placed(sdfg, nodes.NestedSDFG):
-        if state.sdfg is not sdfg:
-            continue
-        edges = [*((e, e.dst_conn) for e in state.in_edges(node)), *((e, e.src_conn) for e in state.out_edges(node))]
-        inner_moved = frozenset(c for e, c in edges if c and (e.data.data in outer_moved or moved(e.data.subset)))
-        misread = sorted(inner_moved & symbolic_reads(node.sdfg))
-        if misread:
-            raise UnsupportedNest(f"nested SDFG {node.label} reads the offset or strided connectors {misread} by index")
-        refuse_moved_symbolic_reads(node.sdfg, inner_moved)
-
-
 def bind_nested_data(sdfg: dace.SDFG) -> None:
     """Rename each nested SDFG's connector arrays to the outer arrays they bind, with the outer descriptors; the
     connectors cover whole arrays after ``ExpandNestedSDFGInputs``."""
@@ -360,7 +327,6 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     unique_connectors(sdfg)
     unique_nested_bindings(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
-        refuse_moved_symbolic_reads(sdfg)
         sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs, validate=False)
         bind_nested_data(sdfg)
     InlineTaskletConnectors().apply_pass(sdfg, {})
