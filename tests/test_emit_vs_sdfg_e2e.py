@@ -250,7 +250,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
 
     def work():
         import subprocess
-        from nestforge.phases.scopes import lower_nests_to_external_call
+        from nestforge.stages.scopes import lower_nests_to_external_call
         from nestforge.corpus.translate import prepare, emit_sources
         from nestforge.build.arena import make_inputs
         from nestforge.build.arena import call_native

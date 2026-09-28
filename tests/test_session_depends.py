@@ -50,10 +50,11 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
 
     kernels = session.list_kernels()
 
-    assert [{key: value for key, value in kernel.items() if key != "id"} for kernel in kernels] == [
+    assert kernels == [
         {
             "name": "extcall_0",
-            "device": None,
+            "device": "cpu",
+            "parallel": True,
             "inputs": ["A", "B"],
             "outputs": ["T"],
             "symbols": ["N"],
@@ -62,7 +63,8 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
         },
         {
             "name": "extcall_1",
-            "device": None,
+            "device": "cpu",
+            "parallel": True,
             "inputs": ["T"],
             "outputs": ["C"],
             "symbols": ["N"],
@@ -70,23 +72,12 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
             "carried": {},
         },
     ]
-    assert [session.resolve(kernel["id"], "kernel").name for kernel in kernels] == ["extcall_0", "extcall_1"]
 
 
-def test_kernel_ids_stay_kernel_handles_after_the_tree_stamps_the_same_nodes(tmp_path):
-    session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-    session.describe()
-
-    kernels = session.list_kernels()
-
-    assert [session.resolve(kernel["id"], "kernel").name for kernel in kernels] == ["extcall_0", "extcall_1"]
-    assert [kernel["id"] for kernel in session.list_kernels()] == [kernel["id"] for kernel in kernels]
-
-
-def test_list_kernels_reports_the_device_phase_3_placed_each_kernel_on(tmp_path):
+def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path):
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
 
-    session.offload()
+    session.place()
 
     assert [kernel["device"] for kernel in session.list_kernels()] == ["cpu", "cpu"]
 

@@ -17,18 +17,18 @@ from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
 from nestforge.corpus.translate import prepare
 from nestforge.ir.libnode import ExternLibEnv
 from nestforge.build.sdfg import compile_linked_program
-from nestforge.phases.kernel import (
+from nestforge.stages.kernel import (
     KernelVerdict,
     at_rung,
     kernel_runtime_libraries,
     schedule_kernel,
     use_kernel_library,
 )
-from nestforge.phases.normalize import Targets, normalize
-from nestforge.phases.schedule import full_fusion
-from nestforge.phases.scopes import lower_nests_to_external_call
-from nestforge.phases.offload import offload
-from nestforge.phases.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
+from nestforge.stages.canonicalize import Targets, canonicalize
+from nestforge.stages.canonicalize import fuse_and_finish
+from nestforge.stages.scopes import lower_nests_to_external_call
+from nestforge.stages.placement import default_devices, place
+from nestforge.stages.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
 
 N = dace.symbol("N")
 
@@ -47,8 +47,8 @@ NVCC_NEWER = CudaToolchain(nvcc="nvcc-b", release="13.3", cudart_dir="lib-b")
 
 def lowered_vadd():
     sdfg = vadd.to_sdfg(simplify=True)
-    normalize(sdfg, Targets())
-    full_fusion(sdfg, Targets())
+    canonicalize(sdfg, Targets())
+    fuse_and_finish(sdfg, Targets())
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
     return sdfg, ext, boundary
 
@@ -153,7 +153,7 @@ def program_build_ninja(build_folder):
 
 @pytest.mark.e2e
 def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(tmp_path):
-    """The whole flow: the phase-4 winner linked into the parent through ``ExternalCall``'s extern-call
+    """The whole flow: the stage 6 winner linked into the parent through ``ExternalCall``'s extern-call
     expansion, with the runtimes it needs linked after the objects. The program's one OpenMP runtime is libomp."""
     sdfg, ext, boundary = lowered_vadd()
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
@@ -185,10 +185,10 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
 @pytest.mark.gpu
 def test_the_gpu_sweep_measures_every_nvcc_cell_and_a_correct_cell_wins(tmp_path):
     sdfg = vadd.to_sdfg(simplify=True)
-    normalize(sdfg, Targets(gpu=True))
-    full_fusion(sdfg, Targets(gpu=True))
+    canonicalize(sdfg, Targets(gpu=True))
+    fuse_and_finish(sdfg, Targets(gpu=True))
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    offload(sdfg, Targets(gpu=True))
+    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     prep = prepare(boundary, ext.name, tmp_path / "ref")
     variants = device_variants("gpu")

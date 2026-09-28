@@ -14,7 +14,7 @@ from dace.transformation.passes.canonicalize import canonicalize
 
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_numpy import load_emitted
-from nestforge.phases.scopes import top_level_map_entries
+from nestforge.stages.scopes import top_level_map_entries
 
 from helpers import loop_level_kernel, sdfg_to_numpy
 

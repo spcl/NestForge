@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The CPU quick start runs every phase on fuse_diamond and leaves each phase's artifact behind."""
+"""The CPU quick start runs every stage's default on fuse_diamond and leaves each stage's artifact behind."""
 
 import json
 import os
@@ -53,23 +53,23 @@ def quickstart_run(tmp_path_factory) -> tuple[Path, str]:
     return out, run.stdout
 
 
-def test_cpu_quickstart_prints_one_line_per_phase_and_saves_every_artifact(quickstart_run):
+def test_cpu_quickstart_prints_one_line_per_stage_and_saves_every_artifact(quickstart_run):
     out, stdout = quickstart_run
 
-    phases = [line.split()[0] for line in stdout.splitlines() if line[:1].isdigit()]
+    stages = [line.split()[0] for line in stdout.splitlines() if line[:1].isdigit()]
 
-    assert phases == ["0", "1", "2", "3", "4", "5"]
+    assert stages == ["1", "2", "3", "4", "5", "6", "7"]
     assert sorted(p.name for p in out.glob("*.sdfg")) == [
-        "0-normalize.sdfg",
-        "1-shape-kernels.sdfg",
-        "2-define-scopes.sdfg",
-        "4-optimize-kernels.sdfg",
+        "1-canonicalize.sdfg",
+        "2-moves.sdfg",
+        "3-scopes.sdfg",
+        "5-kernels.sdfg",
     ]
     kernel_dir = out / "kernels" / "extcall_0"
     assert sorted(p.name for p in kernel_dir.iterdir()) == ["extcall_0.cpp", "libextcall_0.a"]
-    (bound,) = list(lib_paths(json.loads((out / "4-optimize-kernels.sdfg").read_text())))
+    (bound,) = list(lib_paths(json.loads((out / "5-kernels.sdfg").read_text())))
     assert Path(bound).read_bytes() == (kernel_dir / "libextcall_0.a").read_bytes()
-    config = json.loads((out / "5-sweep-configurations.json").read_text())
+    config = json.loads((out / "6-variants.json").read_text())
     assert list(config) == ["extcall_0"]
     assert list(config["extcall_0"]) == ["compiler", "fp_mode", "cost_model", "flags", "time_us"]
     assert config["extcall_0"]["fp_mode"] in flags.FP_LEVELS
@@ -77,6 +77,8 @@ def test_cpu_quickstart_prints_one_line_per_phase_and_saves_every_artifact(quick
     assert "-O3" in config["extcall_0"]["flags"]
     linking_frames = [p for p in (out / "program").glob("*.cpp") if 'extern "C" void extcall_0(' in p.read_text()]
     assert len(linking_frames) == 1
+    feedback = (out / "7-feedback.txt").read_text().splitlines()
+    assert feedback[0].startswith("kernel times: extcall_0 ") and 2 <= len(feedback) <= 9
 
 
 def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_run):
@@ -91,11 +93,11 @@ def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_
 def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_trees(quickstart_run):
     out, stdout = quickstart_run
 
-    trees = {label: (out / "trees" / f"{label}.txt").read_text() for label in ("0-input", "1-cpf", "2-shaped")}
+    trees = {label: (out / "trees" / f"{label}.txt").read_text() for label in ("0-input", "1-canonical", "2-moved")}
 
     assert nest_kinds(trees["0-input"]) == {"maps": 0, "loops": 4}
-    assert nest_kinds(trees["1-cpf"]) == {"maps": 1, "loops": 0}
-    assert nest_kinds(trees["2-shaped"]) == {"maps": 1, "loops": 0}
+    assert nest_kinds(trees["1-canonical"]) == {"maps": 1, "loops": 0}
+    assert nest_kinds(trees["2-moved"]) == {"maps": 1, "loops": 0}
     assert all(tree.rstrip("\n") in stdout for tree in trees.values())
 
 
@@ -117,7 +119,7 @@ def jacobi_run(tmp_path_factory) -> tuple[Path, str]:
 def test_jacobi_keeps_two_maps_in_its_time_loop(jacobi_run):
     out, _ = jacobi_run
 
-    shaped = (out / "trees" / "2-shaped.txt").read_text()
+    shaped = (out / "trees" / "2-moved.txt").read_text()
 
     assert nest_kinds(shaped) == {"maps": 2, "loops": 1}
 
@@ -138,7 +140,7 @@ def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
 def test_jacobi_builds_and_sweeps_both_kernels(jacobi_run):
     out, _ = jacobi_run
 
-    config = json.loads((out / "5-sweep-configurations.json").read_text())
+    config = json.loads((out / "6-variants.json").read_text())
 
     assert list(config) == ["extcall_0", "extcall_1"]
     assert all(

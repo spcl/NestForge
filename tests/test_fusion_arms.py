@@ -1,7 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The phase 1 fusion tool surface (:mod:`nestforge.phases.schedule`): enumerate legal fusion moves and apply
-them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
+"""The stage 2 fusion moves (:mod:`nestforge.stages.moves`): list legal fusion moves and apply them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
 against the un-fused reference. Exercises all three arms -- loop, vertical map, horizontal map -- and the
 agent's real pattern of applying a random legal sequence.
 """
@@ -12,17 +11,10 @@ import pytest
 import dace
 from dace.transformation.interstate.state_fusion import StateFusion
 
-from nestforge.phases.scopes import top_level_map_entries
-from nestforge.phases.schedule import (
-    FusionMove,
-    apply_fusion,
-    can_fuse,
-    enumerate_fusions,
-    horizontal_map_moves,
-    loop_fusion_moves,
-    vertical_map_moves,
-)
-from helpers import random_vectors, run
+from nestforge.ir.introspect import tree_rows
+from nestforge.stages.moves import Rewrite, plan_move, tree_label
+from nestforge.stages.scopes import top_level_map_entries
+from helpers import apply_move, fusion_moves, random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -34,11 +26,11 @@ def apply_to_fixpoint(sdfg, order="greedy", seed=0):
     rng = np.random.default_rng(seed)
     applied = 0
     while True:
-        moves = enumerate_fusions(sdfg)
+        moves = fusion_moves(sdfg)
         if not moves:
             return applied
         move = moves[0] if order == "greedy" else moves[int(rng.integers(len(moves)))]
-        apply_fusion(move)
+        apply_move(sdfg, move)
         applied += 1
 
 
@@ -72,7 +64,7 @@ def sibling_maps(a: f64[N], b: f64[N], c: f64[N]):
 
 def co_located(prog):
     """Build the SDFG and StateFusion sequential states together, so producer/consumer and sibling maps
-    land in one state where the map-fusion arms can match them (mirrors the phase 1 fusion-ready canon)."""
+    land in one state where the map-fusion arms can match them (mirrors the fusion-ready canonical form)."""
     sdfg = prog.to_sdfg(simplify=True)
     sdfg.apply_transformations_repeated(StateFusion)
     return sdfg
@@ -81,28 +73,21 @@ def co_located(prog):
 # enumeration finds the right arm
 
 
-def test_enumerate_finds_loop_fusion():
-    sdfg = two_recurrences.to_sdfg(simplify=True)
-    moves = list(loop_fusion_moves(sdfg))
-    assert any(m.kind == "fuse-loops" for m in moves)
+def the_only_fusion_applies(sdfg) -> str:
+    (move,) = fusion_moves(sdfg)
+    return apply_move(sdfg, move)
 
 
-def test_enumerate_finds_vertical_map_fusion():
-    sdfg = co_located(producer_consumer_maps)
-    moves = list(vertical_map_moves(sdfg))
-    assert any(m.kind == "fuse-map-vertical" for m in moves)
+def test_two_recurrences_offer_a_loop_fusion():
+    assert the_only_fusion_applies(two_recurrences.to_sdfg(simplify=True)) == "LoopFusion"
 
 
-def test_enumerate_finds_horizontal_map_fusion():
-    sdfg = co_located(sibling_maps)
-    moves = list(horizontal_map_moves(sdfg))
-    assert any(m.kind == "fuse-map-horizontal" for m in moves)
+def test_a_producer_and_its_consumer_offer_a_vertical_map_fusion():
+    assert the_only_fusion_applies(co_located(producer_consumer_maps)) == "MapFusionVertical"
 
 
-def test_enumerated_moves_carry_apply_kwargs():
-    sdfg = co_located(producer_consumer_maps)
-    for m in enumerate_fusions(sdfg):
-        assert isinstance(m, FusionMove) and m.where and m.xform is not None
+def test_siblings_offer_a_horizontal_map_fusion():
+    assert the_only_fusion_applies(co_located(sibling_maps)) == "MapFusionHorizontal"
 
 
 # applying moves preserves value bit-for-bit
@@ -158,7 +143,7 @@ def test_no_moves_on_a_single_map():
         for i in dace.map[0:N]:
             b[i] = a[i] * 2.0
 
-    assert enumerate_fusions(one_map.to_sdfg(simplify=True)) == []
+    assert fusion_moves(one_map.to_sdfg(simplify=True)) == []
 
 
 @dace.program
@@ -180,35 +165,14 @@ def map_pairs(sdfg):
                     yield first, second
 
 
-def offered_pairs(sdfg):
-    """The map-entry pairs ``enumerate_fusions`` lists, unordered."""
-    pairs = set()
-    for move in enumerate_fusions(sdfg):
-        if move.kind == "fuse-map-vertical":
-            exit_node = move.where["first_map_exit"]
-            state = next(s for s in sdfg.all_states() if exit_node in s.nodes())
-            pairs.add(frozenset({state.entry_node(exit_node), move.where["second_map_entry"]}))
-        elif move.kind == "fuse-map-horizontal":
-            pairs.add(frozenset({move.where["first_parallel_map_entry"], move.where["second_parallel_map_entry"]}))
-    return pairs
-
-
-def test_can_fuse_agrees_with_enumerate_fusions():
-    """``can_fuse`` says yes for exactly the pairs ``enumerate_fusions`` lists, and otherwise gives a reason: a live
-    output beside a fusable transient must not hide the listed move."""
+def test_a_map_pair_plans_a_fusion_exactly_when_it_is_listed():
+    """A live output beside a fusable transient must not hide the listed move, and every other pair gets a reason."""
     sdfg = live_and_transient.to_sdfg(simplify=True)
-    offered = offered_pairs(sdfg)
+    offered = {frozenset(labels) for _, labels in fusion_moves(sdfg)}
     assert offered, "the fixture must offer a map fusion, else it tests nothing"
+    rows = tree_rows(sdfg)
     for first, second in map_pairs(sdfg):
-        verdict = can_fuse(sdfg, first, second)
-        assert (verdict == "yes") == (frozenset({first, second}) in offered), (first, second, verdict)
-        assert isinstance(verdict, str) and verdict
-
-
-def test_live_output_does_not_mask_a_transient_fusion():
-    # the specific shape: if any move is offered for the producer/consumer pair, can_fuse must not report the
-    # live output as the blocker.
-    sdfg = live_and_transient.to_sdfg(simplify=True)
-    assert enumerate_fusions(sdfg), "fixture must produce a fusable pair, else it tests nothing"
-    verdicts = [can_fuse(sdfg, a, b) for a, b in map_pairs(sdfg)]
-    assert any(v == "yes" for v in verdicts), f"a move is offered but no pair says yes: {verdicts}"
+        plan = plan_move("map-fusion", [rows[tree_label(first)], rows[tree_label(second)]])
+        listed = frozenset({tree_label(first), tree_label(second)}) in offered
+        assert isinstance(plan, Rewrite) == listed, (first, second, plan)
+        assert isinstance(plan, Rewrite) or plan

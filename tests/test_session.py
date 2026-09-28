@@ -1,16 +1,14 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session: the epoch-stamped id layer over the phase API: id minting, the stale-handle guard on every mutation,
-kind checks, the region/nest distinction, and plain JSON-able results. The wrapped transforms have their own tests.
-"""
+"""Session: the epoch guard on labeled calls, kernels named by name, and plain JSON-able results. The wrapped
+stages have their own tests."""
 
 import numpy as np
-import pytest
 import dace
 
-from nestforge.phases.normalize import Targets
-from nestforge.phases.scopes import top_level_map_entries
-from nestforge.session import Session, StaleHandle
+from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
+from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")
 
@@ -25,14 +23,6 @@ def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def two_indep(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
-    for i in dace.map[0:N]:
-        C[i] = A[i] * 2.0
-    for i in dace.map[0:N]:
-        D[i] = B[i] * 3.0
-
-
-@dace.program
 def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.float64[N], C: dace.float64[N]):
     T = np.empty_like(A)  # transient producer output
     for i in dace.map[0:N]:
@@ -42,217 +32,92 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
         C[i] = T[i] * 2.0 + live_out[i]  # consumer reads both
 
 
-def make_session():
-    return Session(vertical_pair.to_sdfg(simplify=True))
-
-
-def barred_session():
-    # simplify=False keeps each map in its own state -> a state barrier between the two nests.
-    return Session(two_indep.to_sdfg(simplify=False))
+def make_session(tmp_path=None) -> Session:
+    return Session(vertical_pair.to_sdfg(simplify=True), work_dir=str(tmp_path) if tmp_path else None)
 
 
 def top_level_map_count(sdfg) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.all_states())
 
 
-# nest fusion and the id/epoch layer
-
-
-def test_list_nests_is_plain_data():
+def test_a_move_bumps_the_epoch_and_its_labels_go_stale():
     s = make_session()
-    tree = s.describe()
-    assert tree.startswith("SDFG ") and "[e0:nest:" in tree  # a tree, with acting ids on its nest rows
-    nests = s.list_nests()
-    assert len(nests) == 2
-    # epoch-0 stamped nest ids. Not pinned to :0/:1 -- describe() mints the same handles onto its
-    # tree lines, so the counter's absolute value depends on what was inspected first.
-    assert all(n["id"].startswith("e0:nest:") for n in nests)
-    assert all(s.resolve(n["id"], "nest") is not None for n in nests)
-    assert ({"A", "B"}, {"T"}) in [(set(n["reads"]), set(n["writes"])) for n in nests]
-    for n in nests:  # JSON-able: only str/bool/list, never a node
-        assert isinstance(n["label"], str) and isinstance(n["parallel"], bool)
+    (move,) = s.list_moves("map-fusion")
+    assert move["epoch"] == 0
+
+    applied = s.apply_move(move["kind"], move["labels"], move["epoch"])
+
+    assert (applied.status, s.epoch) == ("applied", 1)
+    assert s.apply_move(move["kind"], move["labels"], move["epoch"]).status == "stale"
 
 
-def test_can_fuse_uses_nest_ids():
-    s = make_session()
-    a, b = (n["id"] for n in s.list_nests())
-    assert s.can_fuse(a, b) == "yes"
-
-
-def test_fuse_bumps_epoch_and_stales_prior_ids():
-    s = make_session()
-    nests = s.list_nests()
-    moves = s.list_fusions()
-    assert len(moves) == 1 and moves[0]["kind"] == "fuse-map-vertical"
-    assert s.epoch == 0
-    s.fuse(moves[0]["id"])
-    assert s.epoch == 1
-    with pytest.raises(StaleHandle):  # a nest id from epoch 0 no longer resolves
-        s.can_fuse(nests[0]["id"], nests[1]["id"])
-
-
-def test_fission_all_bumps_epoch():
-    s = make_session()
-    stale = [m["id"] for m in s.list_fusions()]  # mint some epoch-0 handles
-    s.fission_all()
-    assert s.epoch == 1
-    # Every epoch-0 handle is gone. The dict is not empty: fission_all returns the fresh tree, and
-    # describe() stamps live epoch-1 ids on it so the agent can act on what it was just handed.
-    assert not any(hid.startswith("e0:") for hid in s.handles)
-    for hid in stale:
-        with pytest.raises(StaleHandle):
-            s.resolve(hid)
-
-
-def test_resolve_rejects_wrong_kind():
-    s = make_session()
-    nest_id = s.list_nests()[0]["id"]
-    with pytest.raises(KeyError):  # a nest id is not a move id
-        s.fuse(nest_id)
-
-
-def test_unknown_id_at_current_epoch_is_not_stale():
-    s = make_session()
-    s.list_nests()
-    with pytest.raises(KeyError) as ei:  # current-epoch but nonexistent -> plain unknown, not StaleHandle
-        s.can_fuse("e0:nest:99", "e0:nest:0")
-    assert not isinstance(ei.value, StaleHandle)
-
-
-# region fusion
-
-
-def test_cross_state_nests_are_blocked_and_name_the_region_merge():
-    s = barred_session()
-    a, b = (n["id"] for n in s.list_nests())
-    reason = s.can_fuse(a, b)
-    assert "different states" in reason and "merge the enclosing regions" in reason
-    assert s.list_region_fusions(), "a state-fusion move must exist to unblock them"
-
-
-def test_region_fusion_unblocks_cross_state_nest_fusion():
-    s = barred_session()
-    assert not s.list_fusions(), "nothing fuses while the state barrier stands"
-    while s.list_region_fusions():  # merge regions to a fixed point (agent picks; here we drain)
-        s.fuse_regions(s.list_region_fusions()[0]["id"])
-    assert s.list_fusions(), "with the states merged, the two maps are now fusable"
-
-
-def test_fuse_regions_bumps_epoch_and_stales_prior_ids():
-    s = barred_session()
-    moves = s.list_region_fusions()
-    assert moves and moves[0]["kind"] == "fuse-states"
-    epoch = s.epoch
-    s.fuse_regions(moves[0]["id"])
-    assert s.epoch == epoch + 1
-    with pytest.raises(StaleHandle):  # the region-move id is now stale
-        s.fuse_regions(moves[0]["id"])
-
-
-# phase 2: scopes
-
-
-def test_scope_candidates_carry_their_own_id_kind_and_read_write_sets():
-    s = make_session()
-    cands = s.list_scope_candidates()
-    assert cands and all(c["id"].startswith("e0:cand:") for c in cands)
-    assert all("reads" in c and "writes" in c for c in cands)
-
-
-def test_define_scopes_mints_kernels_at_new_epoch_with_boundary_sets():
+def test_define_scopes_bumps_the_epoch_and_names_kernels_with_their_boundary_sets():
     s = make_session()
     kernels = s.define_scopes()
     assert s.epoch == 1
-    assert len(kernels) == 2
-    assert all(k["id"].startswith("e1:kernel:") for k in kernels)
+    assert [k["name"] for k in kernels] == ["extcall_0", "extcall_1"]
     producer = next(k for k in kernels if k["writes"] == ["T"])
-    assert producer["reads"] == ["A", "B"] and producer["symbols"] == ["N"]
+    assert producer["reads"] == ["A", "B"] and producer["symbols"] == ["N"] and producer["parallel"]
 
 
 def test_kernel_boundary_exposes_abi_order_target():
     s = make_session()
-    kernel_id = s.define_scopes()[0]["id"]
-    info = s.kernel_boundary(kernel_id)
-    # boundary_order = inputs + outputs + symbols; set_kernel's abi_order is checked against it
+    name = s.define_scopes()[0]["name"]
+    info = s.kernel_boundary(name)
     assert info["boundary_order"] == info["inputs"] + info["outputs"] + info["symbols"]
 
 
 def test_set_kernel_sets_leaf_fields_without_bumping_epoch():
     s = make_session()
-    kernel_id = s.define_scopes()[0]["id"]
+    name = s.define_scopes()[0]["name"]
     epoch = s.epoch
-    out = s.set_kernel(kernel_id, "/abs/libk.a", "k", ["A", "B", "T", "N"])
-    assert s.epoch == epoch  # a leaf-field write, ids stay valid
+    out = s.set_kernel(name, "/abs/libk.a", "k", ["A", "B", "T", "N"])
+    assert s.epoch == epoch
     assert out["abi_order"] == ["A", "B", "T", "N"]
-    assert s.kernel_boundary(kernel_id)  # same id still resolves
 
 
 def test_set_kernel_selects_the_extern_call_expansion():
-    """The three leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion
-    would emit the numpy reference and the timing would measure it while reporting the agent's kernel. The outputs
-    would still be correct and the number plausible, so nothing else catches it."""
+    """The leaf fields are inert without this: ExternalCall defaults to DaceReference, so expansion would emit the
+    reference and the timing would measure it while reporting the agent's kernel."""
     s = make_session()
-    kernel_id = s.define_scopes()[0]["id"]
-    ext = s.resolve(kernel_id, "kernel")
-    # None, not "DaceReference": dace leaves the field unset and falls back to default_implementation at
-    # expand time. Either way the agent's kernel is not the one that runs, so the guard is on "not chosen".
+    name = s.define_scopes()[0]["name"]
+    ext = s.kernel(name)
     assert ext.implementation != "ExternCall", "fixture already selects the expansion; test would be vacuous"
-    s.set_kernel(kernel_id, "/abs/libk.a", "k", ["A", "B", "T", "N"])
+    s.set_kernel(name, "/abs/libk.a", "k", ["A", "B", "T", "N"])
     assert ext.implementation == "ExternCall"
 
 
-def test_emit_reference_writes_numpy_oracle(tmp_path):
-    s = Session(vertical_pair.to_sdfg(simplify=True), work_dir=str(tmp_path))
-    kernel_id = s.define_scopes()[0]["id"]
-    path = s.emit_reference(kernel_id)
+def test_emit_reference_writes_the_python_oracle(tmp_path):
+    s = make_session(tmp_path)
+    path = s.emit_reference(s.define_scopes()[0]["name"])
     assert path.endswith(".py")
     with open(path) as f:
         assert "def " in f.read()
 
 
-def test_malformed_id_is_not_reported_as_stale():
-    # a garbage id reported as StaleHandle sends the agent into a re-list/retry loop that can never succeed;
-    # it must be flagged as a caller bug instead.
-    session = Session(vertical_pair.to_sdfg(simplify=True))
-    with pytest.raises(KeyError, match="malformed id"):
-        session.resolve("not-an-id")
-    with pytest.raises(KeyError, match="malformed id"):
-        session.resolve("x:move:0")
-
-
-def test_noop_define_scopes_does_not_strand_handles():
-    # define_scopes with no parallel top-level map to define a scope over changes nothing, so it must
-    # not bump the epoch -- bumping would silently invalidate every move id the agent had already
-    # enumerated.
+def test_a_no_op_define_scopes_keeps_the_epoch_so_labels_stay_valid():
     sdfg = dace.SDFG("no_maps")
     sdfg.add_state_after(sdfg.add_state())
     session = Session(sdfg)
-    moves = session.list_region_fusions()
-    assert moves, "the fixture offers no handle to strand"
-    epoch_before = session.epoch
     assert session.define_scopes() == []
-    assert session.epoch == epoch_before
-    session.resolve(moves[0]["id"], "regmove")  # the agent's ids survive a no-op
+    assert session.epoch == 0
 
 
-# Phase 0/1: normalize -> full_fusion -> fission_all, structural checks
-
-
-def test_normalize_then_full_fusion_bumps_epoch_each_time_and_reduces_top_level_maps():
+def test_canonicalize_then_default_moves_bump_the_epoch_each_time_and_reduce_top_level_maps():
     sdfg = live_and_transient.to_sdfg(simplify=True)
     frontend_maps = top_level_map_count(sdfg)
     session = Session(sdfg, targets=Targets())
-    session.normalize()
+    session.canonicalize()
     assert session.epoch == 1
-    session.full_fusion()
+    session.default_moves()
     assert session.epoch == 2
     assert top_level_map_count(session.sdfg) < frontend_maps
 
 
-def test_fission_all_after_full_fusion_increases_nest_count():
-    session = Session(live_and_transient.to_sdfg(simplify=True), targets=Targets())
-    session.normalize()
-    session.full_fusion()
-    fused_nest_count = len(session.list_nests())
-    session.fission_all()
-    assert len(session.list_nests()) > fused_nest_count
+def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
+    s = make_session()
+    map_label = next(label for label, (obj, _) in s.row_index().items() if isinstance(obj, dace.nodes.MapEntry))
+    assert "work=" in s.metrics(map_label) and "OI=" in s.metrics(map_label)
+    producer = next(k["name"] for k in s.define_scopes() if k["writes"] == ["T"])
+    assert s.metrics(producer).startswith(f"{producer}: work=N depth=")  # one add per element
+    assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."

@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Configuration sweep: build a kernel per compiler x FP mode x cost model, keep the fastest correct build."""
+"""Stage 6, configuration sweep: build a kernel per compiler x FP mode x cost model, keep the fastest correct build."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.dedup import collapse, collapse_notes, variant_key
 from nestforge.build.toolchain import CudaToolchain, Toolchain, discover_cuda_toolchains, discover_toolchains
 from nestforge.corpus.translate import Prepared
-from nestforge.phases.kernel import (
+from nestforge.stages.kernel import (
     KernelSource,
     KernelVerdict,
     at_rung,

@@ -15,7 +15,7 @@ from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, Reach, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.libnode import ExternalCall, in_conn, out_conn
-from nestforge.phases.scopes import lower_nests_to_external_call
+from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
 K = dace.symbol("K")

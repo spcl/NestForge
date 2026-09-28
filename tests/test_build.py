@@ -23,24 +23,21 @@ import dace
 
 import nestforge.build.sdfg as build_mod
 import nestforge.build.toolchain as toolchain_mod
-from nestforge.build.toolchain import LIBOMP, lib_linkable, runtime_library
+from nestforge.build.toolchain import lib_linkable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
-from nestforge.phases.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.corpus.translate import prepare
 from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.sdfg import BuildOptions, build_sdfg, dace_runtime_include
 from nestforge.build.toolchain import (
-    OpenMPRuntime,
     compiler_family,
     driver_lib_path,
-    driver_search_dirs,
-    hint_dirs,
-    ldconfig_dirs,
-    linkable_lib_dir,
-    llvm_version,
+    library_flags,
+    openmp_compile_flags,
+    openmp_link_flags,
     parse_params,
 )
 from helpers import corpus_kernel
@@ -93,124 +90,16 @@ def without_search_paths(flags):
     return [f for f in flags if not f.startswith("-L") and not f.startswith("-Wl,-rpath")]
 
 
-def test_library_dirs_come_from_the_toolchain_not_from_hardcoded_layouts():
-    """Where a runtime lives is asked (driver ``-print-search-dirs``, then the loader cache), because a
-    hardcoded distro ladder goes stale per distro and per toolchain version. Guessed layouts survive only
-    as a last-resort hint, after every query."""
-    cc = "g++" if shutil.which("g++") else "gcc"
-    dirs = driver_search_dirs(cc)
-    assert dirs and all(os.path.isabs(d) for d in dirs), dirs
-    assert driver_search_dirs("no-such-compiler-42") == ()  # a missing driver is empty, never a crash
-    # libc is in the loader cache on every Linux box, so this exercises the parse without pinning a path.
-    # Assert non-empty: `all()` over [] passes, which would green-light a layer that found nothing at all
-    # (e.g. ldconfig unreachable because /usr/sbin is off PATH -- the exact failure this must catch).
-    libc_dirs = ldconfig_dirs("c")
-    assert libc_dirs and all(os.path.isabs(d) for d in libc_dirs), libc_dirs
-    assert all(os.path.isabs(d) for d in hint_dirs())
-    # A library nothing provides must resolve to None -- no layer may invent a directory for it.
-    assert linkable_lib_dir("nosuchlib42", cc) is None
-
-
-def test_llvm_version_parses_the_number_not_the_string():
-    assert llvm_version(Path("/usr/lib/llvm-21/lib")) == (21,)
-    assert llvm_version(Path("/usr/lib/llvm-9/lib")) == (9,)
-    assert llvm_version(Path("/usr/lib/llvm-18.1/lib")) == (18, 1)  # point release ranks above bare 18
-    assert llvm_version(Path("/usr/lib/llvm-18/lib")) < llvm_version(Path("/usr/lib/llvm-18.1/lib"))
-    assert llvm_version(Path("/usr/lib/x86_64-linux-gnu")) == (-1,)  # not an llvm-N dir at all
-
-
-def test_hint_dirs_rank_by_version_across_all_roots(tmp_path, monkeypatch):
-    """A string sort puts llvm-9 above llvm-21, and a per-root sort puts /usr/lib's llvm-14 above
-    /usr/lib64's llvm-18; real directories, since the host may have neither layout."""
-    lib, lib64 = tmp_path / "lib", tmp_path / "lib64"
-    for root, versions in ((lib, ("llvm-9", "llvm-21")), (lib64, ("llvm-14", "llvm-18"))):
-        for v in versions:
-            (root / v / "lib").mkdir(parents=True)
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINT_ROOTS", (str(lib), str(lib64)))
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINTS", ())
-
-    hints = hint_dirs()
-    assert [Path(d).parent.name for d in hints] == ["llvm-21", "llvm-18", "llvm-14", "llvm-9"]
-    assert len(hints) == len(set(hints)), hints  # and no duplicates across roots
-
-
-def test_hint_dirs_is_a_total_order_so_two_identical_boxes_agree(tmp_path, monkeypatch):
-    """Equal versions must still order deterministically. Path.glob returns raw directory order, which
-    varies with inode layout, so a tie left to glob order resolves libomp differently on machines built
-    from the same image."""
-    root = tmp_path / "lib"
-    for name in ("llvm-18", "llvm-18.1"):
-        (root / name / "lib").mkdir(parents=True)
-    (root / "llvm-18" / "lib64").mkdir()  # same version, two dirs -> the tiebreaker has to decide
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINT_ROOTS", (str(root),))
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINTS", ())
-
-    # newest first; the llvm-18 tie is broken by path, descending
-    assert hint_dirs() == [
-        str(root / "llvm-18.1" / "lib"),
-        str(root / "llvm-18" / "lib64"),
-        str(root / "llvm-18" / "lib"),
-    ]
-
-
-def test_ldconfig_candidates_are_version_ranked_before_first_match(monkeypatch, cold_lookup_caches):
-    """The loader cache lists dirs in its order, and linkable_lib_dir returns the first hit -- so without
-    ranking, the version fix in hint_dirs is unreachable whenever ldconfig knows any llvm dir at all."""
-    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda soname, compiler: False)
-    monkeypatch.setattr(toolchain_mod, "env_library_dirs", lambda: [])
-    monkeypatch.setattr(toolchain_mod, "driver_lib_path", lambda soname, compiler: None)
-    monkeypatch.setattr(toolchain_mod, "driver_search_dirs", lambda compiler: [])
-    monkeypatch.setattr(toolchain_mod, "llvm_config_libdir", lambda: None)
-    # cache order is deliberately oldest-first, so only ranking puts llvm-18 first
-    monkeypatch.setattr(toolchain_mod, "ldconfig_dirs", lambda soname: ["/opt/llvm-14/lib", "/opt/llvm-18/lib"])
-    monkeypatch.setattr(toolchain_mod.Path, "exists", lambda self: "llvm-" in str(self))
-
-    assert linkable_lib_dir("omp", "g++") == "/opt/llvm-18/lib"
-
-
-def test_openmp_runtime_is_a_separate_per_compiler_flag_axis():
-    """The OpenMP runtime maps to the right flag per compiler, so mixed-compiler builds share one runtime."""
-    rt = OpenMPRuntime()  # default libomp
+def test_openmp_flags_select_libomp_for_every_compiler_family():
+    """An LLVM compiler selects libomp by name; gcc compiles its GOMP calls and links libomp explicitly, never
+    the libgomp a bare -fopenmp would pull in, so mixed-compiler builds share one runtime."""
     assert compiler_family("gfortran") == "gnu" and compiler_family("flang") == "llvm"
     assert compiler_family("icx") == "llvm"
-    # LLVM family selects the runtime BY name (flang -fopenmp=libomp).
-    assert rt.compile_flags("flang") == ["-fopenmp=libomp"]
-    assert rt.compile_flags("clang++") == ["-fopenmp=libomp"]
-    assert rt.compile_flags("icx") == ["-fopenmp=libomp"]
-    # gnu emits GOMP calls at compile and links the mandated runtime explicitly (not -fopenmp -> libgomp).
-    assert rt.compile_flags("g++") == ["-fopenmp"] and without_search_paths(rt.link_flags("g++")) == ["-lomp"]
-    # a lib_dir threads onto the link line as a -L/-rpath pair (so the .so is found at run time too),
-    # and both are discovery, not selection -- without_search_paths must drop both.
-    pinned = OpenMPRuntime(lib_dir="/opt/omp/lib").link_flags("g++")
-    assert "-L/opt/omp/lib" in pinned and "-Wl,-rpath,/opt/omp/lib" in pinned
-    assert without_search_paths(pinned) == ["-lomp"]
-
-
-def test_openmp_runtime_registry_covers_the_popular_runtimes():
-    """The three popular runtimes are ready knobs: libgomp (GNU), libomp (LLVM), libiomp5 (Intel,
-    ABI-compat with libomp)."""
-    from nestforge.build.toolchain import LIBGOMP, LIBIOMP5, OPENMP_RUNTIMES
-
-    assert set(OPENMP_RUNTIMES) == {"libomp", "libgomp", "libiomp5"}
-    # gcc on Intel's runtime (GOMP-compat); search paths filtered (see without_search_paths).
-    assert without_search_paths(LIBIOMP5.link_flags("g++")) == ["-liomp5"]
-    assert without_search_paths(LIBGOMP.link_flags("g++")) == ["-lgomp"]
-
-
-def test_openmp_abi_compatibility_is_enforced():
-    """A runtime is usable only if the compiler can actually link it, which depends on how the family
-    selects a runtime, not ABI alone: gcc links any gomp-capable runtime by soname; LLVM name-selects
-    only libomp/libiomp5 (kmpc ABI). Mismatches raise."""
-    from nestforge.build.toolchain import LIBGOMP, LIBIOMP5, LIBOMP
-
-    # clang name-selects libomp/libiomp5 but not libgomp (no __kmpc_*).
-    assert LIBOMP.compatible("clang++") and LIBIOMP5.compatible("clang++")
-    assert not LIBGOMP.compatible("clang++")
-    with pytest.raises(ValueError, match="kmpc"):  # clang + libgomp: wrong ABI
-        LIBGOMP.link_flags("clang++")
-    # gcc (GOMP) works against every runtime, since libomp/libiomp5 carry a GOMP-compat layer.
-    for rt in (LIBOMP, LIBGOMP, LIBIOMP5):
-        assert rt.compatible("g++")
+    assert openmp_compile_flags("flang") == openmp_compile_flags("clang++") == ["-fopenmp=libomp"]
+    assert openmp_compile_flags("g++") == ["-fopenmp"]
+    linked = without_search_paths(openmp_link_flags("g++"))
+    assert len(linked) == 1 and linked[0] in ("-lomp", "-l:libomp.so.5"), linked
+    assert without_search_paths(openmp_link_flags("clang++")) == ["-fopenmp=libomp"]
 
 
 def test_gcc_compiled_kernel_links_against_libomp(tmp_path):
@@ -221,7 +110,7 @@ def test_gcc_compiled_kernel_links_against_libomp(tmp_path):
         tmp_path,
         "scientific_computing/dense_linear_algebra/gemm/gemm",
         size=32,
-        opts=BuildOptions(compiler="g++", openmp=OpenMPRuntime()),
+        opts=BuildOptions(compiler="g++"),
     )
 
 
@@ -241,24 +130,23 @@ def parallel_axpy_sdfg(name="paxpy"):
     return sdfg
 
 
-def test_link_flags_pins_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch, cold_lookup_caches):
-    """The linker and the loader search different places, so "installed" does not imply "-l<soname> resolves":
-    Ubuntu's libomp-dev moves the library off the default linker path across releases."""
+def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch, cold_lookup_caches):
+    """The linker and the loader search different places, so "installed" does not imply "-l<soname>
+    resolves": Ubuntu's libomp-dev moves the library off the default linker path across releases."""
     (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
-    # LD_LIBRARY_PATH (not LIBRARY_PATH): the loader searches it, the linker does not -- exactly where a
-    # spack/module runtime lives. LIBRARY_PATH would prove nothing (the linker already searches that).
+    # LD_LIBRARY_PATH (not LIBRARY_PATH): the loader searches it, the linker does not
     monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
-    rt = OpenMPRuntime(name="libfakeomp", soname="fakeomp")
-    assert not toolchain_mod.linker_finds("fakeomp", "g++"), "premise: the linker cannot find it unaided"
-    assert f"-L{tmp_path}" in rt.link_flags("g++")
-    assert toolchain_mod.lib_linkable("fakeomp", "g++")  # and the honest probe agrees it can be linked
+    assert driver_lib_path("fakeomp", "g++") is None, "premise: the linker cannot find it unaided"
+    assert library_flags("fakeomp", "g++") == [f"-L{tmp_path}", f"-Wl,-rpath,{tmp_path}", "-lfakeomp"]
+    assert lib_linkable("fakeomp", "g++")
 
 
-def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(monkeypatch, cold_lookup_caches):
-    # Discovery must stay invisible when the lib is already on the default path. Forced rather than read
-    # off this box, so the assertion means the same thing wherever it runs.
-    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: True)
-    assert OpenMPRuntime().link_flags("g++") == ["-lomp"]
+def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(tmp_path, cold_lookup_caches):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (tmp_path / "libfakeomp.so").write_bytes(b"")
+    write_tool(bin_dir, "fake-g++", f"{tmp_path}/libfakeomp.so")  # answers the way g++ does when it finds it
+    assert library_flags("fakeomp", str(bin_dir / "fake-g++")) == ["-lfakeomp"]
 
 
 def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
@@ -279,13 +167,6 @@ def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp
     got = driver_lib_path("split", str(fake_cc))
     assert got == link_dir / "libsplit.so", f"expected the symlink itself, got {got}"
     assert got.parent == link_dir, "the -L must be the symlink's own dir, never its target's"
-
-
-def test_an_explicitly_pinned_lib_dir_beats_discovery(monkeypatch, cold_lookup_caches):
-    # A spack/module runtime is pinned by hand and must win; "" means "I know: use a bare -l".
-    monkeypatch.setattr(toolchain_mod, "linker_finds", lambda *a, **kw: False)
-    assert "-L/opt/spack/omp" in OpenMPRuntime(lib_dir="/opt/spack/omp").link_flags("g++")
-    assert OpenMPRuntime(lib_dir="").link_flags("g++") == ["-lomp"]
 
 
 def test_parallel_map_emits_omp_pragma(tmp_path):
@@ -310,16 +191,14 @@ def test_parallel_map_emits_omp_pragma(tmp_path):
 )
 def test_parallel_loop_links_openmp_across_compilers(tmp_path, compiler):
     assert shutil.which(compiler) is not None, f"{compiler} not on PATH"
-    rt = LIBOMP
-    assert lib_linkable(rt.soname, compiler), f"{rt.name} is not linkable by {compiler} (setup_apt.sh installs libomp)"
-    assert rt.compatible(compiler), f"{compiler} must be able to link {rt.name}"
+    assert lib_linkable("omp", compiler), f"libomp is not linkable by {compiler} (setup_apt.sh installs libomp)"
     n = 256
     x, y = np.random.default_rng(0).random(n), np.random.default_rng(1).random(n)
     buf = {"X": x.copy(), "Y": y.copy(), "Z": np.zeros(n)}
     built = build_sdfg(
         parallel_axpy_sdfg(),
         tmp_path / "nf_par",
-        BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++20"], openmp=rt),
+        BuildOptions(compiler=compiler, flags=["-O2", "-fPIC", "-shared", "-std=c++20"]),
     )
     built.run(buf, {"N": n})
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
@@ -470,39 +349,21 @@ def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path, monkeypatch):
     pragma and runs serially, silently, so a build that names no runtime gets the resolved one."""
     seen = []
     monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
-    monkeypatch.setattr(build_mod, "usable_openmp", lambda compiler: toolchain_mod.LIBOMP)
+    monkeypatch.setattr(build_mod, "lib_linkable", lambda soname, compiler: True)
     src = tmp_path / "x.cpp"
     src.write_text("int main() { return 0; }\n")
 
     build_mod.compile(src, tmp_path, "x", BuildOptions())
 
     issued = " ".join(t for cmd in seen for t in cmd)
-    assert "-fopenmp" in issued and "-lomp" in issued, issued
+    assert "-fopenmp" in issued and "omp" in issued.replace("-fopenmp", ""), issued
 
 
-def test_the_resolved_runtime_is_named_never_a_bare_fopenmp():
-    """A bare -fopenmp lets each family link its own default (gcc->libgomp, clang->libomp), so a sweep
-    spanning compilers ends up with two thread pools in one process. libomp is preferred because it is
-    LLVM-selectable and GOMP-compatible, so gcc- and clang-built objects share one pool."""
-    assert toolchain_mod.usable_openmp("g++") is toolchain_mod.usable_openmp("clang++")
-    assert toolchain_mod.usable_openmp("g++").name == "libomp"
-
-
-def test_an_explicit_runtime_is_not_overridden(tmp_path, monkeypatch):
-    """A pinned runtime must reach the compile command; otherwise a runtime sweep measures one runtime under
-    several names."""
-    seen = []
-    monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
-    monkeypatch.setattr(build_mod, "usable_openmp", lambda compiler: toolchain_mod.LIBOMP)
-    src = tmp_path / "x.cpp"
-    src.write_text("int main() { return 0; }\n")
-
-    build_mod.compile(src, tmp_path, "x", BuildOptions(openmp=toolchain_mod.LIBGOMP))
-    issued = " ".join(t for cmd in seen for t in cmd)
-    # -lgomp vs -lomp is what actually separates the two on g++ (both compile with a plain -fopenmp), so
-    # this is the token that fails if the pin is dropped for the resolved default.
-    assert "-lgomp" in issued, f"the pinned libgomp never reached the link: {issued}"
-    assert "-lomp" not in issued.replace("-lgomp", ""), "the resolved libomp replaced the pinned runtime"
+def test_the_runtime_is_named_never_a_bare_fopenmp():
+    """A bare -fopenmp lets each family link its own default (gcc->libgomp, clang->libomp), so a sweep spanning
+    compilers ends up with two thread pools in one process."""
+    assert openmp_link_flags("g++") != ["-fopenmp"] and "-fopenmp" not in openmp_link_flags("g++")
+    assert openmp_link_flags("clang++")[0] == "-fopenmp=libomp"
 
 
 def test_compiler_warnings_are_reported_but_bounded():
@@ -536,12 +397,7 @@ def write_tool(bin_dir: Path, name: str, answer: str) -> None:
 @pytest.fixture
 def cold_lookup_caches():
     """Runtime lookups are cached per name; a fake PATH must neither read nor leave a cached answer."""
-    caches = (
-        toolchain_mod.driver_lib_path,
-        toolchain_mod.driver_search_dirs,
-        toolchain_mod.llvm_config_libdir,
-        toolchain_mod.linkable_lib_dir,
-    )
+    caches = (toolchain_mod.driver_lib_path, toolchain_mod.runtime_library)
     for cache in caches:
         cache.cache_clear()
     yield
@@ -550,22 +406,14 @@ def cold_lookup_caches():
 
 
 def isolate_lookup(tmp_path: Path, monkeypatch) -> Path:
-    """A PATH holding only the fake drivers a test writes, no environment, loader cache or layout hint."""
+    """A PATH holding only the fake drivers a test writes, and no library path in the environment."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     monkeypatch.delenv("LIBRARY_PATH", raising=False)
-    monkeypatch.setattr(toolchain_mod, "ldconfig_dirs", lambda soname: [])
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINT_ROOTS", ())
-    monkeypatch.setattr(toolchain_mod, "LIB_DIR_HINTS", ())
     # a test may have looked up the real runtime before isolating, so drop what that cached
-    for cache in (
-        toolchain_mod.driver_lib_path,
-        toolchain_mod.driver_search_dirs,
-        toolchain_mod.llvm_config_libdir,
-        toolchain_mod.linkable_lib_dir,
-    ):
+    for cache in (toolchain_mod.driver_lib_path, toolchain_mod.runtime_library):
         cache.cache_clear()
     return bin_dir
 
@@ -631,7 +479,7 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
     write_tool(bin_dir, "g++", "libomp.so")
     write_tool(bin_dir, "llvm-config", str(llvm_lib))
 
-    flags = LIBOMP.link_flags("g++")
+    flags = openmp_link_flags("g++")
 
     assert flags == [f"-L{llvm_lib}", f"-Wl,-rpath,{llvm_lib}", "-l:libomp.so.5"]
     source, obj, shared = tmp_path / "kern.cpp", tmp_path / "kern.o", tmp_path / "libkern.so"

@@ -7,7 +7,7 @@ import subprocess
 import numpy as np
 import dace
 
-from nestforge.phases.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_numpy import load_emitted, nest_to_numpy
 from nestforge.build.arena import call_native
@@ -74,12 +74,12 @@ def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
 def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
     """MapFusion's size-1 intermediate is transient outside the nested SDFG and not inside, which decides its
     spelling; run, not grepped, since what matters is that the value survives."""
-    from nestforge.phases.normalize import Targets, normalize
-    from nestforge.phases.schedule import full_fusion
-    from nestforge.phases.scopes import lower_nests_to_external_call
+    from nestforge.stages.canonicalize import Targets, canonicalize
+    from nestforge.stages.canonicalize import fuse_and_finish
+    from nestforge.stages.scopes import lower_nests_to_external_call
 
     sdfg = gather_two_map.to_sdfg(simplify=True)
-    full_fusion(normalize(sdfg, Targets()), Targets())
+    fuse_and_finish(canonicalize(sdfg, Targets()), Targets())
     calls = lower_nests_to_external_call(sdfg)
     assert calls, "nothing lowered; the fixture no longer produces an offloadable nest"
     _, b = calls[0]

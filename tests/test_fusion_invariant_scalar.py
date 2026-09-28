@@ -11,7 +11,8 @@ import numpy as np
 
 import dace
 
-from nestforge.phases.schedule import apply_fusion, enumerate_fusions
+from helpers import apply_move, fusion_moves
+
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -37,8 +38,8 @@ def test_fusion_across_an_invariant_scalar_is_value_preserving():
     ref = run(invariant_scalar.to_sdfg(simplify=True), a, d)
 
     sdfg = invariant_scalar.to_sdfg(simplify=True)
-    for move in enumerate_fusions(sdfg):
-        apply_fusion(move)
+    while moves := fusion_moves(sdfg):
+        apply_move(sdfg, moves[0])
     sdfg.validate()
     got = run(sdfg, a, d)
     # unfused: d[i] = d[i-1] + a[N-1]  (a prefix sum of the last element)

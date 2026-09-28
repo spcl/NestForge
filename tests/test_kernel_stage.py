@@ -23,7 +23,7 @@ from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
 from nestforge.ir.libnode import proto_and_call
-from nestforge.phases.kernel import (
+from nestforge.stages.kernel import (
     build_kernel_library,
     gpu_schedule,
     kernel_runtime_libraries,
@@ -31,11 +31,11 @@ from nestforge.phases.kernel import (
     use_kernel_library,
     validate_kernel,
 )
-from nestforge.phases.normalize import Targets, normalize
-from nestforge.phases.offload import device_copies, offload
-from nestforge.phases.schedule import full_fusion
-from nestforge.phases.scopes import lower_nests_to_external_call
-from nestforge.phases.variants import device_variants
+from nestforge.stages.canonicalize import Targets, canonicalize
+from nestforge.stages.placement import default_devices, device_copies, place
+from nestforge.stages.canonicalize import fuse_and_finish
+from nestforge.stages.scopes import lower_nests_to_external_call
+from nestforge.stages.variants import device_variants
 
 N = dace.symbol("N")
 M = dace.symbol("M")
@@ -84,10 +84,10 @@ ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.M)
 
 
 def lowered_kernel(program):
-    """``program`` through phases 0-2: ``(parent SDFG, its one ExternalCall, that kernel's Boundary)``."""
+    """``program`` through stages 1-3: ``(parent SDFG, its one ExternalCall, that kernel's Boundary)``."""
     sdfg = program.to_sdfg(simplify=True)
-    normalize(sdfg, Targets())
-    full_fusion(sdfg, Targets())
+    canonicalize(sdfg, Targets())
+    fuse_and_finish(sdfg, Targets())
     lowered = lower_nests_to_external_call(sdfg)
     assert len(lowered) == 1, [ext.name for ext, _ in lowered]
     ext, boundary = lowered[0]
@@ -95,14 +95,14 @@ def lowered_kernel(program):
 
 
 def gpu_lowered_kernel(program, on_device=()):
-    """``program`` through phases 0-3 for a GPU target; ``on_device`` names inputs the program keeps in GPU memory."""
+    """``program`` through stages 1-4 for a GPU target; ``on_device`` names inputs the program keeps in GPU memory."""
     sdfg = program.to_sdfg(simplify=True)
-    normalize(sdfg, Targets(gpu=True))
-    full_fusion(sdfg, Targets(gpu=True))
+    canonicalize(sdfg, Targets(gpu=True))
+    fuse_and_finish(sdfg, Targets(gpu=True))
     for name in on_device:
         sdfg.arrays[name].storage = dace.StorageType.GPU_Global
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    offload(sdfg, Targets(gpu=True))
+    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
     return sdfg, ext, boundary
 
 
@@ -124,7 +124,7 @@ def entry_params(src):
 @pytest.mark.parametrize("program", KERNELS, ids=KERNEL_IDS)
 def test_the_default_kernel_is_a_standalone_cpf_unit(tmp_path, program):
     """The unit builds with a bare compiler: no DaCe header, no DaCe runtime entry, and the boundary SDFG the
-    extraction produced stays untouched, since phases 3 and 4 may schedule it again."""
+    extraction produced stays untouched, since stages 4 and 5 may schedule it again."""
     _, ext, boundary = lowered_kernel(program)
     before = boundary.standalone_sdfg.to_json()
 
@@ -153,7 +153,7 @@ def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_not
 
 @pytest.mark.parametrize("program", [vadd, scaled], ids=["vadd", "scaled"])
 def test_a_gpu_kernel_is_one_cuda_unit_whose_entry_matches_the_external_call_prototype(tmp_path, program):
-    """After phase 3 places the kernel on the GPU, phase 4 renders CUDA with the same entry the parent calls."""
+    """After stage 4 places the kernel on the GPU, stage 5 renders CUDA with the same entry the parent calls."""
     sdfg, ext, boundary = gpu_lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path)
     use_kernel_library(ext, tmp_path / "unused.a", src.symbol, src.abi_order, [])
@@ -397,12 +397,12 @@ import dace
 
 from nestforge.build.toolchain import discover_cuda_toolchains
 from nestforge.corpus.translate import prepare
-from nestforge.phases.kernel import build_kernel_library, schedule_kernel, validate_kernel
-from nestforge.phases.normalize import Targets, normalize
-from nestforge.phases.offload import offload
-from nestforge.phases.schedule import full_fusion
-from nestforge.phases.scopes import lower_nests_to_external_call
-from nestforge.phases.variants import device_variants
+from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
+from nestforge.stages.canonicalize import Targets, canonicalize
+from nestforge.stages.placement import default_devices, place
+from nestforge.stages.canonicalize import fuse_and_finish
+from nestforge.stages.scopes import lower_nests_to_external_call
+from nestforge.stages.variants import device_variants
 
 N = dace.symbol("N")
 
@@ -418,10 +418,10 @@ if __name__ == "__main__":
     cudart = ctypes.CDLL(os.path.join(discover_cuda_toolchains()[0].cudart_dir, "libcudart.so"))
     status = cudart.cudaFree(ctypes.c_void_p(0))
     sdfg = vadd.to_sdfg(simplify=True)
-    normalize(sdfg, Targets(gpu=True))
-    full_fusion(sdfg, Targets(gpu=True))
+    canonicalize(sdfg, Targets(gpu=True))
+    fuse_and_finish(sdfg, Targets(gpu=True))
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    offload(sdfg, Targets(gpu=True))
+    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     src = schedule_kernel(ext, boundary, out / "gen")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), out / "lib")

@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session.define_scope: one kernel over regions no scheduling move fuses, so the kernel written in phase 4 fuses
+"""Session.define_scope: one kernel over regions no scheduling move fuses, so the kernel written in stage 5 fuses
 them instead."""
 
 import copy
@@ -14,7 +14,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.libnode import ExternalCall, external_calls
-from nestforge.phases.scopes import kernel_arguments
+from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 from nestforge.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -63,19 +63,6 @@ def running_sum(x: dace.float64[N], out: dace.float64[N]):
         out[i] = out[i - 1] + x[i]
 
 
-@dace.program
-def triangle(A: dace.float64[N, N]):
-    for i in dace.map[0:N]:
-        for t in range(i):
-            A[i, t] = A[i, t] * 0.5 + 1.0
-
-
-@dace.program
-def scale_by_cell(A: dace.float64[N], s: dace.float64[1], C: dace.float64[N]):
-    for i in dace.map[0:N]:
-        C[i] = A[i] * s[0]
-
-
 def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
@@ -119,7 +106,7 @@ def test_two_maps_no_fusion_accepts_become_one_kernel():
 
     assert result.status == "applied", result
     (kernel,) = external_calls(session.sdfg)
-    assert session.resolve(result.reason, "kernel") is kernel
+    assert session.kernel(result.reason) is kernel
     assert sorted(session.kernel_boundary(result.reason)["outputs"]) == ["C", "T"]
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
@@ -163,7 +150,7 @@ def test_define_scopes_lowers_the_maps_left_after_a_group():
     first, second, _ = map_labels(session)
     grouped = session.define_scope([first, second], session.epoch)
     assert grouped.status == "applied", grouped
-    grouped_kernel = session.resolve(grouped.reason, "kernel")
+    grouped_kernel = session.kernel(grouped.reason)
 
     rest = session.define_scopes()
 
@@ -182,7 +169,7 @@ def test_a_single_state_becomes_one_top_level_kernel(simplify):
     result = session.define_scope([state_label], session.epoch)
 
     assert result.status == "applied", result
-    kernel = session.resolve(result.reason, "kernel")
+    kernel = session.kernel(result.reason)
     (state,) = [s for s in session.sdfg.all_states() if kernel in s.nodes()]
     assert state.entry_node(kernel) is None, "the kernel sits inside a map"
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
@@ -216,61 +203,37 @@ def test_no_labels_is_refused():
 def test_labels_from_an_old_epoch_are_stale():
     session, _ = session_and_reference(live_intermediate)
     labels = map_labels(session)
-    session.normalize()
+    session.canonicalize()
 
     assert session.define_scope(labels, 0).status == "stale"
 
 
 @pytest.mark.e2e
 def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_path):
-    """Phase 4 takes a grouped kernel like any other: its CPF unit holds both maps, and the linked library
+    """Stage 5 takes a grouped kernel like any other: its CPF unit holds both maps, and the linked library
     reproduces the program."""
     sdfg = live_intermediate.to_sdfg(simplify=True)
     sdfg.name = f"{sdfg.name}_{os.getpid()}_lib"
     reference = copy.deepcopy(sdfg)
     reference.name = f"{sdfg.name}_reference"
     session = Session(sdfg, work_dir=str(tmp_path))
-    kernel_id = session.define_scope(map_labels(session), session.epoch).reason
+    name = session.define_scope(map_labels(session), session.epoch).reason
 
-    info = session.optimize_kernel(kernel_id)
+    info = session.optimize_kernel(name)
 
-    assert session.resolve(kernel_id, "kernel").implementation == "ExternCall"
+    assert session.kernel(name).implementation == "ExternCall"
     assert sorted(info["abi_order"]) == ["A", "C", "N", "T"]
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-# the define_scope fallback of a refused move
+# loop nests no move can reshape
 
 
 def top_level_kernels(session: Session) -> list[ExternalCall]:
     return [n for state in session.sdfg.states() for n in state.nodes() if isinstance(n, ExternalCall)]
 
 
-def test_an_unimplemented_interchange_offers_to_scope_the_outer_loop_of_the_nest():
-    session, _ = session_and_reference(column_prefix)
-
-    result = session.apply_move("interchange-loop-loop", ["for0_0", "for1_0"], 0)
-
-    assert (result.status, result.fallback) == ("not-implemented", "define_scope(['for0_0'], 0)"), result
-
-
-def test_an_illegal_move_on_an_inner_loop_offers_to_scope_its_top_level_loop():
-    session, _ = session_and_reference(column_prefix)
-
-    result = session.apply_move("loop-fission", ["for1_0"], 0)
-
-    assert (result.status, result.fallback) == ("illegal", "define_scope(['for0_0'], 0)"), result
-
-
-def test_an_illegal_map_loop_interchange_offers_to_scope_the_map_around_the_loop():
-    session, _ = session_and_reference(triangle)
-
-    result = session.apply_move("interchange-map-loop", ["kernel1_0", "for2_0"], 0)
-
-    assert (result.status, result.fallback) == ("illegal", "define_scope(['kernel1_0'], 0)"), result
-
-
-def test_the_offered_scope_makes_one_kernel_that_computes_the_column_prefix_sum():
+def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_the_column_prefix_sum():
     session, _ = session_and_reference(column_prefix)
     rng = np.random.default_rng(0)
     A, B = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
@@ -281,29 +244,22 @@ def test_the_offered_scope_makes_one_kernel_that_computes_the_column_prefix_sum(
 
     assert result.status == "applied", result
     (kernel,) = top_level_kernels(session)
-    assert session.resolve(result.reason, "kernel") is kernel
+    assert session.kernel(result.reason) is kernel
     assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop nest left the program"
     session.sdfg(A=A, B=B, N=SIZE)
     np.testing.assert_allclose(A, expected, rtol=1e-12)
 
 
-def test_a_refusal_whose_map_reads_a_host_length1_array_offers_no_scope():
-    session, _ = session_and_reference(scale_by_cell)
-
-    result = session.apply_move("map-fission", ["kernel1_0"], 0)
-
-    assert (result.status, result.fallback) == ("illegal", ""), result
-
-
-def test_a_single_sequential_loop_nest_phase_2_skips_can_be_scoped_explicitly():
+def test_a_single_sequential_loop_nest_the_default_skips_can_be_scoped_explicitly():
     session, _ = session_and_reference(running_sum)
     x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
-    assert session.list_scope_candidates() == [], "phase 2's default must skip the loop, else it tests nothing"
+    assert parallel_top_level_maps(session.sdfg) == [], "the default must skip the loop, else it tests nothing"
 
     result = session.define_scope(["for0_0"], 0)
 
     assert result.status == "applied", result
     assert len(top_level_kernels(session)) == 1
     assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop left the program"
+    assert not session.list_kernels()[0]["parallel"], "a loop kernel is sequential, so placement keeps it on the CPU"
     session.sdfg(x=x, out=out, N=SIZE)
     np.testing.assert_array_equal(out, [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0])

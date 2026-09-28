@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Kernel optimization: render one kernel as a standalone CPF unit with one C entry, then build and validate
+"""Stage 5, kernel optimization: render one kernel as a standalone CPF unit with one C entry, then build and validate
 ``lib<kernel>.a``."""
 
 from __future__ import annotations
@@ -32,11 +32,11 @@ from nestforge.build.arena import (
 from nestforge.build.flags import cuda_base_flags
 from nestforge.build.isolation import run_isolated, run_spawned
 from nestforge.build.sdfg import BuildOptions, build_archive, build_cuda_archive, program_compiler
-from nestforge.build.toolchain import LIBOMP, cudart_dir, cudart_link_flags, parse_params, raw_signature
+from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import Boundary
 from nestforge.ir.libnode import ExternalCall
-from nestforge.phases.offload import kernel_device
+from nestforge.stages.placement import kernel_device
 
 
 @dataclass(slots=True)
@@ -102,7 +102,7 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
 
 
 def build_cpu_library(unit: Path, compiler: str, flags: list[str] | None, archive: Path) -> None:
-    opts = BuildOptions(compiler=compiler, flags=flags, openmp=LIBOMP)
+    opts = BuildOptions(compiler=compiler, flags=flags)
     build_archive([unit], None, archive, archive.with_suffix(".so"), opts)
 
 
@@ -113,7 +113,7 @@ def build_gpu_library(unit: Path, compiler: str, flags: list[str] | None, archiv
 
 def process_runtime_libraries() -> list[str]:
     """libomp, the process's one OpenMP runtime, spelled for the program's linker."""
-    return LIBOMP.link_flags(program_compiler())
+    return openmp_link_flags(program_compiler())
 
 
 def cpu_runtime_libraries(compiler: str) -> list[str]:
@@ -195,7 +195,7 @@ FORMS: dict[str, KernelForm] = {
 
 
 def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> KernelSource:
-    """The kernel for the device phase 3 placed ``ext`` on, rendered by CPF into ``<out_dir>/<kernel>.cpp`` or
+    """The kernel for the device stage 4 placed ``ext`` on, rendered by CPF into ``<out_dir>/<kernel>.cpp`` or
     ``.cu``, whose one entry is ``ext``'s symbol."""
     device = kernel_device(ext)
     form = FORMS[device]

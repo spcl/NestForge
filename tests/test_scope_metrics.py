@@ -2,15 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Scope metrics: the work, depth, bytes moved and operational intensity a scheduling agent reads per scope."""
 
-import re
-
 import dace
 import numpy as np
 import sympy
 
 from dace.sdfg.state import LoopRegion
-from nestforge.phases.schedule import ScopeMetrics, scope_metrics
-from nestforge.phases.scopes import top_level_map_entries
+from nestforge.stages.moves import ScopeMetrics, scope_metrics
+from nestforge.stages.scopes import top_level_map_entries
 from nestforge.session import Session
 
 N = dace.symbol("N")
@@ -81,8 +79,8 @@ def test_fusing_a_producer_into_its_consumer_raises_oi_above_both_parts():
     producer, consumer = top_level_maps(session.sdfg)
     unfused = [scope_metrics(session.sdfg, entry) for entry in (producer, consumer)]
     assert [m.oi for m in unfused] == [sympy.Rational(1, 24), sympy.Rational(1, 16)]
-    (move,) = session.list_fusions()
-    session.fuse(move["id"])
+    (move,) = session.list_moves("map-fusion")
+    assert session.apply_move(move["kind"], move["labels"], move["epoch"]).status == "applied"
     (fused_entry,) = top_level_maps(session.sdfg)
     fused = scope_metrics(session.sdfg, fused_entry)
     assert_symbolic(fused.work, 2 * N)
@@ -106,6 +104,5 @@ def test_describe_appends_metrics_to_kernel_lines_only_when_asked():
     assert "work=" not in plain
     (kernel,) = [line for line in with_metrics.splitlines() if "reads=" in line]
     assert kernel.endswith("  work=N depth=1 bytes=24*N OI=0.04167"), kernel
-    strip = lambda tree: re.sub(r"\[e\d+:nest:\d+\]", "[nest]", tree)
-    assert strip(with_metrics.replace("  work=N depth=1 bytes=24*N OI=0.04167", "")) == strip(plain)
+    assert with_metrics.replace("  work=N depth=1 bytes=24*N OI=0.04167", "") == plain
     assert session.epoch == 0

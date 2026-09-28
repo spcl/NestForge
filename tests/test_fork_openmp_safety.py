@@ -16,7 +16,7 @@ import subprocess
 import numpy as np
 import pytest
 
-from nestforge.build.toolchain import OpenMPRuntime, lib_linkable
+from nestforge.build.toolchain import lib_linkable, library_flags
 from nestforge.build.isolation import (
     ERROR_CHARS,
     OMP_RUNTIME_SONAMES,
@@ -53,7 +53,7 @@ def build(tmp_path, runtime):
     extra = []
     if runtime != "gomp":  # gcc links libgomp by default
         assert lib_linkable(runtime, "gcc"), f"lib{runtime}.so is not linkable by gcc; install it (libomp-dev)"
-        extra = OpenMPRuntime(name=f"lib{runtime}", soname=runtime).link_flags("gcc")
+        extra = library_flags(runtime, "gcc")
     proc = subprocess.run(
         ["gcc", "-O2", "-fPIC", "-shared", "-fopenmp", str(src), *extra, "-o", str(so)], capture_output=True, text=True
     )

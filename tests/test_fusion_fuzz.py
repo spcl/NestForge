@@ -14,9 +14,7 @@ import pytest
 
 from dace.transformation.interstate.state_fusion import StateFusion
 
-from nestforge.phases.schedule import fission_to_statements
-from nestforge.phases.schedule import apply_fusion, enumerate_fusions
-from helpers import run
+from helpers import apply_move, fission_to_fixpoint, fusion_moves, run
 
 ARRAYS = ("a", "b", "c", "d")
 NCASES_FUSE = 12
@@ -113,10 +111,10 @@ def random_fuse_to_fixpoint(sdfg, seed: int) -> int:
     rng = np.random.default_rng(seed)
     applied = 0
     for _ in range(200):  # bound: each fusion strictly reduces the nest count
-        moves = enumerate_fusions(sdfg)
+        moves = fusion_moves(sdfg)
         if not moves:
             return applied
-        apply_fusion(moves[int(rng.integers(len(moves)))])
+        apply_move(sdfg, moves[int(rng.integers(len(moves)))])
         applied += 1
     raise AssertionError("random fusion did not converge")
 
@@ -141,14 +139,14 @@ def test_fuzz_random_fuse_sequence_is_value_preserving(seed, tmp_path):
 
 @pytest.mark.parametrize("seed", range(NCASES_FISSION))
 def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
-    # the full phase 1 round trip on a random program: explode to statements, then fuse back up randomly.
+    # the full stage 2 round trip on a random program: split every nest that splits, then fuse back up randomly.
     prog, src = load_program(tmp_path, seed + 500)
     n = 16
     inputs = inputs_for(n, seed)
     ref = run(prog.to_sdfg(simplify=True), inputs, n)
 
     sdfg = prog.to_sdfg(simplify=True)
-    fission_to_statements(sdfg)
+    fission_to_fixpoint(sdfg)
     sdfg.validate()
     sdfg.apply_transformations_repeated(StateFusion)
     random_fuse_to_fixpoint(sdfg, seed)

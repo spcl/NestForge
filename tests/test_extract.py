@@ -4,7 +4,7 @@ import numpy as np
 import dace
 from dace.sdfg.state import LoopRegion
 
-from nestforge.phases.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.ir.extract import Boundary, extract_nest_to_sdfg, nest_defined_symbol_dtypes
 
 N = dace.symbol("N")

@@ -13,7 +13,7 @@ import dace
 from nestforge.ir.extract import extract_nest_to_sdfg
 from helpers import signature_order
 from nestforge.ir.libnode import ExternLibEnv, ExternalCall, proto_and_call
-from nestforge.phases.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.corpus.translate import emit_sources, prepare
 
 N = dace.symbol("N")

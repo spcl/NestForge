@@ -9,7 +9,7 @@ import dace
 
 from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.corpus.translate import prepare
-from nestforge.phases.scopes import lower_nests_to_external_call, node_boundary
+from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
 from nestforge.ir.emit_numpy import nest_to_numpy
 from nestforge.ir.emit_yaml import manifest_dict
 from nestforge.ir.libnode import ExternalCall, external_calls

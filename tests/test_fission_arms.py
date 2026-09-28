@@ -1,9 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The phase 1 fission lever (:mod:`nestforge.phases.schedule`): explode a program to statement granularity by
-reusing the existing DaCe canon passes (SplitStatements + LoopFission + MapFission), and the agent's real
-phase 1 flow: fission, then fuse back up. Value-preservation (bit-exact vs the un-fissioned reference) is
-the invariant on every case.
+"""The stage 2 fission moves (:mod:`nestforge.stages.moves`): ``loop-fission`` and ``map-fission`` applied until
+nothing splits, and the agent's flow of fission then fusion. Value-preservation (bit-exact vs the un-fissioned
+reference) is the invariant on every case.
 """
 
 import numpy as np
@@ -12,13 +11,11 @@ import pytest
 import dace
 from dace.sdfg.state import LoopRegion
 
-from dace.sdfg import nodes
-from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge.phases.schedule import enumerate_map_fissions, fission_to_statements
-from nestforge.phases.schedule import apply_fusion, enumerate_fusions
-from helpers import random_vectors, run
+from nestforge.ir.names import normalize_labels
+from nestforge.stages.moves import legal_moves
+from helpers import apply_move, fission_to_fixpoint, fusion_moves, random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -59,7 +56,7 @@ def test_fission_splits_independent_recurrences_value_preserving():
     ref = run(two_independent_recurrences.to_sdfg(simplify=True), inputs, 48)
     sdfg = two_independent_recurrences.to_sdfg(simplify=True)
     before = nloops(sdfg)
-    applied = fission_to_statements(sdfg)
+    applied = fission_to_fixpoint(sdfg)
     got = run(sdfg, inputs, 48)
     assert applied >= 1 and nloops(sdfg) > before  # the loop split into independent statements
     for k in inputs:
@@ -78,24 +75,21 @@ def test_fission_is_value_preserving(prog, names):
     inputs = random_vectors(names=names)
     ref = run(prog.to_sdfg(simplify=True), inputs, 48)
     sdfg = prog.to_sdfg(simplify=True)
-    fission_to_statements(sdfg)
+    fission_to_fixpoint(sdfg)
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg=f"{prog.name}: fission changed the value")
 
 
 def test_fission_then_fuse_roundtrip_value_preserving():
-    # the agent's real phase 1 flow: explode to statements, then fuse back up -- must land on the same
+    # the agent's stage 2 flow: split what splits, then fuse back up -- must land on the same
     # value as the original program whatever granularity it settles on.
     inputs = random_vectors(names=("a", "b", "c", "d"))
     ref = run(three_independent_statements.to_sdfg(simplify=True), inputs, 48)
     sdfg = three_independent_statements.to_sdfg(simplify=True)
-    fission_to_statements(sdfg)
-    while True:
-        moves = enumerate_fusions(sdfg)
-        if not moves:
-            break
-        apply_fusion(moves[0])
+    fission_to_fixpoint(sdfg)
+    while moves := fusion_moves(sdfg):
+        apply_move(sdfg, moves[0])
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg=k)
@@ -103,7 +97,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
 
 def map_with_nested_body():
     """A map whose sole body child is a NestedSDFG holding two independent output groups -- MapFission's
-    map-with-nested-SDFG pattern, which is the shape ``enumerate_map_fissions`` exists to enumerate."""
+    map-with-nested-SDFG pattern, the shape the ``map-fission`` move takes."""
     sdfg = dace.SDFG("map_with_nested_body")
     sdfg.add_array("a", [N], f64)
     sdfg.add_array("b", [N], f64)
@@ -125,19 +119,15 @@ def map_with_nested_body():
     return sdfg, me
 
 
-def test_map_fission_enumerates_a_nested_sdfg_body():
-    # The arm must match MapFission's map-with-nested-SDFG pattern (expr_index=1). Matched against the
-    # default map-with-subgraph pattern instead, the lone NestedSDFG body reads as a single component and
-    # the arm offers no moves at all for the one shape it targets.
+def test_map_fission_is_listed_for_a_nested_sdfg_body_and_applies():
+    # The move must match MapFission's map-with-nested-SDFG pattern (expr_index=1). Matched against the default
+    # map-with-subgraph pattern instead, the lone NestedSDFG body reads as a single component and no move is listed.
     sdfg, me = map_with_nested_body()
-    moves = enumerate_map_fissions(sdfg)
+    normalize_labels(sdfg)
+    moves = legal_moves(sdfg, "map-fission")
 
-    assert len(moves) == 1, "the map with an independent-group nested-SDFG body must be offered as a move"
-    entry, nsdfg = moves[0].map_entry, moves[0].nested_sdfg
-    assert entry is me
-    assert isinstance(nsdfg, nodes.NestedSDFG)
-    # The move must carry the pair that validated, so the documented apply_to cannot raise on it.
-    MapFission.apply_to(sdfg, expr_index=1, map_entry=entry, nested_sdfg=nsdfg)
+    assert moves == [("map-fission", (me.map.label,))]
+    assert apply_move(sdfg, moves[0]) == "MapFission"
     sdfg.validate()
 
 
@@ -146,21 +136,20 @@ def test_map_fission_preserves_values():
     sdfg, _ = map_with_nested_body()
     ref = run(map_with_nested_body()[0], inputs, 48)
 
-    for move in enumerate_map_fissions(sdfg):
-        MapFission.apply_to(sdfg, expr_index=1, map_entry=move.map_entry, nested_sdfg=move.nested_sdfg)
+    assert fission_to_fixpoint(sdfg) >= 1
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg="map fission changed the value")
 
 
 def test_map_fission_no_moves_without_independent_groups():
-    # The enumeration must stay honest in the other direction: a single-statement body has nothing to split.
+    # The listing must stay honest in the other direction: a single-statement body has nothing to split.
     @dace.program
     def one_statement_map(a: f64[N], b: f64[N]):
         for i in dace.map[0:N]:
             b[i] = a[i] + 1.0
 
-    assert enumerate_map_fissions(one_statement_map.to_sdfg(simplify=True)) == []
+    assert legal_moves(one_statement_map.to_sdfg(simplify=True), "map-fission") == []
 
 
 def test_fission_no_op_on_single_statement():
@@ -173,7 +162,7 @@ def test_fission_no_op_on_single_statement():
     inputs = random_vectors(names=("a", "b"))
     ref = run(one_statement.to_sdfg(simplify=True), inputs, 48)
     sdfg = one_statement.to_sdfg(simplify=True)
-    fission_to_statements(sdfg)  # nothing independent to split
+    fission_to_fixpoint(sdfg)  # nothing independent to split
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg=k)

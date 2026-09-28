@@ -1,9 +1,9 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Feedback re-inlining: an externalized nest must come back fusable, via ``full_fusion``.
+"""Feedback re-inlining: an externalized nest must come back fusable, via ``fuse_and_finish``.
 
 A NestedSDFG hides its maps from ``MapFusion``, so a re-inlined program left nested fuses nothing and
-reports success while doing it. ``normalize`` + ``full_fusion`` already fold ``two_maps`` to one map, so
+reports success while doing it. ``canonicalize`` + ``fuse_and_finish`` already fold ``two_maps`` to one map, so
 the fixture fissions it back apart first to get two nests worth externalizing.
 """
 
@@ -11,9 +11,10 @@ import numpy as np
 
 import dace
 
-from nestforge.phases.normalize import Targets, normalize
-from nestforge.phases.schedule import fission_to_statements, full_fusion
-from nestforge.phases.scopes import lower_nests_to_external_call
+from nestforge.stages.canonicalize import Targets, canonicalize
+from nestforge.stages.canonicalize import fuse_and_finish
+from nestforge.stages.scopes import lower_nests_to_external_call
+from helpers import fission_to_fixpoint
 
 N = dace.symbol("N")
 f64 = dace.float64
@@ -39,9 +40,9 @@ def externalized():
     """Two map nests, each lowered to its own ``ExternalCall`` -- the state the agent measures in."""
     sdfg = two_maps.to_sdfg(simplify=False)
     targets = Targets()
-    normalize(sdfg, targets)
-    full_fusion(sdfg, targets)
-    assert fission_to_statements(sdfg) >= 1, "fixture fused to one map but fission split nothing back apart"
+    canonicalize(sdfg, targets)
+    fuse_and_finish(sdfg, targets)
+    assert fission_to_fixpoint(sdfg) >= 1, "fixture fused to one map but fission split nothing back apart"
     calls = lower_nests_to_external_call(sdfg)
     assert len(calls) == 2, "fixture must externalize both statements separately"
     return sdfg, calls
@@ -55,12 +56,12 @@ def test_externalized_nest_keeps_its_own_sdfg_for_reinlining():
 
 
 def test_reinlined_nests_are_inlined_so_map_fusion_can_see_them():
-    """(b) The round trip. After expanding back to NestedSDFGs, ``full_fusion`` must reach one map."""
+    """(b) The round trip. After expanding back to NestedSDFGs, ``fuse_and_finish`` must reach one map."""
     sdfg, _ = externalized()
     sdfg.expand_library_nodes()  # DaceReference: each nest returns as a NestedSDFG
     assert nested_in(sdfg), "fixture did not produce NestedSDFGs; the hazard under test is absent"
 
-    full_fusion(sdfg, Targets())
+    fuse_and_finish(sdfg, Targets())
     assert not nested_in(sdfg), "re-inlined nests were left nested, so MapFusion could not see their maps"
     assert len(maps_in(sdfg)) == 1, f"expected the two maps to fuse into one, got {len(maps_in(sdfg))}"
 
@@ -76,7 +77,7 @@ def test_reinlined_and_fused_program_still_computes_the_same_values():
 
     sdfg, _ = externalized()
     sdfg.expand_library_nodes()
-    full_fusion(sdfg, Targets())
+    fuse_and_finish(sdfg, Targets())
     got_b, got_c = np.empty(n), np.empty(n)
     sdfg(a=a.copy(), b=got_b, c=got_c, N=n)
 

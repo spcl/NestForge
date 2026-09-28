@@ -24,22 +24,23 @@ from dace.codegen import compiler as dace_compiler
 
 from nestforge.build.toolchain import (
     AR,
+    AS_NEEDED,
     CXX_STD,
     DEFAULT_COMPILER,
     DEFAULT_FLAGS,
-    AS_NEEDED,
     LIBOMP,
-    OpenMPRuntime,
     Param,
     bind_argument,
     cudart_dir,
     cudart_link_flags,
+    lib_linkable,
+    openmp_compile_flags,
+    openmp_link_flags,
     parse_params,
     run,
     runtime_library,
     signature,
     support_rpath_flags,
-    usable_openmp,
 )
 
 
@@ -125,11 +126,11 @@ def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
 
 @dataclass(slots=True)
 class BuildOptions:
-    """Compiler, flags and OpenMP runtime of a build."""
+    """Compiler, flags and whether the build links OpenMP (libomp) of a build."""
 
     compiler: str = DEFAULT_COMPILER
     flags: list[str] | None = None  # None -> DEFAULT_FLAGS
-    openmp: OpenMPRuntime | None = None
+    openmp: bool = True
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
 
     def resolved_flags(self) -> list[str]:
@@ -154,14 +155,13 @@ class BuildCommands:
 def build_commands(folder: Path | None, opts: BuildOptions) -> BuildCommands:
     compiler = opts.compiler
     # without OpenMP every multicore map's pragma is ignored
-    omp = opts.openmp or usable_openmp(compiler)
-    if omp is None:
+    omp = opts.openmp and lib_linkable(LIBOMP, compiler)
+    if opts.openmp and not omp:
         warnings.warn(
-            f"{Path(compiler).name} can link no OpenMP runtime; building serial, so every parallel map runs on "
-            "one thread"
+            f"{Path(compiler).name} cannot link libomp; building serial, so every parallel map runs on one thread"
         )
-    omp_c = omp.compile_flags(compiler) if omp else []
-    omp_l = omp.link_flags(compiler) if omp else []
+    omp_c = openmp_compile_flags(compiler) if omp else []
+    omp_l = openmp_link_flags(compiler) if omp else []
     includes = [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"] if folder is not None else []
     return BuildCommands(
         compiler=compiler,
@@ -234,13 +234,13 @@ def program_compiler() -> str:
 
 def libomp_cmake_args(compiler: str) -> list[str]:
     """CMake cache values under which DaCe's ``find_package(OpenMP)`` resolves LLVM libomp for ``compiler``."""
-    library = runtime_library(LIBOMP.soname, compiler)
+    library = runtime_library(LIBOMP, compiler)
     if library is None:
         raise LookupError(
-            f"no lib{LIBOMP.soname} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search "
-            "path names one, and the process's one OpenMP runtime is libomp"
+            f"no lib{LIBOMP} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search path "
+            "names one, and the process's one OpenMP runtime is libomp"
         )
-    return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP.soname}", f"-DOpenMP_{LIBOMP.soname}_LIBRARY={library}"]
+    return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP}", f"-DOpenMP_{LIBOMP}_LIBRARY={library}"]
 
 
 def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:

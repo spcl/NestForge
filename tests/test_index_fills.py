@@ -12,7 +12,7 @@ from dace.transformation.passes.canonicalize import canonicalize
 from nestforge.build.arena import make_inputs
 from nestforge.corpus.bench import preset_sizes
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.phases.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import parallel_top_level_maps
 
 from helpers import loop_level_kernel
 

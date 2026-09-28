@@ -21,6 +21,9 @@ from nestforge.ir.emit_numpy import (
     scratch_arrays,
 )
 from nestforge.ir.extract import Boundary
+from nestforge.ir.introspect import tree_rows
+from nestforge.ir.names import normalize_labels
+from nestforge.stages.moves import Rewrite, legal_moves, plan_move
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
 CTYPE = {
@@ -97,3 +100,30 @@ def sdfg_to_numpy(sdfg: dace.SDFG, fn_name: str = "kernel") -> str:
     reject_unsizable_scratch(sdfg, scratch, symbols)
     args = data_args + scratch + symbols
     return render(fn_name, args, emit_region(sdfg, sdfg))
+
+
+def fusion_moves(sdfg: dace.SDFG) -> list[tuple[str, tuple[str, ...]]]:
+    """Every legal loop or map fusion of ``sdfg`` as ``(kind, labels)``, after making its tree labels unique."""
+    normalize_labels(sdfg)
+    return legal_moves(sdfg, "loop-fusion") + legal_moves(sdfg, "map-fusion")
+
+
+def apply_move(sdfg: dace.SDFG, move: tuple[str, tuple[str, ...]]) -> str:
+    """Apply one listed ``(kind, labels)`` move; returns the transformation that ran."""
+    kind, labels = move
+    rows = tree_rows(sdfg)
+    plan = plan_move(kind, [rows[label] for label in labels])
+    assert isinstance(plan, Rewrite), plan
+    plan.commit()
+    return plan.name
+
+
+def fission_to_fixpoint(sdfg: dace.SDFG) -> int:
+    """Apply the first legal loop or map fission until none remains; returns how many applied."""
+    for applied in range(200):  # bound: each fission strictly adds a nest
+        normalize_labels(sdfg)
+        moves = legal_moves(sdfg, "loop-fission") + legal_moves(sdfg, "map-fission")
+        if not moves:
+            return applied
+        apply_move(sdfg, moves[0])
+    raise AssertionError("fission did not converge")

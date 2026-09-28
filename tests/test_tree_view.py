@@ -85,30 +85,13 @@ def test_indentation_tracks_the_level_in_the_label():
         assert len(guide) == 3 * (level + 1), f"level {level} at guide width {len(guide)}: {line}"
 
 
-def test_session_stamps_the_ids_that_act_on_each_line():
-    """Reading the tree and acting on it use one vocabulary. A nest line carries the very handle
-    can_fuse/fuse resolve -- not a label the agent has to match against a separate list_nests call."""
+def test_every_row_the_session_prints_is_a_label_its_labeled_calls_take():
+    """Reading the tree and acting on it use one vocabulary: each row's first word is a key of the row index."""
     sdfg = shaped.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
     session = Session(sdfg)
-    tree = session.describe()
-    nest_ids = re.findall(r"\[(e\d+:nest:\d+)\]", tree)
-    assert nest_ids, "no nest line carried a minted handle"
-    for hid in nest_ids:
-        assert session.resolve(hid, "nest") is not None
-    # Two nests off the tree are exactly what can_fuse accepts -- no list_nests call in between.
-    assert isinstance(session.can_fuse(nest_ids[0], nest_ids[1]), str)
-
-
-def test_region_lines_carry_the_stable_descriptive_id_not_a_minted_one():
-    """Nothing resolves a ``region`` kind, so minting one would grow the registry on a read-only call
-    and hand back an id that raises on the kind guard."""
-    sdfg = shaped.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    tree = session.describe()
-    assert re.search(r"\[region:state0_0\]", tree), tree
-    assert not re.search(r"\[e\d+:region:", tree)
+    labels = [re.sub(r"^[|` -]*", "", line).split()[0] for line in session.describe().splitlines()[1:]]
+    assert labels and all(label in session.row_index() for label in labels), labels
 
 
 # conditions read as the arrays they test
@@ -329,16 +312,20 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
     assert body == full
 
 
-# one kernel's body, by handle
+# one kernel's body
 
 
-def test_session_hands_back_one_kernel_body_by_its_tree_id():
-    """The id on the tree line is the handle: read a line, ask what that kernel computes."""
-    sdfg = shaped.to_sdfg(simplify=True)
+def first_nest(program):
+    sdfg = program.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    body = session.kernel_body(nest_id)
+    state = next(st for st in sdfg.all_states() if any(isinstance(n, dc.nodes.MapEntry) for n in st.nodes()))
+    entry = next(n for n in state.scope_children()[None] if isinstance(n, dc.nodes.MapEntry))
+    return sdfg, state, entry
+
+
+def test_a_kernel_body_is_the_statements_without_their_headers():
+    sdfg, state, entry = first_nest(shaped)
+    body = kernel_body(state, sdfg, entry, state.scope_children())
     assert body and all(isinstance(line, str) for line in body)
     assert not any(line.startswith("for ") for line in body), "headers are on the kernel line already"
 
@@ -346,34 +333,18 @@ def test_session_hands_back_one_kernel_body_by_its_tree_id():
 def test_a_reduction_body_is_folded():
     """An explicit accumulate is the only point rendering of a reduction; `np.sum` is a whole-array
     spelling that belongs to the slice form."""
-    sdfg = matvec.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    body = "\n".join(session.kernel_body(nest_id))
+    sdfg, state, entry = first_nest(matvec)
+    body = "\n".join(kernel_body(state, sdfg, entry, state.scope_children()))
     assert "C[i0] = C[i0] +" in body, body
     assert "np.sum" not in body
-
-
-def test_a_stale_id_does_not_silently_return_someone_elses_body():
-    sdfg = shaped.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    session.bump()
-    with pytest.raises(KeyError):
-        session.kernel_body(nest_id)
 
 
 # a kernel's representation: pure, runnable numpy
 
 
 def source_of_first_kernel(program):
-    sdfg = program.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    return sdfg, session, session.kernel_source(nest_id)
+    sdfg, state, entry = first_nest(program)
+    return sdfg, state, introspect.kernel_source(state, sdfg, entry)
 
 
 def test_a_kernel_source_is_a_whole_module_not_a_fragment():
@@ -396,7 +367,7 @@ def test_a_kernel_source_runs_with_nothing_injected():
 def test_a_kernel_source_computes_what_the_sdfg_computes():
     """The point of it being runnable: emit, execute, compare. A representation nothing can execute
     cannot be shown to be correct."""
-    sdfg, session, source = source_of_first_kernel(matvec)
+    sdfg, _, source = source_of_first_kernel(matvec)
     namespace = {}
     exec(source, namespace)
     kernel = next(v for k, v in namespace.items() if k.startswith("kernel") and callable(v))
@@ -434,53 +405,3 @@ def test_a_kernel_source_takes_a_symbol_only_its_body_reads():
     kernel(A=A, B=B, M=4, N=3)
 
     np.testing.assert_array_equal(B, A[:, 3])
-
-
-def session_and_first_nest(program):
-    sdfg = program.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    session = Session(sdfg)
-    nest_id = re.findall(r"\[(e\d+:nest:\d+)\]", session.describe())[0]
-    return sdfg, session, nest_id
-
-
-def test_c_is_the_same_numpy_lowered_by_the_translator():
-    """`lang="c"` runs the point-form numpy through numpyto -- a real C function over the same arrays,
-    not a second hand-written emitter."""
-    _, session, nest_id = session_and_first_nest(matvec)
-    src = session.kernel_source(nest_id, lang="c")
-    assert "double" in src and "for (" in src
-    assert "A" in src and "B" in src and "C" in src  # the boundary arrays survive to the signature
-
-
-def test_cpp_is_the_cpp_half_of_the_one_c_family_emit():
-    """Bare C++ is the `.cpp` of the plain `c` target (one emit produces both), so it carries the C++
-    arithmetic header rather than OpenMP the agent never asked for."""
-    _, session, nest_id = session_and_first_nest(matvec)
-    src = session.kernel_source(nest_id, lang="cpp")
-    assert 'extern "C"' in src and "template" in src  # the templated C++ int_floor/int_ceil header
-    assert "#pragma omp" not in src  # not cpp_omp
-
-
-def test_fortran_lowers_through_the_fortran_backend():
-    _, session, nest_id = session_and_first_nest(matvec)
-    src = session.kernel_source(nest_id, lang="fortran")
-    assert "subroutine" in src and "bind(C" in src
-
-
-def test_lowering_a_kernel_does_not_mutate_the_live_sdfg():
-    """``kernel_source`` extracts on a copy and bumps no epoch; ids are stripped, since each describe mints new ones."""
-    strip = lambda tree: re.sub(r"\[e\d+:nest:\d+\]", "[nest]", tree)
-    sdfg, session, nest_id = session_and_first_nest(matvec)
-    before, epoch_before = strip(session.describe()), session.epoch
-    states_before = len(list(sdfg.all_states()))
-    session.kernel_source(nest_id, lang="c")
-    assert session.epoch == epoch_before
-    assert len(list(sdfg.all_states())) == states_before
-    assert strip(session.describe()) == before
-
-
-def test_an_unknown_language_is_refused_by_name():
-    _, session, nest_id = session_and_first_nest(shaped)
-    with pytest.raises(ValueError, match="expected 'python'"):
-        session.kernel_source(nest_id, lang="rust")

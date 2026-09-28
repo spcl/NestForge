@@ -5,7 +5,7 @@
 import numpy as np
 import dace
 
-from nestforge.phases.scopes import lower_nests_to_external_call
+from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.ir.libnode import ExternalCall
 
 N = dace.symbol("N")

@@ -15,18 +15,15 @@ import subprocess
 import sys
 
 import numpy as np
-import pytest
 
 import nestforge
 
 from nestforge.build.toolchain import (
     LIBOMP,
-    OPENMP_RUNTIMES,
-    OpenMPRuntime,
-    compiler_family,
     lib_linkable,
+    openmp_compile_flags,
+    openmp_link_flags,
     runtime_library,
-    usable_openmp,
 )
 
 #: A minimal nest with an OpenMP region: enough to make the compiler link a runtime.
@@ -103,56 +100,30 @@ def available_compilers():
     return [cc for cc in COMPILERS if shutil.which(cc)]
 
 
-def prune_reason(compiler, runtime):
-    """Why ``compiler`` cannot link ``runtime`` (ABI or name selection first, then installation), or None."""
-    if not runtime.compatible(compiler):
-        return f"{compiler} cannot link {runtime.name} (single-runtime contract)"
-    if not lib_linkable(runtime.soname, compiler):
-        return f"{runtime.name} is not linkable by {compiler} (runtime not installed for it)"
-    return None
-
-
-def build_cell(tmp_path, compiler, runtime, src=OMP_SRC, tag="k"):
-    """Link one nest the way the owned build does: the runtime's compile flags before the source, its link
-    flags after the object. Returns ``(so, skip_reason)``; exactly one is None."""
-    reason = prune_reason(compiler, runtime)
-    if reason is not None:
-        return None, reason
+def build_cell(tmp_path, compiler, src=OMP_SRC, tag="k"):
+    """Link one nest the way the owned build does: the OpenMP compile flags before the source, the libomp link
+    flags after the object."""
+    assert lib_linkable(LIBOMP, compiler), f"libomp is not linkable by {compiler} (setup_apt.sh installs libomp-dev)"
     csrc = tmp_path / f"{tag}.c"
     csrc.write_text(src)
-    so = tmp_path / f"{tag}_{compiler}_{runtime.name}.so"
-    cmd = [
-        compiler,
-        "-O2",
-        "-fPIC",
-        "-shared",
-        *runtime.compile_flags(compiler),
-        str(csrc),
-        *runtime.link_flags(compiler),
-        "-o",
-        str(so),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        pytest.fail(f"{compiler} {runtime.name} failed to link:\n{proc.stderr[-1500:]}")
+    so = tmp_path / f"{tag}_{compiler}.so"
+    cmd = [compiler, "-O2", "-fPIC", "-shared", *openmp_compile_flags(compiler), str(csrc)]
+    proc = subprocess.run([*cmd, *openmp_link_flags(compiler), "-o", str(so)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"{compiler} failed to link libomp:\n{proc.stderr[-1500:]}"
     # The pragma is in the source, so a cell that links a runtime but opens no region was silently serialized.
     assert emits_parallel_region(so), (
-        f"{compiler} + {runtime.name}: the cell links "
-        f"{sorted(linked_openmp_runtimes(so))} but emits NO OpenMP fork call"
+        f"{compiler}: the cell links {sorted(linked_openmp_runtimes(so))} but emits NO OpenMP fork call"
     )
-    return so, None
+    return so
 
 
 def test_every_compiler_links_the_same_single_runtime(tmp_path):
     """Across every available compiler, a cell links exactly one OpenMP runtime, the same for all: a bare -fopenmp
     links libgomp under gcc and libomp under clang. The global runtime is libomp, which the owned build resolves
     for gcc, clang and icx."""
-    assert all(usable_openmp(cc) is LIBOMP for cc in available_compilers() if compiler_family(cc) in ("gnu", "llvm"))
     seen = {}
     for cc in available_compilers():
-        so, _ = build_cell(tmp_path, cc, LIBOMP, tag="a")
-        if so is None:
-            continue  # a pruned compiler is a recorded skip, not a failure
+        so = build_cell(tmp_path, cc, tag="a")
         rts = linked_openmp_runtimes(so)
         assert len(rts) == 1, f"{cc} linked {len(rts)} OpenMP runtimes ({sorted(rts)}), must be exactly 1"
         seen[cc] = rts
@@ -168,43 +139,10 @@ def test_two_different_nests_from_two_compilers_share_one_runtime(tmp_path):
     assert len(compilers) >= 2, f"needs two compiler families, found {compilers} (setup_apt.sh installs gcc+clang)"
     union, built = set(), {}
     for cc, src, tag in ((compilers[0], OMP_SRC, "map"), (compilers[1], OMP_SRC_REDUCE, "red")):
-        so, reason = build_cell(tmp_path, cc, LIBOMP, src=src, tag=tag)
-        assert so is not None, f"{cc} cannot link the global runtime: {reason}"
+        so = build_cell(tmp_path, cc, src=src, tag=tag)
         built[f"{cc}:{tag}"] = sorted(linked_openmp_runtimes(so))
         union |= linked_openmp_runtimes(so)
     assert len(union) == 1, f"two node libraries, two compilers, {len(union)} runtimes: {built}"
-
-
-@pytest.mark.parametrize("runtime_name", sorted(OPENMP_RUNTIMES))
-def test_the_runtime_is_choosable_and_prunes_what_cannot_link_it(tmp_path, runtime_name):
-    """The runtime is a knob: for a given choice each compiler either links exactly that one runtime or is
-    pruned with a reason, never silently falling back to its own default. libgomp is gomp-ABI only, so
-    clang cannot link it -- the reason the resolved runtime is libomp, which both families link."""
-    runtime = OPENMP_RUNTIMES[runtime_name]
-    distinct, decided = set(), {}
-    for cc in available_compilers():
-        so, reason = build_cell(tmp_path, cc, runtime, tag="c")
-        if so is None:
-            assert reason, f"{cc} was pruned for {runtime_name} with no reason recorded"
-            decided[cc] = f"skip: {reason}"
-            continue
-        rts = linked_openmp_runtimes(so)
-        assert len(rts) == 1, f"{cc} linked {sorted(rts)} for {runtime_name}; must be exactly 1"
-        decided[cc] = sorted(rts)
-        distinct |= rts
-    assert decided, "no compiler was even considered"
-    assert len(distinct) <= 1, f"{runtime_name} produced {len(distinct)} distinct runtimes: {decided}"
-
-
-def test_libgomp_is_pruned_for_llvm_but_kept_for_gnu():
-    """Asserted on the compatibility rules rather than this box's toolchain: libgomp implements only GOMP_*,
-    clang/flang/icx emit __kmpc_*; libomp carries a GOMP-compat layer and serves both."""
-    libgomp, libomp = OPENMP_RUNTIMES["libgomp"], OPENMP_RUNTIMES["libomp"]
-    assert libgomp.compatible("gcc") and not libgomp.compatible("clang")
-    assert libomp.compatible("gcc") and libomp.compatible("clang")
-    with pytest.raises(ValueError, match="libgomp"):  # refused with a reason, never a silently serial flag
-        libgomp.compile_flags("clang")
-    assert compiler_family("icx") == "llvm" and libomp.compatible("icx")  # icx is clang-based: name-selects libomp
 
 
 #: Loads both node libraries into one process, runs both nests, and reports what got mapped. Run via EXEC,
@@ -252,8 +190,7 @@ def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_pat
     )
     built = {}
     for cc, src, tag in (("gcc", OMP_SRC, "kern"), ("clang", OMP_SRC_REDUCE, "kern2")):
-        so, reason = build_cell(tmp_path, cc, LIBOMP, src=src, tag=f"e2e_{tag}")
-        assert so is not None, f"{cc} cannot link the global runtime {LIBOMP.name}: {reason}"
+        so = build_cell(tmp_path, cc, src=src, tag=f"e2e_{tag}")
         built[cc] = so
         assert linked_openmp_runtimes(so) == linked_openmp_runtimes(built["gcc"]), "cells disagree on the runtime"
 
@@ -302,7 +239,7 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
     source.write_text(OMP_SRC_ENTRIES)
     obj = tmp_path / "entries.o"
     subprocess.run(["g++", "-x", "c++", "-O2", "-fopenmp", "-c", str(source), "-o", str(obj)], check=True)
-    libomp = runtime_library(LIBOMP.soname, "g++")
+    libomp = runtime_library(LIBOMP, "g++")
     assert libomp is not None, "no libomp found for g++ (setup_apt.sh installs libomp-dev)"
 
     called = {name for name in symbol_names(["nm", "-u", str(obj)]) if name.startswith(("GOMP_", "omp_"))}
@@ -312,20 +249,6 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
     assert sorted(called - exported) == [], (
         f"libomp does not export these entries g++ calls: {sorted(called - exported)}"
     )
-
-
-def test_openmp_link_flags_carry_an_rpath_for_a_pinned_dir():
-    # -L satisfies the linker only; without -rpath the built .so has DT_NEEDED and no RUNPATH, so the
-    # ctypes.CDLL right after the build fails to find libomp.
-    runtime = OpenMPRuntime(name=LIBOMP.name, soname=LIBOMP.soname, lib_dir="/opt/llvm/lib")
-    linked = runtime.link_flags("clang")
-    assert "-L/opt/llvm/lib" in linked
-    assert "-Wl,-rpath,/opt/llvm/lib" in linked
-
-
-def test_openmp_link_flags_omit_libdir_when_not_pinned():
-    runtime = OpenMPRuntime(name=LIBOMP.name, soname=LIBOMP.soname, lib_dir="")
-    assert not [f for f in runtime.link_flags("clang") if f.startswith(("-L", "-Wl,-rpath"))]
 
 
 def test_every_link_search_path_is_paired_with_an_rpath():

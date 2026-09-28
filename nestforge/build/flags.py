@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The compile-flag matrix phase 5 sweeps: FP mode crossed with vectorizer cost model, per compiler family.
+"""The compile-flag matrix stage 6 sweeps: FP mode crossed with vectorizer cost model, per compiler family.
 ``intel`` is its own family because icx, icpx and ifx default to ``-fp-model=fast``."""
 
 from __future__ import annotations

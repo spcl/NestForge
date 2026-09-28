@@ -18,7 +18,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
 
 from nestforge.ir.names import normalize_for_tree
-from nestforge.phases.scopes import top_level_map_entries
+from nestforge.stages.scopes import top_level_map_entries
 from nestforge.session import MoveResult, Session
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -75,6 +75,12 @@ def two_indep(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dac
         C[i] = A[i] * 2.0
     for i in dace.map[0:N]:
         D[i] = B[i] * 3.0
+
+
+@dace.program
+def one_statement(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
@@ -329,7 +335,7 @@ def test_listed_moves_name_rows_of_the_tree_at_the_current_epoch():
     assert moves, "the fixture offers no move"
     assert {move["epoch"] for move in moves} == {0}
     for label in {label for move in moves for label in move["labels"]}:
-        assert re.search(rf"\] {label}\b", tree), (label, tree)
+        assert re.search(rf"[-`] {label}\b", tree), (label, tree)
 
 
 # loop fusion
@@ -352,7 +358,7 @@ def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing():
 
     result = sut.apply_move("loop-fusion", ["for0_0", "for0_1"], 0)
 
-    assert result.status == "illegal" and "FuseLoops" in result.reason, result
+    assert result.status == "illegal" and "LoopFusion" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
     assert sut.list_moves("loop-fusion") == []
 
@@ -419,8 +425,19 @@ def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_ar
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
 
 
-def test_map_fission_of_a_map_without_a_nested_body_is_illegal():
-    sut = Session(two_statements.to_sdfg(simplify=True))
+def test_map_fission_splits_a_flat_two_statement_map_by_its_outputs():
+    sut, reference = session_and_reference(two_statements)
+    (entry,) = top_level_maps(sut.sdfg)
+
+    result = sut.apply_move("map-fission", [entry.label], 0)
+
+    assert (result.status, result.reason) == ("applied", "MapFission")
+    assert len(top_level_maps(sut.sdfg)) > 1, "the map split into its independent components"
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
+
+
+def test_map_fission_of_a_flat_map_writing_one_array_is_illegal():
+    sut = Session(one_statement.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
     before = digest(sut.sdfg)
 

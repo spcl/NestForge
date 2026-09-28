@@ -36,7 +36,7 @@ assert shutil.which("objdump") is not None, "objdump not on PATH (setup_apt.sh: 
 
 
 def build(tmp_path: Path, source: str, fp_mode: str, tag: str = "v", compiler: str = "g++") -> Path:
-    """Build ``source`` as a phase 5 variant is built; returns the object the key reads."""
+    """Build ``source`` as a stage 6 variant is built; returns the object the key reads."""
     src = tmp_path / f"{tag}.cpp"
     src.write_text(source)
     family = compiler_family(compiler)

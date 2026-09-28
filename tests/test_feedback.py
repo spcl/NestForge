@@ -1,102 +1,124 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Feedback loop (:mod:`nestforge.phases.feedback`), which re-enters phase 1: the measurement-driven granularity
-loop and its two rules -- ``best_outcome`` (fastest bit-exact wins) and ``improved`` (a round that does not improve
-stops the loop). Driven with a fake ``measure`` (no compiler), plus one real SDFG proving ``default_fuse_step``
-re-enumerates + fuses to the fixed point.
-"""
+"""Stage 7: the rule table that turns validation, times, compiler remarks and operational intensity into a few
+hints, most important first, and the report a session builds from real builds."""
+
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import dace
-from nestforge.phases.feedback import (
-    FeedbackResult,
-    Outcome,
-    best_outcome,
-    default_fuse_step,
-    improved,
-    run_feedback_loop,
-)
-from nestforge.phases.scopes import parallel_top_level_maps
 
-N = dace.symbol("N")
-f64 = dace.float64
+from nestforge.session import Session
+from nestforge.stages.feedback import Evidence, report, spills, vectorizer_reasons
+from nestforge.stages.kernel import KernelVerdict
+
+N = dace.symbol("N", dtype=dace.int64)
+
+GCC_REMARKS = """k.cpp:12:23: missed: couldn't vectorize loop
+k.cpp:12:23: missed: not vectorized: control flow in loop.
+k.cpp:20:5: missed: not vectorized: complicated access pattern.
+k.cpp:12:23: missed: not vectorized: control flow in loop.
+"""
+CLANG_REMARKS = (
+    "k.cpp:9:3: remark: loop not vectorized: cannot identify array bounds [-Rpass-analysis=loop-vectorize]\n"
+)
+PTXAS_REMARKS = """ptxas info    : Used 24 registers, 368 bytes cmem[0]
+ptxas info    : Function properties for k
+    96 bytes stack frame, 64 bytes spill stores, 64 bytes spill loads
+ptxas info    : Used 40 registers, 368 bytes cmem[0]
+    0 bytes stack frame, 16 bytes spill stores, 16 bytes spill loads
+"""
+
+
+def verdict(time_us: float = 10.0, md_rel: float = 0.0, error: str = "") -> KernelVerdict:
+    return KernelVerdict("strict-ieee", md_rel, md_rel, 2.3e-16, time_us, error)
+
+
+def evidence(kernel: str = "extcall_0", remarks: str = "", oi: float | None = 4.0, **kw) -> Evidence:
+    producers, consumers = kw.pop("producers", ()), kw.pop("consumers", ())
+    return Evidence(kernel, verdict(**kw), remarks, oi, producers, consumers)
+
+
+def test_gcc_reasons_are_distinct_and_the_bare_missed_line_is_no_reason():
+    assert vectorizer_reasons(GCC_REMARKS) == ["control flow in loop", "complicated access pattern"]
+
+
+def test_clang_reasons_stop_before_the_remark_flag():
+    assert vectorizer_reasons(CLANG_REMARKS) == ["cannot identify array bounds"]
+
+
+def test_ptxas_spills_add_up_over_functions_and_report_the_most_registers():
+    assert spills(PTXAS_REMARKS) == (40, 80)
+    assert spills("") == (0, 0)
+
+
+def test_a_wrong_result_comes_first_and_a_failed_build_before_it():
+    lines = report(
+        [
+            evidence("extcall_0", remarks=GCC_REMARKS),
+            evidence("extcall_1", md_rel=0.25),
+            evidence("extcall_2", error="RuntimeError: command failed: g++ -O3\nk.cpp:1: error"),
+        ]
+    ).splitlines()
+
+    assert (
+        lines[1] == "extcall_2: failed: RuntimeError: command failed: g++ -O3 -> fix the kernel so it builds and runs."
+    )
+    assert lines[2].startswith("extcall_1: wrong result, max rel err 0.25 at strict-ieee ->")
+
+
+def test_a_kernel_with_most_of_the_time_is_named_hot_and_the_head_lists_every_time():
+    text = report([evidence("extcall_0", time_us=80.0), evidence("extcall_1", time_us=20.0)])
+
+    assert text.splitlines()[0] == "kernel times: extcall_0 80.0 us, extcall_1 20.0 us"
+    assert "extcall_0 is 80% of kernel time (80.0 us) -> optimize it first." in text
+    assert "extcall_1 is" not in text
+
+
+def test_a_memory_bound_kernel_is_told_which_neighbours_to_fuse_with():
+    text = report([evidence("extcall_1", oi=0.125, producers=("extcall_0",), consumers=("extcall_2",))])
+
+    assert "extcall_1: OI 0.12 flop/B, memory-bound -> fuse with producer extcall_0 or consumer extcall_2." in text
+
+
+def test_register_spills_suggest_fission_and_vectorizer_reasons_carry_their_advice():
+    text = report([evidence(remarks=PTXAS_REMARKS + GCC_REMARKS)])
+
+    assert "extcall_0: 80 bytes spilled at 40 registers -> loop body too big, try fission." in text
+    assert "loop not vectorized: control flow in loop -> move the condition out of the loop" in text
+
+
+def test_a_report_keeps_at_most_eight_hints_ranked_by_importance():
+    many = [evidence(f"extcall_{i}", md_rel=0.5, remarks=GCC_REMARKS, oi=0.1) for i in range(5)]
+
+    lines = report(many).splitlines()
+
+    assert len(lines) == 1 + 8
+    assert all("wrong result" in line for line in lines[1:6])
+
+
+def test_a_healthy_kernel_gets_no_hint():
+    assert report([evidence()]).splitlines()[1] == "no hints: every kernel is correct and nothing stands out."
 
 
 @dace.program
-def two_nests(a: f64[N], c: f64[N]):
-    tmp = np.empty_like(a)
+def square(a: dace.float64[N], b: dace.float64[N]):
     for i in dace.map[0:N]:
-        tmp[i] = a[i] * 2.0
-    for i in dace.map[0:N]:
-        c[i] = tmp[i] + 1.0
+        b[i] = a[i] * a[i]
 
 
-def oc(median_us: float, ok: bool = True) -> Outcome:
-    return Outcome(name="fb", ok=ok, median_us=median_us)
+@pytest.mark.e2e
+def test_a_session_reports_the_times_and_the_intensity_of_its_built_kernels(tmp_path):
+    session = Session(square.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 4096})
+    (kernel,) = session.define_scopes()
 
+    text = session.feedback(reps=2)
 
-def nest_count(sdfg: dace.SDFG) -> int:
-    return len(parallel_top_level_maps(sdfg))
-
-
-def test_best_outcome_ignores_failed_and_picks_fastest():
-    outs = [oc(10.0), oc(3.0, ok=False), oc(5.0)]  # the 3.0 lost the correctness gate
-    assert best_outcome(outs).median_us == 5.0
-
-
-def test_best_outcome_none_when_all_fail():
-    assert best_outcome([oc(1.0, ok=False), oc(2.0, ok=False)]) is None
-
-
-def test_improved_only_when_bit_exact_and_faster():
-    prior = [oc(5.0)]
-    assert improved(prior, oc(4.0))  # faster + bit-exact
-    assert not improved(prior, oc(6.0))  # slower
-    assert not improved(prior, oc(1.0, ok=False))  # faster but not bit-exact
-    assert improved([], oc(9.0))  # first bit-exact result always improves
-
-
-def test_default_fuse_step_fuses_to_fixed_point():
-    sdfg = two_nests.to_sdfg(simplify=True)
-    start = nest_count(sdfg)
-    assert start >= 2  # two independent map-nests before fusion
-    assert default_fuse_step(sdfg) is True  # a fusion move existed
-    assert nest_count(sdfg) < start  # granularity coarsened
-    while default_fuse_step(sdfg):  # drain to the fixed point
-        pass
-    assert default_fuse_step(sdfg) is False  # no move left
-
-
-def test_loop_fuses_while_it_helps_then_hits_fixed_point():
-    # fewer nests measured as faster -> fusing always improves -> loop runs to the fusion fixed point.
-    sdfg = two_nests.to_sdfg(simplify=True)
-    res = run_feedback_loop(sdfg, lambda s: oc(float(nest_count(s))))
-    assert isinstance(res, FeedbackResult)
-    assert res.best.median_us == min(o.median_us for o in res.outcomes)
-    assert nest_count(res.sdfg) == 1  # stopped-at granularity is the (best) fully-fused one
-    assert default_fuse_step(res.sdfg) is False  # and it is the fixed point
-
-
-def test_loop_stops_the_round_a_move_stops_helping():
-    times = iter([10.0, 5.0, 5.0, 1.0])  # round 2 (5.0) does not beat round 1 (5.0) -> stop before 1.0
-    res = run_feedback_loop(two_nests.to_sdfg(simplify=True), lambda s: oc(next(times)), apply_move=lambda s: True)
-    assert [o.median_us for o in res.outcomes] == [10.0, 5.0, 5.0]
-    assert res.best.median_us == 5.0
-    assert res.rounds == 2
-
-
-def test_loop_is_bounded_by_max_rounds():
-    # a move that always applies + always improves must still terminate at max_rounds.
-    t = iter(float(x) for x in range(100, 0, -1))
-    res = run_feedback_loop(
-        two_nests.to_sdfg(simplify=True), lambda s: oc(next(t)), apply_move=lambda s: True, max_rounds=3
-    )
-    assert res.rounds == 3
-    assert len(res.outcomes) == 4  # baseline + 3 rounds
-
-
-def test_bad_max_rounds_raises():
-    with pytest.raises(ValueError):
-        run_feedback_loop(two_nests.to_sdfg(simplify=True), lambda s: oc(1.0), max_rounds=0)
+    lines = text.splitlines()
+    assert lines[0].startswith(f"kernel times: {kernel['name']} ") and lines[0].endswith(" us")
+    # one multiply per element over 16 bytes: memory-bound, with no neighbour to fuse with
+    assert f"{kernel['name']}: OI 0.062 flop/B, memory-bound -> reuse loaded data, drop temporaries." in lines
+    assert Path(session.kernel(kernel["name"]).lib_path).exists()
+    assert np.isfinite(float(lines[0].split()[-2]))
