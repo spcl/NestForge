@@ -116,9 +116,15 @@ def call_native(
         t0 = time.perf_counter()
         fn(*args)
         total += time.perf_counter() - t0
-    elapsed_us = total / reps * 1e6
+    elapsed_us = total / reps * US_PER_S
     return outputs, elapsed_us
 
+
+#: Microseconds per second.
+US_PER_S = 1e6
+
+#: Timed calls per measurement, after one warm-up call.
+TIMED_REPS = 10
 
 #: ``cudaMemcpyKind`` values.
 HOST_TO_DEVICE = 1
@@ -195,7 +201,7 @@ def time_device_reps(
         t0 = time.perf_counter()
         fn(*args)
         total += (time.perf_counter() - t0) if rep > 0 else 0.0
-    return outputs, total / reps * 1e6
+    return outputs, total / reps * US_PER_S
 
 
 @dataclass(frozen=True, slots=True)

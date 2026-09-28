@@ -17,7 +17,7 @@ import dace
 from nestforge.agent import llm, loop
 from nestforge.build.sdfg import generate_program
 from nestforge.corpus.bench import iter_dace_kernels, preset_sizes
-from nestforge.session import Session
+from nestforge.session import JSON_INDENT, Session
 from nestforge.stages.canonicalize import Targets
 
 KERNELS = {
@@ -77,7 +77,7 @@ def main() -> None:
     parser.add_argument("--agent", choices=("openai", "anthropic"), help="let a model drive stages 2 to 5")
     parser.add_argument("--model", help="model name, required with --agent")
     parser.add_argument("--base-url", help="an OpenAI-compatible server (vLLM, SGLang)")
-    parser.add_argument("--turns", type=int, default=4, help="model calls per stage")
+    parser.add_argument("--turns", type=int, default=loop.TURNS, help="model calls per stage")
     parser.add_argument("--analyst", action="store_true", help="one more model call rewrites each feedback report")
     args = parser.parse_args()
     if args.agent and not args.model:
@@ -117,7 +117,7 @@ def main() -> None:
             raise SystemExit(f"stage 6 found no configuration of {result['kernel']} that matches its oracle")
         configs[result["kernel"]] = result["config"]
         print(f"6 variants    {result['kernel']}: {result['cells']} cells, winner {result['winner']}")
-    (out / "6-variants.json").write_text(json.dumps(configs, indent=2) + "\n")
+    (out / "6-variants.json").write_text(json.dumps(configs, indent=JSON_INDENT) + "\n")
     report = session.feedback()
     (out / "7-feedback.txt").write_text(report + "\n")
     print("7 feedback\n" + "\n".join(f"  {line}" for line in report.splitlines()))

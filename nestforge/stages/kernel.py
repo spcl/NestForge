@@ -19,6 +19,7 @@ from dace.codegen import cpf
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
 
 from nestforge.build.arena import (
+    TIMED_REPS,
     call_native,
     DeviceCall,
     accumulating_outputs,
@@ -253,7 +254,7 @@ def validate_kernel(
     src: KernelSource,
     prep: Prepared,
     sizes: dict[str, int],
-    reps: int = 10,
+    reps: int = TIMED_REPS,
     fp_mode: str = "strict-ieee",
 ) -> KernelVerdict:
     """:func:`measure_kernel` on seeded inputs against the kernel's NumPy oracle."""

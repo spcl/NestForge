@@ -29,6 +29,9 @@ ANALYST = (
 #: Characters of a tool result one log line keeps.
 LOG_LINE = 160
 
+#: Model calls per stage.
+TURNS = 4
+
 LABELS = {"type": "array", "items": {"type": "string"}}
 EPOCH = {"type": "integer"}
 
@@ -176,7 +179,7 @@ def analyzed(chat: Chat, report: str, enabled: bool) -> str:
     return (chat(ANALYST, report, []).text or report) if enabled else report
 
 
-def run(session: Session, chat: Chat, task: str, turns: int = 4, analyst: bool = False) -> list[str]:
+def run(session: Session, chat: Chat, task: str, turns: int = TURNS, analyst: bool = False) -> list[str]:
     """Drive stages 2 to 5 of a canonicalized session, at most ``turns`` model calls per stage; returns the log.
 
     :param chat: One model call, e.g. ``functools.partial(llm.chat, client)``.

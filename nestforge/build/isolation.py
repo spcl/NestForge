@@ -26,6 +26,12 @@ OMP_PAUSE_SOFT = 1
 #: Longest exception message a child reports back, after its type name.
 ERROR_CHARS = 4000
 
+#: Wall-clock seconds an isolated child may run before it counts as hung.
+RUN_TIMEOUT_S = 900.0
+
+#: Bytes read from a child's result pipe at a time.
+PIPE_CHUNK = 65536
+
 
 def pause_openmp_pools() -> None:
     """Pause every loaded OpenMP runtime before a fork; a live libgomp pool deadlocks the child."""
@@ -53,7 +59,7 @@ def error_result(e: BaseException) -> dict:
     return {"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"}
 
 
-def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = 900.0) -> dict:
+def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = RUN_TIMEOUT_S) -> dict:
     """:func:`run_isolated` in a freshly spawned interpreter: a CUDA context does not survive a fork. ``target``
     and ``payload`` must pickle."""
     context = multiprocessing.get_context("spawn")
@@ -93,7 +99,7 @@ def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> N
     sender.close()
 
 
-def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
+def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) -> dict:
     """``work_fn()`` from a forked child, or ``{"error": ...}`` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
     r, w = os.pipe()
@@ -120,7 +126,7 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = 900.0) -> dict:
             ready, _, _ = select.select([r], [], [], remaining)
             if not ready:
                 break
-            chunk = os.read(r, 65536)
+            chunk = os.read(r, PIPE_CHUNK)
             if not chunk:  # the child closed the pipe: done, or dead
                 timed_out = False
                 break

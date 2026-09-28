@@ -49,6 +49,12 @@ COMPILE_TIMEOUT_S: float = float(os.environ.get("NF_COMPILE_TIMEOUT", "900"))
 #: Ceiling on asking a driver something; an unbounded probe hangs the sweep.
 PROBE_TIMEOUT_S: float = 15.0
 
+#: Characters of a tool's error output an exception or warning quotes.
+ERROR_TAIL = 2000
+
+#: Words of a failed command an error names: the tool and its first argument.
+COMMAND_WORDS = 2
+
 #: The OpenMP runtime every kernel and the program link, so gcc- and clang-built code share one thread pool:
 #: libomp carries a GOMP compatibility layer for gcc's calls.
 LIBOMP = "omp"
@@ -283,10 +289,10 @@ def path_executables(exe: str) -> list[str]:
 @functools.lru_cache(maxsize=None, typed=True)
 def nvcc_release(nvcc: str) -> str:
     """``major.minor`` of the CUDA toolkit ``nvcc`` belongs to."""
-    out = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=60).stdout
+    out = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S).stdout
     match = re.search(r"release (\d+\.\d+)", out)
     if match is None:
-        raise LookupError(f"{nvcc} --version names no CUDA release: {out[:200]!r}")
+        raise LookupError(f"{nvcc} --version names no CUDA release: {out[:ERROR_TAIL]!r}")
     return match.group(1)
 
 
@@ -343,7 +349,7 @@ WARNED: dict[str, dict[str, None]] = {}
 def warning_kinds(stderr: str) -> str:
     """The distinct [-Wflag] kinds in stderr, or its first line; keyed on kind, not text, to dedup across cells."""
     kinds = sorted(dict.fromkeys(m.group(1) for m in re.finditer(r"\[-W([a-z0-9-]+)\]", stderr)))
-    return ", ".join(kinds) if kinds else stderr.strip().splitlines()[0][:120]
+    return ", ".join(kinds) if kinds else stderr.strip().splitlines()[0][:ERROR_TAIL]
 
 
 def warn_once(tool: str, stderr: str) -> None:
@@ -354,7 +360,7 @@ def warn_once(tool: str, stderr: str) -> None:
     if kinds in seen or len(seen) >= WARN_BUDGET:
         return
     seen[kinds] = None
-    warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-2000:]}")
+    warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-ERROR_TAIL:]}")
 
 
 def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
@@ -364,9 +370,9 @@ def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
-            f"command timed out after {timeout:.0f}s: {' '.join(cmd[:2])} ... (the ceiling is NF_COMPILE_TIMEOUT)"
+            f"command timed out after {timeout:.0f}s: {' '.join(cmd[:COMMAND_WORDS])} ... (the ceiling is NF_COMPILE_TIMEOUT)"
         )
     if p.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(cmd[:2])} ...\n{p.stderr[-2000:]}")
+        raise RuntimeError(f"command failed: {' '.join(cmd[:COMMAND_WORDS])} ...\n{p.stderr[-ERROR_TAIL:]}")
     if p.stderr.strip():
         warn_once(Path(cmd[0]).name, p.stderr)

@@ -13,7 +13,18 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
 
-from nestforge.ir.emit_python import Names, UnsupportedNest, expr, load_emitted, nest_to_python
+import sympy
+from dace import subsets
+
+from nestforge.ir.emit_python import (
+    Names,
+    UnsupportedNest,
+    expr,
+    indexed_shape,
+    load_emitted,
+    nest_to_python,
+    simplify_as_sizes,
+)
 from nestforge.ir.extract import Boundary
 from helpers import run_emitted, sdfg_to_python
 
@@ -334,3 +345,16 @@ def test_dace_integer_division_heads_become_python_operators_with_their_meaning(
     assert "int_floor" not in floor_text and "int_ceil" not in ceil_text
     assert eval(floor_text, {"a": a, "b": b}) == math.floor(a / b)  # noqa: S307 -- the emitted expression
     assert eval(ceil_text, {"a": a, "b": b}) == math.ceil(a / b)  # noqa: S307
+
+
+def test_a_widened_extent_names_only_sizes_not_max():
+    """A loop end widened against its start folds ``Max(N - 1, 0)`` to ``N - 1``: the manifest declares no ``Max``."""
+    n = sympy.Symbol("N")
+    assert simplify_as_sizes(sympy.Max(n - 1, -n + n)) == n - 1
+
+
+def test_a_rank_changing_copy_reshapes_to_a_literal_shape():
+    """The reshape target is a tuple of extents, never ``np.shape`` of a slice the C translator cannot size."""
+    column = subsets.Range([(0, M - 1, 1), (3, 3, 1)])
+    assert indexed_shape(column) == "(M, )"
+    assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_floor(N - 1, 2) + 1), )"

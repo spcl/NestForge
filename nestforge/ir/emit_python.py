@@ -301,6 +301,13 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     unique_connectors(sdfg)
 
 
+def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
+    """``extent`` simplified with every symbol a positive integer, as sizes are; drops a ``Max`` against zero."""
+    sizes = {s: sympy.Symbol(str(s), integer=True, positive=True) for s in extent.free_symbols}
+    simple = sympy.simplify(extent.subs(sizes))
+    return simple.subs({size: s for s, size in sizes.items()})
+
+
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
     """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
     refuse one whose extent the caller cannot evaluate."""
@@ -323,6 +330,7 @@ def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
                 for var in loop_vars:
                     lo, hi = ranges[str(var)]
                     extent = sympy.Max(extent.subs(var, lo), extent.subs(var, hi))  # monotone in var
+            extent = simplify_as_sizes(extent)
             unknown = sorted(str(s) for s in extent.free_symbols if str(s) not in known)
             if unknown:
                 raise UnsupportedNest(f"scratch buffer {name!r} has extent {dim}, which depends on {unknown}")
@@ -341,11 +349,7 @@ def scratch_arrays(sdfg: dace.SDFG) -> list[str]:
 
 def index(subset: subsets.Subset) -> str:
     """A subset as a NumPy index: an integer for a single element (the axis drops), else a slice."""
-    if isinstance(subset, subsets.Indices):
-        subset = subsets.Range.from_indices(subset)
-    if not isinstance(subset, subsets.Range):
-        raise UnsupportedNest(f"subset {subset} is neither a range nor indices")
-    ranges: list[tuple[Any, Any, Any]] = subset.ranges
+    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
@@ -357,6 +361,22 @@ def index(subset: subsets.Subset) -> str:
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
     return ", ".join(parts)
+
+
+def as_range(subset: subsets.Subset) -> subsets.Range:
+    """``subset`` as a range; NumPy indexing needs one."""
+    if isinstance(subset, subsets.Indices):
+        subset = subsets.Range.from_indices(subset)
+    if not isinstance(subset, subsets.Range):
+        raise UnsupportedNest(f"subset {subset} is neither a range nor indices")
+    return subset
+
+
+def indexed_shape(subset: subsets.Subset) -> str:
+    """The shape ``index(subset)`` selects, as a tuple literal: single-element axes drop, as in NumPy."""
+    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
+    kept = [(end - begin) // step + 1 for begin, end, step in ranges if begin != end]
+    return "(" + "".join(f"{symbolic.symstr(extent, cpp_mode=False)}, " for extent in kept) + ")"
 
 
 def access(scope: Scope, name: str, subset: subsets.Subset | None) -> str:
@@ -433,7 +453,9 @@ def copy_line(scope: Scope, src: nodes.AccessNode, dst: nodes.AccessNode, memlet
         src_sub, dst_sub = src_sub or dst_sub, dst_sub or src_sub
     target, value = access(scope, dst.data, dst_sub), access(scope, src.data, src_sub)
     if len(src_shape) != len(dst_shape) and dst.data not in scope.names.locals:
-        value = f"np.reshape({value}, np.shape({target}))"  # a copy between ranks moves elements in row-major order
+        # a copy between ranks moves elements in row-major order
+        shape = indexed_shape(dst_sub if dst_sub is not None else subsets.Range.from_array(scope.sdfg.arrays[dst.data]))
+        value = f"np.reshape({value}, {shape})"
     value = value if memlet.wcr is None else combine(memlet.wcr, target, value)
     return python(f"{target} = {value}", scope.names)[0]
 

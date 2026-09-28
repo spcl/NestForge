@@ -20,6 +20,7 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
+from nestforge.build.arena import TIMED_REPS
 from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
@@ -59,8 +60,8 @@ from nestforge.stages.scopes import (
 )
 from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
 
-#: Timed calls per measurement.
-TIMED_REPS = 10
+#: Spaces per level of the saved JSON snapshots.
+JSON_INDENT = 2
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
@@ -295,7 +296,7 @@ class Session:
             return
         path = self.work_dir / "kernel_deps" / f"e{self.epoch}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(graph.to_json(), indent=2, sort_keys=True) + "\n")
+        path.write_text(json.dumps(graph.to_json(), indent=JSON_INDENT, sort_keys=True) + "\n")
 
     def kernel(self, name: str) -> ExternalCall:
         """The kernel node named ``name``."""
