@@ -1,7 +1,7 @@
 name: CI
 
-# pip installs from pyproject.toml: dace tracks spcl/dace@extended, hpcagent_bench tracks
-# spcl/HPCAgent-Bench@main. Must stay credential-free so CI runs on fork PRs.
+# uv installs from pyproject.toml (pip works the same: pip install -e ".[dev]"). dace and hpcagent_bench are
+# pinned there; scripts/bump_deps.py moves the pins. Must stay credential-free so CI runs on fork PRs.
 
 on:
   push:
@@ -19,17 +19,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
-      - run: pip install -e ".[dev]"
+      - run: uv pip install -e ".[dev,agent]"
       - run: pre-commit run --all-files --show-diff-on-failure
-      # stage_labels exists only on dace@extended, so a stale or PyPI dace fails here.
-      - name: dace is @extended
-        run: python -c "from dace.transformation.passes.canonicalize import stage_labels; stage_labels()"
       - name: pytest (a skip fails the run)
         env:
           NESTFORGE_CI_NO_SKIP: '1'
@@ -40,12 +38,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          activate-environment: true
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
-      - run: pip install -e ".[dev]"
+      - run: uv pip install -e ".[dev,agent]"
       - name: pytest
         run: pytest -m "integration and not gpu and not vendor" --timeout=900 --cov=nestforge --cov-report=term
