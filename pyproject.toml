@@ -26,8 +26,8 @@ dependencies = [
     "sympy",
     # Pinned tips of dace@extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both to the
     # current tips. Bump whenever DaCe extended gains a transformation or fix NestForge needs.
-    "dace @ git+https://github.com/spcl/dace.git@f05b5e617bc1bd4204f7cfdb9d01f98e0c984fdc",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@1b22c8745d370fd8fbcc70551c7fc06f15271ab7",
+    "dace @ git+https://github.com/spcl/dace.git@ba79f22fda04a6a9fb8dea0cd383c31916d9e510",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@26a4f0cfc1540cead109dfc8d736f1c45263e390",
 ]
 
 [project.optional-dependencies]
