@@ -20,6 +20,7 @@ import pytest
 from nestforge.build.toolchain import lib_linkable, library_flags
 from nestforge.build.isolation import (
     ERROR_CHARS,
+    drop_openmp_registration,
     OMP_RUNTIME_SONAMES,
     pause_openmp_pools,
     run_isolated,
@@ -126,6 +127,7 @@ def test_the_soft_pause_makes_the_fork_safe(tmp_path, runtime):
     if not ready:
         os.kill(pid, 9)
     os.waitpid(pid, 0)
+    drop_openmp_registration(pid)
     why = "produced nothing (hung on its parallel region, then was killed)" if not got else f"computed {got.decode()}"
     assert got == b"ok", f"lib{runtime} + soft pause: child {why}"
 
