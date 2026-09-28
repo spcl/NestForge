@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import sympy
 
@@ -46,6 +47,7 @@ from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNeste
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
 
+from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import Boundary
 
 
@@ -86,6 +88,10 @@ COMBINE = {
 
 #: Marks the loop of a map, whose iterations are independent; a sequential loop carries no mark.
 PARALLEL = "# parallel"
+#: How often library nodes are expanded again: an expansion may produce further library nodes.
+EXPANSION_ROUNDS = 16
+#: Hex digits of the source hash that name an emitted module's file.
+HASH_DIGITS = 16
 #: The one-trip loop a nested SDFG's early return breaks out of.
 ONCE = "nested_once"
 
@@ -173,14 +179,28 @@ def expr(value: object, names: Names) -> str:
 # lowering, on a copy
 
 
+def placed[N: nodes.Node](sdfg: dace.SDFG, kind: type[N]) -> list[tuple[N, SDFGState]]:
+    """Every ``kind`` node of ``sdfg`` and its nested SDFGs, with its state."""
+    return [(n, s) for n, s in sdfg.all_nodes_recursive() if isinstance(n, kind) and isinstance(s, SDFGState)]
+
+
+def memlet_parts(memlet: dace.Memlet) -> tuple[str, subsets.Subset | None, subsets.Subset | None]:
+    """A data memlet's container, subset and other subset; DaCe annotates the subsets as possibly strings."""
+    data, subset, other = memlet.data, memlet.subset, memlet.other_subset
+    assert isinstance(data, str), f"memlet {memlet} moves no data"
+    assert not isinstance(subset, str) and not isinstance(other, str), f"memlet {memlet} has an unparsed subset"
+    return data, subset, other
+
+
 def expand_to_pure(sdfg: dace.SDFG) -> None:
     """Expand every library node, choosing its ``pure`` implementation where it has one."""
-    for attempt in range(16):  # an expansion may produce further library nodes
-        libraries = [node for node, parent in sdfg.all_nodes_recursive() if isinstance(node, nodes.LibraryNode)]
+    for attempt in range(EXPANSION_ROUNDS):
+        libraries = [node for node, state in placed(sdfg, nodes.LibraryNode)]
         if not libraries:
             return
         for node in libraries:
-            if "pure" in node.implementations:
+            # dace.library.node erases the class type, hiding its implementations from pyright
+            if "pure" in node.implementations:  # pyright: ignore[reportAttributeAccessIssue]
                 node.implementation = "pure"
         sdfg.expand_library_nodes(recursive=False)
     raise UnsupportedNest(f"library nodes of {sdfg.name} still expand to library nodes after {attempt + 1} rounds")
@@ -188,23 +208,20 @@ def expand_to_pure(sdfg: dace.SDFG) -> None:
 
 def refuse_strided_connectors(sdfg: dace.SDFG) -> None:
     """``ExpandNestedSDFGInputs`` widens a strided connector but does not scale the inner indices by the stride."""
-    for node, state in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.NestedSDFG):
-            for edge in [*state.in_edges(node), *state.out_edges(node)]:
-                ranges = edge.data.subset.ranges if isinstance(edge.data.subset, subsets.Range) else []
-                if any(step != 1 and begin != end for begin, end, step in ranges):
-                    raise UnsupportedNest(f"nested SDFG {node.label} binds the strided subset {edge.data}")
+    for node, state in placed(sdfg, nodes.NestedSDFG):
+        for edge in [*state.in_edges(node), *state.out_edges(node)]:
+            ranges = edge.data.subset.ranges if isinstance(edge.data.subset, subsets.Range) else []
+            if any(step != 1 and begin != end for begin, end, step in ranges):
+                raise UnsupportedNest(f"nested SDFG {node.label} binds the strided subset {edge.data}")
 
 
 def bind_nested_data(sdfg: dace.SDFG) -> None:
     """Rename each nested SDFG's connector arrays to the outer arrays they bind, with the outer descriptors; the
     connectors cover whole arrays after ``ExpandNestedSDFGInputs``."""
-    for node, state in list(sdfg.all_nodes_recursive()):
-        if not isinstance(node, nodes.NestedSDFG):
-            continue
+    for node, state in placed(sdfg, nodes.NestedSDFG):
         outer, inner = state.sdfg, node.sdfg
-        bound = {e.dst_conn: e.data.data for e in state.in_edges(node) if e.dst_conn and e.data.data}
-        bound |= {e.src_conn: e.data.data for e in state.out_edges(node) if e.src_conn and e.data.data}
+        bound = {e.dst_conn: memlet_parts(e.data)[0] for e in state.in_edges(node) if e.dst_conn and e.data.data}
+        bound |= {e.src_conn: memlet_parts(e.data)[0] for e in state.out_edges(node) if e.src_conn and e.data.data}
         for conn, data in bound.items():
             inner_desc, outer_desc = inner.arrays[conn], outer.arrays[data]
             same = [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]
@@ -224,9 +241,8 @@ def program_names(sdfg: dace.SDFG) -> set[str]:
     taken: set[str] = set()
     for sd in sdfg.all_sdfgs_recursive():
         taken |= set(sd.arrays) | set(sd.symbols)
-    for node, parent in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.MapEntry):
-            taken |= set(node.map.params)
+    for entry, state in placed(sdfg, nodes.MapEntry):
+        taken |= set(strings(entry.map.params))
     for region in sdfg.all_control_flow_regions(recursive=True):
         if isinstance(region, LoopRegion) and region.loop_variable:
             taken.add(region.loop_variable)
@@ -236,8 +252,8 @@ def program_names(sdfg: dace.SDFG) -> set[str]:
 def unique_connectors(sdfg: dace.SDFG) -> None:
     """Rename every connector a tasklet body still reads or writes to a name unique across the program."""
     taken = program_names(sdfg)
-    for node, state in sdfg.all_nodes_recursive():
-        if not isinstance(node, nodes.Tasklet) or node.code.language != dtypes.Language.Python:
+    for node, state in placed(sdfg, nodes.Tasklet):
+        if node.code.language != dtypes.Language.Python:
             continue
         tree = ast.parse(node.code.as_string)
         used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
@@ -276,7 +292,7 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     """Prepare ``sdfg`` for emission, in place; ``expand=False`` leaves library nodes, which emission refuses."""
     if expand:
         expand_to_pure(sdfg)
-    if any(isinstance(node, nodes.NestedSDFG) for node, parent in sdfg.all_nodes_recursive()):
+    if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
         refuse_strided_connectors(sdfg)
         sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs, validate=False)
@@ -289,7 +305,7 @@ def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
     """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
     refuse one whose extent the caller cannot evaluate."""
     known = set(symbols)
-    ranges: dict[str, tuple[sympy.Basic, sympy.Basic]] = {}
+    ranges: dict[str, tuple[Any, Any]] = {}
     for region in sdfg.all_control_flow_regions():
         if isinstance(region, LoopRegion) and region.loop_variable:
             start, end = loop_analysis.get_init_assignment(region), loop_analysis.get_loop_end(region)
@@ -325,7 +341,11 @@ def scratch_arrays(sdfg: dace.SDFG) -> list[str]:
 
 def index(subset: subsets.Subset) -> str:
     """A subset as a NumPy index: an integer for a single element (the axis drops), else a slice."""
-    ranges = subset.ranges if isinstance(subset, subsets.Range) else subsets.Range.from_indices(subset).ranges
+    if isinstance(subset, subsets.Indices):
+        subset = subsets.Range.from_indices(subset)
+    if not isinstance(subset, subsets.Range):
+        raise UnsupportedNest(f"subset {subset} is neither a range nor indices")
+    ranges: list[tuple[Any, Any, Any]] = subset.ranges
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
@@ -347,10 +367,11 @@ def access(scope: Scope, name: str, subset: subsets.Subset | None) -> str:
     return f"{name}[{index(subset if subset is not None else whole)}]"
 
 
-def combine(wcr: str, target: str, value: str) -> str:
+def combine(wcr: str | ast.AST, target: str, value: str) -> str:
     """``target`` combined with ``value`` by a write-conflict resolution."""
     kind = detect_reduction_type(wcr)
-    return COMBINE[kind].format(target, value) if kind in COMBINE else f"({wcr})({target}, {value})"
+    text = wcr if isinstance(wcr, str) else ast.unparse(wcr)
+    return COMBINE[kind].format(target, value) if kind in COMBINE else f"({text})({target}, {value})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,15 +403,13 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
     for edge in state.in_edges(node):
         if edge.dst_conn not in used or edge.data.is_empty():
             continue
-        value = (
-            edge.src_conn if isinstance(edge.src, nodes.Tasklet) else access(scope, edge.data.data, edge.data.subset)
-        )
+        value = edge.src_conn if isinstance(edge.src, nodes.Tasklet) else access(scope, *memlet_parts(edge.data)[:2])
         before.append(f"{edge.dst_conn} = {value}")
     after: list[str] = []
     for edge in state.out_edges(node):
         if edge.src_conn not in used or edge.data.is_empty() or isinstance(edge.dst, nodes.Tasklet):
             continue
-        target = access(scope, edge.data.data, edge.data.subset)
+        target = access(scope, *memlet_parts(edge.data)[:2])
         value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
         after.append(f"{target} = {value}")
     return (
@@ -402,10 +421,11 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
 
 def copy_line(scope: Scope, src: nodes.AccessNode, dst: nodes.AccessNode, memlet: dace.Memlet) -> str:
     """``dst[..] = src[..]`` for one copy; a subset missing on one side mirrors the other between equal shapes."""
-    if memlet.data == src.data:
-        src_sub, dst_sub = memlet.subset, memlet.other_subset
-    elif memlet.data == dst.data:
-        dst_sub, src_sub = memlet.subset, memlet.other_subset
+    data, subset, other = memlet_parts(memlet)
+    if data == src.data:
+        src_sub, dst_sub = subset, other
+    elif data == dst.data:
+        dst_sub, src_sub = subset, other
     else:
         raise UnsupportedNest(f"copy memlet {memlet.data!r} names neither {src.data!r} nor {dst.data!r}")
     src_shape, dst_shape = scope.sdfg.arrays[src.data].shape, scope.sdfg.arrays[dst.data].shape
@@ -445,7 +465,7 @@ def indent(lines: list[str]) -> list[str]:
 def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list[nodes.Node]) -> list[str]:
     """A map as nested ``for`` loops; its dynamic range inputs are read first."""
     lines = [
-        f"{e.dst_conn} = {access(scope, e.data.data, e.data.subset)}"
+        f"{e.dst_conn} = {access(scope, *memlet_parts(e.data)[:2])}"
         for e in state.in_edges(entry)
         if e.dst_conn and not e.dst_conn.startswith("IN_") and not e.data.is_empty()
     ]
@@ -459,7 +479,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
         bounds = [expr(begin, scope.names), expr(end + sign, scope.names)]
         stepped = bounds if step == 1 else [*bounds, expr(step, scope.names)]
         headers.append(f"for {param} in range({', '.join(stepped)}):  {PARALLEL}")
-    inner = Scope(scope.sdfg, scope.names, scope.active | set(entry.map.params))
+    inner = Scope(scope.sdfg, scope.names, scope.active | set(strings(entry.map.params)))
     body = scope_lines(inner, state, entry, order)
     for header in reversed(headers):
         body = [header, *indent(body)]
@@ -514,7 +534,7 @@ def node_lines(scope: Scope, state: SDFGState, node: nodes.Node, order: list[nod
         return nested_lines(scope, state, node)
     if isinstance(node, nodes.MapExit):
         return []
-    raise UnsupportedNest(f"{type(node).__name__} {node.label} is not emitted")
+    raise UnsupportedNest(f"{type(node).__name__} {node} is not emitted")
 
 
 def scope_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry | None, order: list[nodes.Node]) -> list[str]:
@@ -617,7 +637,8 @@ def render(fn_name: str, args: list[str], sdfg: dace.SDFG) -> str:
 
 def map_python(state: SDFGState, entry: nodes.MapEntry, body_only: bool = False) -> list[str]:
     """One map of a lowered SDFG as ``for`` loops, or only what one iteration computes."""
-    scope = Scope(state.sdfg, names_of(state.sdfg), frozenset(entry.map.params) if body_only else frozenset())
+    params = frozenset(strings(entry.map.params))
+    scope = Scope(state.sdfg, names_of(state.sdfg), params if body_only else frozenset())
     order = list(dfs_topological_sort(state))
     return scope_lines(scope, state, entry, order) if body_only else map_lines(scope, state, entry, order)
 
@@ -662,7 +683,7 @@ def emitted_dir() -> Path:
 
 def load_emitted(source: str, name: str) -> ModuleType:
     """Import emitted ``source`` as a module; the file name hashes the source, since bytecode caching keys on mtime."""
-    path = emitted_dir() / f"{name}_{hashlib.sha256(source.encode()).hexdigest()[:16]}.py"
+    path = emitted_dir() / f"{name}_{hashlib.sha256(source.encode()).hexdigest()[:HASH_DIGITS]}.py"
     path.write_text(source)
     spec = importlib.util.spec_from_file_location(f"nestforge_emitted.{name}", path)
     assert spec is not None and spec.loader is not None, f"{path} is not importable"

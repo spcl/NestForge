@@ -154,7 +154,8 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
             continue
         kind = detect_reduction_type(edge.data.wcr)
         op = "?" if kind is None else REDUCTION_SPELLING.get(kind, kind.name.lower())
-        written = edge.data.subset.free_symbols if edge.data.subset is not None else set()
+        subset = edge.data.subset
+        written = subset.free_symbols if isinstance(subset, dace.subsets.Subset) else set()
         collapsed = [p for p in strings(entry.map.params) if p not in written]
         over = ", ".join(collapsed) if collapsed else "-"
         out.append(f"{op} over {over} -> {edge.data.data}")

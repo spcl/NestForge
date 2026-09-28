@@ -13,6 +13,7 @@ from typing import Literal
 import dace
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
+from dace.sdfg.graph import MultiConnectorEdge
 from dace.sdfg.state import (
     BreakBlock,
     ConditionalBlock,
@@ -201,7 +202,7 @@ def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
             bindings[id(binding)] = None
             roots[id(node)] = root.data
 
-    def source(edge: dace.sdfg.graph.MultiConnectorEdge) -> Fact:
+    def source(edge: MultiConnectorEdge) -> Fact:
         if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUTPUT_PREFIX):
             return Fact((Producer("kernel", edge.src.label, edge.src_conn.removeprefix(OUTPUT_PREFIX)),))
         if isinstance(edge.src, nodes.AccessNode):
