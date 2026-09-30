@@ -24,11 +24,13 @@ compact prompt every turn from the program view and the latest feedback.
 ## Quick start
 
 ```bash
-python examples/quickstart.py --device cpu --out quickstart_out
-python examples/quickstart.py --device gpu --out quickstart_out
-python examples/quickstart.py --device cpu --kernel jacobi_1d --out quickstart_jacobi
-python examples/quickstart.py --device cpu --agent anthropic --model claude-opus-5-5 --out quickstart_agent
+python examples/quickstart.py --device cpu
+python examples/quickstart.py --device gpu
+python examples/quickstart.py --device cpu --kernel jacobi_1d
+python examples/quickstart.py --device cpu --agent anthropic --model claude-opus-5-5 --out experiments/fuse_diamond/cpu-agent
 ```
+
+Each run writes `experiments/<kernel>/<device>` (pass `--out` to put it somewhere else).
 
 The first runs every default on HPCAgent-Bench's `fuse_diamond` at preset S (`LEN_1D=512`): four loops where
 `t = a*a` feeds `u = t + 1` and `v = t - 1`, then `out = u*v`. It prints the structure tree before stage 1:

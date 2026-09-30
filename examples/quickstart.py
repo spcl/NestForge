@@ -4,7 +4,8 @@
 stage made. Every stage runs its deterministic default; ``--agent`` hands stages 2 to 5 to a model instead.
 
 ``fuse_diamond`` fuses into a single kernel. ``jacobi_1d`` keeps two maps in its time loop, one reading the other's
-neighbours, so it shows two kernels and the dependency carried between them."""
+neighbours, so it shows two kernels and the dependency carried between them. ``fission_dep_then_indep`` mixes a
+loop-carried prefix sum with an independent store, so the two statements can split."""
 
 import argparse
 import functools
@@ -21,10 +22,25 @@ from nestforge.session import JSON_INDENT, Session
 from nestforge.stages.canonicalize import Targets
 
 KERNELS = {
+    "fission_dep_then_indep": "loop_level_reasoning/fission_dep_then_indep/fission_dep_then_indep",
     "fuse_diamond": "loop_level_reasoning/fuse_diamond/fuse_diamond",
     "jacobi_1d": "scientific_computing/structured_grids/jacobi_1d/jacobi_1d",
+    "fuse_stencil_through_transient": "loop_level_reasoning/fuse_stencil_through_transient/fuse_stencil_through_transient",
+    "fuse_move_ifs": "loop_level_reasoning/fuse_move_ifs/fuse_move_ifs",
+    "k3mm": "scientific_computing/dense_linear_algebra/k3mm/k3mm",
+    "gemver": "scientific_computing/dense_linear_algebra/gemver/gemver",
+    "fission_gather_2body": "loop_level_reasoning/fission_gather_2body/fission_gather_2body",
+    "twin_reduction_shared_stencil": "loop_level_reasoning/twin_reduction_shared_stencil/twin_reduction_shared_stencil",
+    "two_stream_reftrans": "loop_level_reasoning/two_stream_reftrans/two_stream_reftrans",
+    "tsvc_2_s221": "loop_level_reasoning/tsvc_2_s221/tsvc_2_s221",
+    "cloudsc_liq_ice_frac": "scientific_computing/structured_grids/cloudsc_liq_ice_frac/cloudsc_liq_ice_frac",
+    "cloudsc_tidy": "scientific_computing/structured_grids/cloudsc_tidy/cloudsc_tidy",
+    "cloudsc_init": "scientific_computing/structured_grids/cloudsc_init/cloudsc_init",
+    "scaled_dot_product_attention": "machine_learning/scaled_dot_product_attention/scaled_dot_product_attention",
 }
 PRESET = "S"
+# One folder per kernel and device, kept out of the repository root.
+EXPERIMENTS = Path("experiments")
 
 
 def save(session: Session, out: Path, label: str) -> None:
@@ -73,7 +89,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--kernel", choices=sorted(KERNELS), default="fuse_diamond")
-    parser.add_argument("--out", type=Path, default=Path("quickstart_out"))
+    parser.add_argument("--out", type=Path, help="where to save this run (default: experiments/<kernel>/<device>)")
     parser.add_argument("--agent", choices=("openai", "anthropic"), help="let a model drive stages 2 to 5")
     parser.add_argument("--model", help="model name, required with --agent")
     parser.add_argument("--base-url", help="an OpenAI-compatible server (vLLM, SGLang)")
@@ -82,7 +98,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.agent and not args.model:
         parser.error("--agent needs --model")
-    out, work = args.out.resolve(), args.out.resolve() / "work"
+    out_dir = args.out if args.out is not None else EXPERIMENTS / args.kernel / args.device
+    out, work = out_dir.resolve(), out_dir.resolve() / "work"
     dace.Config.set("default_build_folder", value=str(work / "dacecache"))
     short_name = KERNELS[args.kernel]
     kernel = next(k for k in iter_dace_kernels(short_name.split("/", 1)[0]) if k.short_name == short_name)
