@@ -51,7 +51,7 @@ def detached_twin(
 ) -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
     """A detached copy of ``sdfg`` and the copies of ``state`` and ``entry`` in it."""
     twin = detach(sdfg)
-    twin_state = list(twin.all_states())[list(sdfg.all_states()).index(state)]
+    twin_state = list(twin.states())[list(sdfg.states()).index(state)]
     twin_entry = twin_state.node(state.node_id(entry))
     assert isinstance(twin_entry, nodes.MapEntry), "a deep copy keeps node ids"
     return twin, twin_state, twin_entry
@@ -90,7 +90,7 @@ def extract_state_nodes(parent_sdfg: dace.SDFG, state: SDFGState, members: Seque
     """Outline ``members`` of ``state``, a convex set of whole map scopes and the access nodes between them, into
     one nested SDFG over whole boundary arrays."""
     subgraph = SubgraphView(state, list(members))
-    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name, full_data=True)
+    nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name)
     return boundary_from_nsdfg(nsdfg_node, state)
 
 

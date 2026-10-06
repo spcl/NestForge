@@ -49,7 +49,7 @@ def make_A(M, N, conditioning, seed=0):
 
 def computes_nrm_reduction(loop: LoopRegion) -> bool:
     """True if ``loop``'s body holds the BLAS ``Dot`` node computing ``nrm = A[:,k].A[:,k]``."""
-    return any(isinstance(n, Dot) for state in loop.all_states() for n in state.nodes())
+    return any(isinstance(n, Dot) for state in loop.states() for n in state.nodes())
 
 
 def prepare_compute_nest():

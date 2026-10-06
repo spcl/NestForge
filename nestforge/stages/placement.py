@@ -13,7 +13,7 @@ from dace.sdfg import nodes
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
 
 from nestforge.ir.depends import KernelGraph
-from nestforge.ir.libnode import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import is_parallel_kernel
 
@@ -62,7 +62,7 @@ def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
     """Access-to-access edges whose two ends live in different memory spaces, in state order."""
     return [
         (edge.src.data, edge.dst.data)
-        for state in sdfg.all_states()
+        for state in sdfg.states()
         for edge in state.edges()
         if isinstance(edge.src, nodes.AccessNode)
         and isinstance(edge.dst, nodes.AccessNode)

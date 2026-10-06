@@ -41,7 +41,7 @@ def tool(name: str, description: str, **properties: dict[str, Any]) -> Tool:
     return Tool(name, description, schema)
 
 
-METRICS = tool("metrics", "Symbolic work, depth, bytes and operational intensity of a row.", label={"type": "string"})
+METRICS = tool("metrics", "Symbolic work and depth of a row.", label={"type": "string"})
 MOVES = (
     tool("list_moves", "Legal moves now, optionally of one kind.", kind={"type": "string", "enum": list(MOVE_SHAPES)}),
     tool("apply_move", "Apply a fusion, fission or interchange.", kind={"type": "string"}, labels=LABELS, epoch=EPOCH),

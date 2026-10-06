@@ -396,10 +396,8 @@ def index(subset: subsets.Subset) -> str:
 
 def as_range(subset: subsets.Subset) -> subsets.Range:
     """``subset`` as a range; NumPy indexing needs one."""
-    if isinstance(subset, subsets.Indices):
-        subset = subsets.Range.from_indices(subset)
     if not isinstance(subset, subsets.Range):
-        raise UnsupportedNest(f"subset {subset} is neither a range nor indices")
+        raise UnsupportedNest(f"subset {subset} is not a range")
     return subset
 
 
@@ -462,7 +460,7 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
             continue
         data, subset, other = memlet_parts(edge.data)
         target = access(scope, data, subset)
-        single = not isinstance(subset, (subsets.Range, subsets.Indices)) or subset.num_elements() == 1
+        single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
         # the body writes some elements of a range, or may skip a dynamic write: start from what is there
         if edge.data.dynamic or not single:
             before.append(f"{edge.src_conn} = {target}")

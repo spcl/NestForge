@@ -55,7 +55,7 @@ def kernel_session(gpu: bool, tmp_path, program=scaled_sum) -> Session:
 
 def operand_storages(session: Session, name: str) -> list:
     ext = session.kernel(name)
-    state = next(s for s in session.sdfg.all_states() if ext in s.nodes())
+    state = next(s for s in session.sdfg.states() if ext in s.nodes())
     operands = [e.src.data for e in state.in_edges(ext)] + [e.dst.data for e in state.out_edges(ext)]
     return [session.sdfg.arrays[operand].storage for operand in operands]
 

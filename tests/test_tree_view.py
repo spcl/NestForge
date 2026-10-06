@@ -217,7 +217,7 @@ def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
     normalize_for_tree(sdfg)
     nested = [
         (st, n)
-        for st in sdfg.all_states()
+        for st in sdfg.states()
         for n in st.nodes()
         if isinstance(n, dc.sdfg.nodes.MapEntry)
         and any(isinstance(c, dc.sdfg.nodes.MapEntry) for c in st.scope_children()[n])
@@ -228,7 +228,7 @@ def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
     # and the inner one, which is a leaf, does carry the statement
     inner = [
         (st, n)
-        for st in sdfg.all_states()
+        for st in sdfg.states()
         for n in st.nodes()
         if isinstance(n, dc.sdfg.nodes.MapEntry) and st.entry_node(n) is not None
     ]
@@ -279,9 +279,7 @@ def test_a_kernel_without_a_reduction_says_nothing():
 def test_the_reduction_op_is_read_off_the_wcr():
     sdfg = matvec.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
-    state, entry = next(
-        (st, n) for st in sdfg.all_states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry)
-    )
+    state, entry = next((st, n) for st in sdfg.states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry))
     assert introspect.kernel_reductions(state, entry) == ["+ over i1 -> C"]
     # A different op reads as itself, not as "+".
     exit_node = state.exit_node(entry)
@@ -297,7 +295,7 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
     normalize_for_tree(sdfg)
     state, entry = next(
         (st, n)
-        for st in sdfg.all_states()
+        for st in sdfg.states()
         for n in st.nodes()
         if isinstance(n, dc.sdfg.nodes.MapEntry) and st.entry_node(n) is None
     )
@@ -317,7 +315,7 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
 def first_nest(program):
     sdfg = program.to_sdfg(simplify=True)
     normalize_for_tree(sdfg)
-    state = next(st for st in sdfg.all_states() if any(isinstance(n, dc.nodes.MapEntry) for n in st.nodes()))
+    state = next(st for st in sdfg.states() if any(isinstance(n, dc.nodes.MapEntry) for n in st.nodes()))
     entry = next(n for n in state.scope_children()[None] if isinstance(n, dc.nodes.MapEntry))
     return sdfg, state, entry
 

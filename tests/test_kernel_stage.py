@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import dace
+from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
 
@@ -21,7 +22,6 @@ from nestforge.build.isolation import run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
-from nestforge.ir.libnode import proto_and_call
 from nestforge.paths import REPO_ROOT
 from nestforge.stages.kernel import (
     build_kernel_library,
@@ -156,9 +156,9 @@ def test_a_gpu_kernel_is_one_cuda_unit_whose_entry_matches_the_external_call_pro
     """After stage 4 places the kernel on the GPU, stage 5 renders CUDA with the same entry the parent calls."""
     sdfg, ext, boundary = gpu_lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path)
-    use_kernel_library(ext, tmp_path / "unused.a", src.symbol, src.abi_order, [])
+    use_kernel_library(ext, tmp_path / "unused.a", src, [])
 
-    proto, _ = proto_and_call(ext, next(s for s in sdfg.all_states() if ext in s.nodes()))
+    proto, _ = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
     text = src.unit.read_text()
     assert (src.device, src.unit.suffix) == ("gpu", ".cu")
@@ -171,11 +171,14 @@ def test_a_gpu_kernel_is_one_cuda_unit_whose_entry_matches_the_external_call_pro
 def test_a_length_one_device_array_input_is_a_device_pointer_in_the_prototype(tmp_path):
     sdfg, ext, boundary = gpu_lowered_kernel(scaled_by_cell, on_device=("alpha",))
     src = schedule_kernel(ext, boundary, tmp_path)
-    use_kernel_library(ext, tmp_path / "unused.a", src.symbol, src.abi_order, [])
+    use_kernel_library(ext, tmp_path / "unused.a", src, [])
 
-    proto, _ = proto_and_call(ext, next(s for s in sdfg.all_states() if ext in s.nodes()))
+    proto, _ = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
-    assert proto == 'extern "C" void extcall_0(const double* alpha, const double* x, double* y, int64_t N);'
+    assert proto == (
+        'extern "C" void extcall_0(const double * __restrict__ alpha, const double * __restrict__ x, '
+        "double * __restrict__ y, int64_t N);"
+    )
     assert [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))] == entry_params(src)
 
 
@@ -189,7 +192,7 @@ def test_the_unit_defines_one_entry_in_cpf_order_not_manifest_order(tmp_path):
 
     assert ENTRY_DEFINITION.findall(src.unit.read_text()) == [ext.name]
     assert [name for _, name in entry_params(src)] == src.abi_order == ["a", "b", "c", "N"]
-    assert src.abi_order != list(ext.config["input_args"])
+    assert src.abi_order != list(ext.abi_order)  # stage 3 records the manifest's role order
     assert src.symbol == ext.name
 
 
@@ -200,9 +203,9 @@ def test_the_entry_declares_each_parameter_as_the_external_call_prototype_does(t
     pointer, and the read-only scalar ``alpha`` by value."""
     sdfg, ext, boundary = lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path)
-    use_kernel_library(ext, tmp_path / "unused.a", src.symbol, src.abi_order, [])
+    use_kernel_library(ext, tmp_path / "unused.a", src, [])
 
-    proto, _ = proto_and_call(ext, next(s for s in sdfg.all_states() if ext in s.nodes()))
+    proto, _ = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
     declared = [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))]
     assert declared == entry_params(src)
@@ -212,11 +215,14 @@ def test_a_read_only_scalar_input_crosses_the_boundary_by_value(tmp_path):
     """``alpha`` is a Scalar in the program, so the prototype takes its value and the call passes it."""
     sdfg, ext, boundary = lowered_kernel(scaled)
     src = schedule_kernel(ext, boundary, tmp_path)
-    use_kernel_library(ext, tmp_path / "unused.a", src.symbol, src.abi_order, [])
+    use_kernel_library(ext, tmp_path / "unused.a", src, [])
 
-    proto, call = proto_and_call(ext, next(s for s in sdfg.all_states() if ext in s.nodes()))
+    proto, call = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
-    assert proto == 'extern "C" void extcall_0(const double* x, double* y, int64_t N, double alpha);'
+    assert (
+        proto
+        == 'extern "C" void extcall_0(const double * __restrict__ x, double * __restrict__ y, int64_t N, double alpha);'
+    )
     assert call == "extcall_0(_in_x, _out_y, N, _in_alpha);"
 
 
@@ -320,7 +326,7 @@ def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_devi
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), tmp_path / "lib")
-    use_kernel_library(ext, archive, src.symbol, src.abi_order, kernel_runtime_libraries(src, strict.compiler))
+    use_kernel_library(ext, archive, src, kernel_runtime_libraries(src, strict.compiler))
     sdfg.expand_library_nodes()
     compiled = compile_linked_program(sdfg, tmp_path / "parent")
     x = np.random.default_rng(0).random(1037)
@@ -394,6 +400,7 @@ import sys
 from pathlib import Path
 
 import dace
+from helpers import extern_declaration_and_call
 
 from nestforge.build.toolchain import discover_cuda_toolchains
 from nestforge.corpus.translate import prepare

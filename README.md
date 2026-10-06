@@ -55,7 +55,7 @@ SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_d
 
 Stage 2 finds nothing left to fuse, stage 3 makes the map one kernel `extcall_0`, stage 4 keeps it on the CPU,
 stage 5 renders it as one CPF C++ unit with `extern "C" extcall_0(a, out, LEN_1D)`, and stage 6 times 15 CPU
-variants. Stage 7 reports that the kernel is memory-bound (0.25 flop/B).
+variants. Stage 7 reports the kernel's time and any loop the compiler did not vectorize.
 
 `--kernel jacobi_1d` keeps two maps in the time loop, since each reads the other's neighbours:
 
@@ -75,7 +75,7 @@ extcall_1: B <- extcall_0.B, N <- program
 exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 ```
 
-and stage 7 tells the agent to fuse the two memory-bound kernels. The script saves one `.sdfg` per stage, the
+and stage 7 reports both kernels' times. The script saves one `.sdfg` per stage, the
 structure trees, the kernel DAG, each kernel's unit and `lib<kernel>.a`, the program's generated code, the winning
 stage 6 configuration as JSON and the feedback report.
 

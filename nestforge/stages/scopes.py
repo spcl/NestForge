@@ -11,6 +11,7 @@ from functools import partial
 
 import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
 
@@ -23,8 +24,8 @@ from nestforge.ir.extract import (
     extract_state_nodes,
     find_state_of_node,
 )
+from nestforge.ir.dace_types import strings
 from nestforge.ir.introspect import Row, nest_reads_writes
-from nestforge.ir.libnode import ExternalCall, external_calls, in_conn, out_conn
 from nestforge.ir.names import in_order
 
 
@@ -41,10 +42,7 @@ def is_parallel_nest(node: NestNode) -> bool:
 def parallel_top_level_maps(sdfg: dace.SDFG) -> list[tuple[dace.SDFG, nodes.MapEntry]]:
     """The default scopes: every parallel top-level map, wherever it sits in the control flow."""
     return [
-        (sdfg, entry)
-        for state in sdfg.all_states()
-        for entry in top_level_map_entries(state)
-        if is_parallel_nest(entry)
+        (sdfg, entry) for state in sdfg.states() for entry in top_level_map_entries(state) if is_parallel_nest(entry)
     ]
 
 
@@ -81,9 +79,7 @@ def kernel_arguments(ext: ExternalCall) -> tuple[list[str], list[str], list[str]
     """``(inputs, outputs, symbols)`` of the kernel node, in boundary order."""
     inputs = [conn.removeprefix(in_conn("")) for conn in ext.in_connectors]
     outputs = [conn.removeprefix(out_conn("")) for conn in ext.out_connectors]
-    # read once: a DaCe property the library-node decorator hides from pyright
-    manifest = ext.config  # pyright: ignore[reportAttributeAccessIssue]
-    symbols = sorted(arg for arg in manifest["input_args"] if arg not in manifest["array_args"]) if manifest else []
+    symbols = sorted(arg for arg in strings(ext.abi_order) if arg not in inputs and arg not in outputs)
     return inputs, outputs, symbols
 
 
@@ -120,10 +116,10 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
         name,
         inputs=[in_conn(i) for i in boundary.inputs],
         outputs=[out_conn(o) for o in boundary.outputs],
-        numpy_source=source,
-        config=manifest,
         standalone_sdfg=reference_sdfg(boundary),
+        numpy_source=source,
     )
+    ext.abi_order = list(manifest["input_args"])
     state.add_node(ext)
     # a memlet is never shared between edges
     for e in state.in_edges(nsdfg):

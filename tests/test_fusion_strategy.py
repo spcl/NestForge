@@ -37,7 +37,7 @@ def sibling_maps(a: f64[N], b: f64[N], c: f64[N]):
 
 def map_count(sdfg):
     return sum(
-        isinstance(n, nodes.MapEntry) for sd in sdfg.all_sdfgs_recursive() for st in sd.all_states() for n in st.nodes()
+        isinstance(n, nodes.MapEntry) for sd in sdfg.all_sdfgs_recursive() for st in sd.states() for n in st.nodes()
     )
 
 

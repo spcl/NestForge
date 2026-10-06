@@ -36,7 +36,7 @@ from nestforge.build.sdfg import BuildOptions, build_archive, build_cuda_archive
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import Boundary
-from nestforge.ir.libnode import ExternalCall
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from nestforge.stages.placement import kernel_device
 
 
@@ -221,12 +221,12 @@ def kernel_runtime_libraries(src: KernelSource, compiler: str) -> list[str]:
     return FORMS[src.device].runtime(compiler)
 
 
-def use_kernel_library(
-    ext: ExternalCall, lib_path: Path, symbol: str, abi_order: list[str], runtime_libraries: Sequence[str]
-) -> None:
-    """Point ``ext`` at a built library and the runtimes it needs, and select the extern-call expansion."""
-    ext.lib_path, ext.symbol, ext.abi_order = str(lib_path), symbol, list(abi_order)
-    ext.runtime_libraries = list(runtime_libraries)
+def use_kernel_library(ext: ExternalCall, lib_path: Path, src: KernelSource, runtime_libraries: Sequence[str]) -> None:
+    """Point ``ext`` at a built library and the runtimes it needs, and select the extern-call expansion. The
+    prototype is the unit's own parameter list: the parent's symbol types may be narrower than the entry's."""
+    ext.lib_path, ext.symbol, ext.abi_order = str(lib_path), src.symbol, list(src.abi_order)
+    ext.signature = raw_signature(src.unit.read_text(), src.symbol)
+    ext.link_flags = list(runtime_libraries)
     ext.implementation = "ExternCall"
 
 

@@ -37,7 +37,7 @@ def make_session(tmp_path=None) -> Session:
 
 
 def top_level_map_count(sdfg) -> int:
-    return sum(len(top_level_map_entries(state)) for state in sdfg.all_states())
+    return sum(len(top_level_map_entries(state)) for state in sdfg.states())
 
 
 def test_a_move_bumps_the_epoch_and_its_labels_go_stale():
@@ -82,7 +82,7 @@ def test_canonicalize_then_default_moves_bump_the_epoch_each_time_and_reduce_top
 def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
     s = make_session()
     map_label = next(label for label, (obj, _) in s.row_index().items() if isinstance(obj, dace.nodes.MapEntry))
-    assert "work=" in s.metrics(map_label) and "OI=" in s.metrics(map_label)
+    assert "work=" in s.metrics(map_label) and "depth=" in s.metrics(map_label)
     producer = next(k["name"] for k in s.define_scopes() if k["writes"] == ["T"])
     assert s.metrics(producer).startswith(f"{producer}: work=N depth=")  # one add per element
     assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."

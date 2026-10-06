@@ -14,7 +14,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
-from nestforge.ir.libnode import ExternalCall, in_conn, out_conn
+from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
@@ -186,14 +186,10 @@ def hand_kernel(
 
 
 def bare_kernel(name: str, reads: Sequence[str], writes: Sequence[str], symbols: Sequence[str] = ()) -> ExternalCall:
-    """An ``ExternalCall`` with the connectors and manifest stage 3 would give it, wired to nothing."""
-    manifest = {"input_args": [*reads, *writes, *symbols], "array_args": [*reads, *writes], "output_args": [*writes]}
-    return ExternalCall(
-        name,
-        inputs={in_conn(r): None for r in reads},
-        outputs={out_conn(w): None for w in writes},
-        config=manifest,
-    )
+    """An ``ExternalCall`` with the connectors and argument list stage 3 would give it, wired to nothing."""
+    kernel = ExternalCall(name, inputs={in_conn(r): None for r in reads}, outputs={out_conn(w): None for w in writes})
+    kernel.abi_order = [*reads, *writes, *symbols]
+    return kernel
 
 
 def whole(sdfg: dace.SDFG, name: str) -> dace.Memlet:
@@ -422,15 +418,15 @@ def test_a_return_inside_the_loop_reaches_the_exit_without_the_last_kernel():
     assert set(at_exit) == {"extcall_2.C", "program"}, at_exit
 
 
-def test_an_external_call_without_a_manifest_is_refused():
-    sdfg = dace.SDFG("no_manifest")
+def test_an_external_call_without_an_argument_list_is_refused():
+    sdfg = dace.SDFG("no_abi_order")
     sdfg.add_array("x", [8], dace.float64)
     sdfg.add_array("y", [8], dace.float64)
     state = sdfg.add_state("only", is_start_block=True)
     kernel = hand_kernel(sdfg, state, "extcall_0", ["x"], ["y"])
-    kernel.config = {}
+    kernel.abi_order = []
 
-    with pytest.raises(UnsupportedProgram, match="manifest"):
+    with pytest.raises(UnsupportedProgram, match="abi_order"):
         kernel_dependencies(sdfg)
 
 

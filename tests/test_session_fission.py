@@ -47,7 +47,7 @@ def all_map_entries(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
     return [
         n
         for sd in sdfg.all_sdfgs_recursive()
-        for state in sd.all_states()
+        for state in sd.states()
         for n in state.nodes()
         if isinstance(n, nodes.MapEntry)
     ]
@@ -57,7 +57,7 @@ def tasklet_scopes(sdfg: dace.SDFG) -> dict[str, nodes.Node | None]:
     """Tasklet label -> its immediate enclosing MapEntry (``None`` if unmapped at that state)."""
     scopes: dict[str, nodes.Node | None] = {}
     for sd in sdfg.all_sdfgs_recursive():
-        for state in sd.all_states():
+        for state in sd.states():
             scope = state.scope_dict()
             for node in state.nodes():
                 if isinstance(node, nodes.Tasklet):

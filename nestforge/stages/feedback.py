@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 7: a concise report for the agent. A fixed rule table turns raw evidence (validation, per-kernel times,
-compiler remarks, operational intensity) into short hints, most important first."""
+compiler remarks) into short hints, most important first."""
 
 from __future__ import annotations
 
@@ -11,16 +11,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import dace
-import sympy
-
 from nestforge.build.toolchain import COMPILE_TIMEOUT_S, compiler_family, openmp_compile_flags
-from nestforge.ir.depends import KernelGraph
 from nestforge.stages.kernel import KernelSource, KernelVerdict
-from nestforge.stages.moves import sdfg_metrics
-
-#: Below this many flops per byte a kernel is memory-bound on any current CPU or GPU.
-MEMORY_BOUND_OI = 1.0
 
 #: A kernel above this share of the program's kernel time is named as the one to work on.
 HOT_SHARE = 0.5
@@ -35,7 +27,7 @@ HINT_TEXT = 160
 VECTOR_REASONS = 2
 
 #: Hint ranks, most important first.
-FAILED, WRONG, HOT, SPILLS, MEMORY_BOUND, NOT_VECTORIZED = range(6)
+FAILED, WRONG, HOT, SPILLS, NOT_VECTORIZED = range(5)
 
 #: Vectorizer reasons, by a phrase they contain, and what to try.
 VECTOR_ADVICE: tuple[tuple[str, str], ...] = (
@@ -60,9 +52,6 @@ class Evidence:
     kernel: str
     verdict: KernelVerdict
     remarks: str
-    oi: float | None
-    producers: tuple[str, ...]
-    consumers: tuple[str, ...]
 
 
 def remark_flags(compiler: str) -> list[str]:
@@ -83,39 +72,6 @@ def compiler_remarks(src: KernelSource, compiler: str, flags: list[str]) -> str:
         cmd = [compiler, *kept, *extra, *remark_flags(compiler), "-c", str(src.unit), "-o", f"{scratch}/k.o"]
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
     return done.stderr
-
-
-def evaluated(expr: sympy.Expr | None, sizes: dict[str, int]) -> float | None:
-    if expr is None:
-        return None
-    value = expr.subs({s: sizes[str(s)] for s in expr.free_symbols if str(s) in sizes})
-    return float(value) if value.is_number else None
-
-
-def kernel_oi(standalone: dace.SDFG, sizes: dict[str, int]) -> float | None:
-    """Flops per byte of the kernel at ``sizes``; ``None`` when DaCe's analyses cannot count it."""
-    try:
-        return evaluated(sdfg_metrics(standalone).oi, sizes)
-    except (NotImplementedError, KeyError, TypeError, ValueError):
-        return None
-
-
-def neighbours(graph: KernelGraph, kernel: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(producers, consumers)``: the kernels whose output ``kernel`` reads, and those reading its output."""
-    produced = (label.partition(".")[0] for edge in graph.arguments(kernel) for label in edge.labels())
-    producers = tuple(dict.fromkeys(name for name in produced if name in graph.kernels and name != kernel))
-    consumed = (edge.consumer for edge in graph.consumers_of(kernel))
-    return producers, tuple(dict.fromkeys(name for name in consumed if name in graph.kernels and name != kernel))
-
-
-def partners(ev: Evidence) -> list[str]:
-    """The kernels ``ev`` could fuse with, each named once; ``producer``/``consumer`` only says which side it is."""
-    both = [k for k in ev.producers if k in ev.consumers]
-    return (
-        both
-        + [f"producer {k}" for k in ev.producers if k not in both]
-        + [f"consumer {k}" for k in ev.consumers if k not in both]
-    )
 
 
 def vectorizer_reasons(remarks: str) -> list[str]:
@@ -158,9 +114,6 @@ def hints(ev: Evidence, share: float) -> list[tuple[int, str]]:
         out.append(
             (SPILLS, f"{k}: {spilled} bytes spilled at {registers} registers -> loop body too big, try fission.")
         )
-    if ev.oi is not None and ev.oi < MEMORY_BOUND_OI:
-        cure = f"fuse with {' or '.join(partners(ev))}" if partners(ev) else "reuse loaded data, drop temporaries"
-        out.append((MEMORY_BOUND, f"{k}: OI {ev.oi:.2g} flop/B, memory-bound -> {cure}."))
     reasons = vectorizer_reasons(ev.remarks)[:VECTOR_REASONS]
     out += [(NOT_VECTORIZED, f"{k}: loop not vectorized: {r} -> {vector_advice(r)}.") for r in reasons]
     return out

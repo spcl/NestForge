@@ -10,7 +10,7 @@ import dace
 from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
 from nestforge.corpus.translate import prepare, python_and_manifest
-from nestforge.ir.libnode import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 
 N = dace.symbol("N")
 
@@ -85,7 +85,7 @@ def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_
 
     assert (rebuilt.inputs, rebuilt.outputs, rebuilt.symbols) == (boundary.inputs, boundary.outputs, boundary.symbols)
     source, manifest = python_and_manifest(rebuilt, ext.name)
-    assert manifest == ext.config
+    assert manifest["input_args"] == list(ext.abi_order)
     assert source == ext.numpy_source
 
 

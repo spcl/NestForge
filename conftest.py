@@ -9,7 +9,6 @@ import dace
 import pytest
 
 from nestforge.corpus.bench import materialize_dace_corpus
-from nestforge.ir.libnode import ExternLibEnv
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -32,15 +31,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     for report in skipped:
         reporter.write_line(f"  SKIPPED {report.nodeid}")
     session.exitstatus = 1
-
-
-@pytest.fixture(autouse=True)
-def reset_extern_lib_env() -> Iterator[None]:
-    """``ExternLibEnv`` is a process-wide class that accumulates link items, so without a reset a test's outcome
-    depends on which tests ran before it."""
-    ExternLibEnv.reset()
-    yield
-    ExternLibEnv.reset()
 
 
 @pytest.fixture(autouse=True, scope="session")

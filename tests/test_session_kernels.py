@@ -10,7 +10,7 @@ import pytest
 import dace
 
 from nestforge.build import flags
-from nestforge.ir.libnode import ExternalCall
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import kernel_arguments
@@ -66,7 +66,7 @@ def test_optimize_kernel_binds_its_default_library_and_the_program_still_compute
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall"
     assert ext.lib_path == info["library"] and Path(info["library"]).name == f"lib{info['kernel']}.a"
-    assert ext.runtime_libraries and info["variant"].count(":") == 2
+    assert ext.link_flags and info["variant"].count(":") == 2
     assert_program_computes(session.sdfg)
 
 

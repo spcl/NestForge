@@ -92,7 +92,7 @@ def all_maps(sdfg):
     return [
         n
         for sd in sdfg.all_sdfgs_recursive()
-        for st in sd.all_states()
+        for st in sd.states()
         for n in st.nodes()
         if isinstance(n, nodes.MapEntry)
     ]
@@ -195,9 +195,9 @@ def test_in_order_breaks_ties_by_insertion_order():
 
 def test_no_free_tasklet_survives():
     sdfg = two_maps.to_sdfg(simplify=True)
-    assert any(free_tasklets(st) for st in sdfg.all_states()), "fixture has no free tasklet to wrap"
+    assert any(free_tasklets(st) for st in sdfg.states()), "fixture has no free tasklet to wrap"
     normalize_for_tree(sdfg)
-    assert not any(free_tasklets(st) for st in sdfg.all_states())
+    assert not any(free_tasklets(st) for st in sdfg.states())
 
 
 def test_a_wrap_map_is_one_iteration_and_sequential():
@@ -219,10 +219,10 @@ def test_a_library_node_is_not_wrapped():
         C[:] = A @ B
 
     sdfg = gemm.to_sdfg(simplify=True)
-    libnodes = [n for st in sdfg.all_states() for n in st.nodes() if isinstance(n, nodes.LibraryNode)]
+    libnodes = [n for st in sdfg.states() for n in st.nodes() if isinstance(n, nodes.LibraryNode)]
     assert libnodes, "fixture no longer produces a library node"
     normalize_for_tree(sdfg)
-    for state in sdfg.all_states():
+    for state in sdfg.states():
         for node in state.nodes():
             if isinstance(node, nodes.LibraryNode):
                 assert state.entry_node(node) is None, f"{node.label} was buried in a map scope"
@@ -233,7 +233,7 @@ def test_grouping_uses_the_fewest_maps_the_dependencies_allow():
     through whatever sits between them. The minimum number of such groups is the longest chain
     (Mirsky), which is what the levelling produces."""
     sdfg = two_maps.to_sdfg(simplify=True)
-    for state in sdfg.all_states():
+    for state in sdfg.states():
         groups = wrap_groups(state)
         if not groups:
             continue
@@ -288,7 +288,7 @@ def test_a_nested_sdfg_inside_a_map_is_left_alone():
     normalize_for_tree(sdfg)
     inside = [
         (st, n)
-        for st in sdfg.all_states()
+        for st in sdfg.states()
         for n in st.nodes()
         if isinstance(n, nodes.NestedSDFG) and st.entry_node(n) is not None
     ]
@@ -515,7 +515,7 @@ def test_a_reduction_ends_on_an_accessnode_to_mapexit_edge():
     wcr_edges = [
         (st, e)
         for sd in sdfg.all_sdfgs_recursive()
-        for st in sd.all_states()
+        for st in sd.states()
         for e in st.edges()
         if e.data is not None and e.data.wcr is not None
     ]
@@ -548,7 +548,7 @@ def test_renaming_a_map_param_never_captures_a_program_symbol():
 
     sdfg = add_symbol.to_sdfg(simplify=True)
     rename_map_params(sdfg)
-    (entry,) = [n for s in sdfg.all_states() for n in s.nodes() if isinstance(n, nodes.MapEntry)]
+    (entry,) = [n for s in sdfg.states() for n in s.nodes() if isinstance(n, nodes.MapEntry)]
     A = np.arange(16, dtype=np.float64).reshape(4, 4).copy()
     expected = A + 7.0
 

@@ -27,7 +27,7 @@ from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.introspect import Row, describe_graph, tree_rows
-from nestforge.ir.libnode import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
@@ -221,8 +221,7 @@ class Session:
         return MoveResult("applied", kind, names, plan.name)
 
     def metrics(self, label: str) -> str:
-        """Symbolic work, depth, bytes moved and operational intensity of a top-level map, a top-level loop or a
-        kernel, by DaCe's analyses."""
+        """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""
         row = self.row_index().get(label)
         if row is None:
             return f"no tree row is labeled {label}."
@@ -390,8 +389,7 @@ class Session:
         src = build.source
         runtime = kernel_runtime_libraries(src, build.variant.compiler)
         ext = self.kernel(name)
-        use_kernel_library(ext, build.archive, src.symbol, src.abi_order, runtime)
-        ext.fp_mode = build.variant.fp_mode
+        use_kernel_library(ext, build.archive, src, runtime)
         self.builds[name] = build
 
     def optimize_kernel(self, name: str) -> dict:
@@ -495,11 +493,7 @@ class Session:
 
     def feedback(self, reps: int = TIMED_REPS) -> str:
         """A few lines of hints for the next round, most important first, from every kernel's current library:
-        its validation and time, the compiler's vectorizer or register remarks, and its operational intensity."""
-        try:
-            graph: KernelGraph | None = self.kernel_graph()
-        except UnsupportedProgram:
-            graph = None
+        its validation and time, and the compiler's vectorizer or register remarks."""
         evidence: list[feedback.Evidence] = []
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
@@ -511,9 +505,7 @@ class Session:
                 build.verdict = validate_kernel(build.archive, build.source, prep, self.need_sizes(), reps, fp_mode)
             variant = build.variant
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
-            oi = feedback.kernel_oi(build.source.boundary.standalone_sdfg, self.need_sizes())
-            producers, consumers = feedback.neighbours(graph, ext.name) if graph is not None else ((), ())
-            evidence.append(feedback.Evidence(ext.name, build.verdict, remarks, oi, producers, consumers))
+            evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
         return feedback.report(evidence)
 
 
