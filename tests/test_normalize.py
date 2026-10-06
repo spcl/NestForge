@@ -520,7 +520,10 @@ def test_a_reduction_ends_on_an_accessnode_to_mapexit_edge():
         if e.data is not None and e.data.wcr is not None
     ]
     assert wcr_edges, "the fixture no longer carries a WCR"
-    for state, edge in wcr_edges:
+    # a WCR path starts on an AccessNode -> MapExit edge; the edges it continues on leave a MapExit
+    starts = [edge for _, edge in wcr_edges if not isinstance(edge.src, nodes.MapExit)]
+    assert starts, "no WCR path starts inside the map"
+    for edge in starts:
         assert isinstance(edge.src, nodes.AccessNode), f"WCR sources from {type(edge.src).__name__}"
         assert isinstance(edge.dst, nodes.MapExit), f"WCR lands on {type(edge.dst).__name__}"
 

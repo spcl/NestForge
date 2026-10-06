@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import dace
+from dace.sdfg import nodes
+from dace.sdfg.propagation import propagate_memlets_nested_sdfg, propagate_memlets_state
 from dace.transformation.passes.canonicalize import canonicalize as dace_canonicalize
 from dace.transformation.passes.canonicalize import stage_labels
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
@@ -34,7 +36,20 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     # the frontend binds derived loop bounds to fresh interstate symbols that extraction cannot pass in
     SymbolPropagation().apply_pass(sdfg, {})
     labels = stage_labels(targets.canon_target)
-    return dace_canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
+    dace_canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
+    narrow_nested_memlets(sdfg)
+    return sdfg
+
+
+def narrow_nested_memlets(sdfg: dace.SDFG) -> None:
+    """A nest in a map takes whole arrays, and canonicalization leaves its outer memlets whole; narrowed to what one
+    iteration touches, a fusion across the map sees the per-iteration access instead of the whole array."""
+    for state in sdfg.states():
+        nests = [n for n in state.nodes() if isinstance(n, nodes.NestedSDFG) and state.entry_node(n) is not None]
+        for nest in nests:
+            propagate_memlets_nested_sdfg(state.sdfg, state, nest)
+        if nests:
+            propagate_memlets_state(state.sdfg, state)
 
 
 def after_fusion(targets: Targets) -> list[str]:
