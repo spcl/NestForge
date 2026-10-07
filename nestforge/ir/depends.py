@@ -27,7 +27,9 @@ from dace.sdfg.state import (
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.analysis.analysis import names_read_by_text
 
-from nestforge.ir.libnode import ExternalCall, in_conn, out_conn
+from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, in_conn, out_conn
+
+from nestforge.ir.dace_types import strings
 from nestforge.ir.names import in_order
 
 INPUT_PREFIX = in_conn("")
@@ -177,11 +179,12 @@ def assign(env: Env, assignments: dict[str, str]) -> Env:
 
 
 def kernel_symbols(node: ExternalCall) -> list[str]:
-    """The symbol arguments of a kernel: its manifest's non-array inputs."""
-    manifest = node.config  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe property
-    if not manifest:
-        raise UnsupportedProgram(f"ExternalCall {node.label!r} has no manifest, so its symbol arguments are unknown")
-    return sorted(arg for arg in manifest["input_args"] if arg not in manifest["array_args"])
+    """The symbol arguments of a kernel: the arguments of its ``abi_order`` no connector carries."""
+    order = strings(node.abi_order)
+    if not order:
+        raise UnsupportedProgram(f"ExternalCall {node.label!r} has no abi_order, so its symbol arguments are unknown")
+    data = {data_name(conn) for conn in [*node.in_connectors, *node.out_connectors]}
+    return sorted(arg for arg in order if arg not in data)
 
 
 def record(tracker: Tracker, consumer: str, arg: str, role: Role, fact: Fact) -> None:
@@ -320,7 +323,7 @@ def kernel_dependencies(sdfg: dace.SDFG) -> KernelGraph:
         for name, desc in sd.arrays.items():
             if isinstance(desc, dace.data.Reference):
                 raise UnsupportedProgram(f"container {name!r} of SDFG {sd.name!r} is a Reference, bound at run time")
-        kernels = [n for state in sd.all_states() for n in state.nodes() if isinstance(n, ExternalCall)]
+        kernels = [n for state in sd.states() for n in state.nodes() if isinstance(n, ExternalCall)]
         if sd is not sdfg and kernels:
             raise UnsupportedProgram(f"ExternalCall {kernels[0].label!r} sits inside nested SDFG {sd.name!r}")
     tracker = Tracker({}, {}, {})

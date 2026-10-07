@@ -17,4 +17,4 @@ Scalar inputs cross the boundary by value; a host length-1 array input is refuse
 |---|---|
 | default | `define_scopes()` |
 | agent | `define_scope(labels, epoch)` |
-| code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/libnode.py` |
+| code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |

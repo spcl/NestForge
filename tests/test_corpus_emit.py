@@ -189,7 +189,7 @@ def test_emission_does_not_mutate_caller_sdfg():
     def nsdfg_in_subsets(g):
         return {
             e.dst_conn: str(e.data.subset)
-            for st in g.all_states()
+            for st in g.states()
             for n in st.nodes()
             if isinstance(n, nodes.NestedSDFG)
             for e in st.in_edges(n)

@@ -44,6 +44,7 @@ from dace.sdfg.state import (
 )
 from dace.sdfg.utils import dfs_topological_sort, inline_sdfgs
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
+from dace.transformation.passes.remove_views import RemoveViews
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
 
@@ -323,6 +324,9 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
         expand_to_pure(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
+        # an expansion over a window binds a View of it; folded into the viewed array, a strided window with a
+        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown
+        RemoveViews().apply_pass(sdfg, {})
     # before nested data takes outer names, which a nested tasklet's connector may carry
     unique_connectors(sdfg)
     unique_nested_bindings(sdfg)
@@ -396,10 +400,8 @@ def index(subset: subsets.Subset) -> str:
 
 def as_range(subset: subsets.Subset) -> subsets.Range:
     """``subset`` as a range; NumPy indexing needs one."""
-    if isinstance(subset, subsets.Indices):
-        subset = subsets.Range.from_indices(subset)
     if not isinstance(subset, subsets.Range):
-        raise UnsupportedNest(f"subset {subset} is neither a range nor indices")
+        raise UnsupportedNest(f"subset {subset} is not a range")
     return subset
 
 
@@ -462,7 +464,7 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
             continue
         data, subset, other = memlet_parts(edge.data)
         target = access(scope, data, subset)
-        single = not isinstance(subset, (subsets.Range, subsets.Indices)) or subset.num_elements() == 1
+        single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
         # the body writes some elements of a range, or may skip a dynamic write: start from what is there
         if edge.data.dynamic or not single:
             before.append(f"{edge.src_conn} = {target}")
@@ -545,10 +547,23 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     return [*python("\n".join(lines), scope.names), *body] if lines else body
 
 
+def combines_inside(sdfg: dace.SDFG, name: str, wcr: str) -> bool:
+    """Whether every write to ``name`` in ``sdfg`` already combines with ``wcr``: then an outer WCR on the same
+    connector only repeats the inner one along the memlet path, and inlining the body is exact."""
+    writes = [
+        e.data
+        for state in sdfg.states()
+        for e in state.edges()
+        if isinstance(e.dst, nodes.AccessNode) and e.dst.data == name and not e.data.is_empty()
+    ]
+    return bool(writes) and all(memlet.wcr is not None and str(memlet.wcr) == str(wcr) for memlet in writes)
+
+
 def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list[str]:
     """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
-    if any(e.data.wcr is not None for e in state.out_edges(node)):
-        raise UnsupportedNest(f"nested SDFG {node.label} writes through a write-conflict resolution")
+    for edge in state.out_edges(node):
+        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr):
+            raise UnsupportedNest(f"nested SDFG {node.label} writes through a write-conflict resolution")
     inner_sdfg = node.sdfg
     outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
     binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if str(k) != symbolic.symstr(v)}

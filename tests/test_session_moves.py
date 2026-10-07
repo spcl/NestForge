@@ -229,7 +229,7 @@ def conditionals(sdfg: dace.SDFG) -> list[ConditionalBlock]:
 
 
 def top_level_maps(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
-    return [entry for state in sdfg.all_states() for entry in top_level_map_entries(state)]
+    return [entry for state in sdfg.states() for entry in top_level_map_entries(state)]
 
 
 def map_writes(sdfg: dace.SDFG) -> list[list[str]]:
@@ -457,7 +457,7 @@ def test_map_map_interchange_puts_the_inner_parameter_outside():
 
     assert (result.status, result.reason) == ("applied", "MapInterchange")
     (outer,) = top_level_maps(sut.sdfg)
-    state = next(s for s in sut.sdfg.all_states() if outer in s.nodes())
+    state = next(s for s in sut.sdfg.states() if outer in s.nodes())
     (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
     assert (outer.map.params, inner.map.params) == (["j"], ["i"])
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
@@ -491,7 +491,7 @@ def test_loop_map_interchange_moves_the_loop_inside_the_map():
     assert (result.status, result.reason) == ("applied", "MoveLoopIntoMap")
     assert not [block for block in sut.sdfg.nodes() if isinstance(block, LoopRegion)]
     (entry,) = top_level_maps(sut.sdfg)
-    state = next(s for s in sut.sdfg.all_states() if entry in s.nodes())
+    state = next(s for s in sut.sdfg.states() if entry in s.nodes())
     (body,) = [n for n in state.scope_children()[entry] if isinstance(n, nodes.NestedSDFG)]
     assert [block for block in body.sdfg.nodes() if isinstance(block, LoopRegion)]
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
@@ -510,7 +510,7 @@ def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal():
 def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
     sut = Session(sweep_then_scale.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
-    (outside,) = [n for n in top_level_maps(sut.sdfg) if all(n not in s.nodes() for s in loop.all_states())]
+    (outside,) = [n for n in top_level_maps(sut.sdfg) if all(n not in s.nodes() for s in loop.states())]
     before = digest(sut.sdfg)
 
     result = sut.apply_move("interchange-loop-map", [loop.label, outside.label], 0)
@@ -567,7 +567,7 @@ def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut
 def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing():
     sut = Session(long_body.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
-    state = next(s for s in sut.sdfg.all_states() if entry in s.nodes())
+    state = next(s for s in sut.sdfg.states() if entry in s.nodes())
     (body,) = [n for n in state.scope_children()[entry] if isinstance(n, nodes.NestedSDFG)]
     (last,) = body.sdfg.sink_nodes()
     before = digest(sut.sdfg)

@@ -111,7 +111,7 @@ def lowered_twin(sdfg: dace.SDFG) -> Twin:
     """A copy of ``sdfg`` lowered for Python emission, found by the ids of the live states and nodes; emission never
     touches the live program."""
     twin = copy.deepcopy(sdfg)
-    pairs: Twin = {id(a): b for a, b in zip(sdfg.all_states(), twin.all_states())}
+    pairs: Twin = {id(a): b for a, b in zip(sdfg.states(), twin.states())}
     pairs |= {id(pair[0]): copied[0] for pair, copied in zip(sdfg.all_nodes_recursive(), twin.all_nodes_recursive())}
     lower(twin, expand=False)
     return pairs

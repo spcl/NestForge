@@ -12,7 +12,7 @@ import dace
 
 from nestforge.ir.extract import extract_nest_to_sdfg
 from helpers import signature_order
-from nestforge.ir.libnode import ExternLibEnv, ExternalCall, proto_and_call
+from dace.libraries.standard.nodes.external_call import ExternalCall, params_and_args
 from nestforge.stages.scopes import parallel_top_level_maps
 from nestforge.corpus.translate import emit_sources, prepare
 
@@ -67,12 +67,7 @@ def test_a_prototype_above_the_definition_does_not_widen_the_capture():
 
 
 def extern_call(abi_order, inputs):
-    manifest = {
-        "array_args": list(abi_order),
-        "output_args": [],
-        "init": {"arrays": {a: {"dtype": "float64"} for a in abi_order}, "scalars": {}},
-    }
-    node = ExternalCall("k", inputs=set(inputs), outputs=set(), config=manifest)
+    node = ExternalCall("k", inputs={conn: None for conn in inputs}, outputs={})
     node.symbol, node.abi_order = "k_fp64", list(abi_order)
     sdfg = dace.SDFG("host")
     state = sdfg.add_state()
@@ -86,18 +81,5 @@ def extern_call(abi_order, inputs):
 
 def test_abi_arg_without_a_connector_is_refused():
     """A scratch buffer in the compiled signature never crosses the node's boundary; the call would name nothing."""
-    with pytest.raises(ValueError, match="no '_in_scratch' connector"):
-        proto_and_call(*extern_call(["A", "scratch"], inputs=["_in_A"]))
-
-
-def test_extern_lib_env_accumulates_every_nest_library():
-    """Every kernel shares the environment class, so a later kernel must not replace an earlier one's library."""
-    ExternLibEnv.reset()
-    assert ExternLibEnv.cmake_libraries == []
-    ExternLibEnv.configure("/tmp/libone_nest.so")
-    ExternLibEnv.configure("/tmp/libtwo_nest.so")
-    assert ExternLibEnv.cmake_libraries == ["/tmp/libone_nest.so", "/tmp/libtwo_nest.so"]
-    ExternLibEnv.configure("/tmp/libone_nest.so")  # deduplicated
-    assert len(ExternLibEnv.cmake_libraries) == 2
-    ExternLibEnv.reset()
-    assert ExternLibEnv.cmake_libraries == [] and ExternLibEnv.cmake_link_flags == []
+    with pytest.raises(ValueError, match="'scratch' is neither a connected container nor a symbol"):
+        params_and_args(*extern_call(["A", "scratch"], inputs=["_in_A"]))

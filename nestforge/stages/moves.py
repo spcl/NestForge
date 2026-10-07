@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 2: fusion, fission and interchange moves on the tree rows labels name, judged and applied by DaCe's own
-transformations, and the symbolic work, depth and operational intensity of a scope."""
+transformations, and the symbolic work and depth of a scope."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, cast
 import dace
 import sympy
 from dace.sdfg import nodes
-from dace.sdfg.performance_evaluation import total_volume, work_depth
+from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.dataflow.map_fission import MapFission
@@ -306,7 +306,7 @@ def every_region_block[B: ControlFlowBlock](sdfg: dace.SDFG, kind: type[B]) -> I
 
 def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
     for owner in sdfg.all_sdfgs_recursive():
-        for state in owner.all_states():
+        for state in owner.states():
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
 
 
@@ -320,7 +320,7 @@ def loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 def map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     """Map pairs of one state that share a scope or a data node, in node order."""
     for owner in sdfg.all_sdfgs_recursive():
-        for state in owner.all_states():
+        for state in owner.states():
             entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
             for i, a in enumerate(entries):
                 for b in entries[i + 1 :]:
@@ -352,7 +352,7 @@ def loop_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 def nested_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     for owner in sdfg.all_sdfgs_recursive():
-        for state in owner.all_states():
+        for state in owner.states():
             pairs = dict.fromkeys(
                 (e.src, e.dst)
                 for e in state.edges()
@@ -403,36 +403,24 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
     return list(found)
 
 
-CACHE_MODEL = "map_perfect_loop_none"
-
-
 @dataclass(frozen=True, slots=True)
 class ScopeMetrics:
-    """Symbolic cost of one scope; ``oi`` is ``work / bytes``, ``None`` when no counted byte moves."""
+    """Symbolic cost of one scope: its work and its depth."""
 
     work: sympy.Expr
     depth: sympy.Expr
-    bytes: sympy.Expr
-    oi: sympy.Expr | None
 
     def suffix(self) -> str:
-        if self.oi is None:
-            oi = "-"
-        else:
-            oi = f"{float(self.oi):.4g}" if self.oi.is_number else str(self.oi)
-        return f"work={self.work} depth={self.depth} bytes={self.bytes} OI={oi}"
+        return f"work={self.work} depth={self.depth}"
 
 
 def sdfg_metrics(scope: dace.SDFG) -> ScopeMetrics:
-    """Work, depth, bytes moved and operational intensity of a standalone SDFG, by DaCe's analyses."""
+    """Work and depth of a standalone SDFG, by DaCe's work-depth analysis."""
     # analyze_sdfg is unannotated and returns (work, depth) when not asked for average parallelism
     work, depth = cast(
         tuple[sympy.Expr, sympy.Expr], work_depth.analyze_sdfg(scope, {}, work_depth.get_tasklet_work_depth, [], False)
     )
-    read, write = total_volume.analyze_sdfg(scope, cache_model=CACHE_MODEL)
-    moved = cast(sympy.Expr, dace.symbolic.simplify(read + write))
-    oi = cast(sympy.Expr, dace.symbolic.simplify(work / moved)) if moved != 0 else None
-    return ScopeMetrics(work, depth, moved, oi)
+    return ScopeMetrics(work, depth)
 
 
 def scope_metrics(sdfg: dace.SDFG, node: nodes.MapEntry | LoopRegion) -> ScopeMetrics:

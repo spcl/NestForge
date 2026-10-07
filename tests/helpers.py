@@ -11,6 +11,7 @@ import numpy as np
 
 import dace
 from dace import symbolic
+from dace.libraries.standard.nodes.external_call import ExpandExternCall, ExternalCall
 
 from nestforge.build.toolchain import CType, raw_signature
 from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels
@@ -142,3 +143,9 @@ def fission_to_fixpoint(sdfg: dace.SDFG) -> int:
             return applied
         apply_move(sdfg, moves[0])
     raise AssertionError("fission did not converge")
+
+
+def extern_declaration_and_call(ext: ExternalCall, state: dace.SDFGState) -> tuple[str, str]:
+    """The forward declaration and the call DaCe's ``ExternCall`` expansion emits for ``ext``."""
+    tasklet = ExpandExternCall.expansion(ext, state, state.sdfg)
+    return tasklet.code_global.as_string, tasklet.code.as_string

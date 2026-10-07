@@ -157,7 +157,7 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
 
 
 def map_pairs(sdfg):
-    for state in sdfg.all_states():
+    for state in sdfg.states():
         entries = top_level_map_entries(state)
         for first in entries:
             for second in entries:

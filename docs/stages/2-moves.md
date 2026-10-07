@@ -9,7 +9,7 @@ Every move is an existing DaCe transformation, checked for legality before it ap
 `{kind, labels, epoch}`, and `apply_move(kind, labels, epoch)` returns a `MoveResult` whose status is `applied`,
 `illegal`, `not-implemented`, `not-found` or `stale`. Labels are the tree labels, unique across the whole program.
 Any mutation starts a new epoch, so a move read at an old epoch returns `stale`. `metrics(label)` gives symbolic
-work, depth, bytes and operational intensity (DaCe's `work_depth` and `total_volume`).
+work and depth (DaCe's `work_depth`).
 
 | kind | labels | DaCe |
 |---|---|---|

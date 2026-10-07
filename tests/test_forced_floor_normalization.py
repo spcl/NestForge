@@ -9,7 +9,7 @@ into int_floor); transformation code is not, so canonicalization normalizes it.
 
 import dace
 import sympy
-from dace.subsets import Indices, Range
+from dace.subsets import Range
 from dace.transformation.passes.canonicalize import canonicalize
 
 from helpers import loop_level_kernel
@@ -24,12 +24,9 @@ def floors_in(sdfg):
         for state in sub.states():
             for edge in state.edges():
                 subset = edge.data.subset
-                if isinstance(subset, Range):
-                    bounds = [b for dim in subset.ranges for b in dim]
-                elif isinstance(subset, Indices):
-                    bounds = list(subset.indices)
-                else:
+                if not isinstance(subset, Range):
                     continue
+                bounds = [b for dim in subset.ranges for b in dim]
                 found += [(edge.data.data, b) for b in bounds if sympy.sympify(b).atoms(sympy.floor)]
     return found
 

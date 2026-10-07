@@ -74,7 +74,7 @@ def top_level_nodes[N: nodes.Node](state: SDFGState, kind: type[N]) -> list[N]:
 
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
-    return [(state, node) for state in sdfg.all_states() for node in top_level_nodes(state, nodes.NestedSDFG)]
+    return [(state, node) for state in sdfg.states() for node in top_level_nodes(state, nodes.NestedSDFG)]
 
 
 def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
@@ -136,7 +136,7 @@ def wrap_group(state: SDFGState, group: list[nodes.Tasklet], name: str) -> None:
 def wrap_free_tasklets(sdfg: dace.SDFG) -> int:
     """Wrap every free tasklet in a map; returns how many maps that took. Their names are placeholders."""
     added = 0
-    for state in sdfg.all_states():
+    for state in sdfg.states():
         for group in wrap_groups(state):
             wrap_group(state, group, f"wrap_{added}")
             added += 1
@@ -250,7 +250,7 @@ def param_targets(state: SDFGState) -> dict[nodes.MapEntry, list[str]]:
 def rename_map_params(sdfg: dace.SDFG) -> None:
     """Rename map parameters as :func:`param_targets` says. Two passes through fresh names, since renaming in
     place collides in either order."""
-    for state in sdfg.all_states():
+    for state in sdfg.states():
         targets = param_targets(state)
         temps = {
             node: [f"__nf_param{index}_{axis}" for axis in range(len(wanted))]

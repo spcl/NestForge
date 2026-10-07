@@ -15,7 +15,6 @@ from dace.codegen import cpf
 
 from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
 from nestforge.corpus.translate import prepare
-from nestforge.ir.libnode import ExternLibEnv
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.stages.kernel import (
     KernelVerdict,
@@ -164,7 +163,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     assert result.library is not None, [c.verdict.error for c in result.cells]
 
     runtime = kernel_runtime_libraries(src, result.winner.variant.compiler)
-    use_kernel_library(ext, result.library, result.symbol, result.abi_order, runtime)
+    use_kernel_library(ext, result.library, src, runtime)
     sdfg.expand_library_nodes()
     sdfg.validate()
     compiled = compile_linked_program(sdfg, tmp_path / "parent")
@@ -174,9 +173,14 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     compiled(b=b, c=c, a=a, N=n)
 
     np.testing.assert_array_equal(a, b + c)
-    assert str(result.library) in ExternLibEnv.cmake_libraries
-    assert runtime and set(runtime) <= set(ExternLibEnv.cmake_libraries)
-    assert not any("-rpath" in f for f in ExternLibEnv.cmake_link_flags), "statically in, not loaded"
+    (env,) = [
+        dace.library.get_environment(name)
+        for node, _ in sdfg.all_nodes_recursive()
+        if isinstance(node, dace.nodes.Tasklet)
+        for name in node.environments
+    ]
+    assert env.cmake_libraries == [str(result.library), *runtime] and runtime
+    assert not any(str(result.library.parent) in f for f in env.cmake_libraries[1:]), "statically in, not loaded"
     assert openmp_runtime_stems(compiled._lib._library_filename) == ["libomp"]
     link_flags = [line for line in program_build_ninja(tmp_path / "parent") if line.strip().startswith("LINK_FLAGS =")]
     assert link_flags and all("-Wl,--as-needed" in line for line in link_flags)

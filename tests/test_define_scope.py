@@ -13,7 +13,7 @@ import dace
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.libnode import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 from nestforge.session import Session
 
@@ -170,7 +170,7 @@ def test_a_single_state_becomes_one_top_level_kernel(simplify):
 
     assert result.status == "applied", result
     kernel = session.kernel(result.reason)
-    (state,) = [s for s in session.sdfg.all_states() if kernel in s.nodes()]
+    (state,) = [s for s in session.sdfg.states() if kernel in s.nodes()]
     assert state.entry_node(kernel) is None, "the kernel sits inside a map"
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
