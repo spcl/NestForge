@@ -13,8 +13,12 @@ and nothing changes, when something outside the group runs between its parts.
 
 Scalar inputs cross the boundary by value; a host length-1 array input is refused.
 
+A scope inside a sequential loop takes the loop's iterator as an argument (`_loop_it_N`). The loop defines it and
+nothing declares it, so `define_scopes` declares it on the program, and stages 5 and 6 check the kernel at the middle
+of the loop's range unless `sizes` gives a value.
+
 | | |
 |---|---|
 | default | `define_scopes()` |
 | agent | `define_scope(labels, epoch)` |
-| code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
+| code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/loops.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
