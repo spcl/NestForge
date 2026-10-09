@@ -42,7 +42,7 @@ from dace.sdfg.state import (
     ReturnBlock,
     SDFGState,
 )
-from dace.sdfg.utils import dfs_topological_sort, inline_sdfgs
+from dace.sdfg.utils import dfs_topological_sort, get_view_edge, inline_sdfgs, map_view_to_array
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 from dace.transformation.passes.remove_views import RemoveViews
 from dace.transformation.passes.analysis import loop_analysis
@@ -207,6 +207,42 @@ def expand_to_pure(sdfg: dace.SDFG) -> None:
     raise UnsupportedNest(f"library nodes of {sdfg.name} still expand to library nodes after {attempt + 1} rounds")
 
 
+def bind_nests_through_views(sdfg: dace.SDFG) -> None:
+    """Bind each nested SDFG that a slice View alone feeds or drains straight to the viewed window. A multi-state
+    nest inside a map (an expansion's init then update) does not inline, RemoveViews keeps a View that binds a
+    nest, and a transient View left behind would be scratch the caller allocates; ``ExpandNestedSDFGInputs`` then
+    widens the connector to the whole array."""
+    for view, state in placed(sdfg, nodes.AccessNode):
+        desc = state.sdfg.arrays[view.data]
+        view_edge = get_view_edge(state, view) if isinstance(desc, dt.View) else None
+        if view_edge is None or view_edge.data.data == view.data:
+            continue
+        others = [e for e in state.all_edges(view) if e is not view_edge]
+        if len(others) != 1:
+            continue
+        (edge,) = others
+        reads = view_edge.dst is view
+        nest = edge.dst if reads else edge.src
+        array, window, _ = memlet_parts(view_edge.data)
+        if (
+            not isinstance(nest, nodes.NestedSDFG)
+            or window is None
+            or edge.data.subset != subsets.Range.from_array(desc)
+        ):
+            continue
+        mapping = map_view_to_array(desc, state.sdfg.arrays[array], window)
+        if mapping is None or mapping[1]:  # a View that adds axes is no slice of the array
+            continue
+        bound = dace.Memlet(data=array, subset=copy.deepcopy(window))
+        if reads:
+            state.add_edge(view_edge.src, view_edge.src_conn, nest, edge.dst_conn, bound)
+        else:
+            state.add_edge(nest, edge.src_conn, view_edge.dst, view_edge.dst_conn, bound)
+        state.remove_node(view)
+        if not any(n.data == view.data for s in state.sdfg.states() for n in s.data_nodes()):
+            state.sdfg.remove_data(view.data, validate=False)
+
+
 def bind_nested_data(sdfg: dace.SDFG) -> None:
     """Rename each nested SDFG's connector arrays to the outer arrays they bind, with the outer descriptors; the
     connectors cover whole arrays after ``ExpandNestedSDFGInputs``."""
@@ -324,9 +360,10 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
         expand_to_pure(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
+        bind_nests_through_views(sdfg)
         # an expansion over a window binds a View of it; folded into the viewed array, a strided window with a
-        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown. A nest
-        # that stays nested (its outputs share an access node) views its whole-array connectors the same way.
+        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown. A nest that
+        # stays nested (its outputs share an access node) views its whole-array connectors the same way.
         for nested in list(sdfg.all_sdfgs_recursive()):
             RemoveViews().apply_pass(nested, {})
     # before nested data takes outer names, which a nested tasklet's connector may carry
