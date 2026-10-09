@@ -40,15 +40,29 @@ from dace.libraries.standard.nodes.external_call import ExternalCall
 from nestforge.stages.placement import kernel_device
 
 
+# Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` beside the host unit ``<kernel>.cu``.
+DEVICE_UNIT_SUFFIX = "_device"
+# Line that separates the host and device units in the one text an agent reads and writes for a GPU kernel.
+DEVICE_UNIT_MARKER = "// ---- device unit ----"
+
+
 @dataclass(slots=True)
 class KernelSource:
-    """The kernel's CPF translation unit, defining ``extern "C" <name>`` with parameters in ``abi_order``."""
+    """The kernel's CPF translation unit, defining ``extern "C" <name>`` with parameters in ``abi_order``. A GPU
+    kernel CPF renders in two has the host launcher in ``unit`` and the ``__global__`` kernels and the launchers
+    it calls in ``device_unit``."""
 
     name: str
     unit: Path
     abi_order: list[str]
     boundary: Boundary
     device: str
+    device_unit: Path | None = None
+
+    @property
+    def units(self) -> list[Path]:
+        """Every file the kernel's library is built from, host unit first."""
+        return [self.unit] if self.device_unit is None else [self.unit, self.device_unit]
 
     @property
     def symbol(self) -> str:
@@ -102,14 +116,14 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
     return finalize_for_target(sdfg, "gpu")
 
 
-def build_cpu_library(unit: Path, compiler: str, flags: list[str] | None, archive: Path) -> None:
+def build_cpu_library(units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path) -> None:
     opts = BuildOptions(compiler=compiler, flags=flags)
-    build_archive([unit], None, archive, archive.with_suffix(".so"), opts)
+    build_archive(units, None, archive, archive.with_suffix(".so"), opts)
 
 
-def build_gpu_library(unit: Path, compiler: str, flags: list[str] | None, archive: Path) -> None:
+def build_gpu_library(units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path) -> None:
     chosen = flags if flags is not None else cuda_base_flags(cpf.CUDA_BUILD_FLAGS)
-    build_cuda_archive(unit, archive, archive.with_suffix(".so"), compiler, chosen)
+    build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, chosen)
 
 
 def process_runtime_libraries() -> list[str]:
@@ -184,7 +198,7 @@ class KernelForm:
     language: str
     suffix: str
     schedule: Callable[[Boundary], dace.SDFG]
-    build: Callable[[Path, str, list[str] | None, Path], None]
+    build: Callable[[Sequence[Path], str, list[str] | None, Path], None]
     measure: Callable[[Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int], int], dict]
     runtime: Callable[[str], list[str]]
 
@@ -206,13 +220,30 @@ def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> Ker
     out_dir.mkdir(parents=True, exist_ok=True)
     unit = out_dir / f"{ext.name}{form.suffix}"
     unit.write_text(rendering.code)
-    return KernelSource(ext.name, unit, list(rendering.arguments), boundary, device)
+    device_unit = out_dir / f"{ext.name}{DEVICE_UNIT_SUFFIX}{form.suffix}" if rendering.device_code else None
+    if device_unit is not None:
+        device_unit.write_text(rendering.device_code)
+    return KernelSource(ext.name, unit, list(rendering.arguments), boundary, device, device_unit)
+
+
+def kernel_text(src: KernelSource) -> str:
+    """The kernel's source as one text: the host unit, then, for a GPU kernel CPF rendered in two, the marker line
+    and the device unit."""
+    if src.device_unit is None:
+        return src.unit.read_text()
+    return f"{src.unit.read_text()}\n{DEVICE_UNIT_MARKER}\n{src.device_unit.read_text()}"
+
+
+def split_kernel_text(text: str) -> tuple[str, str | None]:
+    """The inverse of :func:`kernel_text`: the host unit and the device unit, ``None`` when there is no marker."""
+    host, marker, device = text.partition(f"\n{DEVICE_UNIT_MARKER}\n")
+    return (host, device) if marker else (text, None)
 
 
 def build_kernel_library(src: KernelSource, compiler: str, flags: list[str] | None, out_dir: Path) -> Path:
     """Build ``<out_dir>/lib<kernel>.a`` from the kernel's unit, plus its shared twin for validation."""
     archive = out_dir / f"lib{src.name}.a"
-    FORMS[src.device].build(src.unit, compiler, flags, archive)
+    FORMS[src.device].build(src.units, compiler, flags, archive)
     return archive
 
 
