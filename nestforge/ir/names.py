@@ -10,7 +10,7 @@ import copy
 import heapq
 import itertools
 import re
-from typing import Any, TypeVar
+from typing import Any
 
 import dace
 from dace import data as dt
@@ -65,11 +65,8 @@ def in_order(graph: AbstractControlFlowRegion | SDFGState) -> list[Any]:
 
 # no top-level nested SDFG
 
-#: A node class :func:`top_level_nodes` collects.
-N = TypeVar("N", bound=nodes.Node)
 
-
-def top_level_nodes(state: SDFGState, kind: type[N]) -> list[N]:
+def top_level_nodes[N: nodes.Node](state: SDFGState, kind: type[N]) -> list[N]:
     """The ``kind`` nodes of ``state`` outside every map scope, in node order."""
     scope = state.scope_dict()
     return [node for node in state.nodes() if isinstance(node, kind) and scope[node] is None]

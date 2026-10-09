@@ -22,7 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, TypeVar
+from typing import Any
 
 import dace
 import sympy
@@ -178,11 +178,8 @@ def expr(value: object, names: Names) -> str:
 
 # lowering, on a copy
 
-#: A node class :func:`placed` collects.
-N = TypeVar("N", bound=nodes.Node)
 
-
-def placed(sdfg: dace.SDFG, kind: type[N]) -> list[tuple[N, SDFGState]]:
+def placed[N: nodes.Node](sdfg: dace.SDFG, kind: type[N]) -> list[tuple[N, SDFGState]]:
     """Every ``kind`` node of ``sdfg`` and its nested SDFGs, with its state."""
     return [(n, s) for n, s in sdfg.all_nodes_recursive() if isinstance(n, kind) and isinstance(s, SDFGState)]
 
