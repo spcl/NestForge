@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -27,7 +28,9 @@ from nestforge.stages.kernel import (
     build_kernel_library,
     gpu_schedule,
     kernel_runtime_libraries,
+    kernel_text,
     schedule_kernel,
+    split_kernel_text,
     use_kernel_library,
     validate_kernel,
 )
@@ -152,8 +155,9 @@ def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_not
 
 
 @pytest.mark.parametrize("program", [vadd, scaled], ids=["vadd", "scaled"])
-def test_a_gpu_kernel_is_one_cuda_unit_whose_entry_matches_the_external_call_prototype(tmp_path, program):
-    """After stage 4 places the kernel on the GPU, stage 5 renders CUDA with the same entry the parent calls."""
+def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_external_call_prototype(tmp_path, program):
+    """After stage 4 places the kernel on the GPU, stage 5 renders CUDA with the same entry the parent calls: the
+    host unit holds the entry, the device unit the kernels and the launchers the entry calls."""
     sdfg, ext, boundary = gpu_lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path)
     use_kernel_library(ext, tmp_path / "unused.a", src, [])
@@ -163,7 +167,13 @@ def test_a_gpu_kernel_is_one_cuda_unit_whose_entry_matches_the_external_call_pro
     text = src.unit.read_text()
     assert (src.device, src.unit.suffix) == ("gpu", ".cu")
     assert ENTRY_DEFINITION.findall(text) == [ext.name] and text.count('extern "C"') == 1
-    assert "cudaLaunchKernel(" in text and "__dace_" not in text
+    assert "__global__" not in text and "__dace_" not in text
+    assert src.device_unit is not None and src.device_unit.name == f"{src.name}_device.cu"
+    device_text = src.device_unit.read_text()
+    assert "__global__" in device_text and "cudaLaunchKernel(" in device_text
+    launchers = set(re.findall(r"\b(__cpf_runkernel_\w+)\(", text))
+    assert launchers and all(re.search(rf"\bvoid {name}\(", device_text) for name in launchers)
+    assert src.units == [src.unit, src.device_unit]
     declared = [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))]
     assert declared == entry_params(src)
 
@@ -452,3 +462,40 @@ def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_cuda_contex
     assert run.returncode == 0, run.stderr[-3000:]
     report = json.loads(run.stdout.strip().splitlines()[-1])
     assert report == {"init_status": 0, "error": "", "ok": True, "maxdiff": 0.0}
+
+
+def test_a_cpu_kernel_is_one_unit(tmp_path):
+    _, ext, boundary = lowered_kernel(vadd)
+
+    src = schedule_kernel(ext, boundary, tmp_path)
+
+    assert src.device_unit is None and src.units == [src.unit]
+    assert kernel_text(src) == src.unit.read_text()
+
+
+def test_a_gpu_kernel_text_round_trips_through_its_two_units(tmp_path):
+    """An agent reads a GPU kernel as one text and writes it back; the marker line is the only seam."""
+    _, ext, boundary = gpu_lowered_kernel(vadd)
+    src = schedule_kernel(ext, boundary, tmp_path)
+
+    host, device = split_kernel_text(kernel_text(src))
+
+    assert src.device_unit is not None
+    assert (host, device) == (src.unit.read_text(), src.device_unit.read_text())
+    assert split_kernel_text(src.unit.read_text()) == (src.unit.read_text(), None)
+
+
+def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path, monkeypatch):
+    """A device unit left out of the build leaves the launcher the host unit calls undefined in the library."""
+    commands: list[list[str]] = []
+    linked: list[list[Path]] = []
+    monkeypatch.setattr(build_sdfg, "run", commands.append)
+    monkeypatch.setattr(build_sdfg, "cudart_dir", lambda nvcc: tmp_path)
+    monkeypatch.setattr(build_sdfg, "cudart_link_flags", lambda directory: [])
+    monkeypatch.setattr(build_sdfg, "archive_and_link", lambda objs, *rest: linked.append(list(objs)))
+    units = [tmp_path / "k.cu", tmp_path / "k_device.cu"]
+
+    build_sdfg.build_cuda_archive(units, tmp_path / "out" / "libk.a", tmp_path / "out" / "libk.so", "nvcc", ["-O2"])
+
+    assert [cmd[cmd.index("-c") + 1] for cmd in commands] == [str(u) for u in units]
+    assert linked == [[tmp_path / "out" / "k.o", tmp_path / "out" / "k_device.o"]]

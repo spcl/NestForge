@@ -32,12 +32,15 @@ from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
 from nestforge.stages.kernel import (
+    DEVICE_UNIT_SUFFIX,
     FORMS,
     KernelSource,
     KernelVerdict,
     build_kernel_library,
     kernel_runtime_libraries,
+    kernel_text,
     schedule_kernel,
+    split_kernel_text,
     use_kernel_library,
     validate_kernel,
 )
@@ -412,14 +415,15 @@ class Session:
     def kernel_source(self, name: str) -> str:
         """The source of the kernel's current library, or of its default CPF unit before one is built."""
         build = self.builds.get(name)
-        return (build.source if build is not None else self.default_kernel(name)).unit.read_text()
+        return kernel_text(build.source if build is not None else self.default_kernel(name))
 
     def set_kernel_source(self, name: str, source: str, language: str, reps: int = TIMED_REPS) -> dict:
         """Build a kernel source with the kernel's entry, validate it against the kernel's Python oracle, and link it
         when it matches.
 
         :param source: A translation unit defining ``extern "C" void <name>(...)`` with the parameters, in order, of
-            the default unit (:meth:`kernel_source` before any change).
+            the default unit (:meth:`kernel_source` before any change). A GPU kernel may be two units, host then
+            device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
         :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel, ``cuda`` for a GPU kernel.
         :returns: ``status`` (``ok``, ``refused``, ``build-failed`` or ``wrong``), ``reason`` and ``time_us``; only
             ``ok`` changes the kernel's library.
@@ -435,9 +439,14 @@ class Session:
             return self.kernel_outcome(name, "refused", f"the entry takes {params}; it must take {default.abi_order}.")
         attempt = self.work_dir / name / f"agent{len(list((self.work_dir / name).glob('agent*')))}"
         attempt.mkdir(parents=True)
-        unit = attempt / f"{name}{FORMS[default.device].suffix}"
-        unit.write_text(source)
-        src = KernelSource(name, unit, list(default.abi_order), default.boundary, default.device)
+        host, device_text = split_kernel_text(source)
+        suffix = FORMS[default.device].suffix
+        unit = attempt / f"{name}{suffix}"
+        unit.write_text(host)
+        device_unit = None if device_text is None else attempt / f"{name}{DEVICE_UNIT_SUFFIX}{suffix}"
+        if device_unit is not None:
+            device_unit.write_text(device_text)
+        src = KernelSource(name, unit, list(default.abi_order), default.boundary, default.device, device_unit)
         variant = self.first_variant(src.device)
         try:
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
