@@ -8,11 +8,9 @@ import ctypes
 from pathlib import Path
 
 import numpy as np
-
-from nestforge.build import arena
-
-from nestforge.build import flags
 from helpers import signature_order
+
+from nestforge.build import arena, flags
 from nestforge.build.toolchain import Toolchain
 
 

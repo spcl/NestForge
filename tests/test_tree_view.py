@@ -9,11 +9,9 @@ to be made deliberately rather than drifting out of an unrelated edit.
 
 import re
 
-import numpy as np
-
-import pytest
-
 import dace as dc
+import numpy as np
+import pytest
 
 from nestforge.ir import introspect
 from nestforge.ir.introspect import describe_graph, interstate_definitions, kernel_body, resolve_scalars

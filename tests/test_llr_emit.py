@@ -7,16 +7,14 @@ references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose W
 import re
 import runpy
 
-import numpy as np
-
 import dace
+import numpy as np
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
+from helpers import loop_level_kernel, run_emitted, sdfg_to_python
 
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.stages.scopes import top_level_map_entries
-
-from helpers import loop_level_kernel, run_emitted, sdfg_to_python
 
 
 def top_level_nest(sdfg: dace.SDFG):

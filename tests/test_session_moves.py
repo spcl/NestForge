@@ -4,22 +4,21 @@
 
 import copy
 import hashlib
-import os
 import json
+import os
 import re
 from collections import Counter
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
 
 from nestforge.ir.names import normalize_for_tree
-from nestforge.stages.scopes import top_level_map_entries
 from nestforge.session import MoveResult, Session
+from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)

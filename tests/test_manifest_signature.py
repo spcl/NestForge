@@ -8,14 +8,12 @@ transients are caller-allocated parameters between the outputs and the symbols, 
 
 import ast
 
-import numpy as np
-
 import dace
+import numpy as np
 
 from nestforge.corpus.translate import python_and_manifest
 from nestforge.ir.emit_python import scratch_arrays
 from nestforge.ir.extract import Boundary, detach
-
 
 N = dace.symbol("N")
 

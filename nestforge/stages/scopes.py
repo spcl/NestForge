@@ -16,6 +16,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
 
 from nestforge.corpus.translate import python_and_manifest
+from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import (
     Boundary,
     NestNode,
@@ -24,8 +25,6 @@ from nestforge.ir.extract import (
     extract_state_nodes,
     find_state_of_node,
 )
-from nestforge.ir.dace_types import strings
-from nestforge.ir.loops import declare_scope_symbols
 from nestforge.ir.introspect import Row, nest_reads_writes
 from nestforge.ir.names import in_order
 
@@ -121,7 +120,6 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
         numpy_source=source,
     )
     ext.abi_order = list(manifest["input_args"])
-    declare_scope_symbols(state.sdfg, nsdfg)
     state.add_node(ext)
     # a memlet is never shared between edges
     for e in state.in_edges(nsdfg):

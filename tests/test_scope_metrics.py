@@ -5,11 +5,11 @@
 import dace
 import numpy as np
 import sympy
-
 from dace.sdfg.state import LoopRegion
+
+from nestforge.session import Session
 from nestforge.stages.moves import ScopeMetrics, scope_metrics
 from nestforge.stages.scopes import top_level_map_entries
-from nestforge.session import Session
 
 N = dace.symbol("N")
 TSTEPS = dace.symbol("TSTEPS")

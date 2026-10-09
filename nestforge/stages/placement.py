@@ -6,14 +6,15 @@ transfers the kernel DAG implies. Default: parallel kernels on the GPU when it i
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 import dace
 from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
 
 from nestforge.ir.depends import KernelGraph
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import is_parallel_kernel
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
@@ -26,8 +27,6 @@ from dace.sdfg.state import (
 )
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.analysis.analysis import names_read_by_text
-
-from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, in_conn, out_conn
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.names import in_order

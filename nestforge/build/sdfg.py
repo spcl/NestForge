@@ -8,17 +8,16 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
-from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
 import time
 import warnings
+from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
-
-import numpy as np
 
 import dace
+import numpy as np
 from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
 

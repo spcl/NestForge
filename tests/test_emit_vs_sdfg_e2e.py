@@ -12,12 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from dace import symbolic
 from dace.transformation.passes.canonicalize import canonicalize
-
-from nestforge.build.sdfg import BuildOptions, build_sdfg
-from nestforge.build.isolation import run_isolated
 from helpers import (
     c_argtypes,
     corpus_kernel,
@@ -26,6 +22,9 @@ from helpers import (
     sdfg_to_python,
     signature_order,
 )
+
+from nestforge.build.isolation import run_isolated
+from nestforge.build.sdfg import BuildOptions, build_sdfg
 
 ATOL = 1e-8
 
@@ -242,10 +241,10 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
 
     def work():
         import subprocess
+
+        from nestforge.build.arena import call_native, make_inputs
+        from nestforge.corpus.translate import emit_sources, prepare
         from nestforge.stages.scopes import lower_nests_to_external_call
-        from nestforge.corpus.translate import prepare, emit_sources
-        from nestforge.build.arena import make_inputs
-        from nestforge.build.arena import call_native
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())

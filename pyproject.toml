@@ -26,7 +26,7 @@ dependencies = [
     "sympy",
     # Pinned tips of dace@extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both to the
     # current tips. Bump whenever DaCe extended gains a transformation or fix NestForge needs.
-    "dace @ git+https://github.com/spcl/dace.git@73f0a120e4f3ec38dd1fadeb27792e7b972ec324",
+    "dace @ git+https://github.com/spcl/dace.git@7e427d059d6eabcd934706da10c5dc8b5f4a5fb3",
     "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@26a4f0cfc1540cead109dfc8d736f1c45263e390",
 ]
 
@@ -53,18 +53,17 @@ include = ["nestforge*"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py310"
 
 [tool.ruff.lint]
-# Default rules plus pyupgrade, so annotations use builtin generics and `X | None`, and a complexity ceiling.
-select = ["E4", "E7", "E9", "F", "UP", "C901"]
-
-[tool.ruff.lint.mccabe]
-max-complexity = 15
+select = ["F", "UP", "I", "FLY", "Q", "C4", "DTZ", "T10", "EXE", "INT", "ISC", "PYI", "RSE", "TID", "W", "PERF", "FURB"]
+ignore = ["UP031", "F821", "F841", "F823", "C408", "PYI041", "PYI042", "PYI016", "PERF203", "FURB136"]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests import after a module-level skip guard, use lambda helpers, and keep the reference's math names.
-"tests/*" = ["E402", "E731", "E741"]
+"__init__.py" = ["F401", "F403", "F405", "I"]
+
+[tool.ruff.format]
+exclude = ["*.ipynb"]
 
 [tool.pyright]
 include = ["nestforge", "scripts", "examples", "conftest.py"]

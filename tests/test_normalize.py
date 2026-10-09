@@ -10,11 +10,9 @@ fixture would test the pass against a shape it never meets.
 
 import re
 
+import dace as dc
 import numpy as np
 import pytest
-
-import dace as dc
-
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 

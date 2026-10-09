@@ -12,9 +12,7 @@ from pathlib import Path
 import pytest
 
 from nestforge.build import flags
-
 from nestforge.paths import REPO_ROOT
-
 
 pytestmark = pytest.mark.integration
 

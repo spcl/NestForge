@@ -5,17 +5,16 @@ cell, and that the winning ``lib<kernel>.a`` links into the parent program and c
 
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
-
-from nestforge.build import flags
 from dace.codegen import cpf
 
+from nestforge.build import flags
+from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
 from nestforge.corpus.translate import prepare
-from nestforge.build.sdfg import compile_linked_program
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     KernelVerdict,
     at_rung,
@@ -23,10 +22,8 @@ from nestforge.stages.kernel import (
     schedule_kernel,
     use_kernel_library,
 )
-from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.canonicalize import fuse_and_finish
-from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.placement import default_devices, place
+from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
 
 N = dace.symbol("N")

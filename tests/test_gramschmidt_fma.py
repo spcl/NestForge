@@ -19,11 +19,11 @@ assert gcc is not None, "gcc not on PATH (setup_apt.sh installs it)"
 from dace import symbolic
 from dace.libraries.blas.nodes import Dot
 from dace.sdfg.state import LoopRegion
+from helpers import c_argtypes, corpus_kernel
 
 from nestforge.build.toolchain import bind_argument, entry
+from nestforge.corpus.translate import emit_sources, prepare
 from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.corpus.translate import prepare, emit_sources
-from helpers import c_argtypes, corpus_kernel
 
 GCC_BASE_FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
 FP_MODES = {
@@ -67,7 +67,7 @@ def emit(boundary, tmp_path):
     csrc = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c" and "pluto" not in p.name)
     ctext = csrc.read_text()
     # ABI order is whatever the translator emits (it reorders vs the manifest), so read it back.
-    sig = re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", ctext, re.S).group(1)
+    sig = re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", ctext, re.DOTALL).group(1)
     order = [p.strip().split()[-1].lstrip("*") for p in sig.split(",")]
     return prep, csrc, order
 

@@ -7,13 +7,20 @@ outputs, the DaCe ``__return`` value, and scratch transients -- and reads the re
 in-place buffers. ``alloc_run`` does exactly that, driven by the emitted function's own signature.
 """
 
+import copy
+import os
+
 import numpy as np
 import pytest
+from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 from nestforge.build.isolation import run_isolated
+from nestforge.build.sdfg import compile_linked_program
 from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_python import UnsupportedNest
-from helpers import corpus_kernel, run_emitted, sdfg_to_python
+from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
+from nestforge.stages.scopes import node_boundary
 
 
 def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
@@ -250,6 +257,56 @@ def test_nbody_nested_where_emits_and_computes():
     # vs numpy's pairwise ``np.sum``/``@``, so allow the default allclose tolerance.
     np.testing.assert_allclose(call["KE"], KE, rtol=1e-5, atol=1e-8)
     np.testing.assert_allclose(call["PE"], PE, rtol=1e-5, atol=1e-8)
+
+
+SDPA = "machine_learning/scaled_dot_product_attention/scaled_dot_product_attention"
+SDPA_SIZES = {"batch_size": 2, "embedding_dimension": 4, "num_heads": 2, "sequence_length": 4}
+
+
+def sdpa_scoped_session(tmp_path) -> Session:
+    sdfg = corpus_kernel(SDPA).to_sdfg()
+    sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
+    session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=dict(SDPA_SIZES))
+    session.canonicalize()
+    session.default_moves()
+    session.define_scopes()
+    return session
+
+
+def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_loop_bodies(tmp_path):
+    """sdpa's batched matmul kernel binds 4-D slices of ``V``, the weights and ``out`` through Views to the batched
+    matmul expansion, an init state then an update state inside the batch map that does not inline. The nest binds
+    the slices directly, so no View is an argument the caller allocates."""
+    session = sdpa_scoped_session(tmp_path)
+
+    kernels = session.list_kernels()
+    assert len(kernels) > 1
+    for info in kernels:
+        boundary = node_boundary(session.kernel(info["name"]))
+        assert set(boundary.symbols) <= set(SDPA_SIZES), f"{info['name']} takes {boundary.symbols}"
+        assert set(boundary.symbols) <= set(boundary.standalone_sdfg.symbols)
+
+
+@pytest.mark.e2e
+def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
+    session = sdpa_scoped_session(tmp_path)
+    session.place()
+    for info in session.list_kernels():
+        session.optimize_kernel(info["name"])
+    sdfg = copy.deepcopy(session.sdfg)
+    sdfg.expand_library_nodes()
+    compiled = compile_linked_program(sdfg, tmp_path / "parent")
+    b, h, s, e = (SDPA_SIZES[k] for k in ("batch_size", "num_heads", "sequence_length", "embedding_dimension"))
+    rng = np.random.default_rng(0)
+    q, k, v = (rng.random((b, h, s, e)) for _ in range(3))
+    out = np.zeros((b, h, s, e))
+    scores = q @ np.swapaxes(k, -1, -2) / np.sqrt(e)
+    weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    expected = weights / weights.sum(axis=-1, keepdims=True) @ v
+
+    compiled(Q=q, K=k, V=v, out=out, **SDPA_SIZES)
+
+    np.testing.assert_allclose(out, expected, rtol=1e-12)
 
 
 def test_azimint_hist_oracle_exposes_the_sdfgs_out_of_bounds_bin_edge_read():

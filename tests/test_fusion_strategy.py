@@ -5,14 +5,12 @@ reaches the same fixed point as draining the listed fusion moves -- so the deter
 agent's move-by-move policy agree.
 """
 
-import numpy as np
-
 import dace
+import numpy as np
 from dace.sdfg import nodes
-
-from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.canonicalize import fuse_and_finish
 from helpers import fission_to_fixpoint, fusion_moves
+
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 
 N = dace.symbol("N")
 f64 = dace.float64

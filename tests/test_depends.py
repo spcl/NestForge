@@ -7,14 +7,13 @@ import copy
 import json
 from collections.abc import Sequence
 
-import pytest
-
 import dace
+import pytest
+from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
-from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")

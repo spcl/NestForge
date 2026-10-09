@@ -16,10 +16,9 @@ import textwrap
 import warnings
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 
 import nestforge.build.sdfg as build_mod
 import nestforge.build.toolchain as toolchain_mod
@@ -27,9 +26,8 @@ from nestforge.build.toolchain import lib_linkable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
-from nestforge.stages.scopes import parallel_top_level_maps
-from nestforge.ir.extract import extract_nest_to_sdfg
-from nestforge.corpus.translate import prepare
+from helpers import corpus_kernel
+
 from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.sdfg import BuildOptions, build_sdfg, dace_runtime_include
 from nestforge.build.toolchain import (
@@ -40,9 +38,10 @@ from nestforge.build.toolchain import (
     openmp_link_flags,
     parse_params,
 )
-from helpers import corpus_kernel
-
+from nestforge.corpus.translate import prepare
+from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.paths import REPO_ROOT
+from nestforge.stages.scopes import parallel_top_level_maps
 
 
 def first_nest(short):
