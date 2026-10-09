@@ -1,7 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""A kernel left inside a sequential loop takes the loop's iterator as an argument. The iterator is defined by the
-loop and declared nowhere, so stage 3 declares it on the program and stage 5 and 6 give it a value."""
+"""A kernel left inside a sequential loop takes the loop's iterator as an argument. The iterator is a scope symbol
+of the loop, never declared on the program: the kernel call reads it where it is defined, and stages 5 and 6 give
+it a value."""
 
 import copy
 import os
@@ -43,13 +44,15 @@ def iterator_of(session: Session) -> str:
     return iterator
 
 
-def test_the_iterator_of_the_loop_around_a_kernel_is_declared_on_the_program(tmp_path):
+def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_loop(tmp_path):
     session = scoped_session(tmp_path)
 
     iterator = iterator_of(session)
+    (ext,) = [session.kernel(k["name"]) for k in session.list_kernels()]
+    state = kernel_state(session.sdfg, ext)
 
-    assert iterator in session.sdfg.symbols
-    assert session.sdfg.symbols[iterator] == dace.int64
+    assert iterator not in session.sdfg.symbols, "a loop iterator is defined by its loop, not by the program"
+    assert iterator in state.symbols_defined_at(ext)
 
 
 def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win_over_it(tmp_path):
