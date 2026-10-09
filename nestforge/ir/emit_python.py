@@ -325,8 +325,10 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
         # an expansion over a window binds a View of it; folded into the viewed array, a strided window with a
-        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown
-        RemoveViews().apply_pass(sdfg, {})
+        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown. A nest
+        # that stays nested (its outputs share an access node) views its whole-array connectors the same way.
+        for nested in list(sdfg.all_sdfgs_recursive()):
+            RemoveViews().apply_pass(nested, {})
     # before nested data takes outer names, which a nested tasklet's connector may carry
     unique_connectors(sdfg)
     unique_nested_bindings(sdfg)
