@@ -27,6 +27,7 @@ from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.introspect import Row, describe_graph, tree_rows
+from nestforge.ir.loops import kernel_state, loop_symbol_values
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
@@ -452,7 +453,9 @@ class Session:
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
         except RuntimeError as err:
             return self.kernel_outcome(name, "build-failed", str(err)[-ERROR_TAIL:])
-        verdict = validate_kernel(archive, src, self.prepare_kernel(name), self.need_sizes(), reps, variant.fp_mode)
+        verdict = validate_kernel(
+            archive, src, self.prepare_kernel(name), self.kernel_sizes(name), reps, variant.fp_mode
+        )
         if not verdict.ok:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
             return self.kernel_outcome(name, "wrong", reason)
@@ -473,6 +476,13 @@ class Session:
             raise ValueError("this session has no sizes; pass Session(..., sizes={symbol: value})")
         return self.sizes
 
+    def kernel_sizes(self, name: str) -> dict[str, int]:
+        """The sizes plus, for a kernel inside a sequential loop, a middle value of each loop iterator it takes;
+        a value given in ``sizes`` wins."""
+        sizes = self.need_sizes()
+        ext = self.kernel(name)
+        return {**loop_symbol_values(kernel_state(self.sdfg, ext), sizes), **sizes}
+
     # Stage 6: variants
 
     def sweep(self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None) -> dict:
@@ -486,7 +496,7 @@ class Session:
         src = build.source if build is not None else self.default_kernel(name)
         variants = device_variants(src.device, compilers)
         prep = self.prepare_kernel(name)
-        result = select_variant(src, prep, self.need_sizes(), reps, variants, self.work_dir / name / "variants")
+        result = select_variant(src, prep, self.kernel_sizes(name), reps, variants, self.work_dir / name / "variants")
         winner = result.winner
         if winner is not None and winner.archive is not None:
             self.bind(name, KernelBuild(src, winner.variant, winner.archive, winner.verdict))
@@ -511,7 +521,9 @@ class Session:
             if build.verdict is None:
                 prep = self.prepare_kernel(ext.name)
                 fp_mode = build.variant.fp_mode
-                build.verdict = validate_kernel(build.archive, build.source, prep, self.need_sizes(), reps, fp_mode)
+                build.verdict = validate_kernel(
+                    build.archive, build.source, prep, self.kernel_sizes(ext.name), reps, fp_mode
+                )
             variant = build.variant
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
             evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
