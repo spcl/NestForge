@@ -4,13 +4,12 @@
 
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall
 
 from nestforge.build import flags
-from dace.libraries.standard.nodes.external_call import ExternalCall
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import kernel_arguments

@@ -8,17 +8,17 @@ from __future__ import annotations
 import ast
 import copy
 import functools
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
-from collections.abc import Callable
 
 import dace
 import sympy
 from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
+from dace.frontend.python import astutils
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
-from dace.frontend.python import astutils
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.ir.dace_types import strings

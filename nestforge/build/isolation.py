@@ -5,8 +5,8 @@ instead of taking down the caller."""
 
 from __future__ import annotations
 
-import faulthandler
 import ctypes
+import faulthandler
 import json
 import multiprocessing
 import os

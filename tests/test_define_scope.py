@@ -6,16 +6,15 @@ them instead."""
 import copy
 import os
 
+import dace
 import numpy as np
 import pytest
-
-import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
-from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 from nestforge.session import Session
+from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 9

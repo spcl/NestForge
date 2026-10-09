@@ -6,15 +6,13 @@ notice."""
 
 import numpy as np
 import pytest
-
 from dace.transformation.passes.canonicalize import canonicalize
+from helpers import loop_level_kernel
 
 from nestforge.build.arena import make_inputs
 from nestforge.corpus.bench import preset_sizes
 from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.stages.scopes import parallel_top_level_maps
-
-from helpers import loop_level_kernel
 
 #: (kernel, index array). Every one is a gather/scatter whose index array is the whole point of the test;
 #: loop_level_reasoning is a superset of TSVC-2, so these are TSVC kernels.

@@ -16,6 +16,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
 
 from nestforge.corpus.translate import python_and_manifest
+from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import (
     Boundary,
     NestNode,
@@ -24,7 +25,6 @@ from nestforge.ir.extract import (
     extract_state_nodes,
     find_state_of_node,
 )
-from nestforge.ir.dace_types import strings
 from nestforge.ir.introspect import Row, nest_reads_writes
 from nestforge.ir.names import in_order
 

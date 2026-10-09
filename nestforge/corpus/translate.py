@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import yaml
-
 from dace import symbolic
 
 from nestforge.build.toolchain import COMPILE_TIMEOUT_S

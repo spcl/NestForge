@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``map-fission`` move on a map whose body is one nested SDFG with two independent statements."""
 
-import numpy as np
 import dace
+import numpy as np
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.helpers import nest_state_subgraph

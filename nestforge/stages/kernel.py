@@ -7,28 +7,28 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable, Sequence
-
-import numpy as np
 
 import dace
+import numpy as np
 from dace import dtypes
 from dace.codegen import cpf
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
 
 from nestforge.build.arena import (
     TIMED_REPS,
-    call_native,
     DeviceCall,
     accumulating_outputs,
     call_device,
+    call_native,
     diff_stats,
     dtype_floor,
     make_inputs,
-    rung_rtol,
     run_oracle,
+    rung_rtol,
 )
 from nestforge.build.flags import cuda_base_flags
 from nestforge.build.isolation import run_isolated, run_spawned
@@ -36,9 +36,7 @@ from nestforge.build.sdfg import BuildOptions, build_archive, build_cuda_archive
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import Boundary
-from dace.libraries.standard.nodes.external_call import ExternalCall
 from nestforge.stages.placement import kernel_device
-
 
 # Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` beside the host unit ``<kernel>.cu``.
 DEVICE_UNIT_SUFFIX = "_device"

@@ -5,14 +5,13 @@
 and a reason marks a pair that is never listed.
 """
 
-import numpy as np
 import dace
+import numpy as np
+from dace.sdfg.state import LoopRegion
+from helpers import fusion_moves
 
 from nestforge.ir.introspect import describe_graph, nest_reads_writes
-from dace.sdfg.state import LoopRegion
-
 from nestforge.stages.moves import Rewrite, plan_move
-from helpers import fusion_moves
 from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")

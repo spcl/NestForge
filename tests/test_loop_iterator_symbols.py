@@ -7,10 +7,9 @@ it a value."""
 import copy
 import os
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 
 from nestforge.build.sdfg import compile_linked_program, generate_program
 from nestforge.ir.loops import kernel_state, loop_symbol_values

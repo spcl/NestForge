@@ -9,8 +9,8 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-from pathlib import Path
 from collections.abc import Mapping
+from pathlib import Path
 
 from nestforge.build.toolchain import needed_libraries, tool_stdout
 

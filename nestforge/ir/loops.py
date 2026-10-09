@@ -10,7 +10,6 @@ from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
 
-
 #: A loop's iteration count is halved to pick its middle iteration, an interior value that boundary reads miss.
 HALF = 2
 

@@ -9,8 +9,8 @@ acting on a moved graph. Every stage has a deterministic default; the agent call
 
 from __future__ import annotations
 
-import copy
 import atexit
+import copy
 import json
 import shutil
 import tempfile
@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
@@ -28,7 +29,6 @@ from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.introspect import Row, describe_graph, tree_rows
 from nestforge.ir.loops import kernel_state, loop_symbol_values
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish

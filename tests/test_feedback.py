@@ -5,10 +5,9 @@ hints, most important first, and the report a session builds from real builds.""
 
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 
 from nestforge.session import Session
 from nestforge.stages.feedback import Evidence, report, spills, vectorizer_reasons

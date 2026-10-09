@@ -36,7 +36,7 @@ agents.
 - No `getattr`/`hasattr`: declare every attribute with its type, `X | None` when it may be absent.
 - Every class is slotted (`@dataclass(slots=True)` or `__slots__`); DaCe library nodes, whose properties need an
   instance `__dict__`, are the exception.
-- Small, well-named helpers; cyclomatic complexity at most 15 (ruff C901).
+- Small, well-named helpers; cyclomatic complexity at most 15.
 - Nothing hardcoded but the repository root, derived from the package. No magic numbers: every numeric constant is
   a named module-level constant with a one-line comment.
 - Iterate `dict` or `OrderedSet`, never a plain `set`, where order can reach generated code.
