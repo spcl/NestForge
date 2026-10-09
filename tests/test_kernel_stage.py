@@ -11,19 +11,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
-
 from nestforge.build.isolation import run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
 from nestforge.paths import REPO_ROOT
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     build_kernel_library,
     gpu_schedule,
@@ -34,9 +33,7 @@ from nestforge.stages.kernel import (
     use_kernel_library,
     validate_kernel,
 )
-from nestforge.stages.canonicalize import Targets, canonicalize
 from nestforge.stages.placement import default_devices, device_copies, place
-from nestforge.stages.canonicalize import fuse_and_finish
 from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants
 
@@ -83,7 +80,7 @@ KERNEL_IDS = ["vadd", "stencil_row_sum", "axpy_in_place", "scaled"]
 KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}]
 #: DT_NEEDED soname stems of the OpenMP runtimes a library can name.
 OPENMP_RUNTIME_STEMS = ("libgomp", "libomp", "libiomp5")
-ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.M)
+ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
 
 
 def lowered_kernel(program):
@@ -259,7 +256,7 @@ def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path):
     members = subprocess.run(["ar", "t", str(archive)], capture_output=True, text=True, check=True).stdout.split()
     assert members == [f"{ext.name}.o"]
     defined = subprocess.run(["nm", "--defined-only", str(archive)], capture_output=True, text=True, check=True).stdout
-    assert re.findall(rf"^\S+ T ({re.escape(ext.name)})$", defined, re.M) == [ext.name]
+    assert re.findall(rf"^\S+ T ({re.escape(ext.name)})$", defined, re.MULTILINE) == [ext.name]
     assert "__dace_" not in defined and "__program_" not in defined
 
 

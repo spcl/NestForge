@@ -22,11 +22,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
-
-import sympy
+from typing import Any, TypeVar
 
 import dace
+import sympy
 from dace import data as dt
 from dace import dtypes, subsets, symbolic
 from dace.frontend.operations import detect_reduction_type
@@ -44,9 +43,9 @@ from dace.sdfg.state import (
 )
 from dace.sdfg.utils import dfs_topological_sort, inline_sdfgs
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
-from dace.transformation.passes.remove_views import RemoveViews
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
+from dace.transformation.passes.remove_views import RemoveViews
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import Boundary
@@ -179,8 +178,11 @@ def expr(value: object, names: Names) -> str:
 
 # lowering, on a copy
 
+#: A node class :func:`placed` collects.
+N = TypeVar("N", bound=nodes.Node)
 
-def placed[N: nodes.Node](sdfg: dace.SDFG, kind: type[N]) -> list[tuple[N, SDFGState]]:
+
+def placed(sdfg: dace.SDFG, kind: type[N]) -> list[tuple[N, SDFGState]]:
     """Every ``kind`` node of ``sdfg`` and its nested SDFGs, with its state."""
     return [(n, s) for n, s in sdfg.all_nodes_recursive() if isinstance(n, kind) and isinstance(s, SDFGState)]
 

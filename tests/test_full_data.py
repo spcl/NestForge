@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Extraction passes whole arrays to the external call (no shrink/rebase to the accessed slice)."""
 
-import numpy as np
 import dace
+import numpy as np
+from dace.libraries.standard.nodes.external_call import ExternalCall
 
 from nestforge.stages.scopes import lower_nests_to_external_call
-from dace.libraries.standard.nodes.external_call import ExternalCall
 
 N = dace.symbol("N")
 

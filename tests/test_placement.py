@@ -3,10 +3,9 @@
 """Stage 4: parallel kernels go to the GPU target, sequential ones stay on the CPU, an agent may choose per kernel,
 and the kernel DAG names the transfers each placement implies."""
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 
 from nestforge.ir.depends import KernelGraph, kernel_dependencies

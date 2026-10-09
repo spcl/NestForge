@@ -8,20 +8,19 @@ from __future__ import annotations
 import ctypes
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-from collections.abc import Sequence
 
 import numpy as np
-
 from dace import symbolic
 
 from nestforge.build import flags
 from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
+from nestforge.corpus.translate import Prepared
 from nestforge.ir.emit_python import load_emitted, oracle_sdfg, scratch_arrays
 from nestforge.ir.extract import Boundary
-from nestforge.corpus.translate import Prepared
 
 
 def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...]:

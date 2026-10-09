@@ -9,11 +9,11 @@ in-place buffers. ``alloc_run`` does exactly that, driven by the emitted functio
 
 import numpy as np
 import pytest
+from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 from nestforge.build.isolation import run_isolated
 from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_python import UnsupportedNest
-from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 
 def alloc_run(short, fn_name, sizes, inputs, sdfg=None):

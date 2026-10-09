@@ -3,8 +3,8 @@
 """Session: the epoch guard on labeled calls, kernels named by name, and plain JSON-able results. The wrapped
 stages have their own tests."""
 
-import numpy as np
 import dace
+import numpy as np
 
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets

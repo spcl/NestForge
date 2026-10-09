@@ -3,14 +3,13 @@
 """The emitter contract of docs/oracle.md: the caller allocates every buffer, the Python signature matches the
 manifest, and the caller sizes scratch the way the emitter widened it."""
 
-import numpy as np
 import dace
+import numpy as np
 from dace.sdfg.state import LoopRegion
+from helpers import sdfg_to_python
 
 from nestforge.ir.emit_python import load_emitted, nest_to_python, oracle_sdfg
 from nestforge.ir.extract import Boundary
-
-from helpers import sdfg_to_python
 
 N = dace.symbol("N")
 

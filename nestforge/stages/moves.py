@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import dace
 import sympy
@@ -298,8 +298,11 @@ def plan_move(kind: str, rows: Sequence[Row]) -> Rewrite | str:
 
 # candidate rows per kind; plan_move judges them
 
+#: A block class :func:`every_region_block` collects.
+B = TypeVar("B", bound=ControlFlowBlock)
 
-def every_region_block[B: ControlFlowBlock](sdfg: dace.SDFG, kind: type[B]) -> Iterator[B]:
+
+def every_region_block(sdfg: dace.SDFG, kind: type[B]) -> Iterator[B]:
     for region in sdfg.all_control_flow_regions(recursive=True):
         yield from (block for block in region.nodes() if isinstance(block, kind))
 

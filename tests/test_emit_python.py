@@ -6,15 +6,14 @@ what a hand-written NumPy reference computes. Every buffer is allocated by the c
 import json
 import math
 
+import dace
 import numpy as np
 import pytest
-
-import dace
-from dace.sdfg import nodes
-from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
-
 import sympy
 from dace import subsets
+from dace.sdfg import nodes
+from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
+from helpers import run_emitted, sdfg_to_python
 
 from nestforge.ir.emit_python import (
     Names,
@@ -27,7 +26,6 @@ from nestforge.ir.emit_python import (
     simplify_as_sizes,
 )
 from nestforge.ir.extract import Boundary
-from helpers import run_emitted, sdfg_to_python
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)

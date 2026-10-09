@@ -7,9 +7,8 @@ import ctypes
 import inspect
 import re
 
-import numpy as np
-
 import dace
+import numpy as np
 from dace import symbolic
 from dace.libraries.standard.nodes.external_call import ExpandExternCall, ExternalCall
 
@@ -60,7 +59,7 @@ def signature_order(text: str, symbol: str, lang: str = "c") -> list[str]:
     """Parameter names of a translated kernel's entry, in declaration order: the emitted C order (sorted arrays,
     then symbols) is not the manifest's ``input_args`` order, so arguments bind to this."""
     if lang == "fortran":
-        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.S | re.I)
+        m = re.search(rf"subroutine\s+{re.escape(symbol)}\s*\((.*?)\)", text, re.DOTALL | re.IGNORECASE)
         if not m:
             raise LookupError(f"subroutine {symbol} not found")
         return [a.strip() for a in m.group(1).replace("&", " ").split(",") if a.strip()]

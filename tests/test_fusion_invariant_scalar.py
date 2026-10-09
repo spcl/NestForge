@@ -7,12 +7,9 @@ current iteration. That is a genuine dependence, and it is exactly the one a car
 classifier reports no offset for -- there is no iterator in either subset to carry.
 """
 
-import numpy as np
-
 import dace
-
+import numpy as np
 from helpers import apply_move, fusion_moves
-
 
 N = dace.symbol("N")
 f64 = dace.float64

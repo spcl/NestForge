@@ -227,7 +227,7 @@ def raw_signature(text: str, symbol: str) -> str:
     """The parameter text of the kernel entry's definition; :class:`LookupError` if it is absent. Anchored on
     ``void`` and the opening brace, since the bare name also matches a comment naming it."""
     # `[^)]*` not `(.*?)`: non-greedy backtracks across a preceding prototype, capturing a bogus span
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.S)
+    m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.DOTALL)
     if not m:
         raise LookupError(f"entry {symbol} not found in the emitted source")
     return m.group(1)
@@ -235,7 +235,7 @@ def raw_signature(text: str, symbol: str) -> str:
 
 def signature(code: str, symbol: str) -> str:
     """The parameter list of symbol(...) in code; unlike raw_signature, matches a non-void DaCe declaration."""
-    m = re.search(rf"{re.escape(symbol)}\s*\((.*?)\)", code, re.S)
+    m = re.search(rf"{re.escape(symbol)}\s*\((.*?)\)", code, re.DOTALL)
     if not m:
         raise LookupError(f"entry point {symbol} not found in generated code")
     return m.group(1)

@@ -6,10 +6,9 @@ per turn, checked against hand-written stand-ins for the OpenAI and Anthropic SD
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 
 from nestforge.agent import llm, loop
 from nestforge.agent.llm import Reply, Tool, ToolCall

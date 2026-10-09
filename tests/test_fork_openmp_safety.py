@@ -9,22 +9,22 @@ pool in the parent on purpose and check that the child still runs.
 
 import ctypes
 import os
-import warnings
 import select
 import shutil
 import subprocess
+import warnings
 
 import numpy as np
 import pytest
 
-from nestforge.build.toolchain import lib_linkable, library_flags
 from nestforge.build.isolation import (
     ERROR_CHARS,
-    drop_openmp_registration,
     OMP_RUNTIME_SONAMES,
+    drop_openmp_registration,
     pause_openmp_pools,
     run_isolated,
 )
+from nestforge.build.toolchain import lib_linkable, library_flags
 
 OMP_SRC = """#include <omp.h>
 void kern(double *a, int n) {

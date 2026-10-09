@@ -3,14 +3,14 @@
 """Lowering a nest to an ``ExternalCall`` and running it through the ``DaceReference`` expansion. The linked-library
 expansion is covered by ``test_variants_stage.py``."""
 
+import dace
 import numpy as np
 import pytest
-import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
 from nestforge.corpus.translate import prepare, python_and_manifest
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
+from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
 
 N = dace.symbol("N")
 

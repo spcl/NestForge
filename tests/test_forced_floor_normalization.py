@@ -11,7 +11,6 @@ import dace
 import sympy
 from dace.subsets import Range
 from dace.transformation.passes.canonicalize import canonicalize
-
 from helpers import loop_level_kernel
 
 

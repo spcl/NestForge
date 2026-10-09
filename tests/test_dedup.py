@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from nestforge.build import flags as flags_mod
-from nestforge.build.flags import FP_LEVELS
 from nestforge.build import dedup
+from nestforge.build import flags as flags_mod
 from nestforge.build.dedup import asm_bodies, collapse, collapse_notes, parse_disassembly, variant_key
+from nestforge.build.flags import FP_LEVELS
 from nestforge.build.sdfg import BuildOptions, build_archive
 from nestforge.build.toolchain import compiler_family, needed_libraries
 
