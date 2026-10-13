@@ -98,8 +98,10 @@ def test_each_prompt_is_rebuilt_from_the_log_and_only_the_last_turns_results(tmp
 
 @pytest.mark.e2e
 def fission_then_refused_calls(sut: Session) -> ScriptedModel:
+    # canonicalization leaves fusion to stage 2, so fuse the pair to give fission one map to split
+    sut.apply_move(**sut.list_moves("map-fusion")[0])
     labels = map_labels(sut)
-    assert len(labels) == 1, "canonicalization fuses the two maps, else this tests nothing"
+    assert len(labels) == 1, "the fused pair is one map, else this tests nothing"
     return ScriptedModel(
         [
             Reply("", [ToolCall("apply_move", {"kind": "map-fission", "labels": labels, "epoch": sut.epoch})]),
@@ -116,7 +118,7 @@ def test_an_applied_move_and_the_refused_calls_after_it_are_logged_not_raised(tm
     log = loop.run(sut, fission_then_refused_calls(sut), "make it fast", turns=3)
 
     assert log[0].endswith("-> applied: MapFission")
-    assert log[1].endswith("-> stale: labels read at epoch 0; the program is at epoch 2. Describe again.")
+    assert log[1].endswith("-> stale: labels read at epoch 0; the program is at epoch 3. Describe again.")
     assert log[2] == "[moves] frobnicate() -> error: no tool frobnicate"
 
 

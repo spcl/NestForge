@@ -95,7 +95,7 @@ def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_tree
     trees = {label: (out / "trees" / f"{label}.txt").read_text() for label in ("0-input", "1-canonical", "2-moved")}
 
     assert nest_kinds(trees["0-input"]) == {"maps": 0, "loops": 4}
-    assert nest_kinds(trees["1-canonical"]) == {"maps": 1, "loops": 0}
+    assert nest_kinds(trees["1-canonical"]) == {"maps": 4, "loops": 0}
     assert nest_kinds(trees["2-moved"]) == {"maps": 1, "loops": 0}
     assert all(tree.rstrip("\n") in stdout for tree in trees.values())
 

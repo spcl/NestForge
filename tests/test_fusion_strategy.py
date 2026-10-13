@@ -39,16 +39,16 @@ def map_count(sdfg):
     )
 
 
-def test_fuse_and_finish_is_idempotent_on_an_already_fused_pair():
-    """canonicalize already folds a vertical producer/consumer pair to one map; fuse_and_finish must leave it one map with
-    no legal fuse move remaining."""
+def test_fuse_and_finish_folds_the_vertical_pair_canonicalize_left_to_it():
+    """canonicalize stops before fusion, so a vertical producer/consumer pair stays two maps; fuse_and_finish folds it
+    to one map with no legal fuse move remaining."""
     raw = producer_consumer_maps.to_sdfg(simplify=False)
     assert map_count(raw) == 2, "fixture must start with two separate maps"
 
     sdfg = producer_consumer_maps.to_sdfg(simplify=False)
     targets = Targets()
     canonicalize(sdfg, targets)
-    assert map_count(sdfg) == 1, "canonicalize already fused the pair"
+    assert map_count(sdfg) == 2, "canonicalize leaves the fusion to stage 2"
     fuse_and_finish(sdfg, targets)
     assert map_count(sdfg) == 1
     assert fusion_moves(sdfg) == []
