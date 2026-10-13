@@ -27,7 +27,7 @@ dependencies = [
     # HPCAgent-Bench@main's tip and the DaCe commit it pins (the two must agree, or the resolver refuses two URLs for
     # dace); `python scripts/bump_deps.py` moves both. Bump whenever DaCe extended gains a fix NestForge needs.
     "dace @ git+https://github.com/spcl/dace.git@a161a3e626e1083d549d9530778350e9738defcc",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@d7ca62ca7d6c5071e51472c62659ae8485b50d70",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@f0fd5d1ac43c14b4616866425902c7987fa9bc36",
 ]
 
 [project.optional-dependencies]
