@@ -456,9 +456,9 @@ def test_jacobi_1d_loopregion_emits_and_computes():
 
 
 def test_corpus_program_is_the_entry_not_a_helper():
-    # mlp_dace defines relu, softmax, then mlp; resnet has resnet_basicblock + a _gpu variant after it.
+    # mlp_dace defines relu, softmax, then mlp; every kernel's entry is named for the kernel (bench afcccb7).
     assert corpus_kernel("machine_learning/mlp/mlp").program().name.endswith("mlp")
-    assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet_basicblock")
+    assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet")
 
 
 def test_corpus_module_path_independent_of_namespace_path():

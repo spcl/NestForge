@@ -113,6 +113,11 @@ def materialize_dace_corpus() -> None:
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
-    """The integer symbol sizes of one preset in the kernel's manifest."""
+    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes."""
     rung = kernel.spec.parameters.get(preset, {})
-    return {sym: size for sym, size in rung.items() if isinstance(size, int) and not isinstance(size, bool)}
+    knobs = kernel.spec.config_names
+    return {
+        sym: size
+        for sym, size in rung.items()
+        if sym not in knobs and isinstance(size, int) and not isinstance(size, bool)
+    }

@@ -103,7 +103,15 @@ def emit_sources(prep: Prepared, out_dir: str | Path, target: str = "c") -> list
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     with emit_bridge.bench_info_tempfile(prep.spec) as bench_info:
-        cmd = [sys.executable, "-m", "numpyto_common.cli", "--target", target, "--kernel", str(prep.numpy_path)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "hpcagent_bench.translators.numpyto_common.cli",
+            "--target",
+            target,
+            "--kernel",
+            str(prep.numpy_path),
+        ]
         cmd += ["--bench-info", str(bench_info), "--out", str(out), "--precision", "float64"]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)

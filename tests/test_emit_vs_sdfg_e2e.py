@@ -120,7 +120,8 @@ def rand_buffer(shape, dt, rng, center):
 
 
 def dace_sizes(kernel, base=6):
-    preset = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
+    merged = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
+    preset = {k: v for k, v in merged.items() if k not in kernel.spec.config_names}  # knobs are data, not sizes
     ranks = {v: i for i, v in enumerate(sorted(set(preset.values())))}
     return {k: base + ranks[v] for k, v in preset.items()}
 
