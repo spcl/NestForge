@@ -86,7 +86,10 @@ def prepare(boundary: Boundary, name: str, out_dir: str | Path, sizes: dict[str,
     numpy_path.write_text(source)
     yaml_path = out / f"{name}.yaml"
     yaml_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
-    spec = BenchSpec.from_yaml(dict(manifest), source=str(yaml_path))
+    # from_yaml derives the entry and signature from a reference under the bench's corpus; this kernel lives in
+    # out_dir, so its spec takes them as declared, with the identity from_yaml would derive from the file
+    identity = {"short_name": name, "module_name": name, "track": manifest["relative_path"]}
+    spec = BenchSpec.from_dict(manifest | identity, source=str(yaml_path))
     return Prepared(name, numpy_path, yaml_path, source, manifest, spec)
 
 

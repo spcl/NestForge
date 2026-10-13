@@ -46,7 +46,7 @@ class CorpusKernel:
         return module
 
     def program(self) -> dace.frontend.python.parser.DaceProgram:
-        """The kernel's entry ``@dace.program``, named by the manifest's ``func_name``; without one, the last
+        """The kernel's entry ``@dace.program``, named by the spec's ``func_name``; without one, the last
         program the module defines, since helpers precede the entry."""
         import hpcagent_bench.frameworks.dace_framework as dfw
 
