@@ -24,10 +24,10 @@ dependencies = [
     "numpy",
     "pyyaml",
     "sympy",
-    # HPCAgent-Bench@main's tip and the DaCe commit it pins (the two must agree, or the resolver refuses two URLs for
-    # dace); `python scripts/bump_deps.py` moves both. Bump whenever DaCe extended gains a fix NestForge needs.
-    "dace @ git+https://github.com/spcl/dace.git@a161a3e626e1083d549d9530778350e9738defcc",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@f0fd5d1ac43c14b4616866425902c7987fa9bc36",
+    # The tips of DaCe extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both. The bench pins its
+    # own DaCe, so [tool.uv] overrides it with this one.
+    "dace @ git+https://github.com/spcl/dace.git@0f445383e4d32a6016997a03decbbd50c8ba7f18",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@7d0b800c3e58ce36d7c99e5a640aa8fe8255b3f9",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +47,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/spcl/NestForge"
 Repository = "https://github.com/spcl/NestForge"
+
+[tool.uv]
+override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@0f445383e4d32a6016997a03decbbd50c8ba7f18"]
 
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
