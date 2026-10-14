@@ -15,10 +15,14 @@ HALF = 2
 
 
 def enclosing_loops(state: SDFGState) -> list[LoopRegion]:
-    """The counted loops around ``state``, outermost first."""
+    """The counted loops around ``state``, outermost first, including those around the nested SDFGs it sits in."""
     loops: list[LoopRegion] = []
-    region: ControlFlowRegion | dace.SDFG | None = state.parent_graph
-    while isinstance(region, ControlFlowRegion) and not isinstance(region, dace.SDFG):
+    region: ControlFlowRegion | None = state.parent_graph
+    while region is not None:
+        if isinstance(region, dace.SDFG):
+            holder = region.parent  # the state holding this nested SDFG, ``None`` at the program's top
+            region = holder.parent_graph if holder is not None else None
+            continue
         if isinstance(region, LoopRegion) and region.loop_variable:
             loops.append(region)
         region = region.parent_graph
