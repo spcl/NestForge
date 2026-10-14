@@ -20,8 +20,8 @@ pytestmark = pytest.mark.integration
 TREE_GUIDE = re.compile(r"^[|` -]*")
 #: A map nest's line: label, bracketed domain, then its reads.
 MAP_LINE = re.compile(r"^\S+  \[\w+=[^\]]+\]  reads=")
-#: A loop nest's line: label and a bare ``var=start:end`` domain.
-LOOP_LINE = re.compile(r"^\S+  \w+=\S+$")
+#: A loop nest's line: label and a ``var=start:end`` domain, then its annotations (a state's ``kernels=N`` has no range).
+LOOP_LINE = re.compile(r"^\S+  \w+=\S*:\S+(  |$)")
 
 
 def nest_kinds(tree: str) -> dict:
