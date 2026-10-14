@@ -19,7 +19,8 @@ human driving the same `Session` API.
 | [7 Feedback](docs/stages/7-feedback.md) | what to try next | ranked hints from times and compiler remarks | optional analyst |
 
 The built-in [agent loop](docs/agent.md) drives stages 2 to 5 with the OpenAI or Anthropic API, rebuilding a
-compact prompt every turn from the program view and the latest feedback.
+compact prompt every turn from the program view and the latest feedback. The view starts small: every loop and
+state with its work and depth, a state's kernels only once the agent expands it.
 
 ## Quick start
 

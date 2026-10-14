@@ -83,6 +83,7 @@ def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path)
 
 def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
+    session.expand([session.row_index()["extcall_1"][1].label], session.epoch)
 
     lines = session.describe(deps=True).splitlines()
 

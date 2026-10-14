@@ -20,6 +20,8 @@ import pytest
 from nestforge.build.isolation import (
     ERROR_CHARS,
     OMP_RUNTIME_SONAMES,
+    Failure,
+    Result,
     drop_openmp_registration,
     pause_openmp_pools,
     run_isolated,
@@ -38,6 +40,10 @@ N = 4096
 #: Whether the soft omp_pause_resource_all tears the pool down, measured as threads in /proc/self/task:
 #:     libgomp 16->1   libomp 16->16
 #: libomp's soft pause keeps the pool and still returns 0; its fork is safe through its atfork handler instead.
+
+
+class Total(Result):
+    total: float
 
 
 def thread_count():
@@ -88,9 +94,9 @@ def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path, runtime
     """Without pausing the pool, the libgomp child hangs until the 60 s timeout with nothing to read."""
     so = build(tmp_path, runtime)
     call_kernel(so)  # the parent's pool is now live
-    res = run_isolated(lambda: {"total": float(call_kernel(so).sum())}, timeout=60.0)
-    assert "error" not in res, f"lib{runtime}: forked child failed after the parent used OpenMP: {res}"
-    assert res["total"] == float(N), f"lib{runtime}: child computed {res['total']}, expected {N}"
+    res = run_isolated(lambda: Total(total=float(call_kernel(so).sum())), Total, timeout=60.0)
+    assert isinstance(res, Total), f"lib{runtime}: forked child failed after the parent used OpenMP: {res}"
+    assert res.total == float(N), f"lib{runtime}: child computed {res.total}, expected {N}"
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
@@ -179,6 +185,6 @@ def test_a_child_exception_survives_the_pipe_intact():
     def boom():
         raise RuntimeError(long_message)
 
-    res = run_isolated(boom, timeout=60.0)
-    assert tail in res["error"], f"message truncated to {len(res['error'])} chars"
+    res = run_isolated(boom, Total, timeout=60.0)
+    assert isinstance(res, Failure) and tail in res.error, f"message truncated: {res}"
     assert len(long_message) <= ERROR_CHARS

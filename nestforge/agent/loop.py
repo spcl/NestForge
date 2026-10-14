@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from nestforge.agent.llm import Reply, Tool, ToolCall
 from nestforge.session import MoveResult, Session
@@ -19,7 +21,8 @@ Chat = Callable[[str, str, list[Tool]], Reply]
 
 SYSTEM = (
     "You optimize a program for speed with NestForge. Act only through the tools; labels and epochs come from the "
-    "program view. Reply without a tool call when this stage needs nothing more."
+    "program view; a state lists its kernels once you expand it. Reply without a tool call when this stage needs "
+    "nothing more."
 )
 ANALYST = (
     "Rewrite this compiler and profiler feedback into at most five short lines of concrete guidance for the next "
@@ -32,42 +35,106 @@ LOG_LINE = 160
 #: Model calls per stage.
 TURNS = 4
 
-LABELS = {"type": "array", "items": {"type": "string"}}
-EPOCH = {"type": "integer"}
+
+class Args(BaseModel):
+    """A tool's arguments: its JSON schema goes to the model, and the model's call is validated against it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-def tool(name: str, description: str, **properties: dict[str, Any]) -> Tool:
-    schema = {"type": "object", "properties": properties, "required": [p for p in properties if p != "kind"]}
-    return Tool(name, description, schema)
+#: Move kinds, offered as an enum; :mod:`~nestforge.stages.moves` refuses any other.
+MoveKind = Annotated[str, Field(json_schema_extra={"enum": list(MOVE_SHAPES)})]
 
 
-METRICS = tool("metrics", "Symbolic work and depth of a row.", label={"type": "string"})
+class ListMoves(Args):
+    kind: MoveKind | None = None
+
+
+class ApplyMove(Args):
+    kind: MoveKind
+    labels: list[str]
+    epoch: int
+
+
+class Expand(Args):
+    labels: list[str]
+    epoch: int
+
+
+class Metrics(Args):
+    label: str
+
+
+class DefineScope(Args):
+    labels: list[str]
+    epoch: int
+
+
+class Place(Args):
+    devices: dict[str, Literal["cpu", "gpu"]]
+    epoch: int
+
+
+class SetKernelSource(Args):
+    kernel: str
+    source: str
+    language: Literal["cpp", "cuda"]
+
+
+@dataclass(frozen=True, slots=True)
+class Action[A: Args]:
+    """A tool, the model of its arguments, and what running it does."""
+
+    tool: Tool
+    args: type[A]
+    run: Callable[[Session, A], object]
+
+    def __call__(self, session: Session, arguments: dict[str, Any]) -> object:
+        return self.run(session, self.args.model_validate(arguments))
+
+
+def action[A: Args](name: str, description: str, args: type[A], run: Callable[[Session, A], object]) -> Action[A]:
+    return Action(Tool(name, description, args.model_json_schema()), args, run)
+
+
+METRICS = action("metrics", "Symbolic work and depth of a row.", Metrics, lambda s, a: s.metrics(a.label))
+EXPAND = action(
+    "expand",
+    "Show the kernels and bodies of states, or the nested states of maps, until the program changes.",
+    Expand,
+    lambda s, a: s.expand(a.labels, a.epoch),
+)
 MOVES = (
-    tool("list_moves", "Legal moves now, optionally of one kind.", kind={"type": "string", "enum": list(MOVE_SHAPES)}),
-    tool("apply_move", "Apply a fusion, fission or interchange.", kind={"type": "string"}, labels=LABELS, epoch=EPOCH),
+    action("list_moves", "Legal moves now, optionally of one kind.", ListMoves, lambda s, a: s.list_moves(a.kind)),
+    action(
+        "apply_move",
+        "Apply a fusion, fission or interchange.",
+        ApplyMove,
+        lambda s, a: s.apply_move(a.kind, a.labels, a.epoch),
+    ),
+    EXPAND,
     METRICS,
 )
 SCOPES = (
-    tool("define_scope", "Make one kernel of maps of one state or of a run of blocks.", labels=LABELS, epoch=EPOCH),
-)
-PLACE = (
-    tool(
-        "place",
-        "Run kernels on devices.",
-        devices={"type": "object", "additionalProperties": {"enum": ["cpu", "gpu"]}},
-        epoch=EPOCH,
+    action(
+        "define_scope",
+        "Make one kernel of maps of one state or of a run of blocks.",
+        DefineScope,
+        lambda s, a: s.define_scope(a.labels, a.epoch),
     ),
+    EXPAND,
 )
+PLACE = (action("place", "Run kernels on devices.", Place, lambda s, a: s.place(dict(a.devices), a.epoch)),)
 KERNELS = (
-    tool(
+    action(
         "set_kernel_source",
         "Replace a kernel's source; same extern C entry. It is built and checked against the reference.",
-        kernel={"type": "string"},
-        source={"type": "string"},
-        language={"type": "string", "enum": ["cpp", "cuda"]},
+        SetKernelSource,
+        lambda s, a: s.set_kernel_source(a.kernel, a.source, a.language),
     ),
     METRICS,
 )
+ACTIONS: dict[str, Action[Any]] = {a.tool.name: a for a in (*MOVES, *SCOPES, *PLACE, *KERNELS)}
 
 
 def outcome(result: object) -> str:
@@ -82,19 +149,11 @@ def outcome(result: object) -> str:
 
 def act(session: Session, call: ToolCall) -> str:
     """Run one requested tool; a bad request comes back as text for the next turn instead of ending the run."""
-    a = call.arguments
-    handlers: dict[str, Callable[[], object]] = {
-        "list_moves": lambda: session.list_moves(a.get("kind")),
-        "apply_move": lambda: session.apply_move(a["kind"], a["labels"], a["epoch"]),
-        "metrics": lambda: session.metrics(a["label"]),
-        "define_scope": lambda: session.define_scope(a["labels"], a["epoch"]),
-        "place": lambda: session.place(a["devices"], a["epoch"]),
-        "set_kernel_source": lambda: session.set_kernel_source(a["kernel"], a["source"], a["language"]),
-    }
-    if call.name not in handlers:
+    if call.name not in ACTIONS:
         return f"error: no tool {call.name}"
+    chosen = ACTIONS[call.name]
     try:
-        return outcome(handlers[call.name]())
+        return outcome(chosen(session, call.arguments))
     except Exception as err:  # the model's arguments are untrusted; its next turn sees the error
         return f"error: {type(err).__name__}: {err}"
 
@@ -132,7 +191,7 @@ class Stage:
 
     name: str
     goal: str
-    tools: tuple[Tool, ...]
+    actions: tuple[Action[Any], ...]
     view: Callable[[Session], str]
     finish: Callable[[Session, bool], object]
 
@@ -195,7 +254,7 @@ def run(session: Session, chat: Chat, task: str, turns: int = TURNS, analyst: bo
         last: list[str] = []
         applied = False
         for _ in range(turns):
-            reply = chat(SYSTEM, prompt(task, stage, session, report, log, last), list(stage.tools))
+            reply = chat(SYSTEM, prompt(task, stage, session, report, log, last), [a.tool for a in stage.actions])
             if not reply.calls:
                 break
             last = []

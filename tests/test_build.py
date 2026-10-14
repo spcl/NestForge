@@ -29,7 +29,7 @@ assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs 
 from helpers import corpus_kernel
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.sdfg import BuildOptions, build_sdfg, dace_runtime_include
+from nestforge.build.sdfg import BuildOptions, build_sdfg, dace_runtime_include, new_gpu_codegen
 from nestforge.build.toolchain import (
     compiler_family,
     driver_lib_path,
@@ -498,3 +498,8 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
     )
     assert loaded.returncode == 0, loaded.stderr[-1500:]
     assert float(loaded.stdout) == 999 * 1000 / 2
+
+
+def test_a_gpu_build_uses_the_new_cuda_codegen_whatever_the_config_says():
+    with dace.config.set_temporary("compiler", "cuda", "implementation", value="legacy"), new_gpu_codegen():
+        assert dace.config.Config.get("compiler", "cuda", "implementation") == "experimental"

@@ -13,6 +13,7 @@ import pytest
 from nestforge.agent import llm, loop
 from nestforge.agent.llm import Reply, Tool, ToolCall
 from nestforge.session import Session
+from nestforge.stages.moves import MOVE_SHAPES
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -61,8 +62,8 @@ def test_a_silent_model_leaves_every_stage_to_its_default_and_the_program_still_
 
     assert log == []
     assert [tools for _, _, tools in model.prompts] == [
-        ["list_moves", "apply_move", "metrics"],
-        ["define_scope"],
+        ["list_moves", "apply_move", "expand", "metrics"],
+        ["define_scope", "expand"],
         ["place"],
         ["set_kernel_source", "metrics"],
     ]
@@ -142,6 +143,22 @@ def test_the_analyst_rewrites_the_report_the_kernel_stage_sees(tmp_path):
     assert len(analyst_calls) == 1 and analyst_calls[0].startswith("kernel times: ")
     (kernels_prompt,) = stage_prompts(model, "kernels")
     assert "Latest feedback:\nfuse extcall_0 into extcall_1" in kernels_prompt
+
+
+def test_a_move_tool_offers_every_move_kind_and_requires_what_apply_move_takes():
+    sut = loop.ACTIONS["apply_move"].tool.parameters
+
+    assert sut["required"] == ["kind", "labels", "epoch"]
+    assert sut["properties"]["kind"]["enum"] == list(MOVE_SHAPES)
+    assert sut["additionalProperties"] is False
+
+
+def test_a_call_with_malformed_arguments_comes_back_as_text_without_touching_the_session():
+    call = ToolCall("place", {"devices": {"extcall_0": "fpga"}, "epoch": 0})
+
+    sut = loop.act(Session.__new__(Session), call)
+
+    assert sut.startswith("error: ValidationError:") and "fpga" in sut
 
 
 TOOL = Tool("metrics", "Work of a row.", {"type": "object", "properties": {"label": {"type": "string"}}})

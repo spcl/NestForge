@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
-from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 
 from nestforge.ir.names import normalize_for_tree
 from nestforge.session import MoveResult, Session
@@ -327,6 +327,7 @@ def test_the_tree_names_its_epoch_on_the_first_line():
 
 def test_listed_moves_name_rows_of_the_tree_at_the_current_epoch():
     sut = Session(sweep_then_scale.to_sdfg(simplify=True))
+    sut.expand([label for label, (obj, _) in sut.row_index().items() if isinstance(obj, SDFGState)], sut.epoch)
     tree = sut.describe()
 
     moves = sut.list_moves()

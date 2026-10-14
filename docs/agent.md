@@ -9,8 +9,12 @@ than more tools, skills or history.
 - **One call per turn.** Every turn is one system + user message. The prompt is rebuilt from the task, the stage
   goal and epoch, the current view (tree, kernels with devices and dependencies, or kernel sources), the latest
   feedback report, one line per action tried so far, and the full results of the last calls. No chat history grows.
-- **Few tools.** Stage 2: `list_moves`, `apply_move`, `metrics`. Stage 3: `define_scope`. Stage 4: `place`.
-  Stage 5: `set_kernel_source`, `metrics`. A bad call returns an error line for the next turn.
+- **Few tools.** Stage 2: `list_moves`, `apply_move`, `expand`, `metrics`. Stage 3: `define_scope`, `expand`.
+  Stage 4: `place`. Stage 5: `set_kernel_source`, `metrics`. Each tool's arguments are one pydantic model in
+  `loop.py`: its JSON schema is what the model sees, and the model's call is validated against it. A bad call,
+  malformed arguments included, returns an error line for the next turn.
+- **Small view first.** The tree lists every loop and state with work and depth; a state's kernels and their
+  bodies appear once the model calls `expand` on it, until the next move changes the program.
 - **Defaults finish the stage.** When the model stops calling tools or runs out of turns, the stage's
   deterministic default completes what it left.
 - **Feedback.** Stage 5 starts from the [feedback report](stages/7-feedback.md) and gets a new one after each

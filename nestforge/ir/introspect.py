@@ -8,7 +8,7 @@ from __future__ import annotations
 import ast
 import copy
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -18,6 +18,8 @@ from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
 from dace.frontend.python import astutils
 from dace.sdfg import nodes
+from dace.sdfg.performance_evaluation import work_depth
+from dace.sdfg.performance_evaluation.helpers import get_uuid
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
 
@@ -37,8 +39,8 @@ CACHE_SIZE = 4096
 #: What a ``Handle`` is asked to name: kind ``region`` for a control-flow block, ``nest`` for a map or library node.
 Handle = Callable[[str, object], str]
 
-#: The suffix appended to a top-level map's kernel line, when metrics are asked for.
-Metrics = Callable[[nodes.MapEntry], str]
+#: Work and depth per block and node, keyed as DaCe's work-depth analysis keys them (``helpers.get_uuid``).
+WorkDepth = dict[str, tuple[sympy.Expr, sympy.Expr]]
 
 #: The line to print under a library node's row, or ``None`` for none.
 Notes = Callable[[nodes.LibraryNode], str | None]
@@ -228,25 +230,40 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
     return rows
 
 
+def program_work_depth(sdfg: dace.SDFG) -> WorkDepth:
+    """Work and depth of every loop, state, map and nested SDFG of ``sdfg``, by one pass of DaCe's analysis (which
+    works on a copy)."""
+    found: WorkDepth = {}
+    # analyze_sdfg annotates its map as str -> Expr, but stores (work, depth) pairs
+    work_depth.analyze_sdfg(sdfg, cast(dict[str, sympy.Expr], found), work_depth.get_tasklet_work_depth, [], False)
+    return found
+
+
 def describe_graph(
     sdfg: dace.SDFG,
     handle: Handle | None = None,
     bodies: bool = False,
-    metrics: Metrics | None = None,
     notes: Notes | None = None,
     epoch: int | None = None,
+    expanded: Collection[str] | None = None,
+    costs: WorkDepth | None = None,
 ) -> str:
-    """The program as a text tree, one line per block or kernel.
+    """The program as a text tree, one line per block or kernel; loop and map rows carry their work and depth.
 
     :param handle: Returns the id to print on a row.
-    :param bodies: Also print what each leaf kernel computes, as Python.
-    :param metrics: Returns the suffix of a top-level map's row.
+    :param bodies: Also print what each leaf kernel of a shown state computes, as Python.
     :param notes: Returns a line to print under a library node's row.
     :param epoch: Printed on the first line.
+    :param expanded: Labels of the states and maps whose content is shown (with leaf-kernel bodies); every other
+        state is one row naming how many kernels it holds, every other map one row naming its nested states.
+        ``None`` shows every content.
+    :param costs: :func:`program_work_depth` of ``sdfg``, when the caller holds it already.
     """
     header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
-    twin = lowered_twin(sdfg) if bodies else None
-    tree = Tree([header], handle, interstate_definitions(sdfg), twin, metrics, notes)
+    opened = None if expanded is None else frozenset(expanded)
+    twin = lowered_twin(sdfg) if bodies or opened else None
+    known = program_work_depth(sdfg) if costs is None else costs
+    tree = Tree([header], handle, interstate_definitions(sdfg), twin, notes, opened, bodies, known)
     walk_regions(tree, sdfg, "")
     return "\n".join(tree.lines)
 
@@ -259,12 +276,25 @@ class Tree:
     handle: Handle | None
     defs: dict[str, str]
     twin: Twin | None
-    metrics: Metrics | None
     notes: Notes | None
+    expanded: frozenset[str] | None
+    bodies: bool
+    costs: WorkDepth
 
     def stamp(self, text: str, kind: str, obj: object) -> str:
         """Prefix a line's body with its session id, when there is one to prefix."""
         return f"[{self.handle(kind, obj)}] {text}" if self.handle is not None else text
+
+    def shows(self, label: str) -> bool:
+        return self.expanded is None or label in self.expanded
+
+    def with_bodies(self, label: str) -> bool:
+        """Leaf-kernel bodies are printed when asked for, and always in a state the caller expanded."""
+        return self.twin is not None and (self.bodies or (self.expanded is not None and label in self.expanded))
+
+    def cost(self, key: str) -> str:
+        found = self.costs.get(key)
+        return "" if found is None else f"  work={found[0]} depth={found[1]}"
 
 
 def walk_regions(tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str) -> None:
@@ -272,10 +302,11 @@ def walk_regions(tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str) ->
     blocks = in_order(cfg)
     for index, block in enumerate(blocks):
         last = index == len(blocks) - 1
-        tree.lines.append(prefix + (ELBOW if last else TEE) + tree.stamp(block_line(block, tree.defs), "region", block))
+        tree.lines.append(prefix + (ELBOW if last else TEE) + tree.stamp(block_row(tree, block), "region", block))
         below = prefix + (BLANK if last else PIPE)
         if isinstance(block, SDFGState):
-            walk_state(tree, block, below)
+            if tree.shows(block.label):
+                walk_state(tree, block, below)
         elif isinstance(block, ConditionalBlock):
             walk_branches(tree, block, below)
         elif isinstance(block, ControlFlowRegion):
@@ -303,15 +334,21 @@ def walk_state(tree: Tree, state: SDFGState, prefix: str) -> None:
             last = index == len(kernels) - 1
             below = pad + (BLANK if last else PIPE)
             text = kernel_line(state, node)
-            if tree.metrics is not None and scope is None and isinstance(node, nodes.MapEntry):
-                text = f"{text}  {tree.metrics(node)}"
+            if isinstance(node, nodes.MapEntry):
+                nested = nested_sdfgs(state, node)
+                text += f"  num_states={sum(state_count(n.sdfg) for n in nested)}" if nested else ""
+                text += tree.cost(get_uuid(node, state))
             tree.lines.append(pad + (ELBOW if last else TEE) + tree.stamp(text, "nest", node))
             tree.lines.extend(note_lines(node, below, tree.notes))
             if isinstance(node, nodes.MapEntry):
                 leaf = not any(isinstance(child, nodes.MapEntry) for child in children[node])
-                if tree.twin is not None and leaf:
+                if leaf and tree.with_bodies(state.label):
+                    assert tree.twin is not None, "with_bodies holds only with a lowered twin"
                     tree.lines.extend(below + BODY + line for line in body_lines(tree.twin, state, node))
                 descend(node, below)
+                if nested and tree.expanded is not None and node.map.label in tree.expanded:
+                    for inner in nested:
+                        walk_regions(tree, inner.sdfg, below)
 
     descend(None, prefix)
 
@@ -322,6 +359,41 @@ def note_lines(node: nodes.Node, below: str, notes: Notes | None) -> list[str]:
         return []
     note = notes(node)
     return [] if note is None else [below + note]
+
+
+def nested_sdfgs(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.NestedSDFG]:
+    """The nested SDFGs anywhere in ``entry``'s scope."""
+    return [n for n in state.scope_subgraph(entry).nodes() if isinstance(n, nodes.NestedSDFG)]
+
+
+def state_count(region: ControlFlowRegion) -> int:
+    """The states anywhere in ``region``'s control flow, nested SDFGs included."""
+    return sum(isinstance(b, SDFGState) for b in region.all_control_flow_blocks(recursive=True))
+
+
+def innermost(loop: LoopRegion) -> bool:
+    """Whether ``loop`` holds no other loop in its control flow."""
+    return not any(isinstance(b, LoopRegion) for b in loop.all_control_flow_blocks(recursive=True))
+
+
+def kernel_count(state: SDFGState) -> int:
+    """The top-level maps and library nodes of ``state``."""
+    return sum(
+        isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) and state.entry_node(n) is None for n in state.nodes()
+    )
+
+
+def block_row(tree: Tree, block: ControlFlowBlock) -> str:
+    """A block's row: :func:`block_line`, then its size when it is collapsed or innermost, then its cost."""
+    text = block_line(block, tree.defs)
+    if isinstance(block, SDFGState):
+        count = kernel_count(block)
+        return f"{text}  kernels={count}" if count and not tree.shows(block.label) else text
+    if isinstance(block, LoopRegion):
+        if innermost(block):
+            text += f"  num_states={state_count(block)}"
+        return text + tree.cost(get_uuid(block))
+    return text
 
 
 def block_line(block: ControlFlowBlock, defs: dict[str, str]) -> str:
