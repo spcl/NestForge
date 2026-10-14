@@ -10,9 +10,10 @@ import os
 import dace
 import numpy as np
 import pytest
+from dace.sdfg.state import LoopRegion
 
 from nestforge.build.sdfg import compile_linked_program, generate_program
-from nestforge.ir.loops import kernel_state, loop_symbol_values
+from nestforge.ir.loops import enclosing_loops, kernel_state, loop_symbol_values
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 
@@ -88,3 +89,22 @@ def test_the_program_with_the_loop_outside_the_kernel_builds_sweeps_and_matches_
     expected[1:] = a[0] + np.cumsum(b[1:], axis=0)
     compiled(A=a, B=b, T=SIZES["T"], N=SIZES["N"])
     np.testing.assert_allclose(a, expected, rtol=1e-12)
+
+
+def counted_loop(label: str, iterator: str) -> LoopRegion:
+    return LoopRegion(label, f"{iterator} < 4", iterator, f"{iterator} = 0", f"{iterator} = {iterator} + 1")
+
+
+def test_the_loops_outside_a_nested_sdfg_enclose_a_state_inside_it_outermost_first():
+    outer = dace.SDFG("outer_of_nested_loops")
+    outer_loop = counted_loop("outer_loop", "i")
+    outer.add_node(outer_loop, is_start_block=True)
+    holder = outer_loop.add_state("holder", is_start_block=True)
+    inner = dace.SDFG("inner_of_nested_loops")
+    inner_loop = counted_loop("inner_loop", "j")
+    inner.add_node(inner_loop, is_start_block=True)
+    deepest = inner_loop.add_state("deepest", is_start_block=True)
+    holder.add_nested_sdfg(inner, set(), set())
+
+    assert enclosing_loops(deepest) == [outer_loop, inner_loop]
+    assert enclosing_loops(holder) == [outer_loop]
