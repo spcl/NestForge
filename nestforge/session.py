@@ -24,6 +24,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.build.arena import TIMED_REPS
+from nestforge.build.sdfg import force_register_arrays
 from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
@@ -152,6 +153,7 @@ class Session:
     def bump(self) -> None:
         self.epoch += 1
         normalize_labels(self.sdfg)
+        force_register_arrays(self.sdfg)
         self.rows = None
         self.expanded = set()
         self.costs = None

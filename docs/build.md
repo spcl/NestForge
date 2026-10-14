@@ -21,6 +21,15 @@ that links kernel libraries.
 `ExternalCall`. Every kernel gets its own archive, because DaCe sorts the program's link flags and a
 shared archive would lose members.
 
+## Register arrays
+
+On the CPU every array headed for registers is pinned to `Register(force=True)` (`force_register_arrays`, on every
+program change and on each CPU kernel): it stays on the stack, a symbolic size as a variable-length array, instead
+of a heap allocation per scope. That covers unforced register arrays, scope-lived arrays inside a map, and a
+kernel's scope-lived arrays, which codegen gives registers once the kernel expands. GPU builds and GPU kernel
+renders pin DaCe's new CUDA codegen (`compiler.cuda.implementation = experimental`), whose
+`MoveArrayOutOfKernel` hoists a per-thread array of symbolic size out of its kernel into global memory.
+
 ## Fork isolation
 
 `run_isolated` (`isolation.py`) runs fresh code in a forked child under a wall-clock timeout, so a

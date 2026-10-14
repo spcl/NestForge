@@ -11,7 +11,8 @@ import functools
 import time
 import warnings
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,9 @@ import dace
 import numpy as np
 from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
+from dace.data import Array
+from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
 
 from nestforge.build.toolchain import (
     AR,
@@ -110,10 +114,59 @@ class BuiltSDFG:
             self.close()
 
 
+#: DaCe's CUDA code generator for every GPU build: the new one, which hoists a per-thread array of symbolic size
+#: out of its kernel into global memory (``MoveArrayOutOfKernel``) instead of refusing it.
+CUDA_CODEGEN = "experimental"
+
+
+def new_gpu_codegen() -> AbstractContextManager[object]:
+    """Pin :data:`CUDA_CODEGEN`, whatever the environment or the config file chose."""
+    return dace.config.set_temporary("compiler", "cuda", "implementation", value=CUDA_CODEGEN)
+
+
+def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
+    """Each kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time."""
+    for node, _ in sdfg.all_nodes_recursive():
+        if isinstance(node, ExternalCall) and node.standalone_sdfg is not None:
+            yield from node.standalone_sdfg.all_sdfgs_recursive()
+
+
+def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]:
+    """The transient arrays of ``sdfg`` itself in unforced registers, plus, with ``scope_default``, the
+    scope-lived ones of default storage (a kernel's, which codegen puts in registers once expanded)."""
+    for desc in sdfg.arrays.values():
+        if type(desc) is not Array or not desc.transient:
+            continue
+        storage = desc.storage
+        unforced = storage == dace.StorageType.Register and not storage.force
+        scoped = (
+            scope_default and storage == dace.StorageType.Default and desc.lifetime == dace.AllocationLifetime.Scope
+        )
+        if unforced or scoped:
+            yield desc
+
+
+def force_register_arrays(sdfg: dace.SDFG) -> int:
+    """Pin every array headed for registers to ``Register(force=True)``, so on the CPU it stays on the stack, a
+    symbolic size as a variable-length array, instead of a heap allocation per scope: unforced register arrays,
+    scope-lived arrays inside a map (DaCe's rule), and a kernel's scope-lived arrays. Returns how many."""
+    pinned = force_map_scoped_registers(sdfg)
+    for owned, scope_default in [
+        *((s, False) for s in sdfg.all_sdfgs_recursive()),
+        *((s, True) for s in kernel_sdfgs(sdfg)),
+    ]:
+        arrays = list(stack_candidates(owned, scope_default=scope_default))
+        for desc in arrays:
+            desc.storage = dace.StorageType.Register(force=True)
+        pinned += len(arrays)
+    return pinned
+
+
 def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
     """Write DaCe's source tree (``src/cpu/<name>.cpp`` and ``include/``) without compiling it."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    with dace.config.temporary_config():
+    force_register_arrays(sdfg)
+    with dace.config.temporary_config(), new_gpu_codegen():
         dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
         code_objects = codegen.generate_code(sdfg)
     folder = Path(dace_compiler.generate_program_folder(sdfg, code_objects, str(out_dir)))
@@ -250,7 +303,11 @@ def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]
     sdfg.build_folder = str(build_folder)
-    with dace.config.set_temporary("compiler", "extra_cmake_args", value=" ".join(arg for arg in extra if arg)):
+    force_register_arrays(sdfg)
+    with (
+        new_gpu_codegen(),
+        dace.config.set_temporary("compiler", "extra_cmake_args", value=" ".join(arg for arg in extra if arg)),
+    ):
         with dace.config.set_temporary("compiler", "linker", "args", value=" ".join(arg for arg in linker_args if arg)):
             return sdfg.compile()
 

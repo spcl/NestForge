@@ -5,6 +5,7 @@ them instead."""
 
 import copy
 import os
+import warnings
 
 import dace
 import numpy as np
@@ -157,6 +158,22 @@ def test_define_scopes_lowers_the_maps_left_after_a_group():
     assert len(rest) == 1 and len(names) == 2 and len(set(names)) == 2, names
     assert kernel_arguments(grouped_kernel)[:2] == (["A"], ["U"]), "T stays inside the grouped kernel"
     assert_same_values(reference, session.sdfg, ("A", "C"))
+
+
+def test_a_kernels_scope_arrays_stay_on_the_stack():
+    """``T`` lives inside the grouped kernel; codegen gives it registers once the kernel expands, and without
+    ``force`` a symbolic size there is a heap allocation per call instead of a variable-length array."""
+    session, _ = session_and_reference(three_stages)
+    first, second, _ = map_labels(session)
+    session.define_scope([first, second], session.epoch)
+    session.define_scopes()
+    (grouped,) = [ext for ext in external_calls(session.sdfg) if "T" in ext.standalone_sdfg.arrays]
+
+    assert grouped.standalone_sdfg.arrays["T"].storage == dace.StorageType.Register(force=True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        session.sdfg(A=np.ones(SIZE), C=np.zeros(SIZE), N=SIZE)
+    assert not [w for w in caught if "Variable-length array" in str(w.message)]
 
 
 @pytest.mark.parametrize("simplify", [True, False])

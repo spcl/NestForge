@@ -32,7 +32,14 @@ from nestforge.build.arena import (
 )
 from nestforge.build.flags import cuda_base_flags
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
-from nestforge.build.sdfg import BuildOptions, build_archive, build_cuda_archive, program_compiler
+from nestforge.build.sdfg import (
+    BuildOptions,
+    build_archive,
+    build_cuda_archive,
+    force_register_arrays,
+    new_gpu_codegen,
+    program_compiler,
+)
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import Boundary
@@ -103,7 +110,9 @@ def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
 
 def cpu_schedule(boundary: Boundary) -> dace.SDFG:
     """The kernel copy the C++ unit renders: :func:`abi_ready_copy` finalized for the CPU."""
-    return finalize_for_target(abi_ready_copy(boundary), "cpu")
+    sdfg = finalize_for_target(abi_ready_copy(boundary), "cpu")
+    force_register_arrays(sdfg)
+    return sdfg
 
 
 def gpu_schedule(boundary: Boundary) -> dace.SDFG:
@@ -225,7 +234,8 @@ def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> Ker
     form = FORMS[device]
     sdfg = form.schedule(boundary)
     sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
-    rendering = cpf.render(sdfg, language=form.language)
+    with new_gpu_codegen():
+        rendering = cpf.render(sdfg, language=form.language)
     out_dir.mkdir(parents=True, exist_ok=True)
     unit = out_dir / f"{ext.name}{form.suffix}"
     unit.write_text(rendering.code)
