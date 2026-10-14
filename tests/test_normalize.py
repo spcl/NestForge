@@ -16,7 +16,7 @@ import pytest
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.build.isolation import run_isolated
+from nestforge.build.isolation import Result, run_isolated
 from nestforge.ir.names import (
     WRAP_PARAM,
     block_kind,
@@ -74,6 +74,13 @@ def descending(A: dc.float64[20], B: dc.float64[20]):
     """A loop that counts down -- must come out of normalization with a positive unit step."""
     for i in range(19, -1, -1):
         B[i] = A[i] * 2.0
+
+
+class Doubled(Result):
+    """A map's output and NumPy's, as nested lists."""
+
+    got: list[list[float]]
+    want: list[list[float]]
 
 
 def reaches(graph, source, target) -> bool:
@@ -433,12 +440,12 @@ def test_renaming_params_that_shadow_their_targets_preserves_values(program):
         a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))  # copy: dace bars a view
         b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
         sdfg(A=a, B=b)
-        return {"got": b.tolist(), "want": (a * 2.0).tolist()}
+        return Doubled(got=b.tolist(), want=(a * 2.0).tolist())
 
-    res = run_isolated(work, timeout=300)
-    assert "error" not in res, res["error"]
+    res = run_isolated(work, Doubled, timeout=300)
+    assert isinstance(res, Doubled), res
     assert entry.map.params == wanted
-    np.testing.assert_array_equal(res["got"], res["want"])
+    np.testing.assert_array_equal(res.got, res.want)
 
 
 @dc.program
@@ -465,11 +472,11 @@ def test_nested_map_scopes_do_not_collapse_onto_one_index():
         a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))
         b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
         sdfg(A=a, B=b)
-        return {"got": b.tolist(), "want": (a * 2.0).tolist()}
+        return Doubled(got=b.tolist(), want=(a * 2.0).tolist())
 
-    res = run_isolated(work, timeout=300)
-    assert "error" not in res, res["error"]
-    np.testing.assert_array_equal(res["got"], res["want"])
+    res = run_isolated(work, Doubled, timeout=300)
+    assert isinstance(res, Doubled), res
+    np.testing.assert_array_equal(res.got, res.want)
 
 
 def test_renaming_nothing_changes_nothing():

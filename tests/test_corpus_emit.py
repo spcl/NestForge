@@ -14,13 +14,17 @@ import numpy as np
 import pytest
 from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
-from nestforge.build.isolation import run_isolated
+from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_python import UnsupportedNest
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import node_boundary
+
+
+class Built(Result):
+    ok: bool
 
 
 def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
@@ -54,8 +58,8 @@ def test_the_loop_level_track_builds_to_sdfgs():
     )
     assert loop_level, "loop_level_reasoning yielded no kernels"
     for kernel in loop_level[:2]:
-        result = run_isolated(lambda k=kernel: {"ok": k.program().to_sdfg(simplify=True) is not None})
-        assert result.get("ok"), f"{kernel.short_name}: {result.get('error')}"
+        result = run_isolated(lambda k=kernel: Built(ok=k.program().to_sdfg(simplify=True) is not None), Built)
+        assert result == Built(ok=True), f"{kernel.short_name}: {result}"
 
 
 def test_gemm_matmul_emits_and_computes():

@@ -17,6 +17,7 @@ import numpy as np
 from dace import symbolic
 
 from nestforge.build import flags
+from nestforge.build.isolation import Result
 from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.emit_python import load_emitted, oracle_sdfg, scratch_arrays
@@ -219,7 +220,14 @@ class DeviceCall:
     reps: int
 
 
-def call_device(call: DeviceCall) -> dict[str, object]:
+class DeviceResult(Result):
+    """A device measurement: the kernel's outputs, read back once, and its time per call."""
+
+    outputs: dict[str, np.ndarray]
+    time_us: float
+
+
+def call_device(call: DeviceCall) -> DeviceResult:
     """The spawned child's side of a device measurement: the kernel's outputs and its time per call. Every
     pointer argument is a device buffer, copied down once and read back once; scalars and sizes go by value."""
     argtypes = [param.ctype for param in parse_params(call.parameters)]
@@ -237,7 +245,7 @@ def call_device(call: DeviceCall) -> dict[str, object]:
         outputs, time_us = time_device_reps(fn, args, memory, call.output_names, call.restore, host, call.reps)
     finally:
         memory.free()
-    return {"outputs": outputs, "time_us": time_us}
+    return DeviceResult(outputs=outputs, time_us=time_us)
 
 
 def dtype_floor(arrays: dict[str, np.ndarray]) -> float:

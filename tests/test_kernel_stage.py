@@ -17,7 +17,7 @@ import pytest
 from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
-from nestforge.build.isolation import run_isolated
+from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
@@ -81,6 +81,10 @@ KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}]
 #: DT_NEEDED soname stems of the OpenMP runtimes a library can name.
 OPENMP_RUNTIME_STEMS = ("libgomp", "libomp", "libiomp5")
 ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
+
+
+class MaxDiff(Result):
+    maxdiff: float
 
 
 def lowered_kernel(program):
@@ -338,14 +342,14 @@ def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_devi
     compiled = compile_linked_program(sdfg, tmp_path / "parent")
     x = np.random.default_rng(0).random(1037)
 
-    def run() -> dict:
+    def run() -> MaxDiff:
         y = np.zeros_like(x)
         compiled(alpha=cupy.asarray([0.75]), x=x, y=y, N=x.size)
-        return {"maxdiff": float(np.abs(y - 0.75 * x).max())}
+        return MaxDiff(maxdiff=float(np.abs(y - 0.75 * x).max()))
 
-    result = run_isolated(run)
+    result = run_isolated(run, MaxDiff)
 
-    assert result == {"maxdiff": 0.0}
+    assert result == MaxDiff(maxdiff=0.0)
     program = compiled._lib._library_filename
     assert any(name.startswith("libcudart.so") for name in needed_libraries(program))
     assert [stem for stem in openmp_runtime_stems(program) if stem != "libomp"] == []

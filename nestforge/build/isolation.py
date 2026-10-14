@@ -1,13 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Run generated code in a child process, so a crash or a runaway loop becomes an ``{"error": ...}`` result
-instead of taking down the caller."""
+"""Run generated code in a child process, so a crash or a runaway loop becomes a :class:`Failure` instead of
+taking down the caller. A child's answer is a :class:`Result` model, validated when it crosses back."""
 
 from __future__ import annotations
 
 import ctypes
 import faulthandler
-import json
 import multiprocessing
 import os
 import select
@@ -17,6 +16,8 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
 OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
@@ -73,18 +74,43 @@ def drop_openmp_registration(pid: int) -> None:
     Path(OPENMP_REGISTRATION.format(pid=pid, uid=os.getuid())).unlink(missing_ok=True)
 
 
-def error_result(e: BaseException) -> dict:
+class Result(BaseModel):
+    """What a child sends back; a subclass names its fields."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+
+class Failure(Result):
+    """A child that raised, crashed, hung or sent nothing usable."""
+
+    error: str
+
+
+def error_result(e: BaseException) -> Failure:
     """A child's exception as a result, its message cut to :data:`ERROR_CHARS`."""
-    return {"error": f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}"}
+    return Failure(error=f"{type(e).__name__}: {str(e)[:ERROR_CHARS]}")
 
 
-def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = RUN_TIMEOUT_S) -> dict:
+def parse_result[T: Result](buf: bytes, result: type[T]) -> T | Failure:
+    """The child's JSON as a :class:`Failure` or as ``result``; anything else is a malformed result."""
+    if not buf:
+        return Failure(error="child produced no result")
+    for model in (Failure, result):
+        try:
+            return model.model_validate_json(buf)
+        except ValidationError:
+            continue
+    return Failure(error="child produced malformed result (crashed mid-write)")
+
+
+def run_spawned[T: Result](target: Callable[[Any], T], payload: Any, timeout: float = RUN_TIMEOUT_S) -> T | Failure:
     """:func:`run_isolated` in a freshly spawned interpreter: a CUDA context does not survive a fork. ``target``
     and ``payload`` must pickle."""
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     child = context.Process(target=spawned_entry, args=(target, payload, sender))
     child.start()
+    assert child.pid is not None, "a started process has a pid"
     sender.close()
     try:
         return spawned_result(receiver, child, timeout)
@@ -93,22 +119,22 @@ def run_spawned(target: Callable[[Any], dict], payload: Any, timeout: float = RU
         drop_openmp_registration(child.pid)
 
 
-def spawned_result(receiver: Any, child: Any, timeout: float) -> dict:
-    """The spawned child's dict, or an error when it runs past ``timeout`` or dies before sending one."""
+def spawned_result(receiver: Any, child: Any, timeout: float) -> Any:
+    """The spawned child's result, or a :class:`Failure` when it runs past ``timeout`` or dies before sending one."""
     if not receiver.poll(timeout):
         child.kill()
         child.join()
-        return {"error": f"timeout after {timeout:.0f}s (runaway kernel)"}
+        return Failure(error=f"timeout after {timeout:.0f}s (runaway kernel)")
     try:
         result = receiver.recv()
     except EOFError:  # the child exited, or was killed by a signal, without sending
         child.join()
-        return {"error": f"crashed (exit code {child.exitcode})"}
+        return Failure(error=f"crashed (exit code {child.exitcode})")
     child.join()
     return result
 
 
-def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> None:
+def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any) -> None:
     """The spawned child's body; a Python exception comes back as an error."""
     faulthandler.disable()  # a child's segfault must not dump the parent's stack
     try:
@@ -119,8 +145,8 @@ def spawned_entry(target: Callable[[Any], dict], payload: Any, sender: Any) -> N
     sender.close()
 
 
-def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) -> dict:
-    """``work_fn()`` from a forked child, or ``{"error": ...}`` on an exception, crash, timeout or bad result."""
+def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: float = RUN_TIMEOUT_S) -> T | Failure:
+    """``work_fn()`` from a forked child, or a :class:`Failure` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
     r, w = os.pipe()
     with warnings.catch_warnings():
@@ -133,9 +159,9 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) ->
         os.close(r)
         faulthandler.disable()  # a child's segfault must not dump the parent's stack
         try:
-            payload = json.dumps(work_fn())
+            payload = work_fn().model_dump_json()
         except BaseException as e:
-            payload = json.dumps(error_result(e))
+            payload = error_result(e).model_dump_json()
         try:
             os.write(w, payload.encode())
         finally:
@@ -143,14 +169,15 @@ def run_isolated(work_fn: Callable[[], dict], timeout: float = RUN_TIMEOUT_S) ->
             os._exit(0)
     os.close(w)
     try:
-        return forked_result(pid, r, timeout)
+        outcome = forked_result(pid, r, timeout)
+        return outcome if isinstance(outcome, Failure) else parse_result(outcome, result)
     finally:
         drop_openmp_registration(pid)
 
 
-def forked_result(pid: int, r: int, timeout: float) -> dict:
-    """The forked child's dict read from pipe ``r``, or an error when it crashes, hangs past ``timeout`` or writes
-    no valid result; the child is reaped either way."""
+def forked_result(pid: int, r: int, timeout: float) -> bytes | Failure:
+    """What the forked child wrote to pipe ``r``, or a :class:`Failure` when it crashes or hangs past ``timeout``;
+    the child is reaped either way."""
     start, buf, timed_out = time.perf_counter(), b"", True
     try:
         while True:
@@ -172,12 +199,9 @@ def forked_result(pid: int, r: int, timeout: float) -> dict:
         if reaped == 0:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
-            return {"error": f"timeout after {timeout:.0f}s (runaway kernel)"}
+            return Failure(error=f"timeout after {timeout:.0f}s (runaway kernel)")
     else:
         _, status = os.waitpid(pid, 0)  # the child is exiting, so this returns
     if os.WIFSIGNALED(status):
-        return {"error": f"crashed (signal {os.WTERMSIG(status)})"}
-    try:
-        return json.loads(buf) if buf else {"error": "child produced no result"}
-    except json.JSONDecodeError:
-        return {"error": "child produced malformed result (crashed mid-write)"}
+        return Failure(error=f"crashed (signal {os.WTERMSIG(status)})")
+    return buf

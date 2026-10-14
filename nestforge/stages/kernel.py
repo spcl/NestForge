@@ -31,7 +31,7 @@ from nestforge.build.arena import (
     rung_rtol,
 )
 from nestforge.build.flags import cuda_base_flags
-from nestforge.build.isolation import run_isolated, run_spawned
+from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuildOptions, build_archive, build_cuda_archive, program_compiler
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
@@ -138,9 +138,18 @@ def gpu_runtime_libraries(compiler: str) -> list[str]:
     return [*process_runtime_libraries(), *cudart_link_flags(cudart_dir(compiler))]
 
 
-def kernel_numbers(oracle: dict[str, np.ndarray], outputs: dict[str, np.ndarray], time_us: float) -> dict[str, float]:
+class KernelNumbers(Result):
+    """One measured kernel: its distance to the oracle, the dtype's floor on it, and its time per call."""
+
+    maxdiff: float
+    md_rel: float
+    dtype_floor: float
+    time_us: float
+
+
+def kernel_numbers(oracle: dict[str, np.ndarray], outputs: dict[str, np.ndarray], time_us: float) -> KernelNumbers:
     md, md_rel = diff_stats(oracle, outputs)
-    return {"maxdiff": md, "md_rel": md_rel, "dtype_floor": dtype_floor(outputs), "time_us": time_us}
+    return KernelNumbers(maxdiff=md, md_rel=md_rel, dtype_floor=dtype_floor(outputs), time_us=time_us)
 
 
 def measure_on_cpu(
@@ -150,16 +159,16 @@ def measure_on_cpu(
     oracle: dict[str, np.ndarray],
     sizes: dict[str, int],
     reps: int,
-) -> dict:
+) -> KernelNumbers | Failure:
     """The CPU twin, called in a forked child."""
     argtypes = [p.ctype for p in parse_params(raw_signature(src.unit.read_text(), src.symbol))]
 
-    def work() -> dict[str, float]:
+    def work() -> KernelNumbers:
         outs, us = call_native(shared, src.symbol, src.abi_order, argtypes, src.boundary, inputs, sizes, reps)
         assert outs is not None, "call_native snapshots outputs unless told not to"
         return kernel_numbers(oracle, outs, us)
 
-    return run_isolated(work)
+    return run_isolated(work, KernelNumbers)
 
 
 def measure_on_gpu(
@@ -169,7 +178,7 @@ def measure_on_gpu(
     oracle: dict[str, np.ndarray],
     sizes: dict[str, int],
     reps: int,
-) -> dict:
+) -> KernelNumbers | Failure:
     """The GPU twin, called in a freshly spawned interpreter: a child forked from a process that already holds a
     CUDA context cannot use the device. The comparison runs here, so this process never touches CUDA."""
     call = DeviceCall(
@@ -184,9 +193,9 @@ def measure_on_gpu(
         reps,
     )
     res = run_spawned(call_device, call)
-    if "error" in res:
+    if isinstance(res, Failure):
         return res
-    return kernel_numbers(oracle, res["outputs"], res["time_us"])
+    return kernel_numbers(oracle, res.outputs, res.time_us)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,7 +206,9 @@ class KernelForm:
     suffix: str
     schedule: Callable[[Boundary], dace.SDFG]
     build: Callable[[Sequence[Path], str, list[str] | None, Path], None]
-    measure: Callable[[Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int], int], dict]
+    measure: Callable[
+        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int], int], KernelNumbers | Failure
+    ]
     runtime: Callable[[str], list[str]]
 
 
@@ -271,11 +282,9 @@ def measure_kernel(
     """Call the twin's C entry in an isolated child (forked for a CPU kernel, spawned for a GPU kernel): one run
     compared to ``oracle``, then ``reps`` timed runs. A crash or timeout comes back as a verdict with ``error`` set."""
     res = FORMS[src.device].measure(archive.with_suffix(".so"), src, inputs, oracle, sizes, reps)
-    if "error" in res:
-        return failed_verdict(fp_mode, str(res["error"]))
-    return KernelVerdict(
-        fp_mode, float(res["maxdiff"]), float(res["md_rel"]), float(res["dtype_floor"]), float(res["time_us"])
-    )
+    if isinstance(res, Failure):
+        return failed_verdict(fp_mode, res.error)
+    return KernelVerdict(fp_mode, res.maxdiff, res.md_rel, res.dtype_floor, res.time_us)
 
 
 def validate_kernel(
