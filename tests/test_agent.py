@@ -62,8 +62,8 @@ def test_a_silent_model_leaves_every_stage_to_its_default_and_the_program_still_
 
     assert log == []
     assert [tools for _, _, tools in model.prompts] == [
-        ["list_moves", "apply_move", "metrics"],
-        ["define_scope"],
+        ["list_moves", "apply_move", "expand", "metrics"],
+        ["define_scope", "expand"],
         ["place"],
         ["set_kernel_source", "metrics"],
     ]

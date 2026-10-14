@@ -21,7 +21,8 @@ Chat = Callable[[str, str, list[Tool]], Reply]
 
 SYSTEM = (
     "You optimize a program for speed with NestForge. Act only through the tools; labels and epochs come from the "
-    "program view. Reply without a tool call when this stage needs nothing more."
+    "program view; a state lists its kernels once you expand it. Reply without a tool call when this stage needs "
+    "nothing more."
 )
 ANALYST = (
     "Rewrite this compiler and profiler feedback into at most five short lines of concrete guidance for the next "
@@ -51,6 +52,11 @@ class ListMoves(Args):
 
 class ApplyMove(Args):
     kind: MoveKind
+    labels: list[str]
+    epoch: int
+
+
+class Expand(Args):
     labels: list[str]
     epoch: int
 
@@ -92,6 +98,12 @@ def action[A: Args](name: str, description: str, args: type[A], run: Callable[[S
 
 
 METRICS = action("metrics", "Symbolic work and depth of a row.", Metrics, lambda s, a: s.metrics(a.label))
+EXPAND = action(
+    "expand",
+    "Show the kernels and bodies of states, or the nested states of maps, until the program changes.",
+    Expand,
+    lambda s, a: s.expand(a.labels, a.epoch),
+)
 MOVES = (
     action("list_moves", "Legal moves now, optionally of one kind.", ListMoves, lambda s, a: s.list_moves(a.kind)),
     action(
@@ -100,6 +112,7 @@ MOVES = (
         ApplyMove,
         lambda s, a: s.apply_move(a.kind, a.labels, a.epoch),
     ),
+    EXPAND,
     METRICS,
 )
 SCOPES = (
@@ -109,6 +122,7 @@ SCOPES = (
         DefineScope,
         lambda s, a: s.define_scope(a.labels, a.epoch),
     ),
+    EXPAND,
 )
 PLACE = (action("place", "Run kernels on devices.", Place, lambda s, a: s.place(dict(a.devices), a.epoch)),)
 KERNELS = (

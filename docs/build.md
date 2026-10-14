@@ -24,7 +24,8 @@ shared archive would lose members.
 ## Fork isolation
 
 `run_isolated` (`isolation.py`) runs fresh code in a forked child under a wall-clock timeout, so a
-crash or hang in generated code becomes a recorded result. `os.fork()` copies only the calling
+crash or hang in generated code becomes a recorded result. The child answers with a pydantic `Result` model,
+validated as it crosses back; an exception, crash, hang or malformed answer is a `Failure(error=...)`. `os.fork()` copies only the calling
 thread, so `pause_openmp_pools` shuts down loaded OpenMP thread pools first. A CUDA context does not
 survive a fork, so `run_spawned` measures device kernels in a freshly spawned interpreter instead.
 

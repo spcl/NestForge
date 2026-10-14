@@ -5,6 +5,7 @@
 import dace
 import numpy as np
 import sympy
+from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.session import Session
@@ -76,12 +77,30 @@ def test_scope_metrics_leaves_the_program_untouched():
     assert sdfg.to_json() == before
 
 
-def test_describe_appends_metrics_to_kernel_lines_only_when_asked():
+def kernel_state(session: Session) -> str:
+    return next(
+        label for label, (obj, state) in session.row_index().items() if isinstance(obj, nodes.MapEntry) and state
+    )
+
+
+def test_an_expanded_kernel_row_carries_its_work_and_depth():
     session = Session(vector_add.to_sdfg(simplify=True))
-    plain = session.describe()
-    with_metrics = session.describe(metrics=True)
-    assert "work=" not in plain
-    (kernel,) = [line for line in with_metrics.splitlines() if "reads=" in line]
+    state = session.row_index()[kernel_state(session)][1]
+    assert state is not None
+
+    assert session.expand([state.label], session.epoch) == f"ok: expanded {state.label}"
+
+    (kernel,) = [line for line in session.describe().splitlines() if "reads=" in line]
     assert kernel.endswith("  work=N depth=1"), kernel
-    assert with_metrics.replace("  work=N depth=1", "") == plain
     assert session.epoch == 0
+
+
+def test_an_expansion_closes_when_the_program_changes():
+    session = Session(vector_add.to_sdfg(simplify=True))
+    state = session.row_index()[kernel_state(session)][1]
+    assert state is not None
+    session.expand([state.label], session.epoch)
+
+    session.bump()
+
+    assert not [line for line in session.describe().splitlines() if "reads=" in line]

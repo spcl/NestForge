@@ -12,6 +12,7 @@ import re
 import dace as dc
 import numpy as np
 import pytest
+from dace.sdfg.state import LoopRegion
 
 from nestforge.ir import introspect
 from nestforge.ir.introspect import describe_graph, interstate_definitions, kernel_body, resolve_scalars
@@ -36,19 +37,51 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 GOLDEN = """\
 SDFG 'shaped'
 |- state0_0
-|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']
-|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']
-`- for0_0  i=0:19
+|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']  work=1 depth=1
+`- for0_0  i=0:19  num_states=3  work=19 depth=57
    |- state1_0
    `- if1_0
       |- block2_0  when A[i + 1] > 0.0
       |  `- state3_0
-      |     |- kernel4_0  [__nf_wrap=0:1]  reads=['s1', 's2'] writes=['s3']
-      |     `- kernel4_1  [__nf_wrap=0:1]  reads=['s3'] writes=['out']
+      |     |- kernel4_0  [__nf_wrap=0:1]  reads=['s1', 's2'] writes=['s3']  work=1 depth=1
+      |     `- kernel4_1  [__nf_wrap=0:1]  reads=['s3'] writes=['out']  work=0 depth=0
       `- block2_1  else
          `- state3_1
-            |- kernel4_2  [__nf_wrap=0:1]  reads=['s4'] writes=['s5']
-            `- kernel4_3  [__nf_wrap=0:1]  reads=['s5'] writes=['out']
+            |- kernel4_2  [__nf_wrap=0:1]  reads=['s4'] writes=['s5']  work=1 depth=1
+            `- kernel4_3  [__nf_wrap=0:1]  reads=['s5'] writes=['out']  work=0 depth=0
+"""
+
+#: The agent's view after it expands ``state0_0``: that state's kernels and their bodies, the rest still closed.
+OPENED = """\
+SDFG 'shaped'
+|- state0_0
+|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|  |  : s6 = A[i0]
+|  |  : s7 = s6 + 1.0
+|  |  : B[i0] = s7
+|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']  work=1 depth=1
+|     : s1 = s0 * 2.0
+`- for0_0  i=0:19  num_states=3  work=19 depth=57
+   |- state1_0
+   `- if1_0
+      |- block2_0  when A[i + 1] > 0.0
+      |  `- state3_0  kernels=2
+      `- block2_1  else
+         `- state3_1  kernels=2
+"""
+
+#: What an agent sees before it expands anything: every block, no state's kernels.
+COLLAPSED = """\
+SDFG 'shaped'
+|- state0_0  kernels=2
+`- for0_0  i=0:19  num_states=3  work=19 depth=57
+   |- state1_0
+   `- if1_0
+      |- block2_0  when A[i + 1] > 0.0
+      |  `- state3_0  kernels=2
+      `- block2_1  else
+         `- state3_1  kernels=2
 """
 
 
@@ -63,6 +96,18 @@ def test_the_tree_format_is_pinned():
     """If this fails, the format changed. Update GOLDEN only when that change is the intent -- every
     agent prompt reads this shape."""
     assert tree_of(shaped) + "\n" == GOLDEN
+
+
+def test_a_state_shows_its_kernels_only_once_expanded():
+    sdfg = shaped.to_sdfg(simplify=True)
+    sdfg.name = "shaped"
+    normalize_for_tree(sdfg)
+
+    collapsed = describe_graph(sdfg, expanded=())
+    opened = describe_graph(sdfg, expanded=["state0_0"])
+
+    assert collapsed + "\n" == COLLAPSED
+    assert opened + "\n" == OPENED
 
 
 def test_every_line_is_a_guide_then_one_labelled_thing():
@@ -400,3 +445,13 @@ def test_a_kernel_source_takes_a_symbol_only_its_body_reads():
     kernel(A=A, B=B, M=4, N=3)
 
     np.testing.assert_array_equal(B, A[:, 3])
+
+
+def test_only_states_and_maps_expand():
+    session = Session(shaped.to_sdfg(simplify=True))
+    loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, LoopRegion))
+
+    sut = session.expand([loop], session.epoch)
+
+    assert sut == f"illegal: only states and maps expand; {loop} is neither."
+    assert session.expanded == set()

@@ -21,13 +21,13 @@ from pathlib import Path
 import dace
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.build.arena import TIMED_REPS
 from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
-from nestforge.ir.introspect import Row, describe_graph, tree_rows
+from nestforge.ir.introspect import Row, WorkDepth, describe_graph, program_work_depth, tree_rows
 from nestforge.ir.loops import kernel_state, loop_symbol_values
 from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
@@ -112,6 +112,8 @@ class Session:
         "sizes",
         "epoch",
         "rows",
+        "expanded",
+        "costs",
         "work_dir",
         "kernel_deps",
         "unplaced",
@@ -136,6 +138,9 @@ class Session:
         self.epoch = 0
         normalize_labels(sdfg)
         self.rows: dict[str, Row] | None = None
+        # labels whose content describe() shows, and the work and depth it prints; both reset each epoch
+        self.expanded: set[str] = set()
+        self.costs: WorkDepth | None = None
         self.work_dir = Path(work_dir) if work_dir else scratch_dir()
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
@@ -148,6 +153,8 @@ class Session:
         self.epoch += 1
         normalize_labels(self.sdfg)
         self.rows = None
+        self.expanded = set()
+        self.costs = None
         self.kernel_deps = None
         self.sources, self.builds, self.prepared = {}, {}, {}
 
@@ -178,17 +185,32 @@ class Session:
 
     # Stage 2: moves
 
-    def describe(self, bodies: bool = False, metrics: bool = False, deps: bool = False) -> str:
+    def describe(self, bodies: bool = False, deps: bool = False) -> str:
         """The program as a text tree headed by the epoch; rows are named by the labels the labeled calls take.
-        ``metrics`` appends each top-level map's work, depth, bytes and OI; ``deps`` puts each kernel's
-        :meth:`kernel_graph` line under its row."""
+        Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
+        once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
+        if self.costs is None:
+            self.costs = program_work_depth(self.sdfg)
         return describe_graph(
             self.sdfg,
             bodies=bodies,
-            metrics=(lambda entry: scope_metrics(self.sdfg, entry).suffix()) if metrics else None,
             notes=self.deps_line if deps else None,
             epoch=self.epoch,
+            expanded=self.expanded,
+            costs=self.costs,
         )
+
+    def expand(self, labels: Sequence[str], epoch: int) -> str:
+        """Show the content of the states and maps ``labels`` name (kernels, nested maps and leaf bodies; a map's
+        nested states) until the program changes; returns what opened, or why nothing did."""
+        rows = self.named_rows("expand", tuple(labels), epoch)
+        if isinstance(rows, MoveResult):
+            return f"{rows.status}: {rows.reason}"
+        closed = [name for name, (obj, _) in zip(labels, rows) if not isinstance(obj, (SDFGState, nodes.MapEntry))]
+        if closed:
+            return f"illegal: only states and maps expand; {', '.join(closed)} is neither."
+        self.expanded.update(labels)
+        return f"ok: expanded {', '.join(labels)}"
 
     def deps_line(self, node: nodes.LibraryNode) -> str | None:
         graph = self.kernel_graph()
