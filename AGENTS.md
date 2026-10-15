@@ -43,3 +43,9 @@ agents.
 - Reuse DaCe (canonicalize, transformations, CPF codegen, analyses) before writing anything new.
 - Comments short; docstrings with `:param:` only on public functions. Docs stay brief, one page per concept.
 - Every bug fix gets a test. Tests assert structure as well as values; a failing test is fixed, never weakened.
+
+## Writing a benchmark
+
+Kernels under `benchmarking_creation/` follow [benchmarking_creation/AGENTS.md](benchmarking_creation/AGENTS.md). Read it before adding or changing one.
+
+A kernel is not done without the HPCAgent-Bench files (`<name>_numpy.py`, `<name>.yaml`, generated `<name>_dace.py`), the explanation `<name>.md`, and a measured reference solution in that explanation. The explanation states what the benchmark is, what the reference is, how it was created, what the solution is, how to optimize it, what the gains are, and how CPU and GPU differ. Score a run by the oracle and by preset M time. Do not give `<name>.md` to an agent whose job is to find the schedule.
