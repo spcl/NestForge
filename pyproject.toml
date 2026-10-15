@@ -54,6 +54,8 @@ include = ["nestforge*"]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# Repo-local benchmark kernels hold generated and reference code that follows hpcagent_bench's layout, not ours.
+extend-exclude = ["benchmarking_creation"]
 
 [tool.ruff.lint]
 # Default rules plus pyupgrade, so annotations use builtin generics and `X | None`, and a complexity ceiling.

@@ -17,7 +17,7 @@ import dace
 
 from nestforge.agent import llm, loop
 from nestforge.build.sdfg import generate_program
-from nestforge.corpus.bench import iter_dace_kernels, preset_sizes
+from nestforge.corpus.bench import iter_dace_kernels, local_names, preset_sizes
 from nestforge.session import JSON_INDENT, Session
 from nestforge.stages.canonicalize import Targets
 
@@ -37,7 +37,7 @@ KERNELS = {
     "cloudsc_tidy": "scientific_computing/structured_grids/cloudsc_tidy/cloudsc_tidy",
     "cloudsc_init": "scientific_computing/structured_grids/cloudsc_init/cloudsc_init",
     "scaled_dot_product_attention": "machine_learning/scaled_dot_product_attention/scaled_dot_product_attention",
-}
+} | {key.rsplit("/", 1)[-1]: key for key in local_names()}
 PRESET = "S"
 # One folder per kernel and device, kept out of the repository root.
 EXPERIMENTS = Path("experiments")
