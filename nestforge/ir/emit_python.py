@@ -764,8 +764,27 @@ def oracle_sdfg(boundary: Boundary) -> dace.SDFG:
         raise UnsupportedNest("the nest returns early, out of its enclosing SDFG; it cannot stand alone")
     sdfg = copy.deepcopy(boundary.standalone_sdfg)
     lower(sdfg)
+    hoist_nested_scratch(sdfg)
     widen_scratch(sdfg, boundary.symbols)
     return sdfg
+
+
+def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
+    """Make the transient arrays of every nest :func:`lower` left nested (a multi-state body of a map) scratch of
+    the kernel, which the caller allocates: the emitted body writes them, and a kernel allocates nothing. The oracle
+    runs serially, so one buffer serves every iteration of the enclosing map."""
+    for nested in list(sdfg.all_sdfgs_recursive()):
+        if nested is sdfg:
+            continue
+        local = names_of(nested).locals
+        for name, desc in nested.arrays.items():
+            if not desc.transient or name in local:
+                continue
+            outer = sdfg.arrays.get(name)
+            if outer is None:
+                sdfg.arrays[name] = copy.deepcopy(desc)
+            elif outer.dtype != desc.dtype or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]:
+                raise UnsupportedNest(f"nested scratch {name!r} has another shape or type than the kernel's {name!r}")
 
 
 def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
