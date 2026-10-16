@@ -64,14 +64,17 @@ def remark_flags(compiler: str) -> list[str]:
 
 
 def compiler_remarks(src: KernelSource, compiler: str, flags: list[str]) -> str:
-    """The remarks of one extra compile of the kernel's unit, to an object that is thrown away; the build error
-    text when it does not compile."""
+    """The remarks of one extra compile of each of the kernel's units, to objects that are thrown away; the build
+    error text when one does not compile. A GPU kernel's register use and spills are in its device unit."""
     extra = [] if src.device == "gpu" else openmp_compile_flags(compiler)
     kept = [f for f in flags if f != "-shared"]
     with tempfile.TemporaryDirectory(prefix="nf_remarks_") as scratch:
-        cmd = [compiler, *kept, *extra, *remark_flags(compiler), "-c", str(src.unit), "-o", f"{scratch}/k.o"]
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
-    return done.stderr
+        cmds = [
+            [compiler, *kept, *extra, *remark_flags(compiler), "-c", str(unit), "-o", f"{scratch}/{unit.stem}.o"]
+            for unit in src.units
+        ]
+        done = [subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S) for cmd in cmds]
+    return "".join(d.stderr for d in done)
 
 
 def vectorizer_reasons(remarks: str) -> list[str]:
