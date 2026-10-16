@@ -63,6 +63,7 @@ class KernelSource:
     boundary: Boundary
     device: str
     device_unit: Path | None = None
+    link: list[str] = dataclasses.field(default_factory=list)  # the vendor libraries the units call
 
     @property
     def units(self) -> list[Path]:
@@ -123,14 +124,18 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
     return finalize_for_target(sdfg, "gpu")
 
 
-def build_cpu_library(units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path) -> None:
-    opts = BuildOptions(compiler=compiler, flags=flags)
+def build_cpu_library(
+    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+) -> None:
+    opts = BuildOptions(compiler=compiler, flags=flags, libraries=list(link))
     build_archive(units, None, archive, archive.with_suffix(".so"), opts)
 
 
-def build_gpu_library(units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path) -> None:
+def build_gpu_library(
+    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+) -> None:
     chosen = flags if flags is not None else cuda_base_flags(cpf.CUDA_BUILD_FLAGS)
-    build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, chosen)
+    build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, chosen, link)
 
 
 def process_runtime_libraries() -> list[str]:
@@ -214,7 +219,7 @@ class KernelForm:
     language: str
     suffix: str
     schedule: Callable[[Boundary], dace.SDFG]
-    build: Callable[[Sequence[Path], str, list[str] | None, Path], None]
+    build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str]], None]
     measure: Callable[
         [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int], int], KernelNumbers | Failure
     ]
@@ -242,7 +247,7 @@ def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> Ker
     device_unit = out_dir / f"{ext.name}{DEVICE_UNIT_SUFFIX}{form.suffix}" if rendering.device_code else None
     if device_unit is not None:
         device_unit.write_text(rendering.device_code)
-    return KernelSource(ext.name, unit, list(rendering.arguments), boundary, device, device_unit)
+    return KernelSource(ext.name, unit, list(rendering.arguments), boundary, device, device_unit, list(rendering.link))
 
 
 def kernel_text(src: KernelSource) -> str:
@@ -262,13 +267,13 @@ def split_kernel_text(text: str) -> tuple[str, str | None]:
 def build_kernel_library(src: KernelSource, compiler: str, flags: list[str] | None, out_dir: Path) -> Path:
     """Build ``<out_dir>/lib<kernel>.a`` from the kernel's unit, plus its shared twin for validation."""
     archive = out_dir / f"lib{src.name}.a"
-    FORMS[src.device].build(src.units, compiler, flags, archive)
+    FORMS[src.device].build(src.units, compiler, flags, archive, src.link)
     return archive
 
 
 def kernel_runtime_libraries(src: KernelSource, compiler: str) -> list[str]:
     """What a program linking ``src``'s library, built by ``compiler``, must link after its objects."""
-    return FORMS[src.device].runtime(compiler)
+    return [*src.link, *FORMS[src.device].runtime(compiler)]
 
 
 def use_kernel_library(ext: ExternalCall, lib_path: Path, src: KernelSource, runtime_libraries: Sequence[str]) -> None:

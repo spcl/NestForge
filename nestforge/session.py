@@ -471,7 +471,9 @@ class Session:
         device_unit = None if device_text is None else attempt / f"{name}{DEVICE_UNIT_SUFFIX}{suffix}"
         if device_unit is not None:
             device_unit.write_text(device_text)
-        src = KernelSource(name, unit, list(default.abi_order), default.boundary, default.device, device_unit)
+        src = KernelSource(
+            name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)
+        )
         variant = self.first_variant(src.device)
         try:
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
