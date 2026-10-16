@@ -33,4 +33,5 @@ symbolic work and depth of one kernel.
 |---|---|
 | default | `default_moves()`: canonicalization's `fuse` stage and the stages after it |
 | agent | moves, then `finish_moves()` runs the stages after `fuse` but `fuse_final`, keeping the chosen maps |
+| score | `guided_moves()`: the legal move with the lowest [static score](../score.md) change, while it is negative; `score_moves()` ranks without applying |
 | code | `nestforge/stages/moves.py` |
