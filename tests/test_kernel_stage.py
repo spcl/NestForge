@@ -496,7 +496,7 @@ def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path, monkeyp
     monkeypatch.setattr(build_sdfg, "archive_and_link", lambda objs, *rest: linked.append(list(objs)))
     units = [tmp_path / "k.cu", tmp_path / "k_device.cu"]
 
-    build_sdfg.build_cuda_archive(units, tmp_path / "out" / "libk.a", tmp_path / "out" / "libk.so", "nvcc", ["-O2"])
+    build_sdfg.build_cuda_archive(units, tmp_path / "out" / "libk.a", tmp_path / "out" / "libk.so", "nvcc", ["-O2"], [])
 
     assert [cmd[cmd.index("-c") + 1] for cmd in commands] == [str(u) for u in units]
     assert linked == [[tmp_path / "out" / "k.o", tmp_path / "out" / "k_device.o"]]

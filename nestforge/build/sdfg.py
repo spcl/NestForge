@@ -184,6 +184,7 @@ class BuildOptions:
     flags: list[str] | None = None  # None -> DEFAULT_FLAGS
     openmp: bool = True
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
+    libraries: list[str] = field(default_factory=list)  # linked ahead of the runtimes, e.g. CPF's vendor libraries
 
     def resolved_flags(self) -> list[str]:
         """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard and ``-Wall`` guaranteed."""
@@ -220,7 +221,7 @@ def build_commands(folder: Path | None, opts: BuildOptions) -> BuildCommands:
         cflags=[f for f in opts.resolved_flags() if f != "-shared"],
         compile_extra=[*omp_c, *includes],
         # icx links libsvml/libimf from off the loader path without a RUNPATH
-        link_libs=[*omp_l, *support_rpath_flags(compiler)],
+        link_libs=[*opts.libraries, *omp_l, *support_rpath_flags(compiler)],
     )
 
 
@@ -255,15 +256,17 @@ def link_shared(linker: str, inputs: Sequence[str], link_libs: Sequence[str], sh
     run([linker, "-shared", AS_NEEDED, *inputs, *link_libs, "-o", str(shared)])
 
 
-def build_cuda_archive(sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str]) -> float:
+def build_cuda_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
     """Compile each CUDA unit with ``nvcc``, archive the objects, and link ``shared`` with the host compiler against
-    the ``libcudart`` that ``nvcc`` itself links."""
+    ``libraries`` and the ``libcudart`` that ``nvcc`` itself links."""
     archive.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     objs = [archive.parent / f"{source.stem}.o" for source in sources]
     for source, obj in zip(sources, objs):
         run([nvcc, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
-    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, cudart_link_flags(cudart_dir(nvcc)))
+    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *cudart_link_flags(cudart_dir(nvcc))])
     return time.perf_counter() - t0
 
 
