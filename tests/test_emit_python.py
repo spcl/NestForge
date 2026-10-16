@@ -510,7 +510,7 @@ def test_a_rank_changing_copy_reshapes_to_a_literal_shape():
     """The reshape target is a tuple of extents, never ``np.shape`` of a slice the C translator cannot size."""
     column = subsets.Range([(0, M - 1, 1), (3, 3, 1)])
     assert indexed_shape(column) == "(M, )"
-    assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_floor(N - 1, 2) + 1), )"
+    assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_ceil(N, 2)), )"
 
 
 def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have():

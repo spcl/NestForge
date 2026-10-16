@@ -105,7 +105,7 @@ def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
     sdfg = copy.deepcopy(boundary.standalone_sdfg)
     for name in boundary.symbols:
         if sdfg.symbols[name] in dtypes.INTEGER_TYPES:
-            sdfg.symbols[name] = dace.int64
+            sdfg.symbol_repo.set_type(name, dace.int64)
     return sdfg
 
 

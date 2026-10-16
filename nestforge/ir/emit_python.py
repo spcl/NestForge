@@ -445,8 +445,8 @@ def as_range(subset: subsets.Subset) -> subsets.Range:
 
 def indexed_shape(subset: subsets.Subset) -> str:
     """The shape ``index(subset)`` selects, as a tuple literal: single-element axes drop, as in NumPy."""
-    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
-    kept = [(end - begin) // step + 1 for begin, end, step in ranges if begin != end]
+    selected = as_range(subset)
+    kept = [extent for (begin, end, _), extent in zip(selected.ranges, selected.size()) if begin != end]
     return "(" + "".join(f"{symbolic.symstr(extent, cpp_mode=False)}, " for extent in kept) + ")"
 
 
