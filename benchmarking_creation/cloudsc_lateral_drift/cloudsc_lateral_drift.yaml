@@ -1,0 +1,51 @@
+# Repo-local kernel (see benchmarking_creation/README.md): relative_path, func_name and input_args are explicit
+# because the manifest lives outside hpcagent_bench's corpus, where they would be derived from the folder.
+# CloudSC rain sedimentation (carried down the levels, columns independent) followed by an implicit lateral drift
+# of the flux (carried along the contiguous column axis, levels independent), eastward or westward per level.
+# Source lines and the edit: see cloudsc_lateral_drift_numpy.py.
+name: CloudSC Lateral Drift
+relative_path: benchmarking_creation/cloudsc_lateral_drift
+func_name: cloudsc_lateral_drift
+input_args: [pap, paph, ztp1, zqr, pfsnow, pfplsx, flx, outE, outW, out, cap, east, NLEV, KLON, NCLDTOP]
+level: 2
+parameters:
+  # NCLDTOP = 15 as in the CloudSC NumPy port; NLEV must exceed it. KLON at S is not a multiple of any block.
+  S:
+    NLEV: 30
+    KLON: 263
+    NCLDTOP: 15
+  M:
+    NLEV: 137
+    KLON: 32768
+    NCLDTOP: 15
+  L:
+    NLEV: 137
+    KLON: 65537
+    NCLDTOP: 15
+  XL:
+    NLEV: 137
+    KLON: 131073
+    NCLDTOP: 15
+init:
+  # Structured inputs (monotone pressure, positive temperature, limiter that binds): see cloudsc_lateral_drift.py.
+  func_name: initialize
+  input_args: [NLEV, KLON, NCLDTOP]
+  arrays:
+    pap: (NLEV, KLON)
+    paph: (NLEV + 1, KLON)
+    ztp1: (NLEV, KLON)
+    zqr: (NLEV, KLON)
+    pfsnow: (NLEV + 1, KLON)
+    pfplsx: (NLEV + 1, KLON)
+    flx: (NLEV + 1, KLON)
+    outE: (NLEV + 1, KLON)
+    outW: (NLEV + 1, KLON)
+    out: (NLEV + 1, KLON)
+    cap: (NLEV + 1, KLON)
+    east:
+      shape: (NLEV + 1,)
+      dtype: int32
+output_args:
+- out
+chain_length:
+  out: KLON
