@@ -313,21 +313,20 @@ def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
     np.testing.assert_allclose(out, expected, rtol=1e-12)
 
 
-def test_azimint_hist_oracle_exposes_the_sdfgs_out_of_bounds_bin_edge_read():
-    """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``, but the SDFG evaluates both operands of
-    the ``and`` before branching, so it reads ``e[npt]`` one past the end, which C does silently. The oracle
-    reproduces the SDFG faithfully, so NumPy's bounds check raises there. The day the frontend keeps the
-    short circuit, this test fails and should become the numeric comparison it used to be."""
+def test_azimint_hist_bins_radii_into_a_weighted_mean_per_bin():
+    """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``; the SDFG keeps the short circuit, so the
+    emitted Python never reads past the last bin edge and matches NumPy's histogram ratio."""
     N, npt = 200, 8
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
-    with pytest.raises(IndexError, match=f"index {npt} is out of bounds for axis 0 with size {npt}"):
-        alloc_run(
-            "scientific_computing/map_reduce/azimint_hist/azimint_hist",
-            "azimint_hist",
-            dict(N=N, npt=npt),
-            dict(data=data, radius=radius),
-        )
+    call, _ = alloc_run(
+        "scientific_computing/map_reduce/azimint_hist/azimint_hist",
+        "azimint_hist",
+        dict(N=N, npt=npt),
+        dict(data=data, radius=radius),
+    )
+    ref = np.histogram(radius, npt, weights=data)[0] / np.histogram(radius, npt)[0]
+    np.testing.assert_allclose(call["out"], ref, equal_nan=True)
 
 
 def test_azimint_naive_wcr_reduction_emits_and_computes():
