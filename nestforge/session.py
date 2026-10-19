@@ -297,7 +297,7 @@ class Session:
 
     def define_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
-        top-level blocks. The kernel written in stage 5 fuses what no move could.
+        blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
 
         :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them at ``epoch``.
         :param epoch: The epoch those labels were read at.

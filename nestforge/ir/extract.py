@@ -150,7 +150,7 @@ def blocks_defined_symbol_dtypes(
         if isinstance(block, CfgNest):
             defined |= nest_defined_symbol_dtypes(parent_sdfg, block)
     table = symbol_table(parent_sdfg) | defined
-    for edge in parent_sdfg.edges():
+    for edge in blocks[0].parent_graph.edges():
         if edge.src in blocks and edge.dst in blocks:
             for target, rhs in edge.data.assignments.items():
                 define_symbol(defined, table, target, str(rhs))
@@ -158,7 +158,7 @@ def blocks_defined_symbol_dtypes(
 
 
 def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
-    """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
+    """Outline a single-entry, single-exit run of blocks of one region of ``parent_sdfg`` into one nested SDFG."""
     if len(blocks) == 1 and isinstance(blocks[0], SDFGState):
         # DaCe nests a lone state as itself, so its contents are nested instead
         return extract_state_nodes(parent_sdfg, blocks[0], blocks[0].nodes(), name or "nest")
@@ -166,8 +166,8 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
     for s, dtype in blocks_defined_symbol_dtypes(parent_sdfg, blocks).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
-    subgraph = SubgraphView(parent_sdfg, list(blocks))
-    inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
+    subgraph = SubgraphView(blocks[0].parent_graph, list(blocks))
+    inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph, start=blocks[0])
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
     # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache
     if name:

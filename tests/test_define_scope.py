@@ -63,6 +63,14 @@ def running_sum(x: dace.float64[N], out: dace.float64[N]):
         out[i] = out[i - 1] + x[i]
 
 
+@dace.program
+def smooth_steps(A: dace.float64[N], B: dace.float64[N]):
+    for t in range(3):
+        for i in range(1, N - 1):
+            B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
+        A[1 : N - 1] = B[1 : N - 1] + 1.0
+
+
 def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
@@ -204,6 +212,36 @@ def test_a_length1_transient_the_group_writes_first_is_not_an_input():
     assert result.status == "applied", result
     # the parallel sum into s adds in thread order
     assert_same_values(reference, session.sdfg, ("A", "C"), rtol=1e-14)
+
+
+def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_the_loop_body():
+    """A scope is any straight run of one region, not only of the top level: the kernel replaces the inner loop and
+    the copy state and is called once per time step."""
+    session, reference = session_and_reference(smooth_steps)
+    session.describe()
+    rows = session.row_index()
+    time_loop = rows["for0_0"][0]
+
+    result = session.define_scope(["for1_0", "state1_0"], session.epoch)
+
+    assert result.status == "applied", result
+    kernel = session.kernel(result.reason)
+    (body_state,) = time_loop.nodes()
+    assert kernel in body_state.nodes(), "the kernel left the time loop"
+    assert not any(isinstance(block, LoopRegion) for block in time_loop.all_control_flow_blocks())
+    assert_same_values(reference, session.sdfg, ("A", "B"))
+
+
+def test_blocks_at_different_levels_are_refused():
+    session, _ = session_and_reference(smooth_steps)
+    session.describe()
+    before = session.epoch
+
+    result = session.define_scope(["for0_0", "for1_0"], before)
+
+    assert result.status == "illegal", result
+    assert "one level" in result.reason
+    assert session.epoch == before and external_calls(session.sdfg) == []
 
 
 def test_no_labels_is_refused():

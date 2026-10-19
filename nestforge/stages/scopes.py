@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 3: lower each offloading scope into an ``ExternalCall`` kernel. Default: one scope per parallel top-level
-map. An agent may name several maps of one state, or a straight run of top-level blocks, as one scope."""
+map. An agent may name several maps of one state, or a straight run of blocks of one region, as one scope."""
 
 from __future__ import annotations
 
@@ -216,13 +216,20 @@ def map_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
 
 
 def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> Extract | str:
-    """A straight, single-entry run of top-level blocks of ``sdfg``, in execution order."""
-    outer = [block.label for block in blocks if block.parent_graph is not sdfg]
-    if outer:
-        return f"{', '.join(outer)} is not a top-level block of the program; kernels live at the top level."
-    order = [block for block in in_order(sdfg) if block in blocks]
+    """A straight, single-entry run of blocks of one control-flow region of ``sdfg``, at any depth, in execution
+    order."""
+    nested = [block.label for block in blocks if block.sdfg is not sdfg]
+    if nested:
+        return f"{', '.join(nested)} sits inside a nested SDFG; name blocks of the program."
+    region = blocks[0].parent_graph
+    other = [block.label for block in blocks if block.parent_graph is not region]
+    if other:
+        return f"{', '.join(other)} is not in the region of {blocks[0].label}; name blocks of one level."
+    order = [block for block in in_order(region) if block in blocks]
     for first, second in zip(order, order[1:]):
-        if [e.dst for e in sdfg.out_edges(first)] != [second] or len(sdfg.in_edges(second)) != 1:
+        out = region.out_edges(first)
+        straight = [e.dst for e in out] == [second] and out[0].data.is_unconditional()
+        if not straight or len(region.in_edges(second)) != 1:
             return f"{first.label} and {second.label} are not one straight run; name blocks that follow each other."
     return partial(extract_blocks, sdfg, order)
 

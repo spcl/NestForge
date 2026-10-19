@@ -27,8 +27,8 @@ dependencies = [
     "sympy",
     # The tips of DaCe extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both. The bench pins its
     # own DaCe, so [tool.uv] overrides it with this one.
-    "dace @ git+https://github.com/spcl/dace.git@21fd0c4a545486a3abc1fced7fe8ce357a8bc2da",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@9977765664238e36386f6108eaf3c37c8ef87d35",
+    "dace @ git+https://github.com/spcl/dace.git@647e66e6e36dd87f6b2a5c4ae3c2d25284bb1643",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@083c88e38ddaa6770a4b9f9c97be794e2ba4a11a",
 ]
 
 [project.optional-dependencies]
@@ -50,7 +50,7 @@ Homepage = "https://github.com/spcl/NestForge"
 Repository = "https://github.com/spcl/NestForge"
 
 [tool.uv]
-override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@21fd0c4a545486a3abc1fced7fe8ce357a8bc2da"]
+override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@647e66e6e36dd87f6b2a5c4ae3c2d25284bb1643"]
 
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
