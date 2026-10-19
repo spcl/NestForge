@@ -426,10 +426,10 @@ def index(subset: subsets.Subset) -> str:
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
-        if sympy.sympify(end - begin) == 0:
+        if symbolic.pystr_to_symbolic(end - begin) == 0:
             parts.append(begin_text)
             continue
-        if sympy.sympify(step).is_positive is not True:
+        if symbolic.pystr_to_symbolic(step).is_positive is not True:
             raise UnsupportedNest(f"subset step {step} is not provably positive; no sound NumPy slice")
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
@@ -572,7 +572,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     for param, (begin, end, step) in zip(entry.map.params, entry.map.range.ranges):
         if param in scope.active:
             raise UnsupportedNest(f"map parameter {param!r} shadows an enclosing iterator")
-        sign = sympy.sign(sympy.sympify(step))
+        sign = sympy.sign(symbolic.pystr_to_symbolic(step))
         if sign not in (1, -1):
             raise UnsupportedNest(f"map parameter {param!r} has step {step} of undecidable sign")
         bounds = [expr(begin, scope.names), expr(end + sign, scope.names)]

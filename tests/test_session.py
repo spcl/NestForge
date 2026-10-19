@@ -6,9 +6,9 @@ stages have their own tests."""
 import dace
 import numpy as np
 
+from nestforge.ir.names import top_level_map_entries
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")
 

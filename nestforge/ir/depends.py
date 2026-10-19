@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import dace
-from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, in_conn, out_conn
+from dace.libraries.standard.nodes.external_call import IN_PREFIX, OUT_PREFIX, ExternalCall, data_name
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
@@ -30,9 +30,6 @@ from dace.transformation.passes.analysis.analysis import names_read_by_text
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.names import in_order
-
-INPUT_PREFIX = in_conn("")
-OUTPUT_PREFIX = out_conn("")
 
 #: Why a kernel reads an argument: a data input or a symbol.
 Role = Literal["input", "symbol"]
@@ -205,8 +202,8 @@ def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
             roots[id(node)] = root.data
 
     def source(edge: MultiConnectorEdge) -> Fact:
-        if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUTPUT_PREFIX):
-            return Fact((Producer("kernel", edge.src.label, edge.src_conn.removeprefix(OUTPUT_PREFIX)),))
+        if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUT_PREFIX):
+            return Fact((Producer("kernel", edge.src.label, data_name(edge.src_conn)),))
         if isinstance(edge.src, nodes.AccessNode):
             return facts[id(edge.src)]
         return Fact((Producer("host", state.label),))
@@ -222,8 +219,8 @@ def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
         elif isinstance(node, ExternalCall):
             tracker.kernels[node.label] = None
             for edge in state.in_edges(node):
-                if edge.dst_conn and edge.dst_conn.startswith(INPUT_PREFIX):
-                    record(tracker, node.label, edge.dst_conn.removeprefix(INPUT_PREFIX), "input", source(edge))
+                if edge.dst_conn and edge.dst_conn.startswith(IN_PREFIX):
+                    record(tracker, node.label, data_name(edge.dst_conn), "input", source(edge))
             for name in kernel_symbols(node):
                 record(tracker, node.label, name, "symbol", env.get(name, Fact()))
     return env

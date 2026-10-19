@@ -46,19 +46,6 @@ WorkDepth = dict[str, tuple[sympy.Expr, sympy.Expr]]
 Notes = Callable[[nodes.LibraryNode], str | None]
 
 
-class Substitute(ast.NodeTransformer):
-    """Replace each ``Name`` that has a definition with that definition's expression."""
-
-    __slots__ = ("definitions",)
-
-    def __init__(self, definitions: dict[str, str]) -> None:
-        self.definitions = definitions
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        expression = self.definitions.get(node.id)
-        return ast.parse(expression, mode="eval").body if expression is not None else node
-
-
 def interstate_definitions(sdfg: dace.SDFG) -> dict[str, str]:
     """``name -> expression`` for every interstate assignment in the SDFG; a name assigned more than
     one distinct expression is dropped (which one reaches a block depends on the path taken)."""
@@ -83,7 +70,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
         used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & set(remaining)
         if not used:
             break
-        tree = Substitute({name: remaining.pop(name) for name in used}).visit(tree)
+        tree = astutils.ASTFindReplace({name: remaining.pop(name) for name in used}).visit(tree)
     # ast.unparse: this string is read, never parsed again
     return ast.unparse(simplify_indices(tree)).strip()
 
@@ -207,7 +194,7 @@ def render_range(rng: tuple[Any, Any, Any]) -> str:
     """``begin:end:step`` as ``range`` reads it: an end one past the last value in the direction of travel, and
     a unit step left off."""
     begin, end, step = rng
-    delta = -1 if sympy.sympify(step).is_negative is True else 1
+    delta = -1 if dace.symbolic.pystr_to_symbolic(step).is_negative is True else 1
     text = f"{begin}:{exclusive_end(str(end), delta)}"
     return text if step == 1 else f"{text}:{step}"
 

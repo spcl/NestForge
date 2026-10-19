@@ -72,6 +72,12 @@ def top_level_nodes[N: nodes.Node](state: SDFGState, kind: type[N]) -> list[N]:
     return [node for node in state.nodes() if isinstance(node, kind) and scope[node] is None]
 
 
+def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
+    """The maps of ``state`` not nested in another map, in ``scope_children`` order (breadth first from the
+    sources), which kernel names follow."""
+    return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
+
+
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
     return [(state, node) for state in sdfg.states() for node in top_level_nodes(state, nodes.NestedSDFG)]

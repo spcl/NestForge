@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import dace
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 
@@ -27,9 +27,10 @@ from nestforge.build.arena import TIMED_REPS
 from nestforge.build.sdfg import force_register_arrays
 from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
-from nestforge.ir.depends import OUTPUT_PREFIX, KernelGraph, UnsupportedProgram, kernel_dependencies
+from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
+from nestforge.ir.extract import find_state_of_node
 from nestforge.ir.introspect import Row, WorkDepth, describe_graph, program_work_depth, tree_rows
-from nestforge.ir.loops import kernel_state, loop_symbol_values
+from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import normalize_labels
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
@@ -352,7 +353,7 @@ class Session:
                     "device": kernel_device(ext),
                     "parallel": is_parallel_kernel(ext),
                     "inputs": [edge.arg for edge in arguments if edge.role == "input"],
-                    "outputs": sorted(conn.removeprefix(OUTPUT_PREFIX) for conn in ext.out_connectors),
+                    "outputs": sorted(data_name(conn) for conn in ext.out_connectors),
                     "symbols": [edge.arg for edge in arguments if edge.role == "symbol"],
                     "depends": {edge.arg: edge.labels() for edge in arguments},
                     "carried": {edge.arg: edge.loops() for edge in arguments if edge.loops()},
@@ -507,7 +508,7 @@ class Session:
         a value given in ``sizes`` wins."""
         sizes = self.need_sizes()
         ext = self.kernel(name)
-        return {**loop_symbol_values(kernel_state(self.sdfg, ext), sizes), **sizes}
+        return {**loop_symbol_values(find_state_of_node(self.sdfg, ext), sizes), **sizes}
 
     # Stage 6: variants
 

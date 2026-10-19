@@ -11,9 +11,10 @@ from functools import partial
 
 import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls, in_conn, out_conn
+from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
+from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 
 from nestforge.corpus.translate import python_and_manifest
 from nestforge.ir.dace_types import strings
@@ -26,12 +27,7 @@ from nestforge.ir.extract import (
     find_state_of_node,
 )
 from nestforge.ir.introspect import Row, nest_reads_writes
-from nestforge.ir.names import in_order
-
-
-def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
-    """The maps of ``state`` not nested in another map."""
-    return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
+from nestforge.ir.names import in_order, top_level_map_entries
 
 
 def is_parallel_nest(node: NestNode) -> bool:
@@ -60,25 +56,10 @@ def is_parallel_kernel(ext: ExternalCall) -> bool:
     return True
 
 
-def reference_sdfg(boundary: Boundary) -> dace.SDFG:
-    """The standalone SDFG with boundary arrays renamed to the node's connectors; an array both read and written
-    gets an ``_in_`` and an ``_out_`` connector."""
-    ref = copy.deepcopy(boundary.standalone_sdfg)
-    inplace = [name for name in boundary.inputs if name in boundary.outputs]
-    for name in boundary.inputs:
-        if name not in inplace:
-            ref.replace(name, in_conn(name))
-    for name in boundary.outputs:
-        ref.replace(name, out_conn(name))
-    for name in sorted(inplace):
-        ref.add_datadesc(in_conn(name), copy.deepcopy(ref.arrays[out_conn(name)]))
-    return ref
-
-
 def kernel_arguments(ext: ExternalCall) -> tuple[list[str], list[str], list[str]]:
     """``(inputs, outputs, symbols)`` of the kernel node, in boundary order."""
-    inputs = [conn.removeprefix(in_conn("")) for conn in ext.in_connectors]
-    outputs = [conn.removeprefix(out_conn("")) for conn in ext.out_connectors]
+    inputs = [data_name(conn) for conn in ext.in_connectors]
+    outputs = [data_name(conn) for conn in ext.out_connectors]
     symbols = sorted(arg for arg in strings(ext.abi_order) if arg not in inputs and arg not in outputs)
     return inputs, outputs, symbols
 
@@ -116,7 +97,7 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
         name,
         inputs=[in_conn(i) for i in boundary.inputs],
         outputs=[out_conn(o) for o in boundary.outputs],
-        standalone_sdfg=reference_sdfg(boundary),
+        standalone_sdfg=reference_sdfg(nsdfg),
         numpy_source=source,
     )
     ext.abi_order = list(manifest["input_args"])

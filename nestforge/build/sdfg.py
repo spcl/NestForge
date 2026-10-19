@@ -22,7 +22,7 @@ import numpy as np
 from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
 from dace.data import Array
-from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.libraries.standard.nodes.external_call import external_calls
 from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
 
 from nestforge.build.toolchain import (
@@ -126,8 +126,8 @@ def new_gpu_codegen() -> AbstractContextManager[object]:
 
 def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
     """Each kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time."""
-    for node, _ in sdfg.all_nodes_recursive():
-        if isinstance(node, ExternalCall) and node.standalone_sdfg is not None:
+    for node in external_calls(sdfg):
+        if node.standalone_sdfg is not None:
             yield from node.standalone_sdfg.all_sdfgs_recursive()
 
 

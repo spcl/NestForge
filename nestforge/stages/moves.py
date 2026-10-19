@@ -28,7 +28,7 @@ from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_g
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
-from nestforge.ir.names import in_order
+from nestforge.ir.names import in_order, top_level_map_entries
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,13 +130,7 @@ def map_body(state: SDFGState, entry: nodes.MapEntry) -> nodes.NestedSDFG | None
 
 def loop_maps(loop: LoopRegion) -> list[nodes.MapEntry]:
     """The outermost maps of the states directly inside ``loop``."""
-    return [
-        n
-        for block in loop.nodes()
-        if isinstance(block, SDFGState)
-        for n in block.scope_children()[None]
-        if isinstance(n, nodes.MapEntry)
-    ]
+    return [n for block in loop.nodes() if isinstance(block, SDFGState) for n in top_level_map_entries(block)]
 
 
 def intermediates(state: SDFGState, producer: nodes.MapEntry, consumer: nodes.MapEntry) -> list[nodes.AccessNode]:

@@ -13,7 +13,8 @@ import pytest
 from dace.sdfg.state import LoopRegion
 
 from nestforge.build.sdfg import compile_linked_program, generate_program
-from nestforge.ir.loops import enclosing_loops, kernel_state, loop_symbol_values
+from nestforge.ir.extract import find_state_of_node
+from nestforge.ir.loops import enclosing_loops, loop_symbol_values
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 
@@ -49,7 +50,7 @@ def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_lo
 
     iterator = iterator_of(session)
     (ext,) = [session.kernel(k["name"]) for k in session.list_kernels()]
-    state = kernel_state(session.sdfg, ext)
+    state = find_state_of_node(session.sdfg, ext)
 
     assert iterator not in session.sdfg.symbols, "a loop iterator is defined by its loop, not by the program"
     assert iterator in state.symbols_defined_at(ext)
@@ -60,7 +61,7 @@ def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win
     iterator = iterator_of(session)
     (ext,) = [session.kernel(k["name"]) for k in session.list_kernels()]
 
-    values = loop_symbol_values(kernel_state(session.sdfg, ext), SIZES)
+    values = loop_symbol_values(find_state_of_node(session.sdfg, ext), SIZES)
 
     assert values == {iterator: 3}, "range(1, 6) has 5 iterations and the middle one is t=3"
     assert session.kernel_sizes(ext.name) == {**SIZES, iterator: 3}

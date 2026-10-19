@@ -6,7 +6,6 @@ standalone check of the kernel needs a value for each."""
 from __future__ import annotations
 
 import dace
-from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
 
@@ -27,14 +26,6 @@ def enclosing_loops(state: SDFGState) -> list[LoopRegion]:
             loops.append(region)
         region = region.parent_graph
     return loops[::-1]
-
-
-def kernel_state(sdfg: dace.SDFG, ext: ExternalCall) -> SDFGState:
-    """The state holding the kernel node ``ext``."""
-    for block in sdfg.all_control_flow_blocks():
-        if isinstance(block, SDFGState) and any(node is ext for node in block.nodes()):
-            return block
-    raise KeyError(f"kernel {ext.name!r} is not in the program")
 
 
 def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol, int]) -> int | None:
