@@ -42,7 +42,7 @@ from nestforge.build.sdfg import (
 )
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
-from nestforge.ir.extract import Boundary
+from nestforge.ir.extract import INT64, Boundary
 from nestforge.stages.placement import kernel_device
 
 # Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` beside the host unit ``<kernel>.cu``.
@@ -105,7 +105,7 @@ def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
     sdfg = copy.deepcopy(boundary.standalone_sdfg)
     for name in boundary.symbols:
         if sdfg.symbols[name] in dtypes.INTEGER_TYPES:
-            sdfg.symbol_repo.set_type(name, dace.int64)
+            sdfg.symbol_repo.set_type(name, INT64)
     return sdfg
 
 

@@ -183,8 +183,9 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
         if not isinstance(node, nodes.LibraryNode):
             continue
         if node.label in taken:
-            # LibraryNode sets name and label alike; keep them equal
-            node.name = node.label = find_new_name(node.label, taken)
+            # LibraryNode sets name and label alike; keep them equal. DaCe's Node stub declares label read-only,
+            # though LibraryNode's label is a writable Property
+            node.name = node.label = find_new_name(node.label, taken)  # pyright: ignore[reportAttributeAccessIssue]
         taken[node.label] = None
 
 
@@ -226,7 +227,7 @@ def rename_transient_data(sdfg: dace.SDFG) -> dict[str, str]:
     return renames
 
 
-def enclosing_param_count(node: nodes.MapEntry, scope: dict[nodes.Node, SDFGState | nodes.Node | None]) -> int:
+def enclosing_param_count(node: nodes.MapEntry, scope: dict[nodes.Node, nodes.EntryNode | None]) -> int:
     """How many map parameters the maps enclosing ``node`` own."""
     count, parent = 0, scope[node]
     while isinstance(parent, nodes.MapEntry):

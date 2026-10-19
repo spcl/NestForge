@@ -469,8 +469,9 @@ class Session:
         suffix = FORMS[default.device].suffix
         unit = attempt / f"{name}{suffix}"
         unit.write_text(host)
-        device_unit = None if device_text is None else attempt / f"{name}{DEVICE_UNIT_SUFFIX}{suffix}"
-        if device_unit is not None:
+        device_unit = None
+        if device_text is not None:
+            device_unit = attempt / f"{name}{DEVICE_UNIT_SUFFIX}{suffix}"
             device_unit.write_text(device_text)
         src = KernelSource(
             name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)

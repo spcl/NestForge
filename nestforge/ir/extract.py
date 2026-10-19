@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeAlias, cast
 
 import dace
 from dace.sdfg import nodes
@@ -17,11 +17,12 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFG
 from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
-CfgNest = LoopRegion | ConditionalBlock
+# TypeAlias, not ``type``: isinstance needs the runtime union
+CfgNest: TypeAlias = LoopRegion | ConditionalBlock  # noqa: UP040
 
 #: ``dace.int64``, which DaCe annotates as the NumPy type rather than its typeclass.
 INT64 = cast(dace.dtypes.typeclass, dace.int64)
-NestNode = nodes.MapEntry | CfgNest
+NestNode: TypeAlias = nodes.MapEntry | CfgNest  # noqa: UP040
 
 
 @dataclass(slots=True)

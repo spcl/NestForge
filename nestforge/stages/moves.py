@@ -25,6 +25,7 @@ from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
+from dace.transformation.transformation import PatternTransformation
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
@@ -36,7 +37,7 @@ class Rewrite:
     """A legal move; ``commit`` applies it and ``name`` is the transformation that runs."""
 
     name: str
-    commit: Callable[[], None]
+    commit: Callable[[], object]
 
 
 #: Every move kind, with the tree rows it takes in order.
@@ -95,7 +96,9 @@ def check_kind(kind: str) -> str:
     return kind
 
 
-def pattern(xform: type, sdfg: dace.SDFG, where: dict[str, Any], **options: Any) -> Rewrite | None:
+def pattern(
+    xform: type[PatternTransformation], sdfg: dace.SDFG, where: dict[str, Any], **options: Any
+) -> Rewrite | None:
     """The move ``xform`` makes at ``where`` when its own check accepts it."""
     if not xform.can_be_applied_to(sdfg, **options, **where):
         return None
