@@ -87,23 +87,27 @@ def generate_dace_file(short_name: str) -> None:
         autogen.ensure(short_name, ("dace",))
 
 
-def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
-    """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
+def corpus_kernel(name: str) -> CorpusKernel | None:
+    """The corpus kernel ``name`` (registry key, manifest stem or directory) names, or None without a ``_dace.py``."""
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
+    short_name = KERNELS.path_key(name)
+    if short_name is None:
+        return None
+    dace_file = KERNELS[short_name].parent / f"{short_name.rsplit('/', 1)[-1]}_dace.py"
+    if not dace_file.exists():
+        generate_dace_file(short_name)
+    if not dace_file.exists():
+        return None
+    return CorpusKernel(short_name, module_path(short_name), dace_file, BenchSpec.load(short_name))
+
+
+def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
+    """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
     for short_name in track_names(track):
-        module_name = short_name.rsplit("/", 1)[-1]
-        dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
-        if not dace_file.exists():
-            generate_dace_file(short_name)
-        if not dace_file.exists():
-            continue
-        yield CorpusKernel(
-            short_name=short_name,
-            module_path=module_path(short_name),
-            dace_file=dace_file,
-            spec=BenchSpec.load(short_name),
-        )
+        kernel = corpus_kernel(short_name)
+        if kernel is not None:
+            yield kernel
 
 
 def materialize_dace_corpus() -> None:

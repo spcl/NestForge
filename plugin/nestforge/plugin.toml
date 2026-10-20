@@ -1,0 +1,11 @@
+# NestForge as a user plugin: point HPCAGENT_BENCH_USER_PLUGIN_DIRS at this folder.
+name = "nestforge"
+description = "Whole-program DaCe optimization: legal moves, scoped kernels, placement, with performance feedback."
+
+[packets.nestforge]
+name = "NestForge"
+method = "nestforge"
+tools = [
+    "get_cpf", "view_tree", "list_moves", "apply_move", "run_defaults", "set_scope", "unset_scope",
+    "list_kernels", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "finalize",
+]

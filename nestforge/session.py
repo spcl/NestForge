@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import dace
+import numpy as np
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
@@ -57,7 +58,8 @@ from nestforge.stages.moves import (
     scope_metrics,
     sdfg_metrics,
 )
-from nestforge.stages.placement import check_devices, default_devices, kernel_device, place, transfers
+from nestforge.stages.performance import Performance, kernel_reports, offload_report, time_program
+from nestforge.stages.placement import Transfer, check_devices, default_devices, kernel_device, place, transfers
 from nestforge.stages.scopes import (
     is_parallel_kernel,
     lower_group_to_external_call,
@@ -214,6 +216,11 @@ class Session:
             return f"illegal: only states and maps expand; {', '.join(closed)} is neither."
         self.expanded.update(labels)
         return f"ok: expanded {', '.join(labels)}"
+
+    def collapse(self, labels: Sequence[str]) -> str:
+        """Hide again what :meth:`expand` opened under ``labels``; a label not open is ignored."""
+        self.expanded.difference_update(labels)
+        return f"ok: collapsed {', '.join(labels)}"
 
     def deps_line(self, node: nodes.LibraryNode) -> str | None:
         graph = self.kernel_graph()
@@ -541,6 +548,10 @@ class Session:
     def feedback(self, reps: int = TIMED_REPS) -> str:
         """A few lines of hints for the next round, most important first, from every kernel's current library:
         its validation and time, and the compiler's vectorizer or register remarks."""
+        return feedback.report(self.kernel_evidence(reps))
+
+    def kernel_evidence(self, reps: int = TIMED_REPS) -> list[feedback.Evidence]:
+        """Every kernel's validation, time and compiler remarks, building the default library where none is bound."""
         evidence: list[feedback.Evidence] = []
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
@@ -555,7 +566,40 @@ class Session:
             variant = build.variant
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
             evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
-        return feedback.report(evidence)
+        return evidence
+
+    def trial(self) -> Session:
+        """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
+        copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes)
+        copied.unplaced = copy.deepcopy(self.unplaced)
+        return copied
+
+    def performance(self, inputs: dict[str, np.ndarray], reps: int = TIMED_REPS) -> Performance:
+        """Every phase's feedback at once (:mod:`~nestforge.stages.performance`): on a :meth:`trial`, the default
+        scopes when none is defined, the default placement when none is chosen and the default kernel builds, then
+        the whole program, its offloading and each kernel are timed."""
+        trial = self.trial()
+        if not external_calls(trial.sdfg):
+            trial.define_scopes()
+        placed = trial.place() if trial.unplaced is None else None
+        devices = {ext.name: kernel_device(ext) for ext in external_calls(trial.sdfg)}
+        if placed is not None and placed["transfers"] is not None:
+            moves = [Transfer(**move) for move in placed["transfers"]]
+        else:
+            try:
+                moves = transfers(trial.kernel_graph(), devices)
+            except UnsupportedProgram:
+                moves = None
+        evidence = trial.kernel_evidence(reps)
+        program = time_program(
+            trial.sdfg, trial.work_dir / "program", inputs, self.sizes, reps, "gpu" in devices.values()
+        )
+        return Performance(
+            structured=program,
+            offloading=offload_report(trial.sdfg, devices, moves, self.sizes),
+            kernels=kernel_reports(evidence, devices),
+            hints=feedback.report(evidence),
+        )
 
 
 def winner_config(winner: VariantCell | None) -> dict:
