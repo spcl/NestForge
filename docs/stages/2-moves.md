@@ -11,7 +11,7 @@ nested SDFG, carries `num_states=`. A state shows only `kernels=<count>` until `
 then its maps, nested maps and leaf-kernel bodies appear (an expanded map also shows its nested states). An
 expansion lasts until the epoch changes. `list_moves(kind)` returns the legal moves as
 `{kind, labels, epoch}`, and `apply_move(kind, labels, epoch)` returns a `MoveResult` whose status is `applied`,
-`illegal`, `not-implemented`, `not-found` or `stale`. Labels are the tree labels, unique across the whole program.
+`illegal`, `not-found` or `stale`. Labels are the tree labels, unique across the whole program.
 Any mutation starts a new epoch, so a move read at an old epoch returns `stale`. `metrics(label)` gives the
 symbolic work and depth of one kernel.
 
@@ -27,7 +27,6 @@ symbolic work and depth of one kernel.
 | `interchange-map-loop` | map, its loop | `MapLoopInterchange` |
 | `interchange-if-loop` | if, loop | `MoveIfIntoLoop` |
 | `interchange-loop-if` | loop, its if | `MoveLoopInvariantIfUp` |
-| `interchange-loop-loop` | | not implemented |
 
 | | |
 |---|---|

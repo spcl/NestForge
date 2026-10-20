@@ -13,10 +13,11 @@ import dace as dc
 import numpy as np
 import pytest
 from dace.sdfg.state import LoopRegion
+from helpers import kernel_body
 
 from nestforge.ir import introspect
-from nestforge.ir.introspect import describe_graph, interstate_definitions, kernel_body, resolve_scalars
-from nestforge.ir.names import normalize_for_tree
+from nestforge.ir.introspect import describe_graph, interstate_definitions, resolve_scalars
+from nestforge.ir.names import normalize_labels
 from nestforge.session import Session
 
 
@@ -37,58 +38,51 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 GOLDEN = """\
 SDFG 'shaped'
 |- state0_0
-|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']  work=20 depth=1
-|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']  work=1 depth=1
-`- for0_0  i=0:19  num_states=3  work=19 depth=57
+|  `- kernel1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+`- for0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
-      |- block2_0  when A[i + 1] > 0.0
+      |- block2_0  when A[i] > 0.0
       |  `- state3_0
-      |     |- kernel4_0  [__nf_wrap=0:1]  reads=['s1', 's2'] writes=['s3']  work=1 depth=1
-      |     `- kernel4_1  [__nf_wrap=0:1]  reads=['s3'] writes=['out']  work=0 depth=0
       `- block2_1  else
          `- state3_1
-            |- kernel4_2  [__nf_wrap=0:1]  reads=['s4'] writes=['s5']  work=1 depth=1
-            `- kernel4_3  [__nf_wrap=0:1]  reads=['s5'] writes=['out']  work=0 depth=0
 """
 
 #: The agent's view after it expands ``state0_0``: that state's kernels and their bodies, the rest still closed.
 OPENED = """\
 SDFG 'shaped'
 |- state0_0
-|  |- kernel1_0  [i0=0:20]  reads=['A'] writes=['B']  work=20 depth=1
-|  |  : s6 = A[i0]
-|  |  : s7 = s6 + 1.0
-|  |  : B[i0] = s7
-|  `- kernel1_1  [__nf_wrap=0:1]  reads=['s0'] writes=['s1']  work=1 depth=1
-|     : s1 = s0 * 2.0
-`- for0_0  i=0:19  num_states=3  work=19 depth=57
+|  `- kernel1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|     : test_tree_view_shaped_A_index = A[i]
+|     : B_slice = test_tree_view_shaped_A_index + 1.0
+|     : B[i] = B_slice
+`- for0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
-      |- block2_0  when A[i + 1] > 0.0
-      |  `- state3_0  kernels=2
+      |- block2_0  when A[i] > 0.0
+      |  `- state3_0
       `- block2_1  else
-         `- state3_1  kernels=2
+         `- state3_1
 """
 
 #: What an agent sees before it expands anything: every block, no state's kernels.
 COLLAPSED = """\
 SDFG 'shaped'
-|- state0_0  kernels=2
-`- for0_0  i=0:19  num_states=3  work=19 depth=57
+|- state0_0  kernels=1
+`- for0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
-      |- block2_0  when A[i + 1] > 0.0
-      |  `- state3_0  kernels=2
+      |- block2_0  when A[i] > 0.0
+      |  `- state3_0
       `- block2_1  else
-         `- state3_1  kernels=2
+         `- state3_1
 """
 
 
 def tree_of(program) -> str:
     sdfg = program.to_sdfg(simplify=True)
     sdfg.name = "shaped"
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     return describe_graph(sdfg)
 
 
@@ -101,7 +95,7 @@ def test_the_tree_format_is_pinned():
 def test_a_state_shows_its_kernels_only_once_expanded():
     sdfg = shaped.to_sdfg(simplify=True)
     sdfg.name = "shaped"
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
 
     collapsed = describe_graph(sdfg, expanded=())
     opened = describe_graph(sdfg, expanded=["state0_0"])
@@ -131,7 +125,7 @@ def test_indentation_tracks_the_level_in_the_label():
 def test_every_row_the_session_prints_is_a_label_its_labeled_calls_take():
     """Reading the tree and acting on it use one vocabulary: each row's first word is a key of the row index."""
     sdfg = shaped.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     session = Session(sdfg)
     labels = [re.sub(r"^[|` -]*", "", line).split()[0] for line in session.describe().splitlines()[1:]]
     assert labels and all(label in session.row_index() for label in labels), labels
@@ -144,7 +138,7 @@ def test_a_condition_names_the_array_it_really_reads():
     """The frontend hoists the scalar read to an interstate assignment (`A_index = A[1 + i]`) and the
     branch then tests a name that means nothing on its own."""
     tree = tree_of(shaped)
-    assert "when A[i + 1] > 0.0" in tree, tree
+    assert "when A[i] > 0.0" in tree, tree
     assert "A_index" not in tree
 
 
@@ -152,7 +146,7 @@ def test_a_name_with_two_definitions_is_left_alone():
     """Which definition reaches a block depends on the path taken, so folding either one in would show
     a condition the program does not always evaluate."""
     sdfg = shaped.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     assert "A_index" in interstate_definitions(sdfg), "fixture no longer hoists the scalar read"
     # Give the same name a second, different definition on another edge -- as two branches assigning
     # one variable do.
@@ -194,7 +188,7 @@ def nested_maps(A: dc.float64[8, 4], B: dc.float64[8, 4]):
 
 def with_bodies(program) -> str:
     sdfg = program.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     return describe_graph(sdfg, bodies=True)
 
 
@@ -240,7 +234,7 @@ def test_bodies_are_off_by_default():
 
 def test_a_leaf_kernel_prints_what_it_computes():
     tree = with_bodies(shaped)
-    assert f"{introspect.BODY}B[i0] = " in tree, tree
+    assert f"{introspect.BODY}B[i] = " in tree, tree
     for line in tree.splitlines():
         if introspect.BODY in line:
             assert line.split(introspect.BODY, 1)[0].strip("| `") == "", "a body line must sit under its kernel"
@@ -257,7 +251,7 @@ def test_a_kernel_containing_a_kernel_has_no_body_of_its_own():
     """`map_body_lines` recurses into a nested map, and the tree already gives that map its own row,
     so emitting at both levels would print the inner kernel twice."""
     sdfg = nested_maps.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     nested = [
         (st, n)
         for st in sdfg.states()
@@ -305,14 +299,14 @@ def test_a_reduction_is_named_on_the_kernel_line():
     order is unspecified and a backend may use a register accumulator or an OpenMP clause. That is
     structural, and the agent should not have to read the body to find it."""
     tree = tree_of(matvec)
-    assert "reduce=(+ over i1 -> C)" in tree, tree
+    assert "reduce=(+ over j -> C)" in tree, tree
 
 
 def test_only_the_collapsed_axis_is_reported():
     """The reduced axes are the map parameters the output subset does not mention -- a map over
-    (i0, i1) writing C[i0] has collapsed i1 and only i1."""
+    (i, j) writing C[i] has collapsed j and only j."""
     tree = tree_of(matvec)
-    assert "over i1 ->" in tree and "over i0" not in tree, tree
+    assert "over j ->" in tree and "over i " not in tree, tree
 
 
 def test_a_kernel_without_a_reduction_says_nothing():
@@ -321,21 +315,21 @@ def test_a_kernel_without_a_reduction_says_nothing():
 
 def test_the_reduction_op_is_read_off_the_wcr():
     sdfg = matvec.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     state, entry = next((st, n) for st in sdfg.states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry))
-    assert introspect.kernel_reductions(state, entry) == ["+ over i1 -> C"]
+    assert introspect.kernel_reductions(state, entry) == ["+ over j -> C"]
     # A different op reads as itself, not as "+".
     exit_node = state.exit_node(entry)
     edge = next(e for e in state.in_edges(exit_node) if e.data.wcr is not None)
     edge.data.wcr = "lambda x, y: max(x, y)"
-    assert introspect.kernel_reductions(state, entry) == ["max over i1 -> C"]
+    assert introspect.kernel_reductions(state, entry) == ["max over j -> C"]
 
 
 def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
     """The body is emitted as one iteration's statements, not recovered by dropping len(params) lines off the
     emitted loop block and dedenting by 4 * len(params)."""
     sdfg = shaped.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     state, entry = next(
         (st, n)
         for st in sdfg.states()
@@ -357,7 +351,7 @@ def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
 
 def first_nest(program):
     sdfg = program.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     state = next(st for st in sdfg.states() if any(isinstance(n, dc.nodes.MapEntry) for n in st.nodes()))
     entry = next(n for n in state.scope_children()[None] if isinstance(n, dc.nodes.MapEntry))
     return sdfg, state, entry
@@ -375,7 +369,7 @@ def test_a_reduction_body_is_folded():
     spelling that belongs to the slice form."""
     sdfg, state, entry = first_nest(matvec)
     body = "\n".join(kernel_body(state, sdfg, entry, state.scope_children()))
-    assert "C[i0] = C[i0] +" in body, body
+    assert "C[i] = C[i] +" in body, body
     assert "np.sum" not in body
 
 

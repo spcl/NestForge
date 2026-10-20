@@ -286,8 +286,8 @@ def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_
     kernels = session.list_kernels()
     assert len(kernels) > 1
     for info in kernels:
-        boundary = node_boundary(session.kernel(info["name"]))
-        assert set(boundary.symbols) <= set(SDPA_SIZES), f"{info['name']} takes {boundary.symbols}"
+        boundary = node_boundary(session.kernel(info.name))
+        assert set(boundary.symbols) <= set(SDPA_SIZES), f"{info.name} takes {boundary.symbols}"
         assert set(boundary.symbols) <= set(boundary.standalone_sdfg.symbols)
 
 
@@ -296,7 +296,7 @@ def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
     session = sdpa_scoped_session(tmp_path)
     session.place()
     for info in session.list_kernels():
-        session.optimize_kernel(info["name"])
+        session.optimize_kernel(info.name)
     sdfg = copy.deepcopy(session.sdfg)
     sdfg.expand_library_nodes()
     compiled = compile_linked_program(sdfg, tmp_path / "parent")

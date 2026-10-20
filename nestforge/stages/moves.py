@@ -47,15 +47,12 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "map-fusion": (nodes.MapEntry, nodes.MapEntry),
     "map-fission": (nodes.MapEntry,),
     "subgraph-fission": (nodes.MapEntry, ControlFlowBlock),
-    "interchange-loop-loop": (LoopRegion, LoopRegion),
     "interchange-loop-map": (LoopRegion, nodes.MapEntry),
     "interchange-map-loop": (nodes.MapEntry, LoopRegion),
     "interchange-map-map": (nodes.MapEntry, nodes.MapEntry),
     "interchange-if-loop": (ConditionalBlock, LoopRegion),
     "interchange-loop-if": (LoopRegion, ConditionalBlock),
 }
-
-NOT_IMPLEMENTED: dict[str, str] = {"interchange-loop-loop": "no DaCe transformation interchanges two loops."}
 
 STATE_BARRIER = (
     "nests are in different states, a control-flow dependency map fusion never crosses; fuse the loops around "
@@ -284,8 +281,6 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
 
 def plan_move(kind: str, rows: Sequence[Row]) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated."""
-    if kind in NOT_IMPLEMENTED:
-        return NOT_IMPLEMENTED[kind]
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])

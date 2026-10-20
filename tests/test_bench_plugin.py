@@ -8,13 +8,13 @@ from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
 
 import pytest
-
 from hpcagent_agent.tools import registry
 from hpcagent_bench import plugins
 from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Preset
 from hpcagent_bench.harness.judge_wire import JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
+
 from nestforge.paths import REPO_ROOT
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -63,6 +63,17 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
     assert all(not registry.REGISTRY[name].core for name in names)
 
 
+def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
+    epoch = 1  # get_cpf canonicalizes once
+    tree = post("view_tree", episode="episode-scope", expand=["state0_0"], epoch=epoch).answer["result"]
+    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("kernel")]
+
+    scoped = post("set_scope", episode="episode-scope", labels=maps[:2], epoch=epoch).answer["result"]
+    unset = post("unset_scope", episode="episode-scope", name=scoped["reason"], epoch=epoch + 1).answer["result"]
+
+    assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
+
+
 @pytest.mark.parametrize("tool", ["list_kernels", "read_kernel", "write_kernel", "tune_kernel", "finalize"])
 def test_a_later_phase_tool_is_not_implemented(loaded: None, tool: str) -> None:
     judge = post(tool)
@@ -86,9 +97,12 @@ def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(lo
     assert tree.code == HTTPStatus.OK and "epoch" in str(tree.answer["result"])
     assert moved.code == HTTPStatus.OK and moved.answer["result"]["status"] == "applied"
     performance = moved.answer["performance"]
-    assert "error" not in performance["structured"] and performance["structured"]["time_us"] > 0
+    structured = performance["structured"]
+    assert "error" not in structured and structured["time_us"] > 0
+    assert structured["correct"] is True, structured
     assert set(performance["offloading"]["devices"].values()) == {"cpu"}
     assert performance["kernels"] and all(kernel["correct"] for kernel in performance["kernels"])
+    assert post("get_performance").answer["performance"] == performance, "the unchanged program is measured once"
 
 
 @pytest.mark.gpu

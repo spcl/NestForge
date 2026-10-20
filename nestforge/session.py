@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import atexit
 import copy
-import json
 import shutil
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import dace
 import numpy as np
@@ -32,7 +32,8 @@ from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_depende
 from nestforge.ir.extract import find_state_of_node
 from nestforge.ir.introspect import Row, WorkDepth, describe_graph, program_work_depth, tree_rows
 from nestforge.ir.loops import loop_symbol_values
-from nestforge.ir.names import normalize_labels
+from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
+from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
 from nestforge.stages.kernel import (
@@ -50,7 +51,6 @@ from nestforge.stages.kernel import (
 )
 from nestforge.stages.moves import (
     MOVE_SHAPES,
-    NOT_IMPLEMENTED,
     Rewrite,
     check_kind,
     legal_moves,
@@ -58,7 +58,7 @@ from nestforge.stages.moves import (
     scope_metrics,
     sdfg_metrics,
 )
-from nestforge.stages.performance import Performance, kernel_reports, offload_report, time_program
+from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
 from nestforge.stages.placement import Transfer, check_devices, default_devices, kernel_device, place, transfers
 from nestforge.stages.scopes import (
     is_parallel_kernel,
@@ -66,10 +66,7 @@ from nestforge.stages.scopes import (
     lower_nests_to_external_call,
     node_boundary,
 )
-from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
-
-#: Spaces per level of the saved JSON snapshots.
-JSON_INDENT = 2
+from nestforge.stages.variants import Variant, device_variants, select_variant
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
@@ -78,15 +75,99 @@ ERROR_TAIL = 1500
 LANGUAGES = {"cpu": "cpp", "gpu": "cuda"}
 
 
-@dataclass(frozen=True, slots=True)
-class MoveResult:
-    """What a labeled call did. ``status`` is ``applied``, ``illegal``, ``not-implemented``, ``not-found`` or
-    ``stale``; only ``applied`` changed the program, and ``reason`` then names what ran."""
+class MoveResult(Record):
+    """What a labeled call did; ``reason`` names what ran once ``applied``, else why nothing changed."""
 
-    status: str
+    status: MoveOutcome
     kind: str
     labels: tuple[str, ...]
     reason: str
+
+
+class Move(Record):
+    """A legal move, exactly as :meth:`Session.apply_move` takes it back."""
+
+    kind: str
+    labels: tuple[str, ...]
+    epoch: int
+
+
+class KernelScope(Record):
+    """A kernel :meth:`Session.define_scopes` made, with the containers it reads and writes."""
+
+    name: str
+    reads: tuple[str, ...]
+    writes: tuple[str, ...]
+    symbols: tuple[str, ...]
+    parallel: bool
+
+
+class KernelInfo(Record):
+    """A kernel, its device and arguments, the producer labels reaching each argument (``depends``) and the loops a
+    reaching value crossed (``carried``)."""
+
+    name: str
+    device: str
+    parallel: bool
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    symbols: tuple[str, ...]
+    depends: dict[str, list[str]]
+    carried: dict[str, list[str]]
+
+
+class PlaceResult(Record):
+    """Once ``applied``: every kernel's device, the copies placed and the transfers the kernel DAG implies
+    (``None`` when the analysis refuses the program)."""
+
+    status: MoveOutcome
+    reason: str = ""
+    devices: dict[str, str] = {}
+    copies: tuple[tuple[str, str], ...] = ()
+    transfers: tuple[Transfer, ...] | None = None
+
+
+class KernelLibrary(Record):
+    """What :meth:`Session.optimize_kernel` built and linked."""
+
+    kernel: str
+    symbol: str
+    abi_order: tuple[str, ...]
+    unit: Path
+    library: Path
+    variant: str
+
+    @property
+    def entry(self) -> str:
+        return f"{self.symbol}({', '.join(self.abi_order)})"
+
+
+class KernelOutcome(Record):
+    """What :meth:`Session.set_kernel_source` did."""
+
+    kernel: str
+    status: KernelOutcomeStatus
+    reason: str = ""
+    time_us: float | None = None
+
+
+class Config(Record):
+    """The configuration stage 6 chose."""
+
+    compiler: str
+    fp_mode: str
+    cost_model: str
+    flags: tuple[str, ...]
+    time_us: float
+
+
+class Sweep(Record):
+    """Stage 6 over one kernel: how many variants were measured, and the winner."""
+
+    kernel: str
+    cells: int
+    winner: str | None
+    config: Config | None
 
 
 @dataclass(slots=True)
@@ -124,6 +205,7 @@ class Session:
         "sources",
         "builds",
         "prepared",
+        "measured",
     )
 
     def __init__(
@@ -152,6 +234,8 @@ class Session:
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
+        # :meth:`performance` of the current program, dropped by every change to it
+        self.measured: Performance | None = None
 
     def bump(self) -> None:
         self.epoch += 1
@@ -162,6 +246,7 @@ class Session:
         self.costs = None
         self.kernel_deps = None
         self.sources, self.builds, self.prepared = {}, {}, {}
+        self.measured = None
 
     def row_index(self) -> dict[str, Row]:
         """Tree label -> ``(block or node, state)``, built once per epoch."""
@@ -173,11 +258,16 @@ class Session:
         """The rows ``names`` label at ``epoch``, or the ``stale`` or ``not-found`` result."""
         if epoch != self.epoch:
             reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe again."
-            return MoveResult("stale", kind, names, reason)
+            return MoveResult(status=MoveStatus.STALE, kind=kind, labels=names, reason=reason)
         rows = self.row_index()
         missing = [name for name in names if name not in rows]
         if missing:
-            return MoveResult("not-found", kind, names, f"no tree row is labeled {', '.join(missing)}.")
+            return MoveResult(
+                status=MoveStatus.NOT_FOUND,
+                kind=kind,
+                labels=names,
+                reason=f"no tree row is labeled {', '.join(missing)}.",
+            )
         return [rows[name] for name in names]
 
     # Stage 1: canonicalize
@@ -210,12 +300,32 @@ class Session:
         nested states) until the program changes; returns what opened, or why nothing did."""
         rows = self.named_rows("expand", tuple(labels), epoch)
         if isinstance(rows, MoveResult):
-            return f"{rows.status}: {rows.reason}"
+            return f"{spelled(rows.status)}: {rows.reason}"
         closed = [name for name, (obj, _) in zip(labels, rows) if not isinstance(obj, (SDFGState, nodes.MapEntry))]
         if closed:
             return f"illegal: only states and maps expand; {', '.join(closed)} is neither."
         self.expanded.update(labels)
         return f"ok: expanded {', '.join(labels)}"
+
+    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = (), epoch: int | None = None) -> str:
+        """:meth:`collapse` then :meth:`expand` (labels read at ``epoch``), and the tree after them, each note first."""
+        notes = [self.collapse(collapse)] if collapse else []
+        if expand:
+            notes.append(self.expand(expand, self.epoch - 1 if epoch is None else epoch))
+        return "\n".join([*notes, self.describe()])
+
+    def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
+        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`define_scopes` or
+        :meth:`place`."""
+        match stage:
+            case "moves":
+                return self.default_moves()
+            case "finish":
+                return self.finish_moves()
+            case "scopes":
+                return self.define_scopes()
+            case "placement":
+                return self.place()
 
     def collapse(self, labels: Sequence[str]) -> str:
         """Hide again what :meth:`expand` opened under ``labels``; a label not open is ignored."""
@@ -226,10 +336,9 @@ class Session:
         graph = self.kernel_graph()
         return graph.line(node.label) if node.label in graph.kernels else None
 
-    def list_moves(self, kind: str | None = None) -> list[dict]:
-        """Every legal move right now, of ``kind`` or of every kind, as ``{kind, labels, epoch}``: exactly what
-        :meth:`apply_move` takes back. A not-implemented kind lists nothing."""
-        return [{"kind": k, "labels": list(labels), "epoch": self.epoch} for k, labels in legal_moves(self.sdfg, kind)]
+    def list_moves(self, kind: str | None = None) -> list[Move]:
+        """Every legal move right now, of ``kind`` or of every kind."""
+        return [Move(kind=k, labels=tuple(labels), epoch=self.epoch) for k, labels in legal_moves(self.sdfg, kind)]
 
     def apply_move(self, kind: str, labels: Sequence[str], epoch: int) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name, as read at ``epoch``.
@@ -250,11 +359,11 @@ class Session:
             return rows
         plan = plan_move(kind, rows)
         if not isinstance(plan, Rewrite):
-            return MoveResult("not-implemented" if kind in NOT_IMPLEMENTED else "illegal", kind, names, plan)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         plan.commit()
         self.unplaced = None
         self.bump()
-        return MoveResult("applied", kind, names, plan.name)
+        return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
 
     def metrics(self, label: str) -> str:
         """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""
@@ -285,21 +394,20 @@ class Session:
 
     # Stage 3: scopes
 
-    def define_scopes(self) -> list[dict]:
+    def define_scopes(self) -> list[KernelScope]:
         """Stage 3 default: one kernel per parallel top-level map; returns the new kernels."""
         lowered = lower_nests_to_external_call(self.sdfg)
         if lowered:
             self.unplaced = None
             self.bump()
-            self.snapshot_kernel_graph()
         return [
-            {
-                "name": ext.name,
-                "reads": list(boundary.inputs),
-                "writes": list(boundary.outputs),
-                "symbols": list(boundary.symbols),
-                "parallel": is_parallel_kernel(ext),
-            }
+            KernelScope(
+                name=ext.name,
+                reads=tuple(boundary.inputs),
+                writes=tuple(boundary.outputs),
+                symbols=tuple(boundary.symbols),
+                parallel=is_parallel_kernel(ext),
+            )
             for ext, boundary in lowered
         ]
 
@@ -317,28 +425,45 @@ class Session:
             return rows
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
-            return MoveResult("illegal", "define-scope", names, lowered)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
         self.unplaced = None
         self.bump()
-        self.snapshot_kernel_graph()
-        return MoveResult("applied", "define-scope", names, lowered[0].name)
+        return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
+
+    def unset_scope(self, name: str, epoch: int) -> MoveResult:
+        """Inline the kernel ``name`` back into the program: the inverse of :meth:`define_scope`. A placement is
+        dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
+
+        :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
+        """
+        if epoch != self.epoch:
+            reason = f"kernels read at epoch {epoch}; the program is at epoch {self.epoch}."
+            return MoveResult(status=MoveStatus.STALE, kind="unset-scope", labels=(name,), reason=reason)
+        if self.unplaced is not None:
+            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+        calls = {ext.name: ext for ext in external_calls(self.sdfg)}
+        if name not in calls:
+            reason = f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}."
+            return MoveResult(status=MoveStatus.NOT_FOUND, kind="unset-scope", labels=(name,), reason=reason)
+        ext = calls[name]
+        if ext.standalone_sdfg is None:
+            reason = f"{name} keeps no SDFG of its nest to inline."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
+        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only
+        connected = {data_name(conn) for conn in (*ext.in_connectors, *ext.out_connectors)}
+        for array, desc in ext.standalone_sdfg.arrays.items():
+            if array not in connected:
+                desc.transient = True
+        ext.expand(find_state_of_node(self.sdfg, ext), "DaceReference")
+        inline_top_level_nsdfgs(self.sdfg)
+        self.bump()
+        return MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
 
     def kernel_graph(self) -> KernelGraph:
         """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per epoch."""
         if self.kernel_deps is None:
             self.kernel_deps = kernel_dependencies(self.sdfg)
         return self.kernel_deps
-
-    def snapshot_kernel_graph(self) -> None:
-        """Save :meth:`kernel_graph` to ``<work_dir>/kernel_deps/e<epoch>.json``, byte-stable, when the analysis
-        accepts the program."""
-        try:
-            graph = self.kernel_graph()
-        except UnsupportedProgram:
-            return
-        path = self.work_dir / "kernel_deps" / f"e{self.epoch}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(graph.to_json(), indent=JSON_INDENT, sort_keys=True) + "\n")
 
     def kernel(self, name: str) -> ExternalCall:
         """The kernel node named ``name``."""
@@ -347,63 +472,57 @@ class Session:
             raise KeyError(f"no kernel is named {name!r}; kernels are {sorted(calls)}")
         return calls[name]
 
-    def list_kernels(self) -> list[dict]:
-        """Every kernel with its device, parallel flag, arguments, the producer labels reaching each argument
-        (``depends``), and the loops a reaching value crossed (``carried``)."""
+    def list_kernels(self) -> list[KernelInfo]:
+        """Every kernel, in program order."""
         graph = self.kernel_graph()
-        out: list[dict] = []
+        out: list[KernelInfo] = []
         for name in graph.kernels:
             ext, arguments = self.kernel(name), graph.arguments(name)
             out.append(
-                {
-                    "name": name,
-                    "device": kernel_device(ext),
-                    "parallel": is_parallel_kernel(ext),
-                    "inputs": [edge.arg for edge in arguments if edge.role == "input"],
-                    "outputs": sorted(data_name(conn) for conn in ext.out_connectors),
-                    "symbols": [edge.arg for edge in arguments if edge.role == "symbol"],
-                    "depends": {edge.arg: edge.labels() for edge in arguments},
-                    "carried": {edge.arg: edge.loops() for edge in arguments if edge.loops()},
-                }
+                KernelInfo(
+                    name=name,
+                    device=kernel_device(ext),
+                    parallel=is_parallel_kernel(ext),
+                    inputs=tuple(edge.arg for edge in arguments if edge.role == "input"),
+                    outputs=tuple(sorted(data_name(conn) for conn in ext.out_connectors)),
+                    symbols=tuple(edge.arg for edge in arguments if edge.role == "symbol"),
+                    depends={edge.arg: edge.labels() for edge in arguments},
+                    carried={edge.arg: list(edge.carried) for edge in arguments if edge.carried},
+                )
             )
         return out
 
     # Stage 4: placement
 
-    def place(self, devices: dict[str, str] | None = None, epoch: int | None = None) -> dict:
+    def place(self, devices: dict[str, str] | None = None, epoch: int | None = None) -> PlaceResult:
         """Run each kernel on a device and insert the host/device copies. Kernels ``devices`` leaves out keep the
         default: parallel kernels on the GPU when it is a target, the rest on the CPU. A later call starts again
         from the program before the first placement.
 
         :param devices: Kernel name -> ``cpu`` or ``gpu``.
         :param epoch: The epoch the kernel names were read at; required with ``devices``.
-        :returns: ``status`` and ``reason`` as :class:`MoveResult` has them; once ``applied``, every kernel's
-            device, the copies placed, and the transfers the kernel DAG implies (``None`` when the analysis refuses
-            the program).
         """
         if devices is not None and epoch != self.epoch:
-            return {"status": "stale", "reason": f"kernels read at epoch {epoch}; the program is at {self.epoch}."}
+            return PlaceResult(
+                status=MoveStatus.STALE, reason=f"kernels read at epoch {epoch}; the program is at {self.epoch}."
+            )
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
-            return {"status": "illegal", "reason": refusal}
+            return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
         if self.unplaced is not None:
             self.sdfg = copy.deepcopy(self.unplaced)
             self.kernel_deps = None
         try:
-            moves = [asdict(move) for move in transfers(self.kernel_graph(), chosen)]
+            moves = tuple(transfers(self.kernel_graph(), chosen))
         except UnsupportedProgram:
             moves = None
         self.unplaced = copy.deepcopy(self.sdfg)
         placement = place(self.sdfg, self.targets, chosen)
         self.bump()
-        return {
-            "status": "applied",
-            "reason": "",
-            "kernels": [{"name": name, "device": device} for name, device in placement.devices.items()],
-            "copies": [list(pair) for pair in placement.copies],
-            "transfers": moves,
-        }
+        return PlaceResult(
+            status=MoveStatus.APPLIED, devices=dict(placement.devices), copies=tuple(placement.copies), transfers=moves
+        )
 
     # Stage 5: kernels
 
@@ -427,30 +546,30 @@ class Session:
         ext = self.kernel(name)
         use_kernel_library(ext, build.archive, src, runtime)
         self.builds[name] = build
+        self.measured = None
 
-    def optimize_kernel(self, name: str) -> dict:
+    def optimize_kernel(self, name: str) -> KernelLibrary:
         """Stage 5 default: render the kernel's CPF unit, build it with the first configuration stage 6 sweeps for
         its device, and link it into the kernel's ``ExternalCall``."""
         src = self.default_kernel(name)
         variant = self.first_variant(src.device)
         archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
         self.bind(name, KernelBuild(src, variant, archive))
-        return {
-            "kernel": name,
-            "symbol": src.symbol,
-            "abi_order": list(src.abi_order),
-            "entry": f"{src.symbol}({', '.join(src.abi_order)})",
-            "unit": str(src.unit),
-            "library": str(archive),
-            "variant": variant.label,
-        }
+        return KernelLibrary(
+            kernel=name,
+            symbol=src.symbol,
+            abi_order=tuple(src.abi_order),
+            unit=src.unit,
+            library=archive,
+            variant=variant.label,
+        )
 
     def kernel_source(self, name: str) -> str:
         """The source of the kernel's current library, or of its default CPF unit before one is built."""
         build = self.builds.get(name)
         return kernel_text(build.source if build is not None else self.default_kernel(name))
 
-    def set_kernel_source(self, name: str, source: str, language: str, reps: int = TIMED_REPS) -> dict:
+    def set_kernel_source(self, name: str, source: str, language: str, reps: int = TIMED_REPS) -> KernelOutcome:
         """Build a kernel source with the kernel's entry, validate it against the kernel's Python oracle, and link it
         when it matches.
 
@@ -458,18 +577,25 @@ class Session:
             the default unit (:meth:`kernel_source` before any change). A GPU kernel may be two units, host then
             device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
         :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel, ``cuda`` for a GPU kernel.
-        :returns: ``status`` (``ok``, ``refused``, ``build-failed`` or ``wrong``), ``reason`` and ``time_us``; only
-            ``ok`` changes the kernel's library.
+        :returns: The outcome; only ``ok`` changes the kernel's library.
         """
         default = self.default_kernel(name)
         if language != LANGUAGES[default.device]:
-            return self.kernel_outcome(name, "refused", f"a {default.device} kernel is {LANGUAGES[default.device]}.")
+            return KernelOutcome(
+                kernel=name,
+                status=KernelStatus.REFUSED,
+                reason=f"a {default.device} kernel is {LANGUAGES[default.device]}.",
+            )
         try:
             params = [p.name for p in parse_params(raw_signature(source, name))]
         except (LookupError, ValueError) as err:
-            return self.kernel_outcome(name, "refused", str(err))
+            return KernelOutcome(kernel=name, status=KernelStatus.REFUSED, reason=str(err))
         if params != default.abi_order:
-            return self.kernel_outcome(name, "refused", f"the entry takes {params}; it must take {default.abi_order}.")
+            return KernelOutcome(
+                kernel=name,
+                status=KernelStatus.REFUSED,
+                reason=f"the entry takes {params}; it must take {default.abi_order}.",
+            )
         attempt = self.work_dir / name / f"agent{len(list((self.work_dir / name).glob('agent*')))}"
         attempt.mkdir(parents=True)
         host, device_text = split_kernel_text(source)
@@ -487,23 +613,19 @@ class Session:
         try:
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
         except RuntimeError as err:
-            return self.kernel_outcome(name, "build-failed", str(err)[-ERROR_TAIL:])
+            return KernelOutcome(kernel=name, status=KernelStatus.BUILD_FAILED, reason=str(err)[-ERROR_TAIL:])
         verdict = validate_kernel(
             archive, src, self.prepare_kernel(name), self.kernel_sizes(name), reps, variant.fp_mode
         )
         if not verdict.ok:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
-            return self.kernel_outcome(name, "wrong", reason)
+            return KernelOutcome(kernel=name, status=KernelStatus.WRONG, reason=reason)
         self.bind(name, KernelBuild(src, variant, archive, verdict))
-        return self.kernel_outcome(name, "ok", "", verdict.time_us)
-
-    @staticmethod
-    def kernel_outcome(name: str, status: str, reason: str, time_us: float | None = None) -> dict:
-        return {"kernel": name, "status": status, "reason": reason, "time_us": time_us}
+        return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
 
     def prepare_kernel(self, name: str) -> Prepared:
         if name not in self.prepared:
-            self.prepared[name] = prepare(node_boundary(self.kernel(name)), name, self.work_dir / name)
+            self.prepared[name] = prepare(node_boundary(self.kernel(name)), name)
         return self.prepared[name]
 
     def need_sizes(self) -> dict[str, int]:
@@ -520,7 +642,7 @@ class Session:
 
     # Stage 6: variants
 
-    def sweep(self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None) -> dict:
+    def sweep(self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None) -> Sweep:
         """Build and time the kernel's current source under every configuration of its device, link the fastest
         correct one, and summarize the sweep; ``config`` is the winner's compiler, FP mode, cost model, flags, time.
 
@@ -535,13 +657,17 @@ class Session:
         winner = result.winner
         if winner is not None and winner.archive is not None:
             self.bind(name, KernelBuild(src, winner.variant, winner.archive, winner.verdict))
-        return {
-            "kernel": name,
-            "cells": len(result.cells),
-            "collapsed": list(result.collapsed),
-            "winner": winner.variant.label if winner is not None else None,
-            "config": winner_config(winner),
-        }
+        if winner is None:
+            return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
+        variant = winner.variant
+        config = Config(
+            compiler=variant.toolchain,
+            fp_mode=variant.fp_mode,
+            cost_model=variant.cost_model,
+            flags=tuple(variant.flags),
+            time_us=winner.verdict.time_us,
+        )
+        return Sweep(kernel=name, cells=len(result.cells), winner=variant.label, config=config)
 
     # Stage 7: feedback
 
@@ -574,43 +700,35 @@ class Session:
         copied.unplaced = copy.deepcopy(self.unplaced)
         return copied
 
-    def performance(self, inputs: dict[str, np.ndarray], reps: int = TIMED_REPS) -> Performance:
+    def performance(
+        self, inputs: dict[str, np.ndarray], reference: Reference | None = None, reps: int = TIMED_REPS
+    ) -> Performance:
         """Every phase's feedback at once (:mod:`~nestforge.stages.performance`): on a :meth:`trial`, the default
         scopes when none is defined, the default placement when none is chosen and the default kernel builds, then
-        the whole program, its offloading and each kernel are timed."""
+        the whole program (checked against ``reference`` when given), its offloading and each kernel are timed. Reused
+        until the program changes."""
+        if self.measured is not None:
+            return self.measured
         trial = self.trial()
         if not external_calls(trial.sdfg):
             trial.define_scopes()
-        placed = trial.place() if trial.unplaced is None else None
         devices = {ext.name: kernel_device(ext) for ext in external_calls(trial.sdfg)}
-        if placed is not None and placed["transfers"] is not None:
-            moves = [Transfer(**move) for move in placed["transfers"]]
+        if trial.unplaced is None:
+            placed = trial.place()
+            devices, moves = placed.devices, placed.transfers
         else:
             try:
-                moves = transfers(trial.kernel_graph(), devices)
+                moves = tuple(transfers(trial.kernel_graph(), devices))
             except UnsupportedProgram:
                 moves = None
         evidence = trial.kernel_evidence(reps)
         program = time_program(
-            trial.sdfg, trial.work_dir / "program", inputs, self.sizes, reps, "gpu" in devices.values()
+            trial.sdfg, trial.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
-        return Performance(
+        self.measured = Performance(
             structured=program,
             offloading=offload_report(trial.sdfg, devices, moves, self.sizes),
             kernels=kernel_reports(evidence, devices),
             hints=feedback.report(evidence),
         )
-
-
-def winner_config(winner: VariantCell | None) -> dict:
-    """The configuration stage 6 chose: compiler, FP mode, cost model, flags and measured time, or all ``None``."""
-    if winner is None:
-        return dict.fromkeys(("compiler", "fp_mode", "cost_model", "flags", "time_us"))
-    variant = winner.variant
-    return {
-        "compiler": variant.toolchain,
-        "fp_mode": variant.fp_mode,
-        "cost_model": variant.cost_model,
-        "flags": list(variant.flags),
-        "time_us": winner.verdict.time_us,
-    }
+        return self.measured

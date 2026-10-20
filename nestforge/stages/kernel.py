@@ -95,11 +95,6 @@ def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
     return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
 
 
-def at_rung(verdict: KernelVerdict, fp_mode: str) -> KernelVerdict:
-    """The same measurement gated at another FP rung."""
-    return dataclasses.replace(verdict, fp_mode=fp_mode)
-
-
 def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
     """A copy of the kernel whose entry takes the integer symbols as the ``int64_t`` ``ExternalCall`` passes."""
     sdfg = copy.deepcopy(boundary.standalone_sdfg)

@@ -1,6 +1,6 @@
 # Stage 7: Feedback
 
-prev: [6 Variants](6-variants.md) · [Agent loop](../agent.md)
+prev: [6 Variants](6-variants.md)
 
 `feedback()` turns raw evidence into a few ranked hints the agent reads next turn: kernel times, oracle checks,
 compiler remarks from one extra compile of the current variant (`-fopt-info-vec-missed`,
@@ -14,10 +14,19 @@ compiler remarks from one extra compile of the current variant (`-fopt-info-vec-
 | registers spilled | loop body too big, try fission |
 | loop not vectorized | the reason, mapped to a move (fission, interchange, hoisting an `if`, `__restrict__`) |
 
-Failures rank first; the report keeps at most eight hints. With `analyst=True` one more model call rewrites the
-report into guidance.
+Failures rank first; the report keeps at most eight hints.
+
+`performance(inputs, reference)` gives every phase's feedback in one record, on a copy completed with the default
+scopes, placement and kernel builds:
+
+- `structured`: the whole program's time, and whether its outputs match `reference` (the bench's own reference and
+  grading tolerance, when the plugin has one);
+- `offloading`: each kernel's device and every transfer between memories, with bytes;
+- `kernels`: each kernel's correctness, time and share, and the hints above.
+
+It is cached until the program or a kernel library changes.
 
 | | |
 |---|---|
-| default | `feedback()` |
-| code | `nestforge/stages/feedback.py` |
+| default | `feedback()`, `performance(inputs, reference)` |
+| code | `nestforge/stages/feedback.py`, `nestforge/stages/performance.py` |

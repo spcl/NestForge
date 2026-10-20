@@ -8,11 +8,9 @@ through ctypes, so timings compare generated code, free of `CompiledSDFG` marsha
 
 ## Program builds
 
-`generate_program_folder` writes DaCe's generated code to disk, and `sdfg.py` compiles it with DaCe's
-runtime headers on the include path. `BuiltSDFG` binds the three C entries of an SDFG `N`
-(`__dace_init_N`, `__program_N`, `__dace_exit_N`) and calls them in order; `unload` closes the `.so`.
-The tests use it as the reference build of a whole program. `compile_linked_program` builds a program
-that links kernel libraries.
+`compile_linked_program` builds a whole program that links its kernel libraries, through DaCe's CMake with libomp
+as the one OpenMP runtime. `BuiltSDFG` binds the three C entries of an SDFG `N` (`__dace_init_N`, `__program_N`,
+`__dace_exit_N`); `Session.performance()` times the program through it in an isolated child.
 
 ## Kernel libraries
 

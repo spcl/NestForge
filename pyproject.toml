@@ -29,11 +29,11 @@ dependencies = [
     # own DaCe, so [tool.uv] overrides it with this one.
     "dace @ git+https://github.com/spcl/dace.git@baac24733f204d0e992f8cf73ce3d7c77fce7b5d",
     "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@e63f9f1ce04141ae766bcb2cc5164277b57fa59d",
+    # The bench plugin (plugin/nestforge) runs on the agent side too.
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@e63f9f1ce04141ae766bcb2cc5164277b57fa59d#subdirectory=agent",
 ]
 
 [project.optional-dependencies]
-# The agent loop's LLM clients; install one or both.
-agent = ["anthropic", "openai"]
 dev = [
     "pre-commit",
     "pyright",

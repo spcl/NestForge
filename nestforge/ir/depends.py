@@ -81,20 +81,6 @@ class ArgEdge:
         """The producer labels, in order."""
         return [producer.label() for producer in self.producers]
 
-    def loops(self) -> list[str]:
-        """The loops whose back edge a reaching value crossed."""
-        return list(self.carried)
-
-    def to_json(self) -> dict[str, object]:
-        """A plain, key-ordered dictionary."""
-        return {
-            "consumer": self.consumer,
-            "arg": self.arg,
-            "role": self.role,
-            "producers": self.labels(),
-            "carried": self.loops(),
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class KernelGraph:
@@ -103,10 +89,6 @@ class KernelGraph:
     kernels: tuple[str, ...]
     edges: tuple[ArgEdge, ...]
     exits: tuple[ArgEdge, ...]
-
-    def consumers_of(self, kernel: str) -> tuple[ArgEdge, ...]:
-        """Every kernel argument edge that ``kernel`` can produce."""
-        return tuple(e for e in self.edges if any(p.kind == "kernel" and p.name == kernel for p in e.producers))
 
     def arguments(self, kernel: str) -> tuple[ArgEdge, ...]:
         """The argument edges of ``kernel``, inputs then symbols."""
@@ -120,14 +102,6 @@ class KernelGraph:
         """One :meth:`line` per kernel, then one ``exit:`` line."""
         exits = ["exit: " + ", ".join(edge.text() for edge in self.exits)] if self.exits else []
         return [self.line(kernel) for kernel in self.kernels] + exits
-
-    def to_json(self) -> dict[str, object]:
-        """A plain dictionary in the graph's order."""
-        return {
-            "kernels": list(self.kernels),
-            "edges": [edge.to_json() for edge in self.edges],
-            "exits": [edge.to_json() for edge in self.exits],
-        }
 
 
 #: What reaches each container or symbol name at one program point; an absent name has no producer.
@@ -313,7 +287,7 @@ def kernel_dependencies(sdfg: dace.SDFG) -> KernelGraph:
     :param sdfg: The top-level SDFG holding the kernels; it is not modified.
     :returns: The kernel graph, in kernel program order, then role, then argument name.
     :raises UnsupportedProgram: On a ``Reference`` container, a view bound to no container, an ``ExternalCall``
-        inside a nested SDFG or without a manifest, or a control-flow cycle outside a loop region.
+        inside a nested SDFG or without an ``abi_order``, or a control-flow cycle outside a loop region.
     """
     for sd in sdfg.all_sdfgs_recursive():
         for name, desc in sd.arrays.items():

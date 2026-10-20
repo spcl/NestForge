@@ -41,7 +41,7 @@ def scoped_session(tmp_path) -> Session:
 
 def iterator_of(session: Session) -> str:
     (kernel,) = session.list_kernels()
-    (iterator,) = [s for s in kernel["symbols"] if s.startswith("_loop_it")]
+    (iterator,) = [s for s in kernel.symbols if s.startswith("_loop_it")]
     return iterator
 
 
@@ -49,7 +49,7 @@ def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_lo
     session = scoped_session(tmp_path)
 
     iterator = iterator_of(session)
-    (ext,) = [session.kernel(k["name"]) for k in session.list_kernels()]
+    (ext,) = [session.kernel(k.name) for k in session.list_kernels()]
     state = find_state_of_node(session.sdfg, ext)
 
     assert iterator not in session.sdfg.symbols, "a loop iterator is defined by its loop, not by the program"
@@ -59,7 +59,7 @@ def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_lo
 def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win_over_it(tmp_path):
     session = scoped_session(tmp_path)
     iterator = iterator_of(session)
-    (ext,) = [session.kernel(k["name"]) for k in session.list_kernels()]
+    (ext,) = [session.kernel(k.name) for k in session.list_kernels()]
 
     values = loop_symbol_values(find_state_of_node(session.sdfg, ext), SIZES)
 
@@ -74,13 +74,13 @@ def test_the_program_with_the_loop_outside_the_kernel_builds_sweeps_and_matches_
     session = scoped_session(tmp_path)
     session.place()
     (kernel,) = session.list_kernels()
-    session.optimize_kernel(kernel["name"])
+    session.optimize_kernel(kernel.name)
 
     generated = generate_program(session.sdfg, tmp_path / "gen")
-    swept = session.sweep(kernel["name"])
+    swept = session.sweep(kernel.name)
 
-    assert f"{kernel['name']}(" in generated.source
-    assert swept["winner"] is not None, "stage 6 found no configuration that matches the oracle"
+    assert f"{kernel.name}(" in generated.source
+    assert swept.winner is not None, "stage 6 found no configuration that matches the oracle"
     sdfg = copy.deepcopy(session.sdfg)
     sdfg.expand_library_nodes()
     compiled = compile_linked_program(sdfg, tmp_path / "parent")

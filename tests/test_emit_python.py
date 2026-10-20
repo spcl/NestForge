@@ -13,18 +13,9 @@ import sympy
 from dace import subsets
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
-from helpers import run_emitted, sdfg_to_python
+from helpers import nest_to_python, run_emitted, sdfg_to_python
 
-from nestforge.ir.emit_python import (
-    Names,
-    UnsupportedNest,
-    expr,
-    index,
-    indexed_shape,
-    load_emitted,
-    nest_to_python,
-    simplify_as_sizes,
-)
+from nestforge.ir.emit_python import Names, UnsupportedNest, expr, index, indexed_shape, load_emitted, simplify_as_sizes
 from nestforge.ir.extract import Boundary
 
 N = dace.symbol("N", dtype=dace.int64)

@@ -25,7 +25,7 @@ from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
-from nestforge.ir.names import ScopeChildren, in_order, ordered_scope_children
+from nestforge.ir.names import in_order, ordered_scope_children
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
@@ -112,13 +112,6 @@ def body_lines(twin: Twin, state: SDFGState, entry: nodes.MapEntry) -> list[str]
         return map_python(twin[id(state)], twin[id(entry)], body_only=True)
     except UnsupportedNest as exc:
         return [f"<not emitted: {exc}>"]
-
-
-def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: ScopeChildren) -> list[str]:
-    """The Python statements a leaf kernel computes. ``children`` is the state's ``scope_children()``."""
-    if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
-        return []
-    return body_lines(lowered_twin(sdfg), state, entry)
 
 
 def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:

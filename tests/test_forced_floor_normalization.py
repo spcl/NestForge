@@ -11,7 +11,7 @@ import dace
 import sympy
 from dace.subsets import Range
 from dace.transformation.passes.canonicalize import canonicalize
-from helpers import loop_level_kernel
+from helpers import corpus_kernel
 
 
 def floors_in(sdfg):
@@ -40,6 +40,6 @@ def test_the_detector_can_actually_fail():
 
 def test_canonicalize_leaves_no_residual_floor():
     """tsvc_2_s111's stride-2 loop needs a floor-division trip count; canonicalization must normalize it."""
-    sdfg = loop_level_kernel("tsvc_2_s111").to_sdfg(simplify=True)
+    sdfg = corpus_kernel("tsvc_2_s111").to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     assert not floors_in(sdfg)

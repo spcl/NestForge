@@ -174,14 +174,3 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
     if name:
         nsdfg_node.sdfg.name = name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     return boundary_from_nsdfg(nsdfg_node, inner_state)
-
-
-def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | None = None) -> Boundary:
-    """Outline a map nest or a control-flow nest; see :func:`extract_map_nest` and :func:`extract_cfg_nest`."""
-    if isinstance(node, nodes.MapEntry):
-        return extract_map_nest(parent_sdfg, node, name=name)
-    if isinstance(node, CfgNest):
-        return extract_cfg_nest(parent_sdfg, node, name=name)
-    raise TypeError(
-        f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion, or ConditionalBlock"
-    )

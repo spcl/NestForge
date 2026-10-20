@@ -11,25 +11,10 @@ fixture would test the pass against a shape it never meets.
 import re
 
 import dace as dc
-import numpy as np
-import pytest
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.build.isolation import Result, run_isolated
-from nestforge.ir.names import (
-    WRAP_PARAM,
-    block_kind,
-    free_tasklets,
-    in_order,
-    inline_top_level_nsdfgs,
-    normalize_for_tree,
-    rename_map_params,
-    rename_transient_data,
-    top_level_nsdfgs,
-    wrap_free_tasklets,
-    wrap_groups,
-)
+from nestforge.ir.names import block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
 LABEL = re.compile(r"^(state|for|while|if|block|continue|break|return)(\d+)_(\d+)$")
 KERNEL = re.compile(r"^kernel(\d+)_(\d+)$")
@@ -69,20 +54,6 @@ def nested_call(A: dc.float64[20], B: dc.float64[20]):
     inner_body(A, B)
 
 
-@dc.program
-def descending(A: dc.float64[20], B: dc.float64[20]):
-    """A loop that counts down -- must come out of normalization with a positive unit step."""
-    for i in range(19, -1, -1):
-        B[i] = A[i] * 2.0
-
-
-class Doubled(Result):
-    """A map's output and NumPy's, as nested lists."""
-
-    got: list[list[float]]
-    want: list[list[float]]
-
-
 def reaches(graph, source, target) -> bool:
     """Whether ``target`` is downstream of ``source`` -- dace's own ``bfs_nodes``, which a CFG and a
     state both provide."""
@@ -108,7 +79,7 @@ def all_maps(sdfg):
 
 def test_every_block_and_map_gets_a_canonical_name():
     sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     for block in all_blocks(sdfg):
         assert LABEL.match(block.label), f"block kept a non-canonical label {block.label!r}"
     for entry in all_maps(sdfg):
@@ -117,7 +88,7 @@ def test_every_block_and_map_gets_a_canonical_name():
 
 def test_labels_are_globally_unique():
     sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     labels = [b.label for b in all_blocks(sdfg)]
     assert len(labels) == len(set(labels)), f"duplicate block label in {sorted(labels)}"
     kernels = [e.map.label for e in all_maps(sdfg)]
@@ -128,7 +99,7 @@ def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
     """Five kernels at depth 3 are kernel3_0..kernel3_4 -- the index counts that kind at that level, so
     it never depends on how many blocks of another kind happen to sit beside them."""
     sdfg = two_maps.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     by_kind_level = {}
     for block in all_blocks(sdfg):
         kind, level, index = LABEL.match(block.label).groups()
@@ -146,7 +117,7 @@ def test_a_frontend_source_line_label_does_not_survive():
     sdfg = nested_call.to_sdfg(simplify=False)
     before = [e.map.label for e in all_maps(sdfg)]
     assert any(re.search(r"_\d+$", label) for label in before), f"fixture stopped being representative: {before}"
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     assert all(KERNEL.match(e.map.label) for e in all_maps(sdfg))
 
 
@@ -165,18 +136,18 @@ def test_two_builds_of_one_program_get_the_same_names():
     orders give two label assignments for one program -- so an agent's saved id would not survive a
     rebuild."""
     first, second = branchy.to_sdfg(simplify=True), branchy.to_sdfg(simplify=True)
-    normalize_for_tree(first)
-    normalize_for_tree(second)
+    normalize_labels(first)
+    normalize_labels(second)
     assert [b.label for b in all_blocks(first)] == [b.label for b in all_blocks(second)]
     assert [e.map.label for e in all_maps(first)] == [e.map.label for e in all_maps(second)]
 
 
 def test_normalizing_twice_is_normalizing_once():
-    """The agent re-normalizes after every fusion move, so a second pass must not renumber anything."""
+    """The session relabels after every fusion move, so a second pass must not renumber anything."""
     sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     once = ([b.label for b in all_blocks(sdfg)], [e.map.label for e in all_maps(sdfg)])
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     assert ([b.label for b in all_blocks(sdfg)], [e.map.label for e in all_maps(sdfg)]) == once
 
 
@@ -195,86 +166,6 @@ def test_in_order_breaks_ties_by_insertion_order():
             assert (positions[id(first)] < positions[id(second)]) == (inserted[id(first)] < inserted[id(second)])
 
 
-# every computation inside a map
-
-
-def test_no_free_tasklet_survives():
-    sdfg = two_maps.to_sdfg(simplify=True)
-    assert any(free_tasklets(st) for st in sdfg.states()), "fixture has no free tasklet to wrap"
-    normalize_for_tree(sdfg)
-    assert not any(free_tasklets(st) for st in sdfg.states())
-
-
-def test_a_wrap_map_is_one_iteration_and_sequential():
-    sdfg = two_maps.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    wraps = [e for e in all_maps(sdfg) if WRAP_PARAM in e.map.params]
-    assert wraps, "nothing was wrapped"
-    for entry in wraps:
-        assert entry.map.range.num_elements() == 1
-        assert entry.map.schedule == dc.ScheduleType.Sequential
-
-
-def test_a_library_node_is_not_wrapped():
-    """A library node already IS a kernel. Wrapping it would bury it under a map scope and hide that,
-    and its expansion picks its own schedule."""
-
-    @dc.program
-    def gemm(A: dc.float64[8, 8], B: dc.float64[8, 8], C: dc.float64[8, 8]):
-        C[:] = A @ B
-
-    sdfg = gemm.to_sdfg(simplify=True)
-    libnodes = [n for st in sdfg.states() for n in st.nodes() if isinstance(n, nodes.LibraryNode)]
-    assert libnodes, "fixture no longer produces a library node"
-    normalize_for_tree(sdfg)
-    for state in sdfg.states():
-        for node in state.nodes():
-            if isinstance(node, nodes.LibraryNode):
-                assert state.entry_node(node) is None, f"{node.label} was buried in a map scope"
-
-
-def test_grouping_uses_the_fewest_maps_the_dependencies_allow():
-    """A group must be an antichain -- merging two tasklets one can reach from the other closes a cycle
-    through whatever sits between them. The minimum number of such groups is the longest chain
-    (Mirsky), which is what the levelling produces."""
-    sdfg = two_maps.to_sdfg(simplify=True)
-    for state in sdfg.states():
-        groups = wrap_groups(state)
-        if not groups:
-            continue
-        placed = [t for group in groups for t in group]
-        assert sorted(id(t) for t in placed) == sorted(id(t) for t in free_tasklets(state))
-        for group in groups:  # no member reaches another
-            for first in group:
-                for second in group:
-                    assert first is second or not reaches(state, first, second)
-        longest = longest_free_chain(state)
-        assert len(groups) == longest, f"{len(groups)} groups for a longest chain of {longest}"
-
-
-def longest_free_chain(state) -> int:
-    """The most free tasklets on any one dependency path through ``state`` -- the lower bound on how
-    many maps the wrap can use."""
-    free = {id(t) for t in free_tasklets(state)}
-    best = {}
-    longest = 0
-    for node in in_order(state):
-        reaching = max((best[id(e.src)] for e in state.in_edges(node) if id(e.src) in best), default=0)
-        best[id(node)] = reaching + 1 if id(node) in free else reaching
-        longest = max(longest, best[id(node)])
-    return longest
-
-
-def test_wrapping_nothing_changes_nothing():
-    """A pass that does not apply must not mutate."""
-    sdfg = nested_call.to_sdfg(simplify=False)
-    inline_top_level_nsdfgs(sdfg)
-    wrap_free_tasklets(sdfg)
-    before = sdfg.to_json()
-    assert wrap_free_tasklets(sdfg) == 0
-    assert sdfg.to_json() == before
-
-
 # no top-level nested SDFG
 
 
@@ -283,14 +174,14 @@ def test_a_top_level_nested_sdfg_is_inlined():
     across."""
     sdfg = nested_call.to_sdfg(simplify=False)
     assert top_level_nsdfgs(sdfg), "fixture no longer has a top-level nested SDFG"
-    normalize_for_tree(sdfg)
+    inline_top_level_nsdfgs(sdfg)
     assert not top_level_nsdfgs(sdfg)
 
 
 def test_a_nested_sdfg_inside_a_map_is_left_alone():
     """That one is a kernel body, not structure."""
     sdfg = nested_call.to_sdfg(simplify=False)
-    normalize_for_tree(sdfg)
+    inline_top_level_nsdfgs(sdfg)
     inside = [
         (st, n)
         for st in sdfg.states()
@@ -302,265 +193,7 @@ def test_a_nested_sdfg_inside_a_map_is_left_alone():
 
 def test_inlining_bails_out_without_touching_an_already_inlined_sdfg():
     sdfg = nested_call.to_sdfg(simplify=False)
-    normalize_for_tree(sdfg)
+    inline_top_level_nsdfgs(sdfg)
     before = sdfg.to_json()
     assert inline_top_level_nsdfgs(sdfg) == 0
     assert sdfg.to_json() == before
-
-
-# canonical iteration domains
-
-
-def test_a_descending_loop_comes_out_with_a_positive_unit_step():
-    sdfg = descending.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    loops = [b for b in all_blocks(sdfg) if isinstance(b, LoopRegion)]
-    assert loops, "fixture no longer has a loop"
-    for loop in loops:
-        assert "-1" not in loop.update_statement.as_string, f"step stayed negative: {loop.update_statement.as_string}"
-
-
-# the numerics
-
-
-@pytest.mark.e2e
-def test_normalization_preserves_the_result_through_a_branch_and_a_loop():
-    sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    sdfg.validate()
-    A = np.linspace(-1.0, 1.0, 20).copy()
-    B, out = np.zeros(20), np.zeros(20)
-    sdfg(A=A, B=B, out=out)
-    expected = np.zeros(20)
-    for i in range(1, 20):
-        expected[i] = A[i] * 2.0 if A[i] > 0.0 else -A[i]
-    assert np.array_equal(out, expected)
-
-
-@pytest.mark.e2e
-def test_normalization_preserves_the_result_through_an_inlined_nested_sdfg():
-    sdfg = nested_call.to_sdfg(simplify=False)
-    normalize_for_tree(sdfg)
-    sdfg.validate()
-    A = np.linspace(0.5, 2.0, 20).copy()
-    B = np.zeros(20)
-    sdfg(A=A, B=B)
-    expected = np.zeros(20)
-    for i in range(20):
-        for j in range(4):
-            expected[i] += A[i] * j
-    assert np.array_equal(B, expected)
-
-
-@pytest.mark.e2e
-def test_normalization_preserves_the_result_of_a_descending_loop():
-    sdfg = descending.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    sdfg.validate()
-    A = np.linspace(1.0, 5.0, 20).copy()
-    B = np.zeros(20)
-    sdfg(A=A, B=B)
-    assert np.array_equal(B, A * 2.0)
-
-
-# canonical data names
-
-
-def test_transient_data_is_renamed_but_the_interface_is_not():
-    """A frontend qualifies a transient with its whole module path, which is most of the width of a
-    tree line and names nothing the agent can act on. Non-transients are the program's interface --
-    the boundary, the manifest and the emitted numpy signature all name them -- so they stay."""
-    sdfg = nested_call.to_sdfg(simplify=False)
-    interface = {n for n, desc in sdfg.arrays.items() if not desc.transient}
-    normalize_for_tree(sdfg)
-    assert interface <= set(sdfg.arrays), "a non-transient was renamed"
-    transients = {n: d for n, d in sdfg.arrays.items() if d.transient}
-    for name, desc in transients.items():
-        prefix = "s" if isinstance(desc, dc.data.Scalar) else "t"
-        assert re.fullmatch(rf"{prefix}\d+", name), f"uncanonical transient {name} ({type(desc).__name__})"
-
-
-def test_renaming_never_collides_with_a_name_that_survives():
-    """A survivor already called ``t0`` would be clobbered by whatever is renamed to ``t0``."""
-
-    @dc.program
-    def collide(t0: dc.float64[20], B: dc.float64[20]):
-        tmp = t0 * 2.0
-        B[:] = tmp + 1.0
-
-    sdfg = collide.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    assert "t0" in sdfg.arrays and not sdfg.arrays["t0"].transient, "the interface array t0 was overwritten"
-
-
-def test_map_params_are_canonical():
-    sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    for entry in all_maps(sdfg):
-        if WRAP_PARAM in entry.map.params:
-            continue
-        assert entry.map.params == [f"i{axis}" for axis in range(len(entry.map.params))]
-
-
-#: Square extent for the param-shadowing fixtures. Tiny: the property under test is which SYMBOL each
-#: index position ends up carrying, which a 4x4 shows exactly as well as a 4096x4096.
-MAP_N = 4
-
-
-@dc.program
-def swapped_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
-    # params ['i1','i0'] -- a full permutation of the names rename_map_params renames TO
-    for i1, i0 in dc.map[0:MAP_N, 0:MAP_N]:
-        B[i1, i0] = A[i1, i0] * 2.0
-
-
-@dc.program
-def shadowing_map_params(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
-    # params ['j','i0'] -- param 0's target (i0) is param 1's current name: a partial overlap
-    for j, i0 in dc.map[0:MAP_N, 0:MAP_N]:
-        B[j, i0] = A[j, i0] * 2.0
-
-
-@pytest.mark.parametrize("program", [swapped_map_params, shadowing_map_params], ids=["permutation", "partial"])
-def test_renaming_params_that_shadow_their_targets_preserves_values(program):
-    """Renaming pair by pair turns ``A[i1, i0]`` into ``A[i1, i1]``; only the values show it, since the params
-    list is set after the rename."""
-    sdfg = program.to_sdfg(simplify=True)
-    entry = next(e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params)
-    params = list(entry.map.params)
-    wanted = [f"i{axis}" for axis in range(len(params))]
-    # Without a genuine shadow the fixture takes the safe path and the assertions below prove nothing.
-    assert any(p in wanted and p != w for p, w in zip(params, wanted)), (
-        f"fixture params {params} do not shadow the rename targets {wanted}; the test would be vacuous"
-    )
-
-    rename_map_params(sdfg)
-
-    def work():
-        a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))  # copy: dace bars a view
-        b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
-        sdfg(A=a, B=b)
-        return Doubled(got=b.tolist(), want=(a * 2.0).tolist())
-
-    res = run_isolated(work, Doubled, timeout=300)
-    assert isinstance(res, Doubled), res
-    assert entry.map.params == wanted
-    np.testing.assert_array_equal(res.got, res.want)
-
-
-@dc.program
-def nested_map_scopes(A: dc.float64[MAP_N, MAP_N], B: dc.float64[MAP_N, MAP_N]):
-    # two separate map scopes, one inside the other -- what LoopToMap produces for a nested loop
-    for i in dc.map[0:MAP_N]:
-        for j in dc.map[0:MAP_N]:
-            B[i, j] = A[i, j] * 2.0
-
-
-def test_nested_map_scopes_do_not_collapse_onto_one_index():
-    """Numbering each scope from ``i0`` gives an inner map its outer map's name and the nest writes only its
-    diagonal; only the values show it."""
-    sdfg = nested_map_scopes.to_sdfg(simplify=True)
-    entries = [e for e in all_maps(sdfg) if WRAP_PARAM not in e.map.params]
-    assert len(entries) == 2, f"fixture must nest two map scopes, got {len(entries)}"
-
-    rename_map_params(sdfg)
-
-    # numbered down the nesting chain, so the inner map starts where the outer stops
-    assert sorted(p for e in entries for p in e.map.params) == ["i0", "i1"]
-
-    def work():
-        a = np.copy(np.arange(MAP_N * MAP_N, dtype=np.float64).reshape(MAP_N, MAP_N))
-        b = np.zeros((MAP_N, MAP_N), dtype=np.float64)
-        sdfg(A=a, B=b)
-        return Doubled(got=b.tolist(), want=(a * 2.0).tolist())
-
-    res = run_isolated(work, Doubled, timeout=300)
-    assert isinstance(res, Doubled), res
-    np.testing.assert_array_equal(res.got, res.want)
-
-
-def test_renaming_nothing_changes_nothing():
-    sdfg = branchy.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    before = sdfg.to_json()
-    assert rename_transient_data(sdfg) == {}
-    rename_map_params(sdfg)
-    assert sdfg.to_json() == before
-
-
-@pytest.mark.e2e
-def test_renaming_preserves_the_result():
-    """The renames touch every memlet that names a transient, so this is the check that matters."""
-    sdfg = two_maps.to_sdfg(simplify=True)
-    A = np.linspace(1.0, 3.0, 20).copy()
-    expected = A + 1.0
-    expected = expected + expected[0] * 2.0
-    normalize_for_tree(sdfg)
-    sdfg.validate()
-    got = np.zeros(20)
-    sdfg(A=A, B=got)
-    assert np.array_equal(got, expected)
-
-
-# reductions
-
-
-@dc.program
-def reduce_kernel(A: dc.float64[8, 4], B: dc.float64[4], C: dc.float64[8]):
-    for i, j in dc.map[0:8, 0:4]:
-        C[i] += A[i, j] * B[j]
-
-
-def test_a_reduction_ends_on_an_accessnode_to_mapexit_edge():
-    """`NormalizeWCRSource`'s invariant, and what makes a reduction findable: without it the WCR can
-    source from a tasklet or sit inside a nested SDFG, and there is no single edge to ask what is
-    reduced over which axes."""
-    sdfg = reduce_kernel.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    wcr_edges = [
-        (st, e)
-        for sd in sdfg.all_sdfgs_recursive()
-        for st in sd.states()
-        for e in st.edges()
-        if e.data is not None and e.data.wcr is not None
-    ]
-    assert wcr_edges, "the fixture no longer carries a WCR"
-    # a WCR path starts on an AccessNode -> MapExit edge; the edges it continues on leave a MapExit
-    starts = [edge for _, edge in wcr_edges if not isinstance(edge.src, nodes.MapExit)]
-    assert starts, "no WCR path starts inside the map"
-    for edge in starts:
-        assert isinstance(edge.src, nodes.AccessNode), f"WCR sources from {type(edge.src).__name__}"
-        assert isinstance(edge.dst, nodes.MapExit), f"WCR lands on {type(edge.dst).__name__}"
-
-
-@pytest.mark.e2e
-def test_normalizing_a_reduction_preserves_the_result():
-    sdfg = reduce_kernel.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
-    sdfg.validate()
-    A = np.linspace(0.1, 3.2, 32).reshape(8, 4).copy()
-    B = np.linspace(1.0, 2.0, 4).copy()
-    C = np.zeros(8)
-    sdfg(A=A, B=B, C=C)
-    np.testing.assert_allclose(C, A @ B, rtol=1e-13, atol=0)
-
-
-def test_renaming_a_map_param_never_captures_a_program_symbol():
-    i1 = dc.symbol("i1", dtype=dc.float64)
-    N = dc.symbol("N", dtype=dc.int64)
-
-    @dc.program
-    def add_symbol(A: dc.float64[N, N]):
-        for j, k in dc.map[0:N, 0:N]:
-            A[j, k] = A[j, k] + i1
-
-    sdfg = add_symbol.to_sdfg(simplify=True)
-    rename_map_params(sdfg)
-    (entry,) = [n for s in sdfg.states() for n in s.nodes() if isinstance(n, nodes.MapEntry)]
-    A = np.arange(16, dtype=np.float64).reshape(4, 4).copy()
-    expected = A + 7.0
-
-    sdfg(A=A, N=4, i1=7.0)
-
-    assert "i1" not in entry.map.params, entry.map.params
-    np.testing.assert_array_equal(A, expected)

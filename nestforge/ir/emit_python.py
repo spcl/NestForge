@@ -800,12 +800,6 @@ def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:
     return [*arrays, *(s for s in boundary.symbols if s not in arrays)]
 
 
-def nest_to_python(boundary: Boundary, fn_name: str = "kernel") -> str:
-    """Standalone Python source ``def <fn_name>(<args>): ...`` of an extracted nest."""
-    sdfg = oracle_sdfg(boundary)
-    return render(fn_name, kernel_args(boundary, kernel_arrays(boundary, sdfg)), sdfg)
-
-
 @functools.lru_cache(maxsize=1, typed=True)
 def emitted_dir() -> Path:
     """Process-lifetime directory of emitted sources: ``linecache`` reads a traceback's source lazily."""

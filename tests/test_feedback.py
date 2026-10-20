@@ -116,6 +116,6 @@ def test_a_session_reports_the_times_of_its_built_kernels(tmp_path):
     text = session.feedback(reps=2)
 
     lines = text.splitlines()
-    assert lines[0].startswith(f"kernel times: {kernel['name']} ") and lines[0].endswith(" us")
-    assert Path(session.kernel(kernel["name"]).lib_path).exists()
+    assert lines[0].startswith(f"kernel times: {kernel.name} ") and lines[0].endswith(" us")
+    assert Path(session.kernel(kernel.name).lib_path).exists()
     assert np.isfinite(float(lines[0].split()[-2]))

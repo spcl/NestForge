@@ -9,34 +9,32 @@ from __future__ import annotations
 import copy
 import ctypes
 import time
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
 import dace
 import numpy as np
-from pydantic import BaseModel, ConfigDict
 
 from nestforge.build.arena import US_PER_S
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
-from nestforge.build.sdfg import BuiltSDFG, new_gpu_codegen
+from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
 from nestforge.build.toolchain import parse_params, signature
+from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
 from nestforge.stages.placement import Transfer
 
 
-class Report(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class ProgramReport(Report):
-    """The whole program at the session's sizes; ``error`` set when it did not build or run."""
+class ProgramReport(Record):
+    """The whole program at the session's sizes: its time, and whether its outputs match the reference (``None``
+    without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run."""
 
     time_us: float | None = None
+    correct: bool | None = None
+    mismatched: list[str] = []
     error: str = ""
 
 
-class TransferReport(Report):
+class TransferReport(Record):
     direction: str
     arg: str
     producer: str
@@ -45,7 +43,7 @@ class TransferReport(Report):
     bytes: int | None
 
 
-class OffloadReport(Report):
+class OffloadReport(Record):
     #: Kernel -> ``cpu`` or ``gpu``.
     devices: dict[str, str]
     #: ``None`` when the dependency analysis refuses the program.
@@ -53,7 +51,7 @@ class OffloadReport(Report):
     transfer_bytes: int
 
 
-class KernelReport(Report):
+class KernelReport(Record):
     name: str
     device: str
     correct: bool
@@ -62,7 +60,7 @@ class KernelReport(Report):
     error: str = ""
 
 
-class Performance(Report):
+class Performance(Record):
     """Every phase's feedback: ``structured`` (whole program), ``offloading`` and ``kernels``, and ranked hints."""
 
     structured: ProgramReport
@@ -73,6 +71,29 @@ class Performance(Report):
 
 class ProgramTime(Result):
     time_us: float
+    mismatched: list[str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class Reference:
+    """The outputs the whole program must reproduce, and the tolerance it is graded at."""
+
+    outputs: dict[str, np.ndarray]
+    rtol: float
+    atol: float
+
+    def mismatched(self, buffers: dict[str, np.ndarray]) -> list[str]:
+        """The outputs ``buffers`` gets wrong: exactly compared when both sides are integer, else ``allclose``."""
+        wrong: list[str] = []
+        for name, expected in self.outputs.items():
+            got = buffers[name].reshape(np.shape(expected))
+            if got.dtype.kind in "iub" and np.asarray(expected).dtype.kind in "iub":
+                same = np.array_equal(got, expected)
+            else:
+                same = np.allclose(got, expected, rtol=self.rtol, atol=self.atol, equal_nan=True)
+            if not same:
+                wrong.append(name)
+        return wrong
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +106,11 @@ class ProgramCall:
     buffers: dict[str, np.ndarray]
     sizes: dict[str, int]
     reps: int
+    reference: Reference | None
 
 
 def run_program(call: ProgramCall) -> ProgramTime:
-    """Init once, one warm-up call, then the mean of ``reps`` timed calls."""
+    """Init once, one call checked against the reference, then the mean of ``reps`` timed calls."""
     built = BuiltSDFG(
         call.name,
         Path(call.so_path),
@@ -99,10 +121,11 @@ def run_program(call: ProgramCall) -> ProgramTime:
     built.init(call.sizes)
     try:
         built.program(call.buffers, call.sizes)
+        mismatched = call.reference.mismatched(call.buffers) if call.reference is not None else None
         start = time.perf_counter()
         for _ in range(call.reps):
             built.program(call.buffers, call.sizes)
-        return ProgramTime(time_us=(time.perf_counter() - start) / call.reps * US_PER_S)
+        return ProgramTime(time_us=(time.perf_counter() - start) / call.reps * US_PER_S, mismatched=mismatched)
     finally:
         built.close()
 
@@ -123,27 +146,35 @@ def program_buffers(sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: dict[
 
 
 def time_program(
-    sdfg: dace.SDFG, out_dir: Path, inputs: dict[str, np.ndarray], sizes: dict[str, int], reps: int, gpu: bool
+    sdfg: dace.SDFG,
+    out_dir: Path,
+    inputs: dict[str, np.ndarray],
+    reference: Reference | None,
+    sizes: dict[str, int],
+    reps: int,
+    gpu: bool,
 ) -> ProgramReport:
-    """Build ``sdfg`` with DaCe (its CMake links the kernels' libraries and CUDA) and time it in an isolated child:
-    forked on the CPU, spawned once a GPU context is needed."""
+    """Build ``sdfg`` linking its kernels' libraries (:func:`compile_linked_program`) and time it in an isolated
+    child: forked on the CPU, spawned once a GPU context is needed."""
     program = copy.deepcopy(sdfg)
     try:
-        with new_gpu_codegen() if gpu else nullcontext():
-            with dace.config.set_temporary("default_build_folder", value=str(out_dir)):
-                so_path = program.compile().filename
-                frame = Path(program.build_folder) / "src" / "cpu" / f"{program.name}.cpp"
+        so_path = compile_linked_program(program, out_dir).filename
     except Exception as err:  # noqa: BLE001 -- a refused build is feedback, not a crash
         return ProgramReport(error=f"{type(err).__name__}: {err}")
-    call = ProgramCall(so_path, frame.read_text(), program.name, program_buffers(sdfg, inputs, sizes), sizes, reps)
+    frame = out_dir / "src" / "cpu" / f"{program.name}.cpp"
+    call = ProgramCall(
+        so_path, frame.read_text(), program.name, program_buffers(sdfg, inputs, sizes), sizes, reps, reference
+    )
     timed = run_spawned(run_program, call) if gpu else run_isolated(lambda: run_program(call), ProgramTime)
     if isinstance(timed, Failure):
         return ProgramReport(error=timed.error)
-    return ProgramReport(time_us=timed.time_us)
+    if timed.mismatched is None:
+        return ProgramReport(time_us=timed.time_us)
+    return ProgramReport(time_us=timed.time_us, correct=not timed.mismatched, mismatched=timed.mismatched)
 
 
 def offload_report(
-    sdfg: dace.SDFG, devices: dict[str, str], moves: list[Transfer] | None, sizes: dict[str, int]
+    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: dict[str, int]
 ) -> OffloadReport:
     """Where each kernel runs and what crosses memory spaces, with bytes at ``sizes``."""
     transfers = None

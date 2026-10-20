@@ -16,7 +16,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
 from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 
-from nestforge.corpus.translate import python_and_manifest
+from nestforge.corpus.translate import prepare
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import (
     Boundary,
@@ -92,15 +92,15 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     state, nsdfg = boundary.state, boundary.nsdfg_node
     if state is None or nsdfg is None:
         raise ValueError("replace_nsdfg_with_external needs an extracted-nest Boundary (state + nsdfg_node)")
-    source, manifest = python_and_manifest(boundary, name)
+    oracle = prepare(boundary, name)
     ext = ExternalCall(
         name,
         inputs=[in_conn(i) for i in boundary.inputs],
         outputs=[out_conn(o) for o in boundary.outputs],
         standalone_sdfg=reference_sdfg(nsdfg),
-        numpy_source=source,
+        numpy_source=oracle.numpy_source,
     )
-    ext.abi_order = list(manifest["input_args"])
+    ext.abi_order = list(oracle.args)
     state.add_node(ext)
     # a memlet is never shared between edges
     for e in state.in_edges(nsdfg):

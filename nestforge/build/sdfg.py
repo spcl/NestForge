@@ -39,10 +39,8 @@ from nestforge.build.toolchain import (
     lib_linkable,
     openmp_compile_flags,
     openmp_link_flags,
-    parse_params,
     run,
     runtime_library,
-    signature,
     support_rpath_flags,
 )
 
@@ -270,19 +268,6 @@ def build_cuda_archive(
     return time.perf_counter() - t0
 
 
-def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> tuple[Path, float]:
-    """Compile the generated frame into ``lib<name>.so``, directly or, with ``link_external``, through an archive."""
-    so = folder / f"lib{name}.so"
-    if opts.link_external:
-        return so, build_archive([frame], folder, folder / f"lib{name}_nest.a", so, opts)
-    cmds = build_commands(folder, opts)
-    obj = folder / f"{name}.o"
-    t0 = time.perf_counter()
-    run([cmds.compiler, *cmds.cflags, "-c", *cmds.compile_extra, str(frame), "-o", str(obj)])
-    link_shared(cmds.compiler, [*cmds.cflags, str(obj)], cmds.link_libs, so)
-    return so, time.perf_counter() - t0
-
-
 def program_compiler() -> str:
     """The C++ compiler DaCe's program build runs: ``compiler.cpu.executable``, else CMake's ``c++``."""
     return str(dace.config.Config.get("compiler", "cpu", "executable") or "c++")
@@ -336,21 +321,4 @@ def generate_program(sdfg: dace.SDFG, out_dir: Path) -> GeneratedProgram:
     frame = generate_program_folder(sdfg, out_dir)
     return GeneratedProgram(
         frame=frame, name=sdfg.name, source=frame.read_text(), codegen_seconds=time.perf_counter() - t_opt
-    )
-
-
-def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> BuiltSDFG:
-    """Generate, compile and link ``sdfg``; an OpenMP runtime is linked unless none is usable."""
-    gen = generate_program(sdfg, out_dir)
-    init_params = parse_params(signature(gen.source, f"__dace_init_{gen.name}"))
-    prog_params = parse_params(signature(gen.source, f"__program_{gen.name}"))
-    so, compile_seconds = compile(gen.frame, gen.folder, gen.name, opts or BuildOptions())
-    return BuiltSDFG(
-        name=gen.name,
-        so_path=so,
-        lib=ctypes.CDLL(str(so)),
-        init_params=init_params,
-        prog_params=prog_params,
-        codegen_seconds=gen.codegen_seconds,
-        compile_seconds=compile_seconds,
     )

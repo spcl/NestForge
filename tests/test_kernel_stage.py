@@ -272,7 +272,7 @@ def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program
     _, ext, boundary = lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     archive = build_kernel_library(src, "g++", None, tmp_path / "lib")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
 
     verdict = validate_kernel(archive, src, prep, sizes, reps=3)
 
@@ -293,7 +293,7 @@ def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, progr
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), tmp_path / "lib")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
 
     verdict = validate_kernel(archive, src, prep, {"N": 1037}, reps=3)
 
@@ -443,7 +443,7 @@ if __name__ == "__main__":
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     src = schedule_kernel(ext, boundary, out / "gen")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), out / "lib")
-    verdict = validate_kernel(archive, src, prepare(boundary, ext.name, out / "ref"), {"N": 1037}, reps=2)
+    verdict = validate_kernel(archive, src, prepare(boundary, ext.name), {"N": 1037}, reps=2)
     print(json.dumps({"init_status": status, "error": verdict.error, "ok": verdict.ok, "maxdiff": verdict.maxdiff}))
 """
 

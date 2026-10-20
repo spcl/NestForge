@@ -7,9 +7,9 @@ import dace
 import numpy as np
 from dace.sdfg.state import LoopRegion
 from dace.transformation.interstate import LoopToMap
-from helpers import sdfg_to_python
+from helpers import nest_to_python, sdfg_to_python
 
-from nestforge.ir.emit_python import load_emitted, nest_to_python, oracle_sdfg
+from nestforge.ir.emit_python import load_emitted, oracle_sdfg
 from nestforge.ir.extract import Boundary
 
 N = dace.symbol("N")

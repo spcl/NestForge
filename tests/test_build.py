@@ -19,6 +19,7 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
+from helpers import extract_nest_to_sdfg
 
 import nestforge.build.sdfg as build_mod
 import nestforge.build.toolchain as toolchain_mod
@@ -26,10 +27,11 @@ from nestforge.build.toolchain import lib_linkable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
-from helpers import corpus_kernel
+import helpers
+from helpers import build_sdfg, corpus_kernel
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.sdfg import BuildOptions, build_sdfg, dace_runtime_include, new_gpu_codegen
+from nestforge.build.sdfg import BuildOptions, dace_runtime_include, new_gpu_codegen
 from nestforge.build.toolchain import (
     compiler_family,
     driver_lib_path,
@@ -39,7 +41,6 @@ from nestforge.build.toolchain import (
     parse_params,
 )
 from nestforge.corpus.translate import prepare
-from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.paths import REPO_ROOT
 from nestforge.stages.scopes import parallel_top_level_maps
 
@@ -58,7 +59,7 @@ def prepared(short, size, seed, out_dir):
     }
     sizes = {s: (size if s in shape_syms else 0) for s in boundary.symbols}
     inputs = make_inputs(boundary, sizes, seed=seed)
-    oracle = run_oracle(prepare(boundary, "k", out_dir / "k"), boundary, inputs, sizes)
+    oracle = run_oracle(prepare(boundary, "k"), boundary, inputs, sizes)
     return boundary, sizes, inputs, oracle
 
 
@@ -349,12 +350,13 @@ def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path, monkeypatch):
     """DaCe emits ``#pragma omp parallel for`` for every multicore map; a build without an OpenMP flag drops the
     pragma and runs serially, silently, so a build that names no runtime gets the resolved one."""
     seen = []
-    monkeypatch.setattr(build_mod, "run", lambda cmd, **k: seen.append(list(cmd)))
+    for module in (build_mod, toolchain_mod):
+        monkeypatch.setattr(module, "run", lambda cmd, **k: seen.append(list(cmd)))
     monkeypatch.setattr(build_mod, "lib_linkable", lambda soname, compiler: True)
     src = tmp_path / "x.cpp"
     src.write_text("int main() { return 0; }\n")
 
-    build_mod.compile(src, tmp_path, "x", BuildOptions())
+    helpers.compile_frame(src, tmp_path, "x", BuildOptions())
 
     issued = " ".join(t for cmd in seen for t in cmd)
     assert "-fopenmp" in issued and "omp" in issued.replace("-fopenmp", ""), issued
