@@ -1,0 +1,47 @@
+# HPCAgent-Bench benchmark manifest -- adding a benchmark: see README.md.
+# CloudSC precipitation fall and cover in the driver's blocked NPROMA layout, written in GPU loop order (block, ragged
+# column, level). The CPU schedule interchanges the level loop with the inner column map. See cloudsc_nproma_numpy.py.
+# nblk is ceil(ngptot / nproma); ngptot is not a multiple of nproma, so the last block is ragged.
+# Repo-local kernel (see benchmarking_creation/README.md). Benchmark record: cloudsc_nproma.md.
+name: CloudSC Blocked NPROMA Precipitation
+level: 3
+parameters:
+  S:
+    nlev: 30
+    nproma: 32
+    ngptot: 257
+    nblk: 9
+    ncldtop: 15
+  M:
+    nlev: 137
+    nproma: 128
+    ngptot: 32700
+    nblk: 256
+    ncldtop: 15
+  L:
+    nlev: 137
+    nproma: 1024
+    ngptot: 32700
+    nblk: 32
+    ncldtop: 15
+  XL:
+    nlev: 137
+    nproma: 128
+    ngptot: 262157
+    nblk: 2049
+    ncldtop: 15
+# paph must increase down the column (the layer thickness divides). q has a negative part so the clamp binds, and
+# some columns are dry so the cover ramp is below 1. initialize() in cloudsc_nproma.py builds them; domains are
+# for reference.
+args:
+  paph: {shape: "(nblk, nlev + 1, nproma)", domain: [1000.0, 200000.0]}
+  pap: {shape: "(nblk, nlev, nproma)", domain: [1000.0, 200000.0]}
+  pt: {shape: "(nblk, nlev, nproma)", domain: [220.0, 300.0]}
+  za: {shape: "(nblk, nlev, nproma)", domain: [0.0, 1.0]}
+  q: {shape: "(nblk, 5, nlev, nproma)", domain: [-2.0e-6, 1.0e-5]}
+  vfall: {shape: "(5,)", domain: [0.0, 4.0]}
+  pfplsx: {shape: "(nblk, 5, nlev + 1, nproma)", out: true}
+  pcov: {shape: "(nblk, nlev, nproma)", out: true}
+chain_length:
+  pfplsx: nlev
+  pcov: nlev
