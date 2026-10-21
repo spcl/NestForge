@@ -607,7 +607,7 @@ def passes_through(name: str, value: object) -> bool:
 
 def kernel_scratch(name: str, desc: dt.Data, sdfg: dace.SDFG) -> bool:
     """Whether the transient ``name`` of a nest inside ``sdfg`` is the scratch :func:`hoist_nested_scratch` made of
-    it at the top: a transient of the outermost SDFG with the same name, shape and type, which the nest writes."""
+    it at the top: a transient of the outermost SDFG with the same name, shape and type."""
     top = sdfg
     while top.parent_sdfg is not None:
         top = top.parent_sdfg
