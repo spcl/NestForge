@@ -40,6 +40,9 @@ TIMED = frozenset({"apply_move", "run_defaults", "get_performance"})
 #: Seconds a closing session process gets before it is terminated.
 CLOSE_TIMEOUT_S = 5.0
 
+#: Seconds one tool call may take (a build of the whole program included) before its session is ended.
+TOOL_TIMEOUT_S = 1800.0
+
 
 @dataclass(frozen=True, slots=True)
 class Setup:
@@ -123,11 +126,11 @@ class SessionProcess:
 
     __slots__ = ("__weakref__", "connection", "process")
 
-    def __init__(self, setup: Setup) -> None:
+    def __init__(self, setup: Setup, target: Callable[[Connection, Setup], None] = serve) -> None:
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
-        self.process = context.Process(target=serve, args=(child, setup))
+        self.process = context.Process(target=target, args=(child, setup))
         self.process.start()
         child.close()
         weakref.finalize(self, self.process.kill)
@@ -142,9 +145,18 @@ class SessionProcess:
         except EOFError:
             return Reply(error=f"the session process died (exit code {self.process.exitcode})")
 
-    def call(self, tool: str, arguments: dict[str, object]) -> Reply:
-        """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process."""
+    @property
+    def alive(self) -> bool:
+        """Whether the session process still runs; a dead one answers no further call."""
+        return self.process.is_alive()
+
+    def call(self, tool: str, arguments: dict[str, object], timeout_s: float = TOOL_TIMEOUT_S) -> Reply:
+        """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process; a call that does not
+        answer within ``timeout_s`` ends the session."""
         self.connection.send((tool, arguments))
+        if not self.connection.poll(timeout_s):
+            self.close()
+            return Reply(error=f"{tool} did not answer within {timeout_s:.0f} s; the session was ended")
         return self.receive()
 
     def close(self) -> None:
@@ -152,3 +164,4 @@ class SessionProcess:
         self.process.join(CLOSE_TIMEOUT_S)
         if self.process.is_alive():
             self.process.kill()
+            self.process.join()
