@@ -14,7 +14,7 @@ from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, rou
 from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, SessionProcess, Setup
+from nestforge.server import CALLS, Reply, SessionProcess, Setup
 from nestforge.stages.performance import Performance
 
 #: Episode -> kernel name -> its session process.
@@ -54,6 +54,10 @@ def serve(judge: Judge, request: RouteRequest) -> None:
             except LookupError as err:
                 return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
         reply = kernels[kernel].call(name, args.model_dump())
+        if not kernels[kernel].alive:
+            # The next call starts a fresh session from the canonical program; this one's moves are lost.
+            del kernels[kernel]
+            reply = Reply(error=f"{reply.error}; the next call starts a fresh session")
     if reply.error:
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {reply.error}"))
     return judge.reply(HTTPStatus.OK, ToolAnswer(tool=name, result=reply.result, performance=reply.performance))
