@@ -60,7 +60,7 @@ Not timed yet (W10). Preset M (`Nkz 4, NE 16, Nqz 4, Nw 2, N3D 3, NA 128, NB 4`)
 | CPU serial | | | | |
 | CPU OpenMP, 72 threads | | | | |
 
-Oracle relative error at preset S: job 5112562 (quickstart, CPU, default schedule).
+Oracle check at preset S: quickstart passes all seven stages on CPU with the default schedule (job 5112722, after the C_PTR fix `27080f2`; stage 6 picked `g++:contract-fma` among 9 variant cells). Relative error not recorded separately.
 
 ## CPU and GPU
 
@@ -69,7 +69,7 @@ Stage 1 is the same on both; the GPU default already makes the reference shape, 
 ## What else matters
 
 - **Legality:** both pulls offered and applied on CPU and GPU (job 5112133).
-- **Build:** stages 3 to 5 pass on CPU for the route and the default (job 5112069 as v1c; job 5112562 for this folder).
+- **Build:** stages 3 to 5 pass on CPU for the route and the default (job 5112069 as v1c; job 5112562 for this folder); stage 6 needed the C_PTR fix `27080f2` (`std::complex<double>` entry buffers), then quickstart passes (job 5112722).
 - **Vectorization:** not checked.
 - **Pins:** DaCe `801cafd`, NestForge `4df1830` (branch `bench/w3-medium-refills`), HPCAgent-Bench `e63f9f1`.
 
