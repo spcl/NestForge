@@ -3,6 +3,7 @@
 """The Python emitter, one construct per test: the emitted text has the expected shape and the function computes
 what a hand-written NumPy reference computes. Every buffer is allocated by the caller, as the C kernels do."""
 
+import copy
 import json
 import math
 
@@ -15,7 +16,19 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
 from helpers import nest_to_python, run_emitted, sdfg_to_python
 
-from nestforge.ir.emit_python import Names, UnsupportedNest, expr, index, indexed_shape, load_emitted, simplify_as_sizes
+from nestforge.ir.emit_python import (
+    Names,
+    UnsupportedNest,
+    expr,
+    hoist_nested_scratch,
+    index,
+    indexed_shape,
+    load_emitted,
+    lower,
+    render,
+    scratch_arrays,
+    simplify_as_sizes,
+)
 from nestforge.ir.extract import Boundary
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -336,6 +349,91 @@ def test_a_symbol_a_nested_sdfg_binds_itself_leaves_the_outer_value_alone():
     call, _ = emit_and_run(nested_symbol_clash_sdfg(), {}, {})
 
     assert (call["mid"][0], call["out"][0]) == (7.0, 2.0)
+
+
+def assign_state(
+    sdfg: dace.SDFG, after: dace.SDFGState | None, code: str, reads: dict[str, str], write: str
+) -> dace.SDFGState:
+    """A state after ``after`` (or the start state) with one tasklet ``code`` reading ``reads`` (connector ->
+    memlet) and writing its ``o`` to ``write``."""
+    state = sdfg.add_state(is_start_block=after is None) if after is None else sdfg.add_state_after(after)
+    tasklet = state.add_tasklet("t", set(reads), {"o"}, code)
+    for conn, memlet in reads.items():
+        state.add_edge(state.add_read(memlet.split("[")[0]), None, tasklet, conn, dace.Memlet(memlet))
+    state.add_edge(tasklet, "o", state.add_write(write.split("[")[0]), None, dace.Memlet(write))
+    return state
+
+
+def per_element(inner: dace.SDFG, symbol_mapping: dict) -> dace.SDFG:
+    """``b[i]`` from ``a[i]`` for every ``i`` of a map, by the nest ``inner`` (connectors ``x`` and ``y``)."""
+    outer = dace.SDFG("per_element")
+    outer.add_array("a", [N], dace.float64)
+    outer.add_array("b", [N], dace.float64)
+    state = outer.add_state()
+    entry, exit_ = state.add_map("each", {"i": "0:N"})
+    node = state.add_nested_sdfg(inner, {"x"}, {"y"}, symbol_mapping)
+    state.add_memlet_path(state.add_read("a"), entry, node, dst_conn="x", memlet=dace.Memlet("a[i]"))
+    state.add_memlet_path(node, exit_, state.add_write("b"), src_conn="y", memlet=dace.Memlet("b[i]"))
+    return outer
+
+
+def two_state_body(name: str) -> dace.SDFG:
+    """``y = x``, then ``y = y + N`` in a second state, so the nest stays nested inside a map."""
+    inner = dace.SDFG(name)
+    inner.add_array("x", [1], dace.float64)
+    inner.add_array("y", [1], dace.float64)
+    inner.add_symbol("N", dace.int64)
+    first = assign_state(inner, None, "o = v", {"v": "x[0]"}, "y[0]")
+    assign_state(inner, first, "o = v + N", {"v": "y[0]"}, "y[0]")
+    return inner
+
+
+def test_a_nest_handed_an_outer_size_as_a_code_string_reads_the_outer_value():
+    """DaCe may store a symbol mapping entry ``N -> N`` as the string ``'N'``; it is no rebinding."""
+    sdfg = per_element(two_state_body("adds_n"), {"N": N})
+    node = next(n for n, _ in sdfg.all_nodes_recursive() if isinstance(n, nodes.NestedSDFG))
+    node.symbol_mapping["N"] = "N"
+    a = np.random.default_rng(6).random(4)
+
+    call, source = emit_and_run(sdfg, {"a": a}, {"N": 4})
+
+    assert not any(line.strip().startswith("N = ") for line in source.splitlines())
+    np.testing.assert_array_equal(call["b"], a + 4)
+
+
+def nest_in_nest_with_scratch() -> dace.SDFG:
+    """A two-state nest inside a map that calls, inside a map of its own (so neither is inlined), a three-state nest
+    with a private scratch ``t[2]``: ``t = (2x, x + 1)``, then ``y = t[0] + t[1]``."""
+    inner = dace.SDFG("with_scratch")
+    inner.add_array("x", [1], dace.float64)
+    inner.add_array("y", [1], dace.float64)
+    inner.add_array("t", [2], dace.float64, transient=True)
+    first = assign_state(inner, None, "o = 2 * v", {"v": "x[0]"}, "t[0]")
+    second = assign_state(inner, first, "o = v + 1", {"v": "x[0]"}, "t[1]")
+    assign_state(inner, second, "o = p + q", {"p": "t[0]", "q": "t[1]"}, "y[0]")
+    middle = dace.SDFG("calls_scratch")
+    middle.add_array("x", [1], dace.float64)
+    middle.add_array("y", [1], dace.float64)
+    call = middle.add_state(is_start_block=True)
+    entry, exit_ = call.add_map("once", {"k": "0:1"})
+    node = call.add_nested_sdfg(inner, {"x"}, {"y"})
+    call.add_memlet_path(call.add_read("x"), entry, node, dst_conn="x", memlet=dace.Memlet("x[k]"))
+    call.add_memlet_path(node, exit_, call.add_write("y"), src_conn="y", memlet=dace.Memlet("y[k]"))
+    middle.add_state_after(call)
+    return per_element(middle, {})
+
+
+def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not_a_rebinding():
+    lowered = copy.deepcopy(nest_in_nest_with_scratch())
+    lower(lowered)
+    hoist_nested_scratch(lowered)
+    assert "t" in scratch_arrays(lowered)
+    source = render("k", ["a", "b", *scratch_arrays(lowered), "N"], lowered)
+    a = np.random.default_rng(7).random(5)
+
+    call = run_emitted(source, "k", lowered, {"a": a}, {"N": 5})
+
+    np.testing.assert_allclose(call["b"], 3 * a + 1)
 
 
 WINDOW = 4
