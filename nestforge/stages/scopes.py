@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 3: lower each offloading scope into an ``ExternalCall`` kernel. Default: one scope per parallel top-level
-map. An agent may name several maps of one state, or a straight run of top-level blocks, as one scope."""
+map. An agent may name several maps of one state, or a straight run of blocks of one region, as one scope."""
 
 from __future__ import annotations
 
@@ -11,11 +11,12 @@ from functools import partial
 
 import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls, in_conn, out_conn
+from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import ControlFlowBlock, SDFGState
+from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 
-from nestforge.corpus.translate import python_and_manifest
+from nestforge.corpus.translate import prepare
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import (
     Boundary,
@@ -26,12 +27,7 @@ from nestforge.ir.extract import (
     find_state_of_node,
 )
 from nestforge.ir.introspect import Row, nest_reads_writes
-from nestforge.ir.names import in_order
-
-
-def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
-    """The maps of ``state`` not nested in another map."""
-    return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
+from nestforge.ir.names import in_order, top_level_map_entries
 
 
 def is_parallel_nest(node: NestNode) -> bool:
@@ -60,25 +56,10 @@ def is_parallel_kernel(ext: ExternalCall) -> bool:
     return True
 
 
-def reference_sdfg(boundary: Boundary) -> dace.SDFG:
-    """The standalone SDFG with boundary arrays renamed to the node's connectors; an array both read and written
-    gets an ``_in_`` and an ``_out_`` connector."""
-    ref = copy.deepcopy(boundary.standalone_sdfg)
-    inplace = [name for name in boundary.inputs if name in boundary.outputs]
-    for name in boundary.inputs:
-        if name not in inplace:
-            ref.replace(name, in_conn(name))
-    for name in boundary.outputs:
-        ref.replace(name, out_conn(name))
-    for name in sorted(inplace):
-        ref.add_datadesc(in_conn(name), copy.deepcopy(ref.arrays[out_conn(name)]))
-    return ref
-
-
 def kernel_arguments(ext: ExternalCall) -> tuple[list[str], list[str], list[str]]:
     """``(inputs, outputs, symbols)`` of the kernel node, in boundary order."""
-    inputs = [conn.removeprefix(in_conn("")) for conn in ext.in_connectors]
-    outputs = [conn.removeprefix(out_conn("")) for conn in ext.out_connectors]
+    inputs = [data_name(conn) for conn in ext.in_connectors]
+    outputs = [data_name(conn) for conn in ext.out_connectors]
     symbols = sorted(arg for arg in strings(ext.abi_order) if arg not in inputs and arg not in outputs)
     return inputs, outputs, symbols
 
@@ -111,15 +92,15 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     state, nsdfg = boundary.state, boundary.nsdfg_node
     if state is None or nsdfg is None:
         raise ValueError("replace_nsdfg_with_external needs an extracted-nest Boundary (state + nsdfg_node)")
-    source, manifest = python_and_manifest(boundary, name)
+    oracle = prepare(boundary, name)
     ext = ExternalCall(
         name,
         inputs=[in_conn(i) for i in boundary.inputs],
         outputs=[out_conn(o) for o in boundary.outputs],
-        standalone_sdfg=reference_sdfg(boundary),
-        numpy_source=source,
+        standalone_sdfg=reference_sdfg(nsdfg),
+        numpy_source=oracle.numpy_source,
     )
-    ext.abi_order = list(manifest["input_args"])
+    ext.abi_order = list(oracle.args)
     state.add_node(ext)
     # a memlet is never shared between edges
     for e in state.in_edges(nsdfg):
@@ -216,13 +197,20 @@ def map_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
 
 
 def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> Extract | str:
-    """A straight, single-entry run of top-level blocks of ``sdfg``, in execution order."""
-    outer = [block.label for block in blocks if block.parent_graph is not sdfg]
-    if outer:
-        return f"{', '.join(outer)} is not a top-level block of the program; kernels live at the top level."
-    order = [block for block in in_order(sdfg) if block in blocks]
+    """A straight, single-entry run of blocks of one control-flow region of ``sdfg``, at any depth, in execution
+    order."""
+    nested = [block.label for block in blocks if block.sdfg is not sdfg]
+    if nested:
+        return f"{', '.join(nested)} sits inside a nested SDFG; name blocks of the program."
+    region = blocks[0].parent_graph
+    other = [block.label for block in blocks if block.parent_graph is not region]
+    if other:
+        return f"{', '.join(other)} is not in the region of {blocks[0].label}; name blocks of one level."
+    order = [block for block in in_order(region) if block in blocks]
     for first, second in zip(order, order[1:]):
-        if [e.dst for e in sdfg.out_edges(first)] != [second] or len(sdfg.in_edges(second)) != 1:
+        out = region.out_edges(first)
+        straight = [e.dst for e in out] == [second] and out[0].data.is_unconditional()
+        if not straight or len(region.in_edges(second)) != 1:
             return f"{first.label} and {second.label} are not one straight run; name blocks that follow each other."
     return partial(extract_blocks, sdfg, order)
 

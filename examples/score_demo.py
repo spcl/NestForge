@@ -23,8 +23,8 @@ import dace
 
 from nestforge.build.arena import TIMED_REPS
 from nestforge.corpus.bench import iter_dace_kernels, preset_sizes
-from nestforge.ir.loops import kernel_state
-from nestforge.session import JSON_INDENT, Session
+from nestforge.ir.extract import find_state_of_node
+from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.kernel import validate_kernel
 from nestforge.stages.score import enclosing_trips, outer_iterations
@@ -68,7 +68,7 @@ def stage2(session: Session, pipeline: str) -> dict:
 
 
 def kernel_calls(session: Session, name: str) -> float:
-    state = kernel_state(session.sdfg, session.kernel(name))
+    state = find_state_of_node(session.sdfg, session.kernel(name))
     sizes = {k: float(v) for k, v in session.sizes.items()}
     trips, _ = enclosing_trips(state, sizes)
     outer, _ = outer_iterations(state.sdfg, sizes)
@@ -76,11 +76,11 @@ def kernel_calls(session: Session, name: str) -> float:
 
 
 def time_kernels(session: Session) -> list[dict]:
-    session.define_scopes()
+    session.default_scopes()
     session.place()
     out = []
     for info in session.list_kernels():
-        name = info["name"]
+        name = info.name
         session.optimize_kernel(name)
         build = session.builds[name]
         prep, sizes = session.prepare_kernel(name), session.kernel_sizes(name)
@@ -167,7 +167,7 @@ def main() -> None:
                 }
             records.append(record)
             print(json.dumps({k: v for k, v in record.items() if k not in ("kernels", "trace")}), flush=True)
-            (out / "score_demo.json").write_text(json.dumps(records, indent=JSON_INDENT, default=str))
+            (out / "score_demo.json").write_text(json.dumps(records, indent=2, default=str))
     print(table(records))
 
 

@@ -42,7 +42,7 @@ from nestforge.build.sdfg import (
 )
 from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared
-from nestforge.ir.extract import Boundary
+from nestforge.ir.extract import INT64, Boundary
 from nestforge.stages.placement import kernel_device
 
 # Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` beside the host unit ``<kernel>.cu``.
@@ -95,17 +95,12 @@ def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
     return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
 
 
-def at_rung(verdict: KernelVerdict, fp_mode: str) -> KernelVerdict:
-    """The same measurement gated at another FP rung."""
-    return dataclasses.replace(verdict, fp_mode=fp_mode)
-
-
 def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
     """A copy of the kernel whose entry takes the integer symbols as the ``int64_t`` ``ExternalCall`` passes."""
     sdfg = copy.deepcopy(boundary.standalone_sdfg)
     for name in boundary.symbols:
         if sdfg.symbols[name] in dtypes.INTEGER_TYPES:
-            sdfg.symbols[name] = dace.int64
+            sdfg.symbol_repo.set_type(name, INT64)
     return sdfg
 
 

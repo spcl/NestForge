@@ -26,7 +26,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
-      - run: uv pip install -e ".[dev,agent]"
+      - run: uv pip install -e ".[dev]"
       - run: pre-commit run --all-files --show-diff-on-failure
       - name: pytest (a skip fails the run)
         env:
@@ -45,6 +45,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
-      - run: uv pip install -e ".[dev,agent]"
+      - run: uv pip install -e ".[dev]"
       - name: pytest
-        run: pytest -m "integration and not gpu and not vendor" --timeout=900 --cov=nestforge --cov-report=term
+        # The bench's references run only under the OpenMP launch environment its judge uses
+        # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
+        run: |
+          eval "$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')"
+          ulimit -s "$(ulimit -H -s)"
+          pytest -m "integration and not gpu and not vendor" --timeout=900 --cov=nestforge --cov-report=term

@@ -15,16 +15,17 @@ import pytest
 from dace import symbolic
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import (
+    bench_kernel,
+    build_sdfg,
     c_argtypes,
     corpus_kernel,
-    loop_level_kernel,
     run_emitted,
     sdfg_to_python,
     signature_order,
 )
 
 from nestforge.build.isolation import Result, run_isolated
-from nestforge.build.sdfg import BuildOptions, build_sdfg
+from nestforge.build.sdfg import BuildOptions
 
 ATOL = 1e-8
 
@@ -139,7 +140,7 @@ def make_dace(short):
 
 
 def make_llr(key):
-    kernel = loop_level_kernel(key)
+    kernel = corpus_kernel(key)
 
     def build():
         sdfg = kernel.to_sdfg(simplify=True)
@@ -249,8 +250,9 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
     def work():
         import subprocess
 
+        from helpers import emit_sources
+
         from nestforge.build.arena import call_native, make_inputs
-        from nestforge.corpus.translate import emit_sources, prepare
         from nestforge.stages.scopes import lower_nests_to_external_call
 
         make_sdfg, sizes, _ = builder_for(kind, short)
@@ -262,7 +264,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
             for i, (_ext, b) in enumerate(nests):
                 name = f"{short.split('/')[-1]}_n{i}"
                 nsizes = {**sizes, **{s: 0 for s in b.symbols if s not in sizes}}  # leaked nest indices -> 0
-                prep = prepare(b, name, d / name, sizes=nsizes)
+                prep = bench_kernel(b, name, d / name, sizes=nsizes)
                 built = build_sdfg(b.standalone_sdfg, d / f"{name}_o", BuildOptions(compiler="g++"))
                 inp = make_inputs(b, nsizes, seed=0)
                 oracle = {k: v.copy() for k, v in inp.items()}

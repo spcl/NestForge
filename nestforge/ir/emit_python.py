@@ -213,7 +213,9 @@ def bind_nests_through_views(sdfg: dace.SDFG) -> None:
     widens the connector to the whole array."""
     for view, state in placed(sdfg, nodes.AccessNode):
         desc = state.sdfg.arrays[view.data]
-        view_edge = get_view_edge(state, view) if isinstance(desc, dt.View) else None
+        if not isinstance(desc, dt.ArrayView):
+            continue
+        view_edge = get_view_edge(state, view)
         if view_edge is None or view_edge.data.data == view.data:
             continue
         others = [e for e in state.all_edges(view) if e is not view_edge]
@@ -225,7 +227,7 @@ def bind_nests_through_views(sdfg: dace.SDFG) -> None:
         array, window, _ = memlet_parts(view_edge.data)
         if (
             not isinstance(nest, nodes.NestedSDFG)
-            or window is None
+            or not isinstance(window, subsets.Range)
             or edge.data.subset != subsets.Range.from_array(desc)
         ):
             continue
@@ -377,8 +379,8 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
 def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
     """``extent`` simplified with every symbol a positive integer, as sizes are; drops a ``Max`` against zero."""
     sizes = {s: sympy.Symbol(str(s), integer=True, positive=True) for s in extent.free_symbols}
-    simple = sympy.simplify(extent.subs(sizes))
-    return simple.subs({size: s for s, size in sizes.items()})
+    simple = sympy.simplify(extent.xreplace(sizes))
+    return simple.xreplace({size: s for s, size in sizes.items()})
 
 
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
@@ -426,10 +428,10 @@ def index(subset: subsets.Subset) -> str:
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
-        if sympy.sympify(end - begin) == 0:
+        if symbolic.pystr_to_symbolic(end - begin) == 0:
             parts.append(begin_text)
             continue
-        if sympy.sympify(step).is_positive is not True:
+        if symbolic.pystr_to_symbolic(step).is_positive is not True:
             raise UnsupportedNest(f"subset step {step} is not provably positive; no sound NumPy slice")
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
@@ -445,8 +447,8 @@ def as_range(subset: subsets.Subset) -> subsets.Range:
 
 def indexed_shape(subset: subsets.Subset) -> str:
     """The shape ``index(subset)`` selects, as a tuple literal: single-element axes drop, as in NumPy."""
-    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
-    kept = [(end - begin) // step + 1 for begin, end, step in ranges if begin != end]
+    selected = as_range(subset)
+    kept = [extent for (begin, end, _), extent in zip(selected.ranges, selected.size()) if begin != end]
     return "(" + "".join(f"{symbolic.symstr(extent, cpp_mode=False)}, " for extent in kept) + ")"
 
 
@@ -572,7 +574,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     for param, (begin, end, step) in zip(entry.map.params, entry.map.range.ranges):
         if param in scope.active:
             raise UnsupportedNest(f"map parameter {param!r} shadows an enclosing iterator")
-        sign = sympy.sign(sympy.sympify(step))
+        sign = sympy.sign(symbolic.pystr_to_symbolic(step))
         if sign not in (1, -1):
             raise UnsupportedNest(f"map parameter {param!r} has step {step} of undecidable sign")
         bounds = [expr(begin, scope.names), expr(end + sign, scope.names)]
@@ -585,7 +587,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     return [*python("\n".join(lines), scope.names), *body] if lines else body
 
 
-def combines_inside(sdfg: dace.SDFG, name: str, wcr: str) -> bool:
+def combines_inside(sdfg: dace.SDFG, name: str, wcr: str | ast.AST) -> bool:
     """Whether every write to ``name`` in ``sdfg`` already combines with ``wcr``: then an outer WCR on the same
     connector only repeats the inner one along the memlet path, and inlining the body is exact."""
     writes = [
@@ -796,12 +798,6 @@ def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
 def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:
     """Every argument in signature order: :func:`kernel_arrays`, then the symbols."""
     return [*arrays, *(s for s in boundary.symbols if s not in arrays)]
-
-
-def nest_to_python(boundary: Boundary, fn_name: str = "kernel") -> str:
-    """Standalone Python source ``def <fn_name>(<args>): ...`` of an extracted nest."""
-    sdfg = oracle_sdfg(boundary)
-    return render(fn_name, kernel_args(boundary, kernel_arrays(boundary, sdfg)), sdfg)
 
 
 @functools.lru_cache(maxsize=1, typed=True)

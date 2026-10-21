@@ -13,8 +13,6 @@ import time
 import warnings
 from pathlib import Path
 
-import pytest
-
 from nestforge.build.isolation import ERROR_CHARS, OPENMP_REGISTRATION, Failure, Result, run_isolated
 
 #: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
@@ -108,8 +106,12 @@ def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep():
     elapsed = time.perf_counter() - start
     assert isinstance(result, Failure) and "timeout after" in result.error
     assert elapsed < 30, "the deadline did not fire; it waited for the child instead"
-    with pytest.raises(ChildProcessError):
-        os.waitpid(-1, os.WNOHANG)  # nothing left unreaped
+    # nothing left unreaped; a live child of another test (a spawn's resource tracker) is no zombie
+    try:
+        reaped, _ = os.waitpid(-1, os.WNOHANG)
+    except ChildProcessError:
+        reaped = 0
+    assert reaped == 0, f"child {reaped} was left as a zombie"
 
 
 def test_a_child_returning_something_unserialisable_reports_the_reason():

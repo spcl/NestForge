@@ -11,9 +11,8 @@ import dace
 import numpy as np
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
-from helpers import loop_level_kernel, run_emitted, sdfg_to_python
+from helpers import corpus_kernel, extract_nest_to_sdfg, run_emitted, sdfg_to_python
 
-from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.stages.scopes import top_level_map_entries
 
 
@@ -33,7 +32,7 @@ def top_level_nest(sdfg: dace.SDFG):
 def emit_and_call(key: str, sizes: dict, inputs: dict):
     """Canonicalize + extract + emit ``key``, allocate every buffer C-style from the emitted signature,
     run it, return the call dict (buffers hold the results in place)."""
-    kernel = loop_level_kernel(key)
+    kernel = corpus_kernel(key)
     sdfg = kernel.to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     parent, node = top_level_nest(sdfg)
@@ -67,7 +66,7 @@ def test_ext_break_find_first_emits_break_and_stops():
 def test_cond_reduce_sym_scalar_read_and_wcr():
     """Size-1 buffer read as ``x[0]`` and WCR copy accumulates: out = sum of a[i] where a[i] > K."""
     n = 96
-    kernel = loop_level_kernel("cond_reduce_sym")
+    kernel = corpus_kernel("cond_reduce_sym")
     k_value = kernel.spec.pinned_config["K"]
     a = np.random.default_rng(0).random(n)
     call, _ = emit_and_call("cond_reduce_sym", dict(LEN_1D=n), dict(a=a.copy()))
@@ -78,7 +77,7 @@ def test_cond_reduce_sym_scalar_read_and_wcr():
 def test_s318_strided_argmax_indexes_by_its_stride_and_matches_the_oracle():
     """s318's ``a[k]`` with ``k += inc`` canonicalizes to an arg-reduction over ``a[0::inc]``; its expansion indexes
     ``a`` by the stride ``inc``, which stays an argument."""
-    kernel = loop_level_kernel("tsvc_2_s318")
+    kernel = corpus_kernel("tsvc_2_s318")
     oracle = runpy.run_path(str(kernel.dace_file.with_name("tsvc_2_s318_numpy.py")))["s318"]
     assert kernel.spec.init is not None
     n, inc = 64, int(kernel.spec.init.scalars["inc"])

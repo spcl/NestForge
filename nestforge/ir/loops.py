@@ -6,7 +6,6 @@ standalone check of the kernel needs a value for each."""
 from __future__ import annotations
 
 import dace
-from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
 
@@ -29,15 +28,7 @@ def enclosing_loops(state: SDFGState) -> list[LoopRegion]:
     return loops[::-1]
 
 
-def kernel_state(sdfg: dace.SDFG, ext: ExternalCall) -> SDFGState:
-    """The state holding the kernel node ``ext``."""
-    for block in sdfg.all_control_flow_blocks():
-        if isinstance(block, SDFGState) and any(node is ext for node in block.nodes()):
-            return block
-    raise KeyError(f"kernel {ext.name!r} is not in the program")
-
-
-def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol, int]) -> int | None:
+def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol | str, int | float]) -> int | None:
     """The iterator value halfway through ``loop`` under ``env``, or ``None`` for a loop that is not a counted range."""
     start = loop_analysis.get_init_assignment(loop)
     end = loop_analysis.get_loop_end(loop)
@@ -52,7 +43,7 @@ def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol, int]) -> int 
 def loop_symbol_values(state: SDFGState, sizes: dict[str, int]) -> dict[str, int]:
     """A value for the iterator of each loop around ``state``: the middle of its range under ``sizes`` and the
     values already chosen for the loops outside it."""
-    env: dict[dace.symbolic.symbol, int] = {dace.symbolic.symbol(k): v for k, v in sizes.items()}
+    env: dict[dace.symbolic.symbol | str, int | float] = {dace.symbolic.symbol(k): v for k, v in sizes.items()}
     values: dict[str, int] = {}
     for loop in enclosing_loops(state):
         value = middle_value(loop, env)

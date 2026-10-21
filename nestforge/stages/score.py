@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import dace
 import sympy
@@ -250,7 +250,7 @@ def stride_elements(
 @dataclass(slots=True)
 class LineTally:
     streamed: float = 0.0
-    resident: dict[str, float] | None = None
+    resident: dict[tuple[dace.SDFG, str], float] = field(default_factory=dict)
     unresolved: int = 0
 
 
@@ -263,7 +263,6 @@ def tasklet_lines(
         return  # nothing iterates around it: a one-off scalar statement
     n, missing = map_iterations(around, sizes)
     runs, tally.unresolved = runs * n, tally.unresolved + missing
-    resident = tally.resident if tally.resident is not None else {}
     for edge in [*state.in_edges(tasklet), *state.out_edges(tasklet)]:
         memlet = edge.data
         if memlet.data is None or memlet.subset is None:
@@ -277,11 +276,10 @@ def tasklet_lines(
             continue
         nbytes = (evaluate(desc.total_size, sizes) or 0.0) * desc.dtype.bytes
         if 0 < nbytes <= CACHE_BYTES:
-            resident[f"{id(sdfg)}:{memlet.data}"] = nbytes / LINE_BYTES
+            tally.resident[sdfg, memlet.data] = nbytes / LINE_BYTES
         else:
             volume = evaluate(memlet.volume, sizes) or 1.0
             tally.streamed += runs * volume * min(1.0, abs(stride) * desc.dtype.bytes / LINE_BYTES)
-    tally.resident = resident
 
 
 def all_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
@@ -292,7 +290,7 @@ def all_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
 
 
 def program_lines(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, int]:
-    tally = LineTally(resident={})
+    tally = LineTally()
     for inner in all_sdfgs(sdfg):
         outer, missing = outer_iterations(inner, sizes)
         tally.unresolved += missing
@@ -302,7 +300,6 @@ def program_lines(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, int]
             for node in state.nodes():
                 if isinstance(node, nodes.Tasklet):
                     tasklet_lines(inner, state, node, trips * outer, sizes, tally)
-    assert tally.resident is not None
     return tally.streamed + sum(tally.resident.values()), tally.unresolved
 
 

@@ -6,9 +6,10 @@ stages have their own tests."""
 import dace
 import numpy as np
 
+from nestforge.ir.names import top_level_map_entries
+from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")
 
@@ -43,28 +44,28 @@ def top_level_map_count(sdfg) -> int:
 def test_a_move_bumps_the_epoch_and_its_labels_go_stale():
     s = make_session()
     (move,) = s.list_moves("map-fusion")
-    assert move["epoch"] == 0
+    assert move.epoch == 0
 
-    applied = s.apply_move(move["kind"], move["labels"], move["epoch"])
+    applied = s.apply_move(move.kind, move.labels, move.epoch)
 
-    assert (applied.status, s.epoch) == ("applied", 1)
-    assert s.apply_move(move["kind"], move["labels"], move["epoch"]).status == "stale"
+    assert (applied.status, s.epoch) == (MoveStatus.APPLIED, 1)
+    assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.STALE
 
 
-def test_define_scopes_bumps_the_epoch_and_names_kernels_with_their_boundary_sets():
+def test_default_scopes_bumps_the_epoch_and_names_kernels_with_their_boundary_sets():
     s = make_session()
-    kernels = s.define_scopes()
+    kernels = s.default_scopes()
     assert s.epoch == 1
-    assert [k["name"] for k in kernels] == ["extcall_0", "extcall_1"]
-    producer = next(k for k in kernels if k["writes"] == ["T"])
-    assert producer["reads"] == ["A", "B"] and producer["symbols"] == ["N"] and producer["parallel"]
+    assert [k.name for k in kernels] == ["extcall_0", "extcall_1"]
+    producer = next(k for k in kernels if k.writes == ("T",))
+    assert producer.reads == ("A", "B") and producer.symbols == ("N",) and producer.parallel
 
 
-def test_a_no_op_define_scopes_keeps_the_epoch_so_labels_stay_valid():
+def test_a_no_op_default_scopes_keeps_the_epoch_so_labels_stay_valid():
     sdfg = dace.SDFG("no_maps")
     sdfg.add_state_after(sdfg.add_state())
     session = Session(sdfg)
-    assert session.define_scopes() == []
+    assert session.default_scopes() == []
     assert session.epoch == 0
 
 
@@ -83,6 +84,6 @@ def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
     s = make_session()
     map_label = next(label for label, (obj, _) in s.row_index().items() if isinstance(obj, dace.nodes.MapEntry))
     assert "work=" in s.metrics(map_label) and "depth=" in s.metrics(map_label)
-    producer = next(k["name"] for k in s.define_scopes() if k["writes"] == ["T"])
+    producer = next(k.name for k in s.default_scopes() if k.writes == ("T",))
     assert s.metrics(producer).startswith(f"{producer}: work=N depth=")  # one add per element
     assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."

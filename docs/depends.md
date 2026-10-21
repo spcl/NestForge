@@ -18,6 +18,6 @@ exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 - **Control flow.** `if` without `else` keeps the incoming producers; a loop runs to a fixpoint and tags what
   crossed its back edge `[carried: <loop>]`; the incoming producers survive a loop unless it provably runs once.
 - **Refused** with `UnsupportedProgram`: `Reference` containers, a view that binds nothing, a kernel inside a
-  nested SDFG or without a manifest, and unmodeled control flow.
+  nested SDFG or without an `abi_order`, and unmodeled control flow.
 
 `Session.kernel_graph()` computes it once per epoch; `list_kernels()` and `describe(deps=True)` show it.

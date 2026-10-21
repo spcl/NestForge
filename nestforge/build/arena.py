@@ -96,7 +96,7 @@ def call_native(
 ) -> tuple[dict[str, np.ndarray] | None, float]:
     """Call the compiled entry once and snapshot its outputs, then time ``reps`` calls on the same buffers.
 
-    ``order`` is the compiled signature's order, not the manifest's: same-typed buffers in the wrong slot go
+    ``order`` is the compiled signature's order, not the oracle's: same-typed buffers in the wrong slot go
     unnoticed. A read-write output is restored before every timed call (see :func:`accumulating_outputs`).
     ``copy_inputs=False`` works on the caller's buffers; ``copy_outputs=False`` skips the snapshot.
     """

@@ -9,8 +9,8 @@ correct one. It is deterministic, never agent-driven.
   model.
 - **GPU.** Every nvcc on PATH × FP mode (strict-ieee, contract-fma), all with `-arch=native`.
 
-Variants that compile to the same object are timed once. Each CPU variant runs in a forked child and each GPU
-variant in a spawned interpreter, so a crash or hang is a recorded result, never a dead harness.
+Every variant is timed. A CPU variant runs in a forked child and a GPU variant in a spawned interpreter, so a crash
+or hang is a recorded result, never a dead harness.
 [FP modes](../fp-and-vectorization.md) lists the flags.
 
 | | |

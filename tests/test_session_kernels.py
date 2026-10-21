@@ -10,6 +10,7 @@ import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall
 
 from nestforge.build import flags
+from nestforge.records import KernelStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import kernel_arguments
@@ -32,9 +33,9 @@ def boundary_order(kernel: ExternalCall) -> list[str]:
 
 def one_kernel_session(tmp_path, n: int = 256) -> tuple:
     session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": n})
-    kernels = session.define_scopes()
+    kernels = session.default_scopes()
     assert len(kernels) == 1
-    return session, kernels[0]["name"]
+    return session, kernels[0].name
 
 
 def assert_program_computes(sdfg: dace.SDFG) -> None:
@@ -48,12 +49,12 @@ def test_optimize_kernel_writes_one_c_entry_with_the_boundary_arguments(tmp_path
     """The optimized kernel exposes one extern C symbol whose arguments are the boundary's names."""
     session, name = one_kernel_session(tmp_path)
     info = session.optimize_kernel(name)
-    text = Path(info["unit"]).read_text()
-    assert Path(info["unit"]).name == f"{info['kernel']}.cpp"
+    text = Path(info.unit).read_text()
+    assert Path(info.unit).name == f"{info.kernel}.cpp"
     assert text.count('extern "C"') == 1
-    assert f"void {info['symbol']}(" in text
-    assert info["entry"] == f"{info['symbol']}({', '.join(info['abi_order'])})"
-    assert sorted(info["abi_order"]) == sorted(boundary_order(session.kernel(name)))
+    assert f"void {info.symbol}(" in text
+    assert info.entry == f"{info.symbol}({', '.join(info.abi_order)})"
+    assert sorted(info.abi_order) == sorted(boundary_order(session.kernel(name)))
 
 
 def test_optimize_kernel_binds_its_default_library_and_the_program_still_computes(tmp_path):
@@ -64,22 +65,22 @@ def test_optimize_kernel_binds_its_default_library_and_the_program_still_compute
 
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall"
-    assert ext.lib_path == info["library"] and Path(info["library"]).name == f"lib{info['kernel']}.a"
-    assert ext.link_flags and info["variant"].count(":") == 2
+    assert ext.lib_path == str(info.library) and Path(info.library).name == f"lib{info.kernel}.a"
+    assert ext.link_flags and info.variant.count(":") == 2
     assert_program_computes(session.sdfg)
 
 
 def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
-    Session(sdfg, work_dir=str(tmp_path / "lowering")).define_scopes()
+    Session(sdfg, work_dir=str(tmp_path / "lowering")).default_scopes()
     fresh = Session(sdfg, work_dir=str(tmp_path / "fresh"))
     (kernel,) = fresh.list_kernels()
 
-    info = fresh.optimize_kernel(kernel["name"])
+    info = fresh.optimize_kernel(kernel.name)
 
-    ext = fresh.kernel(kernel["name"])
-    assert ext.implementation == "ExternCall" and ext.lib_path == info["library"]
-    assert sorted(info["abi_order"]) == sorted(boundary_order(fresh.kernel(kernel["name"])))
+    ext = fresh.kernel(kernel.name)
+    assert ext.implementation == "ExternCall" and ext.lib_path == str(info.library)
+    assert sorted(info.abi_order) == sorted(boundary_order(fresh.kernel(kernel.name)))
     assert_program_computes(sdfg)
 
 
@@ -99,7 +100,7 @@ def test_a_kernel_source_that_matches_the_oracle_is_linked_and_the_program_compu
 
     outcome = session.set_kernel_source(name, edited, "cpp", reps=1)
 
-    assert outcome["status"] == "ok" and outcome["time_us"] > 0.0, outcome
+    assert outcome.status is KernelStatus.OK and outcome.time_us > 0.0, outcome
     assert session.kernel_source(name) == edited
     assert "agent" in session.kernel(name).lib_path
     assert_program_computes(session.sdfg)
@@ -107,30 +108,30 @@ def test_a_kernel_source_that_matches_the_oracle_is_linked_and_the_program_compu
 
 def test_a_kernel_source_with_a_wrong_result_is_refused_and_the_old_library_stays(tmp_path):
     session, name = one_kernel_session(tmp_path)
-    before = session.optimize_kernel(name)["library"]
+    before = str(session.optimize_kernel(name).library)
     wrong = session.kernel_source(name).replace("2.0", "3.0")
 
     outcome = session.set_kernel_source(name, wrong, "cpp", reps=1)
 
-    assert outcome["status"] == "wrong" and "max rel err" in outcome["reason"], outcome
+    assert outcome.status is KernelStatus.WRONG and "max rel err" in outcome.reason, outcome
     assert session.kernel(name).lib_path == before
 
 
 @pytest.mark.parametrize(
     ("old", "new", "language", "status"),
     [
-        ("int64_t N", "int64_t M", "cpp", "refused"),  # another signature
-        ("", "", "cuda", "refused"),  # a CPU kernel is C++
-        ("#pragma omp parallel for", "#pragma omp parallel for\nsyntax error;", "cpp", "build-failed"),
+        ("int64_t N", "int64_t M", "cpp", KernelStatus.REFUSED),  # another signature
+        ("", "", "cuda", KernelStatus.REFUSED),  # a CPU kernel is C++
+        ("#pragma omp parallel for", "#pragma omp parallel for\nsyntax error;", "cpp", KernelStatus.BUILD_FAILED),
     ],
 )
 def test_a_kernel_source_that_cannot_stand_in_is_not_linked(tmp_path, old, new, language, status):
     session, name = one_kernel_session(tmp_path)
-    before = session.optimize_kernel(name)["library"]
+    before = str(session.optimize_kernel(name).library)
 
     outcome = session.set_kernel_source(name, session.kernel_source(name).replace(old, new), language, reps=1)
 
-    assert outcome["status"] == status, outcome
+    assert outcome.status is status, outcome
     assert session.kernel(name).lib_path == before
 
 
@@ -138,12 +139,12 @@ def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
     """After the sweep the kernel calls the winning archive, and the program still computes 2a + b."""
     session, name = one_kernel_session(tmp_path)
     result = session.sweep(name, reps=2, compilers=["gcc"])
-    assert result["winner"] is not None
-    assert result["cells"] >= 1
-    config = result["config"]
-    assert config["compiler"] == "g++"
-    assert result["winner"] == f"g++:{config['fp_mode']}:{config['cost_model']}"
-    assert "-O3" in config["flags"] and config["time_us"] > 0.0
+    assert result.winner is not None
+    assert result.cells >= 1
+    config = result.config
+    assert config.compiler == "g++"
+    assert result.winner == f"g++:{config.fp_mode}:{config.cost_model}"
+    assert "-O3" in config.flags and config.time_us > 0.0
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall"
     assert ext.lib_path.endswith(".a")
@@ -154,8 +155,8 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
     """A compiler filter that matches nothing leaves the kernel on its DaCe reference expansion."""
     session, name = one_kernel_session(tmp_path, 64)
     result = session.sweep(name, reps=1, compilers=["no-such-compiler"])
-    assert result["winner"] is None
-    assert result["config"] == dict.fromkeys(("compiler", "fp_mode", "cost_model", "flags", "time_us"))
+    assert result.winner is None
+    assert result.config is None
     assert session.kernel(name).implementation != "ExternCall"
 
 
@@ -163,14 +164,14 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
 def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
-    session.define_scopes()
-    (kernel,) = session.place()["kernels"]
+    session.default_scopes()
+    (name,) = session.place().devices
 
-    result = session.sweep(kernel["name"], reps=2)
+    result = session.sweep(name, reps=2)
 
-    assert result["winner"] is not None
-    config = result["config"]
-    assert config["compiler"].startswith("nvcc-") and config["cost_model"] == flags.NO_COST_MODEL
-    assert config["fp_mode"] in flags.CUDA_FP and "-arch=native" in config["flags"]
-    ext = session.kernel(kernel["name"])
+    assert result.winner is not None
+    config = result.config
+    assert config.compiler.startswith("nvcc-") and config.cost_model == flags.NO_COST_MODEL
+    assert config.fp_mode in flags.CUDA_FP and "-arch=native" in config.flags
+    ext = session.kernel(name)
     assert ext.implementation == "ExternCall" and ext.lib_path.endswith(".a")

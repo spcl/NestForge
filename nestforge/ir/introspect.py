@@ -25,7 +25,7 @@ from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
-from nestforge.ir.names import ScopeChildren, in_order, ordered_scope_children
+from nestforge.ir.names import in_order, ordered_scope_children
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
@@ -44,19 +44,6 @@ WorkDepth = dict[str, tuple[sympy.Expr, sympy.Expr]]
 
 #: The line to print under a library node's row, or ``None`` for none.
 Notes = Callable[[nodes.LibraryNode], str | None]
-
-
-class Substitute(ast.NodeTransformer):
-    """Replace each ``Name`` that has a definition with that definition's expression."""
-
-    __slots__ = ("definitions",)
-
-    def __init__(self, definitions: dict[str, str]) -> None:
-        self.definitions = definitions
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        expression = self.definitions.get(node.id)
-        return ast.parse(expression, mode="eval").body if expression is not None else node
 
 
 def interstate_definitions(sdfg: dace.SDFG) -> dict[str, str]:
@@ -83,7 +70,7 @@ def resolve_scalars(expression: str, definitions: dict[str, str]) -> str:
         used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & set(remaining)
         if not used:
             break
-        tree = Substitute({name: remaining.pop(name) for name in used}).visit(tree)
+        tree = astutils.ASTFindReplace({name: remaining.pop(name) for name in used}).visit(tree)
     # ast.unparse: this string is read, never parsed again
     return ast.unparse(simplify_indices(tree)).strip()
 
@@ -125,13 +112,6 @@ def body_lines(twin: Twin, state: SDFGState, entry: nodes.MapEntry) -> list[str]
         return map_python(twin[id(state)], twin[id(entry)], body_only=True)
     except UnsupportedNest as exc:
         return [f"<not emitted: {exc}>"]
-
-
-def kernel_body(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry, children: ScopeChildren) -> list[str]:
-    """The Python statements a leaf kernel computes. ``children`` is the state's ``scope_children()``."""
-    if any(isinstance(node, nodes.MapEntry) for node in children[entry]):
-        return []
-    return body_lines(lowered_twin(sdfg), state, entry)
 
 
 def kernel_source(state: SDFGState, sdfg: dace.SDFG, entry: nodes.MapEntry) -> str:
@@ -207,7 +187,7 @@ def render_range(rng: tuple[Any, Any, Any]) -> str:
     """``begin:end:step`` as ``range`` reads it: an end one past the last value in the direction of travel, and
     a unit step left off."""
     begin, end, step = rng
-    delta = -1 if sympy.sympify(step).is_negative is True else 1
+    delta = -1 if dace.symbolic.pystr_to_symbolic(step).is_negative is True else 1
     text = f"{begin}:{exclusive_end(str(end), delta)}"
     return text if step == 1 else f"{text}:{step}"
 
