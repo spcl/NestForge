@@ -26,7 +26,7 @@ def chain(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 def scoped_session(sdfg: dace.SDFG, work_dir: Path) -> Session:
     session = Session(sdfg, work_dir=str(work_dir))
-    session.define_scopes()
+    session.default_scopes()
     return session
 
 
@@ -35,7 +35,7 @@ def test_the_kernel_graph_is_computed_once_per_epoch_and_again_after_a_mutation(
     before = session.kernel_graph()
     assert session.kernel_graph() is before
 
-    session.define_scopes()
+    session.default_scopes()
 
     after = session.kernel_graph()
     assert after is not before
@@ -90,12 +90,12 @@ def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
     assert "extcall_1: T <- extcall_0.T" not in session.describe()
 
 
-def test_define_scopes_completes_when_the_analysis_refuses_the_program(tmp_path):
+def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path):
     sdfg = chain.to_sdfg(simplify=True)
     sdfg.add_reference("R", [N], dace.float64)
     session = Session(sdfg, work_dir=str(tmp_path))
 
-    kernels = session.define_scopes()
+    kernels = session.default_scopes()
 
     assert [kernel.name for kernel in kernels] == ["extcall_0", "extcall_1"]
     with pytest.raises(UnsupportedProgram, match="'R' .* Reference"):

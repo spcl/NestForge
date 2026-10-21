@@ -35,7 +35,7 @@ def scoped_session(tmp_path) -> Session:
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
     session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=SIZES)
     session.canonicalize()
-    session.define_scopes()
+    session.default_scopes()
     return session
 
 

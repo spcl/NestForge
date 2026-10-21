@@ -7,6 +7,7 @@ HPCAgent-Bench is imported in the child only, so importing nestforge never loads
 from __future__ import annotations
 
 import multiprocessing
+import sys
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ CALLS: dict[str, Callable[..., object]] = {
     "list_moves": Session.list_moves,
     "apply_move": Session.apply_move,
     "run_defaults": Session.run_defaults,
-    "set_scope": Session.define_scope,
+    "set_scope": Session.set_scope,
     "unset_scope": Session.unset_scope,
     "get_performance": lambda session: None,
 }
@@ -74,7 +75,8 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     inputs = {key: value for key, value in data.items() if isinstance(value, np.ndarray)}
     try:
         expected = compiled_reference(kernel.spec, dict(data))
-    except ReferenceUnavailable:
+    except ReferenceUnavailable as err:
+        print(f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}", file=sys.stderr, flush=True)
         return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
     return inputs, Reference(expected, rtol, atol)

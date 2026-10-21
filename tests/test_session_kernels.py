@@ -33,7 +33,7 @@ def boundary_order(kernel: ExternalCall) -> list[str]:
 
 def one_kernel_session(tmp_path, n: int = 256) -> tuple:
     session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": n})
-    kernels = session.define_scopes()
+    kernels = session.default_scopes()
     assert len(kernels) == 1
     return session, kernels[0].name
 
@@ -72,7 +72,7 @@ def test_optimize_kernel_binds_its_default_library_and_the_program_still_compute
 
 def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
-    Session(sdfg, work_dir=str(tmp_path / "lowering")).define_scopes()
+    Session(sdfg, work_dir=str(tmp_path / "lowering")).default_scopes()
     fresh = Session(sdfg, work_dir=str(tmp_path / "fresh"))
     (kernel,) = fresh.list_kernels()
 
@@ -164,7 +164,7 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
 def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
-    session.define_scopes()
+    session.default_scopes()
     (name,) = session.place().devices
 
     result = session.sweep(name, reps=2)
