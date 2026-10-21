@@ -8,20 +8,20 @@ from __future__ import annotations
 import ctypes
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-from collections.abc import Sequence
 
 import numpy as np
-
 from dace import symbolic
 
 from nestforge.build import flags
+from nestforge.build.isolation import Result
 from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
+from nestforge.corpus.translate import Prepared
 from nestforge.ir.emit_python import load_emitted, oracle_sdfg, scratch_arrays
 from nestforge.ir.extract import Boundary
-from nestforge.corpus.translate import Prepared
 
 
 def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...]:
@@ -96,7 +96,7 @@ def call_native(
 ) -> tuple[dict[str, np.ndarray] | None, float]:
     """Call the compiled entry once and snapshot its outputs, then time ``reps`` calls on the same buffers.
 
-    ``order`` is the compiled signature's order, not the manifest's: same-typed buffers in the wrong slot go
+    ``order`` is the compiled signature's order, not the oracle's: same-typed buffers in the wrong slot go
     unnoticed. A read-write output is restored before every timed call (see :func:`accumulating_outputs`).
     ``copy_inputs=False`` works on the caller's buffers; ``copy_outputs=False`` skips the snapshot.
     """
@@ -220,7 +220,14 @@ class DeviceCall:
     reps: int
 
 
-def call_device(call: DeviceCall) -> dict[str, object]:
+class DeviceResult(Result):
+    """A device measurement: the kernel's outputs, read back once, and its time per call."""
+
+    outputs: dict[str, np.ndarray]
+    time_us: float
+
+
+def call_device(call: DeviceCall) -> DeviceResult:
     """The spawned child's side of a device measurement: the kernel's outputs and its time per call. Every
     pointer argument is a device buffer, copied down once and read back once; scalars and sizes go by value."""
     argtypes = [param.ctype for param in parse_params(call.parameters)]
@@ -238,7 +245,7 @@ def call_device(call: DeviceCall) -> dict[str, object]:
         outputs, time_us = time_device_reps(fn, args, memory, call.output_names, call.restore, host, call.reps)
     finally:
         memory.free()
-    return {"outputs": outputs, "time_us": time_us}
+    return DeviceResult(outputs=outputs, time_us=time_us)
 
 
 def dtype_floor(arrays: dict[str, np.ndarray]) -> float:

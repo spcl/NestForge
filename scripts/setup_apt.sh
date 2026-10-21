@@ -95,8 +95,8 @@ fi
 log "OpenMP runtimes: libomp (LLVM/clang), libgomp (ships with gcc)"
 apt_install libomp-dev libgomp1
 
-log "BLAS/LAPACK"
-apt_install libopenblas-dev liblapack-dev libblis-dev libfftw3-dev
+log "BLAS/LAPACK (LAPACKE: the C interface CPF renders vendor LAPACK calls against)"
+apt_install libopenblas-dev liblapack-dev liblapacke-dev libblis-dev libfftw3-dev
 
 [ "$DO_ONEAPI" -eq 1 ] && { phase_oneapi || warn "oneAPI setup incomplete"; }
 

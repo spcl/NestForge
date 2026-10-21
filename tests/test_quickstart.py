@@ -12,9 +12,7 @@ from pathlib import Path
 import pytest
 
 from nestforge.build import flags
-
 from nestforge.paths import REPO_ROOT
-
 
 pytestmark = pytest.mark.integration
 
@@ -22,8 +20,8 @@ pytestmark = pytest.mark.integration
 TREE_GUIDE = re.compile(r"^[|` -]*")
 #: A map nest's line: label, bracketed domain, then its reads.
 MAP_LINE = re.compile(r"^\S+  \[\w+=[^\]]+\]  reads=")
-#: A loop nest's line: label and a bare ``var=start:end`` domain.
-LOOP_LINE = re.compile(r"^\S+  \w+=\S+$")
+#: A loop nest's line: label and a ``var=start:end`` domain, then its annotations (a state's ``kernels=N`` has no range).
+LOOP_LINE = re.compile(r"^\S+  \w+=\S*:\S+(  |$)")
 
 
 def nest_kinds(tree: str) -> dict:
@@ -97,7 +95,7 @@ def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_tree
     trees = {label: (out / "trees" / f"{label}.txt").read_text() for label in ("0-input", "1-canonical", "2-moved")}
 
     assert nest_kinds(trees["0-input"]) == {"maps": 0, "loops": 4}
-    assert nest_kinds(trees["1-canonical"]) == {"maps": 1, "loops": 0}
+    assert nest_kinds(trees["1-canonical"]) == {"maps": 4, "loops": 0}
     assert nest_kinds(trees["2-moved"]) == {"maps": 1, "loops": 0}
     assert all(tree.rstrip("\n") in stdout for tree in trees.values())
 

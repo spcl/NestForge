@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import dace
+from dace.libraries.standard.nodes.external_call import IN_PREFIX, OUT_PREFIX, ExternalCall, data_name
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
@@ -27,13 +28,8 @@ from dace.sdfg.state import (
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.analysis.analysis import names_read_by_text
 
-from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, in_conn, out_conn
-
 from nestforge.ir.dace_types import strings
 from nestforge.ir.names import in_order
-
-INPUT_PREFIX = in_conn("")
-OUTPUT_PREFIX = out_conn("")
 
 #: Why a kernel reads an argument: a data input or a symbol.
 Role = Literal["input", "symbol"]
@@ -85,20 +81,6 @@ class ArgEdge:
         """The producer labels, in order."""
         return [producer.label() for producer in self.producers]
 
-    def loops(self) -> list[str]:
-        """The loops whose back edge a reaching value crossed."""
-        return list(self.carried)
-
-    def to_json(self) -> dict[str, object]:
-        """A plain, key-ordered dictionary."""
-        return {
-            "consumer": self.consumer,
-            "arg": self.arg,
-            "role": self.role,
-            "producers": self.labels(),
-            "carried": self.loops(),
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class KernelGraph:
@@ -107,10 +89,6 @@ class KernelGraph:
     kernels: tuple[str, ...]
     edges: tuple[ArgEdge, ...]
     exits: tuple[ArgEdge, ...]
-
-    def consumers_of(self, kernel: str) -> tuple[ArgEdge, ...]:
-        """Every kernel argument edge that ``kernel`` can produce."""
-        return tuple(e for e in self.edges if any(p.kind == "kernel" and p.name == kernel for p in e.producers))
 
     def arguments(self, kernel: str) -> tuple[ArgEdge, ...]:
         """The argument edges of ``kernel``, inputs then symbols."""
@@ -124,14 +102,6 @@ class KernelGraph:
         """One :meth:`line` per kernel, then one ``exit:`` line."""
         exits = ["exit: " + ", ".join(edge.text() for edge in self.exits)] if self.exits else []
         return [self.line(kernel) for kernel in self.kernels] + exits
-
-    def to_json(self) -> dict[str, object]:
-        """A plain dictionary in the graph's order."""
-        return {
-            "kernels": list(self.kernels),
-            "edges": [edge.to_json() for edge in self.edges],
-            "exits": [edge.to_json() for edge in self.exits],
-        }
 
 
 #: What reaches each container or symbol name at one program point; an absent name has no producer.
@@ -206,8 +176,8 @@ def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
             roots[id(node)] = root.data
 
     def source(edge: MultiConnectorEdge) -> Fact:
-        if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUTPUT_PREFIX):
-            return Fact((Producer("kernel", edge.src.label, edge.src_conn.removeprefix(OUTPUT_PREFIX)),))
+        if isinstance(edge.src, ExternalCall) and edge.src_conn and edge.src_conn.startswith(OUT_PREFIX):
+            return Fact((Producer("kernel", edge.src.label, data_name(edge.src_conn)),))
         if isinstance(edge.src, nodes.AccessNode):
             return facts[id(edge.src)]
         return Fact((Producer("host", state.label),))
@@ -223,8 +193,8 @@ def state_flow(state: SDFGState, env: Env, tracker: Tracker) -> Env:
         elif isinstance(node, ExternalCall):
             tracker.kernels[node.label] = None
             for edge in state.in_edges(node):
-                if edge.dst_conn and edge.dst_conn.startswith(INPUT_PREFIX):
-                    record(tracker, node.label, edge.dst_conn.removeprefix(INPUT_PREFIX), "input", source(edge))
+                if edge.dst_conn and edge.dst_conn.startswith(IN_PREFIX):
+                    record(tracker, node.label, data_name(edge.dst_conn), "input", source(edge))
             for name in kernel_symbols(node):
                 record(tracker, node.label, name, "symbol", env.get(name, Fact()))
     return env
@@ -317,7 +287,7 @@ def kernel_dependencies(sdfg: dace.SDFG) -> KernelGraph:
     :param sdfg: The top-level SDFG holding the kernels; it is not modified.
     :returns: The kernel graph, in kernel program order, then role, then argument name.
     :raises UnsupportedProgram: On a ``Reference`` container, a view bound to no container, an ``ExternalCall``
-        inside a nested SDFG or without a manifest, or a control-flow cycle outside a loop region.
+        inside a nested SDFG or without an ``abi_order``, or a control-flow cycle outside a loop region.
     """
     for sd in sdfg.all_sdfgs_recursive():
         for name, desc in sd.arrays.items():

@@ -6,15 +6,12 @@ The translator sorts arrays, then scalars; the manifest lists inputs, outputs, s
 mismatch writes through the wrong pointer without any error.
 """
 
-import pytest
-
 import dace
-
-from nestforge.ir.extract import extract_nest_to_sdfg
-from helpers import signature_order
+import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall, params_and_args
+from helpers import bench_kernel, emit_sources, extract_nest_to_sdfg, signature_order
+
 from nestforge.stages.scopes import parallel_top_level_maps
-from nestforge.corpus.translate import emit_sources, prepare
 
 N = dace.symbol("N")
 
@@ -30,7 +27,7 @@ def prepared_nest(tmp_path):
     sdfg = writes_a_reads_b.to_sdfg(simplify=True)
     parent, node = parallel_top_level_maps(sdfg)[0]
     boundary = extract_nest_to_sdfg(parent, node, name="wab")
-    prep = prepare(boundary, "wab", tmp_path, sizes={"N": 32})
+    prep = bench_kernel(boundary, "wab", tmp_path, sizes={"N": 32})
     return prep, boundary
 
 
@@ -67,7 +64,7 @@ def test_a_prototype_above_the_definition_does_not_widen_the_capture():
 
 
 def extern_call(abi_order, inputs):
-    node = ExternalCall("k", inputs={conn: None for conn in inputs}, outputs={})
+    node = ExternalCall("k", inputs=dict.fromkeys(inputs), outputs={})
     node.symbol, node.abi_order = "k_fp64", list(abi_order)
     sdfg = dace.SDFG("host")
     state = sdfg.add_state()

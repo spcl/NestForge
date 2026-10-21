@@ -3,14 +3,15 @@
 """Lowering a nest to an ``ExternalCall`` and running it through the ``DaceReference`` expansion. The linked-library
 expansion is covered by ``test_variants_stage.py``."""
 
+import dace
 import numpy as np
 import pytest
-import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
+from helpers import bench_kernel, bench_manifest
 
 from nestforge.build.arena import make_inputs, run_oracle
+from nestforge.corpus.translate import prepare
 from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
-from nestforge.corpus.translate import prepare, python_and_manifest
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 
 N = dace.symbol("N")
 
@@ -84,7 +85,7 @@ def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_
     rebuilt = node_boundary(ext)
 
     assert (rebuilt.inputs, rebuilt.outputs, rebuilt.symbols) == (boundary.inputs, boundary.outputs, boundary.symbols)
-    source, manifest = python_and_manifest(rebuilt, ext.name)
+    source, manifest = prepare(rebuilt, ext.name).numpy_source, bench_manifest(rebuilt, ext.name)
     assert manifest["input_args"] == list(ext.abi_order)
     assert source == ext.numpy_source
 
@@ -110,7 +111,7 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     sdfg = scaley.to_sdfg(simplify=True)
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert boundary.outputs == ["__return"]
-    prep = prepare(boundary, ext.name, tmp_path / "k")
+    prep = bench_kernel(boundary, ext.name, tmp_path / "k")
     # __return is an in-place buffer parameter in the Python signature and the manifest -- aligned.
     header = next(line for line in prep.numpy_source.splitlines() if line.startswith(f"def {ext.name}("))
     assert "__return" in header

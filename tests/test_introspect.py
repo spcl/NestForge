@@ -5,14 +5,13 @@
 and a reason marks a pair that is never listed.
 """
 
-import numpy as np
 import dace
+import numpy as np
+from dace.sdfg.state import LoopRegion
+from helpers import fusion_moves
 
 from nestforge.ir.introspect import describe_graph, nest_reads_writes
-from dace.sdfg.state import LoopRegion
-
 from nestforge.stages.moves import Rewrite, plan_move
-from helpers import fusion_moves
 from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")
@@ -57,7 +56,7 @@ def test_describe_graph_lists_nests_with_read_write_sets():
     sdfg = vertical_pair.to_sdfg(simplify=True)
     text = describe_graph(sdfg)
     # This SDFG is not normalized, so the blocks keep their frontend labels -- describe_graph renders
-    # whatever it is given, and normalize_for_tree is what makes those labels canonical.
+    # whatever it is given, and normalize_labels is what makes those labels canonical.
     assert "`- MapState" in text  # the state the two nests share, as a tree row
     assert "[i=0:N]" in text  # the iteration domain
     assert "reads=['A', 'B'] writes=['T']" in text  # producer nest

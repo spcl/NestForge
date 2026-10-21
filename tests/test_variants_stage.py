@@ -3,30 +3,27 @@
 """The configuration sweep: what it enumerates, how a build shared by several cells is measured once and gated per
 cell, and that the winning ``lib<kernel>.a`` links into the parent program and computes the right answer."""
 
+import dataclasses
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
-
-from nestforge.build import flags
 from dace.codegen import cpf
 
+from nestforge.build import flags
+from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
 from nestforge.corpus.translate import prepare
-from nestforge.build.sdfg import compile_linked_program
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     KernelVerdict,
-    at_rung,
     kernel_runtime_libraries,
     schedule_kernel,
     use_kernel_library,
 )
-from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.canonicalize import fuse_and_finish
-from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.placement import default_devices, place
+from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
 
 N = dace.symbol("N")
@@ -103,33 +100,26 @@ def test_a_shared_measurement_is_gated_at_each_cells_own_rung():
     rung: inheriting the strict verdict would fail a looser cell whose build is correct at its tolerance."""
     strict = KernelVerdict("strict-ieee", maxdiff=1e-14, md_rel=1e-14, dtype_floor=2.3e-16, time_us=5.0)
 
-    loose = at_rung(strict, "contract-fma")
+    loose = dataclasses.replace(strict, fp_mode="contract-fma")
 
     assert not strict.ok and loose.ok
     assert (loose.maxdiff, loose.time_us) == (strict.maxdiff, strict.time_us)
-    assert not at_rung(KernelVerdict("fast-math", 0.0, 0.0, 0.0, 1.0, error="crashed"), "fast-math").ok
+    assert not KernelVerdict("fast-math", 0.0, 0.0, 0.0, 1.0, error="crashed").ok
 
 
 @pytest.mark.e2e
-def test_the_sweep_measures_identical_builds_once_and_the_fastest_correct_build_wins(tmp_path):
-    """A pure add reaches no FP rung below fast-math, so strict and contract-fma compile to one artifact:
-    every cell is still reported, the twin carries the measured numbers, and the winner is correct."""
+def test_the_sweep_measures_every_build_and_the_fastest_correct_build_wins(tmp_path):
+    """Every cell is built and timed against the oracle; the winner is the fastest correct one."""
     _, ext, boundary = lowered_vadd()
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
     variants = gcc_variants(cost_model="default")
 
     result = select_variant(src, prep, {"N": 1037}, 3, variants, tmp_path / "variants")
 
     assert len(result.cells) == len(variants) == len(flags.FP_LEVELS)
     assert all(cell.verdict.error == "" for cell in result.cells), [c.verdict.error for c in result.cells]
-    assert result.collapsed, "strict-ieee and contract-fma build the same vadd; nothing collapsed means dedup is inert"
-    ids = {f"{i}:{cell.variant.label}": cell for i, cell in enumerate(result.cells)}
-    twins = [cell for cell in result.cells if cell.same_as]
-    assert twins and len(result.collapsed) == len({cell.same_as for cell in twins})
-    for twin in twins:
-        head = ids[twin.same_as]
-        assert (twin.verdict.maxdiff, twin.verdict.time_us) == (head.verdict.maxdiff, head.verdict.time_us)
+    assert all(cell.verdict.time_us > 0.0 for cell in result.cells)
     strict = next(cell for cell in result.cells if cell.variant.fp_mode == "strict-ieee")
     assert strict.verdict.ok and strict.verdict.maxdiff == 0.0
     correct = [cell for cell in result.cells if cell.verdict.ok]
@@ -156,7 +146,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     expansion, with the runtimes it needs linked after the objects. The program's one OpenMP runtime is libomp."""
     sdfg, ext, boundary = lowered_vadd()
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
     result = select_variant(
         src, prep, {"N": 257}, 1, gcc_variants(fp_mode="strict-ieee", cost_model="default"), tmp_path / "variants"
     )
@@ -194,7 +184,7 @@ def test_the_gpu_sweep_measures_every_nvcc_cell_and_a_correct_cell_wins(tmp_path
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
     place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
     variants = device_variants("gpu")
 
     result = select_variant(src, prep, {"N": 1037}, 3, variants, tmp_path / "variants")

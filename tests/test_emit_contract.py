@@ -3,14 +3,14 @@
 """The emitter contract of docs/oracle.md: the caller allocates every buffer, the Python signature matches the
 manifest, and the caller sizes scratch the way the emitter widened it."""
 
-import numpy as np
 import dace
+import numpy as np
 from dace.sdfg.state import LoopRegion
+from dace.transformation.interstate import LoopToMap
+from helpers import nest_to_python, sdfg_to_python
 
-from nestforge.ir.emit_python import load_emitted, nest_to_python, oracle_sdfg
+from nestforge.ir.emit_python import load_emitted, oracle_sdfg
 from nestforge.ir.extract import Boundary
-
-from helpers import sdfg_to_python
 
 N = dace.symbol("N")
 
@@ -141,3 +141,32 @@ def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
 def test_the_emitted_signature_takes_the_scratch_buffer_the_caller_allocates():
     boundary = loop_scratch_boundary()
     assert "\ndef k(a, tmp, N):\n" in nest_to_python(boundary, "k")
+
+
+@dace.program
+def rows_two_statements(dqdt: dace.float64[6, N], sx: dace.float64[6, N], sink: dace.float64[6, N]):
+    for i in range(6):
+        dqdt[i, :] = dqdt[i, :] + sx[i, :]
+        dqdt[i, :] = dqdt[i, :] - sink[i, :]
+
+
+def test_the_scratch_of_a_nest_left_inside_a_map_is_the_callers_to_allocate():
+    """Issue #15: a multi-state loop body stays a nest inside the map after lower(); its transient arrays were
+    written by the oracle but neither passed nor allocated, so it raised NameError."""
+    sdfg = rows_two_statements.to_sdfg(simplify=True)
+    sdfg.apply_transformations_repeated(LoopToMap)
+    boundary = Boundary(
+        inputs=["dqdt", "sx", "sink"],
+        outputs=["dqdt"],
+        symbols=["N"],
+        nsdfg_node=None,
+        state=None,
+        standalone_sdfg=sdfg,
+    )
+    from nestforge.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
+
+    buffers = make_inputs(boundary, {"N": 8}, seed=0)
+    assert {"dqdt_slice_plus_sx_slice", "dqdt_slice_minus_sink_slice"} <= buffers.keys()
+    want = buffers["dqdt"] + buffers["sx"] - buffers["sink"]
+    run(nest_to_python(boundary, "k"), "k", **buffers, N=8)
+    np.testing.assert_allclose(buffers["dqdt"], want, rtol=1e-15, atol=0)

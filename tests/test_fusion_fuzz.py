@@ -11,9 +11,7 @@ import importlib.util
 
 import numpy as np
 import pytest
-
 from dace.transformation.interstate.state_fusion import StateFusion
-
 from helpers import apply_move, fission_to_fixpoint, fusion_moves, run
 
 ARRAYS = ("a", "b", "c", "d")

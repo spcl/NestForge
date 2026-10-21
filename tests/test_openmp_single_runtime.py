@@ -8,16 +8,15 @@ libraries. Most only link; the one that runs both kernels does so in a fresh int
 """
 
 import json
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 
 import nestforge
-
 from nestforge.build.toolchain import (
     LIBOMP,
     lib_linkable,

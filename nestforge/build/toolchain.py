@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-C_SCALAR = {
+C_SCALAR: dict[str, type[ctypes._SimpleCData]] = {
     "int32_t": ctypes.c_int32,
     "int64_t": ctypes.c_int64,
     "int": ctypes.c_int,
@@ -29,7 +29,11 @@ C_SCALAR = {
 }
 
 #: Pointer element types; a complex buffer binds as a pointer to its component type.
-C_PTR = {**C_SCALAR, "dace::complex64": ctypes.c_float, "dace::complex128": ctypes.c_double}
+C_PTR: dict[str, type[ctypes._SimpleCData]] = {
+    **C_SCALAR,
+    "dace::complex64": ctypes.c_float,
+    "dace::complex128": ctypes.c_double,
+}
 
 DEFAULT_COMPILER = "g++"
 
@@ -227,7 +231,7 @@ def raw_signature(text: str, symbol: str) -> str:
     """The parameter text of the kernel entry's definition; :class:`LookupError` if it is absent. Anchored on
     ``void`` and the opening brace, since the bare name also matches a comment naming it."""
     # `[^)]*` not `(.*?)`: non-greedy backtracks across a preceding prototype, capturing a bogus span
-    m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.S)
+    m = re.search(rf"void\s+{re.escape(symbol)}\s*\(([^)]*)\)\s*\{{", text, re.DOTALL)
     if not m:
         raise LookupError(f"entry {symbol} not found in the emitted source")
     return m.group(1)
@@ -235,7 +239,7 @@ def raw_signature(text: str, symbol: str) -> str:
 
 def signature(code: str, symbol: str) -> str:
     """The parameter list of symbol(...) in code; unlike raw_signature, matches a non-void DaCe declaration."""
-    m = re.search(rf"{re.escape(symbol)}\s*\((.*?)\)", code, re.S)
+    m = re.search(rf"{re.escape(symbol)}\s*\((.*?)\)", code, re.DOTALL)
     if not m:
         raise LookupError(f"entry point {symbol} not found in generated code")
     return m.group(1)

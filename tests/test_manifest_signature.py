@@ -8,14 +8,13 @@ transients are caller-allocated parameters between the outputs and the symbols, 
 
 import ast
 
-import numpy as np
-
 import dace
+import numpy as np
+from helpers import bench_manifest
 
-from nestforge.corpus.translate import python_and_manifest
+from nestforge.corpus.translate import prepare
 from nestforge.ir.emit_python import scratch_arrays
 from nestforge.ir.extract import Boundary, detach
-
 
 N = dace.symbol("N")
 
@@ -68,7 +67,7 @@ def test_scratch_transient_reaches_the_emitter():
 
 def test_input_args_equals_the_python_signature_with_scratch():
     boundary = scratch_boundary()
-    source, manifest = python_and_manifest(boundary, "two_nest")
+    source, manifest = prepare(boundary, "two_nest").numpy_source, bench_manifest(boundary, "two_nest")
     emitted = signature_of(source)
     assert emitted == ["a", "out", "tmp", "N"]  # arrays, scratch, then symbols
     assert list(manifest["input_args"]) == emitted
@@ -77,7 +76,7 @@ def test_input_args_equals_the_python_signature_with_scratch():
 def test_scratch_is_declared_as_an_allocatable_array():
     """A scratch buffer in ``input_args`` must also be typed as an array, or the translator reads it as a
     scalar parameter; its shape must be resolvable from the kernel's own size symbols."""
-    manifest = python_and_manifest(scratch_boundary(), "two_nest")[1]
+    manifest = bench_manifest(scratch_boundary(), "two_nest")
     assert "tmp" in manifest["array_args"]
     assert manifest["init"]["arrays"]["tmp"] == {"shape": "(N,)", "dtype": "float64"}
     assert "tmp" not in manifest["output_args"]  # internal, not a result the caller reads back

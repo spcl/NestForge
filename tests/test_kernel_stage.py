@@ -11,19 +11,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
-
-from nestforge.build.isolation import run_isolated
+from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
 from nestforge.paths import REPO_ROOT
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     build_kernel_library,
     gpu_schedule,
@@ -34,9 +33,7 @@ from nestforge.stages.kernel import (
     use_kernel_library,
     validate_kernel,
 )
-from nestforge.stages.canonicalize import Targets, canonicalize
 from nestforge.stages.placement import default_devices, device_copies, place
-from nestforge.stages.canonicalize import fuse_and_finish
 from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants
 
@@ -83,7 +80,11 @@ KERNEL_IDS = ["vadd", "stencil_row_sum", "axpy_in_place", "scaled"]
 KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}]
 #: DT_NEEDED soname stems of the OpenMP runtimes a library can name.
 OPENMP_RUNTIME_STEMS = ("libgomp", "libomp", "libiomp5")
-ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.M)
+ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
+
+
+class MaxDiff(Result):
+    maxdiff: float
 
 
 def lowered_kernel(program):
@@ -259,7 +260,7 @@ def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path):
     members = subprocess.run(["ar", "t", str(archive)], capture_output=True, text=True, check=True).stdout.split()
     assert members == [f"{ext.name}.o"]
     defined = subprocess.run(["nm", "--defined-only", str(archive)], capture_output=True, text=True, check=True).stdout
-    assert re.findall(rf"^\S+ T ({re.escape(ext.name)})$", defined, re.M) == [ext.name]
+    assert re.findall(rf"^\S+ T ({re.escape(ext.name)})$", defined, re.MULTILINE) == [ext.name]
     assert "__dace_" not in defined and "__program_" not in defined
 
 
@@ -271,7 +272,7 @@ def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program
     _, ext, boundary = lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     archive = build_kernel_library(src, "g++", None, tmp_path / "lib")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
 
     verdict = validate_kernel(archive, src, prep, sizes, reps=3)
 
@@ -292,7 +293,7 @@ def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, progr
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), tmp_path / "lib")
-    prep = prepare(boundary, ext.name, tmp_path / "ref")
+    prep = prepare(boundary, ext.name)
 
     verdict = validate_kernel(archive, src, prep, {"N": 1037}, reps=3)
 
@@ -341,14 +342,14 @@ def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_devi
     compiled = compile_linked_program(sdfg, tmp_path / "parent")
     x = np.random.default_rng(0).random(1037)
 
-    def run() -> dict:
+    def run() -> MaxDiff:
         y = np.zeros_like(x)
         compiled(alpha=cupy.asarray([0.75]), x=x, y=y, N=x.size)
-        return {"maxdiff": float(np.abs(y - 0.75 * x).max())}
+        return MaxDiff(maxdiff=float(np.abs(y - 0.75 * x).max()))
 
-    result = run_isolated(run)
+    result = run_isolated(run, MaxDiff)
 
-    assert result == {"maxdiff": 0.0}
+    assert result == MaxDiff(maxdiff=0.0)
     program = compiled._lib._library_filename
     assert any(name.startswith("libcudart.so") for name in needed_libraries(program))
     assert [stem for stem in openmp_runtime_stems(program) if stem != "libomp"] == []
@@ -442,7 +443,7 @@ if __name__ == "__main__":
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     src = schedule_kernel(ext, boundary, out / "gen")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), out / "lib")
-    verdict = validate_kernel(archive, src, prepare(boundary, ext.name, out / "ref"), {"N": 1037}, reps=2)
+    verdict = validate_kernel(archive, src, prepare(boundary, ext.name), {"N": 1037}, reps=2)
     print(json.dumps({"init_status": status, "error": verdict.error, "ok": verdict.ok, "maxdiff": verdict.maxdiff}))
 """
 
@@ -495,7 +496,7 @@ def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path, monkeyp
     monkeypatch.setattr(build_sdfg, "archive_and_link", lambda objs, *rest: linked.append(list(objs)))
     units = [tmp_path / "k.cu", tmp_path / "k_device.cu"]
 
-    build_sdfg.build_cuda_archive(units, tmp_path / "out" / "libk.a", tmp_path / "out" / "libk.so", "nvcc", ["-O2"])
+    build_sdfg.build_cuda_archive(units, tmp_path / "out" / "libk.a", tmp_path / "out" / "libk.so", "nvcc", ["-O2"], [])
 
     assert [cmd[cmd.index("-c") + 1] for cmd in commands] == [str(u) for u in units]
     assert linked == [[tmp_path / "out" / "k.o", tmp_path / "out" / "k_device.o"]]

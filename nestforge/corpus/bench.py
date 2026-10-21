@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from collections.abc import Iterator
 
 import dace
 import yaml
@@ -53,7 +53,7 @@ class CorpusKernel:
         return module
 
     def program(self) -> dace.frontend.python.parser.DaceProgram:
-        """The kernel's entry ``@dace.program``, named by the manifest's ``func_name``; without one, the last
+        """The kernel's entry ``@dace.program``, named by the spec's ``func_name``; without one, the last
         program the module defines, since helpers precede the entry."""
         import hpcagent_bench.frameworks.dace_framework as dfw
 
@@ -104,23 +104,19 @@ def local_names() -> dict[str, Path]:
     }
 
 
-def iter_corpus_kernels(track: str | None) -> Iterator[CorpusKernel]:
-    """Every hpcagent_bench corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
+def corpus_kernel(name: str) -> CorpusKernel | None:
+    """The corpus kernel ``name`` (registry key, manifest stem or directory) names, or None without a ``_dace.py``."""
     from hpcagent_bench.spec import KERNELS, BenchSpec
 
-    for short_name in track_names(track):
-        module_name = short_name.rsplit("/", 1)[-1]
-        dace_file = KERNELS[short_name].parent / f"{module_name}_dace.py"
-        if not dace_file.exists():
-            generate_dace_file(short_name)
-        if not dace_file.exists():
-            continue
-        yield CorpusKernel(
-            short_name=short_name,
-            module_path=module_path(short_name),
-            dace_file=dace_file,
-            spec=BenchSpec.load(short_name),
-        )
+    short_name = KERNELS.path_key(name)
+    if short_name is None:
+        return None
+    dace_file = KERNELS[short_name].parent / f"{short_name.rsplit('/', 1)[-1]}_dace.py"
+    if not dace_file.exists():
+        generate_dace_file(short_name)
+    if not dace_file.exists():
+        return None
+    return CorpusKernel(short_name, module_path(short_name), dace_file, BenchSpec.load(short_name))
 
 
 def iter_local_kernels() -> Iterator[CorpusKernel]:
@@ -143,7 +139,10 @@ def iter_local_kernels() -> Iterator[CorpusKernel]:
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
     """Every kernel with a ``_dace.py``, of ``track`` or of all tracks: the corpus's, then the repo-local ones."""
     if track != LOCAL_TRACK:
-        yield from iter_corpus_kernels(track)
+        for short_name in track_names(track):
+            kernel = corpus_kernel(short_name)
+            if kernel is not None:
+                yield kernel
     if track in (None, LOCAL_TRACK):
         yield from iter_local_kernels()
 
@@ -155,6 +154,11 @@ def materialize_dace_corpus() -> None:
 
 
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
-    """The integer symbol sizes of one preset in the kernel's manifest."""
+    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes."""
     rung = kernel.spec.parameters.get(preset, {})
-    return {sym: size for sym, size in rung.items() if isinstance(size, int) and not isinstance(size, bool)}
+    knobs = kernel.spec.config_names
+    return {
+        sym: size
+        for sym, size in rung.items()
+        if sym not in knobs and isinstance(size, int) and not isinstance(size, bool)
+    }

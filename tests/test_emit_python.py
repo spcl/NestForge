@@ -6,28 +6,17 @@ what a hand-written NumPy reference computes. Every buffer is allocated by the c
 import json
 import math
 
+import dace
 import numpy as np
 import pytest
-
-import dace
-from dace.sdfg import nodes
-from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
-
 import sympy
 from dace import subsets
+from dace.sdfg import nodes
+from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
+from helpers import nest_to_python, run_emitted, sdfg_to_python
 
-from nestforge.ir.emit_python import (
-    Names,
-    UnsupportedNest,
-    expr,
-    index,
-    indexed_shape,
-    load_emitted,
-    nest_to_python,
-    simplify_as_sizes,
-)
+from nestforge.ir.emit_python import Names, UnsupportedNest, expr, index, indexed_shape, load_emitted, simplify_as_sizes
 from nestforge.ir.extract import Boundary
-from helpers import run_emitted, sdfg_to_python
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)
@@ -512,7 +501,7 @@ def test_a_rank_changing_copy_reshapes_to_a_literal_shape():
     """The reshape target is a tuple of extents, never ``np.shape`` of a slice the C translator cannot size."""
     column = subsets.Range([(0, M - 1, 1), (3, 3, 1)])
     assert indexed_shape(column) == "(M, )"
-    assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_floor(N - 1, 2) + 1), )"
+    assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_ceil(N, 2)), )"
 
 
 def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have():

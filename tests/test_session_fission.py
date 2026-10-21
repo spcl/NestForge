@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``map-fission`` move on a map whose body is one nested SDFG with two independent statements."""
 
-import numpy as np
 import dace
+import numpy as np
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.helpers import nest_state_subgraph
 
+from nestforge.records import MoveStatus
 from nestforge.session import Session
 
 N = dace.symbol("N")
@@ -76,7 +77,7 @@ def test_two_statement_map_starts_as_one_map_two_statements():
 def test_map_fission_is_listed_for_the_multi_output_map():
     session = Session(multi_statement_map_sdfg())
     (move,) = session.list_moves("map-fission")
-    assert move["labels"] == [all_map_entries(session.sdfg)[0].map.label]
+    assert move.labels == (all_map_entries(session.sdfg)[0].map.label,)
 
 
 def test_map_fission_splits_the_map_by_statement_and_stales_prior_labels_and_matches_numpy():
@@ -84,11 +85,11 @@ def test_map_fission_splits_the_map_by_statement_and_stales_prior_labels_and_mat
     assert len(all_map_entries(session.sdfg)) == 1
 
     (move,) = session.list_moves("map-fission")
-    result = session.apply_move(move["kind"], move["labels"], move["epoch"])
+    result = session.apply_move(move.kind, move.labels, move.epoch)
 
-    assert (result.status, session.epoch) == ("applied", 1)
+    assert (result.status, session.epoch) == (MoveStatus.APPLIED, 1)
     assert len(all_map_entries(session.sdfg)) == 2  # the outer map split, one map per statement
-    assert session.apply_move(move["kind"], move["labels"], move["epoch"]).status == "stale"
+    assert session.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.STALE
 
     scopes = tasklet_scopes(session.sdfg)
     assert scopes["one"] is not None and scopes["two"] is not None

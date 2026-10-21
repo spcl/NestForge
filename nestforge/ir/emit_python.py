@@ -24,9 +24,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import sympy
-
 import dace
+import sympy
 from dace import data as dt
 from dace import dtypes, subsets, symbolic
 from dace.frontend.operations import detect_reduction_type
@@ -42,11 +41,11 @@ from dace.sdfg.state import (
     ReturnBlock,
     SDFGState,
 )
-from dace.sdfg.utils import dfs_topological_sort, inline_sdfgs
+from dace.sdfg.utils import dfs_topological_sort, get_view_edge, inline_sdfgs, map_view_to_array
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
-from dace.transformation.passes.remove_views import RemoveViews
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
+from dace.transformation.passes.remove_views import RemoveViews
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import Boundary
@@ -207,6 +206,44 @@ def expand_to_pure(sdfg: dace.SDFG) -> None:
     raise UnsupportedNest(f"library nodes of {sdfg.name} still expand to library nodes after {attempt + 1} rounds")
 
 
+def bind_nests_through_views(sdfg: dace.SDFG) -> None:
+    """Bind each nested SDFG that a slice View alone feeds or drains straight to the viewed window. A multi-state
+    nest inside a map (an expansion's init then update) does not inline, RemoveViews keeps a View that binds a
+    nest, and a transient View left behind would be scratch the caller allocates; ``ExpandNestedSDFGInputs`` then
+    widens the connector to the whole array."""
+    for view, state in placed(sdfg, nodes.AccessNode):
+        desc = state.sdfg.arrays[view.data]
+        if not isinstance(desc, dt.ArrayView):
+            continue
+        view_edge = get_view_edge(state, view)
+        if view_edge is None or view_edge.data.data == view.data:
+            continue
+        others = [e for e in state.all_edges(view) if e is not view_edge]
+        if len(others) != 1:
+            continue
+        (edge,) = others
+        reads = view_edge.dst is view
+        nest = edge.dst if reads else edge.src
+        array, window, _ = memlet_parts(view_edge.data)
+        if (
+            not isinstance(nest, nodes.NestedSDFG)
+            or not isinstance(window, subsets.Range)
+            or edge.data.subset != subsets.Range.from_array(desc)
+        ):
+            continue
+        mapping = map_view_to_array(desc, state.sdfg.arrays[array], window)
+        if mapping is None or mapping[1]:  # a View that adds axes is no slice of the array
+            continue
+        bound = dace.Memlet(data=array, subset=copy.deepcopy(window))
+        if reads:
+            state.add_edge(view_edge.src, view_edge.src_conn, nest, edge.dst_conn, bound)
+        else:
+            state.add_edge(nest, edge.src_conn, view_edge.dst, view_edge.dst_conn, bound)
+        state.remove_node(view)
+        if not any(n.data == view.data for s in state.sdfg.states() for n in s.data_nodes()):
+            state.sdfg.remove_data(view.data, validate=False)
+
+
 def bind_nested_data(sdfg: dace.SDFG) -> None:
     """Rename each nested SDFG's connector arrays to the outer arrays they bind, with the outer descriptors; the
     connectors cover whole arrays after ``ExpandNestedSDFGInputs``."""
@@ -324,9 +361,12 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
         expand_to_pure(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
+        bind_nests_through_views(sdfg)
         # an expansion over a window binds a View of it; folded into the viewed array, a strided window with a
-        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown
-        RemoveViews().apply_pass(sdfg, {})
+        # symbolic step becomes index arithmetic rather than a NumPy slice whose step sign is unknown. A nest that
+        # stays nested (its outputs share an access node) views its whole-array connectors the same way.
+        for nested in list(sdfg.all_sdfgs_recursive()):
+            RemoveViews().apply_pass(nested, {})
     # before nested data takes outer names, which a nested tasklet's connector may carry
     unique_connectors(sdfg)
     unique_nested_bindings(sdfg)
@@ -339,8 +379,8 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
 def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
     """``extent`` simplified with every symbol a positive integer, as sizes are; drops a ``Max`` against zero."""
     sizes = {s: sympy.Symbol(str(s), integer=True, positive=True) for s in extent.free_symbols}
-    simple = sympy.simplify(extent.subs(sizes))
-    return simple.subs({size: s for s, size in sizes.items()})
+    simple = sympy.simplify(extent.xreplace(sizes))
+    return simple.xreplace({size: s for s, size in sizes.items()})
 
 
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
@@ -388,10 +428,10 @@ def index(subset: subsets.Subset) -> str:
     parts: list[str] = []
     for begin, end, step in ranges:
         begin_text = symbolic.symstr(begin, cpp_mode=False)
-        if sympy.sympify(end - begin) == 0:
+        if symbolic.pystr_to_symbolic(end - begin) == 0:
             parts.append(begin_text)
             continue
-        if sympy.sympify(step).is_positive is not True:
+        if symbolic.pystr_to_symbolic(step).is_positive is not True:
             raise UnsupportedNest(f"subset step {step} is not provably positive; no sound NumPy slice")
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
@@ -407,8 +447,8 @@ def as_range(subset: subsets.Subset) -> subsets.Range:
 
 def indexed_shape(subset: subsets.Subset) -> str:
     """The shape ``index(subset)`` selects, as a tuple literal: single-element axes drop, as in NumPy."""
-    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
-    kept = [(end - begin) // step + 1 for begin, end, step in ranges if begin != end]
+    selected = as_range(subset)
+    kept = [extent for (begin, end, _), extent in zip(selected.ranges, selected.size()) if begin != end]
     return "(" + "".join(f"{symbolic.symstr(extent, cpp_mode=False)}, " for extent in kept) + ")"
 
 
@@ -534,7 +574,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     for param, (begin, end, step) in zip(entry.map.params, entry.map.range.ranges):
         if param in scope.active:
             raise UnsupportedNest(f"map parameter {param!r} shadows an enclosing iterator")
-        sign = sympy.sign(sympy.sympify(step))
+        sign = sympy.sign(symbolic.pystr_to_symbolic(step))
         if sign not in (1, -1):
             raise UnsupportedNest(f"map parameter {param!r} has step {step} of undecidable sign")
         bounds = [expr(begin, scope.names), expr(end + sign, scope.names)]
@@ -547,7 +587,7 @@ def map_lines(scope: Scope, state: SDFGState, entry: nodes.MapEntry, order: list
     return [*python("\n".join(lines), scope.names), *body] if lines else body
 
 
-def combines_inside(sdfg: dace.SDFG, name: str, wcr: str) -> bool:
+def combines_inside(sdfg: dace.SDFG, name: str, wcr: str | ast.AST) -> bool:
     """Whether every write to ``name`` in ``sdfg`` already combines with ``wcr``: then an outer WCR on the same
     connector only repeats the inner one along the memlet path, and inlining the body is exact."""
     writes = [
@@ -726,8 +766,27 @@ def oracle_sdfg(boundary: Boundary) -> dace.SDFG:
         raise UnsupportedNest("the nest returns early, out of its enclosing SDFG; it cannot stand alone")
     sdfg = copy.deepcopy(boundary.standalone_sdfg)
     lower(sdfg)
+    hoist_nested_scratch(sdfg)
     widen_scratch(sdfg, boundary.symbols)
     return sdfg
+
+
+def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
+    """Make the transient arrays of every nest :func:`lower` left nested (a multi-state body of a map) scratch of
+    the kernel, which the caller allocates: the emitted body writes them, and a kernel allocates nothing. The oracle
+    runs serially, so one buffer serves every iteration of the enclosing map."""
+    for nested in list(sdfg.all_sdfgs_recursive()):
+        if nested is sdfg:
+            continue
+        local = names_of(nested).locals
+        for name, desc in nested.arrays.items():
+            if not desc.transient or name in local:
+                continue
+            outer = sdfg.arrays.get(name)
+            if outer is None:
+                sdfg.arrays[name] = copy.deepcopy(desc)
+            elif outer.dtype != desc.dtype or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]:
+                raise UnsupportedNest(f"nested scratch {name!r} has another shape or type than the kernel's {name!r}")
 
 
 def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
@@ -739,12 +798,6 @@ def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
 def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:
     """Every argument in signature order: :func:`kernel_arrays`, then the symbols."""
     return [*arrays, *(s for s in boundary.symbols if s not in arrays)]
-
-
-def nest_to_python(boundary: Boundary, fn_name: str = "kernel") -> str:
-    """Standalone Python source ``def <fn_name>(<args>): ...`` of an extracted nest."""
-    sdfg = oracle_sdfg(boundary)
-    return render(fn_name, kernel_args(boundary, kernel_arrays(boundary, sdfg)), sdfg)
 
 
 @functools.lru_cache(maxsize=1, typed=True)

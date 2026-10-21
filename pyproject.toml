@@ -22,17 +22,18 @@ classifiers = [
 ]
 dependencies = [
     "numpy",
+    "pydantic>=2",
     "pyyaml",
     "sympy",
-    # Pinned tips of dace@extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both to the
-    # current tips. Bump whenever DaCe extended gains a transformation or fix NestForge needs.
-    "dace @ git+https://github.com/spcl/dace.git@73f0a120e4f3ec38dd1fadeb27792e7b972ec324",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@26a4f0cfc1540cead109dfc8d736f1c45263e390",
+    # The tips of DaCe extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both. The bench pins its
+    # own DaCe, so [tool.uv] overrides it with this one.
+    "dace @ git+https://github.com/spcl/dace.git@801cafd179790a844eaf460084232a0c6452571d",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@e63f9f1ce04141ae766bcb2cc5164277b57fa59d",
+    # The bench plugin (plugin/nestforge) runs on the agent side too.
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@e63f9f1ce04141ae766bcb2cc5164277b57fa59d#subdirectory=agent",
 ]
 
 [project.optional-dependencies]
-# The agent loop's LLM clients; install one or both.
-agent = ["anthropic", "openai"]
 dev = [
     "pre-commit",
     "pyright",
@@ -48,6 +49,9 @@ dev = [
 Homepage = "https://github.com/spcl/NestForge"
 Repository = "https://github.com/spcl/NestForge"
 
+[tool.uv]
+override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@801cafd179790a844eaf460084232a0c6452571d"]
+
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
 
@@ -58,15 +62,14 @@ target-version = "py312"
 extend-exclude = ["benchmarking_creation"]
 
 [tool.ruff.lint]
-# Default rules plus pyupgrade, so annotations use builtin generics and `X | None`, and a complexity ceiling.
-select = ["E4", "E7", "E9", "F", "UP", "C901"]
-
-[tool.ruff.lint.mccabe]
-max-complexity = 15
+select = ["F", "UP", "I", "FLY", "Q", "C4", "DTZ", "T10", "EXE", "INT", "ISC", "PYI", "RSE", "TID", "W", "PERF", "FURB"]
+ignore = ["UP031", "F821", "F841", "F823", "C408", "PYI041", "PYI042", "PYI016", "PERF203", "FURB136"]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests import after a module-level skip guard, use lambda helpers, and keep the reference's math names.
-"tests/*" = ["E402", "E731", "E741"]
+"__init__.py" = ["F401", "F403", "F405", "I"]
+
+[tool.ruff.format]
+exclude = ["*.ipynb"]
 
 [tool.pyright]
 include = ["nestforge", "scripts", "examples", "conftest.py"]

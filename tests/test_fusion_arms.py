@@ -5,16 +5,15 @@ against the un-fused reference. Exercises all three arms -- loop, vertical map, 
 agent's real pattern of applying a random legal sequence.
 """
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.transformation.interstate.state_fusion import StateFusion
+from helpers import apply_move, fusion_moves, random_vectors, run
 
 from nestforge.ir.introspect import tree_rows
 from nestforge.stages.moves import Rewrite, plan_move, tree_label
 from nestforge.stages.scopes import top_level_map_entries
-from helpers import apply_move, fusion_moves, random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64

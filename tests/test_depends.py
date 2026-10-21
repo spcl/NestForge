@@ -4,17 +4,15 @@
 by stage 3 and on hand-built SDFGs where the frontend cannot express the case. Structural only; nothing compiles."""
 
 import copy
-import json
 from collections.abc import Sequence
 
-import pytest
-
 import dace
+import pytest
+from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
-from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
@@ -159,7 +157,7 @@ def reaching(graph: KernelGraph) -> dict[tuple[str, str], tuple[str, ...]]:
 
 
 def carried(graph: KernelGraph) -> dict[tuple[str, str], list[str]]:
-    return {(edge.consumer, edge.arg): edge.loops() for edge in (*graph.edges, *graph.exits) if edge.loops()}
+    return {(edge.consumer, edge.arg): list(edge.carried) for edge in (*graph.edges, *graph.exits) if edge.carried}
 
 
 def loop_label(sdfg: dace.SDFG) -> str:
@@ -265,7 +263,12 @@ def test_diamond_kernel_zero_feeds_both_middle_kernels():
         ("extcall_3", "N"): ("program",),
         ("exit", "D"): ("extcall_3.D",),
     }
-    assert sorted(edge.consumer for edge in graph.consumers_of("extcall_0")) == ["extcall_1", "extcall_2"]
+    fed = {
+        edge.consumer
+        for edge in graph.edges
+        if any(p.kind == "kernel" and p.name == "extcall_0" for p in edge.producers)
+    }
+    assert sorted(fed) == ["extcall_1", "extcall_2"]
 
 
 def test_an_index_array_argument_comes_from_the_program():
@@ -592,10 +595,10 @@ def test_a_view_bound_to_no_container_is_refused():
         kernel_dependencies(sdfg)
 
 
-def test_two_runs_on_copies_give_byte_identical_json():
+def test_two_runs_on_copies_give_the_same_graph():
     sdfg, _ = lowered(relax_steps)
 
-    first = json.dumps(kernel_dependencies(copy.deepcopy(sdfg)).to_json())
-    second = json.dumps(kernel_dependencies(copy.deepcopy(sdfg)).to_json())
+    first = kernel_dependencies(copy.deepcopy(sdfg))
+    second = kernel_dependencies(copy.deepcopy(sdfg))
 
     assert first == second

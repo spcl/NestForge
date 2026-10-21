@@ -5,17 +5,15 @@ nothing splits, and the agent's flow of fission then fusion. Value-preservation 
 reference) is the invariant on every case.
 """
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.sdfg.state import LoopRegion
-
 from dace.transformation.helpers import nest_state_subgraph
+from helpers import apply_move, fission_to_fixpoint, fusion_moves, random_vectors, run
 
 from nestforge.ir.names import normalize_labels
 from nestforge.stages.moves import legal_moves
-from helpers import apply_move, fission_to_fixpoint, fusion_moves, random_vectors, run
 
 N = dace.symbol("N")
 f64 = dace.float64

@@ -12,20 +12,20 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from dace import symbolic
 from dace.transformation.passes.canonicalize import canonicalize
-
-from nestforge.build.sdfg import BuildOptions, build_sdfg
-from nestforge.build.isolation import run_isolated
 from helpers import (
+    bench_kernel,
+    build_sdfg,
     c_argtypes,
     corpus_kernel,
-    loop_level_kernel,
     run_emitted,
     sdfg_to_python,
     signature_order,
 )
+
+from nestforge.build.isolation import Result, run_isolated
+from nestforge.build.sdfg import BuildOptions
 
 ATOL = 1e-8
 
@@ -120,8 +120,15 @@ def rand_buffer(shape, dt, rng, center):
     return np.zeros(shape, dt)
 
 
+class MaxDiff(Result):
+    """The largest divergence of a candidate from the SDFG's oracle."""
+
+    md: float
+
+
 def dace_sizes(kernel, base=6):
-    preset = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
+    merged = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
+    preset = {k: v for k, v in merged.items() if k not in kernel.spec.config_names}  # knobs are data, not sizes
     ranks = {v: i for i, v in enumerate(sorted(set(preset.values())))}
     return {k: base + ranks[v] for k, v in preset.items()}
 
@@ -133,7 +140,7 @@ def make_dace(short):
 
 
 def make_llr(key):
-    kernel = loop_level_kernel(key)
+    kernel = corpus_kernel(key)
 
     def build():
         sdfg = kernel.to_sdfg(simplify=True)
@@ -221,11 +228,11 @@ def test_emitted_python_matches_sdfg(kind, short):
             base = base_inputs(make_sdfg(), sizes, center)
             oracle = run_oracle_nest(make_sdfg, sizes, base, Path(td))
             cand = run_emitted_python(make_sdfg, sizes, base)
-            return {"md": max_abs_diff(oracle, cand)}
+            return MaxDiff(md=max_abs_diff(oracle, cand))
 
-    res = run_isolated(work, timeout=600)
-    assert "error" not in res, f"{short}: {res.get('error')}"
-    assert res["md"] <= ATOL, f"{short}: emitted Python diverged from the SDFG (maxdiff {res['md']:g})"
+    res = run_isolated(work, MaxDiff, timeout=600)
+    assert isinstance(res, MaxDiff), f"{short}: {res}"
+    assert res.md <= ATOL, f"{short}: emitted Python diverged from the SDFG (maxdiff {res.md:g})"
 
 
 # L2: emitted code compiled across compilers == the SDFG (per nest)
@@ -242,10 +249,11 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
 
     def work():
         import subprocess
+
+        from helpers import emit_sources
+
+        from nestforge.build.arena import call_native, make_inputs
         from nestforge.stages.scopes import lower_nests_to_external_call
-        from nestforge.corpus.translate import prepare, emit_sources
-        from nestforge.build.arena import make_inputs
-        from nestforge.build.arena import call_native
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())
@@ -256,7 +264,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
             for i, (_ext, b) in enumerate(nests):
                 name = f"{short.split('/')[-1]}_n{i}"
                 nsizes = {**sizes, **{s: 0 for s in b.symbols if s not in sizes}}  # leaked nest indices -> 0
-                prep = prepare(b, name, d / name, sizes=nsizes)
+                prep = bench_kernel(b, name, d / name, sizes=nsizes)
                 built = build_sdfg(b.standalone_sdfg, d / f"{name}_o", BuildOptions(compiler="g++"))
                 inp = make_inputs(b, nsizes, seed=0)
                 oracle = {k: v.copy() for k, v in inp.items()}
@@ -280,8 +288,8 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
                 data = {k: oracle[k] for k in outs if k in oracle and not k.startswith("__sym_out")}
                 assert data, f"{name}: no data output compared"
                 worst = max(worst, max_abs_diff(data, outs))
-        return {"md": worst}
+        return MaxDiff(md=worst)
 
-    res = run_isolated(work, timeout=600)
-    assert "error" not in res, f"{short}/{lang}/{compiler}: {res.get('error')}"
-    assert res["md"] <= ATOL, f"{short}/{lang}/{compiler}: compiled kernel diverged (maxdiff {res['md']:g})"
+    res = run_isolated(work, MaxDiff, timeout=600)
+    assert isinstance(res, MaxDiff), f"{short}/{lang}/{compiler}: {res}"
+    assert res.md <= ATOL, f"{short}/{lang}/{compiler}: compiled kernel diverged (maxdiff {res.md:g})"

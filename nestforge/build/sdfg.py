@@ -8,19 +8,22 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
-from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
 import time
 import warnings
+from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
-
-import numpy as np
 
 import dace
+import numpy as np
 from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
+from dace.data import Array
+from dace.libraries.standard.nodes.external_call import external_calls
+from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
 
 from nestforge.build.toolchain import (
     AR,
@@ -36,10 +39,8 @@ from nestforge.build.toolchain import (
     lib_linkable,
     openmp_compile_flags,
     openmp_link_flags,
-    parse_params,
     run,
     runtime_library,
-    signature,
     support_rpath_flags,
 )
 
@@ -111,10 +112,59 @@ class BuiltSDFG:
             self.close()
 
 
+#: DaCe's CUDA code generator for every GPU build: the new one, which hoists a per-thread array of symbolic size
+#: out of its kernel into global memory (``MoveArrayOutOfKernel``) instead of refusing it.
+CUDA_CODEGEN = "experimental"
+
+
+def new_gpu_codegen() -> AbstractContextManager[object]:
+    """Pin :data:`CUDA_CODEGEN`, whatever the environment or the config file chose."""
+    return dace.config.set_temporary("compiler", "cuda", "implementation", value=CUDA_CODEGEN)
+
+
+def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
+    """Each kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time."""
+    for node in external_calls(sdfg):
+        if node.standalone_sdfg is not None:
+            yield from node.standalone_sdfg.all_sdfgs_recursive()
+
+
+def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]:
+    """The transient arrays of ``sdfg`` itself in unforced registers, plus, with ``scope_default``, the
+    scope-lived ones of default storage (a kernel's, which codegen puts in registers once expanded)."""
+    for desc in sdfg.arrays.values():
+        if type(desc) is not Array or not desc.transient:
+            continue
+        storage = desc.storage
+        unforced = storage == dace.StorageType.Register and not storage.force
+        scoped = (
+            scope_default and storage == dace.StorageType.Default and desc.lifetime == dace.AllocationLifetime.Scope
+        )
+        if unforced or scoped:
+            yield desc
+
+
+def force_register_arrays(sdfg: dace.SDFG) -> int:
+    """Pin every array headed for registers to ``Register(force=True)``, so on the CPU it stays on the stack, a
+    symbolic size as a variable-length array, instead of a heap allocation per scope: unforced register arrays,
+    scope-lived arrays inside a map (DaCe's rule), and a kernel's scope-lived arrays. Returns how many."""
+    pinned = force_map_scoped_registers(sdfg)
+    for owned, scope_default in [
+        *((s, False) for s in sdfg.all_sdfgs_recursive()),
+        *((s, True) for s in kernel_sdfgs(sdfg)),
+    ]:
+        arrays = list(stack_candidates(owned, scope_default=scope_default))
+        for desc in arrays:
+            desc.storage = dace.StorageType.Register(force=True)
+        pinned += len(arrays)
+    return pinned
+
+
 def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
     """Write DaCe's source tree (``src/cpu/<name>.cpp`` and ``include/``) without compiling it."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    with dace.config.temporary_config():
+    force_register_arrays(sdfg)
+    with dace.config.temporary_config(), new_gpu_codegen():
         dace.config.Config.set("compiler", "emit_tree_reductions", value=True)
         code_objects = codegen.generate_code(sdfg)
     folder = Path(dace_compiler.generate_program_folder(sdfg, code_objects, str(out_dir)))
@@ -132,6 +182,7 @@ class BuildOptions:
     flags: list[str] | None = None  # None -> DEFAULT_FLAGS
     openmp: bool = True
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
+    libraries: list[str] = field(default_factory=list)  # linked ahead of the runtimes, e.g. CPF's vendor libraries
 
     def resolved_flags(self) -> list[str]:
         """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard and ``-Wall`` guaranteed."""
@@ -168,7 +219,7 @@ def build_commands(folder: Path | None, opts: BuildOptions) -> BuildCommands:
         cflags=[f for f in opts.resolved_flags() if f != "-shared"],
         compile_extra=[*omp_c, *includes],
         # icx links libsvml/libimf from off the loader path without a RUNPATH
-        link_libs=[*omp_l, *support_rpath_flags(compiler)],
+        link_libs=[*opts.libraries, *omp_l, *support_rpath_flags(compiler)],
     )
 
 
@@ -203,29 +254,18 @@ def link_shared(linker: str, inputs: Sequence[str], link_libs: Sequence[str], sh
     run([linker, "-shared", AS_NEEDED, *inputs, *link_libs, "-o", str(shared)])
 
 
-def build_cuda_archive(sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str]) -> float:
+def build_cuda_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
     """Compile each CUDA unit with ``nvcc``, archive the objects, and link ``shared`` with the host compiler against
-    the ``libcudart`` that ``nvcc`` itself links."""
+    ``libraries`` and the ``libcudart`` that ``nvcc`` itself links."""
     archive.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     objs = [archive.parent / f"{source.stem}.o" for source in sources]
     for source, obj in zip(sources, objs):
         run([nvcc, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
-    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, cudart_link_flags(cudart_dir(nvcc)))
+    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *cudart_link_flags(cudart_dir(nvcc))])
     return time.perf_counter() - t0
-
-
-def compile(frame: Path, folder: Path, name: str, opts: BuildOptions) -> tuple[Path, float]:
-    """Compile the generated frame into ``lib<name>.so``, directly or, with ``link_external``, through an archive."""
-    so = folder / f"lib{name}.so"
-    if opts.link_external:
-        return so, build_archive([frame], folder, folder / f"lib{name}_nest.a", so, opts)
-    cmds = build_commands(folder, opts)
-    obj = folder / f"{name}.o"
-    t0 = time.perf_counter()
-    run([cmds.compiler, *cmds.cflags, "-c", *cmds.compile_extra, str(frame), "-o", str(obj)])
-    link_shared(cmds.compiler, [*cmds.cflags, str(obj)], cmds.link_libs, so)
-    return so, time.perf_counter() - t0
 
 
 def program_compiler() -> str:
@@ -251,7 +291,11 @@ def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]
     sdfg.build_folder = str(build_folder)
-    with dace.config.set_temporary("compiler", "extra_cmake_args", value=" ".join(arg for arg in extra if arg)):
+    force_register_arrays(sdfg)
+    with (
+        new_gpu_codegen(),
+        dace.config.set_temporary("compiler", "extra_cmake_args", value=" ".join(arg for arg in extra if arg)),
+    ):
         with dace.config.set_temporary("compiler", "linker", "args", value=" ".join(arg for arg in linker_args if arg)):
             return sdfg.compile()
 
@@ -277,21 +321,4 @@ def generate_program(sdfg: dace.SDFG, out_dir: Path) -> GeneratedProgram:
     frame = generate_program_folder(sdfg, out_dir)
     return GeneratedProgram(
         frame=frame, name=sdfg.name, source=frame.read_text(), codegen_seconds=time.perf_counter() - t_opt
-    )
-
-
-def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None) -> BuiltSDFG:
-    """Generate, compile and link ``sdfg``; an OpenMP runtime is linked unless none is usable."""
-    gen = generate_program(sdfg, out_dir)
-    init_params = parse_params(signature(gen.source, f"__dace_init_{gen.name}"))
-    prog_params = parse_params(signature(gen.source, f"__program_{gen.name}"))
-    so, compile_seconds = compile(gen.frame, gen.folder, gen.name, opts or BuildOptions())
-    return BuiltSDFG(
-        name=gen.name,
-        so_path=so,
-        lib=ctypes.CDLL(str(so)),
-        init_params=init_params,
-        prog_params=prog_params,
-        codegen_seconds=gen.codegen_seconds,
-        compile_seconds=compile_seconds,
     )

@@ -6,15 +6,12 @@ notice."""
 
 import numpy as np
 import pytest
-
 from dace.transformation.passes.canonicalize import canonicalize
+from helpers import corpus_kernel, extract_nest_to_sdfg
 
 from nestforge.build.arena import make_inputs
 from nestforge.corpus.bench import preset_sizes
-from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.stages.scopes import parallel_top_level_maps
-
-from helpers import loop_level_kernel
 
 #: (kernel, index array). Every one is a gather/scatter whose index array is the whole point of the test;
 #: loop_level_reasoning is a superset of TSVC-2, so these are TSVC kernels.
@@ -37,7 +34,7 @@ def first_nest(kernel):
 @pytest.mark.parametrize("key", GATHER_KERNELS)
 def test_the_default_fill_of_an_index_array_is_all_zeros(key):
     # the plain float fill cast to an int dtype is all zeros, so every iteration reads b[0]
-    kernel = loop_level_kernel(key)
+    kernel = corpus_kernel(key)
     boundary = first_nest(kernel)
     sizes = preset_sizes(kernel, "S")
     ip = make_inputs(boundary, sizes, seed=0)[INDEX_ARRAY]

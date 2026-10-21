@@ -9,8 +9,7 @@ shows up anywhere but here.
 import numpy as np
 import pytest
 
-from nestforge.build import arena
-from nestforge.build import flags
+from nestforge.build import arena, flags
 
 
 def test_a_nan_anywhere_fails_even_when_it_is_not_the_first_element():

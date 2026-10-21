@@ -7,13 +7,24 @@ outputs, the DaCe ``__return`` value, and scratch transients -- and reads the re
 in-place buffers. ``alloc_run`` does exactly that, driven by the emitted function's own signature.
 """
 
+import copy
+import os
+
 import numpy as np
 import pytest
+from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
-from nestforge.build.isolation import run_isolated
+from nestforge.build.isolation import Result, run_isolated
+from nestforge.build.sdfg import compile_linked_program
 from nestforge.corpus.bench import iter_dace_kernels, module_path
 from nestforge.ir.emit_python import UnsupportedNest
-from helpers import corpus_kernel, run_emitted, sdfg_to_python
+from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
+from nestforge.stages.scopes import node_boundary
+
+
+class Built(Result):
+    ok: bool
 
 
 def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
@@ -47,8 +58,8 @@ def test_the_loop_level_track_builds_to_sdfgs():
     )
     assert loop_level, "loop_level_reasoning yielded no kernels"
     for kernel in loop_level[:2]:
-        result = run_isolated(lambda k=kernel: {"ok": k.program().to_sdfg(simplify=True) is not None})
-        assert result.get("ok"), f"{kernel.short_name}: {result.get('error')}"
+        result = run_isolated(lambda k=kernel: Built(ok=k.program().to_sdfg(simplify=True) is not None), Built)
+        assert result == Built(ok=True), f"{kernel.short_name}: {result}"
 
 
 def test_gemm_matmul_emits_and_computes():
@@ -252,21 +263,70 @@ def test_nbody_nested_where_emits_and_computes():
     np.testing.assert_allclose(call["PE"], PE, rtol=1e-5, atol=1e-8)
 
 
-def test_azimint_hist_oracle_exposes_the_sdfgs_out_of_bounds_bin_edge_read():
-    """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``, but the SDFG evaluates both operands of
-    the ``and`` before branching, so it reads ``e[npt]`` one past the end, which C does silently. The oracle
-    reproduces the SDFG faithfully, so NumPy's bounds check raises there. The day the frontend keeps the
-    short circuit, this test fails and should become the numeric comparison it used to be."""
+SDPA = "machine_learning/scaled_dot_product_attention/scaled_dot_product_attention"
+SDPA_SIZES = {"batch_size": 2, "embedding_dimension": 4, "num_heads": 2, "sequence_length": 4}
+
+
+def sdpa_scoped_session(tmp_path) -> Session:
+    sdfg = corpus_kernel(SDPA).to_sdfg()
+    sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
+    session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=dict(SDPA_SIZES))
+    session.canonicalize()
+    session.default_moves()
+    session.define_scopes()
+    return session
+
+
+def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_loop_bodies(tmp_path):
+    """sdpa's batched matmul kernel binds 4-D slices of ``V``, the weights and ``out`` through Views to the batched
+    matmul expansion, an init state then an update state inside the batch map that does not inline. The nest binds
+    the slices directly, so no View is an argument the caller allocates."""
+    session = sdpa_scoped_session(tmp_path)
+
+    kernels = session.list_kernels()
+    assert len(kernels) > 1
+    for info in kernels:
+        boundary = node_boundary(session.kernel(info.name))
+        assert set(boundary.symbols) <= set(SDPA_SIZES), f"{info.name} takes {boundary.symbols}"
+        assert set(boundary.symbols) <= set(boundary.standalone_sdfg.symbols)
+
+
+@pytest.mark.e2e
+def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
+    session = sdpa_scoped_session(tmp_path)
+    session.place()
+    for info in session.list_kernels():
+        session.optimize_kernel(info.name)
+    sdfg = copy.deepcopy(session.sdfg)
+    sdfg.expand_library_nodes()
+    compiled = compile_linked_program(sdfg, tmp_path / "parent")
+    b, h, s, e = (SDPA_SIZES[k] for k in ("batch_size", "num_heads", "sequence_length", "embedding_dimension"))
+    rng = np.random.default_rng(0)
+    q, k, v = (rng.random((b, h, s, e)) for _ in range(3))
+    out = np.zeros((b, h, s, e))
+    scores = q @ np.swapaxes(k, -1, -2) / np.sqrt(e)
+    weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    expected = weights / weights.sum(axis=-1, keepdims=True) @ v
+
+    compiled(Q=q, K=k, V=v, out=out, **SDPA_SIZES)
+
+    np.testing.assert_allclose(out, expected, rtol=1e-12)
+
+
+def test_azimint_hist_bins_radii_into_a_weighted_mean_per_bin():
+    """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``; the SDFG keeps the short circuit, so the
+    emitted Python never reads past the last bin edge and matches NumPy's histogram ratio."""
     N, npt = 200, 8
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
-    with pytest.raises(IndexError, match=f"index {npt} is out of bounds for axis 0 with size {npt}"):
-        alloc_run(
-            "scientific_computing/map_reduce/azimint_hist/azimint_hist",
-            "azimint_hist",
-            dict(N=N, npt=npt),
-            dict(data=data, radius=radius),
-        )
+    call, _ = alloc_run(
+        "scientific_computing/map_reduce/azimint_hist/azimint_hist",
+        "azimint_hist",
+        dict(N=N, npt=npt),
+        dict(data=data, radius=radius),
+    )
+    ref = np.histogram(radius, npt, weights=data)[0] / np.histogram(radius, npt)[0]
+    np.testing.assert_allclose(call["out"], ref, equal_nan=True)
 
 
 def test_azimint_naive_wcr_reduction_emits_and_computes():
@@ -399,9 +459,9 @@ def test_jacobi_1d_loopregion_emits_and_computes():
 
 
 def test_corpus_program_is_the_entry_not_a_helper():
-    # mlp_dace defines relu, softmax, then mlp; resnet has resnet_basicblock + a _gpu variant after it.
+    # mlp_dace defines relu, softmax, then mlp; every kernel's entry is named for the kernel (bench afcccb7).
     assert corpus_kernel("machine_learning/mlp/mlp").program().name.endswith("mlp")
-    assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet_basicblock")
+    assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet")
 
 
 def test_corpus_module_path_independent_of_namespace_path():

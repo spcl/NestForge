@@ -3,13 +3,13 @@
 """Stage 4: parallel kernels go to the GPU target, sequential ones stay on the CPU, an agent may choose per kernel,
 and the kernel DAG names the transfers each placement implies."""
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 
 from nestforge.ir.depends import KernelGraph, kernel_dependencies
+from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.placement import Transfer, transfers
@@ -66,10 +66,10 @@ def test_cpu_target_keeps_the_kernel_on_the_host_and_leaves_the_graph_unchanged(
 
     result = session.place()
 
-    assert result == {
+    assert result.model_dump(mode="json") == {
         "status": "applied",
         "reason": "",
-        "kernels": [{"name": "extcall_0", "device": "cpu"}],
+        "devices": {"extcall_0": "cpu"},
         "copies": [],
         "transfers": [],
     }
@@ -79,9 +79,9 @@ def test_cpu_target_keeps_the_kernel_on_the_host_and_leaves_the_graph_unchanged(
 def test_gpu_target_schedules_a_parallel_kernel_on_the_device_over_device_memory(tmp_path):
     session = kernel_session(True, tmp_path)
 
-    (kernel,) = session.place()["kernels"]
+    devices = session.place().devices
 
-    assert kernel == {"name": "extcall_0", "device": "gpu"}
+    assert devices == {"extcall_0": "gpu"}
     assert session.kernel("extcall_0").schedule == dace.ScheduleType.GPU_Device
     storages = operand_storages(session, "extcall_0")
     assert len(storages) == 3 and all(storage in GPU_RESIDENT_STORAGES for storage in storages)
@@ -91,7 +91,7 @@ def test_gpu_target_schedules_a_parallel_kernel_on_the_device_over_device_memory
 def test_gpu_placement_copies_the_inputs_to_the_device_and_the_output_back(tmp_path):
     session = kernel_session(True, tmp_path)
 
-    copies = session.place()["copies"]
+    copies = session.place().copies
 
     arrays = session.sdfg.arrays
     to_device = sorted(src for src, dst in copies if arrays[dst].storage in GPU_RESIDENT_STORAGES)
@@ -103,11 +103,11 @@ def test_gpu_placement_copies_the_inputs_to_the_device_and_the_output_back(tmp_p
 def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp_path):
     session = kernel_session(True, tmp_path, scale_then_prefix)
     loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.sdfg.state.LoopRegion))
-    assert session.define_scope([loop], session.epoch).status == "applied"
-    parallel = {k["name"]: k["parallel"] for k in session.list_kernels()}
+    assert session.define_scope([loop], session.epoch).status is MoveStatus.APPLIED
+    parallel = {k.name: k.parallel for k in session.list_kernels()}
     assert sorted(parallel.values()) == [False, True], parallel
 
-    devices = {k["name"]: k["device"] for k in session.place()["kernels"]}
+    devices = session.place().devices
 
     assert devices == {name: "gpu" if is_parallel else "cpu" for name, is_parallel in parallel.items()}
     session.sdfg.validate()
@@ -118,7 +118,7 @@ def test_an_agent_placement_keeps_a_parallel_kernel_on_the_host_and_its_operands
 
     result = session.place({"extcall_0": "cpu"}, session.epoch)
 
-    assert result["kernels"] == [{"name": "extcall_0", "device": "cpu"}] and result["copies"] == []
+    assert result.devices == {"extcall_0": "cpu"} and result.copies == ()
     assert not any(storage in GPU_RESIDENT_STORAGES for storage in operand_storages(session, "extcall_0"))
 
 
@@ -128,17 +128,17 @@ def test_placing_again_starts_from_the_program_before_the_first_placement(tmp_pa
 
     again = session.place({"extcall_0": "cpu"}, session.epoch)
 
-    assert again["status"] == "applied" and again["copies"] == []
+    assert again.status is MoveStatus.APPLIED and again.copies == ()
     assert session.kernel("extcall_0").schedule != dace.ScheduleType.GPU_Device
 
 
 @pytest.mark.parametrize(
     ("gpu", "devices", "epoch", "status", "reason"),
     [
-        (True, {"extcall_0": "gpu"}, 7, "stale", "epoch 7"),
-        (True, {"extcall_9": "gpu"}, None, "illegal", "no kernel is named extcall_9"),
-        (True, {"extcall_0": "tpu"}, None, "illegal", "'cpu' or 'gpu'"),
-        (False, {"extcall_0": "gpu"}, None, "illegal", "GPU is not a target"),
+        (True, {"extcall_0": "gpu"}, 7, MoveStatus.STALE, "epoch 7"),
+        (True, {"extcall_9": "gpu"}, None, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
+        (True, {"extcall_0": "tpu"}, None, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
+        (False, {"extcall_0": "gpu"}, None, MoveStatus.ILLEGAL, "GPU is not a target"),
     ],
 )
 def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, epoch, status, reason):
@@ -147,7 +147,7 @@ def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, e
 
     result = session.place(devices, session.epoch if epoch is None else epoch)
 
-    assert result["status"] == status and reason in result["reason"], result
+    assert result.status is status and reason in result.reason, result
     assert (session.sdfg.to_json(), session.epoch) == (before, epoch_before)
 
 
@@ -188,10 +188,10 @@ def test_gpu_placement_transfers_name_the_containers_its_copies_move(tmp_path):
     result = session.place()
 
     arrays = session.sdfg.arrays
-    to_device = sorted(src for src, dst in result["copies"] if arrays[dst].storage in GPU_RESIDENT_STORAGES)
-    to_host = sorted(dst for src, dst in result["copies"] if arrays[src].storage in GPU_RESIDENT_STORAGES)
-    assert sorted(move["arg"] for move in result["transfers"] if move["direction"] == "to_gpu") == to_device
-    assert sorted(move["arg"] for move in result["transfers"] if move["direction"] == "to_host") == to_host
+    to_device = sorted(src for src, dst in result.copies if arrays[dst].storage in GPU_RESIDENT_STORAGES)
+    to_host = sorted(dst for src, dst in result.copies if arrays[src].storage in GPU_RESIDENT_STORAGES)
+    assert sorted(move.arg for move in result.transfers if move.direction == "to_gpu") == to_device
+    assert sorted(move.arg for move in result.transfers if move.direction == "to_host") == to_host
 
 
 @pytest.mark.gpu

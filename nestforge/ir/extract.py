@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeAlias, cast
 
 import dace
 from dace.sdfg import nodes
@@ -17,11 +17,12 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFG
 from dace.sdfg.type_inference import infer_expr_type
 from dace.transformation import helpers
 
-CfgNest = LoopRegion | ConditionalBlock
+# TypeAlias, not ``type``: isinstance needs the runtime union
+CfgNest: TypeAlias = LoopRegion | ConditionalBlock  # noqa: UP040
 
 #: ``dace.int64``, which DaCe annotates as the NumPy type rather than its typeclass.
 INT64 = cast(dace.dtypes.typeclass, dace.int64)
-NestNode = nodes.MapEntry | CfgNest
+NestNode: TypeAlias = nodes.MapEntry | CfgNest  # noqa: UP040
 
 
 @dataclass(slots=True)
@@ -150,7 +151,7 @@ def blocks_defined_symbol_dtypes(
         if isinstance(block, CfgNest):
             defined |= nest_defined_symbol_dtypes(parent_sdfg, block)
     table = symbol_table(parent_sdfg) | defined
-    for edge in parent_sdfg.edges():
+    for edge in blocks[0].parent_graph.edges():
         if edge.src in blocks and edge.dst in blocks:
             for target, rhs in edge.data.assignments.items():
                 define_symbol(defined, table, target, str(rhs))
@@ -158,7 +159,7 @@ def blocks_defined_symbol_dtypes(
 
 
 def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], name: str | None = None) -> Boundary:
-    """Outline a single-entry, single-exit run of top-level blocks of ``parent_sdfg`` into one nested SDFG."""
+    """Outline a single-entry, single-exit run of blocks of one region of ``parent_sdfg`` into one nested SDFG."""
     if len(blocks) == 1 and isinstance(blocks[0], SDFGState):
         # DaCe nests a lone state as itself, so its contents are nested instead
         return extract_state_nodes(parent_sdfg, blocks[0], blocks[0].nodes(), name or "nest")
@@ -166,21 +167,10 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
     for s, dtype in blocks_defined_symbol_dtypes(parent_sdfg, blocks).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
-    subgraph = SubgraphView(parent_sdfg, list(blocks))
-    inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph)
+    subgraph = SubgraphView(blocks[0].parent_graph, list(blocks))
+    inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph, start=blocks[0])
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
     # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache
     if name:
         nsdfg_node.sdfg.name = name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     return boundary_from_nsdfg(nsdfg_node, inner_state)
-
-
-def extract_nest_to_sdfg(parent_sdfg: dace.SDFG, node: NestNode, name: str | None = None) -> Boundary:
-    """Outline a map nest or a control-flow nest; see :func:`extract_map_nest` and :func:`extract_cfg_nest`."""
-    if isinstance(node, nodes.MapEntry):
-        return extract_map_nest(parent_sdfg, node, name=name)
-    if isinstance(node, CfgNest):
-        return extract_cfg_nest(parent_sdfg, node, name=name)
-    raise TypeError(
-        f"cannot extract node of type {type(node).__name__}; expected MapEntry, LoopRegion, or ConditionalBlock"
-    )

@@ -7,21 +7,18 @@ nested-map recursion in ``map_lines`` lets a map-inside-a-map (e.g. tsvc_2_s2275
 FMA) emit as nested ``for`` loops instead of raising. Both are pure/emit-level -- no compile.
 """
 
-import numpy as np
-
 import dace
+import numpy as np
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
+from helpers import corpus_kernel, extract_nest_to_sdfg, sdfg_to_python
 
-from nestforge.ir.extract import extract_nest_to_sdfg
 from nestforge.ir.emit_python import load_emitted
 from nestforge.stages.scopes import is_parallel_nest, parallel_top_level_maps
 
-from helpers import loop_level_kernel, sdfg_to_python
-
 
 def nest_refs(key):
-    sdfg = loop_level_kernel(key).to_sdfg(simplify=True)
+    sdfg = corpus_kernel(key).to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     return sdfg, parallel_top_level_maps(sdfg)
 

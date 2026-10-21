@@ -4,22 +4,22 @@
 
 import copy
 import hashlib
-import os
 import json
+import os
 import re
 from collections import Counter
 
+import dace
 import numpy as np
 import pytest
-
-import dace
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
-from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 
-from nestforge.ir.names import normalize_for_tree
-from nestforge.stages.scopes import top_level_map_entries
+from nestforge.ir.names import normalize_labels
+from nestforge.records import MoveStatus
 from nestforge.session import MoveResult, Session
+from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)
@@ -252,7 +252,7 @@ def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace
 
 def apply_listed(session: Session, kind: str) -> MoveResult:
     (move,) = session.list_moves(kind)
-    return session.apply_move(move["kind"], move["labels"], move["epoch"])
+    return session.apply_move(move.kind, move.labels, move.epoch)
 
 
 def random_arrays(**shapes: tuple[int, ...]) -> dict[str, np.ndarray]:
@@ -288,15 +288,15 @@ def test_labels_stay_unique_after_a_fusion_move():
 
     result = apply_listed(sut, "loop-fusion")
 
-    assert result.status == "applied"
+    assert result.status is MoveStatus.APPLIED
     assert len(loops(sut.sdfg)) == loop_count - 1
     assert duplicate_labels(sut.sdfg) == {}
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), oa=(SIZE,), ob=(SIZE,)), N=SIZE)
 
 
-def test_a_session_keeps_the_labels_normalize_for_tree_already_gave():
+def test_a_session_keeps_the_labels_normalize_labels_already_gave():
     sdfg = sweep_then_scale.to_sdfg(simplify=True)
-    normalize_for_tree(sdfg)
+    normalize_labels(sdfg)
     labels = tree_labels(sdfg)
 
     Session(sdfg)
@@ -328,13 +328,14 @@ def test_the_tree_names_its_epoch_on_the_first_line():
 
 def test_listed_moves_name_rows_of_the_tree_at_the_current_epoch():
     sut = Session(sweep_then_scale.to_sdfg(simplify=True))
+    sut.expand([label for label, (obj, _) in sut.row_index().items() if isinstance(obj, SDFGState)], sut.epoch)
     tree = sut.describe()
 
     moves = sut.list_moves()
 
     assert moves, "the fixture offers no move"
-    assert {move["epoch"] for move in moves} == {0}
-    for label in {label for move in moves for label in move["labels"]}:
+    assert {move.epoch for move in moves} == {0}
+    for label in {label for move in moves for label in move.labels}:
         assert re.search(rf"[-`] {label}\b", tree), (label, tree)
 
 
@@ -346,7 +347,7 @@ def test_loop_fusion_merges_two_loops_into_one_that_writes_both_arrays():
 
     result = apply_listed(sut, "loop-fusion")
 
-    assert (result.status, result.reason) == ("applied", "LoopFusion")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopFusion")
     (loop,) = loops(sut.sdfg)
     assert {"a", "b"} <= set(loop.read_and_write_sets()[1])
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,)), N=SIZE)
@@ -358,7 +359,7 @@ def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing():
 
     result = sut.apply_move("loop-fusion", ["for0_0", "for0_1"], 0)
 
-    assert result.status == "illegal" and "LoopFusion" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "LoopFusion" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
     assert sut.list_moves("loop-fusion") == []
 
@@ -371,7 +372,7 @@ def test_map_fusion_through_a_transient_is_vertical_and_leaves_one_map():
 
     result = apply_listed(sut, "map-fusion")
 
-    assert (result.status, result.reason) == ("applied", "MapFusionVertical")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionVertical")
     assert len(top_level_maps(sut.sdfg)) == 1
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE,), B=(SIZE,), C=(SIZE,)), N=SIZE)
 
@@ -381,7 +382,7 @@ def test_map_fusion_of_independent_siblings_is_horizontal_and_leaves_one_map():
 
     result = apply_listed(sut, "map-fusion")
 
-    assert (result.status, result.reason) == ("applied", "MapFusionHorizontal")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionHorizontal")
     assert len(top_level_maps(sut.sdfg)) == 1
     arrays = random_arrays(A=(SIZE,), B=(SIZE,), C=(SIZE,), D=(SIZE,))
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
@@ -393,7 +394,7 @@ def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies():
 
     result = apply_listed(sut, "map-fusion")
 
-    assert result.status == "applied", result
+    assert result.status is MoveStatus.APPLIED, result
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, STEPS), C=(SIZE, STEPS)), N=SIZE, T=STEPS)
 
 
@@ -404,7 +405,7 @@ def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier():
 
     result = sut.apply_move("map-fusion", labels, 0)
 
-    assert result.status == "illegal" and "different states" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "different states" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -417,7 +418,7 @@ def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_ar
 
     result = apply_listed(sut, "map-fission")
 
-    assert (result.status, result.reason) == ("applied", "MapFission")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFission")
     # MapFission moves the split maps into the nested SDFG that was the map's body
     assert top_level_maps(sut.sdfg) == []
     writes = map_writes(sut.sdfg)
@@ -431,7 +432,7 @@ def test_map_fission_splits_a_flat_two_statement_map_by_its_outputs():
 
     result = sut.apply_move("map-fission", [entry.label], 0)
 
-    assert (result.status, result.reason) == ("applied", "MapFission")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFission")
     assert len(top_level_maps(sut.sdfg)) > 1, "the map split into its independent components"
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
 
@@ -443,7 +444,7 @@ def test_map_fission_of_a_flat_map_writing_one_array_is_illegal():
 
     result = sut.apply_move("map-fission", [entry.label], 0)
 
-    assert result.status == "illegal" and "MapFission" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "MapFission" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -455,7 +456,7 @@ def test_map_map_interchange_puts_the_inner_parameter_outside():
 
     result = apply_listed(sut, "interchange-map-map")
 
-    assert (result.status, result.reason) == ("applied", "MapInterchange")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
     (outer,) = top_level_maps(sut.sdfg)
     state = next(s for s in sut.sdfg.states() if outer in s.nodes())
     (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
@@ -469,7 +470,7 @@ def test_map_map_interchange_of_a_triangular_nest_is_illegal():
 
     result = sut.apply_move("interchange-map-map", ["kernel1_0", "kernel2_0"], 0)
 
-    assert result.status == "illegal" and "MapInterchange" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "MapInterchange" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -479,7 +480,7 @@ def test_naming_the_inner_map_first_is_illegal():
 
     result = sut.apply_move("interchange-map-map", ["kernel2_0", "kernel1_0"], 0)
 
-    assert result.status == "illegal" and "not directly inside" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "not directly inside" in result.reason, result
     assert digest(sut.sdfg) == before
 
 
@@ -488,7 +489,7 @@ def test_loop_map_interchange_moves_the_loop_inside_the_map():
 
     result = apply_listed(sut, "interchange-loop-map")
 
-    assert (result.status, result.reason) == ("applied", "MoveLoopIntoMap")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopIntoMap")
     assert not [block for block in sut.sdfg.nodes() if isinstance(block, LoopRegion)]
     (entry,) = top_level_maps(sut.sdfg)
     state = next(s for s in sut.sdfg.states() if entry in s.nodes())
@@ -503,7 +504,7 @@ def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal():
 
     result = sut.apply_move("interchange-loop-map", ["for0_0", "kernel2_0"], 0)
 
-    assert result.status == "illegal" and "MoveLoopIntoMap" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "MoveLoopIntoMap" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -515,7 +516,7 @@ def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
 
     result = sut.apply_move("interchange-loop-map", [loop.label, outside.label], 0)
 
-    assert result.status == "illegal" and "not the one map directly inside" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "not the one map directly inside" in result.reason, result
     assert digest(sut.sdfg) == before
 
 
@@ -527,7 +528,7 @@ def test_loop_fission_splits_independent_recurrences_into_one_loop_each():
 
     result = apply_listed(sut, "loop-fission")
 
-    assert (result.status, result.reason) == ("applied", "LoopFission")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopFission")
     writes = [{"a", "b"} & set(loop.read_and_write_sets()[1]) for loop in loops(sut.sdfg)]
     assert writes == [{"a"}, {"b"}], writes
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,)), N=SIZE)
@@ -540,7 +541,7 @@ def test_loop_fission_of_coupled_recurrences_is_illegal_and_changes_nothing():
 
     result = sut.apply_move("loop-fission", [loop.label], 0)
 
-    assert result.status == "illegal" and "LoopFission" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "LoopFission" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
     assert sut.list_moves("loop-fission") == []
 
@@ -556,9 +557,9 @@ def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut
     moves = sut.list_moves("subgraph-fission")
     assert len(moves) == 2, moves
 
-    result = sut.apply_move(moves[cut]["kind"], moves[cut]["labels"], moves[cut]["epoch"])
+    result = sut.apply_move(moves[cut].kind, moves[cut].labels, moves[cut].epoch)
 
-    assert (result.status, result.reason) == ("applied", "SubgraphFission")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "SubgraphFission")
     assert len(top_level_maps(sut.sdfg)) == 2
     assert [str(extent) for extent in sut.sdfg.arrays["t"].shape] == ["N"]
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
@@ -574,7 +575,7 @@ def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing():
 
     result = sut.apply_move("subgraph-fission", [entry.map.label, last.label], 0)
 
-    assert result.status == "illegal" and "before the last" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "before the last" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -586,7 +587,7 @@ def test_map_loop_interchange_puts_the_loop_outside_the_map():
 
     result = apply_listed(sut, "interchange-map-loop")
 
-    assert (result.status, result.reason) == ("applied", "MapLoopInterchange")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
     (loop,) = [block for block in sut.sdfg.nodes() if isinstance(block, LoopRegion)]
     (state,) = loop.nodes()
     assert [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
@@ -599,7 +600,7 @@ def test_map_loop_interchange_undoes_loop_map_interchange():
 
     result = apply_listed(sut, "interchange-map-loop")
 
-    assert result.status == "applied", result
+    assert result.status is MoveStatus.APPLIED, result
     assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
@@ -613,7 +614,7 @@ def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_i
 
     result = sut.apply_move("interchange-map-loop", [entry.map.label, loop.label], 0)
 
-    assert result.status == "illegal" and "varies across map iterations" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "varies across map iterations" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
@@ -625,7 +626,7 @@ def test_a_guard_moves_into_the_loop_it_guards():
 
     result = apply_listed(sut, "interchange-if-loop")
 
-    assert (result.status, result.reason) == ("applied", "MoveIfIntoLoop")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveIfIntoLoop")
     assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
     for k in (0, 3):
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
@@ -636,7 +637,7 @@ def test_a_loop_invariant_guard_moves_out_of_its_loop():
 
     result = apply_listed(sut, "interchange-loop-if")
 
-    assert (result.status, result.reason) == ("applied", "MoveLoopInvariantIfUp")
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopInvariantIfUp")
     assert [type(block) for block in sut.sdfg.nodes()] == [ConditionalBlock]
     for k in (0, 3):
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
@@ -649,27 +650,9 @@ def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
 
     result = sut.apply_move("interchange-loop-if", [loop.label, cond.label], 0)
 
-    assert result.status == "illegal" and "MoveLoopInvariantIfUp" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "MoveLoopInvariantIfUp" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
     assert sut.list_moves("interchange-loop-if") == []
-
-
-# kinds without an implementation
-
-
-def test_loop_loop_interchange_is_not_implemented_and_changes_nothing():
-    sut = Session(two_loops.to_sdfg(simplify=True))
-    before = digest(sut.sdfg)
-
-    result = sut.apply_move("interchange-loop-loop", ["for0_0", "for0_1"], 0)
-
-    assert (result.status, result.kind, result.labels) == (
-        "not-implemented",
-        "interchange-loop-loop",
-        ("for0_0", "for0_1"),
-    )
-    assert (digest(sut.sdfg), sut.epoch) == (before, 0)
-    assert sut.list_moves("interchange-loop-loop") == []
 
 
 # refusals that never touch the graph
@@ -681,19 +664,19 @@ def test_an_unknown_label_is_not_found_and_changes_nothing():
 
     result = sut.apply_move("map-fusion", ["kernel1_0", "kernel9_9"], 0)
 
-    assert result.status == "not-found" and "kernel9_9" in result.reason, result
+    assert result.status is MoveStatus.NOT_FOUND and "kernel9_9" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
 
 
 def test_labels_read_before_a_move_are_stale_after_it_and_change_nothing():
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     (move,) = sut.list_moves("map-fusion")
-    sut.apply_move(move["kind"], move["labels"], move["epoch"])
+    sut.apply_move(move.kind, move.labels, move.epoch)
     after_move = digest(sut.sdfg)
 
-    result = sut.apply_move(move["kind"], move["labels"], move["epoch"])
+    result = sut.apply_move(move.kind, move.labels, move.epoch)
 
-    assert result.status == "stale", result
+    assert result.status is MoveStatus.STALE, result
     assert (digest(sut.sdfg), sut.epoch) == (after_move, 1)
 
 

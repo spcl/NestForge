@@ -7,14 +7,12 @@ reports success while doing it. ``canonicalize`` + ``fuse_and_finish`` already f
 the fixture fissions it back apart first to get two nests worth externalizing.
 """
 
-import numpy as np
-
 import dace
-
-from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.canonicalize import fuse_and_finish
-from nestforge.stages.scopes import lower_nests_to_external_call
+import numpy as np
 from helpers import fission_to_fixpoint
+
+from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
 f64 = dace.float64
