@@ -45,6 +45,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
       - run: sudo bash scripts/setup_apt.sh
+      # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
+      # (ubuntu-24.04 restricts that through AppArmor).
+      - name: Grading seal
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
       - name: pytest
         # The bench's references run only under the OpenMP launch environment its judge uses
