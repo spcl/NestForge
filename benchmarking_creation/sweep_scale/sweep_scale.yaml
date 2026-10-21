@@ -1,9 +1,5 @@
-# Repo-local kernel (see benchmarking_creation/README.md): relative_path, func_name and input_args are explicit
-# because the manifest lives outside hpcagent_bench's corpus, where they would be derived from the folder.
+# Repo-local kernel (see benchmarking_creation/README.md).
 name: Sweep then scale
-relative_path: benchmarking_creation/sweep_scale
-func_name: sweep_scale
-input_args: [aa, bb, cc, w, NJ, NI]
 level: 2
 parameters:
   S:
@@ -18,16 +14,10 @@ parameters:
   XL:
     NJ: 14337
     NI: 14337
-init:
-  arrays:
-    aa: (NJ,NI)
-    bb: (NJ,NI)
-    cc: (NJ,NI)
-    w:
-      shape: (NI,)
-      domain: [0.5, 1.5]
-output_args:
-- aa
-- cc
+args:
+  aa: {shape: "(NJ,NI)", out: true}
+  bb: (NJ,NI)
+  cc: {shape: "(NJ,NI)", out: true}
+  w: {shape: "(NI,)", domain: [0.5, 1.5]}
 chain_length:
   aa: NJ

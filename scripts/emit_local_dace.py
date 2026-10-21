@@ -11,26 +11,21 @@ from __future__ import annotations
 import ast
 import sys
 from pathlib import Path
-from typing import Any
 
-import yaml
-
-from nestforge.corpus.bench import LOCAL_ROOT
+from nestforge.corpus.bench import LOCAL_ROOT, local_spec
 
 
 def emit(name: str) -> Path:
     """Write ``<name>_dace.py`` next to ``<name>_numpy.py`` and return its path."""
     from hpcagent_bench import emit_bridge
-    from hpcagent_bench.spec import BenchSpec
-    from numpyto_c.dace_emit import emit_dace
-    from numpyto_common.emit_io import write_generated
-    from numpyto_common.frontend import emit_with_inline_fallback, parse_kernel
+    from hpcagent_bench.translators.numpyto_c.dace_emit import emit_dace
+    from hpcagent_bench.translators.numpyto_common.emit_io import write_generated
+    from hpcagent_bench.translators.numpyto_common.frontend import emit_with_inline_fallback, parse_kernel
 
     folder = LOCAL_ROOT / name
     yaml_path = folder / f"{name}.yaml"
     numpy_path = folder / f"{name}_numpy.py"
-    manifest: dict[str, Any] = yaml.safe_load(yaml_path.read_text())
-    spec = BenchSpec.from_yaml(manifest, source=str(yaml_path))
+    spec = local_spec(yaml_path)
     out = folder / f"{name}_dace.py"
 
     def render() -> str:

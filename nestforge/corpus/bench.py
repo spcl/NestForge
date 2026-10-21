@@ -119,20 +119,39 @@ def corpus_kernel(name: str) -> CorpusKernel | None:
     return CorpusKernel(short_name, module_path(short_name), dace_file, BenchSpec.load(short_name))
 
 
+def local_spec(yaml_path: Path) -> BenchSpec:
+    """The spec of a repo-local manifest. ``BenchSpec.from_yaml`` derives the reference's folder and the track from
+    a location under hpcagent_bench's ``benchmarks/``, so this takes its steps with the kernel's own folder as
+    ``relative_path`` (absolute, which hpcagent_bench joins onto its corpus root unchanged) and the default track."""
+    from hpcagent_bench import manifest_schema
+    from hpcagent_bench import spec as hb
+
+    source = str(yaml_path)
+    raw: dict[str, Any] = yaml.safe_load(yaml_path.read_text())
+    manifest = manifest_schema.validate_manifest(raw, source)
+    raw.update(relative_path=str(yaml_path.parent.resolve()), short_name=yaml_path.stem)
+    raw.setdefault("module_name", yaml_path.stem)
+    raw.setdefault("name", yaml_path.stem)
+    func_name = hb.derive_func_name(raw["relative_path"], raw["module_name"])
+    if func_name is not None:
+        raw["func_name"] = func_name
+    module = yaml_path.with_name(f"{raw['module_name']}.py")
+    initializer = module if hb.defines_function(module, hb.INITIALIZER) else None
+    hb.expand_args(raw, manifest.args, initializer, source)
+    return hb.BenchSpec.from_dict(raw, source)
+
+
 def iter_local_kernels() -> Iterator[CorpusKernel]:
     """Every repo-local kernel. Its ``_dace.py`` is committed with it, so a missing one is an authoring error."""
-    from hpcagent_bench.spec import BenchSpec
-
     for short_name, yaml_path in local_names().items():
         dace_file = yaml_path.with_name(f"{yaml_path.stem}_dace.py")
         if not dace_file.exists():
             raise FileNotFoundError(f"{dace_file} is missing; generate it with scripts/emit_local_dace.py")
-        manifest: dict[str, Any] = yaml.safe_load(yaml_path.read_text())
         yield CorpusKernel(
             short_name=short_name,
             module_path=module_path(short_name),
             dace_file=dace_file,
-            spec=BenchSpec.from_yaml(manifest, source=str(yaml_path)),
+            spec=local_spec(yaml_path),
         )
 
 

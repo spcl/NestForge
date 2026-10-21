@@ -16,17 +16,11 @@ benchmarking_creation/<name>/
   <name>.md           Explanation, including the reference solution. Required.
 ```
 
-Anything else in the folder (a plain-C reference, a validation script, an input generator) is ignored by the loader. An input generator is a separate `<name>.py` when the oracle must not contain it, and the manifest points `init.func_name` at it.
+Anything else in the folder (a plain-C reference, a validation script, an input generator) is ignored by the loader. An input generator is an `initialize()` in a separate `<name>.py`; the loader finds it there, and the manifest does not name it.
 
 ### Oracle and manifest
 
-Write `<name>_numpy.py` and `<name>.yaml` first. The manifest sets three fields that HPCAgent-Bench derives from its own folder and cannot derive here:
-
-- `relative_path: benchmarking_creation/<name>`
-- `func_name: <name>`
-- `input_args`: the positional parameter names of the oracle, in order
-
-Also set `name`, `level`, `parameters` (presets S, M, L, XL), `init`, `output_args`, and `chain_length` when an output is a scan or a carry. Preset S is for correctness. Preset M is the size the gap is measured at, and its leading dimension is not a multiple of a block size. No `bool` arrays: there is no extern-C spelling for them. Use `int32` masks. Do not draw unstructured uniform random inputs for a kernel that divides by a difference of inputs or that needs a monotone pressure or a positive temperature. Put that generator in `init`.
+Write `<name>_numpy.py` and `<name>.yaml` first. The manifest follows HPCAgent-Bench's schema (from `e63f9f1`): set `name`, `level`, `parameters` (presets S, M, L, XL), `args`, and `chain_length` when an output is a scan or a carry. `args` declares every array and scalar of the oracle: a shape string (`aa: "(N, M)"`), or a mapping with `shape`, `out: true` for a graded output, `dtype`, `domain: [low, high]`. Quote a shape inside a `{...}` mapping, or YAML splits it at the comma. Do not set `relative_path`, `func_name`, `input_args`, `output_args` or `init.func_name`: they are derived (the entry is the oracle's only top-level function, or the one named `<name>`; its parameters give the order), and the schema refuses them. `nestforge.corpus.bench.local_spec` does the derivation for a folder outside HPCAgent-Bench's corpus. Preset S is for correctness. Preset M is the size the gap is measured at, and its leading dimension is not a multiple of a block size. No `bool` arrays: there is no extern-C spelling for them. Use `int32` masks. Do not draw unstructured uniform random inputs for a kernel that divides by a difference of inputs or that needs a monotone pressure or a positive temperature. Put that generator in `initialize()` in `<name>.py`.
 
 Generate the DaCe program and commit it. NestForge does not regenerate it on load.
 

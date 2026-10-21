@@ -2,12 +2,8 @@
 # Column kernel whose best schedule differs between CPU and GPU: an exp-heavy producer, a
 # horizontal 3-point stencil on the producer's output, and a vertical tridiagonal solve per
 # column. See cpu_gpu_flip_numpy.py for the two device-dependent decisions.
+# Repo-local kernel (see benchmarking_creation/README.md).
 name: CPU/GPU Flip Column Kernel
-# Repo-local kernel (see benchmarking_creation/README.md): the three fields below are explicit because the
-# manifest lives outside hpcagent_bench's corpus, where they would be derived from the folder.
-relative_path: benchmarking_creation/cpu_gpu_flip
-func_name: cpu_gpu_flip
-input_args: [t, q, p, x, nlev, ncol]
 level: 3
 parameters:
   S:
@@ -22,21 +18,12 @@ parameters:
   XL:
     nlev: 137
     ncol: 262144
-init:
-  # Physically plausible ranges so the exponent stays finite and zqs stays positive. g = KAPPA * zsm
-  # is therefore >= 0, which keeps the tridiagonal matrix diagonally dominant (Thomas without pivoting).
-  arrays:
-    t:
-      shape: (nlev, ncol)
-      domain: [200.0, 300.0]
-    q:
-      shape: (nlev, ncol)
-      domain: [0.0, 0.02]
-    p:
-      shape: (nlev, ncol)
-      domain: [10000.0, 100000.0]
-    x: (nlev, ncol)
-output_args:
-- x
+# Physically plausible ranges so the exponent stays finite and zqs stays positive. g = KAPPA * zsm
+# is therefore >= 0, which keeps the tridiagonal matrix diagonally dominant (Thomas without pivoting).
+args:
+  t: {shape: "(nlev, ncol)", domain: [200.0, 300.0]}
+  q: {shape: "(nlev, ncol)", domain: [0.0, 0.02]}
+  p: {shape: "(nlev, ncol)", domain: [10000.0, 100000.0]}
+  x: {shape: "(nlev, ncol)", out: true}
 chain_length:
   x: nlev
