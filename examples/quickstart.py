@@ -56,7 +56,7 @@ def default_stages_2_to_5(session: Session, out: Path) -> None:
     save(session, out, "2-moves")
     print(f"2 moves       {before} -> {map_count(session)} maps")
     show_tree(session, out, "2-moved")
-    kernels = session.define_scopes()
+    kernels = session.default_scopes()
     save(session, out, "3-scopes")
     names = ", ".join(f"{k.name} (reads {', '.join(k.reads)}; writes {', '.join(k.writes)})" for k in kernels)
     print(f"3 scopes      {len(kernels)} kernel(s): {names}")

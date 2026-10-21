@@ -273,7 +273,7 @@ def sdpa_scoped_session(tmp_path) -> Session:
     session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=dict(SDPA_SIZES))
     session.canonicalize()
     session.default_moves()
-    session.define_scopes()
+    session.default_scopes()
     return session
 
 

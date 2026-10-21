@@ -49,7 +49,7 @@ def lowered_graph(program) -> KernelGraph:
 
 def kernel_session(gpu: bool, tmp_path, program=scaled_sum) -> Session:
     session = Session(program.to_sdfg(simplify=True), targets=Targets(gpu=gpu), work_dir=str(tmp_path))
-    assert session.define_scopes()
+    assert session.default_scopes()
     return session
 
 
@@ -103,7 +103,7 @@ def test_gpu_placement_copies_the_inputs_to_the_device_and_the_output_back(tmp_p
 def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp_path):
     session = kernel_session(True, tmp_path, scale_then_prefix)
     loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.sdfg.state.LoopRegion))
-    assert session.define_scope([loop], session.epoch).status is MoveStatus.APPLIED
+    assert session.set_scope([loop], session.epoch).status is MoveStatus.APPLIED
     parallel = {k.name: k.parallel for k in session.list_kernels()}
     assert sorted(parallel.values()) == [False, True], parallel
 
@@ -151,11 +151,11 @@ def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, e
     assert (session.sdfg.to_json(), session.epoch) == (before, epoch_before)
 
 
-def test_define_scopes_after_gpu_placement_finds_no_further_scope(tmp_path):
+def test_default_scopes_after_gpu_placement_finds_no_further_scope(tmp_path):
     session = kernel_session(True, tmp_path)
     session.place()
 
-    assert session.define_scopes() == []
+    assert session.default_scopes() == []
 
 
 def test_a_gpu_kernel_receives_its_program_inputs_and_returns_its_output_to_the_host():

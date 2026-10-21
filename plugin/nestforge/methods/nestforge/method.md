@@ -1,5 +1,4 @@
-Optimize the program with the NestForge tools. Only the structured phase is open: the other tools answer
-"not implemented".
+Optimize the program with the NestForge tools.
 
 1. `get_cpf`: the program in canonical parallel form, as a tree of labeled rows headed by its epoch.
 2. `view_tree`: expand states and maps to see their kernels and bodies; collapse them again.

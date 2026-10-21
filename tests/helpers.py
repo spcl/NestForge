@@ -8,8 +8,6 @@ import copy
 import ctypes
 import inspect
 import re
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,20 +30,23 @@ from nestforge.build.sdfg import (
     generate_program,
     link_shared,
 )
-from nestforge.build.toolchain import COMPILE_TIMEOUT_S, CType, parse_params, raw_signature, signature
+from nestforge.build.toolchain import CType, parse_params, raw_signature, signature
 from nestforge.corpus import bench
 from nestforge.corpus.bench import CorpusKernel
 from nestforge.corpus.translate import prepare
-from nestforge.ir.emit_python import kernel_args, kernel_arrays, oracle_sdfg
+from nestforge.ir.emit_python import (
+    kernel_args,
+    kernel_arrays,
+    load_emitted,
+    lower,
+    oracle_sdfg,
+    render,
+    scratch_arrays,
+    widen_scratch,
+)
 from nestforge.ir.extract import Boundary, CfgNest, NestNode, extract_cfg_nest, extract_map_nest
-from nestforge.ir.introspect import body_lines, lowered_twin
-from nestforge.ir.names import ScopeChildren
-
-#: Characters of a failed translation's stderr an error keeps.
-STDERR_TAIL = 2000
-from nestforge.ir.emit_python import load_emitted, lower, render, scratch_arrays, widen_scratch
-from nestforge.ir.introspect import tree_rows
-from nestforge.ir.names import normalize_labels
+from nestforge.ir.introspect import body_lines, lowered_twin, tree_rows
+from nestforge.ir.names import ScopeChildren, normalize_labels
 from nestforge.stages.moves import Rewrite, legal_moves, plan_move
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
@@ -203,7 +204,7 @@ def build_sdfg(sdfg: dace.SDFG, out_dir: Path, opts: BuildOptions | None = None)
 
 
 def emit_sources(prep: BenchKernel, out_dir: str | Path, target: str = "c") -> list[Path]:
-    """Translate the kernel's Python source to ``target`` with HPCAgent-Bench's ``numpyto`` driver.
+    """Translate the kernel's Python source to ``target`` in-process with HPCAgent-Bench's translators.
 
     :returns: the generated source files, C then C++ then Fortran.
     """
@@ -211,23 +212,8 @@ def emit_sources(prep: BenchKernel, out_dir: str | Path, target: str = "c") -> l
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    with emit_bridge.bench_info_tempfile(prep.spec) as bench_info:
-        cmd = [
-            sys.executable,
-            "-m",
-            "hpcagent_bench.translators.numpyto_common.cli",
-            "--target",
-            target,
-            "--kernel",
-            str(prep.numpy_path),
-        ]
-        cmd += ["--bench-info", str(bench_info), "--out", str(out), "--precision", "float64"]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"numpyto timed out for {prep.name} (target={target}); see NF_COMPILE_TIMEOUT") from exc
-    if res.returncode != 0:
-        raise RuntimeError(f"numpyto failed for {prep.name} (target={target}):\n{res.stderr[-STDERR_TAIL:]}")
+    if emit_bridge.emit_kernel(prep.spec, prep.numpy_path, out, target=target, precision="float64") != 0:
+        raise RuntimeError(f"numpyto refused {prep.name} (target={target}); the reason is on stderr")
     name = prep.name
     return sorted(out.glob(f"{name}_*.c")) + sorted(out.glob(f"{name}_*.cpp")) + sorted(out.glob(f"{name}_*.f90"))
 

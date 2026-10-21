@@ -93,7 +93,7 @@ class Move(Record):
 
 
 class KernelScope(Record):
-    """A kernel :meth:`Session.define_scopes` made, with the containers it reads and writes."""
+    """A kernel :meth:`Session.default_scopes` made, with the containers it reads and writes."""
 
     name: str
     reads: tuple[str, ...]
@@ -315,7 +315,7 @@ class Session:
         return "\n".join([*notes, self.describe()])
 
     def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
-        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`define_scopes` or
+        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes` or
         :meth:`place`."""
         match stage:
             case "moves":
@@ -323,7 +323,7 @@ class Session:
             case "finish":
                 return self.finish_moves()
             case "scopes":
-                return self.define_scopes()
+                return self.default_scopes()
             case "placement":
                 return self.place()
 
@@ -394,7 +394,7 @@ class Session:
 
     # Stage 3: scopes
 
-    def define_scopes(self) -> list[KernelScope]:
+    def default_scopes(self) -> list[KernelScope]:
         """Stage 3 default: one kernel per parallel top-level map; returns the new kernels."""
         lowered = lower_nests_to_external_call(self.sdfg)
         if lowered:
@@ -411,7 +411,7 @@ class Session:
             for ext, boundary in lowered
         ]
 
-    def define_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
+    def set_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
         blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
 
@@ -431,7 +431,7 @@ class Session:
         return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
 
     def unset_scope(self, name: str, epoch: int) -> MoveResult:
-        """Inline the kernel ``name`` back into the program: the inverse of :meth:`define_scope`. A placement is
+        """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
         dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
@@ -711,7 +711,7 @@ class Session:
             return self.measured
         trial = self.trial()
         if not external_calls(trial.sdfg):
-            trial.define_scopes()
+            trial.default_scopes()
         devices = {ext.name: kernel_device(ext) for ext in external_calls(trial.sdfg)}
         if trial.unplaced is None:
             placed = trial.place()

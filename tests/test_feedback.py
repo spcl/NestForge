@@ -111,7 +111,7 @@ def square(a: dace.float64[N], b: dace.float64[N]):
 @pytest.mark.e2e
 def test_a_session_reports_the_times_of_its_built_kernels(tmp_path):
     session = Session(square.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 4096})
-    (kernel,) = session.define_scopes()
+    (kernel,) = session.default_scopes()
 
     text = session.feedback(reps=2)
 

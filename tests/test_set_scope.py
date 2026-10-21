@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session.define_scope: one kernel over regions no scheduling move fuses, so the kernel written in stage 5 fuses
+"""Session.set_scope: one kernel over regions no scheduling move fuses, so the kernel written in stage 5 fuses
 them instead."""
 
 import copy
@@ -111,7 +111,7 @@ def test_two_maps_no_fusion_accepts_become_one_kernel():
     assert session.list_moves("map-fusion") == [], "the fixture must offer no fusion, else it tests nothing"
     labels = map_labels(session)
 
-    result = session.define_scope(labels, session.epoch)
+    result = session.set_scope(labels, session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     (kernel,) = external_calls(session.sdfg)
@@ -125,7 +125,7 @@ def test_maps_in_different_states_are_grouped_by_their_blocks():
     states = map_state_labels(session)
     assert len(states) == 2, states
 
-    result = session.define_scope(states, session.epoch)
+    result = session.set_scope(states, session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     assert len(external_calls(session.sdfg)) == 1
@@ -138,7 +138,7 @@ def test_a_map_running_between_the_named_maps_is_refused():
     first, _, last = map_labels(session)
     before = session.epoch
 
-    result = session.define_scope([first, last], before)
+    result = session.set_scope([first, last], before)
 
     assert result.status is MoveStatus.ILLEGAL and "runs between" in result.reason, result
     assert session.epoch == before and external_calls(session.sdfg) == []
@@ -148,20 +148,20 @@ def test_blocks_that_do_not_follow_each_other_are_refused():
     session, _ = session_and_reference(three_stages, simplify=False)
     first, _, last = map_state_labels(session)
 
-    result = session.define_scope([first, last], session.epoch)
+    result = session.set_scope([first, last], session.epoch)
 
     assert result.status is MoveStatus.ILLEGAL and "straight run" in result.reason, result
     assert external_calls(session.sdfg) == []
 
 
-def test_define_scopes_lowers_the_maps_left_after_a_group():
+def test_default_scopes_lowers_the_maps_left_after_a_group():
     session, reference = session_and_reference(three_stages)
     first, second, _ = map_labels(session)
-    grouped = session.define_scope([first, second], session.epoch)
+    grouped = session.set_scope([first, second], session.epoch)
     assert grouped.status is MoveStatus.APPLIED, grouped
     grouped_kernel = session.kernel(grouped.reason)
 
-    rest = session.define_scopes()
+    rest = session.default_scopes()
 
     names = [ext.name for ext in external_calls(session.sdfg)]
     assert len(rest) == 1 and len(names) == 2 and len(set(names)) == 2, names
@@ -174,8 +174,8 @@ def test_a_kernels_scope_arrays_stay_on_the_stack():
     ``force`` a symbolic size there is a heap allocation per call instead of a variable-length array."""
     session, _ = session_and_reference(three_stages)
     first, second, _ = map_labels(session)
-    session.define_scope([first, second], session.epoch)
-    session.define_scopes()
+    session.set_scope([first, second], session.epoch)
+    session.default_scopes()
     (grouped,) = [ext for ext in external_calls(session.sdfg) if "T" in ext.standalone_sdfg.arrays]
 
     assert grouped.standalone_sdfg.arrays["T"].storage == dace.StorageType.Register(force=True)
@@ -191,7 +191,7 @@ def test_a_single_state_becomes_one_top_level_kernel(simplify):
     session, reference = session_and_reference(live_intermediate, simplify=simplify)
     state_label = map_state_labels(session)[-1]
 
-    result = session.define_scope([state_label], session.epoch)
+    result = session.set_scope([state_label], session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     kernel = session.kernel(result.reason)
@@ -208,7 +208,7 @@ def test_a_length1_transient_the_group_writes_first_is_not_an_input():
         label for label, (obj, state) in session.row_index().items() if state is None and obj in session.sdfg.nodes()
     ]
 
-    result = session.define_scope(blocks, session.epoch)
+    result = session.set_scope(blocks, session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     # the parallel sum into s adds in thread order
@@ -223,7 +223,7 @@ def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_t
     rows = session.row_index()
     time_loop = rows["for0_0"][0]
 
-    result = session.define_scope(["for1_0", "state1_0"], session.epoch)
+    result = session.set_scope(["for1_0", "state1_0"], session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     kernel = session.kernel(result.reason)
@@ -238,7 +238,7 @@ def test_blocks_at_different_levels_are_refused():
     session.describe()
     before = session.epoch
 
-    result = session.define_scope(["for0_0", "for1_0"], before)
+    result = session.set_scope(["for0_0", "for1_0"], before)
 
     assert result.status is MoveStatus.ILLEGAL, result
     assert "one level" in result.reason
@@ -249,7 +249,7 @@ def test_no_labels_is_refused():
     session, _ = session_and_reference(live_intermediate)
     before = session.epoch
 
-    result = session.define_scope([], before)
+    result = session.set_scope([], before)
 
     assert result.status is MoveStatus.ILLEGAL, result
     assert session.epoch == before and external_calls(session.sdfg) == []
@@ -260,7 +260,7 @@ def test_labels_from_an_old_epoch_are_stale():
     labels = map_labels(session)
     session.canonicalize()
 
-    assert session.define_scope(labels, 0).status is MoveStatus.STALE
+    assert session.set_scope(labels, 0).status is MoveStatus.STALE
 
 
 @pytest.mark.e2e
@@ -272,7 +272,7 @@ def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_
     reference = copy.deepcopy(sdfg)
     reference.name = f"{sdfg.name}_reference"
     session = Session(sdfg, work_dir=str(tmp_path))
-    name = session.define_scope(map_labels(session), session.epoch).reason
+    name = session.set_scope(map_labels(session), session.epoch).reason
 
     info = session.optimize_kernel(name)
 
@@ -286,7 +286,7 @@ def test_unsetting_a_scope_inlines_the_kernel_back_and_the_program_still_compute
     reference = copy.deepcopy(sdfg)
     reference.name = f"{sdfg.name}_reference"
     session = Session(sdfg)
-    name = session.define_scope(map_labels(session), session.epoch).reason
+    name = session.set_scope(map_labels(session), session.epoch).reason
 
     result = session.unset_scope(name, session.epoch)
 
@@ -298,7 +298,7 @@ def test_unsetting_a_scope_inlines_the_kernel_back_and_the_program_still_compute
 
 def test_unsetting_a_scope_brings_back_the_containers_the_kernel_kept_to_itself():
     session, reference = session_and_reference(three_stages)
-    name = session.define_scope(map_labels(session), session.epoch).reason
+    name = session.set_scope(map_labels(session), session.epoch).reason
 
     result = session.unset_scope(name, session.epoch)
 
@@ -309,7 +309,7 @@ def test_unsetting_a_scope_brings_back_the_containers_the_kernel_kept_to_itself(
 
 def test_unsetting_a_scope_at_an_old_epoch_or_of_no_kernel_changes_nothing():
     session = Session(live_intermediate.to_sdfg(simplify=True))
-    name = session.define_scope(map_labels(session), session.epoch).reason
+    name = session.set_scope(map_labels(session), session.epoch).reason
 
     stale = session.unset_scope(name, session.epoch - 1)
     missing = session.unset_scope("extcall_9", session.epoch)
@@ -332,7 +332,7 @@ def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_
     expected = A.copy()
     expected[1:] = A[0] + np.cumsum(B[1:], axis=0)
 
-    result = session.define_scope(["for0_0"], 0)
+    result = session.set_scope(["for0_0"], 0)
 
     assert result.status is MoveStatus.APPLIED, result
     (kernel,) = top_level_kernels(session)
@@ -347,7 +347,7 @@ def test_a_single_sequential_loop_nest_the_default_skips_can_be_scoped_explicitl
     x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
     assert parallel_top_level_maps(session.sdfg) == [], "the default must skip the loop, else it tests nothing"
 
-    result = session.define_scope(["for0_0"], 0)
+    result = session.set_scope(["for0_0"], 0)
 
     assert result.status is MoveStatus.APPLIED, result
     assert len(top_level_kernels(session)) == 1
