@@ -33,6 +33,9 @@ C_PTR: dict[str, type[ctypes._SimpleCData]] = {
     **C_SCALAR,
     "dace::complex64": ctypes.c_float,
     "dace::complex128": ctypes.c_double,
+    # the same layout, as spelled by kernels whose complex values come from explicit loops
+    "std::complex<float>": ctypes.c_float,
+    "std::complex<double>": ctypes.c_double,
 }
 
 DEFAULT_COMPILER = "g++"
