@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import os
 import shutil
 import tempfile
 from collections.abc import Sequence
@@ -66,6 +67,7 @@ from nestforge.stages.scopes import (
     lower_nests_to_external_call,
     node_boundary,
 )
+from nestforge.stages.score import WEIGHTS, ScoredMove, build_name, program_terms, rank_moves
 from nestforge.stages.variants import Variant, device_variants, select_variant
 
 #: Characters of a failed build's error text a caller gets back.
@@ -73,6 +75,15 @@ ERROR_TAIL = 1500
 
 #: The kernel source language each device's kernels are written in.
 LANGUAGES = {"cpu": "cpp", "gpu": "cuda"}
+
+#: Upper bound on the moves :meth:`Session.guided_moves` applies; every move strictly lowers the score, so it ends.
+MAX_GUIDED_MOVES = 64
+
+
+def omp_threads() -> int:
+    """``OMP_NUM_THREADS`` when set, else the CPU count (what an OpenMP runtime would use)."""
+    value = os.environ.get("OMP_NUM_THREADS", "")
+    return int(value) if value.isdigit() else os.cpu_count() or 1
 
 
 class MoveResult(Record):
@@ -385,6 +396,40 @@ class Session:
         fuse_and_finish(self.sdfg, self.targets)
         self.bump()
         return self.describe()
+
+    def score_moves(self, build: str | None = None) -> list[ScoredMove]:
+        """Every legal move with the change of the static score (:mod:`~nestforge.stages.score`) it would make, best
+        first; nothing is applied. Needs a value in :attr:`sizes` for every loop bound and shape symbol.
+
+        :param build: A key of :data:`~nestforge.stages.score.WEIGHTS`; default from the targets and the OpenMP
+            thread count of this process.
+        """
+        return rank_moves(self.sdfg, self.sizes, WEIGHTS[build or self.score_build()])
+
+    def guided_moves(self, build: str | None = None, limit: int = MAX_GUIDED_MOVES) -> list[ScoredMove]:
+        """Stage 2 by the static score: apply the best-scored legal move while it lowers the score, at most ``limit``
+        moves; returns the applied moves in order. Like :meth:`apply_move`, it leaves :meth:`finish_moves` to the
+        caller."""
+        applied: list[ScoredMove] = []
+        for _ in range(limit):
+            ranked = self.score_moves(build)
+            if not ranked or ranked[0].d_score >= 0:
+                break
+            best = ranked[0]
+            result = self.apply_move(best.kind, best.labels, self.epoch)
+            if result.status is not MoveStatus.APPLIED:
+                break
+            applied.append(best)
+        return applied
+
+    def score_build(self) -> str:
+        """The :data:`~nestforge.stages.score.WEIGHTS` key of this session's targets and OpenMP thread count."""
+        return build_name(self.targets.gpu, omp_threads())
+
+    def score_terms(self) -> dict[str, float]:
+        """``E``, ``lines`` and the score of the program as it stands."""
+        terms = program_terms(self.sdfg, self.sizes)
+        return {"E": terms.entries, "lines": terms.lines, "score": terms.score(WEIGHTS[self.score_build()])}
 
     def finish_moves(self) -> str:
         """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
