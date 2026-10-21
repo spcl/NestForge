@@ -201,7 +201,7 @@ def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(
     """The oracle allocates the scratch it lifts out of a nest two levels down; the kernel allocates its own, so the
     scratch is neither an argument of the kernel nor mistaken for one of its symbols (issue #20)."""
     session = Session(nested_scratch.to_sdfg(simplify=False), work_dir=str(tmp_path), sizes={"N": 5})
-    for kernel in session.default_scopes():
+    for kernel in session.define_scopes():
         node = session.kernel(kernel.name)
         inputs, outputs, symbols = kernel_arguments(node)
         assert set(symbols) <= set(session.sdfg.symbols) | {"N"}, symbols
