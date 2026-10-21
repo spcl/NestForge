@@ -599,6 +599,28 @@ def combines_inside(sdfg: dace.SDFG, name: str, wcr: str | ast.AST) -> bool:
     return bool(writes) and all(memlet.wcr is not None and str(memlet.wcr) == str(wcr) for memlet in writes)
 
 
+def passes_through(name: str, value: object) -> bool:
+    """Whether a symbol mapping entry hands the nest the outer ``name`` unchanged. DaCe stores the value as an
+    expression or as a code string, and ``symstr`` of a string parenthesizes it."""
+    return name == symbolic.symstr(symbolic.pystr_to_symbolic(value))
+
+
+def kernel_scratch(name: str, desc: dt.Data, sdfg: dace.SDFG) -> bool:
+    """Whether the transient ``name`` of a nest inside ``sdfg`` is the scratch :func:`hoist_nested_scratch` made of
+    it at the top: a transient of the outermost SDFG with the same name, shape and type."""
+    top = sdfg
+    while top.parent_sdfg is not None:
+        top = top.parent_sdfg
+    outer = top.arrays.get(name)
+    return (
+        desc.transient
+        and outer is not None
+        and outer.transient
+        and outer.dtype == desc.dtype
+        and [str(d) for d in outer.shape] == [str(d) for d in desc.shape]
+    )
+
+
 def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list[str]:
     """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
     for edge in state.out_edges(node):
@@ -606,8 +628,12 @@ def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list
             raise UnsupportedNest(f"nested SDFG {node.label} writes through a write-conflict resolution")
     inner_sdfg = node.sdfg
     outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
-    binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if str(k) != symbolic.symstr(v)}
-    private = [n for n, desc in inner_sdfg.arrays.items() if n not in scope.sdfg.arrays and n in outer_names]
+    binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if not passes_through(str(k), v)}
+    private = [
+        n
+        for n, desc in inner_sdfg.arrays.items()
+        if n not in scope.sdfg.arrays and n in outer_names and not kernel_scratch(n, desc, scope.sdfg)
+    ]
     if private or binds.keys() & outer_names:
         raise UnsupportedNest(
             f"nested SDFG {node.label} rebinds outer names {sorted(private or binds.keys() & outer_names)}"
