@@ -100,7 +100,9 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
         standalone_sdfg=reference_sdfg(nsdfg),
         numpy_source=oracle.numpy_source,
     )
-    ext.abi_order = list(oracle.args)
+    # The oracle's scratch is the oracle harness's to allocate; the kernel allocates its own.
+    own = {*boundary.inputs, *boundary.outputs, *boundary.symbols}
+    ext.abi_order = [arg for arg in oracle.args if arg in own]
     state.add_node(ext)
     # a memlet is never shared between edges
     for e in state.in_edges(nsdfg):

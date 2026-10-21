@@ -175,3 +175,35 @@ def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path
     assert config.fp_mode in flags.CUDA_FP and "-arch=native" in config.flags
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall" and ext.lib_path.endswith(".a")
+
+
+@dace.program
+def pair_sum(x: dace.float64[1], y: dace.float64[1]):
+    t = np.empty(2, dtype=np.float64)
+    t[0] = 2.0 * x[0]
+    t[1] = x[0] + 1.0
+    y[0] = t[0] + t[1]
+
+
+@dace.program
+def calls_pair_sum(x: dace.float64[1], y: dace.float64[1]):
+    for _ in dace.map[0:1]:
+        pair_sum(x, y)
+
+
+@dace.program
+def nested_scratch(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        calls_pair_sum(a[i : i + 1], b[i : i + 1])
+
+
+def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(tmp_path):
+    """The oracle allocates the scratch it lifts out of a nest two levels down; the kernel allocates its own, so the
+    scratch is neither an argument of the kernel nor mistaken for one of its symbols (issue #20)."""
+    session = Session(nested_scratch.to_sdfg(simplify=False), work_dir=str(tmp_path), sizes={"N": 5})
+    for kernel in session.default_scopes():
+        node = session.kernel(kernel.name)
+        inputs, outputs, symbols = kernel_arguments(node)
+        assert set(symbols) <= set(session.sdfg.symbols) | {"N"}, symbols
+        info = session.optimize_kernel(kernel.name)
+        assert set(info.abi_order) == {*inputs, *outputs, *symbols}
