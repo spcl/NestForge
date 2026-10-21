@@ -4,6 +4,7 @@
 structured phase served with performance feedback, every later phase refused as not implemented."""
 
 import contextlib
+import sys
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
 
@@ -38,7 +39,7 @@ class FakeJudge:
 
 
 @pytest.fixture(scope="module")
-def loaded() -> None:
+def loaded() -> Iterator[None]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
         plugins.register.cache_clear()
@@ -48,6 +49,12 @@ def loaded() -> None:
 
         agent_plugins.import_tools()
     assert [plugin.name for plugin in found if plugin.root == PLUGIN] == ["nestforge"]
+    yield
+    # every session process this module started, so no other test inherits a live child
+    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    for _, (kernels, _) in list(episodes.states.items()):
+        for session in kernels.values():
+            session.close()
 
 
 def post(tool: str, episode: str = "episode-cpu", **body: object) -> FakeJudge:
