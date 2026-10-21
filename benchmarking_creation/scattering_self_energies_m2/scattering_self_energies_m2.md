@@ -1,8 +1,10 @@
-# scattering_self_energies_m2 (slot M8, medium, CPU)
+# scattering_self_energies_m2 (slot M9, medium, CPU)
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/dense_linear_algebra/scattering_self_energies` (`e63f9f1`). Written 2026-10-21 from Daint jobs 5111782 (walk of the loop order, as variant v1), 5112069 (build check), 5112070 and 5112133 (walk and routes, as variant v1c) and 5112562 (validation of this folder). Set: `benchmark-set-15` (thesis notes). Entry note: `2026-10-21-w3-medium-refills` (thesis notes). How to optimize it, in short: [README.md](README.md). The 6-move original is the hard-tier candidate `scattering_self_energies`.
 
 **Status:** `entry`
+
+Slot: M9. Entered on 2026-10-21 as M8; `cloudsc_ntrac` holds M8, so this kernel moved to M9 (user decision, board package W12-M9).
 
 ## What this benchmark is
 
