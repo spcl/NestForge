@@ -12,7 +12,7 @@ from nestforge.ir.depends import KernelGraph, kernel_dependencies
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import Transfer, transfers
+from nestforge.stages.placement import OffloadKernels, Transfer, transfers
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -204,3 +204,32 @@ def test_placed_program_computes_on_the_gpu_what_numpy_computes(tmp_path):
     session.sdfg(a=a, b=b, c=c, N=256)
 
     np.testing.assert_allclose(c, 2.0 * a + b, rtol=1e-15, atol=0)
+
+
+@dace.program
+def doubled(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        b[i] = 2.0 * a[i]
+
+
+@dace.program
+def calls_doubled(a: dace.float64[N], b: dace.float64[N]):
+    doubled(a, b)
+
+
+def test_gpu_offloading_places_a_nested_sdfg_at_the_top_level_of_a_state():
+    """DaCe places a host-level nested SDFG with a fresh ``type(self)()``, so ``OffloadKernels`` must build without
+    its host kernels (H1 `cloudsc_solver_carry`'s GPU reference raised a missing-argument ``TypeError`` there)."""
+    sdfg = calls_doubled.to_sdfg(simplify=False)
+    (nested,) = [
+        node
+        for state in sdfg.states()
+        for node in state.nodes()
+        if isinstance(node, dace.nodes.NestedSDFG) and state.entry_node(node) is None
+    ]
+
+    OffloadKernels([]).apply_pass(sdfg, {})
+
+    maps = [node for node, _ in nested.sdfg.all_nodes_recursive() if isinstance(node, dace.nodes.MapEntry)]
+    assert maps and all(entry.map.schedule == dace.ScheduleType.GPU_Device for entry in maps)
+    sdfg.validate()

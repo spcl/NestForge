@@ -23,13 +23,17 @@ DEVICES = ("cpu", "gpu")
 
 class OffloadKernels(OffloadToAccelerator):
     """DaCe's offloading, with the kernels named in ``host_kernels`` kept on the host: the copy analysis then
-    places their operands in host memory and copies around them."""
+    places their operands in host memory and copies around them.
+
+    ``host_kernels`` defaults to none because DaCe places each host-level nested SDFG with a fresh ``type(self)()``.
+    That body offloader only places copies; the schedules, the one place ``host_kernels`` is read, are assigned
+    tree-wide by the outer pass."""
 
     __slots__ = ("host_kernels",)
 
-    def __init__(self, host_kernels: list[str]) -> None:
+    def __init__(self, host_kernels: list[str] | None = None) -> None:
         super().__init__()
-        self.host_kernels = host_kernels
+        self.host_kernels = list(host_kernels or ())
 
     def assign_schedules(self, sdfg: dace.SDFG, host_level: bool = True) -> None:
         super().assign_schedules(sdfg, host_level)
