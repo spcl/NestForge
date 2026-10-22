@@ -8,7 +8,7 @@ and a reason marks a pair that is never listed.
 import dace
 import numpy as np
 from dace.sdfg.state import LoopRegion
-from helpers import fusion_moves
+from helpers import apply_move, fusion_moves
 
 from nestforge.ir.introspect import describe_graph, nest_reads_writes
 from nestforge.stages.moves import Rewrite, plan_move
@@ -89,13 +89,18 @@ def test_can_fuse_yes_for_independent_horizontal():
     assert fusion_moves(sdfg)
 
 
-def test_can_fuse_refuses_live_output_with_reason():
+def test_can_fuse_keeps_a_live_output_by_fusing_in_place():
+    # vertical fusion would drop the live output T; in place keeps it written (spcl/NestForge#27)
     sdfg = live_output_pair.to_sdfg(simplify=True)
     (s1, m1), (s2, m2) = map_entries(sdfg)
-    reason = can_fuse((m1, s1), (m2, s2))
-    assert reason != "yes"
-    assert "live output" in reason and "non-transient" in reason
-    assert not fusion_moves(sdfg), "a refused pair must not be a listed move"
+    assert can_fuse((m1, s1), (m2, s2)) == "yes"
+    (move,) = fusion_moves(sdfg)
+    assert apply_move(sdfg, move) == "MapFusionInPlace"
+    assert len(map_entries(sdfg)) == 1
+    a, b = np.arange(8.0), np.ones(8)
+    t, c = np.zeros(8), np.zeros(8)
+    sdfg(A=a, B=b, T=t, C=c, N=8)
+    assert np.allclose(t, a + b) and np.allclose(c, 2 * (a + b))
 
 
 def test_can_fuse_reports_state_barrier_across_states():
