@@ -24,6 +24,7 @@ Labels move after every move; name each sweep by the array its map writes. The f
 ## Traps
 
 - **The column interchanges alone** (moves 1 to 3): no gain on GPU (1.694 s against 1.702 s at M), because the row sweeps are then left as `N - 2` launches each, which the GPU default had removed.
+- **The `v` row interchange alone** (move 4): worse than the default on GPU (2.716 s).
 - **The row interchange on CPU**: the row sweeps are contiguous in `i`; interchanging `v` on CPU makes it strided (0.770 s against 1.003 s for stage 1, but the CPU default is 0.519 s).
 - **Following the CPU default on GPU, or the GPU default on CPU**: the defaults split by device (CPU takes the column interchanges, GPU the row ones).
 
