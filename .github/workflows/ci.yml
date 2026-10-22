@@ -104,7 +104,7 @@ jobs:
       - name: Pin the tips of the bench release and DaCe extended
         run: python scripts/bump_deps.py && git diff pyproject.toml
       - run: uv pip install -e ".[dev]"
-      - name: pytest (the tests that call the bench: plugin, corpus, manifests, session process)
+      - name: "pytest (the tests that call the bench: plugin, corpus, manifests, session process)"
         run: >-
           pytest -m "not cloudsc and not gpu and not vendor" -n auto --timeout=900
           tests/test_bench_plugin.py tests/test_corpus_emit.py tests/test_manifest_signature.py
