@@ -42,7 +42,7 @@ from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
-from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
+from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish, narrow_nested_memlets
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
     FORMS,
@@ -376,6 +376,9 @@ class Session:
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         plan.commit()
+        # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule inference
+        # read them
+        narrow_nested_memlets(self.sdfg)
         self.unplaced = None
         self.bump()
         return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
@@ -406,6 +409,7 @@ class Session:
     def finish_moves(self) -> str:
         """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
         finish(self.sdfg, self.targets)
+        narrow_nested_memlets(self.sdfg)
         self.bump()
         return self.describe()
 
