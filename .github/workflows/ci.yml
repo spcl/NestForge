@@ -8,7 +8,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # nightly: the bench-tip job checks NestForge against the bench release and DaCe extended tips, not only the pins
+  # nightly too: the bench-tip job checks NestForge's bench-facing tests against the bench release and DaCe extended
+  # tips, not only the pins
   schedule:
     - cron: '0 3 * * *'
 
@@ -91,9 +92,8 @@ jobs:
           pytest -m cloudsc --timeout=5400 --durations=15 -s
 
   bench-tip:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -104,4 +104,8 @@ jobs:
       - name: Pin the tips of the bench release and DaCe extended
         run: python scripts/bump_deps.py && git diff pyproject.toml
       - run: uv pip install -e ".[dev]"
-      - run: pytest -m "not integration and not cloudsc and not gpu and not vendor" -n auto --timeout=900
+      - name: pytest (the tests that call the bench: plugin, corpus, manifests, session process)
+        run: >-
+          pytest -m "not cloudsc and not gpu and not vendor" -n auto --timeout=900
+          tests/test_bench_plugin.py tests/test_corpus_emit.py tests/test_manifest_signature.py
+          tests/test_abi_order.py tests/test_import_isolation.py tests/test_session_process.py
