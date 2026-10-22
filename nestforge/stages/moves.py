@@ -249,7 +249,10 @@ def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
     state, entry, loop = node_state(entry_row), entry_row[0], loop_row[0]
     body = map_body(state, entry)
     if body is None or body.sdfg.nodes() != [loop]:
-        return f"the body of {entry.map.label} is not exactly the loop {loop.label}."
+        return (
+            f"the body of {entry.map.label} is not exactly the loop {loop.label}; subgraph-fission the map around the "
+            "loop first, so the loop is the whole body of a map of its own."
+        )
     xform = MapLoopInterchange()
     match = {MapLoopInterchange.map_entry: state.node_id(entry), MapLoopInterchange.nested_sdfg: state.node_id(body)}
     xform.setup_match(state.sdfg, state.parent_graph.cfg_id, state.block_id, match, 0)

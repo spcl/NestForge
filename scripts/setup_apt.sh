@@ -32,7 +32,9 @@ SUDO=sudo
 [ "$(id -u)" -eq 0 ] && SUDO=""
 
 APT_UPDATED=0
-apt_update_once() { [ "$APT_UPDATED" -eq 1 ] || { $SUDO apt-get update -y; APT_UPDATED=1; }; }
+# A stalled mirror must fail and retry, not hang the job: CI once waited an hour on one Release file.
+APT_NET=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+apt_update_once() { [ "$APT_UPDATED" -eq 1 ] || { $SUDO apt-get "${APT_NET[@]}" update -y; APT_UPDATED=1; }; }
 
 # Install what exists on this release; warn + skip the rest (flang's package name varies).
 apt_install() {
@@ -43,7 +45,7 @@ apt_install() {
   done
   [ "${#miss[@]}" -eq 0 ] || warn "not in apt on this release, skipping: ${miss[*]}"
   # pass DEBIAN_FRONTEND through sudo via env: sudo's env_reset strips an exported one, and debconf may then prompt
-  [ "${#ok[@]}" -eq 0 ] || $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${ok[@]}"
+  [ "${#ok[@]}" -eq 0 ] || $SUDO env DEBIAN_FRONTEND=noninteractive apt-get "${APT_NET[@]}" install -y --no-install-recommends "${ok[@]}"
 }
 
 # Install a signing key only once it is fully fetched: a truncated key would pass the `[ ! -f "$key" ]` guard forever.

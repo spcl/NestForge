@@ -705,3 +705,30 @@ def test_a_move_read_on_a_session_applies_to_its_trial_and_leaves_the_session_al
 
     assert result.status is MoveStatus.APPLIED, result
     assert (digest(session.sdfg), session.epoch) == (before, epoch)
+
+
+NLEV, NSPEC = (dace.symbol(name, dtype=dace.int64) for name in ("NLEV", "NSPEC"))
+
+
+@dace.program
+def species_sedimentation(q: dace.float64[NLEV, N, NSPEC], pr: dace.float64[N]):
+    for jl in dace.map[0:N]:
+        pr[jl] = q[0, jl, 0] * 0.5
+        for js in range(NSPEC):
+            for jk in range(1, NLEV):
+                q[jk, jl, js] = q[jk, jl, js] + 0.1 * q[jk - 1, jl, js]
+
+
+def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it():
+    """#29: the level loop under the column map stayed innermost. Cut the map body around the loop, then the
+    loop-map interchange applies (DaCe had called a scalar the canonical form reads twice loop-carried)."""
+    sut, reference = session_and_reference(species_sedimentation)
+    sut.canonicalize()
+    (cut,) = sut.list_moves("subgraph-fission")
+    sut.apply_move(cut.kind, cut.labels, cut.epoch)
+
+    result = apply_listed(sut, "interchange-map-loop")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
+    arrays = random_arrays(q=(STEPS, SIZE, 3), pr=(SIZE,))
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE, NLEV=STEPS, NSPEC=3)

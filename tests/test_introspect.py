@@ -141,11 +141,21 @@ def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]):
             q[i, j] = q[i, j - 1] + p[i, j - 1]
 
 
-def test_a_refused_fusion_of_a_recurrence_names_the_recurrence():
-    """#27: the agent must tell DaCe's element-wise exchange limit from a real dependency."""
+def test_two_row_recurrences_fuse_and_keep_their_values():
+    """#27: iteration ``i`` of both maps touches only row ``i`` of ``p``, so the recurrences fuse into one map."""
     sdfg = row_recurrences.to_sdfg(simplify=True)
+    reference = copy.deepcopy(sdfg)
+    reference.name = "row_recurrences_reference"
     (s1, m1), (s2, m2) = map_entries(sdfg)
 
-    reason = can_fuse((m1, s1), (m2, s2))
+    plan = plan_move("map-fusion", [(m1, s1), (m2, s2)])
 
-    assert "MapFusionVertical on 'p'" in reason and "recurrence" in reason, reason
+    assert isinstance(plan, Rewrite), plan
+    plan.commit()
+    assert len(map_entries(sdfg)) == 1
+    rng = np.random.default_rng(0)
+    want = {"p0": rng.random(9), "q": rng.random((9, 9))}
+    got = copy.deepcopy(want)
+    reference(**want, N=9)
+    sdfg(**got, N=9)
+    np.testing.assert_allclose(got["q"], want["q"], rtol=1e-14)
