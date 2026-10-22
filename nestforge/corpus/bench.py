@@ -63,7 +63,13 @@ class CorpusKernel:
         return programs[-1]
 
     def to_sdfg(self, simplify: bool = True) -> dace.SDFG:
-        return self.program().to_sdfg(simplify=simplify)
+        """The program's SDFG with the manifest's small symbols declared small, as the bench's CPF route declares
+        them: unless declared, a symbol is assumed big, and the defaults choose schedules by that."""
+        from hpcagent_bench.cpf.canonical import declare_small, small_symbols
+
+        sdfg = self.program().to_sdfg(simplify=simplify)
+        declare_small(sdfg, small_symbols(self.spec))
+        return sdfg
 
 
 def module_path(short_name: str) -> str:
