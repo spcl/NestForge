@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/structured_grids/adi` (`e63f9f1`). Written 2026-10-22 from Daint jobs 5118678 (corpus `adi`), 5118695 and 5118842 (v1, dead end), 5119069 (v2, defaults and a greedy route), 5119089 and 5119090 (the route and every fusion pair, CPU and GPU), 5119102 (CPU timing), 5119212 and 5119364 (GPU timing), 5119154, 5119156 and 5119300 (fusion reproducers, the last one DaCe alone), 5119328 and 5119329 (a hand-fused copy, CPU and GPU). Experiment note: `2026-10-22-m6` (thesis notes). How to optimize it, in short: [README.md](README.md).
 
-**Status:** `blocked` (not finished). The reachable reference gives 1.43 to 1.44x on GPU, under the 2x the `AGENTS.md` checklist requires; the intended reference, with the fusion of the column row maps, gives about 10.6x (hand-fused copy) but stage 2 cannot make that fusion: spcl/NestForge#27 (DaCe `MapFusionVertical`). An agent session on this kernel also needs a guard around work-depth in `describe()` (spcl/NestForge#28; DaCe side spcl/dace#2725 for the fusion). The benchmark is finished when #27 is fixed and the fused reference is re-timed from stage 1.
+**Status:** `entry`, finished with three fixes that are under review: the full reference, re-timed from stage 1, gives 10.7x on GPU (0.158 s against 1.698 s at preset M, Daint job 5120648) and 1.47x on CPU (0.330 s against 0.487 s, job 5120561), all matching the oracle. It needs DaCe `MapFusionInPlace` (spcl/dace#2727, fixes spcl/dace#2725), NestForge narrowing the nest memlets after every move (spcl/NestForge#31, fixes #24) and NestForge's `map-fusion` falling back to `MapFusionInPlace` (branch `m6/in-place-fusion`, the PR for #27 follows dace#2727); the `describe()` guard (#28) is merged (spcl/NestForge#30). Until then only the 4 interchanges are reachable (1.43 to 1.44x on GPU).
 
 Slot: M6 (board package W12-M6).
 
@@ -32,6 +32,20 @@ Alternating-direction implicit diffusion (Polybench ADI via NPBench), the oracle
 
 ## What the solution is
 
+**With the fixes** (the full reference, GPU; labels resolved by written array, `routes-v4.json` in the thesis notes):
+
+1. `map-fusion` of the forward row sweep's two maps (writing `pt` and `qt`): in place, both are row-private in `i`.
+2. `interchange-loop-map` on the fused forward row sweep (`pt`, `qt`).
+3. `interchange-loop-map` on the backward row sweep (`v`).
+4. to 6. `interchange-loop-map` on the column sweeps writing `p`, `q`, `u`.
+7. `finish_moves()`, so the three column row maps share one state.
+8. `map-fusion` of the `p` and `q` row maps, then 9. of that and the `u` map (in place).
+
+On CPU the same without moves 2 and 3 (the row sweeps are contiguous in `i` there): 1.47x.
+
+**Reachable today, without the fixes** (the 1.44x reference):
+
+
 1. `interchange-loop-map` on the column sweep writing `p` (`for1_2`, `kernel3_3` from stage 1).
 2. `interchange-loop-map` on the column sweep writing `q` (again `for1_2`, `kernel3_3`: labels move).
 3. `interchange-loop-map` on the column sweep writing `u` (again `for1_2`, `kernel3_3`).
@@ -60,6 +74,19 @@ After stage 1 on both devices `list_moves` offers `interchange-loop-map` on the 
 
 ## What the gains are
 
+With the fixes (jobs 5120648 GPU, 5120561 and 5120365 CPU; preset M; all match the oracle):
+
+| Build | GPU | CPU, 72 threads |
+| --- | --- | --- |
+| default | 1.698 s | 0.487 s |
+| 4 interchanges (reachable today) | 1.186 s | n/a |
+| interchanges + column fusions | 1.193 s | 0.363 s |
+| full reference (row fusion, interchanges, column fusions) | **0.158 s** (10.7x) | **0.330 s** (1.47x) |
+| row fusion alone | 2.749 s | 0.701 s |
+
+Without the fixes (earlier jobs, kept for the record):
+
+
 Preset M (`TSTEPS 25`, `N 1600`). GPU: one GPU of a Daint GH200 node, `nvcc 12.9` `strict-ieee`; CPU: 72 threads (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), `g++` `strict-ieee` with `-fopenmp`. Whole-program host time (host-device copies included on GPU), mean of 10 calls after one warm-up; min and max not recorded. Every variant matches the oracle (rtol 1e-8, atol 1e-10) at S and M.
 
 | Build | Preset S | Preset M |
@@ -87,7 +114,7 @@ Stage 1 is the same on both devices except that the GPU keeps the boundary maps 
 ## Reference solution
 
 ```yaml
-status: blocked   # spcl/NestForge#27; reachable 1.44x < 2x
+status: entry   # finished with spcl/dace#2727, spcl/NestForge#31 and the #27 fallback (10.7x GPU); 1.44x without them
 device: gpu
 threads: 1
 preset: M

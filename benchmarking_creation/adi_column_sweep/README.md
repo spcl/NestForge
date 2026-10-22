@@ -39,4 +39,4 @@ The CPU default already makes the three column interchanges and keeps the row sw
 
 ## Status
 
-Blocked (not finished): the reachable route is under the 2x bar; the fusion that clears it is spcl/NestForge#27. Measured at DaCe `801cafd`, HPCAgent-Bench `e63f9f1`, NestForge `bench/m6` (`interchange-benchmarks` `4a0c043`), Daint, with a harness guard around work-depth: GPU 1.180 s (4 interchanges) against 1.702 s (default) at M, 1.44x.
+Finished with three fixes under review (spcl/dace#2727, spcl/NestForge#31, and the NestForge `map-fusion` fallback to `MapFusionInPlace` for #27): the full route (fuse the forward row sweep's two maps, interchange every sweep, `finish_moves()`, fuse the three column maps) gives 0.158 s against 1.698 s on GPU at M (10.7x) and 0.330 s against 0.487 s on CPU without the row interchanges (1.47x). Without the fixes only the four interchanges are reachable (1.44x on GPU).
