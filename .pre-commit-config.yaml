@@ -1,6 +1,10 @@
 # Setup: pip install -e ".[dev]" && pre-commit install
 # Every file: pre-commit run --all-files (CI runs the same)
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.10
     hooks:
