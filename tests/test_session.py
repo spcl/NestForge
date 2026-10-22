@@ -3,9 +3,12 @@
 """Session: the epoch guard on labeled calls, kernels named by name, and plain JSON-able results. The wrapped
 stages have their own tests."""
 
+import time
+
 import dace
 import numpy as np
 
+from nestforge.ir import introspect
 from nestforge.ir.names import top_level_map_entries
 from nestforge.records import MoveStatus
 from nestforge.session import Session
@@ -87,3 +90,42 @@ def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
     producer = next(k.name for k in s.default_scopes() if k.writes == ("T",))
     assert s.metrics(producer).startswith(f"{producer}: work=N depth=")  # one add per element
     assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."
+
+
+def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatch):
+    # spcl/NestForge#28: DaCe's work-depth pass raises on some programs; the tree, and the move, must still come back
+    def fail(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", fail)
+    s = make_session()
+    tree = s.describe()
+    assert tree.splitlines()[1] == (
+        "(no work= or depth= this epoch: work-depth analysis failed: RecursionError: maximum recursion depth exceeded)"
+    )
+    assert "work=" not in "\n".join(tree.splitlines()[2:])
+    (move,) = s.list_moves("map-fusion")
+    assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
+    assert "no work= or depth=" in s.describe().splitlines()[1]
+    assert s.costs == {} and s.costs_skipped is not None
+
+
+def test_describe_skips_costs_when_work_depth_outlasts_its_budget(monkeypatch):
+    monkeypatch.setattr(introspect, "WORK_DEPTH_BUDGET_S", 1)
+    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", lambda *args, **kwargs: time.sleep(5))
+    s = make_session()
+    assert "work-depth analysis took over 1 s" in s.describe().splitlines()[1]
+
+
+def test_costs_come_back_on_the_next_epoch_once_work_depth_works(monkeypatch):
+    def fail(*args, **kwargs):
+        raise ValueError("The argument 'nan' is not comparable.")
+
+    s = make_session()
+    with monkeypatch.context() as patch:
+        patch.setattr(introspect.work_depth, "analyze_sdfg", fail)
+        assert s.describe().splitlines()[1].startswith("(no work= or depth= this epoch")
+    (move,) = s.list_moves("map-fusion")
+    result = s.apply_move(move.kind, move.labels, move.epoch)
+    assert result.status is MoveStatus.APPLIED
+    assert s.costs_skipped is None and "no work= or depth=" not in s.describe()
