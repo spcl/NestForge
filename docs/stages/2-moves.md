@@ -7,7 +7,8 @@ Every move is an existing DaCe transformation, checked for legality before it ap
 
 `describe()` prints the tree; its first line carries the epoch. Every loop and state is a row; loop and map rows
 carry `work=` and `depth=` from one pass of DaCe's work-depth analysis, and an innermost loop, or a map holding a
-nested SDFG, carries `num_states=`. A state shows only `kernels=<count>` until `expand(labels, epoch)` opens it:
+nested SDFG, carries `num_states=`. When that pass fails or takes over 60 s, the second line says why and the rows
+carry no costs for that epoch. A state shows only `kernels=<count>` until `expand(labels, epoch)` opens it:
 then its maps, nested maps and leaf-kernel bodies appear (an expanded map also shows its nested states). An
 expansion lasts until the epoch changes. `list_moves(kind)` returns the legal moves as
 `{kind, labels, epoch}`, and `apply_move(kind, labels, epoch)` returns a `MoveResult` whose status is `applied`,

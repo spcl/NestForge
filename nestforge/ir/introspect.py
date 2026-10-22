@@ -6,9 +6,12 @@ nest reads and writes."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import functools
-from collections.abc import Callable, Collection
+import signal
+import threading
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -208,6 +211,50 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
                 kernels = (n for n in block.nodes() if isinstance(n, (nodes.MapEntry, nodes.LibraryNode)))
                 rows.update((n.map.label if isinstance(n, nodes.MapEntry) else n.label, (n, block)) for n in kernels)
     return rows
+
+
+#: Wall-clock seconds DaCe's work-depth pass may take before the tree prints without costs.
+WORK_DEPTH_BUDGET_S = 60
+#: What the work-depth pass raises on a program it cannot cost: SymPy recursion on large nests, an unorderable NaN.
+WORK_DEPTH_FAILURES = (RecursionError, ValueError, TypeError, ArithmeticError)
+#: Longest exception message kept as the reason costs were skipped.
+SKIP_REASON_CHARS = 160
+
+
+class WorkDepthTimeout(Exception):
+    """The work-depth pass outlasted :data:`WORK_DEPTH_BUDGET_S`."""
+
+
+@contextlib.contextmanager
+def time_budget(seconds: int) -> Iterator[None]:
+    """Raise :class:`WorkDepthTimeout` in the body after ``seconds``; only the main thread can be interrupted by a
+    signal, so elsewhere the body runs unbounded."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def expire(signum: int, frame: object) -> None:
+        raise WorkDepthTimeout
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def guarded_work_depth(sdfg: dace.SDFG) -> tuple[WorkDepth, str | None]:
+    """:func:`program_work_depth`, or no costs and why, when the pass raises or outlasts :data:`WORK_DEPTH_BUDGET_S`.
+    Costs only annotate the tree, so a program DaCe cannot cost still gets one."""
+    try:
+        with time_budget(WORK_DEPTH_BUDGET_S):
+            return program_work_depth(sdfg), None
+    except WorkDepthTimeout:
+        return {}, f"work-depth analysis took over {WORK_DEPTH_BUDGET_S} s"
+    except WORK_DEPTH_FAILURES as err:
+        return {}, f"work-depth analysis failed: {type(err).__name__}: {str(err)[:SKIP_REASON_CHARS]}"
 
 
 def program_work_depth(sdfg: dace.SDFG) -> WorkDepth:

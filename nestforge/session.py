@@ -30,7 +30,14 @@ from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import find_state_of_node
-from nestforge.ir.introspect import Row, WorkDepth, describe_graph, program_work_depth, tree_rows
+from nestforge.ir.introspect import (
+    WORK_DEPTH_FAILURES,
+    Row,
+    WorkDepth,
+    describe_graph,
+    guarded_work_depth,
+    tree_rows,
+)
 from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
@@ -199,6 +206,7 @@ class Session:
         "rows",
         "expanded",
         "costs",
+        "costs_skipped",
         "work_dir",
         "kernel_deps",
         "unplaced",
@@ -227,6 +235,8 @@ class Session:
         # labels whose content describe() shows, and the work and depth it prints; both reset each epoch
         self.expanded: set[str] = set()
         self.costs: WorkDepth | None = None
+        # why describe() printed no costs this epoch, or None when it printed them
+        self.costs_skipped: str | None = None
         self.work_dir = Path(work_dir) if work_dir else scratch_dir()
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
@@ -244,6 +254,7 @@ class Session:
         self.rows = None
         self.expanded = set()
         self.costs = None
+        self.costs_skipped = None
         self.kernel_deps = None
         self.sources, self.builds, self.prepared = {}, {}, {}
         self.measured = None
@@ -285,8 +296,8 @@ class Session:
         Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
         once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
         if self.costs is None:
-            self.costs = program_work_depth(self.sdfg)
-        return describe_graph(
+            self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
+        tree = describe_graph(
             self.sdfg,
             bodies=bodies,
             notes=self.deps_line if deps else None,
@@ -294,6 +305,10 @@ class Session:
             expanded=self.expanded,
             costs=self.costs,
         )
+        if self.costs_skipped is None:
+            return tree
+        header, _, rows = tree.partition("\n")
+        return f"{header}\n(no work= or depth= this epoch: {self.costs_skipped})\n{rows}"
 
     def expand(self, labels: Sequence[str], epoch: int) -> str:
         """Show the content of the states and maps ``labels`` name (kernels, nested maps and leaf bodies; a map's
@@ -377,8 +392,10 @@ class Session:
             return f"{label} is a {type(obj).__name__}; metrics cover top-level maps, top-level loops and kernels."
         try:
             return f"{label}: {scope_metrics(self.sdfg, obj).suffix()}"
-        except TypeError as err:
+        except TypeError as err:  # scope_metrics' own refusal: not a top-level map or loop
             return str(err)
+        except WORK_DEPTH_FAILURES as err:
+            return f"{label}: no metrics, work-depth analysis failed: {type(err).__name__}: {err}"
 
     def default_moves(self) -> str:
         """Stage 2 default: canonicalization's fusion stage and the stages after it."""
