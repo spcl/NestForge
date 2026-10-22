@@ -17,6 +17,7 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFG
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
+from dace.transformation.dataflow.map_fusion_in_place import MapFusionInPlace
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
 from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
@@ -153,7 +154,8 @@ def plan_loop_fusion(first: Row, second: Row) -> Rewrite | str:
 
 
 def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
-    """Vertical through a transient in either data-flow order, else horizontal when no data links the maps."""
+    """Vertical through a transient in either data-flow order, else in place (the intermediate stays in memory, for
+    row-private recurrences vertical fusion refuses, spcl/NestForge#27), else horizontal when no data links the maps."""
     state = node_state(first)
     if node_state(second) is not state:
         return STATE_BARRIER
@@ -161,14 +163,18 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     reasons: list[str] = []
     for producer, consumer in ((a, b), (b, a)):
         for arr in intermediates(state, producer, consumer):
-            if not sdfg.arrays[arr.data].transient:
-                reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
-                continue
             where = {"first_map_exit": state.exit_node(producer), "array": arr, "second_map_entry": consumer}
-            move = pattern(MapFusionVertical, sdfg, where)
+            transient = sdfg.arrays[arr.data].transient
+            move = pattern(MapFusionVertical, sdfg, where) if transient else None
+            if move is None:
+                move = pattern(MapFusionInPlace, sdfg, where)
             if move is not None:
                 return move
-            reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
+            vertical = "" if transient else ", a live output (non-transient) vertical fusion would drop"
+            reasons.append(
+                f"blocked on '{arr.data}'{vertical}: MapFusionVertical needs point-wise access to it, and in place "
+                "needs one body per map and every shared container row-private"
+            )
     if reasons:
         return "; ".join(reasons) + "."
     if state.entry_node(a) is not state.entry_node(b):
