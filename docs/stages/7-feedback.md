@@ -17,7 +17,7 @@ compiler remarks from one extra compile of the current variant (`-fopt-info-vec-
 Failures rank first; the report keeps at most eight hints.
 
 `performance(inputs, reference)` gives every phase's feedback in one record, on a copy completed with the default
-scopes, placement and kernel builds:
+scopes and placement; kernels keep the libraries already linked, the rest get the default build:
 
 - `structured`: the whole program's time, and whether its outputs match `reference` (the bench's own reference and
   grading tolerance, when the plugin has one);

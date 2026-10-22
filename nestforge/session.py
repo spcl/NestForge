@@ -53,6 +53,7 @@ from nestforge.stages.kernel import (
     kernel_text,
     schedule_kernel,
     split_kernel_text,
+    unchecked_verdict,
     use_kernel_library,
     validate_kernel,
 )
@@ -325,8 +326,10 @@ class Session:
     def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = (), epoch: int | None = None) -> str:
         """:meth:`collapse` then :meth:`expand` (labels read at ``epoch``), and the tree after them, each note first."""
         notes = [self.collapse(collapse)] if collapse else []
-        if expand:
-            notes.append(self.expand(expand, self.epoch - 1 if epoch is None else epoch))
+        if expand and epoch is None:
+            notes.append("illegal: expand needs the epoch its labels were read at.")
+        elif expand:
+            notes.append(self.expand(expand, epoch))
         return "\n".join([*notes, self.describe()])
 
     def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
@@ -460,16 +463,17 @@ class Session:
         if epoch != self.epoch:
             reason = f"kernels read at epoch {epoch}; the program is at epoch {self.epoch}."
             return MoveResult(status=MoveStatus.STALE, kind="unset-scope", labels=(name,), reason=reason)
-        if self.unplaced is not None:
-            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
         calls = {ext.name: ext for ext in external_calls(self.sdfg)}
         if name not in calls:
             reason = f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}."
             return MoveResult(status=MoveStatus.NOT_FOUND, kind="unset-scope", labels=(name,), reason=reason)
-        ext = calls[name]
-        if ext.standalone_sdfg is None:
+        if calls[name].standalone_sdfg is None:
             reason = f"{name} keeps no SDFG of its nest to inline."
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
+        if self.unplaced is not None:
+            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+        ext = self.kernel(name)
+        assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
         # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only
         connected = {data_name(conn) for conn in (*ext.in_connectors, *ext.out_connectors)}
         for array, desc in ext.standalone_sdfg.arrays.items():
@@ -705,10 +709,14 @@ class Session:
                 self.optimize_kernel(ext.name)
             build = self.builds[ext.name]
             if build.verdict is None:
-                prep = self.prepare_kernel(ext.name)
-                fp_mode = build.variant.fp_mode
-                build.verdict = validate_kernel(
-                    build.archive, build.source, prep, self.kernel_sizes(ext.name), reps, fp_mode
+                sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
+                computed = [s for s in build.source.boundary.symbols if s not in sizes]
+                build.verdict = (
+                    unchecked_verdict(fp_mode, computed)
+                    if computed
+                    else validate_kernel(
+                        build.archive, build.source, self.prepare_kernel(ext.name), sizes, reps, fp_mode
+                    )
                 )
             variant = build.variant
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
@@ -718,7 +726,10 @@ class Session:
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
         copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes)
-        copied.unplaced = copy.deepcopy(self.unplaced)
+        # same epoch, same labels: what was read on this session names the same rows of the copy
+        copied.epoch, copied.unplaced = self.epoch, copy.deepcopy(self.unplaced)
+        # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
+        copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
 
     def performance(
@@ -746,6 +757,8 @@ class Session:
         program = time_program(
             trial.sdfg, trial.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
+        # the trial's builds are measured; a long session would otherwise keep every one until it exits
+        shutil.rmtree(trial.work_dir, ignore_errors=True)
         self.measured = Performance(
             structured=program,
             offloading=offload_report(trial.sdfg, devices, moves, self.sizes),

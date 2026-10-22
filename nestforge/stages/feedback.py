@@ -27,7 +27,7 @@ HINT_TEXT = 160
 VECTOR_REASONS = 2
 
 #: Hint ranks, most important first.
-FAILED, WRONG, HOT, SPILLS, NOT_VECTORIZED = range(5)
+FAILED, WRONG, HOT, SPILLS, NOT_VECTORIZED, UNCHECKED = range(6)
 
 #: Vectorizer reasons, by a phrase they contain, and what to try.
 VECTOR_ADVICE: tuple[tuple[str, str], ...] = (
@@ -106,6 +106,8 @@ def hints(ev: Evidence, share: float) -> list[tuple[int, str]]:
                 f"{k}: failed: {verdict.error.splitlines()[0][:HINT_TEXT]} -> fix the kernel so it builds and runs.",
             )
         ]
+    if verdict.unchecked:
+        return [(UNCHECKED, f"{k}: not checked alone: {verdict.unchecked}.")]
     out: list[tuple[int, str]] = []
     if not verdict.ok:
         wrong = f"{k}: wrong result, max rel err {verdict.md_rel:.2g} at {verdict.fp_mode}"

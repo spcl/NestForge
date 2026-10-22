@@ -27,7 +27,7 @@ def live_intermediate(A: dace.float64[N], T: dace.float64[N], C: dace.float64[N]
     for i in dace.map[0:N]:
         T[i] = A[i] + 1.0
     for i in dace.map[0:N]:
-        C[i] = T[i] * 2.0
+        C[i] = T[N - 1 - i] * 2.0  # another iteration's element: no fusion accepts the pair
 
 
 @dace.program

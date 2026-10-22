@@ -55,15 +55,16 @@ SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_d
 ## Install and test
 
 ```bash
-sudo bash scripts/setup_apt.sh                           # compilers, libomp, BLAS/LAPACK, binutils (Ubuntu)
-pip install -e ".[dev]"                                  # or: uv pip install -e ".[dev]"
-pre-commit install                                       # ruff check, ruff format, headers
-pytest -m "not integration and not gpu and not vendor"   # unit set, as CI runs it
-pytest -m integration                                    # compiles and runs; needs the bench's OpenMP env (CI)
+sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
+pip install -e ".[dev]"                                                 # or: uv pip install -e ".[dev]"
+pre-commit install                                                      # ruff check, ruff format, headers
+pytest -m "not integration and not cloudsc and not gpu and not vendor"  # unit set, as CI runs it
+pytest -m integration                                                   # compiles and runs; bench OpenMP env (CI)
+pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-DaCe (`extended`) and HPCAgent-Bench (`main`) are pinned to commit SHAs in `pyproject.toml`;
-`python scripts/bump_deps.py` moves both to their branch tips. NestForge assumes Linux.
+HPCAgent-Bench (`release-v0.3.0`) and DaCe (`extended`) are pinned to commit SHAs in `pyproject.toml`;
+`python scripts/bump_deps.py [bench-branch]` moves both to their branch tips. NestForge assumes Linux.
 
 ## Layout
 

@@ -75,7 +75,10 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "start() checked the kernel"
     data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset))
-    inputs = {key: value for key, value in data.items() if isinstance(value, np.ndarray)}
+    # a scalar argument (cloudsc's timestep ptsphy) is a 0-d array; dropping it would zero it
+    inputs = {
+        key: np.asarray(value) for key, value in data.items() if isinstance(value, (np.ndarray, np.generic, int, float))
+    }
     try:
         expected = compiled_reference(kernel.spec, dict(data))
     except ReferenceUnavailable as err:

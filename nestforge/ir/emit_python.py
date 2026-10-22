@@ -61,6 +61,7 @@ class UnsupportedNest(Exception):
 NP_FUNCTIONS = {
     **{fn: fn for fn in ("sqrt", "cbrt", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sin", "cos")},
     **{fn: fn for fn in ("tan", "sinh", "cosh", "tanh", "floor", "ceil", "sign", "power", "abs", "arctan2")},
+    **{fn: fn for fn in ("copysign", "fmin", "fmax", "hypot", "trunc")},
     **{"asin": "arcsin", "acos": "arccos", "atan": "arctan", "atan2": "arctan2", "fabs": "abs", "pow": "power"},
     **{"re": "real", "im": "imag"},  # the frontend spells z.real and z.imag as SymPy's re and im
     **{"CMod": "fmod", "FtnMod": "fmod", "bitwise_invert": "invert"},  # C's truncating modulo is fmod
@@ -72,7 +73,7 @@ NP_DTYPES |= {f"{name}_t": name for name in ("int8", "int16", "int32", "int64", 
 
 #: SymPy function heads DaCe prints in symbolic expressions -> a Python operator.
 BINARY_OPS = {"int_floor": ast.FloorDiv, "__int_floor": ast.FloorDiv, "int_floor_ni": ast.FloorDiv, "ipow": ast.Pow}
-BINARY_OPS |= {"py_floor": ast.FloorDiv}
+BINARY_OPS |= {"py_floor": ast.FloorDiv, "FtnModulo": ast.Mod}  # Fortran's MODULO floors, as Python's % does
 BINARY_OPS |= {"Mod": ast.Mod, "PyMod": ast.Mod, "py_mod": ast.Mod, "left_shift": ast.LShift, "right_shift": ast.RShift}
 BINARY_OPS |= {"bitwise_and": ast.BitAnd, "bitwise_or": ast.BitOr, "bitwise_xor": ast.BitXor}
 BUILTINS = {"Min": "min", "Max": "max", "Abs": "abs"}

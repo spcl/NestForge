@@ -11,7 +11,8 @@ nested SDFG, carries `num_states=`. When that pass fails or takes over 60 s, the
 carry no costs for that epoch. A state shows only `kernels=<count>` until `expand(labels, epoch)` opens it:
 then its maps, nested maps and leaf-kernel bodies appear (an expanded map also shows its nested states). An
 expansion lasts until the epoch changes. `list_moves(kind)` returns the legal moves as
-`{kind, labels, epoch}`, and `apply_move(kind, labels, epoch)` returns a `MoveResult` whose status is `applied`,
+`{kind, labels, epoch}`; map fusions list data-linked pairs and each map with the next map of its scope, never every
+pair (CloudSC would list 20k), while `apply_move` still takes any pair, and `apply_move(kind, labels, epoch)` returns a `MoveResult` whose status is `applied`,
 `illegal`, `not-found` or `stale`. Labels are the tree labels, unique across the whole program.
 Any mutation starts a new epoch, so a move read at an old epoch returns `stale`. `metrics(label)` gives the
 symbolic work and depth of one kernel.

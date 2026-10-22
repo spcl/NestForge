@@ -357,7 +357,7 @@ def assign_state(
     """A state after ``after`` (or the start state) with one tasklet ``code`` reading ``reads`` (connector ->
     memlet) and writing its ``o`` to ``write``."""
     state = sdfg.add_state(is_start_block=after is None) if after is None else sdfg.add_state_after(after)
-    tasklet = state.add_tasklet("t", set(reads), {"o"}, code)
+    tasklet = state.add_tasklet("t", dict.fromkeys(reads), {"o"}, code)
     for conn, memlet in reads.items():
         state.add_edge(state.add_read(memlet.split("[")[0]), None, tasklet, conn, dace.Memlet(memlet))
     state.add_edge(tasklet, "o", state.add_write(write.split("[")[0]), None, dace.Memlet(write))
@@ -607,3 +607,27 @@ def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have():
     subset = subsets.Range([(0, dace.symbol("N") - 1, 1), (0, sympy.Integer(0), 1)])
 
     assert index(subset) == "0:N, 0"
+
+
+def copysign_map() -> dace.SDFG:
+    sdfg = dace.SDFG("copysign_map")
+    sdfg.add_array("A", [N], dace.float64)
+    sdfg.add_array("B", [N], dace.float64)
+    sdfg.add_state().add_mapped_tasklet(
+        "sign",
+        {"i": "0:N"},
+        {"a": dace.Memlet("A[i]")},
+        "b = copysign(1.0, a)",
+        {"b": dace.Memlet("B[i]")},
+        external_edges=True,
+    )
+    return sdfg
+
+
+def test_a_c_math_intrinsic_in_tasklet_code_runs_as_its_numpy_function():
+    """CloudSC's ``copysign(1.0, x)`` reached the oracle unbound and raised ``NameError``."""
+    A = np.array([-2.0, 0.5, -0.0, 3.0])
+
+    call, _ = emit_and_run(copysign_map(), {"A": A}, {"N": 4})
+
+    np.testing.assert_array_equal(call["B"], np.copysign(1.0, A))

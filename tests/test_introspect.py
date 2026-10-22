@@ -5,6 +5,8 @@
 and a reason marks a pair that is never listed.
 """
 
+import copy
+
 import dace
 import numpy as np
 from dace.sdfg.state import LoopRegion
@@ -89,13 +91,25 @@ def test_can_fuse_yes_for_independent_horizontal():
     assert fusion_moves(sdfg)
 
 
-def test_can_fuse_refuses_live_output_with_reason():
+def test_a_live_output_between_two_maps_fuses_and_keeps_its_values():
+    """NestForge refused a non-transient intermediate before asking DaCe, which fuses it and still writes it (#27)."""
     sdfg = live_output_pair.to_sdfg(simplify=True)
+    reference = copy.deepcopy(sdfg)
+    reference.name = "live_output_pair_reference"
     (s1, m1), (s2, m2) = map_entries(sdfg)
-    reason = can_fuse((m1, s1), (m2, s2))
-    assert reason != "yes"
-    assert "live output" in reason and "non-transient" in reason
-    assert not fusion_moves(sdfg), "a refused pair must not be a listed move"
+
+    plan = plan_move("map-fusion", [(m1, s1), (m2, s2)])
+
+    assert isinstance(plan, Rewrite), plan
+    plan.commit()
+    assert len(map_entries(sdfg)) == 1
+    rng = np.random.default_rng(0)
+    want = {name: rng.random(7) for name in "ABTC"}
+    got = copy.deepcopy(want)
+    reference(**want, N=7)
+    sdfg(**got, N=7)
+    for name in "TC":
+        np.testing.assert_array_equal(got[name], want[name])
 
 
 def test_can_fuse_reports_state_barrier_across_states():
@@ -113,3 +127,25 @@ def test_a_map_and_a_loop_are_no_map_fusion_pair():
     (s1, m1), _ = map_entries(sdfg)
     reason = can_fuse((m1, s1), (LoopRegion("for9_0"), None))
     assert "is a LoopRegion" in reason
+
+
+@dace.program
+def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]):
+    p = np.empty((N, N), dtype=np.float64)
+    for i in dace.map[0:N]:
+        p[i, 0] = p0[i]
+        for j in range(1, N):
+            p[i, j] = 0.5 * p[i, j - 1] + 1.0
+    for i in dace.map[0:N]:
+        for j in range(1, N):
+            q[i, j] = q[i, j - 1] + p[i, j - 1]
+
+
+def test_a_refused_fusion_of_a_recurrence_names_the_recurrence():
+    """#27: the agent must tell DaCe's element-wise exchange limit from a real dependency."""
+    sdfg = row_recurrences.to_sdfg(simplify=True)
+    (s1, m1), (s2, m2) = map_entries(sdfg)
+
+    reason = can_fuse((m1, s1), (m2, s2))
+
+    assert "MapFusionVertical on 'p'" in reason and "recurrence" in reason, reason

@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pin HPCAgent-Bench (and its agent package) in pyproject.toml to the tip of its main branch and DaCe to the tip of
-extended.
+"""Pin HPCAgent-Bench (and its agent package) in pyproject.toml to the tip of a bench branch (:data:`BENCH_BRANCH`
+unless one is named) and DaCe to the tip of extended.
 
 HPCAgent-Bench requires its own DaCe commit, so the DaCe pin is written twice: as the dependency and as the
 ``[tool.uv]`` override that wins over the bench's. Then reinstall and test:
@@ -11,12 +11,15 @@ HPCAgent-Bench requires its own DaCe commit, so the DaCe pin is written twice: a
 
 import re
 import subprocess
+import sys
+from pathlib import Path
 
-from nestforge.paths import REPO_ROOT
-
-PYPROJECT = REPO_ROOT / "pyproject.toml"
+# not nestforge.paths: importing nestforge loads DaCe, which a fresh checkout has not installed yet
+PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 DACE = "https://github.com/spcl/dace.git"
 BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
+#: The bench branch NestForge tracks: the release the plugin ships with.
+BENCH_BRANCH = "release-v0.3.0"
 #: Where each package's pin is written: the dependency, and for DaCe also the uv override.
 PIN_COUNT = {"hpcagent_bench": 1, "hpcagent-agent": 1, "dace": 2}
 
@@ -26,8 +29,8 @@ def tip(repo: str, branch: str) -> str:
     return out.stdout.split()[0]
 
 
-def main() -> None:
-    bench = tip(BENCH, "main")
+def main(bench_branch: str) -> None:
+    bench = tip(BENCH, bench_branch)
     pins = {"hpcagent_bench": (BENCH, bench), "hpcagent-agent": (BENCH, bench), "dace": (DACE, tip(DACE, "extended"))}
     text = PYPROJECT.read_text()
     for package, (repo, sha) in pins.items():
@@ -42,4 +45,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else BENCH_BRANCH)

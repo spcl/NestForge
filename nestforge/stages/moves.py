@@ -152,6 +152,21 @@ def plan_loop_fusion(first: Row, second: Row) -> Rewrite | str:
     return move or "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two."
 
 
+def vertical_refusal(state: SDFGState, producer: nodes.MapEntry, arr: nodes.AccessNode) -> str:
+    """Why ``MapFusionVertical`` likely refused to fuse through ``arr``, from the shape DaCe's checks reject."""
+    if any(isinstance(e.src, nodes.AccessNode) and e.src.data == arr.data for e in state.in_edges(producer)):
+        return (
+            f"the first map also reads '{arr.data}' (a recurrence); DaCe fuses through a container only when the "
+            "first map reads and writes the same elements of it"
+        )
+    if not state.sdfg.arrays[arr.data].transient:
+        return f"'{arr.data}' is also a program output, which the fused map would have to write as well"
+    return (
+        f"the second map reads elements of '{arr.data}' that another iteration of the first map writes, or the two "
+        "map ranges differ"
+    )
+
+
 def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     """Vertical through a transient in either data-flow order, else horizontal when no data links the maps."""
     state = node_state(first)
@@ -161,14 +176,11 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     reasons: list[str] = []
     for producer, consumer in ((a, b), (b, a)):
         for arr in intermediates(state, producer, consumer):
-            if not sdfg.arrays[arr.data].transient:
-                reasons.append(f"intermediate '{arr.data}' is a live output (non-transient); fusing would drop it")
-                continue
             where = {"first_map_exit": state.exit_node(producer), "array": arr, "second_map_entry": consumer}
             move = pattern(MapFusionVertical, sdfg, where)
             if move is not None:
                 return move
-            reasons.append(f"blocked by MapFusionVertical on '{arr.data}': shape or dependency mismatch")
+            reasons.append(f"blocked by MapFusionVertical on '{arr.data}': {vertical_refusal(state, producer, arr)}")
     if reasons:
         return "; ".join(reasons) + "."
     if state.entry_node(a) is not state.entry_node(b):
@@ -310,14 +322,25 @@ def loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 def map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    """Map pairs of one state that share a scope or a data node, in node order."""
+    """Map pairs of one state that share a data node, and each map with the next map of its scope, in node order.
+    Only neighbors are offered unlinked: every pair of a scope would be quadratic (CloudSC lists 20k), and fusing
+    neighbors one after another reaches any horizontal fusion."""
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
             entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
+            linked = {
+                frozenset((state.entry_node(into.src), out.dst))
+                for access in state.data_nodes()
+                for into in state.in_edges(access)
+                if isinstance(into.src, nodes.MapExit)
+                for out in state.out_edges(access)
+                if isinstance(out.dst, nodes.MapEntry)
+            }
             for i, a in enumerate(entries):
+                scope = state.entry_node(a)
+                neighbor = next((b for b in entries[i + 1 :] if state.entry_node(b) is scope), None)
                 for b in entries[i + 1 :]:
-                    linked = intermediates(state, a, b) or intermediates(state, b, a)
-                    if linked or state.entry_node(a) is state.entry_node(b):
+                    if b is neighbor or frozenset((a, b)) in linked:
                         yield (a, state), (b, state)
 
 

@@ -692,3 +692,16 @@ def test_a_wrong_label_count_is_a_malformed_call():
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     with pytest.raises(ValueError, match="takes 2 label"):
         sut.apply_move("map-fusion", ["kernel1_0"], 0)
+
+
+def test_a_move_read_on_a_session_applies_to_its_trial_and_leaves_the_session_alone():
+    """``performance`` and the agent's what-ifs run on a trial; labels and epoch must carry over."""
+    session, _ = session_and_reference(two_indep)
+    session.bump()  # a session past its first epoch, as after canonicalization
+    (move,) = session.list_moves("map-fusion")
+    before, epoch = digest(session.sdfg), session.epoch
+
+    result = session.trial().apply_move(move.kind, move.labels, move.epoch)
+
+    assert result.status is MoveStatus.APPLIED, result
+    assert (digest(session.sdfg), session.epoch) == (before, epoch)

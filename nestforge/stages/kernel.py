@@ -77,7 +77,8 @@ class KernelSource:
 
 @dataclass(slots=True)
 class KernelVerdict:
-    """A build compared to the NumPy oracle and timed; ``ok`` gates at ``fp_mode``."""
+    """A build compared to the NumPy oracle and timed; ``ok`` gates at ``fp_mode``. ``unchecked`` says why the
+    kernel cannot run standalone (a symbol only the program computes), so it was neither compared nor timed."""
 
     fp_mode: str
     maxdiff: float
@@ -85,14 +86,20 @@ class KernelVerdict:
     dtype_floor: float
     time_us: float
     error: str = ""
+    unchecked: str = ""
 
     @property
     def ok(self) -> bool:
-        return not self.error and self.md_rel <= rung_rtol(self.fp_mode, self.dtype_floor)
+        return not self.error and not self.unchecked and self.md_rel <= rung_rtol(self.fp_mode, self.dtype_floor)
 
 
 def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
     return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
+
+
+def unchecked_verdict(fp_mode: str, symbols: list[str]) -> KernelVerdict:
+    reason = f"takes {', '.join(symbols)}, which only the running program computes; the whole program checks it"
+    return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), unchecked=reason)
 
 
 def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
