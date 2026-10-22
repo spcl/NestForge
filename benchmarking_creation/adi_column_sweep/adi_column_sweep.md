@@ -13,7 +13,7 @@ Alternating-direction implicit diffusion (Polybench ADI via NPBench), the oracle
 ## Why it is a good test
 
 - **What the default does instead:** on GPU, `default_moves()` interchanges the row sweeps (lane maps over `i` with the `j` loop inside) and leaves the three column sweeps as `for j { map i }`, `N - 2` launches each per step (1.702 s at M). On CPU it does the reverse: the column sweeps are interchanged and the contiguous row sweeps kept, which is right on CPU.
-- **What makes it hard:** the right set of interchanges flips with the device; the obvious half (the column sweeps the GPU default left) gains nothing by itself (1.694 s), because from stage 1 the row sweeps are then left with their launches. Only the column interchanges together with the `v` row interchange beat the default (1.180 s, 1.44x).
+- **What makes it hard:** the right set of interchanges flips with the device; neither half gains by itself: the column sweeps the GPU default left give 1.694 s, because from stage 1 the row sweeps are then left with their launches, and the `v` row interchange alone gives 2.716 s. Only the column interchanges together with the `v` row interchange beat the default (1.180 s, 1.44x).
 - **What it covers:** a device-dependent interchange answer from a real code, and a fusion that only becomes possible after the interchanges and is worth about 10x on GPU (measured on a hand-fused copy), but which stage 2 cannot make at the current pins.
 - **What a wrong decision looks like:** the column interchanges only; the row interchanges on CPU; following the CPU default's choice on GPU.
 
@@ -49,8 +49,8 @@ After stage 1 on both devices `list_moves` offers `interchange-loop-map` on the 
 | stage 1, no move | 3.247 s | 5119212 |
 | `default_moves()` | 1.702 s | 5119212 |
 | the three column interchanges | 1.694 s | 5119212 |
-| the `v` row interchange alone | (pending, job 5119364) | |
-| the column interchanges and the `v` row interchange | **1.180 s** | 5119212 |
+| the `v` row interchange alone | 2.716 s | 5119364 |
+| the column interchanges and the `v` row interchange | **1.180 s**; repeat 1.196 s (default on that node 1.706 s) | 5119212, 5119364 |
 | the same with the column row maps fused (hand-fused copy, its default) | 0.160 s | 5119329 |
 | CPU: `default_moves()` | 0.519 s | 5119102 |
 | CPU: the three column interchanges | 0.549 s | 5119102 |
@@ -69,7 +69,7 @@ Preset M (`TSTEPS 25`, `N 1600`). GPU: one GPU of a Daint GH200 node, `nvcc 12.9
 | GPU hand-fused copy, default | 0.99 ms | 0.160 s |
 | CPU default | 7.15 ms | 0.519 s |
 
-Reachable ratio on GPU: 1.44x at M (1.41x at S), below the checklist's 2x. Intended ratio, if the fusion were legal in stage 2: about 10.6x at M (the hand-fused copy under the default, so it also contains whatever the default adds; not the agent's own route).
+Reachable ratio on GPU: 1.44x at M (1.41x at S); a second node gave 1.43x (1.196 s against 1.706 s, job 5119364). Below the checklist's 2x. Each half alone is no better than the default: the column interchanges 1.694 s, the `v` row interchange 2.716 s. Intended ratio, if the fusion were legal in stage 2: about 10.6x at M (the hand-fused copy under the default, so it also contains whatever the default adds; not the agent's own route).
 
 ## CPU and GPU
 
@@ -133,4 +133,6 @@ alternatives:
 decoys:
   - moves: [stage 1, no move]
     time_ms: 3246.5
+  - moves: [the v row interchange alone]
+    time_ms: 2715.9
 ```
