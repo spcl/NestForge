@@ -1,40 +1,34 @@
-# Repo-local kernel (see benchmarking_creation/README.md). H2 contender of the thesis benchmark set; record: seissol_volume.md.
+# Repo-local kernel (see benchmarking_creation/README.md). Thesis benchmark set (medium); record: seissol_volume.md.
 # provenance: {kind: derived, upstream: seissol, via: [hpcagent_bench seissol_tensor_contraction]}
-# The DaCe program is written output-stationary (one (b, k, p) entry, three summed loops inside). The CPU schedule
-# pushes the p and k maps inside the d and l loops: 6 moves with two unlocks.
+# The DaCe program is written output-stationary (one (b, k, p) entry, three summed loops inside). Answers at M:
+# GPU one map-fission (54x); CPU the fission and two interchange-map-loop pushing p inside l and d (1.6x, 1.45x).
 name: SeisSol Volume Update
 level: 2
 parameters:
   # NQ (9 elastic quantities) and ND (3 dimensions) are fixed small counts; NBF 56 is the order-6 basis. NB at M is not
-  # a multiple of a block size.
+  # a multiple of a block size; M is about 6 GFLOP per call, so a 1-thread timing stays short.
   S:
     NB: 64
     NBF: 20
     NQ: 9
     ND: 3
   M:
-    NB: 40003
+    NB: 4003
     NBF: 56
     NQ: 9
     ND: 3
   L:
-    NB: 160003
+    NB: 40003
     NBF: 56
     NQ: 9
     ND: 3
   XL:
-    NB: 400009
+    NB: 160003
     NBF: 56
     NQ: 9
     ND: 3
-public:
-  scales:
-    NQ:
-      scale: small
-      description: "the number of elastic quantities, a fixed small count"
-    ND:
-      scale: small
-      description: "the number of space dimensions, a fixed small count"
+# No public.scales: declaring NQ, ND small changes stage 1's nest and the recorded route is not offered
+# (2026-10-23, Daint jobs 5127775 to 5127781), as for H1, H3 and M8 (a6c787e).
 # Inputs: initialize() in seissol_volume.py.
 args:
   dt: {}

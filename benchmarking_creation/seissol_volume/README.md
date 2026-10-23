@@ -11,28 +11,15 @@ map b { map k { map p { upd = 0; for d { for l { map q (reduce) } } } } }
 map (b, k, p) { Q += dt * upd }
 ```
 
-`default_moves()` keeps this order: for every `(b, k, p)` the whole `d, l, q` sum, re-reading `kDivM` and `star` per entry.
+`default_moves()` keeps this order. On GPU each entry is a 256-thread block sharing a 9-term reduction; on CPU each entry re-reads `kDivM` and `star`.
 
-## The schedule to reach (CPU)
+## The schedule to reach
 
-```
-map b { init; for d { for l { map k { map p { map q (reduce) } } } } }
-```
-
-Each element `b` is one parallel task; inside it, each `kDivM[d, k, l]` is applied to the element's whole `(k, p)` block.
-
-## The moves, in order (6, then finish)
-
-1. `map-fission` of the `p` map (init from sum). Gains nothing alone; makes move 2 legal.
-2. `interchange-map-loop`: `p` inside `l`.
-3. `interchange-map-loop`: `p` inside `d`.
-4. `map-fission` of the `k` map. Gains nothing alone; makes move 5 legal.
-5. `interchange-map-loop`: `k` inside `d`.
-6. `interchange-map-loop`: `k` inside `l`.
-7. `finish_moves()`.
+- **GPU:** `map-fission` of the `p` map (init from sum), then `finish_moves()`. 54x.
+- **CPU (1 and 72 threads):** that fission, then `interchange-map-loop` twice: `p` inside `l`, then inside `d`. 1.62x on 1 thread, 1.45x on 72.
 
 ## Traps
 
-- **The map swaps** of `b`, `k`, `p`, offered at every step.
-- **Stopping after move 3**, with `k` still outside the sums.
-- **Pushing `b` inward**: it is the axis to parallelize.
+- **The fission alone on CPU** (1.00x): required first, gains nothing by itself.
+- **Continuing the route.** A second fission (of `k`) and two more pushes are offered; on CPU they gain nothing, on GPU they make the program 6.8x slower than the default.
+- **The swaps** of `b`, `k` (0.78x at 72 threads), and sequences that move `k` outside `b` (0.13x).

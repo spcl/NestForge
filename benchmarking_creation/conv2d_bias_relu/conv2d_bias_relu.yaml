@@ -1,7 +1,8 @@
-# Repo-local kernel (see benchmarking_creation/README.md). H2 contender of the thesis benchmark set; record: conv2d_bias_relu.md.
+# Repo-local kernel (see benchmarking_creation/README.md). Thesis benchmark set (medium); record: conv2d_bias_relu.md.
 # provenance: {kind: derived, upstream: hpcagent_bench machine_learning conv2d_* family}
-# The DaCe program is written output-stationary (one output element, three summed loops inside). The CPU schedule
-# pushes the output-plane maps inside the channel and kernel-row loops: 7 moves with two unlocks.
+# The DaCe program is written output-stationary (one output element, three summed loops inside). Answers at M:
+# GPU one map-fission (108x); CPU 1 thread the fission and two interchange-map-loop (2.0x); 72 threads also the
+# (n, co) swap (14.9x).
 name: Conv2d Bias ReLU
 level: 2
 parameters:
@@ -38,14 +39,8 @@ parameters:
     W: 57
     KH: 3
     KW: 3
-public:
-  scales:
-    KH:
-      scale: small
-      description: "kernel height, a fixed small count"
-    KW:
-      scale: small
-      description: "kernel width, a fixed small count"
+# No public.scales: declaring KH, KW small changes stage 1's nest and the recorded route is not offered
+# (2026-10-23, Daint jobs 5127775 to 5127781), as for H1, H3 and M8 (a6c787e).
 # Inputs: initialize() in conv2d_bias_relu.py.
 args:
   x: "(N, CI, H + KH - 1, W + KW - 1)"
