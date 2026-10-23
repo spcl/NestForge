@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a synthetic kernel. Written 2026-10-22 from Daint job 5119028. Entry note: `2026-10-22-m7-two-pass-scope` (thesis notes).
 
-**Status:** `entry` (route and oracle at preset S; not timed).
+**Status:** `entry` (route and oracle at preset S; CPU timed at preset M, job 5119199).
 
 ## What this benchmark is
 
@@ -44,7 +44,12 @@ After the scope the tree is one state holding `extcall_0` (reads `a`, `b`, `carr
 
 ## What the gains are
 
-Not timed. Preset M is the size for that measurement. Preset S checked correctness only.
+CPU, preset M (N=4099, M=32771), host time, median of 5 after one warm-up (job 5119199, exclusive, nid005942). All three match the oracle at S and match each other at M.
+
+- 1 thread: baseline 2972 ms, reference 1577 ms (1.89×), interchange 1804 ms. The baseline samples sit in two clumps (2474–2484 and 2972–3015).
+- 72 threads: baseline 175 ms, reference 521 ms (0.34×), interchange 176 ms. The default is 3.0× faster than the scope. The interchange ties the default.
+
+The reference is one kernel, but the scalar update is three length-1 `omp for` loops inside the sequential column loop, each with a barrier. At one thread that is cheaper than 32771 host launches. At 72 threads the barriers dominate. The consumer nest is the same in the baseline and the reference.
 
 ## CPU and GPU
 
@@ -54,7 +59,7 @@ CPU and GPU stage 1 trees match, and the same scope applies on both. CPU baselin
 
 - **Legality.** `define_scope` on the two top-level maps is refused: they are in different states. The consumer interchange is legal and is not the answer.
 - **Contiguity and stride.** `M` is contiguous. The consumer nest after stage 1 has `N` outer and `M` inner. The decoy reverses that.
-- **Launches against stride.** The baseline launches the column kernel once per column and keeps the scalar update on the host. The reference is one kernel. Not timed, so which one wins is not known.
+- **Launches against stride.** The baseline launches the column kernel once per column and keeps the scalar update on the host. The reference is one kernel, and its scalar update is three length-1 parallel loops per column. The reference wins at 1 thread (1.89×) and loses at 72 (0.34×). Job 5119199.
 - **Live values and carries.** The scalar is loop-carried through the column map. `carry` records it so the consumer reads an array. `chain_length` of `carry` is `M`.
 - **Decoys.** `interchange-map-map` on the consumer. It builds on CPU and matches the oracle, and it leaves two kernels.
 - **Oracle.** Inputs `a`, `b`, `w` uniform on `[-1, 1]`, seed 0. `t`, `out` and `carry` start at 0. Preset S, relative error 0 on CPU for all three schedules, and on GPU for the scope.
@@ -65,20 +70,22 @@ CPU and GPU stage 1 trees match, and the same scope applies on both. CPU baselin
 ```yaml
 status: entry
 device: cpu
-threads: null
+threads: 72
 preset: M
 dace: 801cafd179790a844eaf460084232a0c6452571d
 nestforge: 4a0c0434ae260140cb35a1f89ec9d10d70bb2e74
 hpcagent_bench: e63f9f1
-probe: Daint job 5119028 (oracle at S; no timing)
-host: null
+probe: Daint job 5119028 (oracle at S)
+timing: Daint job 5119199 (nid005942; also 1 thread, below)
+host: nid005942
 baseline:
   moves: [default_moves]
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
-  repeats: null
+  time_ms: 174.6
+  time_min_ms: 170.5
+  time_max_ms: 176.9
+  repeats: 5
   oracle_rel_error: 0.0
+  time_ms_1thread: 2972.1
   tree: |
     for0_0  _loop_it_0=0:M
       kernel2_0  [0:N]  writes t
@@ -88,11 +95,12 @@ reference:
   moves:
     - kind: define_scope
       on: state0_0, for0_0, state0_1
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
-  repeats: null
+  time_ms: 520.9
+  time_min_ms: 517.6
+  time_max_ms: 523.8
+  repeats: 5
   oracle_rel_error: 0.0
+  time_ms_1thread: 1576.6
   tree: |
     state0_0
       extcall_0  reads a, b, carry, t, w  writes carry, out, t
