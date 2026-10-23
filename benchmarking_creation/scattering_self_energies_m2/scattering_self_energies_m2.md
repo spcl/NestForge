@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/dense_linear_algebra/scattering_self_energies` (`e63f9f1`). Written 2026-10-21 from Daint jobs 5111782 (walk of the loop order, as variant v1), 5112069 (build check), 5112070 and 5112133 (walk and routes, as variant v1c) and 5112562 (validation of this folder). Set: `benchmark-set-15` (thesis notes). Entry note: `2026-10-21-w3-medium-refills` (thesis notes). How to optimize it, in short: [README.md](README.md). The 6-move original is the hard-tier candidate `scattering_self_energies`.
 
-**Status:** `entry`, timed 2026-10-23 at NestForge main's pins with preset M changed to `Nkz` 2, `NE` 4: the route built with `collapse(3)` beats the default's best build (`collapse(2)`) **9.78x** on CPU at 72 threads (job 5127570; repeat runs 5127845 and 5127847 confirm the baselines, their `collapse(3)` rows were cut off when the Daint session ended).
+**Status:** `entry`, timed 2026-10-23 at NestForge main's pins with preset M changed to `Nkz` 2, `NE` 4: the route built with `collapse(3)` beats the default's best build (`collapse(2)`) **9.78x** on CPU at 72 threads (job 5127570), 9.80x and 9.76x in two repeat jobs (5127845, 5127847).
 
 Slot: M9. Entered on 2026-10-21 as M8; `cloudsc_ntrac` holds M8, so this kernel moved to M9 (user decision, board package W12-M9).
 
@@ -67,7 +67,17 @@ DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`, CPU 72 threads
 | reference, `collapse(2)` | 1040.5 ms (1.11x) | 1010.0 ms (1.11x) |
 | **reference, `collapse(3)`** | 893.8 ms (1.30x) | **114.8 ms (9.78x)** |
 
-At the new M, the default as built takes 3952.8 ms and the reference as built 3560.3 ms (1.11x), with `collapse(2)` the default takes 1134.0 ms (jobs 5127845, 5127847, matching job 5127570). `interchange-map-loop` built with `collapse(3)` does not compile (the collapsed nest is not perfectly nested), so that decoy is measured as built only.
+Repeats at the new M (jobs 5127845, 5127847):
+
+| Build (72 threads) | 5127845 | 5127847 |
+| --- | --- | --- |
+| default, as built | 3952.8 ms | 3951.1 ms |
+| default, `collapse(2)` | 1134.0 ms | 1132.2 ms |
+| reference, as built | 3560.3 ms (1.11x) | 3564.9 ms (1.11x) |
+| **reference, `collapse(3)`** | **115.7 ms (9.80x over `collapse(2)`)** | **116.0 ms (9.76x)** |
+| one pull, as built | 3574.3 ms | 3569.4 ms |
+| `interchange-map-loop`, as built | 3372.6 ms | 3381.0 ms |
+| partial undo, as built | 3573.5 ms | 3571.5 ms | `interchange-map-loop` built with `collapse(3)` does not compile (the collapsed nest is not perfectly nested), so that decoy is measured as built only.
 
 The answer has two parts, as for M5.1: the two pulls (stage 2) and a kernel built with `collapse(3)` (stage 5, through `bind`). Its route is shorter than M5.1's (two pulls, no round trip), so the pair grades the same lever at two depths.
 
