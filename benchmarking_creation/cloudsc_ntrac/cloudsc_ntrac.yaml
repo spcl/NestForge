@@ -22,6 +22,11 @@ parameters:
     KLON: 131075
     NTRAC: 16
 # Inputs need structure (fall speeds, dt*g/dp, dry columns, a clamp that binds): initialize() in cloudsc_ntrac.py.
+public:
+  scales:
+    NTRAC:
+      scale: small
+      description: "the number of tracers, a fixed small count"
 args:
   q: "(NTRAC, NLEV, KLON)"
   pflux: {shape: "(NTRAC, NLEV, KLON)", out: true}

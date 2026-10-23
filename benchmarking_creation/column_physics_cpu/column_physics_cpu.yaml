@@ -22,6 +22,11 @@ parameters:
     KLON: 131075
     NTRAC: 16
 # Inputs, including the fixed cap that makes the tracer clamp bind: initialize() in column_physics_cpu.py.
+public:
+  scales:
+    NTRAC:
+      scale: small
+      description: "the number of tracers, a fixed small count"
 args:
   tr: {shape: "(NLEV, NTRAC, KLON)", out: true}
   src: "(NLEV, KLON)"

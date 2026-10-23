@@ -27,6 +27,11 @@ parameters:
     nclv: 5
 # Structured inputs (positive zdtgdp, diagonally dominant solqb, a clamp that binds) are built by
 # initialize() in cloudsc_solver_carry.py. The domains below are the ranges that generator stays in.
+public:
+  scales:
+    nclv:
+      scale: small
+      description: "the number of cloud species, a fixed small count"
 args:
   q: {shape: "(nclv, nlev, klon)", domain: [0.0, 1.0e-3]}
   zdtgdp: {shape: "(nlev, klon)", domain: [0.05, 0.5]}
