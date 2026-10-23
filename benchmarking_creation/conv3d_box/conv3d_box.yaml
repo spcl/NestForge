@@ -1,0 +1,30 @@
+# Repo-local kernel (see benchmarking_creation/README.md). H2 contender of the thesis benchmark set; record: conv3d_box.md.
+# provenance: {kind: derived, upstream: hpcagent_bench conv_3d}
+# The DaCe program is written output-stationary (one grid point, three tap loops inside). The CPU schedule pushes the
+# j and k maps inside the di and dj tap loops: 6 moves with two unlocks.
+name: Conv3d Box Stencil
+level: 2
+parameters:
+  # K = 2R + 1 taps per axis, a fixed small count. N at M is not a multiple of a block size.
+  S:
+    N: 24
+    K: 5
+  M:
+    N: 257
+    K: 5
+  L:
+    N: 385
+    K: 5
+  XL:
+    N: 513
+    K: 5
+public:
+  scales:
+    K:
+      scale: small
+      description: "taps per axis (2R + 1), a fixed small count"
+# Inputs: initialize() in conv3d_box.py.
+args:
+  padded: "(N + K - 1, N + K - 1, N + K - 1)"
+  w_box: "(K, K, K)"
+  out_grid: {shape: "(N, N, N)", out: true}

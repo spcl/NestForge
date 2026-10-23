@@ -1,0 +1,54 @@
+# Repo-local kernel (see benchmarking_creation/README.md). H2 contender of the thesis benchmark set; record: conv2d_bias_relu.md.
+# provenance: {kind: derived, upstream: hpcagent_bench machine_learning conv2d_* family}
+# The DaCe program is written output-stationary (one output element, three summed loops inside). The CPU schedule
+# pushes the output-plane maps inside the channel and kernel-row loops: 7 moves with two unlocks.
+name: Conv2d Bias ReLU
+level: 2
+parameters:
+  # KH and KW are fixed small counts. H and W at M are not multiples of a block size.
+  S:
+    N: 2
+    CI: 16
+    CO: 16
+    H: 32
+    W: 32
+    KH: 3
+    KW: 3
+  M:
+    N: 8
+    CI: 64
+    CO: 64
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+  L:
+    N: 16
+    CI: 128
+    CO: 128
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+  XL:
+    N: 32
+    CI: 256
+    CO: 256
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+public:
+  scales:
+    KH:
+      scale: small
+      description: "kernel height, a fixed small count"
+    KW:
+      scale: small
+      description: "kernel width, a fixed small count"
+# Inputs: initialize() in conv2d_bias_relu.py.
+args:
+  x: "(N, CI, H + KH - 1, W + KW - 1)"
+  wt: "(CO, CI, KH, KW)"
+  b: "(CO,)"
+  out: {shape: "(N, CO, H, W)", out: true}

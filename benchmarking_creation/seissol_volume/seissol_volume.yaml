@@ -1,0 +1,45 @@
+# Repo-local kernel (see benchmarking_creation/README.md). H2 contender of the thesis benchmark set; record: seissol_volume.md.
+# provenance: {kind: derived, upstream: seissol, via: [hpcagent_bench seissol_tensor_contraction]}
+# The DaCe program is written output-stationary (one (b, k, p) entry, three summed loops inside). The CPU schedule
+# pushes the p and k maps inside the d and l loops: 6 moves with two unlocks.
+name: SeisSol Volume Update
+level: 2
+parameters:
+  # NQ (9 elastic quantities) and ND (3 dimensions) are fixed small counts; NBF 56 is the order-6 basis. NB at M is not
+  # a multiple of a block size.
+  S:
+    NB: 64
+    NBF: 20
+    NQ: 9
+    ND: 3
+  M:
+    NB: 40003
+    NBF: 56
+    NQ: 9
+    ND: 3
+  L:
+    NB: 160003
+    NBF: 56
+    NQ: 9
+    ND: 3
+  XL:
+    NB: 400009
+    NBF: 56
+    NQ: 9
+    ND: 3
+public:
+  scales:
+    NQ:
+      scale: small
+      description: "the number of elastic quantities, a fixed small count"
+    ND:
+      scale: small
+      description: "the number of space dimensions, a fixed small count"
+# Inputs: initialize() in seissol_volume.py.
+args:
+  dt: {}
+  Q: {shape: "(NB, NBF, NQ)", out: true}
+  upd: {shape: "(NB, NBF, NQ)", out: true}
+  I: "(NB, NBF, NQ)"
+  kDivM: "(ND, NBF, NBF)"
+  star: "(ND, NQ, NQ)"
