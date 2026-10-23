@@ -5,6 +5,7 @@ reads ``t``), so the loop stays a loop. The row loop does not carry, and the two
 ``carry`` holds the scalar after each column so the consumer reads an array, not a by-value scalar.
 """
 
+import dace
 import dace as dc
 from hpcagent_bench.frameworks.dace_framework import dc_float
 
@@ -23,12 +24,23 @@ def two_pass_scope(
     out: dc_float[N, M],
     carry: dc_float[M],
 ):
-    s = 0.0
+    # The carried value lives in an array indexed by column, cs[j] before column j and cs[j + 1] after it: a scalar
+    # (or a one-element array, which simplification turns back into one) shared by the parent and a GPU kernel is
+    # passed to the kernel by value while the parent holds it on the device, which does not compile (2026-10-22/23).
+    # The update is one tasklet: written as two statements, the frontend lowers each to a length-1 map.
+    cs = dc.define_local([M + 1], dc.float64)
+    cs[0] = 0.0
     for j in range(M):
         for i in dc.map[0:N]:
-            t[i, j] = a[i, j] * s + b[i, j]
-        s = s + t[0, j] + w[j]
-        carry[j] = s
+            t[i, j] = a[i, j] * cs[j] + b[i, j]
+        with dace.tasklet:
+            si << cs[j]
+            t0 << t[0, j]
+            wj << w[j]
+            so >> cs[j + 1]
+            cj >> carry[j]
+            so = si + t0 + wj
+            cj = si + t0 + wj
     for i in range(N):
         for j in dc.map[0:M]:
             out[i, j] = t[i, j] * t[i, j] - a[i, j] * carry[M - 1]

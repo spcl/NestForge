@@ -2,15 +2,15 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a synthetic kernel. Written 2026-10-22 from Daint job 5119028. Entry note: `2026-10-22-m7-two-pass-scope` (thesis notes).
 
-**Status:** `entry` (route and oracle at preset S; CPU timed at preset M, job 5119199).
+**Status:** `entry`, re-targeted to the GPU on 2026-10-23: the scope beats the default 2.87x and 2.82x (two jobs) on GPU at preset M. On CPU it ties at 1 thread and loses at 72.
 
 ## What this benchmark is
 
-Two passes over a grid `(N, M)`, with `M` contiguous. The producer walks columns. A scalar starts at 0; column `j` of `t` is `a * s + b`, then `s` becomes `s + t[0, j] + w[j]` and that value is stored in `carry[j]`. The consumer walks rows and writes `out = t * t - a * carry[M - 1]`. The column loop cannot be a map, because the next scalar reads the column just written. The row loop can. They are separate blocks, and no move fuses across that boundary. The scheduling problem is to put both passes in one kernel. Synthetic (thesis slot M7).
+Two passes over a grid `(N, M)`, with `M` contiguous. The producer walks columns. A carried value starts at 0; column `j` of `t` is `a * s + b`, then `s` becomes `s + t[0, j] + w[j]` and that value is stored in `carry[j]`. In the DaCe program (since 2026-10-23) the carried value is `cs[j]` of an `(M + 1,)` array and its update is one tasklet (see "How it was created"). The consumer walks rows and writes `out = t * t - a * carry[M - 1]`. The column loop cannot be a map, because the next scalar reads the column just written. The row loop can. They are separate blocks, and no move fuses across that boundary. The scheduling problem is to put both passes in one kernel. Synthetic (thesis slot M7).
 
 ## What the reference is
 
-CPU. The GPU reference builds; the GPU baseline does not (below).
+GPU (since 2026-10-23). On CPU the scope does not beat the default (below).
 
 - **Baseline.** Stage 1, then `default_moves()`, then one kernel per parallel top-level map. Two kernels: the column map, launched once per column from the host loop that updates the scalar, and the collapsed consumer map.
 - **Reference.** `define_scope` on the init state, the column loop and the consumer state. One kernel. No `finish_moves()`.
@@ -18,6 +18,11 @@ CPU. The GPU reference builds; the GPU baseline does not (below).
 ## How it was created
 
 `layout_flip_fuse` was dropped the same morning: at DaCe `801cafd` the default already fuses the two maps ([[2026-10-22-m7-layout-flip-fuse]]). A prefix `acc[j] = previous + w[j]` with the map outside the carry is lifted to a scan in the same state, and the default fuses the maps (job 5118878). The carry has to read the map output, so the map stays inside the loop (this source). Job 5119028.
+
+**2026-10-23 rewrite of the DaCe program** (the NumPy oracle is unchanged). Two changes:
+
+1. The carried scalar update `s = s + t[0, j] + w[j]; carry[j] = s` is one explicit `dace.tasklet`. Written as two statements, the frontend lowered each to a length-1 map, and inside the scope each became a length-1 `omp for` with its own barrier (three per column).
+2. The carried value is `cs[j]` of an `(M + 1,)` transient, read at `cs[j]` and written at `cs[j + 1]`. As a scalar, or as a one-element array (which simplification turns back into a scalar), it is passed to the GPU column kernel as a by-value `double` while the parent holds it on the device (`s_gpu`), and the GPU default did not compile (jobs 5127392, 5127433). With the per-column array every kernel takes it by pointer and the GPU default builds (job 5127479).
 
 ## What the solution is
 
@@ -51,9 +56,20 @@ CPU, preset M (N=4099, M=32771), host time, median of 5 after one warm-up (job 5
 
 The reference is one kernel, but the scalar update is three length-1 `omp for` loops inside the sequential column loop, each with a barrier. At one thread that is cheaper than 32771 host launches. At 72 threads the barriers dominate. The consumer nest is the same in the baseline and the reference.
 
+**2026-10-23, the rewritten program** at NestForge main's pins (DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`), preset M, median of 5 after one warm-up. All variants match the oracle at S (relative error 0).
+
+| Build | Baseline | Scope (reference) | Ratio | Interchange (decoy) |
+| --- | --- | --- | --- | --- |
+| GPU (job 5127479) | 594.86 ms | **207.01 ms** | **2.87x** | 601.66 ms (0.99x) |
+| GPU, repeat (job 5127630) | 604.11 ms | **214.40 ms** | **2.82x** | 607.48 ms (0.99x) |
+| CPU 1 thread (job 5127631) | 1540.58 ms | 1533.30 ms | 1.00x | 1787.72 ms (0.86x) |
+| CPU 72 threads (job 5127480) | 173.84 ms | 273.45 ms | 0.64x | 176.45 ms (0.99x) |
+
+On GPU the default launches the column kernel once per column (32771 launches) and moves the carried value between host and device each time; the scope runs the whole column loop inside one kernel. On CPU the scope replaces one fork-join per column by two barriers per column (the column `omp for` and the length-1 loop DaCe still wraps the tasklet in), which costs about the same: a tie on 1 thread, a loss at 72. The comparison of outputs with the baseline at M is `nan` (the carried value overflows over 32771 columns); the oracle check at S passes.
+
 ## CPU and GPU
 
-CPU and GPU stage 1 trees match, and the same scope applies on both. CPU baseline, CPU reference and CPU decoy match the oracle at S (relative error 0 on `t`, `out` and `carry`). GPU reference matches (0). GPU baseline and GPU decoy do not compile: the parent passes the device pointer `s_gpu` into `extcall_0`'s by-value `double s`. The reference does not split that scalar across a kernel call, so it compiles.
+CPU and GPU stage 1 trees match, and the same scope applies on both. The gap is on GPU (2.87x). On CPU the default is the right schedule. Before the 2026-10-23 rewrite the GPU baseline and decoy did not compile (the parent passed the device pointer `s_gpu` into `extcall_0`'s by-value `double s`).
 
 ## What else matters
 
@@ -104,4 +120,30 @@ reference:
   tree: |
     state0_0
       extcall_0  reads a, b, carry, t, w  writes carry, out, t
+```
+
+```yaml
+status: entry
+device: gpu
+threads: null
+preset: M
+dace: 042413df2b96ed0f2ebb361c4879c7f68bad41d2
+nestforge: ib/on-main (origin/main 8545a4b + interchange-benchmarks), program rewritten 2026-10-23
+hpcagent_bench: 2666c06b73eaa9d51f05568e6c584aaafa98ad67
+timing: Daint job 5127479, repeat 5127630 (GH200)
+baseline:
+  moves: [default_moves]
+  time_ms: 594.86
+  repeats: 5
+  oracle_rel_error: 0.0
+reference:
+  moves:
+    - kind: set_scope
+      on: state0_0, for0_0, state0_1
+  time_ms: 207.01
+  repeats: 5
+  oracle_rel_error: 0.0
+decoys:
+  - moves: [interchange-map-map on the consumer]
+    time_ms: 601.66
 ```

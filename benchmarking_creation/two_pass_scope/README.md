@@ -34,7 +34,7 @@ Naming the two maps instead is refused: they are in different states. Name the b
 
 ## GPU
 
-The same scope applies, and that one kernel matches the oracle at S. The two-kernel default does not compile: the parent passes the device pointer `s_gpu` into `extcall_0`'s by-value `double s`.
+The same scope applies, and that one kernel matches the oracle at S. The GPU is the target: the scope is 2.87x faster than the two-kernel default at preset M (2026-10-23). The default compiles since the carried value moved into the per-column array `cs` (before, the parent passed the device pointer `s_gpu` into a by-value `double s`). On CPU the scope ties the default on 1 thread and loses at 72.
 
 ## Status
 
