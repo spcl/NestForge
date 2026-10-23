@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/structured_grids/adi` (`e63f9f1`). Written 2026-10-22 from Daint jobs 5118678 (corpus `adi`), 5118695 and 5118842 (v1, dead end), 5119069 (v2, defaults and a greedy route), 5119089 and 5119090 (the route and every fusion pair, CPU and GPU), 5119102 (CPU timing), 5119212 and 5119364 (GPU timing), 5119154, 5119156 and 5119300 (fusion reproducers, the last one DaCe alone), 5119328 and 5119329 (a hand-fused copy, CPU and GPU). Experiment note: `2026-10-22-m6` (thesis notes). How to optimize it, in short: [README.md](README.md).
 
-**Status:** `entry`, finished with three fixes that are under review: the full reference, re-timed from stage 1, gives 10.7x on GPU (0.158 s against 1.698 s at preset M, Daint job 5120648) and 1.47x on CPU (0.330 s against 0.487 s, job 5120561), all matching the oracle. It needs DaCe `MapFusionInPlace` (spcl/dace#2727, fixes spcl/dace#2725), NestForge narrowing the nest memlets after every move (spcl/NestForge#31, fixes #24) and NestForge's `map-fusion` falling back to `MapFusionInPlace` (branch `m6/in-place-fusion`, the PR for #27 follows dace#2727); the `describe()` guard (#28) is merged (spcl/NestForge#30). Until then only the 4 interchanges are reachable (1.43 to 1.44x on GPU).
+**Status:** `entry`, **blocked on DaCe**. Re-timed 2026-10-23 at NestForge main's pins (DaCe `042413d`): the reachable route (four interchanges) is 1.45x on GPU and 1.40x on CPU at 72 threads at preset M, and stays at 1.42x to 1.47x at `N` 400 and 800, so no preset change makes it clear 2x. The full route (10.7x on GPU with the fixes, job 5120648) needs `MapFusionVertical` to fuse row maps `map i { for j }` whose producer is a recurrence. spcl/dace#2727 (`MapFusionInPlace`) was closed on the advisor's review: the advisor extends `MapFusionVertical` with the iteration-footprint condition instead. On `main` the fusion is not offered (2026-10-23, jobs 5126599 to 5126601). Re-time the full route once that DaCe change is pinned.
 
 Slot: M6 (board package W12-M6).
 
@@ -73,6 +73,20 @@ After stage 1 on both devices `list_moves` offers `interchange-loop-map` on the 
 | CPU: hand-fused copy, its default | 0.525 s | 5119328 |
 
 ## What the gains are
+
+**2026-10-23, NestForge main's pins** (DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`), median of 5 after one warm-up; every variant matches the oracle at S (9.1e-14). The full route (`full`, `full_cpu`) is refused: `map-fusion` of the forward row sweep's two maps is not offered.
+
+| Variant | GPU, `N` 1600 (M) | CPU 72 threads, M | CPU 1 thread, M | GPU, `N` 400 | GPU, `N` 800 | CPU 72, `N` 400 | CPU 72, `N` 800 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| default | 1732.6 ms | 755.9 ms | 990.6 ms | 347.8 ms | 718.4 ms | 159.4 ms | 351.7 ms |
+| stage 1, no move | 3292.8 ms (0.53x) | 1439.2 ms (0.53x) | **676.4 ms (1.46x)** | | | | |
+| the three column interchanges | 1720.3 ms (1.01x) | 761.3 ms (0.99x) | 990.0 ms (1.00x) | 1.01x | 1.01x | 0.99x | 0.99x |
+| the `v` row interchange alone | 2768.1 ms (0.63x) | 0.62x | 875.2 ms (1.13x) | 0.62x | 0.63x | 0.61x | 0.61x |
+| **columns + `v` row (reachable route)** | **1197.9 ms (1.45x)** | **540.5 ms (1.40x)** | 1184.5 ms (0.84x) | 1.42x | 1.43x | 1.47x | 1.44x |
+
+Jobs 5126599 to 5126601 (preset M), 5127849 to 5127852 (`N` 400 and 800). On 1 CPU thread the default's moves lose to stage 1 itself (1.46x), a second, unclaimed gap.
+
+**2026-10-22** (DaCe `801cafd`, the numbers below):
 
 With the fixes (jobs 5120648 GPU, 5120561 and 5120365 CPU; preset M; all match the oracle):
 
