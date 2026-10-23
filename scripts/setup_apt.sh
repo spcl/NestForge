@@ -6,15 +6,17 @@
 # behind a flag (its own apt repo + gpg key):
 #   --oneapi  Intel oneAPI  -- icx/icpx/ifx + libiomp5 + SVML + MKL
 #   --no-flang  skip flang (CI: no test runs it, and its 45 MB download stalls on slow mirrors)
+#   --archives DIR  keep downloaded .deb files in DIR (CI caches DIR, so a slow mirror is never hit twice)
 #
 # Assumes sudo privileges (uses sudo directly, or runs as-is when already root). Idempotent: present
 # packages / repos / gpg keys are detected and skipped. Nothing here is destructive.
 #
-# Usage: scripts/setup_apt.sh [--oneapi] [--no-flang] [-h]
+# Usage: scripts/setup_apt.sh [--oneapi] [--no-flang] [--archives DIR] [-h]
 set -euo pipefail
 
 DO_ONEAPI=0
 DO_FLANG=1
+ARCHIVES=""
 
 log()  { printf '\033[1;32m[apt]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[apt:warn]\033[0m %s\n' "$*" >&2; }
@@ -25,6 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --oneapi) DO_ONEAPI=1 ;;
     --no-flang) DO_FLANG=0 ;;
+    --archives) ARCHIVES="$2"; shift ;;
     -h|--help) usage 0 ;;
     *) warn "unknown arg: $1"; usage 1 ;;
   esac
@@ -37,6 +40,7 @@ SUDO=sudo
 APT_UPDATED=0
 # A stalled mirror must fail and retry, not hang the job: CI once waited an hour on one Release file.
 APT_NET=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+if [ -n "$ARCHIVES" ]; then mkdir -p "$ARCHIVES/partial"; APT_NET+=(-o "Dir::Cache::Archives=$ARCHIVES"); fi
 apt_update_once() { [ "$APT_UPDATED" -eq 1 ] || { $SUDO apt-get "${APT_NET[@]}" update -y; APT_UPDATED=1; }; }
 
 # Install what exists on this release; warn + skip the rest (flang's package name varies).
@@ -104,5 +108,8 @@ log "BLAS/LAPACK (LAPACKE: the C interface CPF renders vendor LAPACK calls again
 apt_install libopenblas-dev liblapack-dev liblapacke-dev libblis-dev libfftw3-dev
 
 [ "$DO_ONEAPI" -eq 1 ] && { phase_oneapi || warn "oneAPI setup incomplete"; }
+
+# the CI cache step saves DIR as the invoking user, so hand it back from root
+[ -z "$ARCHIVES" ] || $SUDO chown -R "${SUDO_USER:-$(id -un)}" "$ARCHIVES"
 
 log "done. gcc/g++/clang/gfortran on PATH; libomp/libgomp installed."
