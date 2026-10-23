@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/dense_linear_algebra/scattering_self_energies` (`e63f9f1`). Written 2026-10-22 from Daint jobs 5113053 (routes from stage 1), 5113054 and 5113055 (default build), 5113159 (the 5-move route on CPU and GPU), 5114046, 5114047 and 5115143 (timing and the memlet problem) and 5116121 (timing with collapsed kernels). Experiment notes: `2026-10-21-w3-medium-refills` and `2026-10-21-h2-m3-timing` (thesis notes). How to optimize it, in short: [README.md](README.md). Sibling kernels: `scattering_self_energies_m2` (M9, 2 pulls) and the 6-move original `scattering_self_energies`.
 
-**Status:** `entry`, timed on CPU at 72 threads
+**Status:** `entry`, re-timed 2026-10-23 at NestForge main's pins with preset M changed to `Nkz` 2, `NE` 8: the route built with `collapse(3)` beats the default's best build (`collapse(2)`) **5.08x and 4.97x** (two jobs) on CPU at 72 threads.
 
 Slot: M5.1. Created by W3 as a hard-tier (H2) candidate; logged as medium on 2026-10-22 (user decision, board package W12-M5.1).
 
@@ -62,6 +62,31 @@ After stage 1 on CPU, `list_moves` offers `interchange-map-loop` (`kernel7_0`, `
 
 ## What the gains are
 
+**2026-10-23, preset M changed.** At the old M (`Nkz` 4, `NE` 16) the default's best build already splits 64 `(k, E)` points over 72 threads, and the route gains 1.30x over it (job 5126560: 1137 ms against 874 ms). With fewer `(k, E)` points than threads, the default's best build leaves threads idle, and only the route's `(k, E, a)` map fills them. Sweep at 72 threads (jobs 5127167 to 5127169; the default's best build takes the same ~1.13 s at every size because each thread holds one `(k, E)` point):
+
+| `Nkz` x `NE` | default, `collapse(2)` | reference, `collapse(3)` | Ratio |
+| --- | --- | --- | --- |
+| 4 x 16 = 64 (old M) | 1137 ms | 874 ms | 1.30x |
+| 2 x 8 = 16 (**new M**) | 1142 ms | 224 ms | **5.10x** |
+| 1 x 16 = 16 | 1125 ms | 224 ms | 5.02x |
+| 2 x 4 = 8 | 1133 ms | 115 ms | 9.84x |
+
+At the new preset M (`Nkz 2, NE 8, Nqz 4, Nw 2, N3D 3, NA 128, NB 4`), DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`, CPU 72 threads (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), median of 5 after one warm-up, jobs 5127627 and 5127628 (repeat), 5127629 (1 thread). No memlet workaround: on `main` the kernel keeps its OpenMP loop (spcl/NestForge#31). Every variant matches the oracle at S (5.8e-15) and the baseline at M.
+
+| Build | 72 threads | repeat | 1 thread |
+| --- | --- | --- | --- |
+| default, as built | 8562.7 ms | 8430.9 ms | 17126.0 ms |
+| default, `collapse(2)` (the baseline to beat) | 1139.5 ms | 1132.2 ms | 17022.9 ms |
+| first move only, as built | 7370.6 ms | 7295.2 ms | 14831.5 ms |
+| moves 1 and 2 (round trip), as built | 7648.6 ms | 7557.8 ms | n/a |
+| reference, as built | 7627.4 ms | 7537.8 ms | 15242.1 ms |
+| reference, `collapse(2)` | 1024.5 ms | 1017.5 ms | 15315.1 ms |
+| **reference, `collapse(3)`** | **224.3 ms (5.08x)** | **227.9 ms (4.97x)** | 14721.4 ms (1.16x) |
+
+The benchmark is the CPU at 72 threads, and its answer has two parts: the five moves (stage 2) and a kernel built with `collapse(3)` (stage 5, through `bind` of a rebuilt kernel). Neither alone is enough: the moves with the default build are 1.12x, and the best collapse of the default is the baseline above. On 1 thread nothing matters (1.16x at most).
+
+**2026-10-22, old preset M** (DaCe `801cafd`, the record as first written):
+
 Preset M (`Nkz 4, NE 16, Nqz 4, Nw 2, N3D 3, NA 128, NB 4`), CPU, Daint node `nid005539`, 72 threads (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), `g++` `strict-ieee` with `-fopenmp`, whole-program host time, mean of 10 calls after one warm-up (min and max not recorded). Every variant matches the oracle (rtol 1e-8, atol 1e-10) at S and M.
 
 | Build | Preset S | Preset M |
@@ -94,19 +119,17 @@ CPU is the device measured. On GPU the route is offered and applies (job 5113159
 status: entry
 device: cpu
 threads: 72
-preset: M
-dace: 801cafd
-nestforge: 8c87f76 (+ 27080f2)
-hpcagent_bench: e63f9f1
-probe: Daint jobs 5113053, 5113159 (routes), 5116121 (timing)
-host: nid005539
+preset: M    # Nkz 2, NE 8, Nqz 4, Nw 2, N3D 3, NA 128, NB 4 (since 2026-10-23)
+dace: 042413df2b96ed0f2ebb361c4879c7f68bad41d2
+nestforge: ib/on-main (origin/main 8545a4b + interchange-benchmarks)
+hpcagent_bench: 2666c06b73eaa9d51f05568e6c584aaafa98ad67
+probe: Daint jobs 5113053, 5113159 (routes); timing 5127627, repeat 5127628
+host: Daint GH200 node, exclusive
 baseline:
   moves: [default_moves]
   kernel: "#pragma omp parallel for collapse(2)"
-  time_ms: 1014.3
-  time_min_ms: null
-  time_max_ms: null
-  repeats: 10
+  time_ms: 1139.5
+  repeats: 5
   oracle_rel_error: "matches (rtol 1e-8); max error not recorded"
   tree: |
     map (k, E) { for q { for w { for i { map a { for b { for j { map (o1, o2) { guard { for o3 { for o4 } } } } } } } } } }
@@ -123,24 +146,21 @@ reference:
     - kind: interchange-loop-map
       on: for3_0 (loop q), kernel5_0 (map a)
     - finish_moves: true
-  workaround: propagate_memlets_sdfg after finish_moves and on each kernel copy (spcl/NestForge#24)
   kernel: "#pragma omp parallel for collapse(3)"
-  time_ms: 891.7
-  time_min_ms: null
-  time_max_ms: null
-  repeats: 10
+  time_ms: 224.3
+  repeats: 5
   oracle_rel_error: "matches (rtol 1e-8); max error not recorded"
   tree: |
     map (k, E, a) { for q { for w { for i { for b { for j { map (o1, o2) { guard { for o3 { for o4 } } } } } } } } }
 alternatives:
   - moves: [default_moves]
     kernel: "#pragma omp parallel for"
-    time_ms: 16048.8
+    time_ms: 8562.7
   - moves: [the 5 moves, finish_moves]
     kernel: "#pragma omp parallel for collapse(2)"
-    time_ms: 1045.2
+    time_ms: 1024.5
 decoys:
   - moves: [interchange-map-loop]
-    effect: pushes loop b out of map a
-    time_ms: 16008   # job 5114047, kernel without collapse
+    effect: pushes loop b out of map a; the first move alone
+    time_ms: 7370.6   # kernel as built
 ```
