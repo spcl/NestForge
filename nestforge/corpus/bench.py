@@ -126,25 +126,31 @@ def corpus_kernel(name: str) -> CorpusKernel | None:
 
 
 def local_spec(yaml_path: Path) -> BenchSpec:
-    """The spec of a repo-local manifest. ``BenchSpec.from_yaml`` derives the reference's folder and the track from
-    a location under hpcagent_bench's ``benchmarks/``, so this takes its steps with the kernel's own folder as
-    ``relative_path`` (absolute, which hpcagent_bench joins onto its corpus root unchanged) and the default track."""
+    """The spec of a repo-local manifest. hpcagent_bench derives a kernel's site (folder, track, dwarf) from a location
+    under its ``benchmarks/``, so this builds the site itself: the kernel's own folder as ``relative_path`` (absolute,
+    which hpcagent_bench joins onto its corpus root unchanged) and the scientific-computing track, the one that admits
+    every level (loop_level_reasoning refuses level 3)."""
     from hpcagent_bench import manifest_schema
     from hpcagent_bench import spec as hb
 
     source = str(yaml_path)
     raw: dict[str, Any] = yaml.safe_load(yaml_path.read_text())
+    raw["relative_path"] = str(yaml_path.parent.resolve())
     manifest = manifest_schema.validate_manifest(raw, source)
-    raw.update(relative_path=str(yaml_path.parent.resolve()), short_name=yaml_path.stem)
-    raw.setdefault("module_name", yaml_path.stem)
-    raw.setdefault("name", yaml_path.stem)
-    func_name = hb.derive_func_name(raw["relative_path"], raw["module_name"])
-    if func_name is not None:
-        raw["func_name"] = func_name
-    module = yaml_path.with_name(f"{raw['module_name']}.py")
-    initializer = module if hb.defines_function(module, hb.INITIALIZER) else None
-    hb.expand_args(raw, manifest.args, initializer, source)
-    return hb.BenchSpec.from_dict(raw, source)
+    module_name = manifest.module_name or yaml_path.stem
+    func_name = hb.derive_func_name(raw["relative_path"], module_name)
+    if func_name is None:
+        raise ValueError(f"{yaml_path}: no entry function in its reference {module_name}_numpy.py")
+    module = yaml_path.with_name(f"{module_name}.py")
+    site = hb.KernelSite(
+        short_name=yaml_path.stem,
+        relative_path=raw["relative_path"],
+        module_name=module_name,
+        func_name=func_name,
+        track=hb.Track.SCIENTIFIC_COMPUTING,
+        initializer_inputs=hb.initializer_inputs(module) if hb.defines_function(module, hb.INITIALIZER) else None,
+    )
+    return hb.BenchSpec.from_manifest(manifest, site, source)
 
 
 def iter_local_kernels() -> Iterator[CorpusKernel]:
