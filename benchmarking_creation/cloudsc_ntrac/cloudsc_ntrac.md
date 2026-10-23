@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from CloudSC. Written 2026-10-21 from Daint jobs 5112828, 5112859, 5112883, 5112902, 5112961 and 5113005. Set: `benchmark-set-15` (thesis notes). Entry note: `2026-10-21-w11c-cloudsc-ntrac` (thesis notes).
 
-**Status:** `entry`. The kernel, the route and its decoys are written and probed on Daint at preset S on CPU and GPU. Nothing is timed (W10).
+**Status:** `entry`, timed 2026-10-23 at NestForge main's pins. Target: GPU, 2.29x at preset M, which since 2026-10-23 has 1031 columns (it had 32771, where the route gained only 1.11x).
 
 ## What this benchmark is
 
@@ -73,13 +73,38 @@ Right after stage 1, `list_moves` offers `loop-fission` (1) and `interchange-map
 
 ## What the gains are
 
-Not timed yet (W10). Guess from the design: on GPU at preset M (`NLEV` 137, `KLON` 32771, `NTRAC` 16), 272 launches become 2, and each per-level tracer kernel moves about 13 MB, so the time is partly launch-bound: about 1.5 to 2.5× (a guess, nothing measured). The quickstart's stage 7 kernel times at preset S (job 5113005) are launch noise, not the gap.
+Whole-program host time (GPU times include host-device copies), median of 5 calls after one warm-up, default stage 5 build, `-fopenmp` on CPU kernels. DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`, 2026-10-23.
+
+**Why preset M changed.** At the old M (`NLEV` 137, `KLON` 32771, `NTRAC` 16) the route gains 1.11x on GPU (38.6 ms against 34.8 ms, job 5126626): the host-device copies of the (`NTRAC`, `NLEV`, `KLON`) arrays dominate and hide the 272 launches the route removes. GPU sweep of preset M (jobs 5127148 to 5127151):
+
+| `KLON` | `NLEV` | Baseline | Reference | Ratio | Half route |
+| --- | --- | --- | --- | --- | --- |
+| 32771 | 137 | 38.58 ms | 34.78 ms | 1.11x | 1.05x |
+| 4099 | 137 | 10.57 ms | 6.80 ms | 1.55x | 1.21x |
+| **1031** | **137** | 6.55 ms | 2.93 ms | **2.24x** | 1.38x |
+| 1031 | 500 | 20.96 ms | 7.60 ms | 2.76x | 1.47x |
+| 257 | 1000 | 32.64 ms | 6.36 ms | 5.13x | 1.67x |
+
+Preset M is now `NLEV` 137, `KLON` 1031, `NTRAC` 16 (CloudSC's level count; 1031 columns, a GPU block of the size a blocked driver hands one kernel). L is 4099 columns and XL 32771.
+
+**At the new preset M** (jobs 5127296, 5127297, 5127298):
+
+| Variant | GPU | CPU 1 thread | CPU 72 threads |
+| --- | --- | --- | --- |
+| baseline (default) | 6.51 ms | 3.63 ms | 2.17 ms |
+| reference (5 steps) | **2.85 ms (2.29x)** | 25.23 ms (0.14x) | 2.15 ms (1.01x) |
+| half route (cover only) | 4.77 ms (1.37x) | 4.88 ms (0.74x) | **1.40 ms (1.55x)** |
+| `loop-fission` + `loop-fusion` | n/a | 3.81 ms (0.95x) | 2.25 ms (0.96x) |
+
+Oracle relative error at preset S: 0.0 for `pflux` and `pcov` on every variant, CPU and GPU.
 
 Oracle relative error at preset S: 0.0 for `pflux` and `pcov`, for the baseline, both routes and the half route, on CPU and GPU.
 
 ## CPU and GPU
 
-Stage 1 leaves the same tree on both devices, and the same moves are legal on both. The gap is claimed on GPU only. On CPU, the baseline already walks the contiguous `jl` innermost under the level loop. The route turns that into one column per iteration at stride `KLON`, which the 2026-10-02 CPU/GPU flip note found about 8.5× slower for a similar thread-per-column shape on one thread (a laptop smoke test, not a Daint measurement). W10 should time the CPU baseline and the route at 1 and 72 threads to confirm that CPU wants no move.
+Stage 1 leaves the same tree on both devices, and the same moves are legal on both. The benchmark claims the GPU: the full route, 2.29x. On CPU the answer is different. On 1 thread no move helps: the route makes one column per iteration at stride `KLON` and is 7x slower, and the half route loses too. At 72 threads the half route (cover interchanged, tracers kept under the level loop) is the best schedule, 1.55x, and the full route ties the default. So the same five moves are right on GPU, a trap on one CPU thread, and one move too many at 72 threads.
+
+Without the `NTRAC` small declaration: declaring `NTRAC` small (`public.scales`) turns the tracer map into a sequential loop at stage 1, and the route above is not offered (2026-10-23, walk job 5126614). The manifest does not declare it.
 
 ## What else matters
 
@@ -98,17 +123,15 @@ Stage 1 leaves the same tree on both devices, and the same moves are legal on bo
 status: entry
 device: gpu
 threads: 1
-preset: M
-dace: 801cafd
-nestforge: 7c5480f + this kernel (branch w11c/cloudsc-ntrac)
-hpcagent_bench: e63f9f1
-probe: Daint job 5113005 (preset S, CPU and GPU, venv-e989491)
-host: null
+preset: M    # NLEV 137, KLON 1031, NTRAC 16
+dace: 042413df2b96ed0f2ebb361c4879c7f68bad41d2
+nestforge: ib/on-main (origin/main 8545a4b + interchange-benchmarks)
+hpcagent_bench: 2666c06b73eaa9d51f05568e6c584aaafa98ad67
+probe: Daint job 5113005 (route, preset S); timing 5127298 (GPU), 5127296 and 5127297 (CPU)
+host: Daint GH200 node, exclusive
 baseline:
   moves: [default_moves]
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
+  time_ms: 6.51
   repeats: 5
   oracle_rel_error: 0.0   # preset S
   tree: |
@@ -126,9 +149,7 @@ reference:
     - kind: interchange-loop-map
       on: for0_0, kernel2_0 (tracer level loop into the 2-D map)
     - finish_moves: true
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
+  time_ms: 2.85
   repeats: 5
   oracle_rel_error: 0.0   # preset S
   tree: |
@@ -146,10 +167,10 @@ decoys:
     time_ms: null
   - moves: [loop-fission, interchange-loop-map, finish_moves]
     effect: half the gain (tracers still launch once per level)
-    time_ms: null
+    time_ms: 4.77
   - moves: [the reference moves, interchange-map-loop]
     effect: undoes one interchange
     time_ms: null
 ```
 
-The same block for CPU: the reference is `default_moves()` (no move), and the GPU route is a decoy; to be filled in W10.
+CPU: on 1 thread the reference is `default_moves()` (3.63 ms; the GPU route 25.23 ms); at 72 threads the half route is the best schedule (1.40 ms against 2.17 ms).

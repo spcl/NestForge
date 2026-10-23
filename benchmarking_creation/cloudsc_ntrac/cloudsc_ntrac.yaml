@@ -5,28 +5,25 @@ name: CloudSC NTRAC Sedimentation
 level: 2
 parameters:
   # KLON is not a multiple of a block size at any preset. NTRAC >= 4 (tracers 2 and 3 are rain and snow).
+  # M is 1031 columns (2026-10-23): at 32771 columns the host-device copies of the (NTRAC, NLEV, KLON) arrays hide the
+  # 272 launches the route removes (1.11x); at 1031 the launches dominate (2.24x on GPU, jobs 5127148 to 5127151).
   S:
     NLEV: 30
     KLON: 257
     NTRAC: 6
   M:
     NLEV: 137
-    KLON: 32771
+    KLON: 1031
     NTRAC: 16
   L:
     NLEV: 137
-    KLON: 65539
+    KLON: 4099
     NTRAC: 16
   XL:
     NLEV: 137
-    KLON: 131075
+    KLON: 32771
     NTRAC: 16
 # Inputs need structure (fall speeds, dt*g/dp, dry columns, a clamp that binds): initialize() in cloudsc_ntrac.py.
-public:
-  scales:
-    NTRAC:
-      scale: small
-      description: "the number of tracers, a fixed small count"
 args:
   q: "(NTRAC, NLEV, KLON)"
   pflux: {shape: "(NTRAC, NLEV, KLON)", out: true}
