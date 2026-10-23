@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a synthetic kernel. Written 2026-10-22 from Daint job 5119028. Entry note: `2026-10-22-m7-two-pass-scope` (thesis notes).
 
-**Status:** `entry`, re-targeted to the GPU on 2026-10-23: the scope beats the default 2.87x and 2.82x (two jobs) on GPU at preset M. On CPU it ties at 1 thread and loses at 72.
+**Status:** `entry`, **does not meet the benchmark criteria** (corrected 2026-10-23 afternoon). With the GPU as a target, stage 4 places the scope's kernel on the CPU, because it holds a sequential loop: in jobs 5127479 and 5127630 the scope ran as one g++ kernel with OpenMP at 72 threads (207 ms), against the GPU default's per-column launches (595 ms). The "2.87x on GPU" therefore compares a CPU kernel with the GPU default, and the CPU default at 72 threads (174 ms) is faster than both. On CPU alone the scope ties at 1 thread and loses at 72 (0.64x). The 2026-10-23 program rewrite stays: it makes the GPU default compile.
 
 ## What this benchmark is
 
@@ -10,7 +10,7 @@ Two passes over a grid `(N, M)`, with `M` contiguous. The producer walks columns
 
 ## What the reference is
 
-GPU (since 2026-10-23). On CPU the scope does not beat the default (below).
+No device has a gap at preset M (see Status). The GPU default compiles since the 2026-10-23 rewrite; on a GPU target the scope's kernel is placed on the CPU.
 
 - **Baseline.** Stage 1, then `default_moves()`, then one kernel per parallel top-level map. Two kernels: the column map, launched once per column from the host loop that updates the scalar, and the collapsed consumer map.
 - **Reference.** `define_scope` on the init state, the column loop and the consumer state. One kernel. No `finish_moves()`.
