@@ -233,3 +233,25 @@ def test_gpu_offloading_places_a_nested_sdfg_at_the_top_level_of_a_state():
     maps = [node for node, _ in nested.sdfg.all_nodes_recursive() if isinstance(node, dace.nodes.MapEntry)]
     assert maps and all(entry.map.schedule == dace.ScheduleType.GPU_Device for entry in maps)
     sdfg.validate()
+
+
+@dace.program
+def staged_scale(a: dace.float64[N], b: dace.float64[N]):
+    t = np.empty_like(a)
+    for i in dace.map[0:N]:
+        t[i] = a[i] * 2.0
+    for i in dace.map[0:N]:
+        b[i] = t[N - 1 - i] + 1.0
+
+
+def test_a_kernel_placed_on_the_gpu_keeps_its_own_arrays_off_the_host_stack(tmp_path):
+    """Pinned to ``Register(force=True)`` when the scope was set, ``t`` stayed a host stack array the device kernels
+    wrote through, corrupting the host stack."""
+    session = Session(staged_scale.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
+    session.describe()
+    maps = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
+    name = session.set_scope(maps, session.epoch).reason
+
+    session.place({name: "gpu"}, session.epoch)
+
+    assert session.kernel(name).standalone_sdfg.arrays["t"].storage != dace.StorageType.Register

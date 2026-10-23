@@ -251,7 +251,8 @@ class Session:
     def bump(self) -> None:
         self.epoch += 1
         normalize_labels(self.sdfg)
-        force_register_arrays(self.sdfg)
+        # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
+        force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
         self.expanded = set()
         self.costs = None
