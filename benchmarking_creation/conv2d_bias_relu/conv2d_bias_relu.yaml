@@ -1,0 +1,49 @@
+# Repo-local kernel (see benchmarking_creation/README.md). Thesis benchmark set (medium); record: conv2d_bias_relu.md.
+# provenance: {kind: derived, upstream: hpcagent_bench machine_learning conv2d_* family}
+# The DaCe program is written output-stationary (one output element, three summed loops inside). Answers at M:
+# GPU one map-fission (108x); CPU 1 thread the fission and two interchange-map-loop (2.0x); 72 threads also the
+# (n, co) swap (14.9x).
+name: Conv2d Bias ReLU
+level: 2
+parameters:
+  # KH and KW are fixed small counts. H and W at M are not multiples of a block size.
+  S:
+    N: 2
+    CI: 16
+    CO: 16
+    H: 32
+    W: 32
+    KH: 3
+    KW: 3
+  M:
+    N: 8
+    CI: 64
+    CO: 64
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+  L:
+    N: 16
+    CI: 128
+    CO: 128
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+  XL:
+    N: 32
+    CI: 256
+    CO: 256
+    H: 57
+    W: 57
+    KH: 3
+    KW: 3
+# No public.scales: declaring KH, KW small changes stage 1's nest and the recorded route is not offered
+# (2026-10-23, Daint jobs 5127775 to 5127781), as for H1, H3 and M8 (a6c787e).
+# Inputs: initialize() in conv2d_bias_relu.py.
+args:
+  x: "(N, CI, H + KH - 1, W + KW - 1)"
+  wt: "(CO, CI, KH, KW)"
+  b: "(CO,)"
+  out: {shape: "(N, CO, H, W)", out: true}

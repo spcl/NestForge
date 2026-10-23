@@ -280,6 +280,17 @@ def test_int_and_complex_pointers_bind_by_address():
     ]
 
 
+def test_std_complex_pointers_bind_like_dace_complex():
+    """benchmarking_creation/scattering_self_energies_m2 writes its complex products as explicit loops, and its
+    entry spells the buffers ``std::complex<double>*``: same layout as ``dace::complex128``, so it binds the same."""
+    params = parse_params("std::complex<double> * __restrict__ D, std::complex<float> * __restrict__ S, int64_t N")
+    assert [(p.name, p.ctype) for p in params] == [
+        ("D", ctypes.POINTER(ctypes.c_double)),
+        ("S", ctypes.POINTER(ctypes.c_float)),
+        ("N", ctypes.c_int64),
+    ]
+
+
 def test_owned_build_reusable_handle_program(tmp_path):
     """After one init, __program can be called repeatedly in place (the timing path) on one handle, and
     every call still computes the right answer (this nest's output does not read its own prior value, so

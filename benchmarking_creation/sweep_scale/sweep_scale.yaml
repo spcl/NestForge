@@ -1,0 +1,23 @@
+# Repo-local kernel (see benchmarking_creation/README.md).
+name: Sweep then scale
+level: 2
+parameters:
+  S:
+    NJ: 64
+    NI: 64
+  M:
+    NJ: 10241
+    NI: 10241
+  L:
+    NJ: 12289
+    NI: 12289
+  XL:
+    NJ: 14337
+    NI: 14337
+args:
+  aa: {shape: "(NJ,NI)", out: true}
+  bb: (NJ,NI)
+  cc: {shape: "(NJ,NI)", out: true}
+  w: {shape: "(NI,)", domain: [0.5, 1.5]}
+chain_length:
+  aa: NJ

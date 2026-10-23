@@ -31,3 +31,6 @@ htmlcov/
 
 # Claude Code local state (agent worktrees)
 .claude/
+
+# Local benchmark runs (examples/quickstart.py writes experiments/<kernel>/<device>).
+/experiments/

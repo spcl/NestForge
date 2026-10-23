@@ -11,9 +11,12 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import dace
+import yaml
+
+from nestforge.paths import REPO_ROOT
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -22,6 +25,10 @@ if TYPE_CHECKING:
 
 #: Tracks whose ``_dace.py`` this module generates on demand (gitignored, never committed).
 DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning")
+#: The track name of the repo-local kernels, which are not part of hpcagent_bench's corpus.
+LOCAL_TRACK = "benchmarking_creation"
+#: Where repo-local kernels live: one folder per kernel with its ``<name>.yaml`` and a committed ``<name>_dace.py``.
+LOCAL_ROOT = REPO_ROOT / LOCAL_TRACK
 
 
 @dataclass(slots=True)
@@ -75,7 +82,8 @@ class CorpusKernel:
 def module_path(short_name: str) -> str:
     """Canonical dotted name for a kernel's ``_dace.py`` (a stable sys.modules cache key)."""
     *dirs, module_name = short_name.split("/")
-    return f"hpcagent_bench.benchmarks.{'.'.join(dirs)}.{module_name}_dace"
+    prefix = "" if dirs[0] == LOCAL_TRACK else "hpcagent_bench.benchmarks."
+    return f"{prefix}{'.'.join(dirs)}.{module_name}_dace"
 
 
 def track_names(track: str | None) -> list[str]:
@@ -93,6 +101,15 @@ def generate_dace_file(short_name: str) -> None:
         autogen.ensure(short_name, ("dace",))
 
 
+def local_names() -> dict[str, Path]:
+    """Registry key to manifest path of every repo-local kernel, in name order."""
+    return {
+        f"{LOCAL_TRACK}/{path.stem}/{path.stem}": path
+        for path in sorted(LOCAL_ROOT.glob("*/*.yaml"))
+        if path.parent.name == path.stem
+    }
+
+
 def corpus_kernel(name: str) -> CorpusKernel | None:
     """The corpus kernel ``name`` (registry key, manifest stem or directory) names, or None without a ``_dace.py``."""
     from hpcagent_bench.spec import KERNELS, BenchSpec
@@ -108,12 +125,57 @@ def corpus_kernel(name: str) -> CorpusKernel | None:
     return CorpusKernel(short_name, module_path(short_name), dace_file, BenchSpec.load(short_name))
 
 
+def local_spec(yaml_path: Path) -> BenchSpec:
+    """The spec of a repo-local manifest. hpcagent_bench derives a kernel's site (folder, track, dwarf) from a location
+    under its ``benchmarks/``, so this builds the site itself: the kernel's own folder as ``relative_path`` (absolute,
+    which hpcagent_bench joins onto its corpus root unchanged) and the scientific-computing track, the one that admits
+    every level (loop_level_reasoning refuses level 3)."""
+    from hpcagent_bench import manifest_schema
+    from hpcagent_bench import spec as hb
+
+    source = str(yaml_path)
+    raw: dict[str, Any] = yaml.safe_load(yaml_path.read_text())
+    raw["relative_path"] = str(yaml_path.parent.resolve())
+    manifest = manifest_schema.validate_manifest(raw, source)
+    module_name = manifest.module_name or yaml_path.stem
+    func_name = hb.derive_func_name(raw["relative_path"], module_name)
+    if func_name is None:
+        raise ValueError(f"{yaml_path}: no entry function in its reference {module_name}_numpy.py")
+    module = yaml_path.with_name(f"{module_name}.py")
+    site = hb.KernelSite(
+        short_name=yaml_path.stem,
+        relative_path=raw["relative_path"],
+        module_name=module_name,
+        func_name=func_name,
+        track=hb.Track.SCIENTIFIC_COMPUTING,
+        initializer_inputs=hb.initializer_inputs(module) if hb.defines_function(module, hb.INITIALIZER) else None,
+    )
+    return hb.BenchSpec.from_manifest(manifest, site, source)
+
+
+def iter_local_kernels() -> Iterator[CorpusKernel]:
+    """Every repo-local kernel. Its ``_dace.py`` is committed with it, so a missing one is an authoring error."""
+    for short_name, yaml_path in local_names().items():
+        dace_file = yaml_path.with_name(f"{yaml_path.stem}_dace.py")
+        if not dace_file.exists():
+            raise FileNotFoundError(f"{dace_file} is missing; generate it with scripts/emit_local_dace.py")
+        yield CorpusKernel(
+            short_name=short_name,
+            module_path=module_path(short_name),
+            dace_file=dace_file,
+            spec=local_spec(yaml_path),
+        )
+
+
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
-    """Every corpus kernel with a ``_dace.py``, of ``track`` or of all tracks."""
-    for short_name in track_names(track):
-        kernel = corpus_kernel(short_name)
-        if kernel is not None:
-            yield kernel
+    """Every kernel with a ``_dace.py``, of ``track`` or of all tracks: the corpus's, then the repo-local ones."""
+    if track != LOCAL_TRACK:
+        for short_name in track_names(track):
+            kernel = corpus_kernel(short_name)
+            if kernel is not None:
+                yield kernel
+    if track in (None, LOCAL_TRACK):
+        yield from iter_local_kernels()
 
 
 def materialize_dace_corpus() -> None:

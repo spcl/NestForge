@@ -1,0 +1,44 @@
+# Repo-local kernel (see benchmarking_creation/README.md). Slot H1 of the thesis benchmark set.
+# CloudSC section 5.2 solver (non-pivoting 5x5 LU) and the 4.2/5.3 flux carry, one column loop.
+# Record: cloudsc_solver_carry.md. NCLV is 5 in every preset: the arithmetic is unrolled for that order.
+name: CloudSC Solver Carry
+level: 3
+parameters:
+  # klon at S is not a multiple of any vector or thread-block width. NCLV stays 5.
+  S:
+    nlev: 30
+    klon: 263
+    ncldtop: 3
+    nclv: 5
+  M:
+    nlev: 137
+    klon: 32771
+    ncldtop: 15
+    nclv: 5
+  L:
+    nlev: 137
+    klon: 65539
+    ncldtop: 15
+    nclv: 5
+  XL:
+    nlev: 137
+    klon: 131075
+    ncldtop: 15
+    nclv: 5
+# Structured inputs (positive zdtgdp, diagonally dominant solqb, a clamp that binds) are built by
+# initialize() in cloudsc_solver_carry.py. The domains below are the ranges that generator stays in.
+args:
+  q: {shape: "(nclv, nlev, klon)", domain: [0.0, 1.0e-3]}
+  zdtgdp: {shape: "(nlev, klon)", domain: [0.05, 0.5]}
+  zrdtgdp: {shape: "(nlev, klon)", domain: [2.0, 20.0]}
+  rho: {shape: "(nlev, klon)", domain: [0.2, 1.3]}
+  vfall: {shape: "(nclv,)", domain: [0.0, 4.0]}
+  solqa: {shape: "(nclv, nclv, nlev, klon)", domain: [-5.0e-5, 5.0e-5]}
+  solqb: {shape: "(nclv, nclv, nlev, klon)", domain: [0.0, 0.08]}
+  latent: {shape: "(nclv,)", domain: [0.0, 2820.0]}
+  flux: {shape: "(nclv, nlev + 1, klon)", out: true}
+  tnd_cld: {shape: "(nclv, nlev, klon)", out: true}
+  tnd_t: {shape: "(nlev, klon)", out: true}
+  tnd_q: {shape: "(nlev, klon)", out: true}
+chain_length:
+  flux: nlev
