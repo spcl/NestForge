@@ -5,14 +5,16 @@
 # the OpenMP runtimes (libomp/libgomp), BLAS/LAPACK, and the python/build tooling. Intel oneAPI is
 # behind a flag (its own apt repo + gpg key):
 #   --oneapi  Intel oneAPI  -- icx/icpx/ifx + libiomp5 + SVML + MKL
+#   --no-flang  skip flang (CI: no test runs it, and its 45 MB download stalls on slow mirrors)
 #
 # Assumes sudo privileges (uses sudo directly, or runs as-is when already root). Idempotent: present
 # packages / repos / gpg keys are detected and skipped. Nothing here is destructive.
 #
-# Usage: scripts/setup_apt.sh [--oneapi] [-h]
+# Usage: scripts/setup_apt.sh [--oneapi] [--no-flang] [-h]
 set -euo pipefail
 
 DO_ONEAPI=0
+DO_FLANG=1
 
 log()  { printf '\033[1;32m[apt]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[apt:warn]\033[0m %s\n' "$*" >&2; }
@@ -22,6 +24,7 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next}{exit}' "$0"; exit "${
 while [ $# -gt 0 ]; do
   case "$1" in
     --oneapi) DO_ONEAPI=1 ;;
+    --no-flang) DO_FLANG=0 ;;
     -h|--help) usage 0 ;;
     *) warn "unknown arg: $1"; usage 1 ;;
   esac
@@ -82,7 +85,7 @@ apt_install build-essential cmake ninja-build git pkg-config ca-certificates cur
 
 log "compilers: gcc/g++/gfortran, clang/llvm, flang"
 apt_install gcc g++ gfortran clang clang-tools llvm llvm-dev
-apt_install flang        # optional: LLVM Fortran, not on every release
+[ "$DO_FLANG" -eq 0 ] || apt_install flang  # optional: LLVM Fortran, not on every release
 
 # GCC 13's vectorizer mislowers masked selects (DaCe refuses to trust it), so gcc/g++/c++ point at GCC 14 or newer.
 MIN_GCC=14
