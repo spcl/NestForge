@@ -15,9 +15,11 @@ parameters:
     N3D: 2
     NA: 6
     NB: 2
+  # M has Nkz * NE = 8 (k, E) points (2026-10-23; was 4 x 16 = 64): fewer than the 72 threads, so the default's best build
+  # (k, E collapsed) leaves threads idle and the route's (k, E, a) map fills them (9.8x over that build, job 5127570).
   M:
-    Nkz: 4
-    NE: 16
+    Nkz: 2
+    NE: 4
     Nqz: 4
     Nw: 2
     N3D: 3

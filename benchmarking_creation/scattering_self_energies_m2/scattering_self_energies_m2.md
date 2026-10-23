@@ -2,7 +2,7 @@
 
 Explanation and solution record (`benchmarking_creation/AGENTS.md`) of a kernel derived from HPCAgent-Bench `scientific_computing/dense_linear_algebra/scattering_self_energies` (`e63f9f1`). Written 2026-10-21 from Daint jobs 5111782 (walk of the loop order, as variant v1), 5112069 (build check), 5112070 and 5112133 (walk and routes, as variant v1c) and 5112562 (validation of this folder). Set: `benchmark-set-15` (thesis notes). Entry note: `2026-10-21-w3-medium-refills` (thesis notes). How to optimize it, in short: [README.md](README.md). The 6-move original is the hard-tier candidate `scattering_self_energies`.
 
-**Status:** `entry`
+**Status:** `entry`, timed 2026-10-23 at NestForge main's pins with preset M changed to `Nkz` 2, `NE` 4: the route built with `collapse(3)` beats the default's best build (`collapse(2)`) **9.78x** on CPU at 72 threads (job 5127570; repeat runs 5127845 and 5127847 confirm the baselines, their `collapse(3)` rows were cut off when the Daint session ended).
 
 Slot: M9. Entered on 2026-10-21 as M8; `cloudsc_ntrac` holds M8, so this kernel moved to M9 (user decision, board package W12-M9).
 
@@ -55,12 +55,21 @@ After stage 1 (CPU and GPU), `list_moves` offers `interchange-loop-map` (`for4_0
 
 ## What the gains are
 
-Not timed yet (W10). Preset M (`Nkz 4, NE 16, Nqz 4, Nw 2, N3D 3, NA 128, NB 4`), CPU, 1 and 72 threads.
+DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`, CPU 72 threads (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), whole-program host time, median of 5 after one warm-up. Every variant matches the oracle at S (5.9e-15) and the baseline at M.
 
-| Build | Baseline (default) | Stage 1 only | Reference | Ratio |
-| --- | --- | --- | --- | --- |
-| CPU serial | | | | |
-| CPU OpenMP, 72 threads | | | | |
+**At the old preset M** (`Nkz 4, NE 16`; job 5126572) the route gains little: 17.32 s against 15.68 s (1.10x) as built, the one-pull decoy 1.11x, and `interchange-map-loop` 1.17x, faster than the route. The default's `k, E` split already gives each of 64 threads a point; re-entering map `a` `Nqz * Nw = 8` times costs little. Raising `Nqz * Nw` (and shrinking `NA` to keep the run short) does not change that (1.14x, job 5127159).
+
+**Preset M changed (2026-10-23)** to `Nkz 2, NE 4, Nqz 4, Nw 2, N3D 3, NA 128, NB 4`: 8 `(k, E)` points, fewer than the 72 threads, so the default's best build leaves threads idle and the route's `(k, E, a)` map fills them. This is the same lever as its sibling M5.1.
+
+| Build (72 threads) | old M, 64 points (job 5127571) | **new M**, 8 points (job 5127570) |
+| --- | --- | --- |
+| default, `collapse(2)` (the baseline to beat) | 1157.4 ms | 1123.1 ms |
+| reference, `collapse(2)` | 1040.5 ms (1.11x) | 1010.0 ms (1.11x) |
+| **reference, `collapse(3)`** | 893.8 ms (1.30x) | **114.8 ms (9.78x)** |
+
+At the new M, the default as built takes 3952.8 ms and the reference as built 3560.3 ms (1.11x), with `collapse(2)` the default takes 1134.0 ms (jobs 5127845, 5127847, matching job 5127570). `interchange-map-loop` built with `collapse(3)` does not compile (the collapsed nest is not perfectly nested), so that decoy is measured as built only.
+
+The answer has two parts, as for M5.1: the two pulls (stage 2) and a kernel built with `collapse(3)` (stage 5, through `bind`). Its route is shorter than M5.1's (two pulls, no round trip), so the pair grades the same lever at two depths.
 
 Oracle check at preset S: quickstart passes all seven stages on CPU with the default schedule (job 5112722, after the C_PTR fix `27080f2`; stage 6 picked `g++:contract-fma` among 9 variant cells). Relative error not recorded separately.
 
@@ -81,17 +90,18 @@ Stage 1 is the same on both; the GPU default already makes the reference shape, 
 status: entry
 device: cpu
 threads: 72
-preset: M
-dace: 801cafd
-nestforge: 4df1830
-hpcagent_bench: e63f9f1
-probe: Daint jobs 5112133 (route), 5112069 and 5112562 (build)
-host: null
+preset: M    # Nkz 2, NE 4, Nqz 4, Nw 2, N3D 3, NA 128, NB 4 (since 2026-10-23)
+dace: 042413df2b96ed0f2ebb361c4879c7f68bad41d2
+nestforge: ib/on-main (origin/main 8545a4b + interchange-benchmarks)
+hpcagent_bench: 2666c06b73eaa9d51f05568e6c584aaafa98ad67
+probe: Daint jobs 5112133 (route), 5112069 and 5112562 (build); timing 5127570
+host: Daint GH200 node, exclusive
 baseline:
   moves: [default_moves]
-  time_ms: null
+  kernel: "#pragma omp parallel for collapse(2)"
+  time_ms: 1123.1
   repeats: 5
-  oracle_rel_error: null
+  oracle_rel_error: 5.9e-15   # preset S
   tree: |
     map (k, E) { for q { for w { map a { for b { for i { for j { map (o1, o2) { guard { for o3 { for o4 } } } } } } } } } }
 reference:
@@ -101,17 +111,18 @@ reference:
     - kind: interchange-loop-map
       on: for3_0 (loop q), kernel5_0 (map a)
     - finish_moves: true
-  time_ms: null
+  kernel: "#pragma omp parallel for collapse(3)"
+  time_ms: 114.8
   repeats: 5
-  oracle_rel_error: null
+  oracle_rel_error: 5.9e-15   # preset S
   tree: |
     map (k, E, a) { for q { for w { for b { for i { for j { map (o1, o2) { guard { for o3 { for o4 } } } } } } } } }
 alternatives: []
 decoys:
   - moves: [interchange-map-loop]
     effect: map a entered NB times more often
-    time_ms: null
+    time_ms: 14826.1   # old preset M, kernel as built (job 5126572); does not compile with collapse(3)
   - moves: [interchange-loop-map, interchange-loop-map, interchange-map-loop]
     effect: undoes part of the pull
-    time_ms: null
+    time_ms: 15662.2   # old preset M, kernel as built (job 5126572)
 ```
