@@ -38,9 +38,11 @@ reached yet run with their defaults on a copy. The answer is reused until the pr
 ## Quick start
 
 ```bash
-python examples/quickstart.py --device cpu --out quickstart_out
-python examples/quickstart.py --device gpu --kernel jacobi_1d --out quickstart_jacobi
+python examples/quickstart.py --device cpu
+python examples/quickstart.py --device gpu --kernel jacobi_1d
 ```
+
+Each run writes `experiments/<kernel>/<device>` (pass `--out` to put it somewhere else).
 
 It runs every default on an HPCAgent-Bench kernel at preset S and saves each stage's SDFG and tree, the kernel
 DAG, each kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`

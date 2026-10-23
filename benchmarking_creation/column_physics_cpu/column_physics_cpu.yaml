@@ -1,0 +1,36 @@
+# Repo-local kernel (see benchmarking_creation/README.md). Slot H3 of the thesis benchmark set; record: column_physics_cpu.md.
+# Synthetic column model in the GPU order (column map outermost): a cover recurrence and a tracer recurrence down the
+# levels per column, then a diagnostic pass carried over levels. The CPU schedule needs a 7-move stage 2 route.
+name: Column Physics CPU
+level: 3
+parameters:
+  # KLON at S is not a multiple of any block; NTRAC as in the CloudSC-style kernels.
+  S:
+    NLEV: 30
+    KLON: 263
+    NTRAC: 12
+  M:
+    NLEV: 137
+    KLON: 32771
+    NTRAC: 16
+  L:
+    NLEV: 137
+    KLON: 65539
+    NTRAC: 16
+  XL:
+    NLEV: 137
+    KLON: 131075
+    NTRAC: 16
+# Inputs, including the fixed cap that makes the tracer clamp bind: initialize() in column_physics_cpu.py.
+args:
+  tr: {shape: "(NLEV, NTRAC, KLON)", out: true}
+  src: "(NLEV, KLON)"
+  fall: "(NTRAC,)"
+  za: "(NLEV, KLON)"
+  pcov: {shape: "(NLEV, KLON)", out: true}
+  covc: {shape: "(KLON,)", out: true}
+  out: {shape: "(NLEV, KLON)", out: true}
+  cap: ()
+chain_length:
+  tr: NLEV
+  out: NLEV

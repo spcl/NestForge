@@ -58,6 +58,8 @@ include = ["nestforge*"]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+# Repo-local benchmark kernels hold generated and reference code that follows hpcagent_bench's layout, not ours.
+extend-exclude = ["benchmarking_creation"]
 
 [tool.ruff.lint]
 select = ["F", "UP", "I", "FLY", "Q", "C4", "DTZ", "T10", "EXE", "INT", "ISC", "PYI", "RSE", "TID", "W", "PERF", "FURB"]

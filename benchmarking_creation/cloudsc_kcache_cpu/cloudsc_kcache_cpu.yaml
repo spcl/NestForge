@@ -1,0 +1,56 @@
+# HPCAgent-Bench benchmark manifest -- adding a benchmark: see README.md.
+# Rain and snow precipitation physics from CloudSC (sedimentation, precipitation cover, rain evaporation, melting,
+# fluxes) in the loop structure of the dwarf's k-caching GPU port: one loop over columns whose body is a per-column
+# prologue followed by the sequential level loop. See cloudsc_kcache_cpu_numpy.py for the CloudSC source lines.
+# Repo-local kernel (see benchmarking_creation/README.md). Benchmark record: cloudsc_kcache_cpu.md.
+name: CloudSC K-Caching Precipitation Column
+level: 3
+parameters:
+  # klon at S is not a multiple of any vector or thread-block width.
+  S:
+    nlev: 30
+    klon: 263
+    ncldtop: 3
+  M:
+    nlev: 137
+    klon: 32768
+    ncldtop: 15
+  L:
+    nlev: 137
+    klon: 65536
+    ncldtop: 15
+  XL:
+    nlev: 137
+    klon: 262144
+    ncldtop: 15
+# The inputs need structure, not independent uniform draws: paph must increase monotonically down the column
+# (zdp > 0 divides), pap is the mid-level of paph, pq is a fraction (0.3 to 1) of the saturation humidity at
+# pt + 3600 * tt, and pt rises through freezing so the melt limiter is partly active. qr, qs and pa are clipped
+# uniform draws with about 30% exact zeros. initialize() in cloudsc_kcache_cpu.py builds all of them (and zeroes
+# the outputs), in the order below; the domains are for reference.
+args:
+  pt: {shape: "(nlev, klon)", domain: [207.0, 298.0]}
+  tt: {shape: "(nlev, klon)", domain: [-2.0e-4, 2.0e-4]}
+  pq: {shape: "(nlev, klon)", domain: [0.0, 0.5]}
+  qr: {shape: "(nlev, klon)", domain: [0.0, 1.0e-4]}
+  qs: {shape: "(nlev, klon)", domain: [0.0, 1.0e-4]}
+  pa: {shape: "(nlev, klon)", domain: [0.0, 0.7]}
+  pap: {shape: "(nlev, klon)", domain: [100.0, 101100.0]}
+  paph: {shape: "(nlev + 1, klon)", domain: [100.0, 101100.0]}
+  tnd_t: {shape: "(nlev, klon)", out: true}
+  tnd_q: {shape: "(nlev, klon)", out: true}
+  tnd_qr: {shape: "(nlev, klon)", out: true}
+  tnd_qs: {shape: "(nlev, klon)", out: true}
+  pcovptot: {shape: "(nlev, klon)", out: true}
+  pfplsl: {shape: "(nlev + 1, klon)", out: true}
+  pfplsn: {shape: "(nlev + 1, klon)", out: true}
+  pfhpsl: {shape: "(nlev + 1, klon)", out: true}
+  pfhpsn: {shape: "(nlev + 1, klon)", out: true}
+  pfsqrf: {shape: "(nlev + 1, klon)", out: true}
+  pfsqsf: {shape: "(nlev + 1, klon)", out: true}
+chain_length:
+  pcovptot: nlev
+  pfplsl: nlev
+  pfplsn: nlev
+  pfsqrf: nlev
+  pfsqsf: nlev

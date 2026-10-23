@@ -1,0 +1,28 @@
+# Repo-local kernel (see benchmarking_creation/README.md). Slot M7 of the thesis benchmark set.
+# Synthetic: a carried column loop and a row loop of a different range, with a full-grid temporary between
+# them, so map fusion cannot cross the block between the passes. Record: two_pass_scope.md.
+name: Two Pass Scope
+level: 2
+parameters:
+  # S matches the 2026-10-16 sizes. N and M differ, and neither is a multiple of a block size.
+  S:
+    N: 263
+    M: 131
+  M:
+    N: 4099
+    M: 32771
+  L:
+    N: 8191
+    M: 65537
+  XL:
+    N: 16381
+    M: 131071
+args:
+  a: {shape: "(N, M)", domain: [-1.0, 1.0]}
+  b: {shape: "(N, M)", domain: [-1.0, 1.0]}
+  w: {shape: "(M,)", domain: [-1.0, 1.0]}
+  t: {shape: "(N, M)", out: true}
+  out: {shape: "(N, M)", out: true}
+  carry: {shape: "(M,)", out: true}
+chain_length:
+  carry: M

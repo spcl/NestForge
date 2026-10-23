@@ -1,0 +1,37 @@
+# Repo-local kernel (see benchmarking_creation/README.md). Slot M8 of the thesis benchmark set; record: cloudsc_ntrac.md.
+# CloudSC-derived: NTRAC tracers sediment down the levels next to a column-only cover recurrence, in one level loop.
+# The GPU and CPU schedules differ; the route and its decoys are in cloudsc_ntrac.md.
+name: CloudSC NTRAC Sedimentation
+level: 2
+parameters:
+  # KLON is not a multiple of a block size at any preset. NTRAC >= 4 (tracers 2 and 3 are rain and snow).
+  S:
+    NLEV: 30
+    KLON: 257
+    NTRAC: 6
+  M:
+    NLEV: 137
+    KLON: 32771
+    NTRAC: 16
+  L:
+    NLEV: 137
+    KLON: 65539
+    NTRAC: 16
+  XL:
+    NLEV: 137
+    KLON: 131075
+    NTRAC: 16
+# Inputs need structure (fall speeds, dt*g/dp, dry columns, a clamp that binds): initialize() in cloudsc_ntrac.py.
+args:
+  q: "(NTRAC, NLEV, KLON)"
+  pflux: {shape: "(NTRAC, NLEV, KLON)", out: true}
+  vfall: "(NTRAC,)"
+  dtgdp: "(NLEV, KLON)"
+  rdtgdp: "(NLEV, KLON)"
+  rho: "(NLEV, KLON)"
+  za: "(NLEV, KLON)"
+  prec: "(NLEV, KLON)"
+  pcov: {shape: "(NLEV, KLON)", out: true}
+chain_length:
+  pflux: NLEV
+  pcov: NLEV
