@@ -1,8 +1,8 @@
 # dbcsr
 
-Explanation and solution record (`benchmarking_creation/AGENTS.md`) of an HPCAgent-Bench corpus kernel, copied unchanged into this folder. Slot E3 of the thesis benchmark set (one move). Written 2026-10-21 from Daint jobs 5111411, 5111452 (probe from the installed corpus) and 5111566 (this folder). Entry note: `2026-10-21-e3-dbcsr-entry` (thesis notes).
+Explanation and solution record (`benchmarking_creation/AGENTS.md`) of an HPCAgent-Bench corpus kernel, copied into this folder with the program, oracle and generator unchanged and presets M, L and XL changed (2026-10-23). Slot E3 of the thesis benchmark set (one move). Written 2026-10-21 from Daint jobs 5111411, 5111452 (probe from the installed corpus) and 5111566 (this folder). Entry note: `2026-10-21-e3-dbcsr-entry` (thesis notes).
 
-**Status:** `entry` (route, decoys and probe at this branch's pins; not timed).
+**Status:** `entry`, timed 2026-10-23 at NestForge main's pins. Target: CPU, 1 thread, 2.53x (two jobs).
 
 ## What this benchmark is
 
@@ -63,11 +63,36 @@ The hoist is the one move that matters. `interchange-if-loop` after it is the un
 
 ## What the gains are
 
-Not measured. To be timed at preset M (180 x 180 x 180 blocks of 32 x 32, density 0.25): baseline, the reference, the undo, and `map-fission` on `kernel8_0`, on CPU at 1 and 72 threads and on GPU, 5 repeats. Guess, not measured: the block products of the matched pairs stay the same and may dominate, so the gain may be small.
+Preset M, whole-program host time, median of 5 calls after one warm-up, default stage 5 build, `-fopenmp` on CPU kernels, `OMP_PROC_BIND=close`, `OMP_PLACES=cores`. DaCe `042413d`, HPCAgent-Bench `2666c06`, NestForge `ib/on-main`. Every variant matches the oracle at S (relative error 0) and the baseline at M.
+
+**Why the presets changed.** At the corpus sizes (180 x 180 x 180 slots, 32 x 32 blocks, density 0.25; 2026-10-23, jobs 5126512 to 5126514) the block products of the matched pairs dominate, and the hoist gains 1.04x on 1 thread, 1.02x at 72 threads and 1.02x on GPU. The hoist saves the B-slot loop for every padded A slot, so its share grows as the blocks shrink and as more slots are padding. Sweep on 1 thread (jobs 5127152 to 5127291):
+
+| `block_size` | `density` | Baseline | Reference | Ratio | Undo |
+| --- | --- | --- | --- | --- | --- |
+| 32 | 0.25 | 2496.9 ms | 2398.9 ms | 1.04x | 0.98x |
+| 8 | 0.25 | 243.7 ms | 154.1 ms | 1.58x | 1.00x |
+| 4 | 0.25 | 207.2 ms | 115.5 ms | 1.79x | 0.86x |
+| 2 | 0.25 | 201.0 ms | 107.4 ms | 1.87x | 1.00x |
+| 4 | 0.1 | 46.9 ms | 30.9 ms | 1.52x | 0.98x |
+| 2 | 0.1 | 46.9 ms | 19.4 ms | 2.42x | 0.81x |
+| **4** | **0.05** | 18.3 ms | 7.4 ms | **2.46x** | 0.81x |
+
+Presets M, L and XL now use 4 x 4 blocks at density 0.05. The slot counts are unchanged.
+
+**At the new preset M** (jobs 5127395, 5127397, 5127398, 5127399):
+
+| Build | Baseline | Reference | Ratio | Undo | `map-fission` |
+| --- | --- | --- | --- | --- | --- |
+| CPU 1 thread | 18.68 ms | **7.39 ms** | **2.53x** | 0.84x | 1.00x |
+| CPU 1 thread, repeat | 18.77 ms | **7.41 ms** | **2.53x** | 0.98x | 1.00x |
+| CPU 72 threads | 45.43 ms | 34.36 ms | 1.32x | 0.94x | 0.99x |
+| GPU | 64.19 ms | see the 2026-10-23 experiment note | | | |
+
+At 72 threads the default is 2.4x slower than on 1 thread: each matched pair opens a parallel region for a 4 x 4 product. The target is the CPU on 1 thread.
 
 ## CPU and GPU
 
-Stage 1 leaves the same tree on both: the two slot loops on the host, the block product as a map nest inside them. The move is offered, applies and survives `finish_moves()` on both. On GPU the slot loops stay on the host and each matched pair still launches the block product, so the hoist removes host-side iterations only; a gap there is not expected (guess). Not measured on either device.
+Stage 1 leaves the same tree on both: the two slot loops on the host, the block product as a map nest inside them. The move is offered, applies and survives `finish_moves()` on both. On GPU the slot loops stay on the host and each matched pair still launches the block product, so the hoist removes host-side iterations only. Measured 2026-10-23: the gap is on CPU at 1 thread (2.53x); at 72 threads it is 1.32x, and the threaded default is slower than the serial one.
 
 ## What else matters
 
@@ -76,27 +101,25 @@ Stage 1 leaves the same tree on both: the two slot loops on the host, the block 
 - **Launches against stride.** On GPU the number of launches does not change with the hoist (one per matched pair).
 - **Vectorization.** Not checked.
 - **Live values and carries.** None across the moved guard.
-- **Decoys.** The undo (`interchange-if-loop`); `map-fission` on the block product; both unmeasured.
+- **Decoys.** The undo (`interchange-if-loop`, 0.84x and 0.98x on 1 thread); `map-fission` on the block product (1.00x on CPU; 0.24x on GPU at the corpus sizes, where it used to crash on unload, spcl/NestForge#25, fixed in DaCe `dee8dbd`).
 - **Oracle.** Inputs from `initialize()` (sparse block structure; uniform draws would not give the padding). Baseline and reference both match the oracle exactly at preset S on CPU and GPU (jobs 5111452, 5111566).
-- **Pins.** DaCe `801cafd`, NestForge `interchange-benchmarks` (code at `4df1830`), HPCAgent-Bench `e63f9f1`. At the 2026-10-16 pins the CPU default already took the move.
+- **Pins.** Route probed at DaCe `801cafd`, NestForge `4df1830`, HPCAgent-Bench `e63f9f1`; timed at DaCe `042413d`, NestForge `ib/on-main`, HPCAgent-Bench `2666c06`. At the 2026-10-16 pins the CPU default already took the move.
 
 ## Reference solution
 
 ```yaml
 status: entry
-device: cpu, gpu (same moves; timing per device to come)
-threads: null            # to be measured at 1 and 72 on CPU
-preset: M
-dace: 801cafd179790a844eaf460084232a0c6452571d
-nestforge: interchange-benchmarks (code at 4df1830) + benchmarking_creation/dbcsr
-hpcagent_bench: e63f9f1ce04141ae766bcb2cc5164277b57fa59d
-probe: Daint jobs 5111411 (route), 5111452 (route and stage 3-5 builds at S), 5111566 (this folder)
-host: null
+device: cpu
+threads: 1
+preset: M    # 180 x 180 x 180 slots, 4 x 4 blocks, density 0.05
+dace: 042413df2b96ed0f2ebb361c4879c7f68bad41d2
+nestforge: ib/on-main (origin/main 8545a4b + interchange-benchmarks)
+hpcagent_bench: 2666c06b73eaa9d51f05568e6c584aaafa98ad67
+probe: Daint jobs 5111411 (route), 5111452 (route and stage 3-5 builds at S), 5111566 (this folder); timing 5127395, repeat 5127397
+host: Daint GH200 node, exclusive
 baseline:
   moves: [default_moves]
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
+  time_ms: 18.68
   repeats: 5
   oracle_rel_error: 0.0   # preset S, CPU and GPU
   tree: |
@@ -110,9 +133,7 @@ reference:
     - kind: interchange-loop-if
       on: for1_0 (loop over B slots), if2_0 (A-slot padding guard)
     - finish_moves: true
-  time_ms: null
-  time_min_ms: null
-  time_max_ms: null
+  time_ms: 7.39
   repeats: 5
   oracle_rel_error: 0.0   # preset S, CPU and GPU
   tree: |
@@ -124,8 +145,8 @@ reference:
 decoys:
   - moves: [interchange-loop-if, finish_moves, interchange-if-loop]
     effect: undoes the hoist
-    time_ms: null
+    time_ms: 22.24
   - moves: [map-fission kernel8_0]
     effect: splits the block-product map; not related to the guard
-    time_ms: null
+    time_ms: 18.63
 ```
