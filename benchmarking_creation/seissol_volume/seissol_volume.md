@@ -69,6 +69,7 @@ GPU wants the fission only; the CPU pushes cost it part of the gain (41.5x at 3 
 
 - The manifest declares no small symbols: with NQ, ND declared small (`public.scales`), stage 1 builds a different nest and the route is not offered (jobs 5127775 to 5127781), as for H1, H3 and M8 (`a6c787e`).
 - `NBF 56` is the order-6 basis size; preset M's `NB 4003` is not a multiple of a block size.
+- **Algebra, not only scheduling.** The output-stationary nest does about `NBF * NQ * ND * NBF * NQ` = 762K multiply-adds per element at M; the two-product form NumPy's `optimize=True` uses (`I . star`, then `kDivM . tmp`) does about 98K, about 7.8x fewer. No stage 2 move regroups the products, so the gains above are scheduling gains on the same arithmetic, and a regrouping would beat every schedule here. This is the reason the corpus kernel was dropped as a spare on 2026-10-21 (thesis note `ideas/2026-10-21-contraction-order-not-a-loop-move`); whether a kernel with that gap should take a slot is open.
 
 ## Reference solution
 
