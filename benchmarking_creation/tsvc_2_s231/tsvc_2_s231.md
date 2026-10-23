@@ -11,7 +11,7 @@ TSVC `s231`: `for i: for j in 1..LEN_2D: aa[j, i] = aa[j-1, i] + bb[j, i]` on ro
 - **Baseline:** stage 1, then `default_moves()`: `for j (1:LEN_2D) { map i (0:LEN_2D) }`, one parallel region per `j`.
 - **Reference (CPU, 72 threads):** `interchange-loop-map`, then `finish_moves()`: `map i { for j }`, one parallel region; each thread walks a column.
 - **CPU, 1 thread:** no move; the baseline is the right schedule (the interchange is 12.8x slower).
-- **GPU:** no move; stage 1 already gives `map i { for j }`, and the only offered move (`interchange-map-loop`) is the decoy.
+- **GPU:** no move. At DaCe `73f0a120e` stage 1 already gave `map i { for j }` and offered only the undo. At DaCe `801cafd` and `042413d` stage 1 offers `interchange-loop-map` on GPU as on CPU, and `default_moves()` takes it (2026-10-23, job 5126511: default 43.34 ms, stage 1 alone 196.17 ms, the move 42.66 ms); no undo is offered.
 
 ## How it was created
 
@@ -39,11 +39,13 @@ Preset M (`LEN_2D = 10241`), whole-program host time (`perf_counter` around the 
 | CPU OpenMP, 72 threads | 61.65 ms [60.24, 63.83] | 63.46 | **14.06 ms [13.95, 14.34]** | **4.4x** |
 | GPU | 37.44 ms [37.38, 38.79] | 37.46 | not offered (stage 1 already has it) | none |
 
+2026-10-23, NestForge main's pins (DaCe `042413d`, HPCAgent-Bench `2666c06`; jobs 5126509 to 5126511): CPU 72 threads 73.37 ms [72.76, 74.32] against **22.27 ms [21.84, 23.90] (3.29x)**; CPU 1 thread 58.66 ms against 774.54 ms (0.08x); GPU default 43.34 ms, which already contains the interchange.
+
 Oracle relative error at preset S: 0 on every variant; at preset M every variant matches the baseline's output exactly.
 
 ## CPU and GPU
 
-The gap exists only on a threaded CPU. One thread: the interchange is the trap. GPU: stage 1's order is already right; GPU times include host-device copies.
+The gap exists only on a threaded CPU. One thread: the interchange is the trap. GPU: the default already has the right order (at the old pin from stage 1, at today's pins from `default_moves()`); GPU times include host-device copies.
 
 ## What else matters
 
@@ -51,7 +53,7 @@ The gap exists only on a threaded CPU. One thread: the interchange is the trap. 
 - **Contiguity:** `i` is contiguous; the reference walks `j` innermost (strided). It wins by turning `LEN_2D - 1` parallel regions into one, not by stride.
 - **Launches against stride:** the textbook case: fewer regions win with threads, stride loses on one thread.
 - **Vectorization:** not checked on these builds.
-- **Decoys:** the interchange itself on 1 thread (12.8x slower); `interchange-map-loop` on GPU.
+- **Decoys:** the interchange itself on 1 thread (12.8x slower; 13.2x on 2026-10-23); `interchange-map-loop` on GPU at DaCe `73f0a120e` only (not offered at today's pins).
 - **Backtest:** stage 1 offers one move, so "every offered move once" is the reference; no other legal sequence exists.
 - **Pins:** DaCe `73f0a120e`, NestForge `interchange-benchmarks` `40f140d`, HPCAgent-Bench `26a4f0cfc`.
 
