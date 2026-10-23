@@ -123,9 +123,10 @@ def new_gpu_codegen() -> AbstractContextManager[object]:
 
 
 def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
-    """Each kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time."""
+    """Each host kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time. A GPU
+    kernel's arrays are device memory, and a host stack pin would survive its offloading."""
     for node in external_calls(sdfg):
-        if node.standalone_sdfg is not None:
+        if node.standalone_sdfg is not None and node.schedule not in dace.dtypes.GPU_SCHEDULES:
             yield from node.standalone_sdfg.all_sdfgs_recursive()
 
 
@@ -144,14 +145,15 @@ def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]
             yield desc
 
 
-def force_register_arrays(sdfg: dace.SDFG) -> int:
+def force_register_arrays(sdfg: dace.SDFG, kernels: bool = True) -> int:
     """Pin every array headed for registers to ``Register(force=True)``, so on the CPU it stays on the stack, a
     symbolic size as a variable-length array, instead of a heap allocation per scope: unforced register arrays,
-    scope-lived arrays inside a map (DaCe's rule), and a kernel's scope-lived arrays. Returns how many."""
+    scope-lived arrays inside a map (DaCe's rule), and, with ``kernels``, a host kernel's scope-lived arrays. Returns
+    how many."""
     pinned = force_map_scoped_registers(sdfg)
     for owned, scope_default in [
         *((s, False) for s in sdfg.all_sdfgs_recursive()),
-        *((s, True) for s in kernel_sdfgs(sdfg)),
+        *((s, True) for s in (kernel_sdfgs(sdfg) if kernels else ())),
     ]:
         arrays = list(stack_candidates(owned, scope_default=scope_default))
         for desc in arrays:

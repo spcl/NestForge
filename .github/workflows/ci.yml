@@ -29,7 +29,11 @@ jobs:
           activate-environment: true
           enable-cache: true
           cache-dependency-glob: pyproject.toml
-      - run: sudo bash scripts/setup_apt.sh
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
+      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
       - run: uv pip install -e ".[dev]"
       - run: pre-commit run --all-files --show-diff-on-failure
       - name: pytest (a skip fails the run)
@@ -48,7 +52,11 @@ jobs:
           activate-environment: true
           enable-cache: true
           cache-dependency-glob: pyproject.toml
-      - run: sudo bash scripts/setup_apt.sh
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
+      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
       # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
       # (ubuntu-24.04 restricts that through AppArmor).
       - name: Grading seal
@@ -75,7 +83,11 @@ jobs:
           activate-environment: true
           enable-cache: true
           cache-dependency-glob: pyproject.toml
-      - run: sudo bash scripts/setup_apt.sh
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
+      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
       # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
       # (ubuntu-24.04 restricts that through AppArmor).
       - name: Grading seal
@@ -100,7 +112,11 @@ jobs:
         with:
           python-version: '3.12'
           activate-environment: true
-      - run: sudo bash scripts/setup_apt.sh
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
+      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
       # The plugin tests read the bench's references, which run in its grading seal (see integration).
       - name: Grading seal
         run: |
