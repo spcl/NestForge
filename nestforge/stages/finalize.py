@@ -26,36 +26,55 @@ class BenchTarget:
 
 class Final(Record):
     """An assembled program: the library to submit with the scratch bytes it needs (``"0"``: none), the entry source
-    it was built from and what it links."""
+    (and device unit) it was built from and what it links."""
 
     library: Path
     workspace_bytes: str
     source: str
+    #: The HIP device unit on a GPU target with device code; empty otherwise.
+    device_source: str = ""
     link: tuple[str, ...]
     kernels: dict[str, str]
 
 
 def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_dir: Path) -> Final:
     """Render ``sdfg`` (every kernel already bound to its archive) by CPF in the bench C ABI and build it into
-    ``out_dir``. ``kernels`` maps each kernel to the variant that built it, for the answer only."""
+    ``out_dir``. On a GPU target with device code the form is a C++ host unit and a HIP device unit, built into one
+    library as the judge builds a two-unit GPU submission; without device code it is the CPU form. ``kernels`` maps each kernel to the variant that built it,
+    for the answer only."""
     from hpcagent_bench import languages
     from hpcagent_bench.categories import Language
     from hpcagent_bench.cpf.bridge import render_canonical
     from hpcagent_bench.cpf.cache import DEFAULT_HINTS, Target
     from hpcagent_bench.spec import BenchSpec
 
-    if bench.gpu:
-        raise NotImplementedError("finalize assembles CPU programs only; a GPU program has no device split yet")
     spec = BenchSpec.load(bench.kernel)
-    form = render_canonical(spec, spec.short_name, sdfg, "c++", bench.datatype, Target.CPU, DEFAULT_HINTS)
+    form = render_canonical(
+        spec, spec.short_name, sdfg, "c++", bench.datatype, Target.GPU if bench.gpu else Target.CPU, DEFAULT_HINTS
+    )
+    if bench.gpu and not form.device_code:
+        # nothing was placed on the device: the host-only program is plain C++
+        form = render_canonical(spec, spec.short_name, sdfg, "c++", bench.datatype, Target.CPU, DEFAULT_HINTS)
     out_dir.mkdir(parents=True, exist_ok=True)
-    src = out_dir / f"{spec.module_name}.{languages.LANG_EXT[Language.CPP]}"
-    src.write_text(form.code)
+    host = out_dir / f"{spec.module_name}.{languages.LANG_EXT[Language.CPP]}"
+    host.write_text(form.code)
     lib = out_dir / f"lib{spec.module_name}.so"
-    commands = languages.build_shared_lib_commands(Language.CPP, src, lib, extra_link=list(form.link))
+    if form.device_code:
+        device = out_dir / f"{spec.module_name}_device.{languages.LANG_EXT[Language.HIP]}"
+        device.write_text(form.device_code)
+        commands = languages.build_shared_lib_commands(
+            Language.HIP, device, lib, extra_link=list(form.link), extra_sources=[host]
+        )
+    else:
+        commands = languages.build_shared_lib_commands(Language.CPP, host, lib, extra_link=list(form.link))
     failed, log = languages.run_build_commands(commands, out_dir)
     if failed or not lib.exists():
         raise RuntimeError(f"the assembled program did not build:\n{log}")
     return Final(
-        library=lib, workspace_bytes=form.workspace_bytes, source=form.code, link=tuple(form.link), kernels=kernels
+        library=lib,
+        workspace_bytes=form.workspace_bytes,
+        source=form.code,
+        device_source=form.device_code,
+        link=tuple(form.link),
+        kernels=kernels,
     )
