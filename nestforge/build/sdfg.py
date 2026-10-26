@@ -36,6 +36,8 @@ from nestforge.build.toolchain import (
     bind_argument,
     cudart_dir,
     cudart_link_flags,
+    hip_link_flags,
+    hip_runtime_dir,
     lib_linkable,
     openmp_compile_flags,
     openmp_link_flags,
@@ -256,18 +258,40 @@ def link_shared(linker: str, inputs: Sequence[str], link_libs: Sequence[str], sh
     run([linker, "-shared", AS_NEEDED, *inputs, *link_libs, "-o", str(shared)])
 
 
-def build_cuda_archive(
-    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+def build_device_archive(
+    sources: Sequence[Path],
+    archive: Path,
+    shared: Path,
+    compiler: str,
+    flags: Sequence[str],
+    libraries: Sequence[str],
+    runtime: Sequence[str],
 ) -> float:
-    """Compile each CUDA unit with ``nvcc``, archive the objects, and link ``shared`` with the host compiler against
-    ``libraries`` and the ``libcudart`` that ``nvcc`` itself links."""
+    """Compile each device unit with ``compiler`` (nvcc or hipcc), archive the objects, and link ``shared`` with the
+    host compiler against ``libraries`` and the device ``runtime`` the compiler itself links."""
     archive.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     objs = [archive.parent / f"{source.stem}.o" for source in sources]
     for source, obj in zip(sources, objs):
-        run([nvcc, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
-    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *cudart_link_flags(cudart_dir(nvcc))])
+        run([compiler, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
+    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *runtime])
     return time.perf_counter() - t0
+
+
+def build_cuda_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
+    """:func:`build_device_archive` with ``nvcc`` and the ``libcudart`` it links."""
+    runtime = cudart_link_flags(cudart_dir(nvcc))
+    return build_device_archive(sources, archive, shared, nvcc, flags, libraries, runtime)
+
+
+def build_hip_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, hipcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
+    """:func:`build_device_archive` with ``hipcc`` and the ``libamdhip64`` of its ROCm."""
+    runtime = hip_link_flags(hip_runtime_dir(hipcc))
+    return build_device_archive(sources, archive, shared, hipcc, flags, libraries, runtime)
 
 
 def program_compiler() -> str:

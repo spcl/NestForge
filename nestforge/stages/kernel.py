@@ -15,6 +15,7 @@ import dace
 import numpy as np
 from dace import dtypes
 from dace.codegen import cpf
+from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
 
@@ -30,22 +31,31 @@ from nestforge.build.arena import (
     run_oracle,
     rung_rtol,
 )
-from nestforge.build.flags import cuda_base_flags
+from nestforge.build.flags import cuda_base_flags, hip_base_flags
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import (
     BuildOptions,
     build_archive,
     build_cuda_archive,
+    build_hip_archive,
     force_register_arrays,
     new_gpu_codegen,
     program_compiler,
 )
-from nestforge.build.toolchain import cudart_dir, cudart_link_flags, openmp_link_flags, parse_params, raw_signature
+from nestforge.build.toolchain import (
+    cudart_dir,
+    cudart_link_flags,
+    hip_link_flags,
+    hip_runtime_dir,
+    openmp_link_flags,
+    parse_params,
+    raw_signature,
+)
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import INT64, Boundary
 from nestforge.stages.placement import kernel_device
 
-# Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` beside the host unit ``<kernel>.cu``.
+# Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` (``.hip``) beside the host unit ``<kernel>.cu``.
 DEVICE_UNIT_SUFFIX = "_device"
 # Line that separates the host and device units in the one text an agent reads and writes for a GPU kernel.
 DEVICE_UNIT_MARKER = "// ---- device unit ----"
@@ -119,7 +129,7 @@ def cpu_schedule(boundary: Boundary) -> dace.SDFG:
 
 
 def gpu_schedule(boundary: Boundary) -> dace.SDFG:
-    """The kernel copy the CUDA unit renders: offloaded whole, so its arrays arrive as device pointers, then
+    """The kernel copy the CUDA or HIP unit renders: offloaded whole, so its arrays arrive as device pointers, then
     finalized for the GPU."""
     sdfg = abi_ready_copy(boundary)
     offload_to_gpu(sdfg)
@@ -133,11 +143,18 @@ def build_cpu_library(
     build_archive(units, None, archive, archive.with_suffix(".so"), opts)
 
 
-def build_gpu_library(
+def build_cuda_library(
     units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
 ) -> None:
     chosen = flags if flags is not None else cuda_base_flags(cpf.CUDA_BUILD_FLAGS)
     build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, chosen, link)
+
+
+def build_hip_library(
+    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+) -> None:
+    chosen = flags if flags is not None else hip_base_flags()
+    build_hip_archive(units, archive, archive.with_suffix(".so"), compiler, chosen, link)
 
 
 def process_runtime_libraries() -> list[str]:
@@ -149,9 +166,14 @@ def cpu_runtime_libraries(compiler: str) -> list[str]:
     return process_runtime_libraries()
 
 
-def gpu_runtime_libraries(compiler: str) -> list[str]:
+def cuda_runtime_libraries(compiler: str) -> list[str]:
     """libomp, and the ``libcudart`` the kernel's own nvcc links."""
     return [*process_runtime_libraries(), *cudart_link_flags(cudart_dir(compiler))]
+
+
+def hip_runtime_libraries(compiler: str) -> list[str]:
+    """libomp, and the ``libamdhip64`` of the kernel's own hipcc."""
+    return [*process_runtime_libraries(), *hip_link_flags(hip_runtime_dir(compiler))]
 
 
 class KernelNumbers(Result):
@@ -196,7 +218,7 @@ def measure_on_gpu(
     reps: int,
 ) -> KernelNumbers | Failure:
     """The GPU twin, called in a freshly spawned interpreter: a child forked from a process that already holds a
-    CUDA context cannot use the device. The comparison runs here, so this process never touches CUDA."""
+    device context cannot use the device. The comparison runs here, so this process never touches the device."""
     call = DeviceCall(
         str(shared),
         src.symbol,
@@ -228,17 +250,26 @@ class KernelForm:
     runtime: Callable[[str], list[str]]
 
 
-FORMS: dict[str, KernelForm] = {
-    "cpu": KernelForm("c++", ".cpp", cpu_schedule, build_cpu_library, measure_on_cpu, cpu_runtime_libraries),
-    "gpu": KernelForm("cuda", ".cu", gpu_schedule, build_gpu_library, measure_on_gpu, gpu_runtime_libraries),
+CPU_FORM = KernelForm("c++", ".cpp", cpu_schedule, build_cpu_library, measure_on_cpu, cpu_runtime_libraries)
+
+#: The GPU form per DaCe GPU backend (``compiler.cuda.backend``, else probed from the machine).
+GPU_FORMS: dict[str, KernelForm] = {
+    "cuda": KernelForm("cuda", ".cu", gpu_schedule, build_cuda_library, measure_on_gpu, cuda_runtime_libraries),
+    "hip": KernelForm("hip", ".hip", gpu_schedule, build_hip_library, measure_on_gpu, hip_runtime_libraries),
 }
 
 
+def kernel_form(device: str) -> KernelForm:
+    """How a kernel on ``device`` (``cpu`` or ``gpu``) is scheduled, rendered, built and called; a GPU kernel in
+    the dialect of this machine's GPU backend."""
+    return CPU_FORM if device == "cpu" else GPU_FORMS[get_gpu_backend()]
+
+
 def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> KernelSource:
-    """The kernel for the device stage 4 placed ``ext`` on, rendered by CPF into ``<out_dir>/<kernel>.cpp`` or
-    ``.cu``, whose one entry is ``ext``'s symbol."""
+    """The kernel for the device stage 4 placed ``ext`` on, rendered by CPF into ``<out_dir>/<kernel>.cpp``,
+    ``.cu`` or ``.hip``, whose one entry is ``ext``'s symbol."""
     device = kernel_device(ext)
-    form = FORMS[device]
+    form = kernel_form(device)
     sdfg = form.schedule(boundary)
     sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     with new_gpu_codegen():
@@ -269,13 +300,13 @@ def split_kernel_text(text: str) -> tuple[str, str | None]:
 def build_kernel_library(src: KernelSource, compiler: str, flags: list[str] | None, out_dir: Path) -> Path:
     """Build ``<out_dir>/lib<kernel>.a`` from the kernel's unit, plus its shared twin for validation."""
     archive = out_dir / f"lib{src.name}.a"
-    FORMS[src.device].build(src.units, compiler, flags, archive, src.link)
+    kernel_form(src.device).build(src.units, compiler, flags, archive, src.link)
     return archive
 
 
 def kernel_runtime_libraries(src: KernelSource, compiler: str) -> list[str]:
     """What a program linking ``src``'s library, built by ``compiler``, must link after its objects."""
-    return [*src.link, *FORMS[src.device].runtime(compiler)]
+    return [*src.link, *kernel_form(src.device).runtime(compiler)]
 
 
 def use_kernel_library(ext: ExternalCall, lib_path: Path, src: KernelSource, runtime_libraries: Sequence[str]) -> None:
@@ -298,7 +329,7 @@ def measure_kernel(
 ) -> KernelVerdict:
     """Call the twin's C entry in an isolated child (forked for a CPU kernel, spawned for a GPU kernel): one run
     compared to ``oracle``, then ``reps`` timed runs. A crash or timeout comes back as a verdict with ``error`` set."""
-    res = FORMS[src.device].measure(archive.with_suffix(".so"), src, inputs, oracle, sizes, reps)
+    res = kernel_form(src.device).measure(archive.with_suffix(".so"), src, inputs, oracle, sizes, reps)
     if isinstance(res, Failure):
         return failed_verdict(fp_mode, res.error)
     return KernelVerdict(fp_mode, res.maxdiff, res.md_rel, res.dtype_floor, res.time_us)
