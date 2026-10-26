@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``POST /nestforge/<tool>``: the judge half of every NestForge tool. Each episode's kernel is served by its own
 session process (:mod:`nestforge.server`), so the judge's threads never fork and a crash ends that process only.
-A tool the session does not serve yet answers 501."""
+A tool in the wire table that the session does not serve answers 501."""
 
 from http import HTTPMethod, HTTPStatus
 from typing import Any

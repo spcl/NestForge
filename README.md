@@ -21,8 +21,8 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 ## Agents: the HPCAgent-Bench plugin
 
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
-run the `nestforge` packet. Its tools cover three phases; only the structured phase is served today, the others
-answer 501:
+run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). Its tools cover three
+phases:
 
 | Phase | Tools |
 |---|---|
@@ -31,9 +31,12 @@ answer 501:
 | codegen (stage 6) | `tune_kernel` |
 | any | `get_performance`, `finalize` |
 
-`apply_move`, `run_defaults` and `get_performance` answer with `Session.performance()`: the whole program's time and
+`apply_move`, `run_defaults`, `write_kernel`, `tune_kernel` and `get_performance` answer with
+`Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not
-reached yet run with their defaults on a copy. The answer is reused until the program changes.
+reached yet run with their defaults on a copy. The answer is reused until the program changes. `finalize` builds the
+program in the bench C ABI, each kernel linked from its own build, into the shared folder; submit it as
+`library=<library>` with its `workspace_bytes`.
 
 ## Quick start
 

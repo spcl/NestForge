@@ -5,6 +5,6 @@ description = "Whole-program DaCe optimization: legal moves, scoped kernels, pla
 [packets.nestforge]
 name = "NestForge"
 method = "nestforge"
-# The tools the session serves today (nestforge.server.CALLS); the later phases join when they are served.
+# Every tool the session serves (nestforge.server.CALLS); a test keeps the two lists equal.
 tools = ["get_cpf", "view_tree", "list_moves", "apply_move", "run_defaults", "set_scope", "unset_scope", "list_kernels",
     "read_kernel", "write_kernel", "tune_kernel", "get_performance", "finalize"]
