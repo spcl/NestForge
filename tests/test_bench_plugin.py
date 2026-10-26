@@ -24,6 +24,7 @@ from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
 from hpcagent_bench.harness.service import ServiceConfig, make_server
+from stub_session import Stub, install
 
 from nestforge.paths import REPO_ROOT
 from nestforge.server import CALLS
@@ -64,8 +65,8 @@ def loaded() -> Iterator[None]:
     yield
     # every session process this module started, so no other test inherits a live child
     episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
-    for _, (kernels, _) in list(episodes.states.items()):
-        for session in kernels.values():
+    for _, (episode, _) in list(episodes.states.items()):
+        for session in episode.sessions.values():
             session.close()
 
 
@@ -74,6 +75,16 @@ def post(tool: str, episode: str = "episode-cpu", kernel: str = KERNEL, **body: 
     request = RouteRequest(HTTPMethod.POST, ["nestforge", tool], {}, {"kernel": kernel, **body}, episode)
     ROUTES["nestforge"].handler(judge, request)
     return judge
+
+
+@pytest.fixture
+def stub(loaded: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[Stub]:
+    """Every session the route starts answers from a :class:`Stub`; its episodes are forgotten afterwards."""
+    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    before = set(episodes.states)
+    yield install(monkeypatch, Stub())
+    for episode in set(episodes.states) - before:
+        episodes.drop(episode)
 
 
 def test_every_phase_registers_its_tools(loaded: None) -> None:
@@ -103,6 +114,22 @@ def test_every_packet_tool_is_served_with_the_arguments_its_session_call_takes(l
         params = inspect.signature(CALLS[tool]).parameters
         missing = TOOLS[tool].args.model_fields.keys() - params.keys()
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
+
+
+def test_a_gpu_program_is_not_assembled(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(NotImplementedError, match="CPU programs only"):
+        assemble(dace.SDFG("unused"), BenchTarget(KERNEL, "fp64", gpu=True), {}, tmp_path)
+
+
+def test_concurrent_calls_of_one_episode_start_one_session_and_reach_it_one_at_a_time(stub: Stub) -> None:
+    calls = [threading.Thread(target=post, args=("get_cpf", "episode-race")) for _ in range(4)]
+    for call in calls:
+        call.start()
+    for call in calls:
+        call.join()
+
+    assert len(stub.started) == 1, "a second session of the same kernel would leak until garbage collection"
+    assert len(stub.calls) == 4 and stub.most_in_flight == 1, "two calls on one pipe read each other's answers"
 
 
 def test_an_unknown_argument_is_refused(loaded: None) -> None:
