@@ -27,10 +27,10 @@ dependencies = [
     "sympy",
     # The tips of HPCAgent-Bench's release branch and of DaCe extended; `python scripts/bump_deps.py` moves both. The
     # bench pins its own DaCe, so [tool.uv] overrides it with this one.
-    "dace @ git+https://github.com/spcl/dace.git@3a9fcfce9c395b1d9cd04c62b794a544e9d515c1",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@1a27044df3e8aa362e5c4964b839c9dbd7b69df3",
+    "dace @ git+https://github.com/spcl/dace.git@8a4d8244ae2853758f2661acf06b71ef7c195068",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@f729e1e507c2a3aaa4372486b1f6df923ce81530",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@1a27044df3e8aa362e5c4964b839c9dbd7b69df3#subdirectory=agent",
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@f729e1e507c2a3aaa4372486b1f6df923ce81530#subdirectory=agent",
 ]
 
 [project.optional-dependencies]
@@ -50,7 +50,7 @@ Homepage = "https://github.com/spcl/NestForge"
 Repository = "https://github.com/spcl/NestForge"
 
 [tool.uv]
-override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@3a9fcfce9c395b1d9cd04c62b794a544e9d515c1"]
+override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@8a4d8244ae2853758f2661acf06b71ef7c195068"]
 
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
@@ -79,6 +79,7 @@ addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
 markers = [
     "integration: compiles and runs kernels; slow, its own CI job",
+    "judge: a finalized library graded by an in-process bench judge; its own CI job",
     "e2e: end-to-end with g++/clang++, so it runs on CI",
     "gpu: needs a CUDA device, never on CI",
     "vendor: needs a vendor compiler or library not installed on CI",

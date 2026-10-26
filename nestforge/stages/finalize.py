@@ -56,4 +56,6 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
     failed, log = languages.run_build_commands(commands, out_dir)
     if failed or not lib.exists():
         raise RuntimeError(f"the assembled program did not build:\n{log}")
-    return Final(library=lib, workspace_bytes=form.workspace_bytes, source=form.code, link=tuple(form.link), kernels=kernels)
+    return Final(
+        library=lib, workspace_bytes=form.workspace_bytes, source=form.code, link=tuple(form.link), kernels=kernels
+    )

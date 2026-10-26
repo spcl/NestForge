@@ -19,7 +19,7 @@ PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 DACE = "https://github.com/spcl/dace.git"
 BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
 #: The bench branch NestForge tracks: the release the plugin ships with.
-BENCH_BRANCH = "release-v0.3.0"
+BENCH_BRANCH = "release-v0.3.1"
 #: Where each package's pin is written: the dependency, and for DaCe also the uv override.
 PIN_COUNT = {"hpcagent_bench": 1, "hpcagent-agent": 1, "dace": 2}
 

@@ -63,7 +63,7 @@ pytest -m integration                                                   # compil
 pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-HPCAgent-Bench (`release-v0.3.0`) and DaCe (`extended`) are pinned to commit SHAs in `pyproject.toml`;
+HPCAgent-Bench (`release-v0.3.1`) and DaCe (`extended`) are pinned to commit SHAs in `pyproject.toml`;
 `python scripts/bump_deps.py [bench-branch]` moves both to their branch tips. NestForge assumes Linux.
 
 ## Layout

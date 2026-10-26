@@ -68,9 +68,9 @@ def loaded() -> Iterator[None]:
             session.close()
 
 
-def post(tool: str, episode: str = "episode-cpu", **body: object) -> FakeJudge:
+def post(tool: str, episode: str = "episode-cpu", kernel: str = KERNEL, **body: object) -> FakeJudge:
     judge = FakeJudge()
-    request = RouteRequest(HTTPMethod.POST, ["nestforge", tool], {}, {"kernel": KERNEL, **body}, episode)
+    request = RouteRequest(HTTPMethod.POST, ["nestforge", tool], {}, {"kernel": kernel, **body}, episode)
     ROUTES["nestforge"].handler(judge, request)
     return judge
 
@@ -132,11 +132,11 @@ def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(lo
     assert post("get_performance").answer["performance"] == performance, "the unchanged program is measured once"
 
 
-def kernel_round(episode: str) -> tuple[str, str]:
+def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
     """Default scopes on ``episode``, then the first kernel's name and source."""
-    assert post("run_defaults", episode=episode, stage="scopes").code == HTTPStatus.OK
-    name = post("list_kernels", episode=episode).answer["result"][0]["name"]
-    return name, post("read_kernel", episode=episode, name=name).answer["result"]
+    assert post("run_defaults", episode=episode, kernel=kernel, stage="scopes").code == HTTPStatus.OK
+    name = post("list_kernels", episode=episode, kernel=kernel).answer["result"][0]["name"]
+    return name, post("read_kernel", episode=episode, kernel=kernel, name=name).answer["result"]
 
 
 @pytest.mark.integration
@@ -179,23 +179,47 @@ def judge_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     server.server_close()
 
 
-@pytest.mark.integration
+def graded(judge_url: str, kernel: str, final: dict[str, object]) -> GradeAnswer:
+    """``final``'s library as a submission, graded at full feedback by the judge at ``judge_url``."""
+    submission = Submission(
+        language=Language.CPP, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
+    )
+    with config.overridden("service.submit_feedback", SubmitFeedback.FULL):
+        grade = tools.JudgeClient(judge_url).submit(submission, kernel)
+    assert isinstance(grade, GradeAnswer), grade
+    return grade
+
+
+# a straight diamond of maps; maps inside a time loop
+@pytest.mark.judge
+@pytest.mark.parametrize("kernel", [KERNEL, "jacobi_1d"])
 def test_a_finalized_program_is_a_library_the_judge_grades_correct(
-    loaded: None, judge_url: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    loaded: None, judge_url: str, kernel: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))  # read by the session process this test starts
-    name, _ = kernel_round("episode-final")
-    post("tune_kernel", episode="episode-final", name=name, compilers=["gcc"])
+    episode = f"episode-final-{kernel}"
+    name, _ = kernel_round(episode, kernel)
+    post("tune_kernel", episode=episode, kernel=kernel, name=name, compilers=["gcc"])
 
-    final = post("finalize", episode="episode-final").answer["result"]
+    final = post("finalize", episode=episode, kernel=kernel).answer["result"]
 
-    library = pathlib.Path(final["library"])
-    assert library.is_relative_to(tmp_path) and library.exists(), final
-    assert f"{name}(" in final["source"] and len(final["kernels"]) >= 2, final
-    submission = Submission(language=Language.CPP, library=str(library), workspace_bytes=final["workspace_bytes"])
-    with config.overridden("service.submit_feedback", SubmitFeedback.FULL):
-        grade = tools.JudgeClient(judge_url).submit(submission, KERNEL)
-    assert isinstance(grade, GradeAnswer), grade
+    assert pathlib.Path(final["library"]).is_relative_to(tmp_path), final
+    assert f"{name}(" in final["source"] and final["kernels"], final
+    grade = graded(judge_url, kernel, final)
+    assert grade.build_ok is True and grade.correct is True, grade.detail
+
+
+@pytest.mark.judge
+def test_a_program_without_kernels_is_one_entry_that_asks_for_its_scratch(
+    loaded: None, judge_url: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))
+    # atax's two products are library nodes, so no scope is made; tmp = A @ x lives in the judge's scratch
+
+    final = post("finalize", episode="episode-final-atax", kernel="atax").answer["result"]
+
+    assert final["kernels"] == {} and final["workspace_bytes"] != "0", final
+    grade = graded(judge_url, "atax", final)
     assert grade.build_ok is True and grade.correct is True, grade.detail
 
 
