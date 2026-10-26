@@ -177,7 +177,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
 
 
 @pytest.mark.gpu
-def test_the_gpu_sweep_measures_every_nvcc_cell_and_a_correct_cell_wins(tmp_path):
+def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wins(tmp_path):
     sdfg = vadd.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))

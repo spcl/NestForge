@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The compilers on PATH, the one OpenMP runtime every build links (LLVM libomp), CUDA's runtime, and the C
+"""The compilers on PATH, the one OpenMP runtime every build links (LLVM libomp), the CUDA and HIP runtimes, and the C
 signature parsing that binds a kernel entry through ctypes. Imports no DaCe; subprocess probes are cached."""
 
 from __future__ import annotations
@@ -333,6 +333,47 @@ def discover_cuda_toolchains() -> list[CudaToolchain]:
 def cudart_link_flags(directory: str) -> list[str]:
     """Link ``libcudart`` from ``directory`` and find it there again at load time."""
     return [f"-L{directory}", "-lcudart", f"-Wl,-rpath,{directory}"]
+
+
+@dataclass(frozen=True, slots=True)
+class HipToolchain:
+    """One hipcc found on PATH, with its HIP release and the directory its ``libamdhip64`` lives in."""
+
+    hipcc: str
+    release: str
+    runtime_dir: str
+
+    @property
+    def name(self) -> str:
+        return f"hipcc-{self.release}"
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def hipcc_release(hipcc: str) -> str:
+    """``major.minor`` of the HIP release ``hipcc`` belongs to."""
+    out = subprocess.run([hipcc, "--version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S).stdout
+    match = re.search(r"HIP version: (\d+\.\d+)", out)
+    if match is None:
+        raise LookupError(f"{hipcc} --version names no HIP release: {out[:ERROR_TAIL]!r}")
+    return match.group(1)
+
+
+def hip_runtime_dir(hipcc: str) -> str:
+    """The directory holding the ``libamdhip64`` of ``hipcc``'s ROCm: ``<rocm>/lib`` beside its ``<rocm>/bin``."""
+    directory = Path(hipcc).resolve().parents[1] / "lib"
+    if not (directory / "libamdhip64.so").exists():
+        raise LookupError(f"{hipcc}: no libamdhip64.so in {directory}")
+    return str(directory)
+
+
+def discover_hip_toolchains() -> list[HipToolchain]:
+    """Every hipcc on PATH, one toolchain per distinct compiler."""
+    return [HipToolchain(hipcc, hipcc_release(hipcc), hip_runtime_dir(hipcc)) for hipcc in path_executables("hipcc")]
+
+
+def hip_link_flags(directory: str) -> list[str]:
+    """Link ``libamdhip64`` from ``directory`` and find it there again at load time."""
+    return [f"-L{directory}", "-lamdhip64", f"-Wl,-rpath,{directory}"]
 
 
 def needed_libraries(shared: Path) -> list[str]:

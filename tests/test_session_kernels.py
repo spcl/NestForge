@@ -7,6 +7,7 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
+from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 
 from nestforge.build import flags
@@ -161,7 +162,7 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
 
 
 @pytest.mark.gpu
-def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path):
+def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_model(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
     session.default_scopes()
@@ -171,8 +172,12 @@ def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path
 
     assert result.winner is not None
     config = result.config
-    assert config.compiler.startswith("nvcc-") and config.cost_model == flags.NO_COST_MODEL
-    assert config.fp_mode in flags.CUDA_FP and "-arch=native" in config.flags
+    compiler, fp_modes, arch = {
+        "cuda": ("nvcc-", flags.CUDA_FP, "-arch=native"),
+        "hip": ("hipcc-", flags.HIP_FP, "--offload-arch=native"),
+    }[get_gpu_backend()]
+    assert config.compiler.startswith(compiler) and config.cost_model == flags.NO_COST_MODEL
+    assert config.fp_mode in fp_modes and arch in config.flags
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall" and ext.lib_path.endswith(".a")
 

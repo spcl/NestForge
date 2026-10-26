@@ -126,54 +126,70 @@ US_PER_S = 1e6
 #: Timed calls per measurement, after one warm-up call.
 TIMED_REPS = 10
 
-#: ``cudaMemcpyKind`` values.
+#: ``cudaMemcpyKind`` / ``hipMemcpyKind`` values (the same in both runtimes).
 HOST_TO_DEVICE = 1
 DEVICE_TO_HOST = 2
 
-
-def cuda_check(status: int, what: str) -> None:
-    if status != 0:
-        raise RuntimeError(f"{what} failed with CUDA status {status}")
+#: Each device runtime's soname prefix -> the prefix of its API's names.
+DEVICE_RUNTIMES: dict[str, str] = {"libcudart": "cuda", "libamdhip64": "hip"}
 
 
-def loaded_cudart(shared: Path) -> ctypes.CDLL:
-    """The ``libcudart`` an already loaded kernel library links, bound without loading a second copy."""
-    soname = next((name for name in needed_libraries(shared) if name.startswith("libcudart")), None)
-    if soname is None:
-        raise LookupError(f"{shared} does not link libcudart; a device kernel must name its runtime")
-    return ctypes.CDLL(soname, mode=os.RTLD_NOLOAD)
+@dataclass(frozen=True, slots=True)
+class DeviceRuntime:
+    """The device runtime a kernel library links (``libcudart`` or ``libamdhip64``), called by its API prefix."""
+
+    library: ctypes.CDLL
+    api: str
+
+    def call(self, function: str, *args: object) -> int:
+        """``<api><function>(*args)``, e.g. ``cudaMalloc`` or ``hipMalloc``; returns its status."""
+        return int(self.library[f"{self.api}{function}"](*args))
+
+    def check(self, status: int, what: str) -> None:
+        if status != 0:
+            raise RuntimeError(f"{what} failed with {self.api} status {status}")
+
+
+def loaded_device_runtime(shared: Path) -> DeviceRuntime:
+    """The device runtime an already loaded kernel library links, bound without loading a second copy."""
+    for soname in needed_libraries(shared):
+        for prefix, api in DEVICE_RUNTIMES.items():
+            if soname.startswith(prefix):
+                return DeviceRuntime(ctypes.CDLL(soname, mode=os.RTLD_NOLOAD), api)
+    raise LookupError(f"{shared} links no device runtime ({', '.join(DEVICE_RUNTIMES)}); a device kernel must name it")
 
 
 @dataclass(slots=True)
 class DeviceMemory:
-    """Device copies of a kernel's pointer arguments, allocated and freed through one ``libcudart``."""
+    """Device copies of a kernel's pointer arguments, allocated and freed through one device runtime."""
 
-    cudart: ctypes.CDLL
+    runtime: DeviceRuntime
     pointers: dict[str, ctypes.c_void_p]
 
     def upload(self, name: str, host: np.ndarray) -> None:
         source = host.ctypes.data_as(ctypes.c_void_p)
-        status = self.cudart.cudaMemcpy(self.pointers[name], source, ctypes.c_size_t(host.nbytes), HOST_TO_DEVICE)
-        cuda_check(status, f"copy of {name} to the device")
+        size = ctypes.c_size_t(host.nbytes)
+        status = self.runtime.call("Memcpy", self.pointers[name], source, size, HOST_TO_DEVICE)
+        self.runtime.check(status, f"copy of {name} to the device")
 
     def download(self, name: str, host: np.ndarray) -> None:
         target = host.ctypes.data_as(ctypes.c_void_p)
-        status = self.cudart.cudaMemcpy(target, self.pointers[name], ctypes.c_size_t(host.nbytes), DEVICE_TO_HOST)
-        cuda_check(status, f"copy of {name} to the host")
+        size = ctypes.c_size_t(host.nbytes)
+        status = self.runtime.call("Memcpy", target, self.pointers[name], size, DEVICE_TO_HOST)
+        self.runtime.check(status, f"copy of {name} to the host")
 
     def free(self) -> None:
         for pointer in self.pointers.values():
-            self.cudart.cudaFree(pointer)
+            self.runtime.call("Free", pointer)
 
 
-def device_memory(cudart: ctypes.CDLL, buffers: dict[str, np.ndarray], names: Sequence[str]) -> DeviceMemory:
+def device_memory(runtime: DeviceRuntime, buffers: dict[str, np.ndarray], names: Sequence[str]) -> DeviceMemory:
     """A device buffer per name, holding the host contents."""
-    memory = DeviceMemory(cudart, {})
+    memory = DeviceMemory(runtime, {})
     for name in names:
         pointer = ctypes.c_void_p()
-        cuda_check(
-            cudart.cudaMalloc(ctypes.byref(pointer), ctypes.c_size_t(buffers[name].nbytes)), f"allocation of {name}"
-        )
+        size = ctypes.c_size_t(buffers[name].nbytes)
+        runtime.check(runtime.call("Malloc", ctypes.byref(pointer), size), f"allocation of {name}")
         memory.pointers[name] = pointer
         memory.upload(name, buffers[name])
     return memory
@@ -234,7 +250,7 @@ def call_device(call: DeviceCall) -> DeviceResult:
     fn = entry(call.shared, call.symbol, argtypes)
     host = {k: v.copy() for k, v in call.inputs.items()}
     on_device = [arg for arg, ctype in zip(call.order, argtypes) if arg in host and isinstance(ctype, POINTER_TYPE)]
-    memory = device_memory(loaded_cudart(Path(call.shared)), host, on_device)
+    memory = device_memory(loaded_device_runtime(Path(call.shared)), host, on_device)
     args = [
         ctypes.cast(memory.pointers[arg], cast(type[ctypes._Pointer], ctype))
         if arg in memory.pointers
