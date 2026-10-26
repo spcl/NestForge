@@ -14,6 +14,7 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
+from dace.codegen.common import get_gpu_backend
 from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
@@ -24,6 +25,7 @@ from nestforge.corpus.translate import prepare
 from nestforge.paths import REPO_ROOT
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
+    GPU_FORMS,
     build_kernel_library,
     gpu_schedule,
     kernel_runtime_libraries,
@@ -157,8 +159,10 @@ def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_not
 
 @pytest.mark.parametrize("program", [vadd, scaled], ids=["vadd", "scaled"])
 def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_external_call_prototype(tmp_path, program):
-    """After stage 4 places the kernel on the GPU, stage 5 renders CUDA with the same entry the parent calls: the
-    host unit holds the entry, the device unit the kernels and the launchers the entry calls."""
+    """After stage 4 places the kernel on the GPU, stage 5 renders the GPU language with the same entry the parent
+    calls: the host unit holds the entry, the device unit the kernels and the launchers the entry calls."""
+    api = get_gpu_backend()
+    suffix = GPU_FORMS[api].suffix
     sdfg, ext, boundary = gpu_lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path)
     use_kernel_library(ext, tmp_path / "unused.a", src, [])
@@ -166,12 +170,12 @@ def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_extern
     proto, _ = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
     text = src.unit.read_text()
-    assert (src.device, src.unit.suffix) == ("gpu", ".cu")
+    assert (src.device, src.unit.suffix) == ("gpu", suffix)
     assert ENTRY_DEFINITION.findall(text) == [ext.name] and text.count('extern "C"') == 1
     assert "__global__" not in text and "__dace_" not in text
-    assert src.device_unit is not None and src.device_unit.name == f"{src.name}_device.cu"
+    assert src.device_unit is not None and src.device_unit.name == f"{src.name}_device{suffix}"
     device_text = src.device_unit.read_text()
-    assert "__global__" in device_text and "cudaLaunchKernel(" in device_text
+    assert "__global__" in device_text and f"{api}LaunchKernel(" in device_text
     launchers = set(re.findall(r"\b(__cpf_runkernel_\w+)\(", text))
     assert launchers and all(re.search(rf"\bvoid {name}\(", device_text) for name in launchers)
     assert src.units == [src.unit, src.device_unit]
@@ -283,12 +287,15 @@ def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program
 
 GPU_KERNELS = [(vadd, ()), (scaled, ()), (scaled_by_cell, ("alpha",))]
 
+#: Per DaCe GPU backend: the device runtime's soname prefix and its link flag.
+DEVICE_RUNTIME = {"cuda": ("libcudart", "-lcudart"), "hip": ("libamdhip64", "-lamdhip64")}
+
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("program, on_device", GPU_KERNELS, ids=["vadd", "scaled_by_value", "alpha_on_device"])
 def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program, on_device):
-    """Device buffers for the arrays, a by-value scalar, and a length-1 device array all reach the CUDA kernel,
-    built by nvcc at the strict rung."""
+    """Device buffers for the arrays, a by-value scalar, and a length-1 device array all reach the GPU kernel,
+    built by nvcc or hipcc at the strict rung."""
     _, ext, boundary = gpu_lowered_kernel(program, on_device)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
@@ -315,7 +322,7 @@ def test_a_cpu_kernel_library_links_libomp_as_its_only_openmp_runtime(tmp_path, 
 
 
 @pytest.mark.gpu
-def test_a_gpu_kernel_library_links_cudart_and_no_foreign_openmp_runtime(tmp_path):
+def test_a_gpu_kernel_library_links_its_device_runtime_and_no_foreign_openmp_runtime(tmp_path):
     _, ext, boundary = gpu_lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
@@ -323,13 +330,14 @@ def test_a_gpu_kernel_library_links_cudart_and_no_foreign_openmp_runtime(tmp_pat
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), tmp_path / "lib")
 
     shared = archive.with_suffix(".so")
-    assert any(name.startswith("libcudart.so") for name in needed_libraries(shared))
+    soname, _ = DEVICE_RUNTIME[get_gpu_backend()]
+    assert any(name.startswith(f"{soname}.so") for name in needed_libraries(shared))
     assert [stem for stem in openmp_runtime_stems(shared) if stem != "libomp"] == []
 
 
 @pytest.mark.gpu
 def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_device_pointer(tmp_path):
-    """The program calls the linked CUDA kernel with ``alpha`` still in device memory. A host address in that
+    """The program calls the linked GPU kernel with ``alpha`` still in device memory. A host address in that
     slot reads garbage or faults, so the program's output is compared with NumPy, in a forked child."""
     import cupy  # the optional GPU array library, needed only where a GPU runs this test
 
@@ -351,7 +359,8 @@ def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_devi
 
     assert result == MaxDiff(maxdiff=0.0)
     program = compiled._lib._library_filename
-    assert any(name.startswith("libcudart.so") for name in needed_libraries(program))
+    soname, _ = DEVICE_RUNTIME[get_gpu_backend()]
+    assert any(name.startswith(f"{soname}.so") for name in needed_libraries(program))
     assert [stem for stem in openmp_runtime_stems(program) if stem != "libomp"] == []
 
 
@@ -389,7 +398,7 @@ def test_the_kernel_link_passes_as_needed_before_its_libraries(tmp_path, monkeyp
 
 
 @pytest.mark.gpu
-def test_the_gpu_kernel_link_passes_as_needed_before_cudart(tmp_path, monkeypatch):
+def test_the_gpu_kernel_link_passes_as_needed_before_its_device_runtime(tmp_path, monkeypatch):
     _, ext, boundary = gpu_lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
@@ -398,13 +407,14 @@ def test_the_gpu_kernel_link_passes_as_needed_before_cudart(tmp_path, monkeypatc
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), tmp_path / "lib")
 
     link = shared_link(commands, archive.with_suffix(".so"))
-    assert "-Wl,--as-needed" in link and "-lcudart" in link
-    assert link.index("-Wl,--as-needed") < link.index("-lcudart")
+    _, runtime = DEVICE_RUNTIME[get_gpu_backend()]
+    assert "-Wl,--as-needed" in link and runtime in link
+    assert link.index("-Wl,--as-needed") < link.index(runtime)
 
 
-#: Creates this process's CUDA context, then validates a GPU kernel from the same process. A measurement run
-#: in a child forked from a CUDA-initialized parent fails with CUDA status 3 (not initialized).
-CUDA_INITIALIZED_PARENT = """import ctypes
+#: Creates this process's device context, then validates a GPU kernel from the same process. A measurement run
+#: in a child forked from a device-initialized parent fails (CUDA status 3, not initialized).
+DEVICE_INITIALIZED_PARENT = """import ctypes
 import json
 import os
 import sys
@@ -413,7 +423,8 @@ from pathlib import Path
 import dace
 from helpers import extern_declaration_and_call
 
-from nestforge.build.toolchain import discover_cuda_toolchains
+from dace.codegen.common import get_gpu_backend
+from nestforge.build.toolchain import discover_cuda_toolchains, discover_hip_toolchains
 from nestforge.corpus.translate import prepare
 from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
 from nestforge.stages.canonicalize import Targets, canonicalize
@@ -433,8 +444,12 @@ def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]):
 
 if __name__ == "__main__":
     out = Path(sys.argv[1])
-    cudart = ctypes.CDLL(os.path.join(discover_cuda_toolchains()[0].cudart_dir, "libcudart.so"))
-    status = cudart.cudaFree(ctypes.c_void_p(0))
+    if get_gpu_backend() == "hip":
+        runtime = ctypes.CDLL(os.path.join(discover_hip_toolchains()[0].runtime_dir, "libamdhip64.so"))
+        status = runtime.hipFree(ctypes.c_void_p(0))
+    else:
+        runtime = ctypes.CDLL(os.path.join(discover_cuda_toolchains()[0].cudart_dir, "libcudart.so"))
+        status = runtime.cudaFree(ctypes.c_void_p(0))
     sdfg = vadd.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))
@@ -449,11 +464,11 @@ if __name__ == "__main__":
 
 
 @pytest.mark.gpu
-def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_cuda_context(tmp_path):
-    """A CUDA context does not survive fork, so the measurement must not run in a child forked from a process
+def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_device_context(tmp_path):
+    """A device context does not survive fork, so the measurement must not run in a child forked from a process
     that already used the GPU. A fresh interpreter keeps this test's context out of the rest of the suite."""
-    script = tmp_path / "cuda_initialized_parent.py"
-    script.write_text(CUDA_INITIALIZED_PARENT)
+    script = tmp_path / "device_initialized_parent.py"
+    script.write_text(DEVICE_INITIALIZED_PARENT)
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
 
     run = subprocess.run(

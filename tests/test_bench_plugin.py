@@ -5,6 +5,7 @@ structured and kernel phases served with performance feedback, and ``finalize``'
 
 import contextlib
 import inspect
+import multiprocessing
 import pathlib
 import sys
 import threading
@@ -12,8 +13,8 @@ import tomllib
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
 
-import dace
 import pytest
+from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.tools import registry
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
@@ -28,10 +29,11 @@ from stub_session import Stub, install
 
 from nestforge.paths import REPO_ROOT
 from nestforge.server import CALLS, Reply
-from nestforge.stages.finalize import BenchTarget, assemble
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
+#: Seconds a spawned judge has to import the bench and bind its port.
+JUDGE_START_TIMEOUT_S = 300.0
 
 
 class FakeJudge:
@@ -64,8 +66,8 @@ def loaded() -> Iterator[None]:
     yield
     # every session process this module started, so no other test inherits a live child
     episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
-    for _, (kernels, _) in list(episodes.states.items()):
-        for session in kernels.values():
+    for _, (episode, _) in list(episodes.states.items()):
+        for session in episode.sessions.values():
             session.close()
 
 
@@ -115,11 +117,6 @@ def test_every_packet_tool_is_served_with_the_arguments_its_session_call_takes(l
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
 
 
-def test_a_gpu_program_is_not_assembled(tmp_path: pathlib.Path) -> None:
-    with pytest.raises(NotImplementedError, match="CPU programs only"):
-        assemble(dace.SDFG("unused"), BenchTarget(KERNEL, "fp64", gpu=True), {}, tmp_path)
-
-
 def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:
     stub.dies_on = "apply_move"
 
@@ -148,6 +145,17 @@ def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) 
     judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"], epoch=1)
 
     assert judge.code == HTTPStatus.BAD_REQUEST and "epoch" in judge.answer["error"], judge.answer
+
+
+def test_concurrent_calls_of_one_episode_start_one_session_and_reach_it_one_at_a_time(stub: Stub) -> None:
+    calls = [threading.Thread(target=post, args=("get_cpf", "episode-race")) for _ in range(4)]
+    for call in calls:
+        call.start()
+    for call in calls:
+        call.join()
+
+    assert len(stub.started) == 1, "a second session of the same kernel would leak until garbage collection"
+    assert len(stub.calls) == 4 and stub.most_in_flight == 1, "two calls on one pipe read each other's answers"
 
 
 def test_an_unknown_argument_is_refused(loaded: None) -> None:
@@ -203,30 +211,46 @@ def test_a_tuned_kernel_reports_the_winning_configuration(loaded: None) -> None:
     assert tuned["performance"]["structured"]["correct"] is True
 
 
+def serve_judge(ports: "multiprocessing.Queue[int]") -> None:
+    """A judge taking library submissions at S, answering the whole grade, until terminated."""
+    with (
+        config.overridden("fuzz.hidden_correctness_presets", ["S"] * 5),
+        config.overridden("service.submit_feedback", SubmitFeedback.FULL),
+    ):
+        server = make_server(
+            "127.0.0.1", 0, ServiceConfig(baseline=Baseline.C, oracle=Oracle.AUTO, input_mode=InputMode.ANY, repeat=3)
+        )
+        ports.put(server.server_address[1])
+        server.serve_forever()
+
+
 @pytest.fixture
-def judge_url(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """An in-process judge taking library submissions, grading at S as the bench's own suite does."""
+def judge_url(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
+    """A judge in a spawned process, grading at S as the bench's own suite does. Not a thread of this one: a GPU
+    grade initializes the device runtime in the judge's process, and a later test forking this one dies with it."""
+    # The judge's shared folder, and the one the session process a test starts writes its library into.
+    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))
     monkeypatch.setenv("HPCAGENT_BENCH_FUZZ_SIZE_CAP", "4096")
     monkeypatch.setenv("HPCAGENT_BENCH_MEASUREMENT_TIMING_BACKEND", "min_of_k")
     monkeypatch.setenv("HPCAGENT_BENCH_SERVICE_PRESET", "S")
     monkeypatch.setenv("HPCAGENT_BENCH_FUZZ_ANCHOR", "S")
-    server = make_server(
-        "127.0.0.1", 0, ServiceConfig(baseline=Baseline.C, oracle=Oracle.AUTO, input_mode=InputMode.ANY, repeat=3)
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    with config.overridden("fuzz.hidden_correctness_presets", ["S"] * 5):
-        yield f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
-    server.server_close()
+    spawn = multiprocessing.get_context("spawn")
+    ports: multiprocessing.Queue[int] = spawn.Queue()
+    judge = spawn.Process(target=serve_judge, args=(ports,))  # not daemonic: the judge forks its grades
+    judge.start()
+    try:
+        yield f"http://127.0.0.1:{ports.get(timeout=JUDGE_START_TIMEOUT_S)}"
+    finally:
+        judge.terminate()
+        judge.join()
 
 
-def graded(judge_url: str, kernel: str, final: dict[str, object]) -> GradeAnswer:
-    """``final``'s library as a submission, graded at full feedback by the judge at ``judge_url``."""
+def graded(judge_url: str, kernel: str, final: dict[str, object], language: Language = Language.CPP) -> GradeAnswer:
+    """``final``'s library as a ``language`` submission, graded by the judge at ``judge_url``."""
     submission = Submission(
-        language=Language.CPP, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
+        language=language, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
     )
-    with config.overridden("service.submit_feedback", SubmitFeedback.FULL):
-        grade = tools.JudgeClient(judge_url).submit(submission, kernel)
+    grade = tools.JudgeClient(judge_url).submit(submission, kernel)
     assert isinstance(grade, GradeAnswer), grade
     return grade
 
@@ -235,9 +259,8 @@ def graded(judge_url: str, kernel: str, final: dict[str, object]) -> GradeAnswer
 @pytest.mark.judge
 @pytest.mark.parametrize("kernel", [KERNEL, "jacobi_1d"])
 def test_a_finalized_program_is_a_library_the_judge_grades_correct(
-    loaded: None, judge_url: str, kernel: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    loaded: None, judge_url: str, kernel: str, tmp_path: pathlib.Path
 ) -> None:
-    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))  # read by the session process this test starts
     episode = f"episode-final-{kernel}"
     name, _ = kernel_round(episode, kernel)
     post("tune_kernel", episode=episode, kernel=kernel, name=name, compilers=["gcc"])
@@ -251,10 +274,7 @@ def test_a_finalized_program_is_a_library_the_judge_grades_correct(
 
 
 @pytest.mark.judge
-def test_a_program_without_kernels_is_one_entry_that_asks_for_its_scratch(
-    loaded: None, judge_url: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))
+def test_a_program_without_kernels_is_one_entry_that_asks_for_its_scratch(loaded: None, judge_url: str) -> None:
     # atax's two products are library nodes, so no scope is made; tmp = A @ x lives in the judge's scratch
 
     final = post("finalize", episode="episode-final-atax", kernel="atax").answer["result"]
@@ -275,3 +295,19 @@ def test_a_gpu_target_reports_its_offloading(loaded: None, monkeypatch: pytest.M
     assert "gpu" in offloading["devices"].values()
     assert offloading["transfer_bytes"] > 0
     assert "error" not in judge.answer["performance"]["structured"]
+
+
+@pytest.mark.gpu
+def test_a_finalized_gpu_program_is_a_two_unit_library_the_judge_grades_correct(
+    loaded: None, judge_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = get_gpu_backend()
+    monkeypatch.setenv("LANGUAGE", backend)
+
+    judge = post("finalize", episode="episode-final-gpu")  # never placed: the default placement
+
+    assert judge.code == HTTPStatus.OK, judge.answer
+    final = judge.answer["result"]
+
+    grade = graded(judge_url, KERNEL, final, Language[backend.upper()])
+    assert grade.build_ok is True and grade.correct is True, grade.detail

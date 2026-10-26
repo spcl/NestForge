@@ -46,10 +46,10 @@ from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_an
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
-    FORMS,
     KernelSource,
     KernelVerdict,
     build_kernel_library,
+    kernel_form,
     kernel_runtime_libraries,
     kernel_text,
     schedule_kernel,
@@ -80,8 +80,12 @@ from nestforge.stages.variants import Variant, device_variants, select_variant
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
 
+
 #: The kernel source language each device's kernels are written in.
-LANGUAGES = {"cpu": "cpp", "gpu": "cuda"}
+def kernel_language(device: str) -> str:
+    """The ``write_kernel`` language of a kernel on ``device``: ``cpp`` on the CPU, the GPU form's dialect on the GPU
+    (``cuda`` or ``hip``)."""
+    return "cpp" if device == "cpu" else kernel_form(device).language
 
 
 class MoveResult(Record):
@@ -606,15 +610,16 @@ class Session:
         :param source: A translation unit defining ``extern "C" void <name>(...)`` with the parameters, in order, of
             the default unit (:meth:`kernel_source` before any change). A GPU kernel may be two units, host then
             device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
-        :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel, ``cuda`` for a GPU kernel.
+        :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel; for a GPU kernel ``cuda`` or ``hip``, the
+            dialect of this machine's GPU backend.
         :returns: The outcome; only ``ok`` changes the kernel's library.
         """
         default = self.default_kernel(name)
-        if language != LANGUAGES[default.device]:
+        if language != kernel_language(default.device):
             return KernelOutcome(
                 kernel=name,
                 status=KernelStatus.REFUSED,
-                reason=f"a {default.device} kernel is {LANGUAGES[default.device]}.",
+                reason=f"a {default.device} kernel is {kernel_language(default.device)}.",
             )
         try:
             params = [p.name for p in parse_params(raw_signature(source, name))]
@@ -629,7 +634,7 @@ class Session:
         attempt = self.work_dir / name / f"agent{len(list((self.work_dir / name).glob('agent*')))}"
         attempt.mkdir(parents=True)
         host, device_text = split_kernel_text(source)
-        suffix = FORMS[default.device].suffix
+        suffix = kernel_form(default.device).suffix
         unit = attempt / f"{name}{suffix}"
         unit.write_text(host)
         device_unit = None
@@ -676,7 +681,7 @@ class Session:
         """Build and time the kernel's current source under every configuration of its device, link the fastest
         correct one, and summarize the sweep; ``config`` is the winner's compiler, FP mode, cost model, flags, time.
 
-        :param compilers: Toolchain names to keep (``gcc``, ``clang``, ``nvcc``, ``nvcc-13.1``, ...); every one
+        :param compilers: Toolchain names to keep (``gcc``, ``clang``, ``nvcc``, ``nvcc-13.1``, ``hipcc``, ...); every one
             discovered for the kernel's device when ``None``.
         """
         build = self.builds.get(name)
@@ -731,13 +736,19 @@ class Session:
     # Assembly
 
     def finalize(self, out_dir: Path | None = None) -> Final:
-        """The program as a bench library submission: every kernel without a build gets its stage 5 default, then
-        the program is rendered in the bench C ABI and built, each kernel linked from its own archive.
+        """The program as a bench library submission: on a GPU target a program never placed gets the default scopes
+        and placement, every kernel without a build gets its stage 5 default, then the program is rendered in the
+        bench C ABI and built, each kernel linked from its own archive.
 
         :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
+        if self.targets.gpu and self.unplaced is None:
+            # a GPU program is assembled as placed: one never placed takes the default scopes and placement
+            if not external_calls(self.sdfg):
+                self.default_scopes()
+            self.place()
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
                 self.optimize_kernel(ext.name)

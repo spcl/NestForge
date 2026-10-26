@@ -69,7 +69,9 @@ class KernelName(Args):
 
 class WriteKernel(KernelName):
     source: str
-    language: Literal["cpp", "cuda"]
+    language: Literal["cpp", "cuda", "hip"] = pydantic.Field(
+        description="cpp for a CPU kernel; for a GPU kernel the dialect read_kernel showed (cuda or hip)."
+    )
 
 
 class TuneKernel(KernelName):
