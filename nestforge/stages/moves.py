@@ -12,6 +12,7 @@ from typing import Any, cast
 import dace
 import sympy
 from dace.sdfg import nodes
+from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
@@ -19,6 +20,8 @@ from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
+from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
+from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
@@ -169,7 +172,9 @@ def vertical_refusal(state: SDFGState, producer: nodes.MapEntry, arr: nodes.Acce
 
 
 def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
-    """Vertical through a transient in either data-flow order, else horizontal when no data links the maps."""
+    """Vertical through the data linking the maps in either data-flow order (in place when the first map updates
+    it), else on the fly (the second map recomputes what it reads of the first), else horizontal when no data links
+    the maps."""
     state = node_state(first)
     if node_state(second) is not state:
         return STATE_BARRIER
@@ -178,10 +183,14 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     for producer, consumer in ((a, b), (b, a)):
         for arr in intermediates(state, producer, consumer):
             where = {"first_map_exit": state.exit_node(producer), "array": arr, "second_map_entry": consumer}
-            move = pattern(MapFusionVertical, sdfg, where)
+            move = pattern(MapFusionVertical, sdfg, where) or pattern(
+                OTFMapFusion, sdfg, where, options={"recompute_windows": True}
+            )
             if move is not None:
                 return move
-            reasons.append(f"blocked by MapFusionVertical on '{arr.data}': {vertical_refusal(state, producer, arr)}")
+            reasons.append(
+                f"blocked by MapFusionVertical and OTFMapFusion on '{arr.data}': {vertical_refusal(state, producer, arr)}"
+            )
     if reasons:
         return "; ".join(reasons) + "."
     if state.entry_node(a) is not state.entry_node(b):
@@ -194,16 +203,58 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
 
 
+def statement_groups(state: SDFGState) -> list[list[nodes.Node]]:
+    """The independent computations of a map body's state: its code nodes, joined through the locals (transients)
+    they exchange, with those locals. A statement lowered to a chain of tasklets is one group."""
+    leader: dict[nodes.Node, nodes.Node] = {
+        n: n
+        for n in state.nodes()
+        if isinstance(n, nodes.CodeNode) or (isinstance(n, nodes.AccessNode) and n.desc(state.sdfg).transient)
+    }
+
+    def root(node: nodes.Node) -> nodes.Node:
+        while leader[node] is not node:
+            node = leader[node]
+        return node
+
+    for edge in state.edges():
+        if edge.src in leader and edge.dst in leader:
+            leader[root(edge.dst)] = root(edge.src)
+    groups: dict[nodes.Node, list[nodes.Node]] = {}
+    for node in leader:
+        groups.setdefault(root(node), []).append(node)
+    return [group for group in groups.values() if any(isinstance(n, nodes.CodeNode) for n in group)]
+
+
+def computations(body: dace.SDFG) -> int:
+    """The computations of a map body MapFission gives a map each: its control-flow regions, and the statement
+    groups of its states."""
+    return sum(1 if not isinstance(block, SDFGState) else len(statement_groups(block)) for block in body.nodes())
+
+
+def group_statements(body: dace.SDFG) -> None:
+    """Nest every statement group of more than one code node, so MapFission splits per statement, not per tasklet
+    (which would turn its locals into arrays)."""
+    for state in body.states():
+        for group in statement_groups(state):
+            if sum(isinstance(n, nodes.CodeNode) for n in group) > 1:
+                nest_state_subgraph(body, state, SubgraphView(state, group))
+
+
 def plan_map_fission(row: Row) -> Rewrite | str:
     """Split a map by its independent output groups: a nested-SDFG body by ``MapFission``'s nested pattern, a flat
     body writing two or more outputs by its component pattern (not per tasklet, which would turn locals into
     arrays)."""
     state, entry = node_state(row), row[0]
     body = map_body(state, entry)
+    if body is not None and computations(body.sdfg) < 2:
+        return "the map body is one computation; there is nothing to split."
     if body is not None:
-        return pattern(MapFission, state.sdfg, {"map_entry": entry, "nested_sdfg": body}, expr_index=1) or (
-            MAP_FISSION_REFUSED
-        )
+        where = {"map_entry": entry, "nested_sdfg": body}
+        move = pattern(MapFission, state.sdfg, where, expr_index=1)
+        if move is None:
+            return MAP_FISSION_REFUSED
+        return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
     move = pattern(MapFission, state.sdfg, {"map_entry": entry}, expr_index=0) if len(outputs) > 1 else None
     return move or MAP_FISSION_REFUSED
@@ -318,9 +369,10 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "loop-fusion": ("LoopFusion", "two adjacent loops over the same range become one loop."),
     "loop-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
     "map-fusion": (
-        "MapFusionVertical / MapFusionHorizontal",
-        "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar), "
-        "or two independent maps over the same range.",
+        "MapFusionVertical / OTFMapFusion / MapFusionHorizontal",
+        "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar, "
+        "or stays the array when the producer updates it in place), a consumer that recomputes the producer's "
+        "values it reads on the fly (a stencil), or two independent maps over the same range.",
     ),
     "map-fission": (
         "MapFission",

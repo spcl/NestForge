@@ -55,15 +55,23 @@ def all_map_entries(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
 
 
 def tasklet_scopes(sdfg: dace.SDFG) -> dict[str, nodes.Node | None]:
-    """Tasklet label -> its immediate enclosing MapEntry (``None`` if unmapped at that state)."""
+    """Tasklet label -> its innermost enclosing MapEntry, through the nested SDFG a map body is (``None`` if
+    unmapped)."""
     scopes: dict[str, nodes.Node | None] = {}
     for sd in sdfg.all_sdfgs_recursive():
         for state in sd.states():
-            scope = state.scope_dict()
             for node in state.nodes():
                 if isinstance(node, nodes.Tasklet):
-                    scopes[node.label] = scope[node]
+                    scopes[node.label] = enclosing_map(state, node)
     return scopes
+
+
+def enclosing_map(state: dace.SDFGState, node: nodes.Node) -> nodes.Node | None:
+    scope = state.entry_node(node)
+    nest = state.sdfg.parent_nsdfg_node
+    if scope is None and nest is not None:
+        return enclosing_map(state.sdfg.parent, nest)
+    return scope
 
 
 def test_two_statement_map_starts_as_one_map_two_statements():

@@ -197,6 +197,31 @@ def steps_inside_a_map(A: dace.float64[N, T], C: dace.float64[N, T]):
                 C[i, j] = C[i, j] + tmp[j]
 
 
+@dace.program
+def scale_in_place_then_read(A: dace.float64[N], B: dace.float64[N]):
+    for i in dace.map[0:N]:
+        A[i] = A[i] * 2
+    for i in dace.map[0:N]:
+        B[i] = A[i] + 1
+
+
+@dace.program
+def scale_then_neighbors(A: dace.float64[N], B: dace.float64[N]):
+    t = np.empty(N, dace.float64)
+    for i in dace.map[0:N]:
+        t[i] = A[i] * 2
+    for i in dace.map[1 : N - 1]:
+        B[i] = t[i - 1] + t[i + 1]
+
+
+@dace.program
+def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
+    for i in dace.map[0:N]:
+        S[0] += A[i] * 2
+    for i in dace.map[0:N]:
+        R[0] += A[i] + 1
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -398,6 +423,28 @@ def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, STEPS), C=(SIZE, STEPS)), N=SIZE, T=STEPS)
 
 
+@pytest.mark.parametrize(
+    "program, fusion",
+    [
+        (scale_in_place_then_read, "MapFusionVertical"),
+        (scale_then_neighbors, "OTFMapFusion"),
+        (two_sums, "MapFusionHorizontal"),
+    ],
+)
+def test_map_fusion_fuses_in_place_on_the_fly_and_two_reductions_into_one_map(program, fusion):
+    """In place: the first map updates the array the second reads. On the fly: the second reads a window of the
+    first's output, recomputed per element. Two reductions: two nested bodies, each leaving through ``-wcr->``."""
+    sut, reference = session_and_reference(program)
+    sut.canonicalize()
+
+    result = apply_listed(sut, "map-fusion")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, fusion)
+    assert len(top_level_maps(sut.sdfg)) == 1
+    arrays = random_arrays(A=(SIZE,), **({"S": (1,), "R": (1,)} if program is two_sums else {"B": (SIZE,)}))
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
+
+
 def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier():
     sut = Session(two_indep.to_sdfg(simplify=False))
     labels = [entry.label for entry in top_level_maps(sut.sdfg)]
@@ -446,6 +493,33 @@ def test_map_fission_of_a_flat_map_writing_one_array_is_illegal():
 
     assert result.status is MoveStatus.ILLEGAL and "MapFission" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
+
+
+def test_map_fission_of_a_nested_body_of_one_computation_is_illegal():
+    sut = Session(one_statement.to_sdfg(simplify=True))
+    sut.canonicalize()
+    (entry,) = top_level_maps(sut.sdfg)
+
+    result = sut.apply_move("map-fission", [entry.label], sut.epoch)
+
+    assert result.status is MoveStatus.ILLEGAL and "one computation" in result.reason, result
+
+
+def test_canonicalization_leaves_every_map_body_one_nested_sdfg_and_a_reduction_outside_it():
+    """``map { nested SDFG } -> access node -wcr->``: no tasklet beside the body, no reduction inside it."""
+    sut = Session(two_sums.to_sdfg(simplify=True))
+
+    sut.canonicalize()
+
+    for state in sut.sdfg.states():
+        for entry in top_level_map_entries(state):
+            exit_node = state.exit_node(entry)
+            body = [n for n in state.scope_children()[entry] if n is not exit_node]
+            (nest,) = [n for n in body if isinstance(n, nodes.NestedSDFG)]
+            (leaves,) = [n for n in body if n is not nest]
+            assert isinstance(leaves, nodes.AccessNode)
+            assert [e.data.wcr is not None for e in state.out_edges(leaves)] == [True]
+            assert not any(e.data.wcr for inner in nest.sdfg.states() for e in inner.edges())
 
 
 # interchange

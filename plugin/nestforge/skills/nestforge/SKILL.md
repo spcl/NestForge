@@ -36,7 +36,8 @@ applies: {explicit: true}
 An illegal move is refused with the reason and changes nothing.
 
 - Fusion (`loop-fusion`, `map-fusion`): one loop or map instead of two; less memory traffic, intermediates
-  become scalars.
+  become scalars. `map-fusion` fuses a producer and its consumer (in place when the producer updates the array),
+  recomputes what a consumer reads of a window (a stencil) on the fly, or fuses two independent maps over one range.
 - `loop-fission`: one loop per independent statement group.
 - `map-fission`: split per computation, one map per independent output group. Follow it with `map-fusion` on the
   pieces that share data.
