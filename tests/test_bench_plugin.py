@@ -8,6 +8,7 @@ import inspect
 import multiprocessing
 import pathlib
 import sys
+import threading
 import tomllib
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
@@ -23,11 +24,11 @@ from hpcagent_bench.harness import tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
-from hpcagent_bench.harness.service import ServiceConfig, make_server
+from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
 from stub_session import Stub, install
 
 from nestforge.paths import REPO_ROOT
-from nestforge.server import CALLS
+from nestforge.server import CALLS, Reply
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
@@ -116,9 +117,34 @@ def test_every_packet_tool_is_served_with_the_arguments_its_session_call_takes(l
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
 
 
-def test_a_gpu_program_is_not_assembled(tmp_path: pathlib.Path) -> None:
-    with pytest.raises(NotImplementedError, match="CPU programs only"):
-        assemble(dace.SDFG("unused"), BenchTarget(KERNEL, "fp64", gpu=True), {}, tmp_path)
+def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:
+    stub.dies_on = "apply_move"
+
+    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"], epoch=1)
+    again = post("get_cpf", "episode-crash")
+
+    assert (died.code, died.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), died.answer
+    assert "starts a fresh session" in died.answer["error"]
+    assert again.code == HTTPStatus.OK and len(stub.started) == 2
+
+
+def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(setup: object) -> None:
+        raise LookupError("canonicalize: RecursionError")
+
+    monkeypatch.setattr(sys.modules[ROUTES["nestforge"].handler.__module__], "SessionProcess", refused)
+
+    judge = post("get_cpf", "episode-unstartable")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+
+
+def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
+    stub.replies["apply_move"] = Reply(error="ValueError: the labels were read at epoch 1, the tree is at epoch 2")
+
+    judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"], epoch=1)
+
+    assert judge.code == HTTPStatus.BAD_REQUEST and "epoch" in judge.answer["error"], judge.answer
 
 
 def test_concurrent_calls_of_one_episode_start_one_session_and_reach_it_one_at_a_time(stub: Stub) -> None:

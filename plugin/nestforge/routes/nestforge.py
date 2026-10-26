@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``POST /nestforge/<tool>``: the judge half of every NestForge tool. Each episode's kernel is served by its own
 session process (:mod:`nestforge.server`), so the judge's threads never fork and a crash ends that process only.
-A tool in the wire table that the session does not serve answers 501."""
+A tool in the wire table that the session does not serve answers 501. A session that cannot start, crashes or times
+out is the judge's fault (500, :data:`JUDGE_FAULT_CAUSE`); 400 is only for the agent's own call."""
 
 import threading
 from http import HTTPMethod, HTTPStatus
@@ -13,9 +14,10 @@ from hpcagent_bench.cpf.cache import Target
 from hpcagent_bench.harness.judge_wire import JudgeAnswer, JudgeError
 from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, route
 from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
+from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, Reply, SessionProcess, Setup
+from nestforge.server import CALLS, SessionProcess, Setup
 from nestforge.stages.performance import Performance
 
 
@@ -66,12 +68,14 @@ def serve(judge: Judge, request: RouteRequest) -> None:
             try:
                 kernels[kernel] = SessionProcess(setup)
             except LookupError as err:
-                return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
+                error = f"{name}: the session could not start: {err}"
+                return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
         reply = kernels[kernel].call(name, args.model_dump())
         if not kernels[kernel].alive:
             # The next call starts a fresh session from the canonical program; this one's moves are lost.
             del kernels[kernel]
-            reply = Reply(error=f"{reply.error}; the next call starts a fresh session")
+            error = f"{name}: {reply.error}; the next call starts a fresh session"
+            return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
     if reply.error:
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {reply.error}"))
     return judge.reply(HTTPStatus.OK, ToolAnswer(tool=name, result=reply.result, performance=reply.performance))
