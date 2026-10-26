@@ -4,7 +4,9 @@
 
 DaCe canonicalization rewrites the program into the canonical parallel form (CPF): parallel loops become maps,
 reductions and scans are lifted, statements are distributed. It runs once, with the target's preset, up to and
-excluding the `fuse` stage, so stage 2 owns every fusion decision. It is never searched.
+excluding the `fuse` stage, so stage 2 owns every fusion decision, then `structural_cleanup` (DaCe's
+`StructuralCleanup`: states fused, dead states and symbols dropped; no nested SDFG inlined, so map bodies stay
+`map { nested SDFG } -> access node -wcr->`). No stage after `fuse` runs, so nothing specializes. It is never searched.
 
 | | |
 |---|---|

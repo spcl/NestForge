@@ -42,7 +42,14 @@ from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
-from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish, narrow_nested_memlets
+from nestforge.stages.canonicalize import (
+    Targets,
+    canonicalize,
+    finish,
+    fuse_and_finish,
+    narrow_nested_memlets,
+    structural_cleanup,
+)
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -388,6 +395,7 @@ class Session:
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         plan.commit()
+        structural_cleanup(self.sdfg)
         # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule inference
         # read them
         narrow_nested_memlets(self.sdfg)
@@ -736,19 +744,19 @@ class Session:
     # Assembly
 
     def finalize(self, out_dir: Path | None = None) -> Final:
-        """The program as a bench library submission: on a GPU target a program never placed gets the default scopes
-        and placement, every kernel without a build gets its stage 5 default, then the program is rendered in the
-        bench C ABI and built, each kernel linked from its own archive.
+        """The program as a bench library submission: a program without scopes gets the default scopes, one never
+        placed on a GPU target the default placement, and every kernel without a build its stage 5 default (the first
+        configuration stage 6 sweeps; no sweep runs), then the program is rendered in the bench C ABI and built, each
+        kernel linked from its own archive.
 
         :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
+        if not external_calls(self.sdfg):
+            self.default_scopes()
         if self.targets.gpu and self.unplaced is None:
-            # a GPU program is assembled as placed: one never placed takes the default scopes and placement
-            if not external_calls(self.sdfg):
-                self.default_scopes()
-            self.place()
+            self.place()  # a GPU program is assembled as placed
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
                 self.optimize_kernel(ext.name)

@@ -12,6 +12,7 @@ from dace.sdfg import nodes
 from dace.sdfg.propagation import propagate_memlets_nested_sdfg, propagate_memlets_state
 from dace.transformation.passes.canonicalize import canonicalize as dace_canonicalize
 from dace.transformation.passes.canonicalize import stage_labels
+from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
 from nestforge.ir.names import inline_top_level_nsdfgs
@@ -31,13 +32,22 @@ class Targets:
 
 
 def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
-    """Canonicalize ``sdfg`` in place up to, excluding, the fusion stage."""
+    """Canonicalize ``sdfg`` in place up to, excluding, the fusion stage, then run DaCe's structural cleanup."""
     # the frontend binds derived loop bounds to fresh interstate symbols that extraction cannot pass in
     SymbolPropagation().apply_pass(sdfg, {})
     labels = stage_labels(targets.canon_target)
     dace_canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
+    structural_cleanup(sdfg)  # no stage after fusion runs, so nothing specializes
     narrow_nested_memlets(sdfg)
     return sdfg
+
+
+def structural_cleanup(sdfg: dace.SDFG) -> None:
+    """DaCe's ``StructuralCleanup``: states fused to a fixpoint, empty and dead states and unused symbols dropped,
+    redundant copies folded. It inlines no nested SDFG, so map bodies stay canonical: a map whose body is a nested
+    SDFG keeps it (its states are where ``subgraph-fission`` cuts), and a reduction leaves it as
+    ``map { nested SDFG } -> access node -wcr->``. Runs after canonicalization and after every move."""
+    StructuralCleanup().apply_pass(sdfg, {})
 
 
 def narrow_nested_memlets(sdfg: dace.SDFG) -> None:
