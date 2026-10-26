@@ -31,11 +31,15 @@ CALLS: dict[str, Callable[..., object]] = {
     "run_defaults": Session.run_defaults,
     "set_scope": Session.set_scope,
     "unset_scope": Session.unset_scope,
+    "list_kernels": Session.list_kernels,
+    "read_kernel": Session.kernel_source,
+    "write_kernel": Session.set_kernel_source,
+    "tune_kernel": Session.sweep,
     "get_performance": lambda session: None,
 }
 
 #: Tools whose answer carries :meth:`Session.performance`.
-TIMED = frozenset({"apply_move", "run_defaults", "get_performance"})
+TIMED = frozenset({"apply_move", "run_defaults", "write_kernel", "tune_kernel", "get_performance"})
 
 #: Seconds a closing session process gets before it is terminated.
 CLOSE_TIMEOUT_S = 5.0

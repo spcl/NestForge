@@ -1,10 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The NestForge bench plugin: loaded through HPCAgent-Bench's own plugin loader, every tool registered, the
-structured phase served with performance feedback, every later phase refused as not implemented."""
+structured and kernel phases served with performance feedback, ``finalize`` refused as not implemented."""
 
 import contextlib
+import inspect
 import sys
+import tomllib
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
 
@@ -17,6 +19,7 @@ from hpcagent_bench.harness.judge_wire import JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
 
 from nestforge.paths import REPO_ROOT
+from nestforge.server import CALLS
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
@@ -81,7 +84,19 @@ def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
 
 
-@pytest.mark.parametrize("tool", ["list_kernels", "read_kernel", "write_kernel", "tune_kernel", "finalize"])
+def test_every_packet_tool_is_served_with_the_arguments_its_session_call_takes(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS
+
+    packet = tomllib.loads((PLUGIN / "plugin.toml").read_text())["packets"]["nestforge"]["tools"]
+
+    assert set(packet) == CALLS.keys()
+    for tool in packet:
+        params = inspect.signature(CALLS[tool]).parameters
+        missing = TOOLS[tool].args.model_fields.keys() - params.keys()
+        assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
+
+
+@pytest.mark.parametrize("tool", ["finalize"])
 def test_a_later_phase_tool_is_not_implemented(loaded: None, tool: str) -> None:
     judge = post(tool)
 
@@ -110,6 +125,36 @@ def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(lo
     assert set(performance["offloading"]["devices"].values()) == {"cpu"}
     assert performance["kernels"] and all(kernel["correct"] for kernel in performance["kernels"])
     assert post("get_performance").answer["performance"] == performance, "the unchanged program is measured once"
+
+
+def kernel_round(episode: str) -> tuple[str, str]:
+    """Default scopes on ``episode``, then the first kernel's name and source."""
+    assert post("run_defaults", episode=episode, stage="scopes").code == HTTPStatus.OK
+    name = post("list_kernels", episode=episode).answer["result"][0]["name"]
+    return name, post("read_kernel", episode=episode, name=name).answer["result"]
+
+
+@pytest.mark.integration
+def test_a_kernel_written_back_unchanged_is_linked_and_a_wrong_entry_is_refused(loaded: None) -> None:
+    name, source = kernel_round("episode-kernel")
+
+    written = post("write_kernel", episode="episode-kernel", name=name, source=source, language="cpp")
+    renamed = source.replace(f"void {name}(", f"void {name}_other(", 1)
+    refused = post("write_kernel", episode="episode-kernel", name=name, source=renamed, language="cpp")
+
+    assert written.answer["result"]["status"] == "ok", written.answer
+    assert written.answer["performance"]["structured"]["correct"] is True
+    assert refused.answer["result"]["status"] == "refused", refused.answer
+
+
+@pytest.mark.integration
+def test_a_tuned_kernel_reports_the_winning_configuration(loaded: None) -> None:
+    name, _ = kernel_round("episode-tune")
+
+    tuned = post("tune_kernel", episode="episode-tune", name=name, compilers=["gcc"]).answer
+
+    assert tuned["result"]["cells"] > 1 and tuned["result"]["winner"] is not None, tuned
+    assert tuned["performance"]["structured"]["correct"] is True
 
 
 @pytest.mark.gpu

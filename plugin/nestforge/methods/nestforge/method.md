@@ -9,6 +9,11 @@ Optimize the program with the NestForge tools.
 5. `get_performance`: whole-program time, which kernel runs where with the bytes moved between memories, and
    each kernel's time and share. `apply_move` and `run_defaults` return it too. Stages you have not reached run
    with their defaults on a copy.
+6. `list_kernels` / `read_kernel` / `write_kernel`: once scopes exist, read a kernel's C++ unit, rewrite it and
+   write it back. The entry keeps its name and parameters; a write is built, checked against the kernel's oracle
+   and linked only when it matches, and returns performance.
+7. `tune_kernel`: sweep compilers, FP modes and vectorizer cost models for one kernel; the fastest correct build
+   is linked.
 
 Keep a move when the whole-program time drops. Prefer moves on the kernel with the largest share.
 
