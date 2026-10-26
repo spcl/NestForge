@@ -43,6 +43,7 @@ from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish, narrow_nested_memlets
+from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
     FORMS,
@@ -215,6 +216,7 @@ class Session:
         "builds",
         "prepared",
         "measured",
+        "bench",
     )
 
     def __init__(
@@ -247,6 +249,8 @@ class Session:
         self.prepared: dict[str, Prepared] = {}
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Performance | None = None
+        # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
+        self.bench: BenchTarget | None = None
 
     def bump(self) -> None:
         self.epoch += 1
@@ -723,6 +727,22 @@ class Session:
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
             evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
         return evidence
+
+    # Assembly
+
+    def finalize(self, out_dir: Path | None = None) -> Final:
+        """The program as a bench library submission: every kernel without a build gets its stage 5 default, then
+        the program is rendered in the bench C ABI and built, each kernel linked from its own archive.
+
+        :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
+        """
+        if self.bench is None:
+            raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
+        for ext in external_calls(self.sdfg):
+            if ext.name not in self.builds:
+                self.optimize_kernel(ext.name)
+        variants = {name: build.variant.label for name, build in self.builds.items()}
+        return assemble(self.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""

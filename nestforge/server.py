@@ -12,6 +12,7 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,7 +21,16 @@ from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import Record
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.performance import Performance, Reference
+
+
+def finalize(session: Session) -> Final:
+    """The session's program assembled into the folder the judge and the agent share, one folder per session."""
+    from hpcagent_bench.harness.sandbox import shared_dir
+
+    return session.finalize(Path(shared_dir()) / "nestforge" / session.work_dir.name)
+
 
 #: Tool -> the session call it makes, the tool's validated arguments passed as keywords.
 CALLS: dict[str, Callable[..., object]] = {
@@ -36,6 +46,7 @@ CALLS: dict[str, Callable[..., object]] = {
     "write_kernel": Session.set_kernel_source,
     "tune_kernel": Session.sweep,
     "get_performance": lambda session: None,
+    "finalize": finalize,
 }
 
 #: Tools whose answer carries :meth:`Session.performance`.
@@ -98,6 +109,7 @@ def start(setup: Setup) -> tuple[Session, dict[str, np.ndarray], Reference | Non
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
     session = Session(kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset))
+    session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.canonicalize()
     inputs, reference = bench_data(setup)
     return session, inputs, reference

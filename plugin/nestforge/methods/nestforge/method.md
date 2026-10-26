@@ -14,6 +14,9 @@ Optimize the program with the NestForge tools.
    and linked only when it matches, and returns performance.
 7. `tune_kernel`: sweep compilers, FP modes and vectorizer cost models for one kernel; the fastest correct build
    is linked.
+8. `finalize`: the program in the bench C ABI, each kernel linked from its own build, as a library in the shared
+   folder. Submit it with `score` / `submit` as `library=<library>` and `workspace_bytes=<workspace_bytes>`
+   from its answer; `source` shows the entry it was built from.
 
 Keep a move when the whole-program time drops. Prefer moves on the kernel with the largest share.
 
