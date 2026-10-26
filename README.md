@@ -21,15 +21,15 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 ## Agents: the HPCAgent-Bench plugin
 
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
-run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). Its tools cover three
-phases:
+run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). The packet exposes the
+structured phase; its skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and
+the moves. Scopes, placement and kernel builds run their defaults in `get_performance` and `finalize`.
 
 | Phase | Tools |
 |---|---|
-| structured (stages 1-4) | `get_cpf`, `view_tree`, `list_moves`, `apply_move`, `run_defaults`, `set_scope`, `unset_scope` |
-| unstructured (stage 5) | `list_kernels`, `read_kernel`, `write_kernel` |
-| codegen (stage 6) | `tune_kernel` |
-| any | `get_performance`, `finalize` |
+| structured (stages 1-2), in the packet | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` |
+| any, in the packet | `get_performance`, `finalize` |
+| served, not in the packet | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` |
 
 `apply_move`, `run_defaults`, `write_kernel`, `tune_kernel` and `get_performance` answer with
 `Session.performance()`: the whole program's time and

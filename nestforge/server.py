@@ -22,6 +22,7 @@ from nestforge.records import Record
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
+from nestforge.stages.moves import move_kinds
 from nestforge.stages.performance import Performance, Reference
 
 
@@ -36,6 +37,7 @@ def finalize(session: Session) -> Final:
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
+    "list_move_kinds": lambda session: move_kinds(),
     "list_moves": Session.list_moves,
     "apply_move": Session.apply_move,
     "run_defaults": Session.run_defaults,

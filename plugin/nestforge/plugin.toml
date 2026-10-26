@@ -5,6 +5,7 @@ description = "Whole-program DaCe optimization: legal moves, scoped kernels, pla
 [packets.nestforge]
 name = "NestForge"
 method = "nestforge"
-# Every tool the session serves (nestforge.server.CALLS); a test keeps the two lists equal.
-tools = ["get_cpf", "view_tree", "list_moves", "apply_move", "run_defaults", "set_scope", "unset_scope", "list_kernels",
-    "read_kernel", "write_kernel", "tune_kernel", "get_performance", "finalize"]
+# The structured phase: scopes, placement and kernel builds run their defaults (finalize, get_performance). Every
+# tool is one the session serves (nestforge.server.CALLS); a test keeps them in the structured and any phases.
+tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
+    "finalize"]

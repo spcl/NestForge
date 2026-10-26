@@ -19,6 +19,7 @@ IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens"})
 
 class Phase(enum.StrEnum):
     STRUCTURED = "structured"
+    SCOPES = "scopes"
     UNSTRUCTURED = "unstructured"
     CODEGEN = "codegen"
     ANY = "any"
@@ -87,11 +88,14 @@ class ToolDef(NamedTuple):
 TOOLS: dict[str, ToolDef] = {
     "get_cpf": ToolDef(Phase.STRUCTURED, NoArgs, "The program in canonical parallel form, as a labeled tree."),
     "view_tree": ToolDef(Phase.STRUCTURED, ViewTree, "Expand or collapse tree rows, then show the tree."),
+    "list_move_kinds": ToolDef(
+        Phase.STRUCTURED, NoArgs, "Every move kind: the tree rows it takes, the transformation it runs, what it does."
+    ),
     "list_moves": ToolDef(Phase.STRUCTURED, ListMoves, "Every legal fusion, fission and interchange right now."),
     "apply_move": ToolDef(Phase.STRUCTURED, ApplyMove, "Apply one legal move; returns the new tree and performance."),
     "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
-    "set_scope": ToolDef(Phase.STRUCTURED, Labeled, "Make one kernel of the regions the labels name."),
-    "unset_scope": ToolDef(Phase.STRUCTURED, UnsetScope, "Inline a kernel back into the program."),
+    "set_scope": ToolDef(Phase.SCOPES, Labeled, "Make one kernel of the regions the labels name."),
+    "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program."),
     "list_kernels": ToolDef(Phase.UNSTRUCTURED, NoArgs, "Every kernel with its device and arguments."),
     "read_kernel": ToolDef(Phase.UNSTRUCTURED, KernelName, "A kernel's current source."),
     "write_kernel": ToolDef(Phase.UNSTRUCTURED, WriteKernel, "Replace a kernel's source; it is built and checked."),

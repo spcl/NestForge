@@ -30,6 +30,7 @@ from dace.transformation.transformation import PatternTransformation
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
+from nestforge.records import Record
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +293,64 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-if-loop": plan_if_loop,
     "interchange-loop-if": plan_loop_if,
 }
+
+
+class MoveKind(Record):
+    """One move kind as the agent is told it: the tree rows it takes in order, the DaCe transformation it runs and
+    what it does."""
+
+    kind: str
+    rows: tuple[str, ...]
+    runs: str
+    does: str
+
+
+#: The tree keyword of each row type a move takes.
+ROW_KEYWORDS: dict[type, str] = {
+    LoopRegion: "for",
+    nodes.MapEntry: "kernel",
+    ControlFlowBlock: "state",
+    ConditionalBlock: "if",
+}
+
+#: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
+MOVE_TEXT: dict[str, tuple[str, str]] = {
+    "loop-fusion": ("LoopFusion", "two adjacent loops over the same range become one loop."),
+    "loop-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
+    "map-fusion": (
+        "MapFusionVertical / MapFusionHorizontal",
+        "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar), "
+        "or two independent maps over the same range.",
+    ),
+    "map-fission": (
+        "MapFission",
+        "split per computation: one map per independent output group. The pieces often want map-fusion afterwards: "
+        "fuse back the ones that share data.",
+    ),
+    "subgraph-fission": (
+        "SubgraphFission",
+        "split per state: the map's body is a program of states (expand the kernel row to see them); the map is cut "
+        "after the named state, the states up to it in one map and the rest in a second.",
+    ),
+    "interchange-loop-map": ("MoveLoopIntoMap", "for t: map i: B becomes map i: for t: B (the map goes outside)."),
+    "interchange-map-loop": (
+        "MapLoopInterchange",
+        "map i: for t: B becomes for t: map i: B; the loop must be the whole body of the map.",
+    ),
+    "interchange-map-map": ("MapInterchange", "swap a map with the map directly inside it."),
+    "interchange-if-loop": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
+    "interchange-loop-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
+}
+
+
+def move_kinds() -> list[MoveKind]:
+    """Every move kind, in :data:`MOVE_SHAPES` order."""
+    return [
+        MoveKind(
+            kind=kind, rows=tuple(ROW_KEYWORDS[t] for t in shape), runs=MOVE_TEXT[kind][0], does=MOVE_TEXT[kind][1]
+        )
+        for kind, shape in MOVE_SHAPES.items()
+    ]
 
 
 def plan_move(kind: str, rows: Sequence[Row]) -> Rewrite | str:

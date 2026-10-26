@@ -25,12 +25,15 @@ from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
+from hpcagent_bench.skill_frontmatter import split_frontmatter
+from hpcagent_bench.vocabulary import PACKETS
 from stub_session import Stub, install
 
 from nestforge.paths import REPO_ROOT
 from nestforge.server import CALLS, Reply
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
@@ -105,13 +108,17 @@ def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
 
 
-def test_every_packet_tool_is_served_with_the_arguments_its_session_call_takes(loaded: None) -> None:
-    from hpcagent_bench_plugins.nestforge.wire import TOOLS
+def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_served(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
 
     packet = tomllib.loads((PLUGIN / "plugin.toml").read_text())["packets"]["nestforge"]["tools"]
 
-    assert set(packet) == CALLS.keys()
-    for tool in packet:
+    assert {TOOLS[tool].phase for tool in packet} <= {Phase.STRUCTURED, Phase.ANY}
+    assert "set_scope" not in packet and "list_move_kinds" in packet
+    assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
+    assert PACKETS["nestforge"].skills == ("nestforge",)
+    assert TOOLS.keys() == CALLS.keys()
+    for tool in TOOLS:
         params = inspect.signature(CALLS[tool]).parameters
         missing = TOOLS[tool].args.model_fields.keys() - params.keys()
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
@@ -270,6 +277,18 @@ def test_a_finalized_program_is_a_library_the_judge_grades_correct(
     assert pathlib.Path(final["library"]).is_relative_to(tmp_path), final
     assert f"{name}(" in final["source"] and final["kernels"], final
     grade = graded(judge_url, kernel, final)
+    assert grade.build_ok is True and grade.correct is True, grade.detail
+
+
+@pytest.mark.judge
+def test_a_program_finalized_after_the_structured_phase_gets_the_default_kernels(loaded: None, judge_url: str) -> None:
+    episode = "episode-structured"
+    post("run_defaults", episode=episode, stage="moves")
+
+    final = post("finalize", episode=episode).answer["result"]
+
+    assert final["kernels"], final
+    grade = graded(judge_url, KERNEL, final)
     assert grade.build_ok is True and grade.correct is True, grade.detail
 
 
