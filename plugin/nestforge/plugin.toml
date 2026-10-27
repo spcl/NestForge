@@ -2,6 +2,18 @@
 name = "nestforge"
 description = "Whole-program DaCe optimization: legal moves, scoped kernels, placement, with performance feedback."
 
+# The packages nestforge and nestforge_bench, built from the repository into the judge's interpreter; their
+# dependencies are the benchmark's own, at its pins.
+[install]
+root = "../.."
+command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
+
+# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, and the reference column.
+[ci]
+optimizers = ["dace_cpu_canon_nestforge_stub", "dace_cpu_canon_nestforge_reference"]
+kernels = ["jacobi_1d", "tsvc_2_s231"]
+language = "cpp"
+
 [packets.nestforge]
 name = "NestForge"
 method = "nestforge"
@@ -10,6 +22,12 @@ method = "nestforge"
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
     "finalize"]
 
+# The agent writes no code: no build flags, no hand-optimization or language guide, and a delivery that is finalize's
+# library (prompts/nestforge/delivery.j2). The user's own prompt keys still win.
+[packets.nestforge.prompt]
+sections = { build_flags = false, optimizations = false, lang_cpp = false, lang_fortran = false, delivery = "nestforge/delivery.j2" }
+template_dirs = ["prompts"]
+
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.
 [flavors.nestforge_reference]
@@ -17,3 +35,10 @@ name = "NestForge reference"
 full_name = "NestForge (reference moves)"
 optimizer = "nestforge_bench:ReferenceOptimizer"
 extends = ["dace_cpu_canon", "dace_gpu_canon"]
+
+# A stand-in for an LLM agent on the packet, for CI: seeded legal moves through the tools, then finalize.
+[flavors.nestforge_stub]
+name = "NestForge stub"
+full_name = "NestForge (stub agent)"
+optimizer = "nestforge_bench:StubAgent"
+extends = ["dace_cpu_canon"]

@@ -6,12 +6,15 @@ kernel has none, and scopes, placement and code generation run on the same defau
 
 A package of its own beside ``nestforge``: it imports HPCAgent-Bench, which no ``nestforge`` module may."""
 
+import hashlib
 import pathlib
+import random
 import shutil
 import sys
 import tempfile
 import weakref
 
+from hpcagent_agent.tools import http_json
 from hpcagent_bench import config
 from hpcagent_bench.flags import ncores
 from hpcagent_bench.harness.envelope import Submission
@@ -23,7 +26,7 @@ from nestforge.paths import REPO_ROOT
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
 from nestforge.server import Setup, start
 
-__all__ = ["ReferenceOptimizer", "reference_solution"]
+__all__ = ["ReferenceOptimizer", "StubAgent", "reference_solution"]
 
 #: Where the reference solutions live, one ``<kernel>.py`` each.
 SOLUTIONS = REPO_ROOT / "reference_solutions"
@@ -60,3 +63,40 @@ class ReferenceOptimizer(FlavorOptimizer):
         )
         weakref.finalize(submission, shutil.rmtree, str(out), ignore_errors=True)
         return submission
+
+
+#: Moves the stub agent applies at most.
+STUB_MOVES = 3
+
+
+def tool(name: str, kernel: str, **args: object) -> dict[str, object]:
+    """One NestForge tool call as the agent's tool makes it (``POST /nestforge/<name>`` under the episode's identity);
+    raises with the judge's error."""
+    answer = http_json.post_judge(f"/nestforge/{name}", {**args, "kernel": kernel})
+    if "error" in answer:
+        raise RuntimeError(f"{name}: {answer['error']}")
+    return answer
+
+
+class StubAgent(FlavorOptimizer):
+    """``nestforge_stub``: the benchmark's CI stand-in for an LLM agent on the NestForge packet. Through the packet's
+    own tools it reads the CPF, applies up to :data:`STUB_MOVES` legal moves picked by a generator seeded by the
+    kernel's name (so a run is repeatable), finalizes and returns the library to submit."""
+
+    __slots__ = ()
+
+    def tune(self, task: Task, pipeline: str) -> Submission:
+        seed = int.from_bytes(hashlib.sha256(task.kernel.encode()).digest()[:8], "big")
+        pick = random.Random(seed)
+        tool("get_cpf", task.kernel)
+        for _ in range(STUB_MOVES):
+            moves = tool("list_moves", task.kernel)["result"]
+            if not isinstance(moves, list) or not moves:
+                break
+            move = pick.choice(moves)
+            tool("apply_move", task.kernel, kind=move["kind"], labels=move["labels"], epoch=move["epoch"])
+        final = tool("finalize", task.kernel)["result"]
+        assert isinstance(final, dict), final
+        return Submission(
+            language=task.language, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
+        )
