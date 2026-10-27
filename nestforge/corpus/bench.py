@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
     from hpcagent_bench.spec import BenchSpec
 
+#: The generated ``_dace.py``'s map of bench argument names to the program's, for names the generator renamed
+#: (``frac`` -> ``__frac``); the name is the generator's, read from the module.
+RENAMES = "__hpcagent_bench_renames__"
+
 #: Tracks whose ``_dace.py`` this module generates on demand (gitignored, never committed).
 DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning")
 
@@ -61,6 +65,11 @@ class CorpusKernel:
         if not programs:
             raise LookupError(f"no @dace.program found in {self.dace_file}")
         return programs[-1]
+
+    def renames(self) -> dict[str, str]:
+        """Bench argument name -> the program's, for each name the generator renamed; empty when none was."""
+        self.program()  # imports the module with HPCAgent-Bench's dtype globals set
+        return dict(vars(self.module()).get(RENAMES, {}))
 
     def to_sdfg(self, simplify: bool = True) -> dace.SDFG:
         """The program's SDFG with the manifest's small symbols declared small, as the bench's CPF route declares
