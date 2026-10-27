@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Replay a benchmark's reference solution: a Python script of stage 2 calls, run next to the default.
 
-A solution script (``reference_solution/solution.py`` of a benchmark) names its corpus kernel and the
-configurations it is measured on, and defines ``solve(script, ctx)``: the moves of the reference schedule, picked by
-kind and by what the rows read and write, never by label. Replay starts the kernel's canonicalized session, runs the
-baseline (``default_moves()``), the reference and every decoy on their own copies, takes each through the default
-stages 3 to 5, times the whole program and checks it against the bench oracle, and writes one JSON record per
-configuration plus a Markdown table of all of them::
+A solution script (``reference_solutions/<kernel>.py``) names its corpus kernel and the configurations it is
+measured on, and defines ``solve(script, ctx)``: the moves of the reference schedule, picked by kind and by what the
+rows read and write, never by label. Replay starts the kernel's canonicalized session, runs the baseline
+(``default_moves()``), the reference and every decoy on their own copies, takes each through the default stages 3 to
+5, times the whole program and checks it against the bench oracle, writes one JSON record per configuration under
+``experiments/replay/<kernel>/`` and prints a Markdown table of them::
 
-    python -m nestforge.replay benchmarking_creation/tsvc_2_s231/reference_solution/solution.py
-    python -m nestforge.replay <solution.py> --config cpu:72:M --config gpu:1:M --md <name>.md
+    python -m nestforge.replay reference_solutions/tsvc_2_s231.py
+    python -m nestforge.replay <solution.py> --config cpu:72:M --md reference_solutions/README.md
 
 Each configuration runs in its own process with ``OMP_NUM_THREADS`` set before any OpenMP runtime starts.
 """
@@ -48,12 +48,8 @@ US_PER_MS = 1e3
 DEFAULT_REPS = 5
 #: The datatype the bench oracle grades.
 DATATYPE = "float64"
-#: Folder next to the solution script that holds the generated records.
-REPLAY_DIR = "replay"
-#: The generated Markdown table, next to the solution script.
-RESULTS_MD = "results.md"
-#: Markers of the generated section a ``--md`` document gets.
-MD_BEGIN, MD_END = "<!-- replay:begin -->", "<!-- replay:end -->"
+#: Where the records go, one folder per kernel; kept out of the repository like quickstart's runs.
+REPLAY_DIR = REPO_ROOT / "experiments" / "replay"
 #: Thread placement of every timed run, as the benchmark records were measured.
 OMP_PLACEMENT = {"OMP_PROC_BIND": "close", "OMP_PLACES": "cores"}
 #: Overrides the NestForge commit a record names, for a tree copied without its ``.git``.
@@ -206,7 +202,7 @@ class Solution:
 def load_solution(path: Path) -> Solution:
     """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve`` and optional ``DECOYS``. Loaded by file path,
     as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
-    spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.parent.parent.name}", path)
+    spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} is not importable")
     module = importlib.util.module_from_spec(spec)
@@ -347,7 +343,7 @@ def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> Replay
 
 
 def report_path(solution: Solution, ctx: Context) -> Path:
-    return solution.path.parent / REPLAY_DIR / f"{ctx.key}.json"
+    return REPLAY_DIR / solution.kernel / f"{ctx.key}.json"
 
 
 def write_report(report: ReplayReport, path: Path) -> None:
@@ -395,12 +391,19 @@ def markdown(reports: Sequence[ReplayReport]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def splice(document: str, section: str) -> str:
-    """``document`` with the text between the replay markers replaced by ``section`` (appended when unmarked)."""
-    block = f"{MD_BEGIN}\n{section}{MD_END}"
-    if MD_BEGIN in document and MD_END in document:
-        head, _, rest = document.partition(MD_BEGIN)
-        _, _, tail = rest.partition(MD_END)
+def markers(kernel: str) -> tuple[str, str]:
+    """The comments around ``kernel``'s generated table in a document that holds several."""
+    return f"<!-- replay:{kernel}:begin -->", f"<!-- replay:{kernel}:end -->"
+
+
+def splice(document: str, kernel: str, section: str) -> str:
+    """``document`` with the text between ``kernel``'s replay markers replaced by ``section`` (appended when
+    unmarked)."""
+    begin, end = markers(kernel)
+    block = f"{begin}\n{section}{end}"
+    if begin in document and end in document:
+        head, _, rest = document.partition(begin)
+        _, _, tail = rest.partition(end)
         return head + block + tail
     return document.rstrip("\n") + "\n\n" + block + "\n"
 
@@ -445,10 +448,12 @@ def run_config(solution: Solution, ctx: Context, reps: int) -> int:
 
 def parse(argv: Sequence[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=DESCRIPTION)
-    ap.add_argument("solution", type=Path, help="a reference_solution/solution.py")
+    ap.add_argument("solution", type=Path, help="a reference_solutions/<kernel>.py")
     ap.add_argument("--config", action="append", type=Context.parse, help="device:threads:preset (default: CONFIGS)")
     ap.add_argument("--reps", type=int, default=DEFAULT_REPS, help="timed calls per variant")
-    ap.add_argument("--md", type=Path, help="also write the table into this document, between the replay markers")
+    ap.add_argument(
+        "--md", type=Path, help="also write the table into this document, between the kernel's replay markers"
+    )
     return ap.parse_args(argv)
 
 
@@ -457,10 +462,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     solution = load_solution(args.solution)
     configs: list[Context] = args.config or list(solution.configs)
     status = max(run_config(solution, ctx, args.reps) for ctx in configs)
-    table = markdown(read_reports(solution.path.parent / REPLAY_DIR))
-    (solution.path.parent / RESULTS_MD).write_text(f"# Replay of {solution.kernel}\n\n{table}")
     if args.md is not None:
-        args.md.write_text(splice(args.md.read_text() if args.md.exists() else "", table))
+        table = markdown(read_reports(REPLAY_DIR / solution.kernel))
+        args.md.write_text(splice(args.md.read_text() if args.md.exists() else "", solution.kernel, table))
     return status
 
 

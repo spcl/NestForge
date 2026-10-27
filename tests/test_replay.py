@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
@@ -13,13 +11,12 @@ from hpcagent_bench.flags import openmp_launch_env
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.paths import REPO_ROOT
 from nestforge.replay import (
-    MD_BEGIN,
-    MD_END,
     Context,
     ReplayError,
     Script,
     load_solution,
     markdown,
+    markers,
     openmp_env,
     replay,
     short,
@@ -28,7 +25,7 @@ from nestforge.replay import (
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 
-S231 = REPO_ROOT / "benchmarking_creation" / "tsvc_2_s231" / "reference_solution" / "solution.py"
+S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"
 #: Timed calls per variant in the end-to-end test; the time is not asserted.
 QUICK_REPS = 1
 
@@ -115,14 +112,14 @@ def test_s231_replay_end_to_end() -> None:
     assert table.count("| cpu, 1 thread(s), preset S |") == len(names)
 
 
-def test_splice_replaces_only_the_marked_section(tmp_path: Path) -> None:
-    doc = f"# s231\n\nprose\n\n{MD_BEGIN}\nold table\n{MD_END}\n\nmore prose\n"
-    out = splice(doc, "new table\n")
-    assert "old table" not in out and "new table" in out
-    assert out.startswith("# s231\n\nprose") and out.endswith("more prose\n")
-    assert splice(out, "new table\n") == out
-    fresh = splice("# s231\n", "t\n")
-    assert fresh == f"# s231\n\n{MD_BEGIN}\nt\n{MD_END}\n"
+def test_splice_replaces_only_its_kernels_section() -> None:
+    begin, end = markers("tsvc_2_s231")
+    other_begin, other_end = markers("tsvc_2_s233")
+    doc = f"# solutions\n\n{begin}\nold table\n{end}\n\n{other_begin}\nkept\n{other_end}\n"
+    out = splice(doc, "tsvc_2_s231", "new table\n")
+    assert "old table" not in out and "new table" in out and "kept" in out
+    assert splice(out, "tsvc_2_s231", "new table\n") == out
+    assert splice("# solutions\n", "tsvc_2_s231", "t\n") == f"# solutions\n\n{begin}\nt\n{end}\n"
 
 
 def test_openmp_env_carries_the_bench_launch_env() -> None:

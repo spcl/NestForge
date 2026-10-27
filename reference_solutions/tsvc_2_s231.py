@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Reference solution of TSVC s231, replayed by ``python -m nestforge.replay``.
+"""Reference solution of TSVC s231: ``python -m nestforge.replay reference_solutions/tsvc_2_s231.py``.
 
 ``aa[j, i] = aa[j-1, i] + bb[j, i]``: the recurrence runs along ``j``, ``i`` is independent. After stage 1 the
 program is ``for j { map i }``, one parallel region per ``j``. The one offered move, ``interchange-loop-map``, gives
