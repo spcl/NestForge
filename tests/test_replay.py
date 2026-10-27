@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
@@ -25,7 +27,10 @@ from nestforge.replay import (
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 
+SOLUTIONS = sorted((REPO_ROOT / "reference_solutions").glob("*.py"))
 S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"
+#: Where CI replays every solution: correctness only, so the smallest preset on one CPU thread.
+CI_CONTEXT = Context("cpu", 1, "S")
 #: Timed calls per variant in the end-to-end test; the time is not asserted.
 QUICK_REPS = 1
 
@@ -98,18 +103,25 @@ def test_s231_reference_puts_the_loop_inside_the_map() -> None:
 
 
 @pytest.mark.integration
-def test_s231_replay_end_to_end() -> None:
-    report = replay(load_solution(S231), Context("cpu", 1, "S"), reps=QUICK_REPS)
+@pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
+def test_every_solution_replays_correctly(path: Path) -> None:
+    """Every reference solution still applies on these pins, and every variant matches the oracle at preset S."""
+    solution = load_solution(path)
+    report = replay(solution, CI_CONTEXT, reps=QUICK_REPS)
     names = [v.name for v in report.variants]
-    assert names == ["baseline", "reference", "interchange", "no-move"]
+    assert names == ["baseline", "reference", *solution.decoys]
     for variant in report.variants:
         assert variant.error == "" and variant.correct is True, variant
         assert variant.time_ms is not None and variant.speedup is not None
     assert report.variants[0].speedup == pytest.approx(1.0)
-    assert [m.kind for m in report.variants[2].moves] == ["interchange-loop-map"]
     assert set(report.pins) == {"nestforge", "dace", "hpcagent_bench"}
-    table = markdown([report])
-    assert table.count("| cpu, 1 thread(s), preset S |") == len(names)
+    assert markdown([report]).count("| cpu, 1 thread(s), preset S |") == len(names)
+
+
+def test_s231_decoy_records_its_move() -> None:
+    script = Script(s231_session())
+    load_solution(S231).decoys["interchange"](script, CI_CONTEXT)
+    assert [m.kind for m in script.applied] == ["interchange-loop-map"]
 
 
 def test_splice_replaces_only_its_kernels_section() -> None:

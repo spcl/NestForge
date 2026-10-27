@@ -6,7 +6,7 @@ One file per benchmark, `<kernel>.py`. Its `solve(s, ctx)` applies the reference
 python -m nestforge.replay reference_solutions/<kernel>.py
 ```
 
-**Adding a solution:** keep the script and its section short and easy to scan, like `tsvc_2_s231` below. The script holds only the moves, picked by kind and by what they read and write. The section lists only the moves, a few words on when they apply, and a small table of each config's default time, reference time and gain. Leave full replay output in `experiments/replay/`.
+**Adding a solution:** keep the script and its section short and easy to scan, like `tsvc_2_s231` below. The script holds only the moves, picked by kind and by what they read and write. The section lists only the moves, a few words on when they apply, and a small table of each config's default time, reference time and gain. Leave full replay output in `experiments/replay/`. CI replays every file here at preset S on one CPU thread (`tests/test_replay.py`), so a solution that stops applying or no longer matches the oracle fails the build.
 
 ## tsvc_2_s231
 
