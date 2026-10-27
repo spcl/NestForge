@@ -10,7 +10,7 @@ rows read and write, never by label. Replay starts the kernel's canonicalized se
 ``experiments/replay/<kernel>/`` and prints a Markdown table of them::
 
     python -m nestforge.replay reference_solutions/tsvc_2_s231.py
-    python -m nestforge.replay <solution.py> --config cpu:72:M --md reference_solutions/README.md
+    python -m nestforge.replay <solution.py> --config cpu:72:M --md <note>.md
 
 Each configuration runs in its own process with ``OMP_NUM_THREADS`` set before any OpenMP runtime starts.
 """
