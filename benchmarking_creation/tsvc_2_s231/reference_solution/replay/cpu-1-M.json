@@ -1,0 +1,65 @@
+{
+  "kernel": "tsvc_2_s231",
+  "solution": "benchmarking_creation/tsvc_2_s231/reference_solution/solution.py",
+  "device": "cpu",
+  "threads": 1,
+  "preset": "M",
+  "reps": 5,
+  "date": "2026-10-27T06:52:50+01:00",
+  "pins": {
+    "nestforge": "0aa3ec0+replay-uncommitted",
+    "dace": "3469167e508742b3df6fb9feba4d4c72d9e9f9e8",
+    "hpcagent_bench": "0cc69ba1088a052bb2aac7cf2db3d2160d2413e2"
+  },
+  "variants": [
+    {
+      "name": "baseline",
+      "moves": [],
+      "tree": "SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_tsvc_2_s231_tsvc_2_s231_dace_s231'  epoch=2\n|- state0_0\n`- for0_0  _loop_it_1=1:LEN_2D  num_states=1  work=LEN_2D*(LEN_2D - 1) depth=LEN_2D - 1\n   `- state1_0  kernels=1",
+      "time_ms": 55.42925759218633,
+      "correct": true,
+      "mismatched": [],
+      "error": "",
+      "speedup": 1.0
+    },
+    {
+      "name": "reference",
+      "moves": [],
+      "tree": "SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_tsvc_2_s231_tsvc_2_s231_dace_s231'  epoch=2\n|- state0_0\n`- for0_0  _loop_it_1=1:LEN_2D  num_states=1  work=LEN_2D*(LEN_2D - 1) depth=LEN_2D - 1\n   `- state1_0  kernels=1",
+      "time_ms": 55.35075138323009,
+      "correct": true,
+      "mismatched": [],
+      "error": "",
+      "speedup": 1.0014183404379227
+    },
+    {
+      "name": "interchange",
+      "moves": [
+        {
+          "kind": "interchange-loop-map",
+          "labels": [
+            "for0_0",
+            "kernel2_0"
+          ],
+          "reason": "MoveLoopIntoMap"
+        }
+      ],
+      "tree": "SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_tsvc_2_s231_tsvc_2_s231_dace_s231'  epoch=3\n|- state0_0\n`- state0_1  kernels=1",
+      "time_ms": 958.5410884115845,
+      "correct": true,
+      "mismatched": [],
+      "error": "",
+      "speedup": 0.05782668918662542
+    },
+    {
+      "name": "no-move",
+      "moves": [],
+      "tree": "SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_tsvc_2_s231_tsvc_2_s231_dace_s231'  epoch=2\n|- state0_0\n`- for0_0  _loop_it_1=1:LEN_2D  num_states=1  work=LEN_2D*(LEN_2D - 1) depth=LEN_2D - 1\n   `- state1_0  kernels=1",
+      "time_ms": 55.43307000771165,
+      "correct": true,
+      "mismatched": [],
+      "error": "",
+      "speedup": 0.9999312248893163
+    }
+  ]
+}
