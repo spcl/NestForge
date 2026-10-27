@@ -15,6 +15,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
+import dace
 import numpy as np
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
@@ -117,7 +118,21 @@ def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, 
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.canonicalize()
     inputs, reference = bench_data(setup)
+    # after canonicalization: it is what promotes a scalar input to a symbol
+    session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     return session, inputs, reference
+
+
+def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, int]:
+    """The integer scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's ``k``,
+    which canonicalization promotes to a symbol): only sizes bind a symbol, so each becomes one. A size the
+    preset already gives keeps the preset's value."""
+    free = {str(s) for s in sdfg.free_symbols}
+    return {
+        name: int(value)
+        for name, value in inputs.items()
+        if name in free and value.ndim == 0 and np.issubdtype(value.dtype, np.integer)
+    }
 
 
 def failure(err: BaseException) -> Reply:
