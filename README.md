@@ -12,7 +12,7 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 |---|---|---|---|
 | [1 Canonicalize](docs/stages/1-canonicalize.md) | canonical parallel form (CPF) | DaCe canonicalization up to fusion | |
 | [2 Moves](docs/stages/2-moves.md) | fusion, fission, interchange | canonicalization's fusion stage | `apply_move` |
-| [3 Scopes](docs/stages/3-scopes.md) | which regions become kernels | one per parallel top-level map | `set_scope`, `unset_scope` |
+| [3 Scopes](docs/stages/3-scopes.md) | which regions become kernels | parallel maps; sequential and mixed loops whole; large maps split | `set_scope`, `unset_scope` |
 | [4 Placement](docs/stages/4-placement.md) | device per kernel | parallel on GPU, sequential on CPU | `place` |
 | [5 Kernels](docs/stages/5-kernels.md) | each kernel's code | CPF C++ (CPU) or CUDA (GPU) | `set_kernel_source` |
 | [6 Variants](docs/stages/6-variants.md) | compiler, FP mode, cost model | fastest variant that matches the oracle | `sweep` |

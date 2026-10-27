@@ -1,7 +1,18 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Stage 3: lower each offloading scope into an ``ExternalCall`` kernel. Default: one scope per parallel top-level
-map. An agent may name several maps of one state, or a straight run of blocks of one region, as one scope."""
+"""Stage 3: lower each offloading scope into an ``ExternalCall`` kernel. An agent may name several maps of one state, or
+a straight run of blocks of one region, as one scope. The default (:func:`default_units`), over the program's
+top-level blocks:
+
+- a state: each parallel map is a scope; sequential work stays in the program;
+- a loop holding no parallel map: one scope (a sequential kernel, which placement keeps on the CPU);
+- a loop whose body holds only parallel maps and loops: each map is a scope, and each loop in it is opened the same
+  way one level deeper (its maps become scopes) or, when it cannot open, is one scope;
+- a loop whose body mixes in other work: one scope;
+- a conditional: each branch like a loop body; one scope when a branch cannot open.
+
+A parallel map holding more than ``Targets.max_statements`` statements is first split (at most twice) at the cut
+between its body blocks that leaves each piece a quarter of the statements and passes the fewest containers."""
 
 from __future__ import annotations
 
@@ -13,7 +24,7 @@ import dace
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
-from dace.sdfg.state import ControlFlowBlock, SDFGState
+from dace.sdfg.state import AbstractControlFlowRegion, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 
 from nestforge.corpus.translate import prepare
@@ -28,6 +39,8 @@ from nestforge.ir.extract import (
 )
 from nestforge.ir.introspect import Row, nest_reads_writes
 from nestforge.ir.names import in_order, top_level_map_entries
+from nestforge.stages.canonicalize import Targets
+from nestforge.stages.moves import map_body, plan_subgraph_fission
 
 
 def is_parallel_nest(node: NestNode) -> bool:
@@ -254,3 +267,159 @@ def lower_group_to_external_call(sdfg: dace.SDFG, rows: Sequence[Row]) -> tuple[
     (name,) = kernel_names(sdfg, 1)
     boundary = extract(name)
     return replace_nsdfg_with_external(boundary, name), boundary
+
+
+#: How deep a loop inside an opened loop body is opened too (its maps become scopes).
+OPEN_DEPTH = 1
+#: The smallest share of a split map's statements each piece keeps.
+MIN_PIECE = 0.25
+#: The most cuts the size gate makes in one map.
+MAX_CUTS = 2
+
+
+def parallel_maps(state: SDFGState) -> list[Row] | None:
+    """The state's top-level maps when, besides access nodes, it holds only parallel maps; ``None`` otherwise."""
+    work = [node for node in state.scope_children()[None] if not isinstance(node, nodes.AccessNode)]
+    if all(isinstance(node, nodes.MapEntry) and is_parallel_nest(node) for node in work):
+        return [(node, state) for node in work]
+    return None
+
+
+def holds_parallel_map(block: ControlFlowBlock) -> bool:
+    return any(isinstance(node, nodes.MapEntry) and is_parallel_nest(node) for node, _ in block.all_nodes_recursive())
+
+
+def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
+    """The scopes of a loop or branch body: each parallel map of its states, each loop in it opened ``depth`` more
+    levels or else taken whole; ``None`` when the body holds other work, so the caller is taken whole."""
+    rows: list[Row] = []
+    for block in in_order(region):
+        if isinstance(block, SDFGState):
+            maps = parallel_maps(block)
+            if maps is None:
+                return None
+            rows += maps
+        elif isinstance(block, LoopRegion) and depth > 0:
+            inner = opened(block, depth - 1)
+            rows += inner if inner is not None else [(block, None)]
+        else:
+            return None
+    return rows
+
+
+def block_units(block: ControlFlowBlock) -> list[Row]:
+    """The default scopes of one top-level block that is not a state."""
+    if not holds_parallel_map(block):
+        return [(block, None)] if isinstance(block, LoopRegion) else []
+    if isinstance(block, LoopRegion):
+        inner = opened(block, OPEN_DEPTH)
+        return inner if inner is not None else [(block, None)]
+    if isinstance(block, ConditionalBlock):
+        branches = [opened(branch, OPEN_DEPTH) for _, branch in block.branches]
+        if any(rows is None for rows in branches):
+            return [(block, None)]
+        return [row for rows in branches for row in rows or ()]
+    return [(block, None)]
+
+
+def default_units(sdfg: dace.SDFG) -> list[Row]:
+    """The default scopes, in program order: top-level maps with their state, and blocks taken whole (state
+    ``None``)."""
+    units: list[Row] = []
+    for block in in_order(sdfg):
+        if isinstance(block, SDFGState):
+            units += [(entry, block) for entry in top_level_map_entries(block) if is_parallel_nest(entry)]
+        else:
+            units += block_units(block)
+    return units
+
+
+def statements(graph: dace.SDFG | ControlFlowBlock) -> int:
+    """The tasklets of ``graph``, nested SDFGs included."""
+    return sum(isinstance(node, nodes.Tasklet) for node, _ in graph.all_nodes_recursive())
+
+
+def map_statements(state: SDFGState, entry: nodes.MapEntry) -> int:
+    scope = state.scope_subgraph(entry).nodes()
+    own = sum(isinstance(node, nodes.Tasklet) for node in scope)
+    return own + sum(statements(node.sdfg) for node in scope if isinstance(node, nodes.NestedSDFG))
+
+
+def best_cut(state: SDFGState, entry: nodes.MapEntry, least: int) -> Callable[[], object] | None:
+    """The legal cut between the map's body blocks that leaves both pieces ``least`` statements and passes the fewest
+    containers from one piece to the other (balance breaks ties), or ``None`` when there is none."""
+    body = map_body(state, entry)
+    if body is None:
+        return None
+    blocks = in_order(body.sdfg)
+    counts = [statements(block) for block in blocks]
+    total = sum(counts)
+    best: tuple[tuple[int, int], Callable[[], object]] | None = None
+    for i, cut in enumerate(blocks[:-1]):
+        before = sum(counts[: i + 1])
+        if before < least or total - before < least:
+            continue
+        rewrite = plan_subgraph_fission((entry, state), (cut, None))
+        if isinstance(rewrite, str):
+            continue
+        written = {name for block in blocks[: i + 1] for name in block.read_and_write_sets()[1]}
+        read = {name for block in blocks[i + 1 :] for name in block.read_and_write_sets()[0]}
+        key = (len(written & read), abs(total - 2 * before))
+        if best is None or key < best[0]:
+            best = (key, rewrite.commit)
+    return best[1] if best is not None else None
+
+
+def split_large_maps(sdfg: dace.SDFG, max_statements: int) -> int:
+    """Split every default map scope above ``max_statements`` (at most :data:`MAX_CUTS` cuts each, every piece at
+    least :data:`MIN_PIECE` of the original); returns how many cuts were made."""
+    made = 0
+    for entry, state in [row for row in default_units(sdfg) if isinstance(row[0], nodes.MapEntry)]:
+        assert state is not None, "a map row carries its state"
+        least = int(MIN_PIECE * map_statements(state, entry))
+        others = set(top_level_map_entries(state)) - {entry}
+        for _ in range(MAX_CUTS):
+            pieces = [e for e in top_level_map_entries(state) if e not in others]
+            if not pieces:
+                break
+            largest = max(pieces, key=lambda e: map_statements(state, e))
+            if map_statements(state, largest) <= max_statements:
+                break
+            commit = best_cut(state, largest, least)
+            if commit is None:
+                break
+            commit()
+            made += 1
+    return made
+
+
+def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[ExternalCall, Boundary]]:
+    """Stage 3 default (:func:`default_units`, after :func:`split_large_maps`). Refuses before changing anything if a
+    scope reads a length-1 host array."""
+    split_large_maps(sdfg, targets.max_statements)
+    units = default_units(sdfg)
+    offenders = [
+        (tree_name(obj), name)
+        for obj, state in units
+        for name in host_length1_reads(
+            obj.sdfg if state is None else state.sdfg,
+            *(nest_reads_writes(state, obj) if state is not None else obj.read_and_write_sets()),
+        )
+    ]
+    if offenders:
+        raise ValueError(
+            f"scope inputs {offenders} are length-1 arrays in host memory; declare each as a Scalar, which "
+            "crosses the kernel boundary by value"
+        )
+    out: list[tuple[ExternalCall, Boundary]] = []
+    for (obj, state), name in zip(units, kernel_names(sdfg, len(units))):
+        if state is not None:
+            boundary = extract_map_nest(state.sdfg, obj, name=name)
+        else:
+            boundary = extract_blocks(obj.sdfg, [obj], name)
+        out.append((replace_nsdfg_with_external(boundary, name), boundary))
+    return out
+
+
+def tree_name(obj: nodes.MapEntry | ControlFlowBlock) -> str:
+    return obj.map.label if isinstance(obj, nodes.MapEntry) else obj.label

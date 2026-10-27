@@ -269,11 +269,13 @@ def graded(judge_url: str, kernel: str, final: dict[str, object], language: Lang
 @pytest.mark.judge
 @pytest.mark.parametrize("kernel", ["tsvc_2_s231", KERNEL])
 def test_the_reference_column_submits_a_library_the_judge_grades_correct(
-    loaded: None, judge_url: str, kernel: str
+    loaded: None, judge_url: str, kernel: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plugins.register_flavors.cache_clear()
-    plugins.register_flavors()
     column = "dace_cpu_canon_nestforge_reference"
+    monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
+    if column not in FRAMEWORKS.entries:
+        plugins.register_flavors.cache_clear()
+        plugins.register_flavors()
     sut = ReferenceOptimizer(column)
 
     submission = sut.tune(Task(kernel, SourceMode.ANY, Language.CPP), "canon_cpu")

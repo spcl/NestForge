@@ -16,6 +16,7 @@ from hpcagent_bench import config
 from hpcagent_bench.flags import ncores
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.optimizers import FlavorOptimizer
+from hpcagent_bench.harness.sandbox import shared_dir
 from hpcagent_bench.harness.task import Task
 
 from nestforge.paths import REPO_ROOT
@@ -49,7 +50,10 @@ class ReferenceOptimizer(FlavorOptimizer):
             print(f"nestforge_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
         solve = solution.solve if solution is not None else baseline
         solve(script, Context("gpu" if gpu else "cpu", ncores(), service.preset))
-        out = pathlib.Path(tempfile.mkdtemp(prefix=f"nestforge-reference-{task.kernel}-"))
+        # the judge takes a library only from its shared folder
+        root = pathlib.Path(shared_dir()) / "nestforge"
+        root.mkdir(parents=True, exist_ok=True)
+        out = pathlib.Path(tempfile.mkdtemp(prefix=f"reference-{pathlib.PurePath(task.kernel).name}-", dir=root))
         final = session.finalize(out)
         submission = Submission(
             language=task.language, library=str(final.library), workspace_bytes=final.workspace_bytes

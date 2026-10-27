@@ -342,10 +342,10 @@ def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_
     np.testing.assert_allclose(A, expected, rtol=1e-12)
 
 
-def test_a_single_sequential_loop_nest_the_default_skips_can_be_scoped_explicitly():
+def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
     session, _ = session_and_reference(running_sum)
     x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
-    assert parallel_top_level_maps(session.sdfg) == [], "the default must skip the loop, else it tests nothing"
+    assert parallel_top_level_maps(session.sdfg) == [], "no map: the loop is the only region to name"
 
     result = session.set_scope(["for0_0"], 0)
 

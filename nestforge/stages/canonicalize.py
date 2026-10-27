@@ -28,9 +28,11 @@ FUSE_STAGE = "fuse"
 
 @dataclass(frozen=True, slots=True)
 class Targets:
-    """Devices the program may run on. The CPU is always a target; the GPU is opt-in."""
+    """Devices the program may run on (the CPU always, the GPU opt-in), and the largest default scope: a parallel
+    map whose body holds more statements (tasklets) is split before it becomes a kernel."""
 
     gpu: bool = False
+    max_statements: int = 200
 
     @property
     def canon_target(self) -> str:

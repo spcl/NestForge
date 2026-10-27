@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import dataclasses
 import shutil
 import tempfile
 from collections.abc import Sequence
@@ -78,8 +79,8 @@ from nestforge.stages.performance import Performance, Reference, kernel_reports,
 from nestforge.stages.placement import Transfer, check_devices, default_devices, kernel_device, place, transfers
 from nestforge.stages.scopes import (
     is_parallel_kernel,
+    lower_default_scopes,
     lower_group_to_external_call,
-    lower_nests_to_external_call,
     node_boundary,
 )
 from nestforge.stages.variants import Variant, device_variants, select_variant
@@ -206,6 +207,17 @@ Codegen = Literal["first", "sweep"]
 SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
 
 
+def kept(build: KernelBuild, folder: Path) -> KernelBuild:
+    """``build`` with its units and archive copied into ``folder``, so it outlives the work directory it was built in."""
+    folder.mkdir(parents=True, exist_ok=True)
+    copies = {path: Path(shutil.copy2(path, folder / path.name)) for path in [*build.source.units, build.archive]}
+    device = build.source.device_unit
+    source = dataclasses.replace(
+        build.source, unit=copies[build.source.unit], device_unit=copies[device] if device is not None else None
+    )
+    return KernelBuild(source, build.variant, copies[build.archive], build.verdict)
+
+
 def scratch_dir() -> Path:
     """A work directory of the session's own, removed when the process exits."""
     path = Path(tempfile.mkdtemp(prefix="nfsession_"))
@@ -234,6 +246,7 @@ class Session:
         "prepared",
         "codegen",
         "swept",
+        "swept_dir",
         "measured",
         "bench",
     )
@@ -272,6 +285,8 @@ class Session:
         self.codegen = codegen
         # sweep winners by kernel source and sizes, shared with every trial so a kernel is swept once
         self.swept: dict[SweepKey, KernelBuild] = {}
+        # where a cached winner's units and archive are kept, so they outlive the trial that swept them
+        self.swept_dir = self.work_dir / "swept"
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Performance | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
@@ -450,8 +465,9 @@ class Session:
     # Stage 3: scopes
 
     def default_scopes(self) -> list[KernelScope]:
-        """Stage 3 default: one kernel per parallel top-level map; returns the new kernels."""
-        lowered = lower_nests_to_external_call(self.sdfg)
+        """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
+        the program by its rules, large maps split first; returns the new kernels."""
+        lowered = lower_default_scopes(self.sdfg, self.targets)
         if lowered:
             self.unplaced = None
             self.bump()
@@ -715,7 +731,7 @@ class Session:
         if winner is not None and winner.archive is not None:
             build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
             self.bind(name, build)
-            self.swept[self.sweep_key(name, src)] = build
+            self.swept[self.sweep_key(name, src)] = kept(build, self.swept_dir / f"{name}_{len(self.swept)}")
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
         variant = winner.variant
@@ -799,7 +815,8 @@ class Session:
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
         copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes, codegen=self.codegen)
-        copied.swept = self.swept  # shared: a winner the trial sweeps serves this session's finalize too
+        # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
+        copied.swept, copied.swept_dir = self.swept, self.swept_dir
         # same epoch, same labels: what was read on this session names the same rows of the copy
         copied.epoch, copied.unplaced = self.epoch, copy.deepcopy(self.unplaced)
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults

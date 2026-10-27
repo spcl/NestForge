@@ -101,9 +101,7 @@ def test_gpu_placement_copies_the_inputs_to_the_device_and_the_output_back(tmp_p
 
 
 def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp_path):
-    session = kernel_session(True, tmp_path, scale_then_prefix)
-    loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.sdfg.state.LoopRegion))
-    assert session.set_scope([loop], session.epoch).status is MoveStatus.APPLIED
+    session = kernel_session(True, tmp_path, scale_then_prefix)  # the map, and the sequential loop as a kernel too
     parallel = {k.name: k.parallel for k in session.list_kernels()}
     assert sorted(parallel.values()) == [False, True], parallel
 

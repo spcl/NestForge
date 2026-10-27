@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session stages 5 and 6: optimize a kernel, replace its source, sweep its configurations, link the winner."""
 
+import shutil
 from pathlib import Path
 
 import dace
@@ -152,19 +153,23 @@ def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
     assert_program_computes(session.sdfg)
 
 
-def test_a_sweeping_session_builds_a_kernel_once_with_the_sweep_winner_and_its_trials_share_it(tmp_path):
-    """Under ``codegen="sweep"`` an unbuilt kernel gets the sweep's winner; the session relinks the archive its trial
-    swept instead of sweeping again, and the program still computes 2a + b."""
+def test_a_sweeping_session_relinks_the_winner_its_trial_swept_after_the_trial_is_gone(tmp_path):
+    """Under ``codegen="sweep"`` an unbuilt kernel gets the sweep's winner; the session relinks the winner a trial
+    swept (as :meth:`Session.performance` does, which removes the trial's folder after measuring) instead of sweeping
+    again, and the program still computes 2a + b."""
     session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 256}, codegen="sweep")
     (kernel,) = session.default_scopes()
     trial = session.trial()
-
     trial.default_build(kernel.name)
+    swept = trial.builds[kernel.name]
+    shutil.rmtree(trial.work_dir)
+
     session.default_build(kernel.name)
 
-    swept, linked = trial.builds[kernel.name], session.builds[kernel.name]
+    linked = session.builds[kernel.name]
     assert swept.verdict is not None and swept.verdict.ok, "a sweep winner is a timed, correct build"
-    assert linked.archive == swept.archive and linked.variant == swept.variant
+    assert linked.variant == swept.variant and linked.verdict == swept.verdict, "relinked, not swept again"
+    assert linked.archive.is_file() and linked.archive.is_relative_to(tmp_path)
     assert_program_computes(session.sdfg)
 
 
