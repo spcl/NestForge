@@ -6,16 +6,12 @@ One file per benchmark, `<kernel>.py`. Its `solve(s, ctx)` applies the reference
 python -m nestforge.replay reference_solutions/<kernel>.py
 ```
 
-**Adding a solution:** keep the script and its section short and easy to scan, like `tsvc_2_s231` below. The script holds only the moves, picked by kind and by what they read and write. The section lists only the moves, a few words on when they apply, and a small table of each config's default time, reference time and gain. Leave full replay output in `experiments/replay/`. CI replays every file here at preset S on one CPU thread (`tests/test_replay.py`), so a solution that stops applying or no longer matches the oracle fails the build.
+**Adding a solution:** keep the script short, like `tsvc_2_s231.py`: the kernel, the config and the moves, picked by kind and by what they read and write. Add a kernel here once its moves beat the default by more than the timing noise (10-17% between Daint nodes). CI replays every file here at preset S on one CPU thread (`tests/test_replay.py`), so a solution that stops applying or no longer matches the oracle fails the build.
 
-## tsvc_2_s231
+| Kernel | Moves | Config | Default | Reference | Gain |
+| --- | --- | --- | --- | --- | --- |
+| `aes_graupel` | `map-fission` of the map computing `sink` and `sx2x`, then the default | CPU, 72 threads | 7705 ms | 1022 ms | 7.54x (previous pins; re-timing on main pending) |
+| `tsvc_2_s233` | `loop-fission`, then `interchange-loop-map` on the `aa` half and the `bb` half | CPU, 72 threads | 30.7 ms | 8.8 ms | 3.47x |
+| `tsvc_2_s231` | `interchange-loop-map` (the `j` loop into the `i` map) | CPU, 72 threads | 39.5 ms | 16.5 ms | 2.40x |
 
-**Move:** `interchange-loop-map`, which moves the `j` loop inside the `i` map. It applies on a threaded CPU and on the GPU; on one thread, no move.
-
-| Config | Default | Reference | Gain |
-| --- | --- | --- | --- |
-| CPU, 72 threads | 39.8 ms | 16.6 ms | 2.39x |
-| CPU, 1 thread | 55.4 ms | 55.4 ms | 1.00x (the interchange would be 17x slower) |
-| GPU | 38.4 ms | 37.7 ms | 1.02x (the default already interchanges) |
-
-Preset M on a Daint GH200 node; DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
+Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
