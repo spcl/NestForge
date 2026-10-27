@@ -7,6 +7,7 @@ Tests build real corpus nests through :mod:`nestforge.build.sdfg` and check the 
 numpy oracle: source-tree layout, the init/program/exit call sequence, and per-parameter ctype marshaling.
 """
 
+import ctypes
 import ctypes.util
 import os
 import shutil
@@ -33,6 +34,7 @@ from helpers import build_sdfg, corpus_kernel
 from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.sdfg import BuildOptions, dace_runtime_include, new_gpu_codegen
 from nestforge.build.toolchain import (
+    C_PTR,
     compiler_family,
     driver_lib_path,
     library_flags,
@@ -258,15 +260,15 @@ def test_parse_params_strips_the_const_qualifier_only_as_a_word():
 def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
     """An unmapped by-value type must fail loud: defaulting to int64 puts a float in a GP register (SysV
     ABI), so the callee reads garbage with no ctypes error."""
-    with pytest.raises(ValueError, match="uint64_t"):
-        parse_params("k_state_t *__state, uint64_t n")
+    with pytest.raises(ValueError, match="custom_t"):
+        parse_params("k_state_t *__state, custom_t n")
 
 
 def test_parse_params_refuses_an_unmapped_pointer_base_type():
     """An unmapped pointer base type must fail loud too, the same as the scalar branch: silently defaulting
     to ``double*`` marshals a differently-sized element through the ABI with no ctypes error."""
-    with pytest.raises(ValueError, match="uint64_t"):
-        parse_params("k_state_t *__state, uint64_t *n")
+    with pytest.raises(ValueError, match="custom_t"):
+        parse_params("k_state_t *__state, custom_t *n")
 
 
 def test_int_and_complex_pointers_bind_by_address():
@@ -505,3 +507,19 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
 def test_a_gpu_build_uses_the_new_cuda_codegen_whatever_the_config_says():
     with dace.config.set_temporary("compiler", "cuda", "implementation", value="legacy"), new_gpu_codegen():
         assert dace.config.Config.get("compiler", "cuda", "implementation") == "experimental"
+
+
+def test_c_ptr_binds_narrow_integer_buffers():
+    """An int8 buffer (comet_int4_gemm's packed codes) binds as a pointer, like the wider integers."""
+    assert C_PTR["int8_t"] is ctypes.c_int8 and C_PTR["uint8_t"] is ctypes.c_uint8
+
+
+def test_a_std_complex_pointer_binds_as_its_component():
+    """scattering_self_energies' entry, once built, takes ``std::complex<double>*``: the C++ spelling of
+    ``dace::complex128``, bound the same way."""
+    params = parse_params("std::complex<double> * __restrict__ D, std::complex<float> * E, int64_t N")
+    assert [(p.name, p.ctype) for p in params] == [
+        ("D", ctypes.POINTER(ctypes.c_double)),
+        ("E", ctypes.POINTER(ctypes.c_float)),
+        ("N", ctypes.c_int64),
+    ]

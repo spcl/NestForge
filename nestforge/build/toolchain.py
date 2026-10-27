@@ -20,8 +20,14 @@ from typing import Any
 import numpy as np
 
 C_SCALAR: dict[str, type[ctypes._SimpleCData]] = {
+    "int8_t": ctypes.c_int8,
+    "uint8_t": ctypes.c_uint8,
+    "int16_t": ctypes.c_int16,
+    "uint16_t": ctypes.c_uint16,
     "int32_t": ctypes.c_int32,
+    "uint32_t": ctypes.c_uint32,
     "int64_t": ctypes.c_int64,
+    "uint64_t": ctypes.c_uint64,
     "int": ctypes.c_int,
     "float": ctypes.c_float,
     "double": ctypes.c_double,
@@ -33,6 +39,8 @@ C_PTR: dict[str, type[ctypes._SimpleCData]] = {
     **C_SCALAR,
     "dace::complex64": ctypes.c_float,
     "dace::complex128": ctypes.c_double,
+    "std::complex<float>": ctypes.c_float,
+    "std::complex<double>": ctypes.c_double,
 }
 
 DEFAULT_COMPILER = "g++"
