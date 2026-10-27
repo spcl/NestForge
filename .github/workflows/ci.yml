@@ -34,6 +34,11 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      # tests/test_bench_data.py runs a bench reference, which enters the grading seal's user namespace.
+      - name: Grading seal
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
       - run: pre-commit run --all-files --show-diff-on-failure
       - name: pytest (a skip fails the run)
