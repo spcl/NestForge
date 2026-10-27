@@ -70,7 +70,13 @@ jobs:
         run: |
           eval "$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')"
           ulimit -s "$(ulimit -H -s)"
-          pytest -m "integration and not cloudsc and not gpu and not vendor" --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+          pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+      - name: replay
+        # One reference solution per worker: each replay builds the baseline, the reference and every decoy (#42).
+        run: |
+          eval "$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')"
+          ulimit -s "$(ulimit -H -s)"
+          pytest tests/test_replay.py -m integration -n auto --timeout=900 --durations=15 --cov=nestforge --cov-append --cov-report=term
 
   # Every phase through the plugin route, then finalize's library graded by an in-process bench judge.
   judge:
