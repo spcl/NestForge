@@ -200,6 +200,12 @@ class KernelBuild:
     verdict: KernelVerdict | None = None
 
 
+#: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
+Codegen = Literal["first", "sweep"]
+#: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
+SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
+
+
 def scratch_dir() -> Path:
     """A work directory of the session's own, removed when the process exits."""
     path = Path(tempfile.mkdtemp(prefix="nfsession_"))
@@ -226,6 +232,8 @@ class Session:
         "sources",
         "builds",
         "prepared",
+        "codegen",
+        "swept",
         "measured",
         "bench",
     )
@@ -237,8 +245,11 @@ class Session:
         name: str | None = None,
         work_dir: str | None = None,
         sizes: dict[str, int] | None = None,
+        codegen: Codegen = "first",
     ) -> None:
-        """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7)."""
+        """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
+        :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
+            ``first``, stage 5's first configuration; ``sweep``, the fastest correct one of stage 6's sweep."""
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
@@ -258,6 +269,9 @@ class Session:
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
+        self.codegen = codegen
+        # sweep winners by kernel source and sizes, shared with every trial so a kernel is swept once
+        self.swept: dict[SweepKey, KernelBuild] = {}
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Performance | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
@@ -699,7 +713,9 @@ class Session:
         result = select_variant(src, prep, self.kernel_sizes(name), reps, variants, self.work_dir / name / "variants")
         winner = result.winner
         if winner is not None and winner.archive is not None:
-            self.bind(name, KernelBuild(src, winner.variant, winner.archive, winner.verdict))
+            build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
+            self.bind(name, build)
+            self.swept[self.sweep_key(name, src)] = build
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
         variant = winner.variant
@@ -711,6 +727,23 @@ class Session:
             time_us=winner.verdict.time_us,
         )
         return Sweep(kernel=name, cells=len(result.cells), winner=variant.label, config=config)
+
+    def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
+        units = tuple(unit.read_text() for unit in src.units)
+        return name, units, tuple(sorted(self.kernel_sizes(name).items()))
+
+    def default_build(self, name: str) -> None:
+        """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
+        the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
+        a sweep without a correct winner falls back to the first configuration)."""
+        if self.codegen == "first":
+            self.optimize_kernel(name)
+            return
+        known = self.swept.get(self.sweep_key(name, self.default_kernel(name)))
+        if known is not None:
+            self.bind(name, known)
+        elif self.sweep(name).winner is None:
+            self.optimize_kernel(name)
 
     # Stage 7: feedback
 
@@ -724,7 +757,7 @@ class Session:
         evidence: list[feedback.Evidence] = []
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
-                self.optimize_kernel(ext.name)
+                self.default_build(ext.name)
             build = self.builds[ext.name]
             if build.verdict is None:
                 sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
@@ -745,8 +778,8 @@ class Session:
 
     def finalize(self, out_dir: Path | None = None) -> Final:
         """The program as a bench library submission: a program without scopes gets the default scopes, one never
-        placed on a GPU target the default placement, and every kernel without a build its stage 5 default (the first
-        configuration stage 6 sweeps; no sweep runs), then the program is rendered in the bench C ABI and built, each
+        placed on a GPU target the default placement, and every kernel without a build its default build
+        (:meth:`default_build`), then the program is rendered in the bench C ABI and built, each
         kernel linked from its own archive.
 
         :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
@@ -759,13 +792,14 @@ class Session:
             self.place()  # a GPU program is assembled as placed
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
-                self.optimize_kernel(ext.name)
+                self.default_build(ext.name)
         variants = {name: build.variant.label for name, build in self.builds.items()}
         return assemble(self.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
-        copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes)
+        copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes, codegen=self.codegen)
+        copied.swept = self.swept  # shared: a winner the trial sweeps serves this session's finalize too
         # same epoch, same labels: what was read on this session names the same rows of the copy
         copied.epoch, copied.unplaced = self.epoch, copy.deepcopy(self.unplaced)
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults

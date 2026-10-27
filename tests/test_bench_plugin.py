@@ -18,19 +18,22 @@ from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.tools import registry
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
-from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset
+from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
+from hpcagent_bench.columns import FRAMEWORKS
 from hpcagent_bench.config import SubmitFeedback
 from hpcagent_bench.harness import tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
+from hpcagent_bench.harness.task import Task
 from hpcagent_bench.skill_frontmatter import split_frontmatter
 from hpcagent_bench.vocabulary import PACKETS
 from stub_session import Stub, install
 
 from nestforge.paths import REPO_ROOT
 from nestforge.server import CALLS, Reply
+from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
@@ -260,6 +263,25 @@ def graded(judge_url: str, kernel: str, final: dict[str, object], language: Lang
     grade = tools.JudgeClient(judge_url).submit(submission, kernel)
     assert isinstance(grade, GradeAnswer), grade
     return grade
+
+
+# s231 has a reference solution; the diamond has none and runs the default moves
+@pytest.mark.judge
+@pytest.mark.parametrize("kernel", ["tsvc_2_s231", KERNEL])
+def test_the_reference_column_submits_a_library_the_judge_grades_correct(
+    loaded: None, judge_url: str, kernel: str
+) -> None:
+    plugins.register_flavors.cache_clear()
+    plugins.register_flavors()
+    column = "dace_cpu_canon_nestforge_reference"
+    sut = ReferenceOptimizer(column)
+
+    submission = sut.tune(Task(kernel, SourceMode.ANY, Language.CPP), "canon_cpu")
+
+    assert FRAMEWORKS.entries[column].pipelines == ("canon_cpu",), "the manifest registers the column"
+    grade = tools.JudgeClient(judge_url).submit(submission, kernel)
+    assert isinstance(grade, GradeAnswer), grade
+    assert grade.build_ok is True and grade.correct is True, grade.detail
 
 
 # a straight diamond of maps; maps inside a time loop

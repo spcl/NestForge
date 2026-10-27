@@ -2,11 +2,11 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pin HPCAgent-Bench (and its agent package) in pyproject.toml to the tip of a bench branch (:data:`BENCH_BRANCH`
-unless one is named), DaCe to the tip of extended, and relayout to the commit that bench commit pins.
+unless one is named), and DaCe and relayout to the commits that bench commit pins: the bench owns both pins.
 
-HPCAgent-Bench requires its own DaCe commit, so the DaCe pin is written twice: as the dependency and as the
-``[tool.uv]`` override that wins over the bench's. relayout is written the same two ways, because the bench pins it
-only in ``[tool.uv.sources]`` and pip would install PyPI's unrelated ``relayout``. Then reinstall and test:
+The bench pins DaCe and relayout only in ``[tool.uv.sources]``, which neither pip nor a uv install of another project
+reads (PyPI's ``relayout`` is an unrelated project), so each is written twice: as the dependency and as the
+``[tool.uv]`` override. Then reinstall and test:
 ``python scripts/bump_deps.py && uv pip install -e ".[dev]" && pytest``.
 """
 
@@ -24,8 +24,8 @@ BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
 RELAYOUT = "https://github.com/ThrudPrimrose/relayout.git"
 #: The bench's pyproject.toml at one commit.
 BENCH_PYPROJECT = "https://raw.githubusercontent.com/spcl/HPCAgent-Bench/{sha}/pyproject.toml"
-#: The bench branch NestForge tracks: the release the plugin ships with.
-BENCH_BRANCH = "release-v0.3.1"
+#: The bench branch NestForge tracks.
+BENCH_BRANCH = "main"
 #: Where each package's pin is written: the dependency, and for DaCe and relayout also the uv override.
 PIN_COUNT = {"hpcagent_bench": 1, "hpcagent-agent": 1, "dace": 2, "relayout": 2}
 
@@ -35,18 +35,21 @@ def tip(repo: str, branch: str) -> str:
     return out.stdout.split()[0]
 
 
-def bench_relayout(bench: str) -> str:
+def bench_sources(bench: str) -> dict[str, str]:
+    """The commit of every git source in the bench's ``[tool.uv.sources]`` at ``bench``, by package."""
     with urllib.request.urlopen(BENCH_PYPROJECT.format(sha=bench)) as response:
-        return tomllib.load(response)["tool"]["uv"]["sources"]["relayout"]["rev"]
+        sources = tomllib.load(response)["tool"]["uv"]["sources"]
+    return {name: source["rev"] for name, source in sources.items() if isinstance(source, dict) and "rev" in source}
 
 
 def main(bench_branch: str) -> None:
     bench = tip(BENCH, bench_branch)
+    sources = bench_sources(bench)
     pins = {
         "hpcagent_bench": (BENCH, bench),
         "hpcagent-agent": (BENCH, bench),
-        "dace": (DACE, tip(DACE, "extended")),
-        "relayout": (RELAYOUT, bench_relayout(bench)),
+        "dace": (DACE, sources["dace"]),
+        "relayout": (RELAYOUT, sources["relayout"]),
     }
     text = PYPROJECT.read_text()
     for package, (repo, sha) in pins.items():

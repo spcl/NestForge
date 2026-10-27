@@ -6,8 +6,9 @@ Optimize the program with the NestForge tools; the `nestforge` skill explains th
    come from the latest tree; a stale epoch is refused. `run_defaults` applies the default fusion (`moves`) or
    finishes after your own moves (`finish`).
 4. `get_performance`: whole-program time, which kernel runs where with the bytes moved between memories, and
-   each kernel's time and share. `apply_move` and `run_defaults` return it too. Scopes, placement and kernel builds
-   run their defaults.
+   each kernel's time and share. `apply_move` and `run_defaults` return it too. Scopes, placement and code
+   generation run automatically on their defaults (each kernel built with the fastest correct compiler
+   configuration); you choose the moves.
 5. `finalize`: the program in the bench C ABI as a library in the shared folder. Submit it with `score` / `submit`
    as `library=<library>` and `workspace_bytes=<workspace_bytes>` from its answer; `source` shows the entry it was
    built from.

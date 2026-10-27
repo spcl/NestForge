@@ -324,7 +324,8 @@ def pins() -> dict[str, str]:
 
 def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> ReplayReport:
     """The baseline, the reference and every decoy of ``solution`` on ``ctx``, in that order."""
-    session, inputs, reference = start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"))
+    # the first configuration per kernel: a replay compares moves, not compiler sweeps
+    session, inputs, reference = start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"), "first")
     steps: dict[str, Steps] = {"baseline": baseline, "reference": solution.solve, **solution.decoys}
     variants = [run_variant(session, ctx, name, fn, (inputs, reference), reps) for name, fn in steps.items()]
     return ReplayReport(

@@ -9,3 +9,11 @@ method = "nestforge"
 # tool is one the session serves (nestforge.server.CALLS); a test keeps them in the structured and any phases.
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
     "finalize"]
+
+# The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
+# moves, then the same automatic scopes, placement and code generation; no LLM.
+[flavors.nestforge_reference]
+name = "NestForge reference"
+full_name = "NestForge (reference moves)"
+optimizer = "nestforge_bench:ReferenceOptimizer"
+extends = ["dace_cpu_canon", "dace_gpu_canon"]

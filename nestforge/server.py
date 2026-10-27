@@ -19,7 +19,7 @@ import numpy as np
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import Record
-from nestforge.session import Session
+from nestforge.session import Codegen, Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
@@ -105,12 +105,15 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     return inputs, Reference(expected, rtol, atol)
 
 
-def start(setup: Setup) -> tuple[Session, dict[str, np.ndarray], Reference | None]:
-    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on."""
+def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
+    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on. The agent drives the
+    moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
     kernel = corpus_kernel(setup.kernel)
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
-    session = Session(kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset))
+    session = Session(
+        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset), codegen=codegen
+    )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.canonicalize()
     inputs, reference = bench_data(setup)

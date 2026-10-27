@@ -152,6 +152,32 @@ def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
     assert_program_computes(session.sdfg)
 
 
+def test_a_sweeping_session_builds_a_kernel_once_with_the_sweep_winner_and_its_trials_share_it(tmp_path):
+    """Under ``codegen="sweep"`` an unbuilt kernel gets the sweep's winner; the session relinks the archive its trial
+    swept instead of sweeping again, and the program still computes 2a + b."""
+    session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 256}, codegen="sweep")
+    (kernel,) = session.default_scopes()
+    trial = session.trial()
+
+    trial.default_build(kernel.name)
+    session.default_build(kernel.name)
+
+    swept, linked = trial.builds[kernel.name], session.builds[kernel.name]
+    assert swept.verdict is not None and swept.verdict.ok, "a sweep winner is a timed, correct build"
+    assert linked.archive == swept.archive and linked.variant == swept.variant
+    assert_program_computes(session.sdfg)
+
+
+def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
+    session, name = one_kernel_session(tmp_path)
+
+    session.default_build(name)
+
+    build = session.builds[name]
+    assert build.variant == session.first_variant(build.source.device)
+    assert build.verdict is None, "no sweep timed it"
+
+
 def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
     """A compiler filter that matches nothing leaves the kernel on its DaCe reference expansion."""
     session, name = one_kernel_session(tmp_path, 64)
