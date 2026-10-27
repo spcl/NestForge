@@ -388,6 +388,46 @@ def two_state_body(name: str) -> dace.SDFG:
     return inner
 
 
+def test_a_nested_map_reusing_the_outer_map_parameter_keeps_both_iterators():
+    """A nest inside a map over ``__i0`` maps over ``__i0`` again (legal: map parameters are scoped). Emitted inline,
+    the inner loop would overwrite the outer iterator, so the inner one is renamed."""
+    inner = dace.SDFG("row")
+    inner.add_array("x", [M], dace.float64)
+    inner.add_array("y", [M], dace.float64)
+    inner.add_symbol("M", dace.int64)
+    double = inner.add_state(is_start_block=True)
+    double.add_mapped_tasklet(
+        "double",
+        {"__i0": "0:M"},
+        {"v": dace.Memlet("x[__i0]")},
+        "o = 2 * v",
+        {"o": dace.Memlet("y[__i0]")},
+        external_edges=True,
+    )
+    inc = inner.add_state_after(double)  # a second state keeps the nest nested
+    inc.add_mapped_tasklet(
+        "inc",
+        {"__i0": "0:M"},
+        {"v": dace.Memlet("y[__i0]")},
+        "o = v + 1",
+        {"o": dace.Memlet("y[__i0]")},
+        external_edges=True,
+    )
+    outer = dace.SDFG("rows")
+    outer.add_array("a", [N, M], dace.float64)
+    outer.add_array("b", [N, M], dace.float64)
+    state = outer.add_state()
+    entry, exit_ = state.add_map("each", {"__i0": "0:N"})
+    node = state.add_nested_sdfg(inner, {"x"}, {"y"}, {"M": "M"})
+    state.add_memlet_path(state.add_read("a"), entry, node, dst_conn="x", memlet=dace.Memlet("a[__i0, 0:M]"))
+    state.add_memlet_path(node, exit_, state.add_write("b"), src_conn="y", memlet=dace.Memlet("b[__i0, 0:M]"))
+    a = np.arange(12.0).reshape(3, 4)
+
+    call, _ = emit_and_run(outer, {"a": a}, {"N": 3, "M": 4})
+
+    np.testing.assert_array_equal(call["b"], 2 * a + 1)
+
+
 def test_a_nest_handed_an_outer_size_as_a_code_string_reads_the_outer_value():
     """DaCe may store a symbol mapping entry ``N -> N`` as the string ``'N'``; it is no rebinding."""
     sdfg = per_element(two_state_body("adds_n"), {"N": N})
@@ -631,3 +671,23 @@ def test_a_c_math_intrinsic_in_tasklet_code_runs_as_its_numpy_function():
     call, _ = emit_and_run(copysign_map(), {"A": A}, {"N": 4})
 
     np.testing.assert_array_equal(call["B"], np.copysign(1.0, A))
+
+
+def test_a_bare_inf_in_tasklet_code_runs_as_numpy_inf():
+    """velocity_tendencies' fused max starts at ``-inf``; the oracle raised ``NameError: name 'inf'``."""
+    sdfg = dace.SDFG("clip_or_floor")
+    sdfg.add_array("A", [N], dace.float64)
+    sdfg.add_array("B", [N], dace.float64)
+    sdfg.add_state().add_mapped_tasklet(
+        "clip",
+        {"i": "0:N"},
+        {"a": dace.Memlet("A[i]")},
+        "b = a if a > 0 else -inf",
+        {"b": dace.Memlet("B[i]")},
+        external_edges=True,
+    )
+    A = np.array([-2.0, 0.5, 3.0])
+
+    call, _ = emit_and_run(sdfg, {"A": A}, {"N": 3})
+
+    np.testing.assert_array_equal(call["B"], np.where(A > 0, A, -np.inf))
