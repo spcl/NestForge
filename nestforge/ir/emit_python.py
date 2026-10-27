@@ -31,6 +31,7 @@ from dace import dtypes, subsets, symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.properties import CodeBlock
 from dace.sdfg import nodes
+from dace.sdfg.replace import replace_dict
 from dace.sdfg.state import (
     BreakBlock,
     ConditionalBlock,
@@ -66,6 +67,8 @@ NP_FUNCTIONS = {
     **{"re": "real", "im": "imag"},  # the frontend spells z.real and z.imag as SymPy's re and im
     **{"CMod": "fmod", "FtnMod": "fmod", "bitwise_invert": "invert"},  # C's truncating modulo is fmod
 }
+#: Constant names tasklet code may use bare (a max reduction starts at ``-inf``) -> their NumPy spelling.
+NP_CONSTANTS = {"inf": "inf", "nan": "nan"}
 NP_DTYPES = {name: name for name in ("int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64")}
 NP_DTYPES |= {"float16": "float16", "float32": "float32", "float64": "float64", "bool": "bool_"}
 NP_DTYPES |= {"complex64": "complex64", "complex128": "complex128", "double": "float64", "float": "float32"}
@@ -135,6 +138,8 @@ class Normalize(ast.NodeTransformer):
     def visit_Name(self, node: ast.Name) -> ast.AST:
         if node.id in self.names.scalars and isinstance(node.ctx, ast.Load):
             return ast.copy_location(ast.Subscript(value=node, slice=ast.Constant(0), ctx=node.ctx), node)
+        if node.id in NP_CONSTANTS and node.id not in self.names.locals and isinstance(node.ctx, ast.Load):
+            return ast.copy_location(numpy_attr(NP_CONSTANTS[node.id]), node)
         return node
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
@@ -301,6 +306,16 @@ def own_names(sdfg: dace.SDFG) -> set[str]:
     return names | {p for e, s in placed(sdfg, nodes.MapEntry) if s.sdfg is sdfg for p in strings(e.map.params)}
 
 
+def enclosing_names(sdfg: dace.SDFG) -> set[str]:
+    """The :func:`own_names` of every SDFG enclosing ``sdfg``."""
+    enclosing: set[str] = set()
+    parent = sdfg.parent_sdfg
+    while parent is not None:
+        enclosing |= own_names(parent)
+        parent = parent.parent_sdfg
+    return enclosing
+
+
 def unique_nested_bindings(sdfg: dace.SDFG) -> None:
     """Rename a symbol a nested SDFG binds itself when an enclosing SDFG uses the name: in one flat Python
     function the nested binding would overwrite the outer value."""
@@ -309,14 +324,29 @@ def unique_nested_bindings(sdfg: dace.SDFG) -> None:
         node = sd.parent_nsdfg_node
         if node is None:
             continue
-        enclosing: set[str] = set()
-        parent = sd.parent_sdfg
-        while parent is not None:
-            enclosing |= own_names(parent)
-            parent = parent.parent_sdfg
+        enclosing = enclosing_names(sd)
         clashes = [n for n in own_bindings(sd) if n in enclosing and n not in node.symbol_mapping]
         if clashes:
             sd.replace_dict({name: fresh_name(name, taken) for name in clashes})
+
+
+def unique_nested_map_params(sdfg: dace.SDFG) -> None:
+    """Rename a nested SDFG's map parameter when an enclosing SDFG uses the name, inside that map's scope only. A
+    map parameter is scoped in the SDFG, but in one flat Python function the inner ``for`` would overwrite the outer
+    iterator (a CloudSC nest inside a map over ``__i0`` maps over ``__i0`` again)."""
+    taken = program_names(sdfg)
+    for sd in list(sdfg.all_sdfgs_recursive()):
+        if sd.parent_nsdfg_node is None:
+            continue
+        enclosing = enclosing_names(sd)
+        for entry, state in placed(sd, nodes.MapEntry):
+            if state.sdfg is not sd:  # a deeper nest's map: its own turn checks it
+                continue
+            renames = {p: fresh_name(p, taken) for p in strings(entry.map.params) if p in enclosing}
+            if not renames:
+                continue
+            replace_dict(state.scope_subgraph(entry), renames)
+            entry.map.params = [renames.get(p, p) for p in strings(entry.map.params)]
 
 
 def unique_connectors(sdfg: dace.SDFG) -> None:
@@ -371,6 +401,7 @@ def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
     # before nested data takes outer names, which a nested tasklet's connector may carry
     unique_connectors(sdfg)
     unique_nested_bindings(sdfg)
+    unique_nested_map_params(sdfg)
     if placed(sdfg, nodes.NestedSDFG):
         sdfg.apply_transformations_repeated(ExpandNestedSDFGInputs, validate=False)
         bind_nested_data(sdfg)
