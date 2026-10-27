@@ -93,9 +93,13 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "start() checked the kernel"
     data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset))
+    # the program names an argument the generator renamed by its new name; unmapped, it would run on zeros
+    renames = kernel.renames()
     # a scalar argument (cloudsc's timestep ptsphy) is a 0-d array; dropping it would zero it
     inputs = {
-        key: np.asarray(value) for key, value in data.items() if isinstance(value, (np.ndarray, np.generic, int, float))
+        renames.get(key, key): np.asarray(value)
+        for key, value in data.items()
+        if isinstance(value, (np.ndarray, np.generic, int, float))
     }
     try:
         expected = compiled_reference(kernel.spec, dict(data))
@@ -103,7 +107,7 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
         print(f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}", file=sys.stderr, flush=True)
         return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
-    return inputs, Reference(expected, rtol, atol)
+    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
 
 
 def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
