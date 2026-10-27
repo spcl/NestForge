@@ -47,7 +47,9 @@ python examples/quickstart.py --device gpu --kernel jacobi_1d --out quickstart_j
 
 It runs every default on an HPCAgent-Bench kernel at preset S and saves each stage's SDFG and tree, the kernel
 DAG, each kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`
-canonicalization turns four sequential loops into one parallel map:
+canonicalization turns four sequential loops into one parallel map. A benchmark's reference solution is replayed
+with `python -m nestforge.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
+On `fuse_diamond`:
 
 ```
 SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=1
@@ -74,12 +76,14 @@ HPCAgent-Bench (`release-v0.3.1`) and DaCe (`extended`) are pinned to commit SHA
 ```
 nestforge/
   session.py   the one API over all stages
+  replay.py    replay a benchmark's reference-solution script next to the default, timed and oracle-checked
   records.py   the typed answers and their status enums
   stages/      canonicalize, moves, scopes, placement, kernel, variants, feedback, performance
   ir/          extraction, the Python oracle, the kernel DAG, structure trees
   build/       compile and link, compilers on PATH, FP flags, validate-and-time, fork isolation
   corpus/      HPCAgent-Bench kernels and the oracle bridge
 plugin/nestforge/  the HPCAgent-Bench plugin: tools, judge route, method prompt
+reference_solutions/  one reference-solution script per benchmark, replayed by nestforge/replay.py
 ```
 
 More: [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md), [build and runtime linking](docs/build.md),
