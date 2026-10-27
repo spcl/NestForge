@@ -218,8 +218,9 @@ def calls_doubled(a: dace.float64[N], b: dace.float64[N]):
 
 
 def test_gpu_offloading_places_a_nested_sdfg_at_the_top_level_of_a_state():
-    """DaCe places a host-level nested SDFG with a fresh ``type(self)()``, so ``OffloadKernels`` must build without
-    its host kernels (H1 `cloudsc_solver_carry`'s GPU reference raised a missing-argument ``TypeError`` there)."""
+    """DaCe places a host-level nested SDFG with a fresh ``type(self)(taskloop_overrides, host_maps)``, so
+    ``OffloadKernels`` must build from DaCe's arguments alone (H1 `cloudsc_solver_carry`'s GPU reference raised
+    a missing-argument ``TypeError`` there)."""
     sdfg = calls_doubled.to_sdfg(simplify=False)
     (nested,) = [
         node
@@ -228,7 +229,7 @@ def test_gpu_offloading_places_a_nested_sdfg_at_the_top_level_of_a_state():
         if isinstance(node, dace.nodes.NestedSDFG) and state.entry_node(node) is None
     ]
 
-    OffloadKernels([]).apply_pass(sdfg, {})
+    OffloadKernels(host_kernels=[]).apply_pass(sdfg, {})
 
     maps = [node for node, _ in nested.sdfg.all_nodes_recursive() if isinstance(node, dace.nodes.MapEntry)]
     assert maps and all(entry.map.schedule == dace.ScheduleType.GPU_Device for entry in maps)

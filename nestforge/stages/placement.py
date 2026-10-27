@@ -12,6 +12,7 @@ from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
+from dace.transformation.passes.offloading.host_maps import HostMapSpec
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
 
 from nestforge.ir.depends import KernelGraph
@@ -25,14 +26,20 @@ class OffloadKernels(OffloadToAccelerator):
     """DaCe's offloading, with the kernels named in ``host_kernels`` kept on the host: the copy analysis then
     places their operands in host memory and copies around them.
 
-    ``host_kernels`` defaults to none because DaCe places each host-level nested SDFG with a fresh ``type(self)()``.
-    That body offloader only places copies; the schedules, the one place ``host_kernels`` is read, are assigned
-    tree-wide by the outer pass."""
+    The positional parameters are DaCe's, because DaCe places each host-level nested SDFG with a fresh
+    ``type(self)(taskloop_overrides, host_maps)``. ``host_kernels`` defaults to none there: that body offloader only
+    places copies; the schedules, the one place ``host_kernels`` is read, are assigned tree-wide by the outer pass."""
 
     __slots__ = ("host_kernels",)
 
-    def __init__(self, host_kernels: list[str] | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        taskloop_overrides: dict[str, bool] | None = None,
+        host_maps: HostMapSpec = False,
+        *,
+        host_kernels: list[str] | None = None,
+    ) -> None:
+        super().__init__(taskloop_overrides, host_maps)
         self.host_kernels = list(host_kernels or ())
 
     def assign_schedules(self, sdfg: dace.SDFG, host_level: bool = True) -> None:
@@ -93,7 +100,7 @@ def place(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> Placeme
     """Run every kernel on its device of ``devices`` (checked by :func:`check_devices`), in place. With a kernel on
     the GPU, DaCe's ``OffloadToAccelerator`` schedules it and inserts the copies; with none nothing changes."""
     if "gpu" in devices.values():
-        OffloadKernels([name for name, device in devices.items() if device == "cpu"]).apply_pass(sdfg, {})
+        OffloadKernels(host_kernels=[name for name, device in devices.items() if device == "cpu"]).apply_pass(sdfg, {})
     return Placement({ext.name: kernel_device(ext) for ext in external_calls(sdfg)}, tuple(device_copies(sdfg)))
 
 
