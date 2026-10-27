@@ -697,8 +697,11 @@ class Session:
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
 
     def prepare_kernel(self, name: str) -> Prepared:
+        """The kernel's NumPy oracle, from the boundary its source was rendered from. Not the node's: binding a library
+        sets the node's ``abi_order`` to the built entry's parameters, which drop a symbol the body never reads
+        (``NSUB`` of a nest inside the substep loop), and the oracle would no longer take what validation passes."""
         if name not in self.prepared:
-            self.prepared[name] = prepare(node_boundary(self.kernel(name)), name)
+            self.prepared[name] = prepare(self.default_kernel(name).boundary, name)
         return self.prepared[name]
 
     def need_sizes(self) -> dict[str, int]:

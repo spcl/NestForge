@@ -10,12 +10,14 @@ import numpy as np
 import pytest
 from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
+from helpers import corpus_kernel
 
 from nestforge.build import flags
+from nestforge.corpus.bench import preset_sizes
 from nestforge.records import KernelStatus
-from nestforge.session import Session
+from nestforge.session import Session, external_calls
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import kernel_arguments
+from nestforge.stages.scopes import kernel_arguments, node_boundary
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -243,3 +245,22 @@ def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(
         assert set(symbols) <= set(session.sdfg.symbols) | {"N"}, symbols
         info = session.optimize_kernel(kernel.name)
         assert set(info.abi_order) == {*inputs, *outputs, *symbols}
+
+
+def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path):
+    """graupel_sedim2b's species and level loops are one kernel inside the substep loop, so ``NSUB`` is among its
+    symbols though its body never reads it. The built entry drops it, binding drops it from the node, and the oracle
+    prepared after that bind must still take every symbol validation passes from the source."""
+    kernel = corpus_kernel("graupel_sedim2b")
+    session = Session(kernel.to_sdfg(), Targets(gpu=False), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
+    session.canonicalize()
+    session.default_moves()
+    session.default_scopes()
+    dropped = []
+    for ext in external_calls(session.sdfg):
+        source_symbols = session.default_kernel(ext.name).boundary.symbols
+        session.optimize_kernel(ext.name)
+        dropped += [s for s in source_symbols if s not in node_boundary(session.kernel(ext.name)).symbols]
+        assert set(source_symbols) <= set(session.prepare_kernel(ext.name).args)
+    assert dropped, "some kernel's entry drops a symbol its body never reads; otherwise this test proves nothing"
+    assert len(session.kernel_evidence(reps=1)) == len(external_calls(session.sdfg))
