@@ -122,12 +122,22 @@ def materialize_dace_corpus() -> None:
         generate_dace_file(short_name)
 
 
+def is_size(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
-    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes."""
+    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes.
+    An integer the manifest fixes for every preset (an ``args`` entry with a ``value`` that ``initialize()`` does not
+    return, or an ``init.constants`` entry) is a size too: ``aes_graupel``'s ``kstart`` bounds a loop, and nothing
+    else would bind it. A returned value is only a default the initializer replaces, so it stays out."""
+    init = kernel.spec.init
+    fixed = (
+        {}
+        if init is None
+        else {**init.constants, **{k: v for k, v in init.scalars.items() if k not in init.output_args}}
+    )
     rung = kernel.spec.parameters.get(preset, {})
     knobs = kernel.spec.config_names
-    return {
-        sym: size
-        for sym, size in rung.items()
-        if sym not in knobs and isinstance(size, int) and not isinstance(size, bool)
-    }
+    merged = {**fixed, **rung}
+    return {sym: int(size) for sym, size in merged.items() if sym not in knobs and is_size(size)}
