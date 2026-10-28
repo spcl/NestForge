@@ -38,7 +38,7 @@ def straight_pair(session: Session) -> tuple[str, str]:
 def applied_and_valid(base: Session, move: Move) -> MoveStatus:
     """``move`` applied on a copy of ``base``, whose program must still validate."""
     sut = base.trial()
-    status = sut.apply_move(move.kind, move.labels, move.epoch).status
+    status = sut.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes, move.implementation).status
     sut.sdfg.validate()
     return status
 

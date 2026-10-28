@@ -12,6 +12,10 @@ from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
+from dace.transformation.passes.canonicalize.finalize import (
+    CPU_FAST_IMPLEMENTATIONS,
+    canonicalize_fast_library_priority,
+)
 
 from nestforge.stages.canonicalize import Targets, canonicalize
 
@@ -65,6 +69,22 @@ def set_implementation(node: nodes.LibraryNode, implementation: str) -> None:
     """Pin ``node`` to ``implementation``: no automatic selection (finalization, the kernel unit) overrides it."""
     node.implementation = implementation
     node.auto_select_implementation = False
+
+
+def pin_pure_without_library(sdfg: dace.SDFG) -> list[str]:
+    """Pin to ``pure`` every automatically selected library node with a fast CPU lowering none of which this host
+    has (no ``HPTT_ROOT`` for a transpose): finalization refuses to lower it to ``pure`` on its own, but a kernel
+    must still build. Returns the labels pinned."""
+    installed = set(canonicalize_fast_library_priority(dace.DeviceType.CPU))
+    pinned = []
+    for node, _ in sdfg.all_nodes_recursive():
+        if not isinstance(node, nodes.LibraryNode) or not node.auto_select_implementation:
+            continue
+        fast = set(CPU_FAST_IMPLEMENTATIONS) & set(node.implementations)
+        if fast and not fast & installed and "pure" in node.implementations:
+            set_implementation(node, "pure")
+            pinned.append(node.label)
+    return pinned
 
 
 def expand_library(state: SDFGState, node: nodes.LibraryNode) -> list[nodes.NestedSDFG]:

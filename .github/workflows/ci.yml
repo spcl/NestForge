@@ -34,6 +34,12 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hptt
+          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
       # tests/test_bench_data.py runs a bench reference, which enters the grading seal's user namespace.
       - name: Grading seal
         run: |
@@ -67,6 +73,12 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hptt
+          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
       # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
       # (ubuntu-24.04 restricts that through AppArmor).
       - name: Grading seal
@@ -107,6 +119,12 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hptt
+          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
       # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
       # (ubuntu-24.04 restricts that through AppArmor).
       - name: Grading seal
@@ -139,6 +157,12 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hptt
+          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
       # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
       # (ubuntu-24.04 restricts that through AppArmor).
       - name: Grading seal
@@ -169,6 +193,12 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
       - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hptt
+          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
       # The plugin tests read the bench's references, which run in its grading seal (see integration).
       - name: Grading seal
         run: |

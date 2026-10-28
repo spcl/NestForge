@@ -53,6 +53,7 @@ from nestforge.build.toolchain import (
 )
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.extract import INT64, Boundary
+from nestforge.stages.expand import pin_pure_without_library
 from nestforge.stages.placement import kernel_device
 
 # Suffix of a GPU kernel's device unit: ``<kernel>_device.cu`` (``.hip``) beside the host unit ``<kernel>.cu``.
@@ -123,7 +124,9 @@ def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
 
 def cpu_schedule(boundary: Boundary) -> dace.SDFG:
     """The kernel copy the C++ unit renders: :func:`abi_ready_copy` finalized for the CPU."""
-    sdfg = finalize_for_target(abi_ready_copy(boundary), "cpu")
+    sdfg = abi_ready_copy(boundary)
+    pin_pure_without_library(sdfg)
+    sdfg = finalize_for_target(sdfg, "cpu")
     force_register_arrays(sdfg)
     return sdfg
 

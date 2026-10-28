@@ -331,12 +331,12 @@ def test_a_program_finalized_after_the_structured_phase_gets_the_default_kernels
 
 
 @pytest.mark.judge
-def test_a_program_without_kernels_is_one_entry_that_asks_for_its_scratch(loaded: None, judge_url: str) -> None:
-    # atax's two products are library nodes, so no scope is made; tmp = A @ x lives in the judge's scratch
+def test_each_library_product_is_a_kernel_and_the_program_asks_for_its_scratch(loaded: None, judge_url: str) -> None:
+    # atax's two products are library nodes, each its own default kernel; tmp = A @ x lives in the judge's scratch
 
     final = post("finalize", episode="episode-final-atax", kernel="atax").answer["result"]
 
-    assert final["kernels"] == {} and final["workspace_bytes"] != "0", final
+    assert len(final["kernels"]) == 2 and final["workspace_bytes"] != "0", final
     grade = graded(judge_url, "atax", final)
     assert grade.build_ok is True and grade.correct is True, grade.detail
 

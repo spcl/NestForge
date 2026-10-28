@@ -6,11 +6,13 @@ import re
 
 import dace
 import numpy as np
+from dace.libraries.linalg.nodes.ttranspose import TensorTranspose
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
+from nestforge.stages.expand import pin_pure_without_library
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 24
@@ -159,3 +161,29 @@ if __name__ == "__main__":
         test_a_device_library_on_a_cpu_only_target_is_refused,
     ):
         test(pathlib.Path(tempfile.mkdtemp()))
+
+
+def transpose_sdfg() -> tuple[dace.SDFG, TensorTranspose]:
+    sdfg = dace.SDFG("transpose_only")
+    node = TensorTranspose("transpose", axes=[1, 0])
+    sdfg.add_state(is_start_block=True).add_node(node)
+    return sdfg, node
+
+
+def test_a_transpose_without_its_fast_library_is_pinned_to_pure(monkeypatch):
+    monkeypatch.delenv("HPTT_ROOT", raising=False)
+    sdfg, node = transpose_sdfg()
+
+    pinned = pin_pure_without_library(sdfg)
+
+    assert pinned == ["transpose"]
+    assert node.implementation == "pure" and not node.auto_select_implementation
+
+
+def test_a_transpose_with_its_fast_library_is_left_to_the_selection(monkeypatch, tmp_path):
+    monkeypatch.setenv("HPTT_ROOT", str(tmp_path))
+    sdfg, node = transpose_sdfg()
+
+    pinned = pin_pure_without_library(sdfg)
+
+    assert pinned == [] and node.auto_select_implementation

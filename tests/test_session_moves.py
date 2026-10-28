@@ -277,7 +277,7 @@ def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace
 
 def apply_listed(session: Session, kind: str) -> MoveResult:
     (move,) = session.list_moves(kind)
-    return session.apply_move(move.kind, move.labels, move.epoch)
+    return session.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes, move.implementation)
 
 
 def random_arrays(**shapes: tuple[int, ...]) -> dict[str, np.ndarray]:
