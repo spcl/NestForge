@@ -221,9 +221,9 @@ def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_t
     session, reference = session_and_reference(smooth_steps)
     session.describe()
     rows = session.row_index()
-    time_loop = rows["for0_0"][0]
+    time_loop = rows["loop0_0"][0]
 
-    result = session.set_scope(["for1_0", "state1_0"], session.epoch)
+    result = session.set_scope(["loop1_0", "state1_0"], session.epoch)
 
     assert result.status is MoveStatus.APPLIED, result
     kernel = session.kernel(result.reason)
@@ -238,7 +238,7 @@ def test_blocks_at_different_levels_are_refused():
     session.describe()
     before = session.epoch
 
-    result = session.set_scope(["for0_0", "for1_0"], before)
+    result = session.set_scope(["loop0_0", "loop1_0"], before)
 
     assert result.status is MoveStatus.ILLEGAL, result
     assert "one level" in result.reason
@@ -332,7 +332,7 @@ def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_
     expected = A.copy()
     expected[1:] = A[0] + np.cumsum(B[1:], axis=0)
 
-    result = session.set_scope(["for0_0"], 0)
+    result = session.set_scope(["loop0_0"], 0)
 
     assert result.status is MoveStatus.APPLIED, result
     (kernel,) = top_level_kernels(session)
@@ -347,7 +347,7 @@ def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
     x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
     assert parallel_top_level_maps(session.sdfg) == [], "no map: the loop is the only region to name"
 
-    result = session.set_scope(["for0_0"], 0)
+    result = session.set_scope(["loop0_0"], 0)
 
     assert result.status is MoveStatus.APPLIED, result
     assert len(top_level_kernels(session)) == 1

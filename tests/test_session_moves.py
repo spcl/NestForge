@@ -329,7 +329,7 @@ def test_a_session_keeps_the_labels_normalize_labels_already_gave():
     assert tree_labels(sdfg) == labels
 
 
-def test_repeated_library_node_labels_become_unique_and_keep_name_equal_to_label():
+def test_library_calls_get_unique_kernel_family_labels_and_keep_name_equal_to_label():
     sdfg = dace.SDFG("two_dots")
     state = sdfg.add_state()
     first, second = Dot("dot"), Dot("dot")
@@ -338,7 +338,9 @@ def test_repeated_library_node_labels_become_unique_and_keep_name_equal_to_label
 
     Session(sdfg)
 
-    assert first.label == "dot" and second.label != "dot"
+    assert re.fullmatch(r"kernel_blas\d+_\d+", first.label), first.label
+    assert re.fullmatch(r"kernel_blas\d+_\d+", second.label), second.label
+    assert first.label != second.label
     assert (first.name, second.name) == (first.label, second.label)
 
 
@@ -382,7 +384,7 @@ def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing():
     sut = Session(read_ahead.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("loop-fusion", ["for0_0", "for0_1"], 0)
+    result = sut.apply_move("loop-fusion", ["loop0_0", "loop0_1"], 0)
 
     assert result.status is MoveStatus.ILLEGAL and "LoopFusion" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
@@ -576,7 +578,7 @@ def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal():
     sut = Session(lane_cross.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("interchange-loop-map", ["for0_0", "kernel2_0"], 0)
+    result = sut.apply_move("interchange-loop-map", ["loop0_0", "kernel2_0"], 0)
 
     assert result.status is MoveStatus.ILLEGAL and "MoveLoopIntoMap" in result.reason, result
     assert (digest(sut.sdfg), sut.epoch) == (before, 0)
@@ -757,7 +759,7 @@ def test_labels_read_before_a_move_are_stale_after_it_and_change_nothing():
 def test_an_unknown_kind_is_a_malformed_call():
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     with pytest.raises(ValueError, match="unknown move kind"):
-        sut.apply_move("loop-tiling", ["for0_0"], 0)
+        sut.apply_move("loop-tiling", ["loop0_0"], 0)
     with pytest.raises(ValueError, match="unknown move kind"):
         sut.list_moves("loop-tiling")
 

@@ -39,7 +39,7 @@ GOLDEN = """\
 SDFG 'shaped'
 |- state0_0
 |  `- kernel1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
+`- loop0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
       |- block2_0  when A[i] > 0.0
@@ -56,7 +56,7 @@ SDFG 'shaped'
 |     : test_tree_view_shaped_A_index = A[i]
 |     : B_slice = test_tree_view_shaped_A_index + 1.0
 |     : B[i] = B_slice
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
+`- loop0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
       |- block2_0  when A[i] > 0.0
@@ -69,7 +69,7 @@ SDFG 'shaped'
 COLLAPSED = """\
 SDFG 'shaped'
 |- state0_0  kernels=1
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
+`- loop0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
       |- block2_0  when A[i] > 0.0
@@ -108,7 +108,7 @@ def test_every_line_is_a_guide_then_one_labelled_thing():
     for line in tree_of(shaped).splitlines()[1:]:
         assert re.match(
             r"^(\|  |   )*(\|- |`- )"
-            r"(state|for|while|if|block|continue|break|return|kernel)\d+_\d+\b",
+            r"(state|loop|if|block|continue|break|return|kernel)\d+_\d+\b",
             line,
         ), line
 

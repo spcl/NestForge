@@ -405,13 +405,14 @@ class Session:
         """Every legal move right now, of ``kind`` or of every kind."""
         return [Move(kind=k, labels=tuple(labels), epoch=self.epoch) for k, labels in legal_moves(self.sdfg, kind)]
 
-    def apply_move(self, kind: str, labels: Sequence[str], epoch: int) -> MoveResult:
+    def apply_move(self, kind: str, labels: Sequence[str], epoch: int, tile_sizes: Sequence[int] = ()) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name, as read at ``epoch``.
 
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
+        :param tile_sizes: For ``tile-kernel``, one positive size per dimension of the kernel.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -422,7 +423,7 @@ class Session:
         rows = self.named_rows(kind, names, epoch)
         if isinstance(rows, MoveResult):
             return rows
-        plan = plan_move(kind, rows)
+        plan = plan_move(kind, rows, tile_sizes)
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         made = plan.commit()

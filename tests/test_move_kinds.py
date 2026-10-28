@@ -14,7 +14,7 @@ def test_every_move_kind_is_listed_with_the_tree_rows_it_takes_in_order() -> Non
 
     assert list(sut) == list(MOVE_SHAPES)
     assert sut["subgraph-fission"].rows == ("kernel", "state")
-    assert sut["interchange-loop-map"].rows == ("for", "kernel")
+    assert sut["interchange-loop-map"].rows == ("loop", "kernel")
     assert sut["map-fission"].runs == "MapFission" and "map-fusion" in sut["map-fission"].does
 
 

@@ -80,9 +80,10 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 
 
 def block_kind(block: ControlFlowBlock) -> str:
-    """The tree keyword of a block; a loop with both an init and an update statement is a ``for``."""
+    """The tree keyword of a block: every sequential loop (for or while) is a ``loop``, a parallel map a ``kernel``
+    (:func:`relabel_state`), a do-all loop proven to have independent iterations."""
     if isinstance(block, LoopRegion):
-        return "for" if block.init_statement is not None and block.update_statement is not None else "while"
+        return "loop"
     if isinstance(block, ConditionalBlock):
         return "if"
     if isinstance(block, ContinueBlock):

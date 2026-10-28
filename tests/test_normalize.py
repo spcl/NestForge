@@ -16,7 +16,7 @@ from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.names import block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
-LABEL = re.compile(r"^(state|for|while|if|block|continue|break|return)(\d+)_(\d+)$")
+LABEL = re.compile(r"^(state|loop|if|block|continue|break|return)(\d+)_(\d+)$")
 KERNEL = re.compile(r"^kernel(\d+)_(\d+)$")
 
 
@@ -121,14 +121,15 @@ def test_a_frontend_source_line_label_does_not_survive():
     assert all(KERNEL.match(e.map.label) for e in all_maps(sdfg))
 
 
-def test_a_counted_loop_is_a_for_and_a_conditional_loop_is_a_while():
+def test_a_counted_and_a_conditional_loop_are_both_a_loop():
+    """The tree names every sequential loop ``loop``; only a kernel is a do-all loop."""
     sdfg = branchy.to_sdfg(simplify=True)
     loops = [b for b in all_blocks(sdfg) if isinstance(b, LoopRegion)]
     assert loops, "fixture no longer has a LoopRegion"
     for loop in loops:
-        assert block_kind(loop) == "for"
+        assert block_kind(loop) == "loop"
         loop.update_statement = None
-        assert block_kind(loop) == "while"
+        assert block_kind(loop) == "loop"
 
 
 def test_two_builds_of_one_program_get_the_same_names():

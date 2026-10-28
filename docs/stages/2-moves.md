@@ -33,6 +33,10 @@ agent's catalog.
 | `interchange-map-loop` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-loop` | if, loop | `MoveIfIntoLoop` |
 | `interchange-loop-if` | loop, its if | `MoveLoopInvariantIfUp` |
+| `tile-kernel` | kernel (+ `tile_sizes`) | `MapTiling` (`divides_evenly=False`) |
+| `untile-kernel` | tile kernel, point kernel | `UntileLoops`' map tile pairs, every tile dimension |
+| `collapse-kernels` | kernel, kernel inside it | `MapCollapse` |
+| `expand-kernel` | kernel of two or more dimensions | `MapExpansion`, each nested kernel keeping the schedule |
 | `expand-library` | library call (`kernel_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |

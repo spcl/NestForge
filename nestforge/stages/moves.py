@@ -15,18 +15,28 @@ from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
+from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.transformation.dataflow.map_collapse import MapCollapse
+from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
 from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
+from dace.transformation.dataflow.tiling import MapTiling
 from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
+from dace.transformation.passes.canonicalize.untile_loops import (
+    MapTilePair,
+    eliminate_pinned_maps,
+    map_tile_pairs,
+    untile_map_pair,
+)
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
 from dace.transformation.transformation import PatternTransformation
@@ -62,7 +72,24 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "interchange-if-loop": (ConditionalBlock, LoopRegion),
     "interchange-loop-if": (LoopRegion, ConditionalBlock),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
+    "tile-kernel": (nodes.MapEntry,),
+    "untile-kernel": (nodes.MapEntry, nodes.MapEntry),
+    "collapse-kernels": (nodes.MapEntry, nodes.MapEntry),
+    "expand-kernel": (nodes.MapEntry,),
 }
+
+#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
+SIZED = frozenset({"tile-kernel"})
+#: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
+PROBE_TILE = 32
+
+
+def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
+    """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension."""
+    if kind not in SIZED:
+        return ()
+    return (PROBE_TILE,) * len(cast(nodes.MapEntry, rows[0][0]).map.params)
+
 
 STATE_BARRIER = (
     "nests are in different states, a control-flow dependency map fusion never crosses; fuse the loops around "
@@ -351,6 +378,64 @@ def plan_expand_library(row: Row) -> Rewrite | str:
     return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
 
 
+def plan_tile_kernel(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    dims = len(entry.map.params)
+    if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
+        return f"{entry.map.label} has {dims} dimension(s) {entry.map.params}: pass tile_sizes, one positive size each."
+    options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
+    return pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options) or (
+        f"blocked by MapTiling: {entry.map.label} cannot be tiled."
+    )
+
+
+def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
+    return next((pair for pair in map_tile_pairs(state) if pair.outer is outer and pair.inner is inner), None)
+
+
+def plan_untile_kernel(outer_row: Row, inner_row: Row) -> Rewrite | str:
+    outer, inner, state = cast(nodes.MapEntry, outer_row[0]), cast(nodes.MapEntry, inner_row[0]), node_state(outer_row)
+    pair = tile_pair(outer, inner, state) if node_state(inner_row) is state else None
+    if pair is None:
+        return (
+            f"{outer.map.label} is not a tile kernel whose points are {inner.map.label}: name the kernel stepping over "
+            "tiles, then the kernel over one tile's points."
+        )
+
+    def commit() -> None:
+        # one tile dimension per pair: repeat until no tile kernel of these points is left
+        current: MapTilePair | None = pair
+        while current is not None:
+            untile_map_pair(state.sdfg, state, current)
+            eliminate_pinned_maps(state.sdfg, state, {current.outer})
+            current = next((p for p in map_tile_pairs(state) if p.inner is inner), None)
+        propagate_memlets_sdfg(state.sdfg.root_sdfg)
+
+    return Rewrite("untile_map_pair", commit)
+
+
+def plan_collapse_kernels(outer_row: Row, inner_row: Row) -> Rewrite | str:
+    outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
+    if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
+        return f"{inner.map.label} is not directly inside {outer.map.label}; name a kernel, then the one inside it."
+    where = {"outer_map_entry": outer, "inner_map_entry": inner}
+    return pattern(MapCollapse, state.sdfg, where) or (
+        "blocked by MapCollapse: the outer kernel holds more than the inner one, or the inner range reads the outer "
+        "parameter."
+    )
+
+
+def plan_expand_kernel(row: Row) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    if len(entry.map.params) < 2:
+        return f"{entry.map.label} has one dimension; there is nothing to expand."
+    # every nested kernel keeps the kernel's own schedule: MapExpansion's default runs the inner ones sequentially
+    options = {"inner_schedule": entry.map.schedule}
+    return pattern(MapExpansion, state.sdfg, {"map_entry": entry}, options=options) or (
+        f"blocked by MapExpansion: {entry.map.label} cannot be split into nested kernels."
+    )
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "loop-fusion": plan_loop_fusion,
     "loop-fission": plan_loop_fission,
@@ -363,6 +448,10 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-if-loop": plan_if_loop,
     "interchange-loop-if": plan_loop_if,
     EXPAND_LIBRARY: plan_expand_library,
+    "tile-kernel": plan_tile_kernel,
+    "untile-kernel": plan_untile_kernel,
+    "collapse-kernels": plan_collapse_kernels,
+    "expand-kernel": plan_expand_kernel,
 }
 
 
@@ -378,7 +467,7 @@ class MoveKind(Record):
 
 #: The tree keyword of each row type a move takes.
 ROW_KEYWORDS: dict[type, str] = {
-    LoopRegion: "for",
+    LoopRegion: "loop",
     nodes.MapEntry: "kernel",
     ControlFlowBlock: "state",
     ConditionalBlock: "if",
@@ -405,20 +494,31 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "split per state: the map's body is a program of states (expand the kernel row to see them); the map is cut "
         "after the named state, the states up to it in one map and the rest in a second.",
     ),
-    "interchange-loop-map": ("MoveLoopIntoMap", "for t: map i: B becomes map i: for t: B (the map goes outside)."),
+    "interchange-loop-map": (
+        "MoveLoopIntoMap",
+        "loop t: kernel i: B becomes kernel i: loop t: B (the kernel goes outside).",
+    ),
     "interchange-map-loop": (
         "MapLoopInterchange",
         "map i: for t: B becomes for t: map i: B; the loop must be the whole body of the map.",
     ),
     "interchange-map-map": ("MapInterchange", "swap a map with the map directly inside it."),
     "interchange-if-loop": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
-    "interchange-loop-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
+    "interchange-loop-if": ("MoveLoopInvariantIfUp", "loop i: if c: B becomes if c: loop i: B, c loop-invariant."),
     EXPAND_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (kernel_blas, kernel_fft, kernel_reduce, kernel_scan, ...) becomes the plain maps and "
         "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
         "unexpanded, it stays a vendor or library call built on its own.",
     ),
+    "tile-kernel": (
+        "MapTiling (tile_sizes, one per dimension)",
+        "kernel i: B becomes kernel i0 (step = tile size): kernel i (one tile): B; each tile's working set fits a "
+        "cache or a thread block. A size need not divide the range.",
+    ),
+    "untile-kernel": ("UntileLoops (map tile pairs)", "the inverse: a tile kernel and its point kernel become one."),
+    "collapse-kernels": ("MapCollapse", "kernel i: kernel j: B becomes kernel (i, j): B, one parallel space."),
+    "expand-kernel": ("MapExpansion", "the inverse: kernel (i, j): B becomes kernel i: kernel j: B."),
 }
 
 
@@ -432,12 +532,15 @@ def move_kinds() -> list[MoveKind]:
     ]
 
 
-def plan_move(kind: str, rows: Sequence[Row]) -> Rewrite | str:
-    """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated."""
+def plan_move(kind: str, rows: Sequence[Row], tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
+    ``tile_sizes`` goes to the :data:`SIZED` kinds."""
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
             return f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}."
+    if kind in SIZED:
+        return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     return PLANNERS[kind](*rows)
 
 
@@ -453,6 +556,12 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
+
+
+def tile_pair_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    for owner in sdfg.all_sdfgs_recursive():
+        for state in owner.states():
+            yield from (((pair.outer, state), (pair.inner, state)) for pair in map_tile_pairs(state))
 
 
 def library_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
@@ -547,6 +656,10 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-if-loop": guard_loop_pairs,
     "interchange-loop-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,
+    "tile-kernel": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    "untile-kernel": tile_pair_rows,
+    "collapse-kernels": nested_map_pairs,
+    "expand-kernel": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
 }
 
 
@@ -561,7 +674,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
         if name not in CANDIDATES:
             continue
         for rows in CANDIDATES[name](sdfg):
-            if isinstance(plan_move(name, rows), Rewrite):
+            if isinstance(plan_move(name, rows, probe_sizes(name, rows)), Rewrite):
                 found[(name, tuple(tree_label(obj) for obj, _ in rows))] = None
     return list(found)
 

@@ -125,7 +125,7 @@ def test_can_fuse_reports_state_barrier_across_states():
 def test_a_map_and_a_loop_are_no_map_fusion_pair():
     sdfg = vertical_pair.to_sdfg(simplify=True)
     (s1, m1), _ = map_entries(sdfg)
-    reason = can_fuse((m1, s1), (LoopRegion("for9_0"), None))
+    reason = can_fuse((m1, s1), (LoopRegion("loop9_0"), None))
     assert "is a LoopRegion" in reason
 
 

@@ -18,7 +18,6 @@ from dace.transformation.passes.canonicalize import stage_labels
 from dace.transformation.passes.canonicalize.normalize_map_body import NormalizeMapBody
 from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
-from dace.transformation.passes.normalize_wcr_source import NormalizeWCRSource
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
 from nestforge.ir.names import inline_top_level_nsdfgs
@@ -83,8 +82,7 @@ def normalize_map_bodies(sdfg: dace.SDFG) -> None:
     reduction leaves it through an access node: ``map { nested SDFG } -> access node -wcr->``. Siblings a fusion left
     under one map merge into one body; a map whose body holds maps keeps them, so map-map interchange still sees
     the nest."""
-    NormalizeWCR().apply_pass(sdfg, {})
-    NormalizeWCRSource().apply_pass(sdfg, {})
+    NormalizeWCR().apply_pass(sdfg, {})  # since DaCe dc0e4003c it also sources each reduction from an access node
     NormalizeMapBody().apply_pass(sdfg, {})
     for nsdfg in [sdfg, *(n.sdfg for n, _ in sdfg.all_nodes_recursive() if isinstance(n, nodes.NestedSDFG))]:
         for state in nsdfg.states():
