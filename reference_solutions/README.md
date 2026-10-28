@@ -16,7 +16,10 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 | `cloudsc_nproma` | `map-fission` of the column map, then `interchange-map-loop` of the body map and the level loop | CPU, 1 thread | 110.2 ms | 46.9 ms | 2.35x (DaCe `042413d`; not timed on main, `CI_SKIP`) |
 | `fuse_stencil_through_transient` | the default's fusions, then the `map-fusion` they leave (the stencil into the map that writes its transient) | CPU, 72 threads | 12.49 ms | 3.72 ms | 3.35x (main `fb130f1`) |
 | `bellman_ford` | the default, then the one `map-fission` it leaves | GPU | 4347 ms | 2828 ms | 1.54x (main `fb130f1`) |
+| `fuse_physics_into_scan` | the default, then the `map-fission` of the column map that writes `s` (the physics out of the scan kernel) | GPU | 15.30 ms | 11.52 ms | 1.33x (this branch, DaCe `0f8ac0227`; 1.45x on main `b4b893e`) |
 
 Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
+
+`fuse_physics_into_scan` also declares a decoy: the reference, then the physics map interchanged so the levels are outermost, which leaves only the 90 levels parallel on the GPU (300 ms, 0.05x of the default).
 
 `cloudsc_nproma` is CI-skipped: the kernel is not in HPCAgent-Bench `main` (it came with spcl/HPCAgent-Bench#124, which was reverted; its files are at bench commit `d22922c5c`), and on DaCe `7683e143` its `map-fission` reads and writes `pfplsx` through one access node, a cyclic state that the stages after fusion reject (`NetworkXUnfeasible` in `route_ordering_through_data`). On main the default still leaves the route on the menu. At 72 threads the route was 1.19x at preset M and 2.04x at `NPROMA` 1024 (older pins).
