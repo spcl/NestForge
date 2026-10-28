@@ -8,8 +8,9 @@ from nestforge.replay import Context, Script
 KERNEL = "cloudsc_nproma"
 CONFIGS = (Context("cpu", 1, "M"), Context("cpu", 72, "L"))
 CI_SKIP = (
-    "cloudsc_nproma is only on HPCAgent-Bench branch benchmarking-nestforge, and on DaCe 7683e143 its map-fission "
-    "(MapFission) reads and writes pfplsx through one access node, a cyclic state the stages after fusion reject"
+    "cloudsc_nproma is not in HPCAgent-Bench main (it came with HPCAgent-Bench#124, which was reverted; files at "
+    "d22922c5c), and on DaCe 7683e143 its map-fission (MapFission) reads and writes pfplsx through one access node, "
+    "a cyclic state the stages after fusion reject"
 )
 
 
