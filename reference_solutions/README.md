@@ -17,8 +17,11 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 | `fuse_stencil_through_transient` | the default's fusions, then the `map-fusion` they leave (the stencil into the map that writes its transient) | CPU, 72 threads | 12.49 ms | 3.72 ms | 3.35x (main `fb130f1`) |
 | `bellman_ford` | the default, then the one `map-fission` it leaves | GPU | 4347 ms | 2828 ms | 1.54x (main `fb130f1`) |
 | `fuse_physics_into_scan` | the default, then the `map-fission` of the column map that writes `s` (the physics out of the scan kernel) | GPU | 15.30 ms | 11.52 ms | 1.33x (this branch, DaCe `0f8ac0227`; 1.45x on main `b4b893e`) |
+| `bfs` | the default, then the `interchange-map-loop` it leaves on `reach` (the source-vertex loop back outside the target-vertex map) | GPU | 1415.5 ms | 390.5 ms | 3.62x (main `fb130f1`; see the note below) |
 
 Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
+
+`bfs` is close to "take no move", so treat it with care. On the GPU the default itself interchanges the source-vertex loop of `frontier @ graph` into the target-vertex map, which leaves the N = 1200 threads of preset M each summing a whole column alone; the reference undoes that interchange. Taking no move and skipping the default's fusions is almost as fast: 410.1 ms, 3.45x, so the reference beats it by only 5%, within the node noise. The kernel is kept because a real move beats the default (as for `bellman_ford`), but its gain mostly measures what the default gets wrong on the GPU, not what the move adds. On the CPU the default keeps the loop outside and leaves the opposite move (`interchange-loop-map`), which is slower there (0.84x in the screen), so the reference is the default; the script declares the no-move variant as a decoy (`stage1`).
 
 `fuse_physics_into_scan` also declares a decoy: the reference, then the physics map interchanged so the levels are outermost, which leaves only the 90 levels parallel on the GPU (300 ms, 0.05x of the default).
 
