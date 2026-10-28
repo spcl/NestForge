@@ -17,6 +17,7 @@ from dace.transformation.passes.offloading.offload_to_accelerator import Offload
 
 from nestforge.ir.depends import KernelGraph
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.expand import is_device_implementation, is_host_implementation
 from nestforge.stages.scopes import is_parallel_kernel
 
 DEVICES = ("cpu", "gpu")
@@ -61,9 +62,32 @@ def kernel_device(ext: ExternalCall) -> str:
     return "gpu" if ext.schedule in dtypes.GPU_SCHEDULES else "cpu"
 
 
+def pinned_implementations(ext: ExternalCall) -> list[str]:
+    """The implementations ``set-library-implementation`` pinned on the library calls inside kernel ``ext``."""
+    body = ext.standalone_sdfg
+    if body is None:
+        return []
+    return [
+        n.implementation
+        for n, _ in body.all_nodes_recursive()
+        if isinstance(n, nodes.LibraryNode) and not n.auto_select_implementation and n.implementation
+    ]
+
+
+def default_device(ext: ExternalCall, targets: Targets) -> str:
+    """A kernel holding a call pinned to a device library on the GPU, one pinned to a host library on the CPU;
+    otherwise parallel kernels (doalls, library calls among them) on the GPU when it is a target."""
+    pinned = pinned_implementations(ext)
+    if targets.gpu and any(is_device_implementation(i) for i in pinned):
+        return "gpu"
+    if any(is_host_implementation(i) for i in pinned):
+        return "cpu"
+    return "gpu" if targets.gpu and is_parallel_kernel(ext) else "cpu"
+
+
 def default_devices(sdfg: dace.SDFG, targets: Targets) -> dict[str, str]:
-    """Parallel kernels on the GPU when it is a target; every other kernel on the CPU."""
-    return {ext.name: "gpu" if targets.gpu and is_parallel_kernel(ext) else "cpu" for ext in external_calls(sdfg)}
+    """Every kernel on its :func:`default_device`."""
+    return {ext.name: default_device(ext, targets) for ext in external_calls(sdfg)}
 
 
 def on_device(state: dace.SDFGState, node: nodes.AccessNode) -> bool:

@@ -31,21 +31,23 @@ from nestforge.corpus.translate import prepare
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import (
     Boundary,
-    NestNode,
     extract_blocks,
     extract_map_nest,
     extract_state_nodes,
     find_state_of_node,
 )
 from nestforge.ir.introspect import Row, nest_reads_writes
-from nestforge.ir.names import in_order, top_level_map_entries
+from nestforge.ir.names import in_order, top_level_doalls, top_level_map_entries
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import map_body, plan_subgraph_fission
 
 
-def is_parallel_nest(node: NestNode) -> bool:
-    """Whether ``node`` is a map not scheduled sequentially."""
-    return isinstance(node, nodes.MapEntry) and node.map.schedule != dace.ScheduleType.Sequential
+def is_parallel_nest(node: object) -> bool:
+    """Whether ``node`` is a doall: a map not scheduled sequentially, or a library call (a black-box doall; a kernel
+    NestForge built is not one)."""
+    if isinstance(node, nodes.MapEntry):
+        return node.map.schedule != dace.ScheduleType.Sequential
+    return isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall)
 
 
 def parallel_top_level_maps(sdfg: dace.SDFG) -> list[tuple[dace.SDFG, nodes.MapEntry]]:
@@ -64,7 +66,7 @@ def is_parallel_kernel(ext: ExternalCall) -> bool:
         if not isinstance(block, SDFGState):
             return False
         work = [node for node in block.scope_children()[None] if not isinstance(node, nodes.AccessNode)]
-        if not all(isinstance(node, nodes.MapEntry) and is_parallel_nest(node) for node in work):
+        if not all(is_parallel_nest(node) for node in work):
             return False
     return True
 
@@ -195,13 +197,13 @@ def map_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     if state.sdfg is not sdfg:
         return "the named maps sit inside a nested SDFG; kernels live at the top level."
     entries = [obj for obj, _ in rows]
-    nested = [entry.map.label for entry in entries if state.entry_node(entry) is not None]
+    nested = [tree_name(entry) for entry in entries if state.entry_node(entry) is not None]
     if nested:
         return f"{', '.join(nested)} sits inside another map; name top-level maps."
     members: dict[nodes.Node, None] = {}
     for entry in entries:
-        members.update(dict.fromkeys(state.scope_subgraph(entry).nodes()))
-    exits = [state.exit_node(entry) for entry in entries]
+        members.update(dict.fromkeys(doall_nodes(state, entry)))
+    exits = [state.exit_node(entry) if isinstance(entry, nodes.MapEntry) else entry for entry in entries]
     for node in state.data_nodes():
         if any(e.src in exits for e in state.in_edges(node)) and any(e.dst in entries for e in state.out_edges(node)):
             members[node] = None
@@ -244,12 +246,12 @@ def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     """How to outline the regions ``rows`` name into one kernel, or why they cannot form one; changes nothing."""
     if not rows:
         return "name at least one map or block."
-    if all(isinstance(obj, nodes.MapEntry) for obj, _ in rows):
+    if all(isinstance(obj, (nodes.MapEntry, nodes.LibraryNode)) for obj, _ in rows):
         extract = map_group(sdfg, rows)
     elif all(isinstance(obj, ControlFlowBlock) for obj, _ in rows):
         extract = block_group(sdfg, [obj for obj, _ in rows])
     else:
-        return "name only top-level maps or only control-flow blocks."
+        return "name only top-level doalls (maps, library calls) or only control-flow blocks."
     if isinstance(extract, str):
         return extract
     host_scalars = host_length1_reads(sdfg, *group_reads_writes(rows))
@@ -280,13 +282,13 @@ MAX_CUTS = 2
 def parallel_maps(state: SDFGState) -> list[Row] | None:
     """The state's top-level maps when, besides access nodes, it holds only parallel maps; ``None`` otherwise."""
     work = [node for node in state.scope_children()[None] if not isinstance(node, nodes.AccessNode)]
-    if all(isinstance(node, nodes.MapEntry) and is_parallel_nest(node) for node in work):
+    if all(is_parallel_nest(node) for node in work):
         return [(node, state) for node in work]
     return None
 
 
 def holds_parallel_map(block: ControlFlowBlock) -> bool:
-    return any(isinstance(node, nodes.MapEntry) and is_parallel_nest(node) for node, _ in block.all_nodes_recursive())
+    return any(is_parallel_nest(node) for node, _ in block.all_nodes_recursive())
 
 
 def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
@@ -328,7 +330,7 @@ def default_units(sdfg: dace.SDFG) -> list[Row]:
     units: list[Row] = []
     for block in in_order(sdfg):
         if isinstance(block, SDFGState):
-            units += [(entry, block) for entry in top_level_map_entries(block) if is_parallel_nest(entry)]
+            units += [(entry, block) for entry in top_level_doalls(block) if is_parallel_nest(entry)]
         else:
             units += block_units(block)
     return units
@@ -413,7 +415,10 @@ def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[Extern
         )
     out: list[tuple[ExternalCall, Boundary]] = []
     for (obj, state), name in zip(units, kernel_names(sdfg, len(units))):
-        if state is not None:
+        if isinstance(obj, nodes.LibraryNode):
+            assert state is not None, "a library row carries its state"
+            boundary = extract_state_nodes(state.sdfg, state, [obj], name)
+        elif state is not None:
             boundary = extract_map_nest(state.sdfg, obj, name=name)
         else:
             boundary = extract_blocks(obj.sdfg, [obj], name)
@@ -421,5 +426,10 @@ def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[Extern
     return out
 
 
-def tree_name(obj: nodes.MapEntry | ControlFlowBlock) -> str:
+def tree_name(obj: nodes.Node | ControlFlowBlock) -> str:
     return obj.map.label if isinstance(obj, nodes.MapEntry) else obj.label
+
+
+def doall_nodes(state: SDFGState, doall: nodes.MapEntry | nodes.LibraryNode) -> list[nodes.Node]:
+    """The nodes a top-level doall row covers: a map's whole scope, or the library call alone."""
+    return state.scope_subgraph(doall).nodes() if isinstance(doall, nodes.MapEntry) else [doall]

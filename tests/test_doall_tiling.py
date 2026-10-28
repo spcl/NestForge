@@ -78,6 +78,29 @@ def test_tile_sizes_must_name_every_dimension(tmp_path):
     assert "one positive size each" in result.reason
 
 
+def test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused(tmp_path):
+    sut = session(tmp_path)
+    (doall,) = doall_labels(sut)
+
+    result = sut.apply_move("tile-doall", [doall], sut.epoch, tile_sizes=[1, 1])
+
+    assert result.status is MoveStatus.ILLEGAL
+    assert len(maps(sut)) == 1
+
+
+def test_a_listed_tiling_applies_as_listed(tmp_path):
+    sut = session(tmp_path)
+    (doall,) = doall_labels(sut)
+    (move,) = [m for m in sut.list_moves("tile-doall") if m.labels == (doall,)]
+
+    result = sut.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes)
+
+    assert move.tile_sizes == (32, 32)
+    assert result.status is MoveStatus.APPLIED, result
+    assert len(maps(sut)) == 2
+    computes_scale_add(sut)
+
+
 def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path):
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
@@ -102,6 +125,8 @@ if __name__ == "__main__":
         test_a_doall_offers_tiling_and_expansion,
         test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall,
         test_tile_sizes_must_name_every_dimension,
+        test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused,
+        test_a_listed_tiling_applies_as_listed,
         test_an_expanded_doall_collapses_back_into_one_parallel_space,
     ):
         test(pathlib.Path(tempfile.mkdtemp()))

@@ -403,8 +403,8 @@ def innermost(loop: LoopRegion) -> bool:
     return not any(isinstance(b, LoopRegion) for b in loop.all_control_flow_blocks(recursive=True))
 
 
-def kernel_count(state: SDFGState) -> int:
-    """The top-level maps and library nodes of ``state``."""
+def doall_count(state: SDFGState) -> int:
+    """The top-level doalls of ``state``: maps, and library calls, each a black-box doall."""
     return sum(
         isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) and state.entry_node(n) is None for n in state.nodes()
     )
@@ -414,7 +414,7 @@ def block_row(tree: Tree, block: ControlFlowBlock) -> str:
     """A block's row: :func:`block_line`, then its size when it is collapsed or innermost, then its cost."""
     text = block_line(block, tree.defs)
     if isinstance(block, SDFGState):
-        count = kernel_count(block)
+        count = doall_count(block)
         return f"{text}  doalls={count}" if count and not tree.shows(block.label) else text
     if isinstance(block, LoopRegion):
         if innermost(block):

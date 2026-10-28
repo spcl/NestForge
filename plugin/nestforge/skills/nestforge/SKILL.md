@@ -13,9 +13,9 @@ applies: {explicit: true}
 |---|---|
 | `for<L>_<i>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
 | `if<L>_<i>` | a branch; its arms print as `when <cond>` / `else` |
-| `state<L>_<i>` | one step of the program; collapsed it shows `doalls=<k>`, expanded its doalls |
+| `state<L>_<i>` | one step of the program; collapsed it shows `doalls=<k>` (library calls counted), expanded its doalls |
 | `doall<L>_<i>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
-| `lib_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; it runs as a vendor or library call unless you expand it |
+| `lib_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall: it runs as a vendor or library call unless you expand it |
 
 - `L` is the nesting level, `i` the position at that level. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
@@ -28,7 +28,8 @@ applies: {explicit: true}
   per iteration; `subgraph-fission` widens it to the whole doall, every iteration of the first part before any of
   the second, with values passed between the parts becoming arrays.
 - A kernel is a scope, not a row: the part of the program NestForge compiles as one unit. By default every
-  top-level doall (with what it holds) is one kernel, run on the CPU with threads or on the GPU. A top-level for
+  top-level doall (with what it holds), a library call among them, is one kernel, run on the CPU with threads or on
+  the GPU. A top-level for
   loop stays a loop on the host that launches the kernels inside it.
 - Every move bumps the epoch and relabels the tree. Pass the epoch you read the labels at; a stale one is refused,
   so read the tree again after each move.
@@ -57,7 +58,12 @@ An illegal move is refused with the reason and changes nothing.
 - `expand-library`: a `lib_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
   zero fill and a multiply map with a `+` reduction), in canonical form, so the moves above reach inside it. Expand
   a library call when fusing it with its neighbours saves memory traffic; leave it when the vendor call is faster.
-  `list_moves` offers it only on calls with a vendor-free expansion.
+  `list_moves` offers it only on calls with a vendor-free expansion. A library call fuses with a doall only once
+  expanded: unexpanded it is a black box.
+- `set-library-implementation`: a `lib_<family>` row keeps its row and is built through the `implementation` you
+  pass: loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one (`cuBLAS`,
+  `hipBLAS`, ...). `list_moves` lists one move per implementation the row may take. A host library keeps its kernel
+  on the CPU, a device library puts it on the GPU.
 
 ## Flow
 

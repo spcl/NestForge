@@ -6,6 +6,9 @@ canonical parallel form, so the other moves reach inside it."""
 from __future__ import annotations
 
 import dace
+from dace import cpf_lowering
+from dace.codegen import cpf
+from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
@@ -23,6 +26,45 @@ def expansion(node: nodes.LibraryNode) -> str | None:
     if isinstance(node, ExternalCall):
         return None
     return next((name for name in EXPANSIONS if name in node.implementations), None)
+
+
+def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
+    """The implementations ``node`` may be set to: the ones a kernel unit renders (loops, the host vendor library,
+    with a GPU target the device library of this machine's GPU), besides the one already chosen."""
+    name = type(node).__name__
+    offered = (
+        *cpf.VENDOR_IMPLEMENTATIONS_HOST,
+        *cpf.RENDERABLE_BY_NODE.get(name, ()),
+        *cpf.RENDERABLE_IMPLEMENTATIONS,
+        *(device_implementations(name) if gpu else ()),
+    )
+    chosen = node.implementation if not node.auto_select_implementation else None
+    return tuple(dict.fromkeys(i for i in offered if i in node.implementations and i != chosen))
+
+
+def device_implementations(name: str) -> tuple[str, ...]:
+    """The device library calls and device expansions a GPU kernel of library node type ``name`` renders, in the
+    dialect of this machine's GPU."""
+    dialect = (
+        cpf_lowering.Dialect.STANDALONE_HIP if get_gpu_backend() == "hip" else cpf_lowering.Dialect.STANDALONE_CUDA
+    )
+    return (*cpf.VENDOR_IMPLEMENTATIONS_DEVICE[dialect], *cpf.RENDERABLE_BY_NODE_DEVICE.get(name, ()))
+
+
+def is_device_implementation(implementation: str) -> bool:
+    """Whether ``implementation`` is a device library call, so its kernel runs on the GPU."""
+    return any(implementation in names for names in cpf.VENDOR_IMPLEMENTATIONS_DEVICE.values())
+
+
+def is_host_implementation(implementation: str) -> bool:
+    """Whether ``implementation`` is a host library call, so its kernel runs on the CPU."""
+    return implementation in cpf.VENDOR_IMPLEMENTATIONS_HOST
+
+
+def set_implementation(node: nodes.LibraryNode, implementation: str) -> None:
+    """Pin ``node`` to ``implementation``: no automatic selection (finalization, the kernel unit) overrides it."""
+    node.implementation = implementation
+    node.auto_select_implementation = False
 
 
 def expand_library(state: SDFGState, node: nodes.LibraryNode) -> list[nodes.NestedSDFG]:

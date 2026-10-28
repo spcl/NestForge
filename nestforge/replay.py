@@ -103,6 +103,8 @@ class AppliedMove(Record):
     kind: str
     labels: tuple[str, ...]
     reason: str
+    tile_sizes: tuple[int, ...] = ()
+    implementation: str | None = None
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -166,10 +168,16 @@ class Script:
         """Apply ``move``; raises :class:`ReplayError` unless it applied."""
         if self.finished:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
-        result = self.session.apply_move(move.kind, move.labels, move.epoch)
+        result = self.session.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes, move.implementation)
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
-        done = AppliedMove(kind=move.kind, labels=result.labels, reason=result.reason)
+        done = AppliedMove(
+            kind=move.kind,
+            labels=result.labels,
+            reason=result.reason,
+            tile_sizes=move.tile_sizes,
+            implementation=move.implementation,
+        )
         self.applied.append(done)
         return done
 

@@ -8,7 +8,7 @@ from typing import Literal, NamedTuple
 
 import pydantic
 
-__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Phase", "ToolDef"]
+__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "Phase", "ToolDef"]
 
 #: The judge route every tool posts to, as ``/nestforge/<tool>``.
 ROUTE = "nestforge"
@@ -54,6 +54,9 @@ class ApplyMove(Labeled):
         default_factory=list,
         description="tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64].",
     )
+    implementation: str | None = pydantic.Field(
+        None, description="set-library-implementation: one implementation list_moves offered for the row."
+    )
 
 
 class RunDefaults(Args):
@@ -84,35 +87,58 @@ class TuneKernel(KernelName):
     compilers: list[str] | None = None
 
 
+class Effect(enum.StrEnum):
+    """What a call does to the session, which the agent side lists as MCP annotations."""
+
+    READ = "read"  # changes nothing
+    ADD = "add"  # changes the program or a kernel; an inverse or another call undoes it
+    REPLACE = "replace"  # overwrites earlier work (a kernel's source, a scope's kernel)
+
+
 class ToolDef(NamedTuple):
     phase: Phase
     args: type[Args]
     description: str
+    effect: Effect = Effect.ADD
 
 
 TOOLS: dict[str, ToolDef] = {
-    "get_cpf": ToolDef(Phase.STRUCTURED, NoArgs, "The program in canonical parallel form, as a labeled tree."),
+    "get_cpf": ToolDef(
+        Phase.STRUCTURED, NoArgs, "The program in canonical parallel form, as a labeled tree.", Effect.READ
+    ),
     "view_tree": ToolDef(
         Phase.STRUCTURED,
         ViewTree,
-        "Expand or collapse tree rows (loops, states, maps, library calls), then show the tree.",
+        "Expand or collapse tree rows (loops, states, doalls, library calls), then show the tree.",
+        Effect.READ,
     ),
     "list_move_kinds": ToolDef(
-        Phase.STRUCTURED, NoArgs, "Every move kind: the tree rows it takes, the transformation it runs, what it does."
+        Phase.STRUCTURED,
+        NoArgs,
+        "Every move kind: the tree rows it takes, the transformation it runs, what it does.",
+        Effect.READ,
     ),
     "list_moves": ToolDef(
-        Phase.STRUCTURED, ListMoves, "Every legal fusion, fission, interchange and library expansion right now."
+        Phase.STRUCTURED,
+        ListMoves,
+        "Every legal move right now: fusion, fission, interchange, tiling, library expansion and implementation.",
+        Effect.READ,
     ),
     "apply_move": ToolDef(Phase.STRUCTURED, ApplyMove, "Apply one legal move; returns the new tree and performance."),
     "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
     "set_scope": ToolDef(Phase.SCOPES, Labeled, "Make one kernel of the regions the labels name."),
-    "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program."),
-    "list_kernels": ToolDef(Phase.UNSTRUCTURED, NoArgs, "Every kernel with its device and arguments."),
-    "read_kernel": ToolDef(Phase.UNSTRUCTURED, KernelName, "A kernel's current source."),
-    "write_kernel": ToolDef(Phase.UNSTRUCTURED, WriteKernel, "Replace a kernel's source; it is built and checked."),
+    "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
+    "list_kernels": ToolDef(Phase.UNSTRUCTURED, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
+    "read_kernel": ToolDef(Phase.UNSTRUCTURED, KernelName, "A kernel's current source.", Effect.READ),
+    "write_kernel": ToolDef(
+        Phase.UNSTRUCTURED, WriteKernel, "Replace a kernel's source; it is built and checked.", Effect.REPLACE
+    ),
     "tune_kernel": ToolDef(Phase.CODEGEN, TuneKernel, "Sweep compilers and flags for one kernel."),
     "get_performance": ToolDef(
-        Phase.ANY, NoArgs, "Whole-program time, offloading (devices, transfers) and per-kernel times, with hints."
+        Phase.ANY,
+        NoArgs,
+        "Whole-program time, offloading (devices, transfers) and per-kernel times, with hints.",
+        Effect.READ,
     ),
     "finalize": ToolDef(
         Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI; send its library and workspace_bytes."

@@ -208,6 +208,16 @@ def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_
     assert build.verdict is None, "no sweep timed it"
 
 
+def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_named(tmp_path):
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
+    (kernel,) = session.default_scopes()
+
+    with pytest.raises(ValueError, match=r"\['m'\].*cannot be swept"):
+        session.sweep(kernel.name, reps=1)
+
+    assert kernel.name not in session.builds
+
+
 def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
     session, name = one_kernel_session(tmp_path)
 

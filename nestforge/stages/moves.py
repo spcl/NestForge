@@ -49,7 +49,7 @@ from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extrac
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import Record
-from nestforge.stages.expand import expand_library, expansion
+from nestforge.stages.expand import expand_library, expansion, set_implementation
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +62,8 @@ class Rewrite:
 
 #: The move kind that turns a library call into maps, which the session then canonicalizes.
 EXPAND_LIBRARY = "expand-library"
+#: The move kind that picks a library call's implementation; it takes ``implementation``.
+SET_IMPLEMENTATION = "set-library-implementation"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -76,6 +78,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "interchange-if-for": (ConditionalBlock, LoopRegion),
     "interchange-for-if": (LoopRegion, ConditionalBlock),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
+    SET_IMPLEMENTATION: (nodes.LibraryNode,),
     "tile-doall": (nodes.MapEntry,),
     "untile-doall": (nodes.MapEntry, nodes.MapEntry),
     "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
@@ -96,6 +99,14 @@ def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
         return ()
     head = rows[0][0]
     return (PROBE_TILE,) * (len(head.map.params) if isinstance(head, nodes.MapEntry) else 1)
+
+
+def probe_implementation(kind: str, rows: Sequence[Row]) -> str | None:
+    """The implementation :func:`legal_moves` checks :data:`SET_IMPLEMENTATION` with: any the node has; the session
+    lists one move per implementation it may take."""
+    if kind != SET_IMPLEMENTATION:
+        return None
+    return next(iter(cast(nodes.LibraryNode, rows[0][0]).implementations), None)
 
 
 STATE_BARRIER = (
@@ -385,11 +396,27 @@ def plan_expand_library(row: Row) -> Rewrite | str:
     return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
 
 
+def plan_set_implementation(row: Row, implementation: str | None = None) -> Rewrite | str:
+    node = cast(nodes.LibraryNode, row[0])
+    if isinstance(node, ExternalCall):
+        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+    if implementation is None:
+        return f"pass implementation, one of {sorted(node.implementations)}."
+    if implementation not in node.implementations:
+        return f"{node.label} ({type(node).__name__}) has no implementation {implementation!r}; it has {sorted(node.implementations)}."
+    return Rewrite(
+        f"{type(node).__name__} implementation {implementation}", lambda: set_implementation(node, implementation)
+    )
+
+
 def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     dims = len(entry.map.params)
-    if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
-        return f"{entry.map.label} has {dims} dimension(s) {entry.map.params}: pass tile_sizes, one positive size each."
+    if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes) or max(tile_sizes) < 2:
+        return (
+            f"{entry.map.label} has {dims} dimension(s) {entry.map.params}: pass tile_sizes, one positive size each "
+            "(1 leaves a dimension untiled), at least one of 2 or more."
+        )
     options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
     return pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options) or (
         f"blocked by MapTiling: {entry.map.label} cannot be tiled."
@@ -480,6 +507,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-if-for": plan_if_loop,
     "interchange-for-if": plan_loop_if,
     EXPAND_LIBRARY: plan_expand_library,
+    SET_IMPLEMENTATION: plan_set_implementation,
     "tile-doall": plan_tile_doall,
     "untile-doall": plan_untile_doall,
     "collapse-doalls": plan_collapse_doalls,
@@ -545,6 +573,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
         "unexpanded, it stays a vendor or library call built on its own.",
     ),
+    SET_IMPLEMENTATION: (
+        "LibraryNode.implementation (implementation, one list_moves offers)",
+        "a library call, a black-box doall, keeps its row and is built through the named implementation: loops "
+        "(pure), the host vendor library (OpenBLAS, FFTW3) or, with a GPU target, the device one (cuBLAS, hipBLAS, "
+        "...), which also decides the device its kernel runs on.",
+    ),
     "tile-doall": (
         "MapTiling (tile_sizes, one per dimension)",
         "doall i: B becomes doall i0 (step = tile size): doall i (one tile): B; each tile's working set fits a "
@@ -572,15 +606,19 @@ def move_kinds() -> list[MoveKind]:
     ]
 
 
-def plan_move(kind: str, rows: Sequence[Row], tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+def plan_move(
+    kind: str, rows: Sequence[Row], tile_sizes: Sequence[int] = (), implementation: str | None = None
+) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
-    ``tile_sizes`` goes to the :data:`SIZED` kinds."""
+    ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`."""
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
             return f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}."
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
+    if kind == SET_IMPLEMENTATION:
+        return PLANNERS[kind](*rows, implementation=implementation)
     return PLANNERS[kind](*rows)
 
 
@@ -598,11 +636,28 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
 
 
+def doall_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    return (((entry, state),) for state, entry in map_rows(sdfg))
+
+
+def for_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    return (((loop, None),) for loop in every_region_block(sdfg, LoopRegion))
+
+
+def starts_at(inner: LoopRegion, var: str) -> bool:
+    """Whether ``inner`` starts at loop variable ``var``, as the loop over one tile's points does."""
+    start = loop_analysis.get_init_assignment(inner)
+    return start is not None and var in {str(s) for s in start.free_symbols}
+
+
 def tile_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    """Loops that step over tiles (a stride other than 1) and hold a loop: the only ones untile-for can collapse."""
+    """Loops that step over tiles (a stride other than 1) and hold a loop starting at their variable: the only ones
+    untile-for can collapse; the untiling itself, tried on a copy, decides."""
     for loop in every_region_block(sdfg, LoopRegion):
         stride = loop_analysis.get_loop_stride(loop)
-        if stride is not None and stride != 1 and any(isinstance(b, LoopRegion) for b in loop.nodes()):
+        if stride is None or stride == 1 or not loop.loop_variable:
+            continue
+        if any(isinstance(b, LoopRegion) and starts_at(b, loop.loop_variable) for b in loop.nodes()):
             yield ((loop, None),)
 
 
@@ -694,9 +749,9 @@ def loop_guard_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "for-fusion": loop_pairs,
-    "for-fission": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
+    "for-fission": for_rows,
     "doall-fusion": map_pairs,
-    "doall-fission": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    "doall-fission": doall_rows,
     "subgraph-fission": body_cuts,
     "interchange-for-doall": loop_map_pairs,
     "interchange-doall-for": map_loop_pairs,
@@ -704,11 +759,12 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-if-for": guard_loop_pairs,
     "interchange-for-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,
-    "tile-doall": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    SET_IMPLEMENTATION: library_rows,
+    "tile-doall": doall_rows,
     "untile-doall": tile_pair_rows,
     "collapse-doalls": nested_map_pairs,
     "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
-    "tile-for": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
+    "tile-for": for_rows,
     "untile-for": tile_loops,
 }
 
@@ -724,7 +780,8 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
         if name not in CANDIDATES:
             continue
         for rows in CANDIDATES[name](sdfg):
-            if isinstance(plan_move(name, rows, probe_sizes(name, rows)), Rewrite):
+            probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
+            if isinstance(probe, Rewrite):
                 found[(name, tuple(tree_label(obj) for obj, _ in rows))] = None
     return list(found)
 

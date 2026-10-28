@@ -56,6 +56,16 @@ def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
 
 
+def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.LibraryNode]:
+    """The doalls of ``state`` not nested in a map: its maps, and its library calls (each a black-box doall; a
+    kernel NestForge built is not one), in ``scope_children`` order."""
+    return [
+        n
+        for n in state.scope_children()[None]
+        if isinstance(n, nodes.MapEntry) or (isinstance(n, nodes.LibraryNode) and not isinstance(n, ExternalCall))
+    ]
+
+
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
     return [

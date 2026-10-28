@@ -51,7 +51,7 @@ from nestforge.stages.canonicalize import (
     narrow_nested_memlets,
     structural_cleanup,
 )
-from nestforge.stages.expand import settle
+from nestforge.stages.expand import implementations, settle
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -70,10 +70,13 @@ from nestforge.stages.kernel import (
 from nestforge.stages.moves import (
     EXPAND_LIBRARY,
     MOVE_SHAPES,
+    SET_IMPLEMENTATION,
+    SIZED,
     Rewrite,
     check_kind,
     legal_moves,
     plan_move,
+    probe_sizes,
     scope_metrics,
     sdfg_metrics,
 )
@@ -98,6 +101,11 @@ def kernel_language(device: str) -> str:
     return "cpp" if device == "cpu" else kernel_form(device).language
 
 
+def computed_symbols(src: KernelSource, sizes: dict[str, int]) -> list[str]:
+    """The symbols kernel ``src`` takes that ``sizes`` has no value for: ones only the running program computes."""
+    return [s for s in src.boundary.symbols if s not in sizes]
+
+
 class MoveResult(Record):
     """What a labeled call did; ``reason`` names what ran once ``applied``, else why nothing changed."""
 
@@ -113,6 +121,10 @@ class Move(Record):
     kind: str
     labels: tuple[str, ...]
     epoch: int
+    #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
+    tile_sizes: tuple[int, ...] = ()
+    #: For ``set-library-implementation``, the implementation it sets.
+    implementation: str | None = None
 
 
 class KernelScope(Record):
@@ -403,16 +415,37 @@ class Session:
 
     def list_moves(self, kind: str | None = None) -> list[Move]:
         """Every legal move right now, of ``kind`` or of every kind."""
-        return [Move(kind=k, labels=tuple(labels), epoch=self.epoch) for k, labels in legal_moves(self.sdfg, kind)]
+        found = legal_moves(self.sdfg, kind)
+        rows = self.row_index() if any(k in SIZED or k == SET_IMPLEMENTATION for k, _ in found) else {}
+        moves: list[Move] = []
+        for k, labels in found:
+            if k == SET_IMPLEMENTATION:
+                node = cast(nodes.LibraryNode, rows[labels[0]][0])
+                moves += [
+                    Move(kind=k, labels=labels, epoch=self.epoch, implementation=name)
+                    for name in implementations(node, self.targets.gpu)
+                ]
+            else:
+                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
+                moves.append(Move(kind=k, labels=labels, epoch=self.epoch, tile_sizes=sizes))
+        return moves
 
-    def apply_move(self, kind: str, labels: Sequence[str], epoch: int, tile_sizes: Sequence[int] = ()) -> MoveResult:
+    def apply_move(
+        self,
+        kind: str,
+        labels: Sequence[str],
+        epoch: int,
+        tile_sizes: Sequence[int] = (),
+        implementation: str | None = None,
+    ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name, as read at ``epoch``.
 
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
-        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel.
+        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
+        :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -423,7 +456,11 @@ class Session:
         rows = self.named_rows(kind, names, epoch)
         if isinstance(rows, MoveResult):
             return rows
-        plan = plan_move(kind, rows, tile_sizes)
+        plan = plan_move(kind, rows, tile_sizes, implementation)
+        if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
+            offered = implementations(cast(nodes.LibraryNode, rows[0][0]), self.targets.gpu)
+            if implementation not in offered:
+                plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         made = plan.commit()
@@ -734,9 +771,16 @@ class Session:
         """
         build = self.builds.get(name)
         src = build.source if build is not None else self.default_kernel(name)
+        sizes = self.kernel_sizes(name)
+        computed = computed_symbols(src, sizes)
+        if computed:
+            raise ValueError(
+                f"{name} takes {computed}, which only the running program computes; its oracle has no value for "
+                "them, so it cannot be swept. finalize builds its first configuration."
+            )
         variants = device_variants(src.device, compilers)
         prep = self.prepare_kernel(name)
-        result = select_variant(src, prep, self.kernel_sizes(name), reps, variants, self.work_dir / name / "variants")
+        result = select_variant(src, prep, sizes, reps, variants, self.work_dir / name / "variants")
         winner = result.winner
         if winner is not None and winner.archive is not None:
             build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
@@ -767,8 +811,7 @@ class Session:
             self.optimize_kernel(name)
             return
         src = self.default_kernel(name)
-        sizes = self.kernel_sizes(name)
-        if any(s not in sizes for s in src.boundary.symbols):
+        if computed_symbols(src, self.kernel_sizes(name)):
             self.optimize_kernel(name)
             return
         known = self.swept.get(self.sweep_key(name, src))
@@ -793,7 +836,7 @@ class Session:
             build = self.builds[ext.name]
             if build.verdict is None:
                 sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
-                computed = [s for s in build.source.boundary.symbols if s not in sizes]
+                computed = computed_symbols(build.source, sizes)
                 build.verdict = (
                     unchecked_verdict(fp_mode, computed)
                     if computed

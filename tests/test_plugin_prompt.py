@@ -3,11 +3,9 @@
 """The nestforge packet's prompt overlay reshapes both of the bench's prompts: the agent writes no code, delivers
 finalize's library, and reads what NestForge does right after the intro."""
 
-from collections.abc import Iterator
-
 import pytest
-from hpcagent_bench import config, plugins, prompt_build
-from hpcagent_bench import study_tags as tags
+from hpcagent_agent.plugins import Plugin
+from hpcagent_bench import config, prompt_build
 from hpcagent_bench.categories import Language, SourceMode
 from hpcagent_bench.harness.prompts import build_prompt
 from hpcagent_bench.harness.task import Task
@@ -20,17 +18,8 @@ TASK = Task("jacobi_1d", SourceMode.ANY, Language.CPP)
 
 
 @pytest.fixture(scope="module")
-def registered() -> Iterator[None]:
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
-        plugins.register.cache_clear()
-        plugins.load.cache_clear()
-        tags.registry.cache_clear()
-        plugins.load()
-        yield
-    plugins.register.cache_clear()
-    plugins.load.cache_clear()
-    tags.registry.cache_clear()
+def registered(nestforge_plugin: tuple[Plugin, ...]) -> None:
+    pass
 
 
 def test_the_overlay_names_its_agent_blocks_and_every_text_it_reads_exists(registered: None) -> None:
@@ -55,3 +44,14 @@ def test_the_task_prompt_delivers_finalizes_library_and_drops_the_coding_guides(
     assert "## How to optimize" in plain
     assert "## How to optimize" not in sut
     assert "### Build flags per compiler family" not in sut
+
+
+def test_the_full_packet_says_the_agent_may_write_kernels_where_the_structured_one_says_it_writes_no_code(
+    registered: None,
+) -> None:
+    with config.overridden("record.packet", "nestforge-full"):
+        sut = build_prompt(TASK)
+
+    assert "You may rewrite any kernel's source" in sut
+    assert "you write no code" not in sut and "You do not write code" not in sut
+    assert "## Delivery: the library NestForge assembles" in sut
