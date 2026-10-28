@@ -17,7 +17,7 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import dace
 import numpy as np
@@ -51,6 +51,7 @@ from nestforge.stages.canonicalize import (
     narrow_nested_memlets,
     structural_cleanup,
 )
+from nestforge.stages.expand import settle
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -67,6 +68,7 @@ from nestforge.stages.kernel import (
     validate_kernel,
 )
 from nestforge.stages.moves import (
+    EXPAND_LIBRARY,
     MOVE_SHAPES,
     Rewrite,
     check_kind,
@@ -423,7 +425,11 @@ class Session:
         plan = plan_move(kind, rows)
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
-        plan.commit()
+        made = plan.commit()
+        if kind == EXPAND_LIBRARY:
+            # the expansion's maps join the program in canonical form, as rows the other moves take
+            settle(cast(list[nodes.NestedSDFG], made), self.targets)
+            inline_top_level_nsdfgs(self.sdfg)
         structural_cleanup(self.sdfg)
         # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule inference
         # read them

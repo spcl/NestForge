@@ -33,6 +33,7 @@ agent's catalog.
 | `interchange-map-loop` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-loop` | if, loop | `MoveIfIntoLoop` |
 | `interchange-loop-if` | loop, its if | `MoveLoopInvariantIfUp` |
+| `expand-library` | library call (`kernel_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |
 |---|---|

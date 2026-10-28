@@ -9,6 +9,7 @@ import heapq
 from typing import Any
 
 import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import (
     AbstractControlFlowRegion,
@@ -96,8 +97,9 @@ def block_kind(block: ControlFlowBlock) -> str:
 
 
 def normalize_labels(sdfg: dace.SDFG) -> None:
-    """Rename every block and map to ``<kind><level>_<index>``, counted per kind and level over the whole program.
-    A library node keeps its label unless an earlier one holds it."""
+    """Rename every block and map to ``<kind><level>_<index>`` and every library call to
+    ``kernel_<family><level>_<index>``, counted per kind and level over the whole program. A kernel NestForge built
+    (``ExternalCall``) keeps its label unless an earlier one holds it."""
     relabel_cfg(sdfg, 0, {})
     unique_library_labels(sdfg)
 
@@ -113,6 +115,14 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
             # though LibraryNode's label is a writable Property
             node.name = node.label = find_new_name(node.label, taken)  # pyright: ignore[reportAttributeAccessIssue]
         taken[node.label] = None
+
+
+def library_family(node: nodes.LibraryNode) -> str:
+    """The DaCe library ``node`` comes from (``blas``, ``fft``, ``linalg``, ...); a standard node is named by its own
+    kind (``reduce``, ``scan``, ``fill``)."""
+    parts = type(node).__module__.split(".")
+    package = parts[2] if parts[:2] == ["dace", "libraries"] and len(parts) > 2 else "lib"
+    return type(node).__name__.lower() if package == "standard" else package
 
 
 def next_label(kind: str, level: int, counters: dict[tuple[str, int], int]) -> str:
@@ -154,5 +164,8 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], 
                 descend(node, depth + 1)
             elif isinstance(node, nodes.NestedSDFG):
                 relabel_cfg(node.sdfg, depth, counters)
+            elif isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall):
+                # LibraryNode sets name and label alike; keep them equal (see unique_library_labels)
+                node.name = node.label = next_label(f"kernel_{library_family(node)}", depth, counters)  # pyright: ignore[reportAttributeAccessIssue]
 
     descend(None, level)

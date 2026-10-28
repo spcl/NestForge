@@ -435,7 +435,7 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> s
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     reads, writes = nest_reads_writes(state, node)
     if isinstance(node, nodes.LibraryNode):
-        return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
+        return f"{node.label}  LIBNODE {type(node).__name__}  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

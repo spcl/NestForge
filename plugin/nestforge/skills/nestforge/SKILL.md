@@ -15,6 +15,7 @@ applies: {explicit: true}
 | `if<L>_<i>` | a branch; its arms print as `when <cond>` / `else` |
 | `state<L>_<i>` | one step of the program; collapsed it shows `kernels=<k>`, expanded its maps |
 | `kernel<L>_<i>  [i=lo:hi]  reads=[..] writes=[..]` | a parallel map (a loop whose iterations are independent); `: <stmt>` lines are its body |
+| `kernel_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `kernel_blas` (Gemm, Gemv, Dot, ...), `kernel_fft`, `kernel_linalg`, `kernel_reduce`, `kernel_scan`, ...; it runs as a vendor or library call unless you expand it |
 
 - `L` is the nesting level, `i` the position at that level. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
@@ -43,6 +44,10 @@ An illegal move is refused with the reason and changes nothing.
   pieces that share data.
 - `subgraph-fission`: split per state, after the named state of the map's body.
 - Interchange (`interchange-*`): reorder a loop, map or guard with the one directly inside it.
+- `expand-library`: a `kernel_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
+  zero fill and a multiply map with a `+` reduction), in canonical form, so the moves above reach inside it. Expand
+  a library call when fusing it with its neighbours saves memory traffic; leave it when the vendor call is faster.
+  `list_moves` offers it only on calls with a vendor-free expansion.
 
 ## Flow
 

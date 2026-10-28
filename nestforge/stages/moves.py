@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import dace
 import sympy
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
@@ -34,6 +35,7 @@ from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extrac
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import Record
+from nestforge.stages.expand import expand_library, expansion
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,9 @@ class Rewrite:
     name: str
     commit: Callable[[], object]
 
+
+#: The move kind that turns a library call into maps, which the session then canonicalizes.
+EXPAND_LIBRARY = "expand-library"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -56,6 +61,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "interchange-map-map": (nodes.MapEntry, nodes.MapEntry),
     "interchange-if-loop": (ConditionalBlock, LoopRegion),
     "interchange-loop-if": (LoopRegion, ConditionalBlock),
+    EXPAND_LIBRARY: (nodes.LibraryNode,),
 }
 
 STATE_BARRIER = (
@@ -332,6 +338,19 @@ def plan_loop_if(loop_row: Row, cond_row: Row) -> Rewrite | str:
     return region_rewrite("MoveLoopInvariantIfUp", loop.sdfg, lambda: MoveLoopInvariantIfUp.hoist(loop))
 
 
+def plan_expand_library(row: Row) -> Rewrite | str:
+    node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
+    if isinstance(node, ExternalCall):
+        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+    implementation = expansion(node)
+    if implementation is None:
+        return (
+            f"{node.label} ({type(node).__name__}) has no vendor-free expansion (only {sorted(node.implementations)}); "
+            "it stays a library call."
+        )
+    return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "loop-fusion": plan_loop_fusion,
     "loop-fission": plan_loop_fission,
@@ -343,6 +362,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-map-map": plan_map_map,
     "interchange-if-loop": plan_if_loop,
     "interchange-loop-if": plan_loop_if,
+    EXPAND_LIBRARY: plan_expand_library,
 }
 
 
@@ -362,6 +382,7 @@ ROW_KEYWORDS: dict[type, str] = {
     nodes.MapEntry: "kernel",
     ControlFlowBlock: "state",
     ConditionalBlock: "if",
+    nodes.LibraryNode: "kernel_<family>",
 }
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
@@ -392,6 +413,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "interchange-map-map": ("MapInterchange", "swap a map with the map directly inside it."),
     "interchange-if-loop": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
     "interchange-loop-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
+    EXPAND_LIBRARY: (
+        "LibraryNode.expand (pure, else specialize), then canonicalization",
+        "a library call (kernel_blas, kernel_fft, kernel_reduce, kernel_scan, ...) becomes the plain maps and "
+        "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
+        "unexpanded, it stays a vendor or library call built on its own.",
+    ),
 }
 
 
@@ -426,6 +453,12 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
+
+
+def library_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    for owner in sdfg.all_sdfgs_recursive():
+        for state in owner.states():
+            yield from (((n, state),) for n in state.nodes() if isinstance(n, nodes.LibraryNode))
 
 
 def loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
@@ -513,6 +546,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-map-map": nested_map_pairs,
     "interchange-if-loop": guard_loop_pairs,
     "interchange-loop-if": loop_guard_pairs,
+    EXPAND_LIBRARY: library_rows,
 }
 
 
