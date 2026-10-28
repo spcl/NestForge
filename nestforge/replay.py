@@ -197,11 +197,12 @@ class Solution:
     solve: Steps
     decoys: dict[str, Steps]
     configs: tuple[Context, ...]
+    ci_skip: str = ""  # why CI does not replay it yet; empty when it does
 
 
 def load_solution(path: Path) -> Solution:
-    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve`` and optional ``DECOYS``. Loaded by file path,
-    as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
+    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``DECOYS`` and ``CI_SKIP``. Loaded by
+    file path, as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
     spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} is not importable")
@@ -217,6 +218,7 @@ def load_solution(path: Path) -> Solution:
         solve=names["solve"],
         decoys=dict(names.get("DECOYS", {})),
         configs=tuple(names["CONFIGS"]),
+        ci_skip=str(names.get("CI_SKIP", "")),
     )
 
 
