@@ -14,30 +14,67 @@ optimizers = ["dace_cpu_canon_nestforge_stub", "dace_cpu_canon_nestforge_referen
 kernels = ["jacobi_1d", "tsvc_2_s231"]
 language = "cpp"
 
+# The phases of a NestForge run, in the order a packet lists them. A phase's tools are served while the agent runs
+# it; run by default, it is its summary in the prompt and its `default` call (none: finalize builds every kernel).
+# tests/test_bench_plugin.py keeps each phase's tools those of its wire.py phase.
+[phases.moves]
+title = "Moves"
+summary = "NestForge applies its default fusion."
+text = "prompt/phases/moves.md"
+tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
+default = { tool = "run_defaults", args = { stage = "moves" } }
+
+[phases.scopes]
+title = "Scopes"
+summary = "Each top-level doall, a library call included, is a kernel of its own."
+text = "prompt/phases/scopes.md"
+tools = ["set_scope", "unset_scope"]
+mode = "default"
+default = { tool = "run_defaults", args = { stage = "scopes" } }
+
+[phases.placement]
+title = "Placement"
+summary = "Each kernel runs on the CPU with threads, or on the GPU when the setup targets one."
+mode = "default"
+default = { tool = "run_defaults", args = { stage = "placement" } }
+
+[phases.kernels]
+title = "Kernel code"
+summary = "Each kernel is built from the source NestForge renders for it."
+text = "prompt/phases/kernels.md"
+tools = ["list_kernels", "read_kernel", "write_kernel"]
+mode = "default"
+
+[phases.codegen]
+title = "Compiler configuration"
+summary = "Each kernel is built with the fastest correct compiler configuration of NestForge's sweep."
+text = "prompt/phases/codegen.md"
+tools = ["tune_kernel"]
+mode = "default"
+
+# The agent chooses the moves; scopes, placement, kernel code and compiler configuration run on their defaults.
 [packets.nestforge]
 name = "NestForge"
-method = "nestforge"
-# The structured phase: scopes, placement and kernel builds run their defaults (finalize, get_performance). Every
-# tool is one the session serves (nestforge.server.CALLS); a test keeps them in the structured and any phases.
-tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
-    "finalize"]
+skills = ["nestforge"]
+phases = ["moves", "scopes", "placement", "kernels", "codegen"]
+tools = ["get_performance", "finalize"]
 
-# The agent writes no code: prompts/nestforge.yaml reshapes both prompts (the user's own overlays still win).
+# The agent writes no code: build and language guidance are off, and NestForge's own texts say how to send and finish.
 [packets.nestforge.prompt]
-template_dirs = ["prompts"]
-overlays = ["prompts/nestforge.yaml"]
+about = "prompt/about.md"
+off.agent = ["file_tools", "build", "syntax_check", "index_buffers", "stop_policy"]
+off.task = ["build_flags", "optimizations", "lang_cpp", "lang_fortran"]
+replace.agent = { sending_code = "prompt/agent/sending_code.md", failures = "prompt/agent/failures.md", end_to_end = "prompt/agent/end_to_end.md", keep_improving = "prompt/agent/keep_improving.md" }
+replace.task = { delivery = "prompt/task/delivery.md" }
 
-# Every phase: scopes, kernel sources and compiler sweeps too, besides the structured phase's tools.
+# Every phase is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]
+extends = "nestforge"
 name = "NestForge (all phases)"
-method = "nestforge-full"
-tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "set_scope",
-    "unset_scope", "list_kernels", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "finalize"]
+modes = { scopes = "agent", kernels = "agent", codegen = "agent" }
 
-# The structured packet's overlay, then what the other phases change in it.
 [packets.nestforge-full.prompt]
-template_dirs = ["prompts"]
-overlays = ["prompts/nestforge.yaml", "prompts/nestforge-full.yaml"]
+off.task = ["build_flags", "optimizations", "lang_fortran"]
 
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.
