@@ -18,3 +18,21 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
 
 `cloudsc_nproma` is CI-skipped: the kernel is only on HPCAgent-Bench branch `benchmarking-nestforge`, and on DaCe `7683e143` its `map-fission` reads and writes `pfplsx` through one access node, a cyclic state that the stages after fusion reject (`NetworkXUnfeasible` in `route_ordering_through_data`). On main the default still leaves the route on the menu. At 72 threads the route was 1.19x at preset M and 2.04x at `NPROMA` 1024 (older pins).
+
+## Rewritten programs and changed parameters
+
+A solution may start from a rewritten loop nest of a corpus kernel, or run a corpus kernel at other parameters, while the bench's own inputs and NumPy reference still grade it:
+
+- `PROGRAM = "programs/<name>_dace.py"`: a `@dace.program` with the corpus kernel's arguments, optimized instead of the kernel's own `_dace.py`. `KERNEL` names the corpus kernel whose manifest, inputs and oracle it uses.
+- `PARAMS = {...}`: preset parameters merged over the preset (the bench's `params_override`). Integer entries also become the program's sizes.
+
+| Solution | Corpus kernel | Program or parameters | Route | Status |
+| --- | --- | --- | --- | --- |
+| `scattering_self_energies_m2` | `scattering_self_energies` | explicit loop nest `k, E, q, w, a, b, i, j`; `Nkz` 2, `NE` 4 | 2 `interchange-loop-map` (map `a` out past `w`, `q`) | applies, oracle ok at S |
+| `scattering_self_energies_m3` | `scattering_self_energies` | the same nest with `i` before `a, b`; `Nkz` 2, `NE` 8 | `interchange-map-loop`, then 4 `interchange-loop-map` | applies, oracle ok at S |
+| `conv3d_box` | `conv_3d` | output-stationary box stencil, padding inside | GPU: one `subgraph-fission`; CPU: 2 `map-fission` and 3 `interchange-map-loop` | GPU 6.55x at S, oracle ok |
+| `seissol_volume` | `seissol_tensor_contraction` | output-stationary contraction, `Q += upd` | GPU: one `map-fission`; CPU: the fission and 2 `interchange-map-loop` | `CI_SKIP`: replay at S does not finish |
+| `dbcsr_small_blocks` | `dbcsr` | `block_size` 4, `density` 0.05 | `interchange-loop-if` | `CI_SKIP`: the default fails to build |
+
+The programs and parameters come from the kernels of HPCAgent-Bench branch `benchmarking-nestforge` (`d22922c5c`, spcl/HPCAgent-Bench#124, reverted in #128 as duplicates of corpus kernels). None is timed on these pins yet.
+

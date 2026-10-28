@@ -10,7 +10,7 @@ import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
 
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
+from nestforge.corpus.bench import corpus_kernel, preset_sizes, with_program
 from nestforge.paths import REPO_ROOT
 from nestforge.replay import (
     Context,
@@ -121,6 +121,25 @@ def test_a_solution_states_why_ci_skips_it() -> None:
     """``CI_SKIP`` reaches the loaded solution; a script without it is replayed."""
     assert "MapFission" in load_solution(REPO_ROOT / "reference_solutions" / "cloudsc_nproma.py").ci_skip
     assert load_solution(S231).ci_skip == ""
+
+
+def test_a_solution_can_start_from_a_rewritten_program() -> None:
+    """``PROGRAM`` swaps the kernel's loop nest and keeps its manifest: seissol_volume's output-stationary nest, not
+    the corpus einsum, graded on seissol_tensor_contraction's inputs."""
+    solution = load_solution(REPO_ROOT / "reference_solutions" / "seissol_volume.py")
+    assert solution.kernel == "seissol_tensor_contraction"
+    assert solution.program == REPO_ROOT / "reference_solutions" / "programs" / "seissol_volume_dace.py"
+    corpus = corpus_kernel(solution.kernel)
+    assert corpus is not None
+    rewritten = with_program(corpus, solution.program)
+    assert rewritten.spec is corpus.spec and rewritten.dace_file == solution.program
+    assert "upd" in rewritten.to_sdfg().arrays and "upd" not in corpus.to_sdfg().arrays
+
+
+def test_a_solution_can_replace_preset_parameters() -> None:
+    solution = load_solution(REPO_ROOT / "reference_solutions" / "dbcsr_small_blocks.py")
+    assert solution.kernel == "dbcsr" and solution.params == {"block_size": 4, "density": 0.05}
+    assert load_solution(S231).params == {} and load_solution(S231).program is None
 
 
 def test_splice_replaces_only_its_kernels_section() -> None:
