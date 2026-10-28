@@ -44,7 +44,11 @@ jobs:
       - name: pytest (a skip fails the run)
         env:
           NESTFORGE_CI_NO_SKIP: '1'
-        run: pytest -m "not integration and not judge and not cloudsc and not gpu and not vendor" -n auto --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+        # tests/test_bench_data.py runs the bench's references, which need its OpenMP launch environment.
+        run: |
+          eval "$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')"
+          ulimit -s "$(ulimit -H -s)"
+          pytest -m "not integration and not judge and not cloudsc and not gpu and not vendor" -n auto --timeout=900 --durations=15 --cov=nestforge --cov-report=term
 
   integration:
     runs-on: ubuntu-latest

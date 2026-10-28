@@ -754,11 +754,17 @@ class Session:
     def default_build(self, name: str) -> None:
         """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
-        a sweep without a correct winner falls back to the first configuration)."""
+        a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
+        only the running program computes: its oracle has no value for it)."""
         if self.codegen == "first":
             self.optimize_kernel(name)
             return
-        known = self.swept.get(self.sweep_key(name, self.default_kernel(name)))
+        src = self.default_kernel(name)
+        sizes = self.kernel_sizes(name)
+        if any(s not in sizes for s in src.boundary.symbols):
+            self.optimize_kernel(name)
+            return
+        known = self.swept.get(self.sweep_key(name, src))
         if known is not None:
             self.bind(name, known)
         elif self.sweep(name).winner is None:
