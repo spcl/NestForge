@@ -14,6 +14,8 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 | `tsvc_2_s233` | `loop-fission`, then `interchange-loop-map` on the `aa` half and the `bb` half | CPU, 72 threads | 30.7 ms | 8.8 ms | 3.47x |
 | `tsvc_2_s231` | `interchange-loop-map` (the `j` loop into the `i` map) | CPU, 72 threads | 39.5 ms | 16.5 ms | 2.40x |
 | `cloudsc_nproma` | `map-fission` of the column map, then `interchange-map-loop` of the body map and the level loop | CPU, 1 thread | 110.2 ms | 46.9 ms | 2.35x (DaCe `042413d`; not timed on main, `CI_SKIP`) |
+| `fuse_stencil_through_transient` | the default's fusions, then the `map-fusion` they leave (the stencil into the map that writes its transient) | CPU, 72 threads | 12.49 ms | 3.72 ms | 3.35x (main `fb130f1`) |
+| `bellman_ford` | the default, then the one `map-fission` it leaves | GPU | 4347 ms | 2828 ms | 1.54x (main `fb130f1`) |
 
 Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
 
