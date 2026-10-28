@@ -8,7 +8,7 @@ Every move is an existing DaCe transformation, checked for legality before it ap
 `describe()` prints the tree; its first line carries the epoch. Every loop and state is a row; loop and map rows
 carry `work=` and `depth=` from one pass of DaCe's work-depth analysis, and an innermost loop, or a map holding a
 nested SDFG, carries `num_states=`. When that pass fails or takes over 60 s, the second line says why and the rows
-carry no costs for that epoch. A state shows only `kernels=<count>` until `expand(labels, epoch)` opens it:
+carry no costs for that epoch. A state shows only `doalls=<count>` until `expand(labels, epoch)` opens it:
 then its maps, nested maps and leaf-kernel bodies appear (an expanded map also shows its nested states). An
 expansion lasts until the epoch changes. `list_moves(kind)` returns the legal moves as
 `{kind, labels, epoch}`; map fusions list data-linked pairs and each map with the next map of its scope, never every
@@ -23,21 +23,23 @@ agent's catalog.
 
 | kind | labels | DaCe |
 |---|---|---|
-| `loop-fusion` | first, second loop | `LoopFusion` |
-| `loop-fission` | loop | `LoopFission` |
-| `map-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal` |
-| `map-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `map-fusion` back what shares data |
+| `for-fusion` | first, second loop | `LoopFusion` |
+| `for-fission` | loop | `LoopFission` |
+| `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal` |
+| `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
-| `interchange-map-map` | outer, inner map | `MapInterchange` |
-| `interchange-loop-map` | loop, its map | `MoveLoopIntoMap` |
-| `interchange-map-loop` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
-| `interchange-if-loop` | if, loop | `MoveIfIntoLoop` |
-| `interchange-loop-if` | loop, its if | `MoveLoopInvariantIfUp` |
-| `tile-kernel` | kernel (+ `tile_sizes`) | `MapTiling` (`divides_evenly=False`) |
-| `untile-kernel` | tile kernel, point kernel | `UntileLoops`' map tile pairs, every tile dimension |
-| `collapse-kernels` | kernel, kernel inside it | `MapCollapse` |
-| `expand-kernel` | kernel of two or more dimensions | `MapExpansion`, each nested kernel keeping the schedule |
-| `expand-library` | library call (`kernel_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
+| `interchange-doall-doall` | outer, inner map | `MapInterchange` |
+| `interchange-for-doall` | loop, its map | `MoveLoopIntoMap` |
+| `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
+| `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
+| `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |
+| `tile-doall` | doall (+ `tile_sizes`, one per dimension) | `MapTiling` (`divides_evenly=False`) |
+| `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
+| `collapse-doalls` | doall, doall inside it | `MapCollapse` |
+| `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
+| `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
+| `untile-for` | tile for loop | `UntileLoops.untile_loop` |
+| `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |
 |---|---|

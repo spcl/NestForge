@@ -80,10 +80,10 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 
 
 def block_kind(block: ControlFlowBlock) -> str:
-    """The tree keyword of a block: every sequential loop (for or while) is a ``loop``, a parallel map a ``kernel``
-    (:func:`relabel_state`), a do-all loop proven to have independent iterations."""
+    """The tree keyword of a block: every sequential loop (for or while) is a ``for``; a parallel map is a ``doall``
+    (:func:`relabel_state`), a loop proven to have independent iterations. A kernel is a scope, not a row."""
     if isinstance(block, LoopRegion):
-        return "loop"
+        return "for"
     if isinstance(block, ConditionalBlock):
         return "if"
     if isinstance(block, ContinueBlock):
@@ -99,7 +99,7 @@ def block_kind(block: ControlFlowBlock) -> str:
 
 def normalize_labels(sdfg: dace.SDFG) -> None:
     """Rename every block and map to ``<kind><level>_<index>`` and every library call to
-    ``kernel_<family><level>_<index>``, counted per kind and level over the whole program. A kernel NestForge built
+    ``lib_<family><level>_<index>``, counted per kind and level over the whole program. A kernel NestForge built
     (``ExternalCall``) keeps its label unless an earlier one holds it."""
     relabel_cfg(sdfg, 0, {})
     unique_library_labels(sdfg)
@@ -161,12 +161,12 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], 
     def descend(scope: nodes.MapEntry | None, depth: int) -> None:
         for node in children[scope]:
             if isinstance(node, nodes.MapEntry):
-                node.map.label = next_label("kernel", depth, counters)
+                node.map.label = next_label("doall", depth, counters)
                 descend(node, depth + 1)
             elif isinstance(node, nodes.NestedSDFG):
                 relabel_cfg(node.sdfg, depth, counters)
             elif isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall):
                 # LibraryNode sets name and label alike; keep them equal (see unique_library_labels)
-                node.name = node.label = next_label(f"kernel_{library_family(node)}", depth, counters)  # pyright: ignore[reportAttributeAccessIssue]
+                node.name = node.label = next_label(f"lib_{library_family(node)}", depth, counters)  # pyright: ignore[reportAttributeAccessIssue]
 
     descend(None, level)

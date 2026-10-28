@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ``expand-library`` move: a library call shows as a ``kernel_<family>`` row and expands into canonical maps."""
+"""The ``expand-library`` move: a library call shows as a ``lib_<family>`` row and expands into canonical maps."""
 
 import re
 
@@ -36,12 +36,12 @@ def library_nodes(sdfg: dace.SDFG) -> list[str]:
 
 
 def row(text: str, family: str) -> str:
-    match = re.search(rf"\b(kernel_{family}\d+_\d+)\b", text)
+    match = re.search(rf"\b(lib_{family}\d+_\d+)\b", text)
     assert match is not None, text
     return match.group(1)
 
 
-def test_library_calls_are_kernel_rows_named_by_their_family_and_each_can_expand(tmp_path):
+def test_library_calls_are_lib_rows_named_by_their_family_and_each_can_expand(tmp_path):
     sut = library_session(tmp_path)
 
     text = tree(sut)
@@ -60,8 +60,8 @@ def test_an_expanded_product_is_maps_that_compute_it_and_no_library_call(tmp_pat
     assert result.status is MoveStatus.APPLIED, result
     assert library_nodes(sut.sdfg) == ["Reduce"], "only the reduction stays a library call"
     text = tree(sut)
-    assert "kernel_blas" not in text
-    assert re.search(r"kernel\d+_\d+  \[\w+=0:N, \w+=0:N, \w+=0:N\]  reduce=\(\+ over", text), text
+    assert "lib_blas" not in text
+    assert re.search(r"doall\d+_\d+  \[\w+=0:N, \w+=0:N, \w+=0:N\]  reduce=\(\+ over", text), text
     rng = np.random.default_rng(3)
     a, b = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
     c, total = np.zeros((SIZE, SIZE)), np.zeros(1)
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     import tempfile
 
     for test in (
-        test_library_calls_are_kernel_rows_named_by_their_family_and_each_can_expand,
+        test_library_calls_are_lib_rows_named_by_their_family_and_each_can_expand,
         test_an_expanded_product_is_maps_that_compute_it_and_no_library_call,
         test_a_kernel_nestforge_built_is_not_a_library_call_to_expand,
     ):

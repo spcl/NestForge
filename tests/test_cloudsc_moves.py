@@ -4,7 +4,7 @@
 within the bench's grading tolerance, or are refused and leave the program untouched.
 
 The program is the bench's Python cloudsc_monolith, canonicalized once up to fusion (stage 1) as an agent session
-starts it. Each seed walks a copy of it. A move draws its kind first, since map-fusion is almost every legal
+starts it. Each seed walks a copy of it. A move draws its kind first, since doall-fusion is almost every legal
 candidate, then its place: either a move ``list_moves`` offers or any rows of the kind's shape. Applied moves are
 checked in batches, as one codegen and build costs over a minute while a run costs milliseconds. A failure names the
 seed and the moves since the last passing check.

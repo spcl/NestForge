@@ -46,7 +46,7 @@ def top_level_map_count(sdfg) -> int:
 
 def test_a_move_bumps_the_epoch_and_its_labels_go_stale():
     s = make_session()
-    (move,) = s.list_moves("map-fusion")
+    (move,) = s.list_moves("doall-fusion")
     assert move.epoch == 0
 
     applied = s.apply_move(move.kind, move.labels, move.epoch)
@@ -104,7 +104,7 @@ def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatc
         "(no work= or depth= this epoch: work-depth analysis failed: RecursionError: maximum recursion depth exceeded)"
     )
     assert "work=" not in "\n".join(tree.splitlines()[2:])
-    (move,) = s.list_moves("map-fusion")
+    (move,) = s.list_moves("doall-fusion")
     assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
     assert "no work= or depth=" in s.describe().splitlines()[1]
     assert s.costs == {} and s.costs_skipped is not None
@@ -125,7 +125,7 @@ def test_costs_come_back_on_the_next_epoch_once_work_depth_works(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(introspect.work_depth, "analyze_sdfg", fail)
         assert s.describe().splitlines()[1].startswith("(no work= or depth= this epoch")
-    (move,) = s.list_moves("map-fusion")
+    (move,) = s.list_moves("doall-fusion")
     result = s.apply_move(move.kind, move.labels, move.epoch)
     assert result.status is MoveStatus.APPLIED
     assert s.costs_skipped is None and "no work= or depth=" not in s.describe()

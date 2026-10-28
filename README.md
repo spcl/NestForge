@@ -54,7 +54,7 @@ On `fuse_diamond`:
 ```
 SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=1
 `- state0_0
-   `- kernel1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
+   `- doall1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
 ```
 
 ## Install and test

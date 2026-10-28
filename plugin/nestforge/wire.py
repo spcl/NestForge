@@ -51,7 +51,8 @@ class Labeled(Args):
 class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
-        default_factory=list, description="tile-kernel only: one tile size per kernel dimension, e.g. [32, 32]."
+        default_factory=list,
+        description="tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64].",
     )
 
 

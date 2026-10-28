@@ -16,8 +16,8 @@ from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.names import block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
-LABEL = re.compile(r"^(state|loop|if|block|continue|break|return)(\d+)_(\d+)$")
-KERNEL = re.compile(r"^kernel(\d+)_(\d+)$")
+LABEL = re.compile(r"^(state|for|if|block|continue|break|return)(\d+)_(\d+)$")
+KERNEL = re.compile(r"^doall(\d+)_(\d+)$")
 
 
 @dc.program
@@ -96,7 +96,7 @@ def test_labels_are_globally_unique():
 
 
 def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
-    """Five kernels at depth 3 are kernel3_0..kernel3_4 -- the index counts that kind at that level, so
+    """Five kernels at depth 3 are doall3_0..doall3_4 -- the index counts that kind at that level, so
     it never depends on how many blocks of another kind happen to sit beside them."""
     sdfg = two_maps.to_sdfg(simplify=True)
     normalize_labels(sdfg)
@@ -106,7 +106,7 @@ def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
         by_kind_level.setdefault((kind, int(level)), []).append(int(index))
     for entry in all_maps(sdfg):
         level, index = KERNEL.match(entry.map.label).groups()
-        by_kind_level.setdefault(("kernel", int(level)), []).append(int(index))
+        by_kind_level.setdefault(("doall", int(level)), []).append(int(index))
     for key, indices in by_kind_level.items():
         assert sorted(indices) == list(range(len(indices))), f"{key} is numbered {sorted(indices)}"
 
@@ -127,9 +127,9 @@ def test_a_counted_and_a_conditional_loop_are_both_a_loop():
     loops = [b for b in all_blocks(sdfg) if isinstance(b, LoopRegion)]
     assert loops, "fixture no longer has a LoopRegion"
     for loop in loops:
-        assert block_kind(loop) == "loop"
+        assert block_kind(loop) == "for"
         loop.update_statement = None
-        assert block_kind(loop) == "loop"
+        assert block_kind(loop) == "for"
 
 
 def test_two_builds_of_one_program_get_the_same_names():

@@ -10,7 +10,7 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 
 ## tsvc_2_s231
 
-**Move:** `interchange-loop-map`, which moves the `j` loop inside the `i` map. It applies on a threaded CPU and on the GPU; on one thread, no move.
+**Move:** `interchange-for-doall`, which moves the `j` loop inside the `i` map. It applies on a threaded CPU and on the GPU; on one thread, no move.
 
 | Config | Default | Reference | Gain |
 | --- | --- | --- | --- |

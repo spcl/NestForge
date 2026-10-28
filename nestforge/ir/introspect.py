@@ -415,7 +415,7 @@ def block_row(tree: Tree, block: ControlFlowBlock) -> str:
     text = block_line(block, tree.defs)
     if isinstance(block, SDFGState):
         count = kernel_count(block)
-        return f"{text}  kernels={count}" if count and not tree.shows(block.label) else text
+        return f"{text}  doalls={count}" if count and not tree.shows(block.label) else text
     if isinstance(block, LoopRegion):
         if innermost(block):
             text += f"  num_states={state_count(block)}"

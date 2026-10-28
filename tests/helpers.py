@@ -146,7 +146,7 @@ def run_emitted(source: str, fn_name: str, lowered: dace.SDFG, inputs: dict, siz
 def fusion_moves(sdfg: dace.SDFG) -> list[tuple[str, tuple[str, ...]]]:
     """Every legal loop or map fusion of ``sdfg`` as ``(kind, labels)``, after making its tree labels unique."""
     normalize_labels(sdfg)
-    return legal_moves(sdfg, "loop-fusion") + legal_moves(sdfg, "map-fusion")
+    return legal_moves(sdfg, "for-fusion") + legal_moves(sdfg, "doall-fusion")
 
 
 def apply_move(sdfg: dace.SDFG, move: tuple[str, tuple[str, ...]]) -> str:
@@ -163,7 +163,7 @@ def fission_to_fixpoint(sdfg: dace.SDFG) -> int:
     """Apply the first legal loop or map fission until none remains; returns how many applied."""
     for applied in range(200):  # bound: each fission strictly adds a nest
         normalize_labels(sdfg)
-        moves = legal_moves(sdfg, "loop-fission") + legal_moves(sdfg, "map-fission")
+        moves = legal_moves(sdfg, "for-fission") + legal_moves(sdfg, "doall-fission")
         if not moves:
             return applied
         apply_move(sdfg, moves[0])

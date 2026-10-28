@@ -5,6 +5,7 @@ transformations, and the symbolic work and depth of a scope."""
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -29,10 +30,13 @@ from dace.transformation.dataflow.tiling import MapTiling
 from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
+from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
+from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.canonicalize.untile_loops import (
     MapTilePair,
+    UntileLoops,
     eliminate_pinned_maps,
     map_tile_pairs,
     untile_map_pair,
@@ -61,25 +65,27 @@ EXPAND_LIBRARY = "expand-library"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
-    "loop-fusion": (LoopRegion, LoopRegion),
-    "loop-fission": (LoopRegion,),
-    "map-fusion": (nodes.MapEntry, nodes.MapEntry),
-    "map-fission": (nodes.MapEntry,),
+    "for-fusion": (LoopRegion, LoopRegion),
+    "for-fission": (LoopRegion,),
+    "doall-fusion": (nodes.MapEntry, nodes.MapEntry),
+    "doall-fission": (nodes.MapEntry,),
     "subgraph-fission": (nodes.MapEntry, ControlFlowBlock),
-    "interchange-loop-map": (LoopRegion, nodes.MapEntry),
-    "interchange-map-loop": (nodes.MapEntry, LoopRegion),
-    "interchange-map-map": (nodes.MapEntry, nodes.MapEntry),
-    "interchange-if-loop": (ConditionalBlock, LoopRegion),
-    "interchange-loop-if": (LoopRegion, ConditionalBlock),
+    "interchange-for-doall": (LoopRegion, nodes.MapEntry),
+    "interchange-doall-for": (nodes.MapEntry, LoopRegion),
+    "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
+    "interchange-if-for": (ConditionalBlock, LoopRegion),
+    "interchange-for-if": (LoopRegion, ConditionalBlock),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
-    "tile-kernel": (nodes.MapEntry,),
-    "untile-kernel": (nodes.MapEntry, nodes.MapEntry),
-    "collapse-kernels": (nodes.MapEntry, nodes.MapEntry),
-    "expand-kernel": (nodes.MapEntry,),
+    "tile-doall": (nodes.MapEntry,),
+    "untile-doall": (nodes.MapEntry, nodes.MapEntry),
+    "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
+    "expand-doall": (nodes.MapEntry,),
+    "tile-for": (LoopRegion,),
+    "untile-for": (LoopRegion,),
 }
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
-SIZED = frozenset({"tile-kernel"})
+SIZED = frozenset({"tile-doall", "tile-for"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
 
@@ -88,7 +94,8 @@ def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
     """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension."""
     if kind not in SIZED:
         return ()
-    return (PROBE_TILE,) * len(cast(nodes.MapEntry, rows[0][0]).map.params)
+    head = rows[0][0]
+    return (PROBE_TILE,) * (len(head.map.params) if isinstance(head, nodes.MapEntry) else 1)
 
 
 STATE_BARRIER = (
@@ -378,7 +385,7 @@ def plan_expand_library(row: Row) -> Rewrite | str:
     return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
 
 
-def plan_tile_kernel(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     dims = len(entry.map.params)
     if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
@@ -393,13 +400,13 @@ def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) ->
     return next((pair for pair in map_tile_pairs(state) if pair.outer is outer and pair.inner is inner), None)
 
 
-def plan_untile_kernel(outer_row: Row, inner_row: Row) -> Rewrite | str:
+def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = cast(nodes.MapEntry, outer_row[0]), cast(nodes.MapEntry, inner_row[0]), node_state(outer_row)
     pair = tile_pair(outer, inner, state) if node_state(inner_row) is state else None
     if pair is None:
         return (
-            f"{outer.map.label} is not a tile kernel whose points are {inner.map.label}: name the kernel stepping over "
-            "tiles, then the kernel over one tile's points."
+            f"{outer.map.label} is not a tile doall whose points are {inner.map.label}: name the doall stepping over "
+            "tiles, then the doall over one tile's points."
         )
 
     def commit() -> None:
@@ -414,18 +421,18 @@ def plan_untile_kernel(outer_row: Row, inner_row: Row) -> Rewrite | str:
     return Rewrite("untile_map_pair", commit)
 
 
-def plan_collapse_kernels(outer_row: Row, inner_row: Row) -> Rewrite | str:
+def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
     if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
-        return f"{inner.map.label} is not directly inside {outer.map.label}; name a kernel, then the one inside it."
+        return f"{inner.map.label} is not directly inside {outer.map.label}; name a doall, then the one inside it."
     where = {"outer_map_entry": outer, "inner_map_entry": inner}
     return pattern(MapCollapse, state.sdfg, where) or (
-        "blocked by MapCollapse: the outer kernel holds more than the inner one, or the inner range reads the outer "
+        "blocked by MapCollapse: the outer doall holds more than the inner one, or the inner range reads the outer "
         "parameter."
     )
 
 
-def plan_expand_kernel(row: Row) -> Rewrite | str:
+def plan_expand_doall(row: Row) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if len(entry.map.params) < 2:
         return f"{entry.map.label} has one dimension; there is nothing to expand."
@@ -436,22 +443,49 @@ def plan_expand_kernel(row: Row) -> Rewrite | str:
     )
 
 
+def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    if len(tile_sizes) != 1 or tile_sizes[0] < 2:
+        return f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2."
+    where, options = {"loop": loop}, {"tile_size": tile_sizes[0]}
+    if not LoopTiling.can_be_applied_to(loop.sdfg, options=options, **where):
+        return f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1."
+    return region_rewrite("LoopTiling", loop.sdfg, lambda: LoopTiling.apply_to(loop.sdfg, options=options, **where))
+
+
+def plan_untile_for(row: Row) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    # the untiling decides legality as it rewrites, so it is tried on a copy first
+    trial = copy.deepcopy(loop.sdfg)
+    twin = next(r for r in trial.all_control_flow_regions(recursive=True) if r.label == loop.label)
+    if not isinstance(twin, LoopRegion) or not UntileLoops().untile_loop(twin, trial):
+        return f"{loop.label} is not a loop over tiles holding the loop over one tile's points."
+
+    def commit() -> None:
+        UntileLoops().untile_loop(loop, loop.sdfg)
+        propagate_memlets_sdfg(loop.sdfg.root_sdfg)
+
+    return region_rewrite("UntileLoops.untile_loop", loop.sdfg, commit)
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
-    "loop-fusion": plan_loop_fusion,
-    "loop-fission": plan_loop_fission,
-    "map-fusion": plan_map_fusion,
-    "map-fission": plan_map_fission,
+    "for-fusion": plan_loop_fusion,
+    "for-fission": plan_loop_fission,
+    "doall-fusion": plan_map_fusion,
+    "doall-fission": plan_map_fission,
     "subgraph-fission": plan_subgraph_fission,
-    "interchange-loop-map": plan_loop_map,
-    "interchange-map-loop": plan_map_loop,
-    "interchange-map-map": plan_map_map,
-    "interchange-if-loop": plan_if_loop,
-    "interchange-loop-if": plan_loop_if,
+    "interchange-for-doall": plan_loop_map,
+    "interchange-doall-for": plan_map_loop,
+    "interchange-doall-doall": plan_map_map,
+    "interchange-if-for": plan_if_loop,
+    "interchange-for-if": plan_loop_if,
     EXPAND_LIBRARY: plan_expand_library,
-    "tile-kernel": plan_tile_kernel,
-    "untile-kernel": plan_untile_kernel,
-    "collapse-kernels": plan_collapse_kernels,
-    "expand-kernel": plan_expand_kernel,
+    "tile-doall": plan_tile_doall,
+    "untile-doall": plan_untile_doall,
+    "collapse-doalls": plan_collapse_doalls,
+    "expand-doall": plan_expand_doall,
+    "tile-for": plan_tile_for,
+    "untile-for": plan_untile_for,
 }
 
 
@@ -467,58 +501,64 @@ class MoveKind(Record):
 
 #: The tree keyword of each row type a move takes.
 ROW_KEYWORDS: dict[type, str] = {
-    LoopRegion: "loop",
-    nodes.MapEntry: "kernel",
+    LoopRegion: "for",
+    nodes.MapEntry: "doall",
     ControlFlowBlock: "state",
     ConditionalBlock: "if",
-    nodes.LibraryNode: "kernel_<family>",
+    nodes.LibraryNode: "lib_<family>",
 }
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
 MOVE_TEXT: dict[str, tuple[str, str]] = {
-    "loop-fusion": ("LoopFusion", "two adjacent loops over the same range become one loop."),
-    "loop-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
-    "map-fusion": (
+    "for-fusion": ("LoopFusion", "two adjacent loops over the same range become one loop."),
+    "for-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
+    "doall-fusion": (
         "MapFusionVertical / OTFMapFusion / MapFusionHorizontal",
         "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar, "
         "or stays the array when the producer updates it in place), a consumer that recomputes the producer's "
         "values it reads on the fly (a stencil), or two independent maps over the same range.",
     ),
-    "map-fission": (
+    "doall-fission": (
         "MapFission",
-        "split per computation: one map per independent output group. The pieces often want map-fusion afterwards: "
+        "split per computation: one map per independent output group. The pieces often want doall-fusion afterwards: "
         "fuse back the ones that share data.",
     ),
     "subgraph-fission": (
         "SubgraphFission",
-        "split per state: the map's body is a program of states (expand the kernel row to see them); the map is cut "
+        "split per state: the map's body is a program of states (expand the doall row to see them); the map is cut "
         "after the named state, the states up to it in one map and the rest in a second.",
     ),
-    "interchange-loop-map": (
+    "interchange-for-doall": (
         "MoveLoopIntoMap",
-        "loop t: kernel i: B becomes kernel i: loop t: B (the kernel goes outside).",
+        "for t: doall i: B becomes doall i: for t: B (the doall goes outside).",
     ),
-    "interchange-map-loop": (
+    "interchange-doall-for": (
         "MapLoopInterchange",
         "map i: for t: B becomes for t: map i: B; the loop must be the whole body of the map.",
     ),
-    "interchange-map-map": ("MapInterchange", "swap a map with the map directly inside it."),
-    "interchange-if-loop": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
-    "interchange-loop-if": ("MoveLoopInvariantIfUp", "loop i: if c: B becomes if c: loop i: B, c loop-invariant."),
+    "interchange-doall-doall": ("MapInterchange", "swap a map with the map directly inside it."),
+    "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
+    "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
     EXPAND_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
-        "a library call (kernel_blas, kernel_fft, kernel_reduce, kernel_scan, ...) becomes the plain maps and "
+        "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
         "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
         "unexpanded, it stays a vendor or library call built on its own.",
     ),
-    "tile-kernel": (
+    "tile-doall": (
         "MapTiling (tile_sizes, one per dimension)",
-        "kernel i: B becomes kernel i0 (step = tile size): kernel i (one tile): B; each tile's working set fits a "
+        "doall i: B becomes doall i0 (step = tile size): doall i (one tile): B; each tile's working set fits a "
         "cache or a thread block. A size need not divide the range.",
     ),
-    "untile-kernel": ("UntileLoops (map tile pairs)", "the inverse: a tile kernel and its point kernel become one."),
-    "collapse-kernels": ("MapCollapse", "kernel i: kernel j: B becomes kernel (i, j): B, one parallel space."),
-    "expand-kernel": ("MapExpansion", "the inverse: kernel (i, j): B becomes kernel i: kernel j: B."),
+    "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
+    "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
+    "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "tile-for": (
+        "LoopTiling (tile_sizes, one size)",
+        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order; "
+        "follow it with an interchange to block a nest.",
+    ),
+    "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
 }
 
 
@@ -556,6 +596,14 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
+
+
+def tile_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """Loops that step over tiles (a stride other than 1) and hold a loop: the only ones untile-for can collapse."""
+    for loop in every_region_block(sdfg, LoopRegion):
+        stride = loop_analysis.get_loop_stride(loop)
+        if stride is not None and stride != 1 and any(isinstance(b, LoopRegion) for b in loop.nodes()):
+            yield ((loop, None),)
 
 
 def tile_pair_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
@@ -645,21 +693,23 @@ def loop_guard_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
-    "loop-fusion": loop_pairs,
-    "loop-fission": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
-    "map-fusion": map_pairs,
-    "map-fission": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    "for-fusion": loop_pairs,
+    "for-fission": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
+    "doall-fusion": map_pairs,
+    "doall-fission": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
     "subgraph-fission": body_cuts,
-    "interchange-loop-map": loop_map_pairs,
-    "interchange-map-loop": map_loop_pairs,
-    "interchange-map-map": nested_map_pairs,
-    "interchange-if-loop": guard_loop_pairs,
-    "interchange-loop-if": loop_guard_pairs,
+    "interchange-for-doall": loop_map_pairs,
+    "interchange-doall-for": map_loop_pairs,
+    "interchange-doall-doall": nested_map_pairs,
+    "interchange-if-for": guard_loop_pairs,
+    "interchange-for-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,
-    "tile-kernel": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
-    "untile-kernel": tile_pair_rows,
-    "collapse-kernels": nested_map_pairs,
-    "expand-kernel": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "tile-doall": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    "untile-doall": tile_pair_rows,
+    "collapse-doalls": nested_map_pairs,
+    "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "tile-for": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
+    "untile-for": tile_loops,
 }
 
 

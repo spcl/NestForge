@@ -63,7 +63,7 @@ def sibling_maps(a: f64[N], b: f64[N], c: f64[N]):
 
 def co_located(prog):
     """Build the SDFG and StateFusion sequential states together, so producer/consumer and sibling maps
-    land in one state where the map-fusion arms can match them (mirrors the fusion-ready canonical form)."""
+    land in one state where the doall-fusion arms can match them (mirrors the fusion-ready canonical form)."""
     sdfg = prog.to_sdfg(simplify=True)
     sdfg.apply_transformations_repeated(StateFusion)
     return sdfg
@@ -171,7 +171,7 @@ def test_a_map_pair_plans_a_fusion_exactly_when_it_is_listed():
     assert offered, "the fixture must offer a map fusion, else it tests nothing"
     rows = tree_rows(sdfg)
     for first, second in map_pairs(sdfg):
-        plan = plan_move("map-fusion", [rows[tree_label(first)], rows[tree_label(second)]])
+        plan = plan_move("doall-fusion", [rows[tree_label(first)], rows[tree_label(second)]])
         listed = frozenset({tree_label(first), tree_label(second)}) in offered
         assert isinstance(plan, Rewrite) == listed, (first, second, plan)
         assert isinstance(plan, Rewrite) or plan

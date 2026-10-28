@@ -31,8 +31,8 @@ FAILED, WRONG, HOT, SPILLS, NOT_VECTORIZED, UNCHECKED = range(6)
 
 #: Vectorizer reasons, by a phrase they contain, and what to try.
 VECTOR_ADVICE: tuple[tuple[str, str], ...] = (
-    ("control flow", "move the condition out of the loop (interchange-loop-if) or make the body branch-free"),
-    ("dependen", "fission the dependent statement into its own loop (loop-fission / map-fission)"),
+    ("control flow", "move the condition out of the loop (interchange-for-if) or make the body branch-free"),
+    ("dependen", "fission the dependent statement into its own loop (for-fission / doall-fission)"),
     ("alias", "the kernel source can mark its pointers __restrict__"),
     ("call", "inline or replace the call in the loop body"),
     ("access", "interchange so the innermost loop walks contiguous memory"),

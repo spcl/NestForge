@@ -11,22 +11,25 @@ applies: {explicit: true}
 
 | row | is |
 |---|---|
-| `loop<L>_<i>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
+| `for<L>_<i>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
 | `if<L>_<i>` | a branch; its arms print as `when <cond>` / `else` |
-| `state<L>_<i>` | one step of the program; collapsed it shows `kernels=<k>`, expanded its maps |
-| `kernel<L>_<i>  [i=lo:hi]  reads=[..] writes=[..]` | a kernel: a do-all loop, proven to have independent iterations (a parallel map); `: <stmt>` lines are its body |
-| `kernel_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `kernel_blas` (Gemm, Gemv, Dot, ...), `kernel_fft`, `kernel_linalg`, `kernel_reduce`, `kernel_scan`, ...; it runs as a vendor or library call unless you expand it |
+| `state<L>_<i>` | one step of the program; collapsed it shows `doalls=<k>`, expanded its doalls |
+| `doall<L>_<i>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
+| `lib_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; it runs as a vendor or library call unless you expand it |
 
 - `L` is the nesting level, `i` the position at that level. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
-- `view_tree expand=[labels]` opens states and maps; `collapse=[labels]` closes them. A map whose body is a small
+- `view_tree expand=[labels]` opens states and doalls; `collapse=[labels]` closes them. A doall whose body is a small
   program shows that program's states once expanded: those states are where `subgraph-fission` cuts.
-- A state is a dataflow graph: inside it, maps are ordered only by the data they share and may run concurrently.
+- A state is a dataflow graph: inside it, doalls are ordered only by the data they share and may run concurrently.
   Going from one state to the next is a barrier: everything in the first state finishes, and its writes are
-  visible, before the next starts. Loops and branches only ever join states. So maps in different states never fuse
-  (`map-fusion` needs one state); fuse the loops around them instead. Inside a map body the barrier is per
-  iteration; `subgraph-fission` widens it to the whole map, every iteration of the first part before any of the
-  second, with values passed between the parts becoming arrays.
+  visible, before the next starts. Loops and branches only ever join states. So doalls in different states never
+  fuse (`doall-fusion` needs one state); fuse the for loops around them instead. Inside a doall body the barrier is
+  per iteration; `subgraph-fission` widens it to the whole doall, every iteration of the first part before any of
+  the second, with values passed between the parts becoming arrays.
+- A kernel is a scope, not a row: the part of the program NestForge compiles as one unit. By default every
+  top-level doall (with what it holds) is one kernel, run on the CPU with threads or on the GPU. A top-level for
+  loop stays a loop on the host that launches the kernels inside it.
 - Every move bumps the epoch and relabels the tree. Pass the epoch you read the labels at; a stale one is refused,
   so read the tree again after each move.
 
@@ -36,20 +39,22 @@ applies: {explicit: true}
 `list_moves` lists the moves legal right now as `kind` + `labels`; `apply_move` takes one back with the epoch.
 An illegal move is refused with the reason and changes nothing.
 
-- Fusion (`loop-fusion`, `map-fusion`): one loop or map instead of two; less memory traffic, intermediates
-  become scalars. `map-fusion` fuses a producer and its consumer (in place when the producer updates the array),
+- Fusion (`for-fusion`, `doall-fusion`): one loop or map instead of two; less memory traffic, intermediates
+  become scalars. `doall-fusion` fuses a producer and its consumer (in place when the producer updates the array),
   recomputes what a consumer reads of a window (a stencil) on the fly, or fuses two independent maps over one range.
-- `loop-fission`: one loop per independent statement group.
-- `map-fission`: split per computation, one map per independent output group. Follow it with `map-fusion` on the
+- `for-fission`: one loop per independent statement group.
+- `doall-fission`: split per computation, one map per independent output group. Follow it with `doall-fusion` on the
   pieces that share data.
 - `subgraph-fission`: split per state, after the named state of the map's body.
 - Interchange (`interchange-*`): reorder a loop, map or guard with the one directly inside it.
-- Tiling (`tile-kernel`, `untile-kernel`): `apply_move` with `tile_sizes` (one per kernel dimension, e.g. `[32, 32]`)
-  turns kernel `i` into a kernel over tiles holding a kernel over one tile's points, so a tile's working set fits a
-  cache; a size need not divide the range. `untile-kernel` takes the tile kernel and its point kernel back to one.
-- `collapse-kernels` merges a kernel and the kernel directly inside it into one multi-dimensional kernel (one
-  parallel space); `expand-kernel` splits one back into nested kernels.
-- `expand-library`: a `kernel_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
+- Tiling (`tile-doall`, `tile-for` and their `untile-` inverses): `apply_move` with `tile_sizes` turns a loop into
+  a loop over tiles holding a loop over one tile's points, so a tile's working set fits a cache. A doall takes one
+  size per dimension (`[32, 32]`), a for loop one size (`[64]`); a size need not divide the range. A tiled for loop
+  keeps its order; interchange then blocks a nest. `untile-doall` takes the tile doall and its point doall back to
+  one, `untile-for` the tile for loop.
+- `collapse-doalls` merges a doall and the doall directly inside it into one multi-dimensional doall (one parallel
+  space); `expand-doall` splits one back into nested doalls.
+- `expand-library`: a `lib_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
   zero fill and a multiply map with a `+` reduction), in canonical form, so the moves above reach inside it. Expand
   a library call when fusing it with its neighbours saves memory traffic; leave it when the vendor call is faster.
   `list_moves` offers it only on calls with a vendor-free expansion.
@@ -62,5 +67,5 @@ An illegal move is refused with the reason and changes nothing.
 3. `run_defaults stage=moves` applies the default fusion; `stage=finish` finishes after your own moves.
 4. `finalize`, then `score` / `submit` with the `library` and `workspace_bytes` it returns.
 
-Scopes (which maps become one compiled kernel), GPU placement and the compiler configuration are not yours to
+Scopes (which doalls become one compiled kernel), GPU placement and the compiler configuration are not yours to
 choose here: `get_performance` and `finalize` run their defaults.

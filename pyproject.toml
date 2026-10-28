@@ -28,10 +28,10 @@ dependencies = [
     # The tip of HPCAgent-Bench main, and the DaCe and relayout commits it pins (the bench owns them);
     # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
     # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
-    "dace @ git+https://github.com/spcl/dace.git@12e3df71044c0c29fe340190de4521008cbcca28",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@048dbbcc92a47773ce70a0b46655c25726748090",
+    "dace @ git+https://github.com/spcl/dace.git@3dc9b980ed0a520e48286b9293ff045b1c1209bf",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@42258b02b87fe19b414105456ae12a00c3190227",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@048dbbcc92a47773ce70a0b46655c25726748090#subdirectory=agent",
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@42258b02b87fe19b414105456ae12a00c3190227#subdirectory=agent",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
 ]
 
@@ -53,7 +53,7 @@ Repository = "https://github.com/spcl/NestForge"
 
 [tool.uv]
 override-dependencies = [
-    "dace @ git+https://github.com/spcl/dace.git@12e3df71044c0c29fe340190de4521008cbcca28",
+    "dace @ git+https://github.com/spcl/dace.git@3dc9b980ed0a520e48286b9293ff045b1c1209bf",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
 ]
 

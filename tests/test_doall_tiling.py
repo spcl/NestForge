@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Kernel tiling moves: tile a kernel at the agent's sizes and untile it back, collapse nested kernels into one
+"""Doall tiling moves: tile a doall at the agent's sizes and untile it back, collapse nested doalls into one
 parallel space and expand it again; each leaves a program that computes the same."""
 
 import re
@@ -26,10 +26,10 @@ def session(tmp_path) -> Session:
     return Session(scale_add.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
 
 
-def kernel_labels(sut: Session) -> list[str]:
+def doall_labels(sut: Session) -> list[str]:
     states = re.findall(r"\b(state\d+_\d+)\b", sut.describe())
     sut.expand(states, sut.epoch)
-    return re.findall(r"\b(kernel\d+_\d+)\b", sut.describe())
+    return re.findall(r"\b(doall\d+_\d+)\b", sut.describe())
 
 
 def maps(sut: Session) -> list[list[str]]:
@@ -43,26 +43,26 @@ def computes_scale_add(sut: Session) -> None:
     np.testing.assert_allclose(b, 2.0 * a + 1.0, rtol=0, atol=0)
 
 
-def test_a_kernel_offers_tiling_and_expansion(tmp_path):
+def test_a_doall_offers_tiling_and_expansion(tmp_path):
     sut = session(tmp_path)
-    (kernel,) = kernel_labels(sut)
+    (doall,) = doall_labels(sut)
 
-    kinds = {move.kind for move in sut.list_moves() if move.labels[0] == kernel}
+    kinds = {move.kind for move in sut.list_moves() if move.labels[0] == doall}
 
-    assert {"tile-kernel", "expand-kernel"} <= kinds
+    assert {"tile-doall", "expand-doall"} <= kinds
 
 
-def test_a_tiled_kernel_steps_over_tiles_and_untiling_restores_one_kernel(tmp_path):
+def test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall(tmp_path):
     sut = session(tmp_path)
-    (kernel,) = kernel_labels(sut)
+    (doall,) = doall_labels(sut)
 
-    tiled = sut.apply_move("tile-kernel", [kernel], sut.epoch, tile_sizes=[8, 16])
+    tiled = sut.apply_move("tile-doall", [doall], sut.epoch, tile_sizes=[8, 16])
 
     assert tiled.status is MoveStatus.APPLIED, tiled
     assert len(maps(sut)) == 2, maps(sut)
     computes_scale_add(sut)
-    (pair,) = sut.list_moves("untile-kernel")
-    untiled = sut.apply_move("untile-kernel", list(pair.labels), sut.epoch)
+    (pair,) = sut.list_moves("untile-doall")
+    untiled = sut.apply_move("untile-doall", list(pair.labels), sut.epoch)
     assert untiled.status is MoveStatus.APPLIED, untiled
     assert len(maps(sut)) == 1, maps(sut)
     computes_scale_add(sut)
@@ -70,25 +70,25 @@ def test_a_tiled_kernel_steps_over_tiles_and_untiling_restores_one_kernel(tmp_pa
 
 def test_tile_sizes_must_name_every_dimension(tmp_path):
     sut = session(tmp_path)
-    (kernel,) = kernel_labels(sut)
+    (doall,) = doall_labels(sut)
 
-    result = sut.apply_move("tile-kernel", [kernel], sut.epoch, tile_sizes=[8])
+    result = sut.apply_move("tile-doall", [doall], sut.epoch, tile_sizes=[8])
 
     assert result.status is MoveStatus.ILLEGAL
     assert "one positive size each" in result.reason
 
 
-def test_an_expanded_kernel_collapses_back_into_one_parallel_space(tmp_path):
+def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path):
     sut = session(tmp_path)
-    (kernel,) = kernel_labels(sut)
+    (doall,) = doall_labels(sut)
 
-    expanded = sut.apply_move("expand-kernel", [kernel], sut.epoch)
+    expanded = sut.apply_move("expand-doall", [doall], sut.epoch)
 
     assert expanded.status is MoveStatus.APPLIED, expanded
     assert sorted(len(params) for params in maps(sut)) == [1, 1]
     computes_scale_add(sut)
-    (pair,) = sut.list_moves("collapse-kernels")
-    collapsed = sut.apply_move("collapse-kernels", list(pair.labels), sut.epoch)
+    (pair,) = sut.list_moves("collapse-doalls")
+    collapsed = sut.apply_move("collapse-doalls", list(pair.labels), sut.epoch)
     assert collapsed.status is MoveStatus.APPLIED, collapsed
     assert [len(params) for params in maps(sut)] == [2]
     computes_scale_add(sut)
@@ -99,9 +99,9 @@ if __name__ == "__main__":
     import tempfile
 
     for test in (
-        test_a_kernel_offers_tiling_and_expansion,
-        test_a_tiled_kernel_steps_over_tiles_and_untiling_restores_one_kernel,
+        test_a_doall_offers_tiling_and_expansion,
+        test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall,
         test_tile_sizes_must_name_every_dimension,
-        test_an_expanded_kernel_collapses_back_into_one_parallel_space,
+        test_an_expanded_doall_collapses_back_into_one_parallel_space,
     ):
         test(pathlib.Path(tempfile.mkdtemp()))

@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 TREE_GUIDE = re.compile(r"^[|` -]*")
 #: A map nest's line: label, bracketed domain, then its reads.
 MAP_LINE = re.compile(r"^\S+  \[\w+=[^\]]+\]  reads=")
-#: A loop nest's line: label and a ``var=start:end`` domain, then its annotations (a state's ``kernels=N`` has no range).
+#: A loop nest's line: label and a ``var=start:end`` domain, then its annotations (a state's ``doalls=N`` has no range).
 LOOP_LINE = re.compile(r"^\S+  \w+=\S*:\S+(  |$)")
 
 
@@ -130,7 +130,7 @@ def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
     lines = (out / "kernel_deps.txt").read_text().splitlines()
 
     assert lines == [
-        "extcall_0: A <- extcall_1.A | program [carried: loop0_0], N <- program",
+        "extcall_0: A <- extcall_1.A | program [carried: for0_0], N <- program",
         "extcall_1: B <- extcall_0.B, N <- program",
         "exit: A <- extcall_1.A | program, B <- extcall_0.B | program",
     ]

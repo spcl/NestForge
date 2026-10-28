@@ -7,7 +7,7 @@ can reach it. It is the kernel-only view the agent reads, and stage 4 uses it to
 implies. It reads the program and never changes it.
 
 ```
-extcall_0: A <- extcall_1.A | program [carried: loop0_0], N <- program
+extcall_0: A <- extcall_1.A | program [carried: for0_0], N <- program
 extcall_1: B <- extcall_0.B, N <- program
 exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 ```

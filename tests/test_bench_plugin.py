@@ -103,7 +103,7 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     epoch = 1  # get_cpf canonicalizes once
     tree = post("view_tree", episode="episode-scope", expand=["state0_0"], epoch=epoch).answer["result"]
-    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("kernel")]
+    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
 
     scoped = post("set_scope", episode="episode-scope", labels=maps[:2], epoch=epoch).answer["result"]
     unset = post("unset_scope", episode="episode-scope", name=scoped["reason"], epoch=epoch + 1).answer["result"]

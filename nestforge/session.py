@@ -412,7 +412,7 @@ class Session:
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
-        :param tile_sizes: For ``tile-kernel``, one positive size per dimension of the kernel.
+        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
