@@ -55,9 +55,10 @@ costs one call, not a broken program.
   size per dimension (`[32, 32]`), a for loop one size (`[64]`); a size need not divide the range. A tiled for loop
   keeps its order; interchange then blocks a nest. `untile-doall` takes the tile doall and its point doall back to
   one, `untile-for` the tile for loop.
-- Choosing tile sizes: a tile's data should fit the cache it is meant for (L1 for the innermost tile, about 32 KiB;
-  L2 for the next, about 1 MiB) and its innermost size should be a multiple of the vector width (8 doubles with
-  AVX-512) so no remainder loop runs per tile. `get_performance` after the move tells you whether it paid.
+- Choosing tile sizes: a tile's data should fit the cache it is meant for (the innermost tile the closest cache, the
+  next one the cache after it) and its innermost size should be a multiple of the machine's vector width, so no
+  remainder loop runs per tile. Read the sizes from the machine you run on; `get_performance` after the move tells
+  you whether it paid.
 - `collapse-doalls` merges a doall and the doall directly inside it into one multi-dimensional doall (one parallel
   space); `expand-doall` splits one back into nested doalls.
 - `expand-library`: a `lib_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
