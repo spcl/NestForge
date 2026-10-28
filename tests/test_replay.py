@@ -10,7 +10,7 @@ import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
 
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
+from nestforge.corpus.bench import corpus_kernel, preset_sizes, with_program
 from nestforge.paths import REPO_ROOT
 from nestforge.replay import (
     Context,
@@ -121,6 +121,19 @@ def test_a_solution_states_why_ci_skips_it() -> None:
     """``CI_SKIP`` reaches the loaded solution; a script without it is replayed."""
     assert "MapFission" in load_solution(REPO_ROOT / "reference_solutions" / "cloudsc_nproma.py").ci_skip
     assert load_solution(S231).ci_skip == ""
+
+
+def test_a_solution_can_start_from_a_rewritten_program() -> None:
+    """``PROGRAM`` swaps the kernel's loop nest and keeps its manifest: conv3d_box's output-stationary nest, graded on
+    conv_3d's inputs."""
+    solution = load_solution(REPO_ROOT / "reference_solutions" / "conv3d_box.py")
+    assert solution.kernel == "conv_3d"
+    assert solution.program == REPO_ROOT / "reference_solutions" / "programs" / "conv3d_box_dace.py"
+    corpus = corpus_kernel(solution.kernel)
+    assert corpus is not None and solution.program is not None
+    rewritten = with_program(corpus, solution.program)
+    assert rewritten.spec is corpus.spec and rewritten.dace_file == solution.program
+    assert load_solution(S231).program is None and load_solution(S231).params == {}
 
 
 def test_splice_replaces_only_its_kernels_section() -> None:
