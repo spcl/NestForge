@@ -130,7 +130,8 @@ def test_a_pinned_implementation_keeps_the_row_and_reaches_the_kernel_that_build
     (kernel,) = [name for name, calls in kernel_libraries(sut).items() if type(calls[0]).__name__ == "Reduce"]
     (call,) = kernel_libraries(sut)[kernel]
     assert (call.implementation, call.auto_select_implementation) == ("pure", False)
-    assert sut.optimize_kernel(kernel).library.is_file()
+    (evidence,) = [e for e in sut.kernel_evidence(reps=1) if e.kernel == kernel]
+    assert evidence.verdict.ok, evidence.verdict
 
 
 def test_a_device_library_on_a_cpu_only_target_is_refused(tmp_path):

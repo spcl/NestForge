@@ -68,8 +68,8 @@ class RunDefaults(Args):
 
 
 class UnsetScope(Args):
-    name: str = pydantic.Field(description="The kernel to inline back.")
-    epoch: int
+    name: str = pydantic.Field(description="The kernel to inline back, as list_kernels names it.")
+    epoch: int = pydantic.Field(description="The epoch of the latest tree.")
 
 
 class KernelName(Args):
@@ -77,14 +77,19 @@ class KernelName(Args):
 
 
 class WriteKernel(KernelName):
-    source: str
+    source: str = pydantic.Field(
+        description='The whole translation unit, with the entry read_kernel showed (same extern "C" name and '
+        "parameters, in order); a GPU kernel's host and device units joined as read_kernel joined them."
+    )
     language: Literal["cpp", "cuda", "hip"] = pydantic.Field(
         description="cpp for a CPU kernel; for a GPU kernel the dialect read_kernel showed (cuda or hip)."
     )
 
 
 class TuneKernel(KernelName):
-    compilers: list[str] | None = None
+    compilers: list[str] | None = pydantic.Field(
+        None, description="Toolchains to try (gcc, clang, nvcc, hipcc, ...); every one found for the device if omitted."
+    )
 
 
 class Effect(enum.StrEnum):
@@ -104,7 +109,10 @@ class ToolDef(NamedTuple):
 
 TOOLS: dict[str, ToolDef] = {
     "get_cpf": ToolDef(
-        Phase.STRUCTURED, NoArgs, "The program in canonical parallel form, as a labeled tree.", Effect.READ
+        Phase.STRUCTURED,
+        NoArgs,
+        "Start here: the program in canonical parallel form, as a labeled tree headed by its epoch.",
+        Effect.READ,
     ),
     "view_tree": ToolDef(
         Phase.STRUCTURED,
@@ -124,14 +132,27 @@ TOOLS: dict[str, ToolDef] = {
         "Every legal move right now: fusion, fission, interchange, tiling, library expansion and implementation.",
         Effect.READ,
     ),
-    "apply_move": ToolDef(Phase.STRUCTURED, ApplyMove, "Apply one legal move; returns the new tree and performance."),
+    "apply_move": ToolDef(
+        Phase.STRUCTURED,
+        ApplyMove,
+        "Apply one move as list_moves listed it (or with your own tile_sizes); answers with the outcome and the "
+        "whole-program performance. The epoch advances: read the tree again before the next move.",
+    ),
     "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
-    "set_scope": ToolDef(Phase.SCOPES, Labeled, "Make one kernel of the regions the labels name."),
+    "set_scope": ToolDef(
+        Phase.SCOPES,
+        Labeled,
+        "Make one kernel of several top-level doalls of one state, or of a straight run of blocks; answers with the "
+        "kernel's name.",
+    ),
     "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
     "list_kernels": ToolDef(Phase.UNSTRUCTURED, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "read_kernel": ToolDef(Phase.UNSTRUCTURED, KernelName, "A kernel's current source.", Effect.READ),
     "write_kernel": ToolDef(
-        Phase.UNSTRUCTURED, WriteKernel, "Replace a kernel's source; it is built and checked.", Effect.REPLACE
+        Phase.UNSTRUCTURED,
+        WriteKernel,
+        "Replace a kernel's source; it is built, checked against the kernel's oracle and linked only when it matches.",
+        Effect.REPLACE,
     ),
     "tune_kernel": ToolDef(Phase.CODEGEN, TuneKernel, "Sweep compilers and flags for one kernel."),
     "get_performance": ToolDef(

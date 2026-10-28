@@ -1,6 +1,6 @@
 ---
 name: nestforge
-description: "How to read the NestForge tree and which moves rewrite it: fusion, fission and interchange on the program's canonical parallel form."
+description: "How to read the NestForge tree (for loops, doalls, library calls) and pick the moves that rewrite it: fusion, fission, interchange, tiling, library expansion and implementation; with the full tool set, also scopes and kernel code. Read it whenever NestForge tools are in your tool list, even if you only plan to call finalize."
 when: "you drive the NestForge tools: read this before your first view_tree or apply_move."
 applies: {explicit: true}
 ---
@@ -37,8 +37,10 @@ applies: {explicit: true}
 ## Moves
 
 `list_move_kinds` lists every kind with the rows it takes, in order, and the DaCe transformation it runs.
-`list_moves` lists the moves legal right now as `kind` + `labels`; `apply_move` takes one back with the epoch.
-An illegal move is refused with the reason and changes nothing.
+`list_moves` lists the moves legal right now as `kind` + `labels` + `epoch`, with `tile_sizes` on a tiling move (the
+sizes it was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as
+listed, or with your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal
+costs one call, not a broken program.
 
 - Fusion (`for-fusion`, `doall-fusion`): one loop or map instead of two; less memory traffic, intermediates
   become scalars. `doall-fusion` fuses a producer and its consumer (in place when the producer updates the array),
@@ -53,6 +55,9 @@ An illegal move is refused with the reason and changes nothing.
   size per dimension (`[32, 32]`), a for loop one size (`[64]`); a size need not divide the range. A tiled for loop
   keeps its order; interchange then blocks a nest. `untile-doall` takes the tile doall and its point doall back to
   one, `untile-for` the tile for loop.
+- Choosing tile sizes: a tile's data should fit the cache it is meant for (L1 for the innermost tile, about 32 KiB;
+  L2 for the next, about 1 MiB) and its innermost size should be a multiple of the vector width (8 doubles with
+  AVX-512) so no remainder loop runs per tile. `get_performance` after the move tells you whether it paid.
 - `collapse-doalls` merges a doall and the doall directly inside it into one multi-dimensional doall (one parallel
   space); `expand-doall` splits one back into nested doalls.
 - `expand-library`: a `lib_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
@@ -67,11 +72,29 @@ An illegal move is refused with the reason and changes nothing.
 
 ## Flow
 
-1. `get_cpf`, then `view_tree` to open the states and maps worth reading (largest `work=` first).
+1. `get_cpf`, then `view_tree` to open the states and doalls worth reading (largest `work=` first): time spent
+   elsewhere cannot move the total much.
 2. `list_move_kinds` once; then `list_moves`, `apply_move`. `apply_move` returns the performance: keep a move when
    the whole-program time drops, else apply its inverse when `list_moves` offers one.
 3. `run_defaults stage=moves` applies the default fusion; `stage=finish` finishes after your own moves.
 4. `finalize`, then `score` / `submit` with the `library` and `workspace_bytes` it returns.
 
-Scopes (which doalls become one compiled kernel), GPU placement and the compiler configuration are not yours to
-choose here: `get_performance` and `finalize` run their defaults.
+Without `set_scope` in your tool list, scopes (which doalls become one compiled kernel), GPU placement and the
+compiler configuration are not yours to choose: `get_performance` and `finalize` run their defaults.
+
+## Scopes and kernels (when your tool list has them)
+
+Settle the moves first: a move or a new scope rebuilds the kernels it touches, and the sources you wrote for them
+are dropped.
+
+- `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
+  a straight run of blocks. Group doalls that pass an array between them: inside one kernel you can keep that array in
+  registers or cache instead of memory. `unset_scope` undoes it.
+- `list_kernels` shows each kernel's device, its arguments and which kernels produce them; start with the largest
+  share in `get_performance`.
+- `read_kernel` gives the source NestForge rendered. `write_kernel` takes a replacement with the same entry
+  (`extern "C"` name and parameters, in order) in `cpp` for a CPU kernel or the dialect `read_kernel` showed (`cuda`,
+  `hip`) for a GPU one. It is built and run against the kernel's oracle, and linked only when it matches, so a wrong
+  kernel never reaches `finalize`.
+- `tune_kernel` sweeps compilers and flags for one kernel and links the fastest correct build; run it last, on the
+  source you keep.
