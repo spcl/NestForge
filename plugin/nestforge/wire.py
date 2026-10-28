@@ -88,11 +88,17 @@ class ToolDef(NamedTuple):
 
 TOOLS: dict[str, ToolDef] = {
     "get_cpf": ToolDef(Phase.STRUCTURED, NoArgs, "The program in canonical parallel form, as a labeled tree."),
-    "view_tree": ToolDef(Phase.STRUCTURED, ViewTree, "Expand or collapse tree rows, then show the tree."),
+    "view_tree": ToolDef(
+        Phase.STRUCTURED,
+        ViewTree,
+        "Expand or collapse tree rows (loops, states, maps, library calls), then show the tree.",
+    ),
     "list_move_kinds": ToolDef(
         Phase.STRUCTURED, NoArgs, "Every move kind: the tree rows it takes, the transformation it runs, what it does."
     ),
-    "list_moves": ToolDef(Phase.STRUCTURED, ListMoves, "Every legal fusion, fission and interchange right now."),
+    "list_moves": ToolDef(
+        Phase.STRUCTURED, ListMoves, "Every legal fusion, fission, interchange and library expansion right now."
+    ),
     "apply_move": ToolDef(Phase.STRUCTURED, ApplyMove, "Apply one legal move; returns the new tree and performance."),
     "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
     "set_scope": ToolDef(Phase.SCOPES, Labeled, "Make one kernel of the regions the labels name."),
@@ -104,5 +110,7 @@ TOOLS: dict[str, ToolDef] = {
     "get_performance": ToolDef(
         Phase.ANY, NoArgs, "Whole-program time, offloading (devices, transfers) and per-kernel times, with hints."
     ),
-    "finalize": ToolDef(Phase.ANY, NoArgs, "Assemble the program into one source for score and submit."),
+    "finalize": ToolDef(
+        Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI; send its library and workspace_bytes."
+    ),
 }

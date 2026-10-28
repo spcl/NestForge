@@ -22,27 +22,10 @@ method = "nestforge"
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
     "finalize"]
 
-# The agent writes no code. In-process prompt: no build flags, no hand-optimization or language guide, a delivery
-# that is finalize's library. Cluster prompt (agent_*): no build line, syntax check or index-buffer rule; sending,
-# failures, end to end and keep improving are NestForge's. Both say what NestForge does after the intro. The user's
-# own prompt keys still win.
+# The agent writes no code: prompts/nestforge.yaml reshapes both prompts (the user's own overlays still win).
 [packets.nestforge.prompt]
 template_dirs = ["prompts"]
-append = { intro = "nestforge/what_it_does.md", agent_intro = "nestforge/what_it_does.md" }
-
-[packets.nestforge.prompt.sections]
-build_flags = false
-optimizations = false
-lang_cpp = false
-lang_fortran = false
-delivery = "nestforge/delivery.j2"
-agent_build = false
-agent_syntax_check = false
-agent_index_buffers = false
-agent_sending_code = "nestforge/agent/sending_code.md"
-agent_failures = "nestforge/agent/failures.md"
-agent_end_to_end = "nestforge/agent/end_to_end.md"
-agent_keep_improving = "nestforge/agent/keep_improving.md"
+overlays = ["prompts/nestforge.yaml"]
 
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.
