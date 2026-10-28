@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Structure inspection and fusion diagnosis: describe_graph (CFG tree + per-nest read/write sets) and the
-``map-fusion`` plan of a pair ("yes" or a reason). Listing uses the same plan, so a "yes" here is a listed move
+``doall-fusion`` plan of a pair ("yes" or a reason). Listing uses the same plan, so a "yes" here is a listed move
 and a reason marks a pair that is never listed.
 """
 
@@ -20,8 +20,8 @@ N = dace.symbol("N")
 
 
 def can_fuse(first, second) -> str:
-    """``"yes"`` when ``map-fusion`` plans a move for the two ``(node, state)`` rows, else its reason."""
-    plan = plan_move("map-fusion", [first, second])
+    """``"yes"`` when ``doall-fusion`` plans a move for the two ``(node, state)`` rows, else its reason."""
+    plan = plan_move("doall-fusion", [first, second])
     return "yes" if isinstance(plan, Rewrite) else plan
 
 
@@ -98,7 +98,7 @@ def test_a_live_output_between_two_maps_fuses_and_keeps_its_values():
     reference.name = "live_output_pair_reference"
     (s1, m1), (s2, m2) = map_entries(sdfg)
 
-    plan = plan_move("map-fusion", [(m1, s1), (m2, s2)])
+    plan = plan_move("doall-fusion", [(m1, s1), (m2, s2)])
 
     assert isinstance(plan, Rewrite), plan
     plan.commit()
@@ -148,7 +148,7 @@ def test_two_row_recurrences_fuse_and_keep_their_values():
     reference.name = "row_recurrences_reference"
     (s1, m1), (s2, m2) = map_entries(sdfg)
 
-    plan = plan_move("map-fusion", [(m1, s1), (m2, s2)])
+    plan = plan_move("doall-fusion", [(m1, s1), (m2, s2)])
 
     assert isinstance(plan, Rewrite), plan
     plan.commit()

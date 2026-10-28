@@ -59,7 +59,7 @@ def test_listed_moves_grow_with_the_maps_not_with_their_pairs(cloudsc_monolith: 
     listed = Counter(move.kind for move in session.list_moves())
 
     assert set(listed) <= set(MOVE_SHAPES)
-    assert 0 < listed["map-fusion"] <= 2 * maps, listed
+    assert 0 < listed["doall-fusion"] <= 2 * maps, listed
 
 
 def test_the_first_listed_move_of_every_kind_applies_and_leaves_a_valid_program(cloudsc_monolith: Program) -> None:

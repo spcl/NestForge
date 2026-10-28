@@ -15,6 +15,7 @@ from http import HTTPMethod, HTTPStatus
 
 import pytest
 from dace.codegen.common import get_gpu_backend
+from hpcagent_agent.plugins import Plugin
 from hpcagent_agent.tools import registry
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
@@ -59,16 +60,8 @@ class FakeJudge:
 
 
 @pytest.fixture(scope="module")
-def loaded() -> Iterator[None]:
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
-        plugins.register.cache_clear()
-        plugins.load.cache_clear()
-        found = plugins.load()
-        from hpcagent_agent import plugins as agent_plugins
-
-        agent_plugins.import_tools()
-    assert [plugin.name for plugin in found if plugin.root == PLUGIN] == ["nestforge"]
+def loaded(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[None]:
+    assert [plugin.name for plugin in nestforge_plugin if plugin.root == PLUGIN] == ["nestforge"]
     yield
     # every session process this module started, so no other test inherits a live child
     episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
@@ -103,7 +96,7 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     epoch = 1  # get_cpf canonicalizes once
     tree = post("view_tree", episode="episode-scope", expand=["state0_0"], epoch=epoch).answer["result"]
-    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("kernel")]
+    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
 
     scoped = post("set_scope", episode="episode-scope", labels=maps[:2], epoch=epoch).answer["result"]
     unset = post("unset_scope", episode="episode-scope", name=scoped["reason"], epoch=epoch + 1).answer["result"]
@@ -125,6 +118,27 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
         params = inspect.signature(CALLS[tool]).parameters
         missing = TOOLS[tool].args.model_fields.keys() - params.keys()
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
+
+
+def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS
+
+    packet = tomllib.loads((PLUGIN / "plugin.toml").read_text())["packets"]["nestforge-full"]["tools"]
+
+    assert sorted(packet) == sorted(TOOLS)
+    specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
+    hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
+    assert hints.keys() == TOOLS.keys()
+    assert {name for name, hint in hints.items() if hint.read_only} == {
+        "get_cpf",
+        "view_tree",
+        "list_move_kinds",
+        "list_moves",
+        "list_kernels",
+        "read_kernel",
+        "get_performance",
+    }
+    assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 
 
 def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:

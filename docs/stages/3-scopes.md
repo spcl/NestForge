@@ -11,7 +11,7 @@ The default (`default_units` in `nestforge/stages/scopes.py`) walks the program'
 
 | top-level block | scopes |
 |---|---|
-| state | each parallel map; sequential work stays in the program |
+| state | each parallel map and each library call (a black-box doall); sequential work stays in the program |
 | loop holding no parallel map | the loop, one sequential kernel (placement keeps it on the CPU) |
 | loop whose body holds only parallel maps and loops | each map; each loop in it opened the same way one level deeper (its maps), or the loop when it cannot open |
 | loop whose body mixes in other work | the loop |
@@ -20,7 +20,7 @@ The default (`default_units` in `nestforge/stages/scopes.py`) walks the program'
 Before that, a parallel map holding more than `Targets.max_statements` statements (tasklets, default 200) is split by
 `subgraph-fission`, at most twice, at the cut between its body blocks that leaves each piece a quarter of the
 statements and passes the fewest containers from one piece to the other. Loops and conditionals are not split.
-`set_scope(labels, epoch)` makes one scope of several top-level maps of one state or of a straight run of
+`set_scope(labels, epoch)` makes one scope of several top-level doalls (maps, library calls) of one state or of a straight run of
 blocks of one control-flow region, at any depth (a loop and the state after it inside a time loop): the way to fuse
 what no stage 2 move can, by writing the fused kernel in stage 5. The labels are one list, as the tree prints them.
 It is refused, and nothing changes, when the blocks sit at different levels, when another block or a conditional edge

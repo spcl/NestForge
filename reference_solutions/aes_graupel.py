@@ -10,5 +10,5 @@ CONFIGS = (Context("cpu", 72, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("map-fission", writes=["__inl1_sink", "__inl1_sx2x"]))
+    s.apply(s.pick("doall-fission", writes=["__inl1_sink", "__inl1_sx2x"]))
     s.defaults()

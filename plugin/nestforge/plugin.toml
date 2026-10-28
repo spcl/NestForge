@@ -2,6 +2,18 @@
 name = "nestforge"
 description = "Whole-program DaCe optimization: legal moves, scoped kernels, placement, with performance feedback."
 
+# The packages nestforge and nestforge_bench, built from the repository into the judge's interpreter; their
+# dependencies are the benchmark's own, at its pins.
+[install]
+root = "../.."
+command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
+
+# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, and the reference column.
+[ci]
+optimizers = ["dace_cpu_canon_nestforge_stub", "dace_cpu_canon_nestforge_reference"]
+kernels = ["jacobi_1d", "tsvc_2_s231"]
+language = "cpp"
+
 [packets.nestforge]
 name = "NestForge"
 method = "nestforge"
@@ -10,6 +22,23 @@ method = "nestforge"
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "get_performance",
     "finalize"]
 
+# The agent writes no code: prompts/nestforge.yaml reshapes both prompts (the user's own overlays still win).
+[packets.nestforge.prompt]
+template_dirs = ["prompts"]
+overlays = ["prompts/nestforge.yaml"]
+
+# Every phase: scopes, kernel sources and compiler sweeps too, besides the structured phase's tools.
+[packets.nestforge-full]
+name = "NestForge (all phases)"
+method = "nestforge-full"
+tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults", "set_scope",
+    "unset_scope", "list_kernels", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "finalize"]
+
+# The structured packet's overlay, then what the other phases change in it.
+[packets.nestforge-full.prompt]
+template_dirs = ["prompts"]
+overlays = ["prompts/nestforge.yaml", "prompts/nestforge-full.yaml"]
+
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.
 [flavors.nestforge_reference]
@@ -17,3 +46,10 @@ name = "NestForge reference"
 full_name = "NestForge (reference moves)"
 optimizer = "nestforge_bench:ReferenceOptimizer"
 extends = ["dace_cpu_canon", "dace_gpu_canon"]
+
+# A stand-in for an LLM agent on the packet, for CI: seeded legal moves through the tools, then finalize.
+[flavors.nestforge_stub]
+name = "NestForge stub"
+full_name = "NestForge (stub agent)"
+optimizer = "nestforge_bench:StubAgent"
+extends = ["dace_cpu_canon"]

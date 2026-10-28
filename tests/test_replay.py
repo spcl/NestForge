@@ -58,30 +58,30 @@ def test_context_parse_round_trip() -> None:
 
 def test_pick_finds_the_one_interchange() -> None:
     session = s231_session()
-    move = Script(session).pick("interchange-loop-map", reads=["bb"], writes=["aa"])
-    assert move.kind == "interchange-loop-map"
+    move = Script(session).pick("interchange-for-doall", reads=["bb"], writes=["aa"])
+    assert move.kind == "interchange-for-doall"
     assert move.epoch == session.epoch
     assert len(move.labels) == 2
 
 
 def test_pick_refuses_a_filter_nothing_matches() -> None:
     script = Script(s231_session())
-    with pytest.raises(ReplayError, match="no move of interchange-loop-map"):
-        script.pick("interchange-loop-map", writes=["bb"])
+    with pytest.raises(ReplayError, match="no move of interchange-for-doall"):
+        script.pick("interchange-for-doall", writes=["bb"])
 
 
 def test_apply_refuses_a_stale_move() -> None:
     script = Script(s231_session())
-    move = script.pick("interchange-loop-map")
+    move = script.pick("interchange-for-doall")
     script.apply(move)
     with pytest.raises(ReplayError, match="stale"):
         script.apply(move)
-    assert [m.kind for m in script.applied] == ["interchange-loop-map"]
+    assert [m.kind for m in script.applied] == ["interchange-for-doall"]
 
 
 def test_apply_after_finish_is_refused() -> None:
     script = Script(s231_session())
-    move = script.pick("interchange-loop-map")
+    move = script.pick("interchange-for-doall")
     script.finish()
     with pytest.raises(ReplayError, match="after finish"):
         script.apply(move)
@@ -95,7 +95,7 @@ def test_s231_reference_puts_the_loop_inside_the_map() -> None:
     reference = Script(session.trial())
     solution.solve(reference, Context("cpu", 72, "S"))
     reference.finish()
-    assert [m.kind for m in reference.applied] == ["interchange-loop-map"]
+    assert [m.kind for m in reference.applied] == ["interchange-for-doall"]
     assert not top_loops(reference.session), "the j loop moved into the map"
 
 

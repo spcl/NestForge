@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dace
+from dace.codegen.common import get_gpu_backend
 
 from nestforge.records import Record
 
@@ -39,8 +40,8 @@ class Final(Record):
 
 def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_dir: Path) -> Final:
     """Render ``sdfg`` (every kernel already bound to its archive) by CPF in the bench C ABI and build it into
-    ``out_dir``. On a GPU target with device code the form is a C++ host unit and a HIP device unit, built into one
-    library as the judge builds a two-unit GPU submission; without device code it is the CPU form. ``kernels`` maps each kernel to the variant that built it,
+    ``out_dir``. On a GPU target with device code the form is a C++ host unit and a device unit in the GPU backend's
+    language (CUDA or HIP), built into one library as the judge builds a two-unit GPU submission; without device code it is the CPU form. ``kernels`` maps each kernel to the variant that built it,
     for the answer only."""
     from hpcagent_bench import languages
     from hpcagent_bench.categories import Language
@@ -60,10 +61,11 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
     host.write_text(form.code)
     lib = out_dir / f"lib{spec.module_name}.so"
     if form.device_code:
-        device = out_dir / f"{spec.module_name}_device.{languages.LANG_EXT[Language.HIP]}"
+        dialect = Language[get_gpu_backend().upper()]
+        device = out_dir / f"{spec.module_name}_device.{languages.LANG_EXT[dialect]}"
         device.write_text(form.device_code)
         commands = languages.build_shared_lib_commands(
-            Language.HIP, device, lib, extra_link=list(form.link), extra_sources=[host]
+            dialect, device, lib, extra_link=list(form.link), extra_sources=[host]
         )
     else:
         commands = languages.build_shared_lib_commands(Language.CPP, host, lib, extra_link=list(form.link))

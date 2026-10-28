@@ -9,4 +9,4 @@ CONFIGS = (Context("cpu", 72, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("interchange-loop-map", reads=["bb"], writes=["aa"]))
+    s.apply(s.pick("interchange-for-doall", reads=["bb"], writes=["aa"]))

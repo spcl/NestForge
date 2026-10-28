@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -395,8 +396,33 @@ def needed_libraries(shared: Path) -> list[str]:
 #: Distinct warning kinds reported per tool before the rest are only counted.
 WARN_BUDGET: int = 5
 
-#: tool -> the warning kinds reported, in order.
-WARNED: dict[str, dict[str, None]] = {}
+
+class WarningLedger:
+    """The warning kinds reported per tool, in order. Compiles run on several threads, so every access holds
+    ``lock``."""
+
+    __slots__ = ("kinds", "lock")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.kinds: dict[str, dict[str, None]] = {}
+
+    def first_report(self, tool: str, kinds: str) -> bool:
+        """Record ``kinds`` for ``tool``; whether it is new and within :data:`WARN_BUDGET`."""
+        with self.lock:
+            seen = self.kinds.setdefault(tool, {})
+            if kinds in seen or len(seen) >= WARN_BUDGET:
+                return False
+            seen[kinds] = None
+            return True
+
+    def clear(self) -> None:
+        with self.lock:
+            self.kinds.clear()
+
+
+#: The process's ledger: a sweep of any session in this process reports a warning kind once.
+WARNED = WarningLedger()
 
 
 def warning_kinds(stderr: str) -> str:
@@ -409,10 +435,8 @@ def warn_once(tool: str, stderr: str) -> None:
     """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool, since
     a sweep compiles hundreds of cells."""
     kinds = warning_kinds(stderr)
-    seen = WARNED.setdefault(tool, {})
-    if kinds in seen or len(seen) >= WARN_BUDGET:
+    if not WARNED.first_report(tool, kinds):
         return
-    seen[kinds] = None
     warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-ERROR_TAIL:]}")
 
 

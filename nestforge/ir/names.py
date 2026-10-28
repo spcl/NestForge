@@ -9,6 +9,7 @@ import heapq
 from typing import Any
 
 import dace
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import (
     AbstractControlFlowRegion,
@@ -55,6 +56,16 @@ def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
 
 
+def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.LibraryNode]:
+    """The doalls of ``state`` not nested in a map: its maps, and its library calls (each a black-box doall; a
+    kernel NestForge built is not one), in ``scope_children`` order."""
+    return [
+        n
+        for n in state.scope_children()[None]
+        if isinstance(n, nodes.MapEntry) or (isinstance(n, nodes.LibraryNode) and not isinstance(n, ExternalCall))
+    ]
+
+
 def top_level_nsdfgs(sdfg: dace.SDFG) -> list[tuple[SDFGState, nodes.NestedSDFG]]:
     """Every ``NestedSDFG`` outside all map scopes; one inside a map is a kernel body."""
     return [
@@ -79,9 +90,10 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 
 
 def block_kind(block: ControlFlowBlock) -> str:
-    """The tree keyword of a block; a loop with both an init and an update statement is a ``for``."""
+    """The tree keyword of a block: every sequential loop (for or while) is a ``for``; a parallel map is a ``doall``
+    (:func:`relabel_state`), a loop proven to have independent iterations. A kernel is a scope, not a row."""
     if isinstance(block, LoopRegion):
-        return "for" if block.init_statement is not None and block.update_statement is not None else "while"
+        return "for"
     if isinstance(block, ConditionalBlock):
         return "if"
     if isinstance(block, ContinueBlock):
@@ -96,8 +108,9 @@ def block_kind(block: ControlFlowBlock) -> str:
 
 
 def normalize_labels(sdfg: dace.SDFG) -> None:
-    """Rename every block and map to ``<kind><level>_<index>``, counted per kind and level over the whole program.
-    A library node keeps its label unless an earlier one holds it."""
+    """Rename every block and map to ``<kind><level>_<index>`` and every library call to
+    ``lib_<family><level>_<index>``, counted per kind and level over the whole program. A kernel NestForge built
+    (``ExternalCall``) keeps its label unless an earlier one holds it."""
     relabel_cfg(sdfg, 0, {})
     unique_library_labels(sdfg)
 
@@ -113,6 +126,14 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
             # though LibraryNode's label is a writable Property
             node.name = node.label = find_new_name(node.label, taken)  # pyright: ignore[reportAttributeAccessIssue]
         taken[node.label] = None
+
+
+def library_family(node: nodes.LibraryNode) -> str:
+    """The DaCe library ``node`` comes from (``blas``, ``fft``, ``linalg``, ...); a standard node is named by its own
+    kind (``reduce``, ``scan``, ``fill``)."""
+    parts = type(node).__module__.split(".")
+    package = parts[2] if parts[:2] == ["dace", "libraries"] and len(parts) > 2 else "lib"
+    return type(node).__name__.lower() if package == "standard" else package
 
 
 def next_label(kind: str, level: int, counters: dict[tuple[str, int], int]) -> str:
@@ -150,9 +171,12 @@ def relabel_state(state: SDFGState, level: int, counters: dict[tuple[str, int], 
     def descend(scope: nodes.MapEntry | None, depth: int) -> None:
         for node in children[scope]:
             if isinstance(node, nodes.MapEntry):
-                node.map.label = next_label("kernel", depth, counters)
+                node.map.label = next_label("doall", depth, counters)
                 descend(node, depth + 1)
             elif isinstance(node, nodes.NestedSDFG):
                 relabel_cfg(node.sdfg, depth, counters)
+            elif isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall):
+                # LibraryNode sets name and label alike; keep them equal (see unique_library_labels)
+                node.name = node.label = next_label(f"lib_{library_family(node)}", depth, counters)  # pyright: ignore[reportAttributeAccessIssue]
 
     descend(None, level)

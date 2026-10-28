@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""interchange-loop-map builds a nest inside a map; its outer memlets must name what one iteration touches, not the
+"""interchange-for-doall builds a nest inside a map; its outer memlets must name what one iteration touches, not the
 whole array (#24): fusions and DaCe's schedule inference read them."""
 
 import dace
@@ -44,7 +44,7 @@ def assert_per_iteration(memlets: list[tuple[str, str]]) -> None:
 def test_the_nest_an_interchange_builds_gets_per_iteration_memlets():
     s = Session(row_recurrence.to_sdfg(simplify=True), targets=Targets(gpu=False), sizes={"N": SIZE})
     s.canonicalize()
-    (move,) = s.list_moves("interchange-loop-map")
+    (move,) = s.list_moves("interchange-for-doall")
     assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
     assert_per_iteration(nest_memlets(s.sdfg))
     s.finish_moves()

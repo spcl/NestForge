@@ -175,6 +175,49 @@ def test_a_sweeping_session_relinks_the_winner_its_trial_swept_after_the_trial_i
     assert_program_computes(session.sdfg)
 
 
+def computed_bound_sdfg() -> dace.SDFG:
+    """b[i] = 2 a[i] for i < m, where m = N - 1 is assigned on an interstate edge: only the running program has it."""
+    sdfg = dace.SDFG("computed_bound")
+    sdfg.add_array("a", [N], dace.float64)
+    sdfg.add_array("b", [N], dace.float64)
+    sdfg.add_symbol("m", dace.int64)
+    first = sdfg.add_state("first")
+    body = sdfg.add_state_after(first, "body", assignments={"m": "N - 1"})
+    body.add_mapped_tasklet(
+        "double",
+        {"i": "0:m"},
+        {"x": dace.Memlet("a[i]")},
+        "y = 2.0 * x",
+        {"y": dace.Memlet("b[i]")},
+        external_edges=True,
+    )
+    return sdfg
+
+
+def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_5s_configuration(tmp_path):
+    """The sweep's oracle has no value for a symbol the program computes (CloudSC's ``jmelt``), so such a kernel
+    gets the first configuration instead of a sweep."""
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64}, codegen="sweep")
+    (kernel,) = session.default_scopes()
+
+    session.default_build(kernel.name)
+
+    build = session.builds[kernel.name]
+    assert "m" in build.source.boundary.symbols
+    assert build.variant == session.first_variant(build.source.device)
+    assert build.verdict is None, "no sweep timed it"
+
+
+def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_named(tmp_path):
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
+    (kernel,) = session.default_scopes()
+
+    with pytest.raises(ValueError, match=r"\['m'\].*cannot be swept"):
+        session.sweep(kernel.name, reps=1)
+
+    assert kernel.name not in session.builds
+
+
 def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
     session, name = one_kernel_session(tmp_path)
 

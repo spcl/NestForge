@@ -9,12 +9,12 @@ KERNEL = "cloudsc_nproma"
 CONFIGS = (Context("cpu", 1, "M"), Context("cpu", 72, "L"))
 CI_SKIP = (
     "cloudsc_nproma is not in HPCAgent-Bench main (it came with HPCAgent-Bench#124, which was reverted; files at "
-    "d22922c5c), and on DaCe 7683e143 its map-fission (MapFission) reads and writes pfplsx through one access node, "
+    "d22922c5c), and on DaCe 7683e143 its doall-fission (MapFission) reads and writes pfplsx through one access node, "
     "a cyclic state the stages after fusion reject"
 )
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("map-fission", writes=["pfplsx", "pcov"]))
-    s.apply(s.pick("interchange-map-loop", writes=["pfplsx"]))
+    s.apply(s.pick("doall-fission", writes=["pfplsx", "pcov"]))
+    s.apply(s.pick("interchange-doall-for", writes=["pfplsx"]))
     s.finish()

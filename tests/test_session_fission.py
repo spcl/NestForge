@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ``map-fission`` move on a map whose body is one nested SDFG with two independent statements."""
+"""The ``doall-fission`` move on a map whose body is one nested SDFG with two independent statements."""
 
 import dace
 import numpy as np
@@ -37,7 +37,7 @@ def two_statement_map() -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
 
 def multi_statement_map_sdfg() -> dace.SDFG:
     """``two_statement_map`` with its body wrapped into a NestedSDFG -- MapFission's map-with-nested-SDFG
-    pattern, the shape the ``map-fission`` move takes."""
+    pattern, the shape the ``doall-fission`` move takes."""
     sdfg, state, me = two_statement_map()
     nest_state_subgraph(sdfg, state, state.scope_subgraph(me, include_entry=False, include_exit=False))
     sdfg.validate()
@@ -84,7 +84,7 @@ def test_two_statement_map_starts_as_one_map_two_statements():
 
 def test_map_fission_is_listed_for_the_multi_output_map():
     session = Session(multi_statement_map_sdfg())
-    (move,) = session.list_moves("map-fission")
+    (move,) = session.list_moves("doall-fission")
     assert move.labels == (all_map_entries(session.sdfg)[0].map.label,)
 
 
@@ -92,7 +92,7 @@ def test_map_fission_splits_the_map_by_statement_and_stales_prior_labels_and_mat
     session = Session(multi_statement_map_sdfg())
     assert len(all_map_entries(session.sdfg)) == 1
 
-    (move,) = session.list_moves("map-fission")
+    (move,) = session.list_moves("doall-fission")
     result = session.apply_move(move.kind, move.labels, move.epoch)
 
     assert (result.status, session.epoch) == (MoveStatus.APPLIED, 1)

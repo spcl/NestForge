@@ -108,7 +108,7 @@ def assert_same_values(reference: dace.SDFG, grouped: dace.SDFG, names: tuple[st
 def test_two_maps_no_fusion_accepts_become_one_kernel():
     """``T`` is a program output, so vertical fusion refuses the pair; one kernel may still compute both."""
     session, reference = session_and_reference(live_intermediate)
-    assert session.list_moves("map-fusion") == [], "the fixture must offer no fusion, else it tests nothing"
+    assert session.list_moves("doall-fusion") == [], "the fixture must offer no fusion, else it tests nothing"
     labels = map_labels(session)
 
     result = session.set_scope(labels, session.epoch)

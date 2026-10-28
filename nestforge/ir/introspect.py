@@ -403,8 +403,8 @@ def innermost(loop: LoopRegion) -> bool:
     return not any(isinstance(b, LoopRegion) for b in loop.all_control_flow_blocks(recursive=True))
 
 
-def kernel_count(state: SDFGState) -> int:
-    """The top-level maps and library nodes of ``state``."""
+def doall_count(state: SDFGState) -> int:
+    """The top-level doalls of ``state``: maps, and library calls, each a black-box doall."""
     return sum(
         isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) and state.entry_node(n) is None for n in state.nodes()
     )
@@ -414,8 +414,8 @@ def block_row(tree: Tree, block: ControlFlowBlock) -> str:
     """A block's row: :func:`block_line`, then its size when it is collapsed or innermost, then its cost."""
     text = block_line(block, tree.defs)
     if isinstance(block, SDFGState):
-        count = kernel_count(block)
-        return f"{text}  kernels={count}" if count and not tree.shows(block.label) else text
+        count = doall_count(block)
+        return f"{text}  doalls={count}" if count and not tree.shows(block.label) else text
     if isinstance(block, LoopRegion):
         if innermost(block):
             text += f"  num_states={state_count(block)}"
@@ -435,7 +435,7 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> s
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     reads, writes = nest_reads_writes(state, node)
     if isinstance(node, nodes.LibraryNode):
-        return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
+        return f"{node.label}  LIBNODE {type(node).__name__}  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

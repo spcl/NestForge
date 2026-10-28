@@ -9,6 +9,6 @@ CONFIGS = (Context("cpu", 72, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("loop-fission"))
-    s.apply(s.pick("interchange-loop-map", writes=["aa"]))
-    s.apply(s.pick("interchange-loop-map", writes=["bb"]))
+    s.apply(s.pick("for-fission"))
+    s.apply(s.pick("interchange-for-doall", writes=["aa"]))
+    s.apply(s.pick("interchange-for-doall", writes=["bb"]))

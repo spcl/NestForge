@@ -21,15 +21,17 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 ## Agents: the HPCAgent-Bench plugin
 
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
-run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). The packet exposes the
-structured phase; its skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and
-the moves. Scopes, placement and kernel builds run their defaults in `get_performance` and `finalize`.
+run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). The `nestforge` packet
+exposes the structured phase; scopes, placement and kernel builds run their defaults in `get_performance` and
+`finalize`. The `nestforge-full` packet exposes every phase: the agent may also set scopes and write and tune kernels.
+The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
+tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 
-| Phase | Tools |
-|---|---|
-| structured (stages 1-2), in the packet | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` |
-| any, in the packet | `get_performance`, `finalize` |
-| served, not in the packet | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` |
+| Phase | Tools | Packets |
+|---|---|---|
+| structured (stages 1-2) | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` | both |
+| any | `get_performance`, `finalize` | both |
+| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` |
 
 `apply_move`, `run_defaults`, `write_kernel`, `tune_kernel` and `get_performance` answer with
 `Session.performance()`: the whole program's time and
@@ -54,7 +56,7 @@ On `fuse_diamond`:
 ```
 SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=1
 `- state0_0
-   `- kernel1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
+   `- doall1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
 ```
 
 ## Install and test

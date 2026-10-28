@@ -10,10 +10,10 @@ from collections.abc import Sequence
 #: FP modes, strictest first.
 FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma", "fast-math")
 
-#: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` evaluates in the oracle's order, so only the
-#: dtype floor applies.
+#: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` keeps every operation's rounding but not the
+#: order of a reduction, which a parallel or library sum changes (NumPy sums pairwise): a few dozen ULP of float64.
 FP_RTOL: dict[str, float] = {
-    "strict-ieee": 0.0,
+    "strict-ieee": 1e-14,
     "contract-fma": 1e-13,
     "fast-math": 1e-5,
 }

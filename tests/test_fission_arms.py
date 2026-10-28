@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The stage 2 fission moves (:mod:`nestforge.stages.moves`): ``loop-fission`` and ``map-fission`` applied until
+"""The stage 2 fission moves (:mod:`nestforge.stages.moves`): ``for-fission`` and ``doall-fission`` applied until
 nothing splits, and the agent's flow of fission then fusion. Value-preservation (bit-exact vs the un-fissioned
 reference) is the invariant on every case.
 """
@@ -95,7 +95,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
 
 def map_with_nested_body():
     """A map whose sole body child is a NestedSDFG holding two independent output groups -- MapFission's
-    map-with-nested-SDFG pattern, the shape the ``map-fission`` move takes."""
+    map-with-nested-SDFG pattern, the shape the ``doall-fission`` move takes."""
     sdfg = dace.SDFG("map_with_nested_body")
     sdfg.add_array("a", [N], f64)
     sdfg.add_array("b", [N], f64)
@@ -122,9 +122,9 @@ def test_map_fission_is_listed_for_a_nested_sdfg_body_and_applies():
     # map-with-subgraph pattern instead, the lone NestedSDFG body reads as a single component and no move is listed.
     sdfg, me = map_with_nested_body()
     normalize_labels(sdfg)
-    moves = legal_moves(sdfg, "map-fission")
+    moves = legal_moves(sdfg, "doall-fission")
 
-    assert moves == [("map-fission", (me.map.label,))]
+    assert moves == [("doall-fission", (me.map.label,))]
     assert apply_move(sdfg, moves[0]) == "MapFission"
     sdfg.validate()
 
@@ -147,7 +147,7 @@ def test_map_fission_no_moves_without_independent_groups():
         for i in dace.map[0:N]:
             b[i] = a[i] + 1.0
 
-    assert legal_moves(one_statement_map.to_sdfg(simplify=True), "map-fission") == []
+    assert legal_moves(one_statement_map.to_sdfg(simplify=True), "doall-fission") == []
 
 
 def test_fission_no_op_on_single_statement():

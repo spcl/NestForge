@@ -38,7 +38,7 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 GOLDEN = """\
 SDFG 'shaped'
 |- state0_0
-|  `- kernel1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|  `- doall1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
 `- for0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
@@ -52,7 +52,7 @@ SDFG 'shaped'
 OPENED = """\
 SDFG 'shaped'
 |- state0_0
-|  `- kernel1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|  `- doall1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
 |     : test_tree_view_shaped_A_index = A[i]
 |     : B_slice = test_tree_view_shaped_A_index + 1.0
 |     : B[i] = B_slice
@@ -68,7 +68,7 @@ SDFG 'shaped'
 #: What an agent sees before it expands anything: every block, no state's kernels.
 COLLAPSED = """\
 SDFG 'shaped'
-|- state0_0  kernels=1
+|- state0_0  doalls=1
 `- for0_0  i=1:20  num_states=3  work=19 depth=19
    |- state1_0
    `- if1_0
@@ -108,7 +108,7 @@ def test_every_line_is_a_guide_then_one_labelled_thing():
     for line in tree_of(shaped).splitlines()[1:]:
         assert re.match(
             r"^(\|  |   )*(\|- |`- )"
-            r"(state|for|while|if|block|continue|break|return|kernel)\d+_\d+\b",
+            r"(state|for|if|block|continue|break|return|doall)\d+_\d+\b",
             line,
         ), line
 
@@ -386,7 +386,7 @@ def test_a_kernel_source_is_a_whole_module_not_a_fragment():
     exist inside their headers. The representation has to be something an agent can run."""
     _, _, source = source_of_first_kernel(shaped)
     assert source.startswith("import numpy as np")
-    assert "\ndef kernel" in source
+    assert "\ndef doall" in source
     compile(source, "<kernel>", "exec")  # syntactically a module, not a snippet
 
 
@@ -395,7 +395,7 @@ def test_a_kernel_source_runs_with_nothing_injected():
     _, _, source = source_of_first_kernel(matvec)
     namespace = {}
     exec(source, namespace)  # a bare dict: only what the source itself defines
-    assert "np" in namespace and any(k.startswith("kernel") and callable(v) for k, v in namespace.items())
+    assert "np" in namespace and any(k.startswith("doall") and callable(v) for k, v in namespace.items())
 
 
 def test_a_kernel_source_computes_what_the_sdfg_computes():
@@ -404,7 +404,7 @@ def test_a_kernel_source_computes_what_the_sdfg_computes():
     sdfg, _, source = source_of_first_kernel(matvec)
     namespace = {}
     exec(source, namespace)
-    kernel = next(v for k, v in namespace.items() if k.startswith("kernel") and callable(v))
+    kernel = next(v for k, v in namespace.items() if k.startswith("doall") and callable(v))
 
     A = np.linspace(0.5, 4.0, 32).reshape(8, 4).copy()
     B = np.linspace(1.0, 2.0, 4).copy()
@@ -433,7 +433,7 @@ def test_a_kernel_source_takes_a_symbol_only_its_body_reads():
     _, _, source = source_of_first_kernel(last_column)
     namespace = {}
     exec(source, namespace)
-    kernel = next(v for k, v in namespace.items() if k.startswith("kernel") and callable(v))
+    kernel = next(v for k, v in namespace.items() if k.startswith("doall") and callable(v))
     A, B = np.arange(12, dtype=np.float64).reshape(3, 4).copy(), np.zeros(3)
 
     kernel(A=A, B=B, M=4, N=3)

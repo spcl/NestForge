@@ -65,7 +65,7 @@ def test_fuse_and_finish_redrains_legal_fusions_after_fission():
     assert fission_to_fixpoint(sdfg) >= 1
     assert map_count(sdfg) == 2
     reopened = fusion_moves(sdfg)
-    assert [kind for kind, _ in reopened] == ["map-fusion"]
+    assert [kind for kind, _ in reopened] == ["doall-fusion"]
 
     fuse_and_finish(sdfg, targets)
     assert map_count(sdfg) == 1

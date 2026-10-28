@@ -13,9 +13,9 @@ def test_every_move_kind_is_listed_with_the_tree_rows_it_takes_in_order() -> Non
     sut = {kind.kind: kind for kind in move_kinds()}
 
     assert list(sut) == list(MOVE_SHAPES)
-    assert sut["subgraph-fission"].rows == ("kernel", "state")
-    assert sut["interchange-loop-map"].rows == ("for", "kernel")
-    assert sut["map-fission"].runs == "MapFission" and "map-fusion" in sut["map-fission"].does
+    assert sut["subgraph-fission"].rows == ("doall", "state")
+    assert sut["interchange-for-doall"].rows == ("for", "doall")
+    assert sut["doall-fission"].runs == "MapFission" and "doall-fusion" in sut["doall-fission"].does
 
 
 def test_the_skill_page_names_every_move_kind() -> None:
