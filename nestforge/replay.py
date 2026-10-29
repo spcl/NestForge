@@ -206,14 +206,11 @@ class Solution:
     decoys: dict[str, Steps]
     configs: tuple[Context, ...]
     ci_skip: str = ""  # why CI does not replay it yet; empty when it does
-    program: Path | None = None  # a rewritten ``_dace.py`` of the kernel, graded on its inputs and oracle
-    params: dict[str, int | float] = field(default_factory=dict)  # preset parameters replaced (sizes, knobs)
 
 
 def load_solution(path: Path) -> Solution:
-    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``DECOYS``, ``CI_SKIP``, ``PROGRAM``
-    (a ``_dace.py`` path relative to the script) and ``PARAMS`` (preset parameters to replace). Loaded by file path, as :meth:`CorpusKernel.module`
-    loads a ``_dace.py``: a benchmark folder is not a package."""
+    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``DECOYS`` and ``CI_SKIP``. Loaded by
+    file path, as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
     spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} is not importable")
@@ -230,8 +227,6 @@ def load_solution(path: Path) -> Solution:
         decoys=dict(names.get("DECOYS", {})),
         configs=tuple(names["CONFIGS"]),
         ci_skip=str(names.get("CI_SKIP", "")),
-        program=path.resolve().parent / names["PROGRAM"] if "PROGRAM" in names else None,
-        params=dict(names.get("PARAMS", {})),
     )
 
 
@@ -258,8 +253,6 @@ class ReplayReport(Record):
 
     kernel: str
     solution: str
-    program: str = ""  # the rewritten ``_dace.py`` the variants started from; empty for the kernel's own
-    params: dict[str, int | float] = {}  # preset parameters replaced; empty at the manifest's preset
     device: str
     threads: int
     preset: str
@@ -342,15 +335,14 @@ def pins() -> dict[str, str]:
 def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> ReplayReport:
     """The baseline, the reference and every decoy of ``solution`` on ``ctx``, in that order."""
     # the first configuration per kernel: a replay compares moves, not compiler sweeps
-    setup = Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu")
-    session, inputs, reference = start(setup, "first", solution.program, solution.params)
+    session, inputs, reference = start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"), "first")
     steps: dict[str, Steps] = {"baseline": baseline, "reference": solution.solve, **solution.decoys}
     variants = [run_variant(session, ctx, name, fn, (inputs, reference), reps) for name, fn in steps.items()]
     return ReplayReport(
         kernel=solution.kernel,
-        solution=repo_relative(solution.path),
-        program=repo_relative(solution.program) if solution.program is not None else "",
-        params=solution.params,
+        solution=solution.path.relative_to(REPO_ROOT).as_posix()
+        if solution.path.is_relative_to(REPO_ROOT)
+        else str(solution.path),
         device=ctx.device,
         threads=ctx.threads,
         preset=ctx.preset,
@@ -361,13 +353,8 @@ def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> Replay
     )
 
 
-def repo_relative(path: Path) -> str:
-    return path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else str(path)
-
-
 def report_path(solution: Solution, ctx: Context) -> Path:
-    """Per solution, not per kernel: two rewrites of one kernel keep separate reports."""
-    return REPLAY_DIR / solution.path.stem / f"{ctx.key}.json"
+    return REPLAY_DIR / solution.kernel / f"{ctx.key}.json"
 
 
 def write_report(report: ReplayReport, path: Path) -> None:
@@ -487,8 +474,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configs: list[Context] = args.config or list(solution.configs)
     status = max(run_config(solution, ctx, args.reps) for ctx in configs)
     if args.md is not None:
-        table = markdown(read_reports(REPLAY_DIR / solution.path.stem))
-        args.md.write_text(splice(args.md.read_text() if args.md.exists() else "", solution.path.stem, table))
+        table = markdown(read_reports(REPLAY_DIR / solution.kernel))
+        args.md.write_text(splice(args.md.read_text() if args.md.exists() else "", solution.kernel, table))
     return status
 
 

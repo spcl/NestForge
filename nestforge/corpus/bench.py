@@ -102,12 +102,6 @@ def generate_dace_file(short_name: str) -> None:
         autogen.ensure(short_name, ("dace",))
 
 
-def with_program(kernel: CorpusKernel, dace_file: Path) -> CorpusKernel:
-    """``kernel`` with its ``@dace.program`` taken from ``dace_file``: the same bench inputs, manifest and oracle, a
-    different loop nest to optimize. ``dace_file`` takes the kernel's arguments by their bench names."""
-    return CorpusKernel(kernel.short_name, f"nestforge_program_{dace_file.stem}", dace_file.resolve(), kernel.spec)
-
-
 def corpus_kernel(name: str) -> CorpusKernel | None:
     """The corpus kernel ``name`` (registry key, manifest stem or directory) names, or None without a ``_dace.py``."""
     from hpcagent_bench.spec import KERNELS, BenchSpec
@@ -141,13 +135,7 @@ def is_size(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def preset_params(kernel: CorpusKernel, preset: str, overrides: dict[str, int | float] | None) -> dict[str, object]:
-    """One preset's parameters in the kernel's manifest with ``overrides`` merged over them: the same kernel at other
-    sizes or knob values, as the bench's ``params_override`` takes them."""
-    return {**kernel.spec.parameters.get(preset, {}), **(overrides or {})}
-
-
-def preset_sizes(kernel: CorpusKernel, preset: str, overrides: dict[str, int | float] | None = None) -> dict[str, int]:
+def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
     """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes.
     An integer the manifest fixes for every preset (an ``args`` entry with a ``value`` that ``initialize()`` does not
     return, or an ``init.constants`` entry) is a size too: ``aes_graupel``'s ``kstart`` bounds a loop, and nothing
@@ -158,7 +146,7 @@ def preset_sizes(kernel: CorpusKernel, preset: str, overrides: dict[str, int | f
         if init is None
         else {**init.constants, **{k: v for k, v in init.scalars.items() if k not in init.output_args}}
     )
-    rung = preset_params(kernel, preset, overrides)
+    rung = kernel.spec.parameters.get(preset, {})
     knobs = kernel.spec.config_names
     merged = {**fixed, **rung}
     return {sym: int(size) for sym, size in merged.items() if sym not in knobs and is_size(size)}

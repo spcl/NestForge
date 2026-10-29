@@ -18,7 +18,7 @@ from typing import Any
 import dace
 import numpy as np
 
-from nestforge.corpus.bench import corpus_kernel, preset_params, preset_sizes, with_program
+from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import Record
 from nestforge.session import Codegen, Session
 from nestforge.stages.canonicalize import Targets
@@ -80,14 +80,9 @@ class Reply(Record):
     error: str = ""
 
 
-def bench_data(
-    setup: Setup, params: dict[str, int | float] | None = None
-) -> tuple[dict[str, np.ndarray], Reference | None]:
+def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     """The bench's inputs at ``setup``'s preset, and its reference outputs with the grading tolerance (``None`` when
-    the bench has none for this kernel).
-
-    :param params: Preset parameters to replace (sizes or knobs), for the inputs and the reference alike.
-    """
+    the bench has none for this kernel)."""
     from hpcagent_bench.categories import Preset
     from hpcagent_bench.frameworks.benchmark import Benchmark
     from hpcagent_bench.frameworks.test import kernel_tolerances
@@ -97,8 +92,7 @@ def bench_data(
 
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "start() checked the kernel"
-    override = preset_params(kernel, setup.preset, params) if params else None
-    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset), params_override=override)
+    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset))
     # the program names an argument the generator renamed by its new name; unmapped, it would run on zeros
     renames = kernel.renames()
     # a scalar argument (cloudsc's timestep ptsphy) is a 0-d array; dropping it would zero it
@@ -116,30 +110,18 @@ def bench_data(
     return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
 
 
-def start(
-    setup: Setup,
-    codegen: Codegen = "sweep",
-    program: Path | None = None,
-    params: dict[str, int | float] | None = None,
-) -> tuple[Session, dict[str, np.ndarray], Reference | None]:
+def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
     """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on. The agent drives the
-    moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults.
-
-    :param program: A ``_dace.py`` to start from instead of the kernel's own, graded on the kernel's inputs and
-        oracle (a rewritten loop nest of the same computation).
-    :param params: Preset parameters to replace (the same kernel at other sizes or knob values).
-    """
+    moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
     kernel = corpus_kernel(setup.kernel)
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
-    if program is not None:
-        kernel = with_program(kernel, program)
     session = Session(
-        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset, params), codegen=codegen
+        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset), codegen=codegen
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.canonicalize()
-    inputs, reference = bench_data(setup, params)
+    inputs, reference = bench_data(setup)
     # after canonicalization: it is what promotes a scalar input to a symbol
     session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     return session, inputs, reference
