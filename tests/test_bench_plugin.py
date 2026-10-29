@@ -112,10 +112,9 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
 
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
-    wire = {"moves": Phase.STRUCTURED, "scopes": Phase.SCOPES, "kernels": Phase.UNSTRUCTURED, "codegen": Phase.CODEGEN}
 
     for name, phase in manifest["phases"].items():
-        assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == wire.get(name)), name
+        assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == name), name
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
         t for t, d in TOOLS.items() if d.phase == Phase.ANY
     )
@@ -127,7 +126,7 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
     packet = PACKETS["nestforge"].tools
 
     assert packet[-1] == plugins.NEXT_PHASE
-    assert {TOOLS[tool].phase for tool in packet[:-1]} == {Phase.STRUCTURED, Phase.ANY}
+    assert {TOOLS[tool].phase for tool in packet[:-1]} == {Phase.MOVES, Phase.ANY}
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
     assert PACKETS["nestforge"].skills == ("nestforge",)

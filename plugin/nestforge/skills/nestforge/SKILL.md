@@ -29,8 +29,7 @@ applies: {explicit: true}
   the second, with values passed between the parts becoming arrays.
 - A kernel is a scope, not a row: the part of the program NestForge compiles as one unit. By default every
   top-level doall (with what it holds), a library call among them, is one kernel, run on the CPU with threads or on
-  the GPU. A top-level for
-  loop stays a loop on the host that launches the kernels inside it.
+  the GPU. A top-level for loop stays a loop on the host that launches the kernels inside it.
 - A move retires the labels of the rows it took and names the rows it made afresh; every other row keeps its label.
   A retired label is refused as unknown, so read the tree again after each move.
 

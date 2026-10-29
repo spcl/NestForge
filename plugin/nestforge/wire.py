@@ -18,9 +18,11 @@ IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens"})
 
 
 class Phase(enum.StrEnum):
-    STRUCTURED = "structured"
+    """A tool's phase: the id of its ``[phases.<id>]`` in plugin.toml, or any phase."""
+
+    MOVES = "moves"
     SCOPES = "scopes"
-    UNSTRUCTURED = "unstructured"
+    KERNELS = "kernels"
     CODEGEN = "codegen"
     ANY = "any"
 
@@ -106,36 +108,36 @@ class ToolDef(NamedTuple):
 
 TOOLS: dict[str, ToolDef] = {
     "get_cpf": ToolDef(
-        Phase.STRUCTURED,
+        Phase.MOVES,
         NoArgs,
         "Start here: the program in canonical parallel form, as a labeled tree.",
         Effect.READ,
     ),
     "view_tree": ToolDef(
-        Phase.STRUCTURED,
+        Phase.MOVES,
         ViewTree,
         "Expand or collapse tree rows (loops, states, doalls, library calls), then show the tree.",
         Effect.READ,
     ),
     "list_move_kinds": ToolDef(
-        Phase.STRUCTURED,
+        Phase.MOVES,
         NoArgs,
         "Every move kind: the tree rows it takes, the transformation it runs, what it does.",
         Effect.READ,
     ),
     "list_moves": ToolDef(
-        Phase.STRUCTURED,
+        Phase.MOVES,
         ListMoves,
         "Every legal move right now: fusion, fission, interchange, tiling, library expansion and implementation.",
         Effect.READ,
     ),
     "apply_move": ToolDef(
-        Phase.STRUCTURED,
+        Phase.MOVES,
         ApplyMove,
         "Apply one move as list_moves listed it (or with your own tile_sizes); answers with the outcome and the "
-        "whole-program performance. The rows it took are renamed: read the tree again before the next move.",
+        "whole-program performance. It retires the labels of the rows it took: read the tree again before the next move.",
     ),
-    "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
+    "run_defaults": ToolDef(Phase.MOVES, RunDefaults, "Finish one stage with NestForge's default heuristic."),
     "set_scope": ToolDef(
         Phase.SCOPES,
         Labeled,
@@ -143,10 +145,10 @@ TOOLS: dict[str, ToolDef] = {
         "kernel's name.",
     ),
     "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
-    "list_kernels": ToolDef(Phase.UNSTRUCTURED, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
-    "read_kernel": ToolDef(Phase.UNSTRUCTURED, KernelName, "A kernel's current source.", Effect.READ),
+    "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
+    "read_kernel": ToolDef(Phase.KERNELS, KernelName, "A kernel's current source.", Effect.READ),
     "write_kernel": ToolDef(
-        Phase.UNSTRUCTURED,
+        Phase.KERNELS,
         WriteKernel,
         "Replace a kernel's source; it is built, checked against the kernel's oracle and linked only when it matches.",
         Effect.REPLACE,
