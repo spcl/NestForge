@@ -10,13 +10,13 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 
 | Stage | Decides | Default | Call |
 |---|---|---|---|
-| [1 Canonicalize](docs/stages/1-canonicalize.md) | canonical parallel form (CPF) | DaCe canonicalization up to fusion | |
-| [2 Moves](docs/stages/2-moves.md) | fusion, fission, interchange | canonicalization's fusion stage | `apply_move` |
-| [3 Scopes](docs/stages/3-scopes.md) | which regions become kernels | parallel maps; sequential and mixed loops whole; large maps split | `set_scope`, `unset_scope` |
-| [4 Placement](docs/stages/4-placement.md) | device per kernel | parallel on GPU, sequential on CPU | `place` |
-| [5 Kernels](docs/stages/5-kernels.md) | each kernel's code | CPF C++ (CPU) or CUDA (GPU) | `set_kernel_source` |
-| [6 Variants](docs/stages/6-variants.md) | compiler, FP mode, cost model | fastest variant that matches the oracle | `sweep` |
-| [7 Feedback](docs/stages/7-feedback.md) | what to try next | hints, whole-program and kernel times, offloading | `performance` |
+| [1 Canonicalize](docs/stages.md#stage-1-canonicalize) | canonical parallel form (CPF) | DaCe canonicalization up to fusion | |
+| [2 Moves](docs/stages.md#stage-2-moves) | fusion, fission, interchange | canonicalization's fusion stage | `apply_move` |
+| [3 Scopes](docs/stages.md#stage-3-scopes) | which regions become kernels | parallel maps; sequential and mixed loops whole; large maps split | `set_scope`, `unset_scope` |
+| [4 Placement](docs/stages.md#stage-4-placement) | device per kernel | parallel on GPU, sequential on CPU | `place` |
+| [5 Kernels](docs/stages.md#stage-5-kernels) | each kernel's code | CPF C++ (CPU) or CUDA (GPU) | `set_kernel_source` |
+| [6 Variants](docs/stages.md#stage-6-variants) | compiler, FP mode, cost model | fastest variant that matches the oracle | `sweep` |
+| [7 Feedback](docs/stages.md#stage-7-feedback) | what to try next | hints, whole-program and kernel times, offloading | `performance` |
 
 ## Agents: the HPCAgent-Bench plugin
 
@@ -54,9 +54,9 @@ with `python -m nestforge.replay reference_solutions/<kernel>.py` ([reference so
 On `fuse_diamond`:
 
 ```
-SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'  epoch=1
-`- state0_0
-   `- doall1_0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
+SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'
+`- state0
+   `- doall0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
 ```
 
 ## Install and test

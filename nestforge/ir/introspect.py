@@ -271,7 +271,6 @@ def describe_graph(
     handle: Handle | None = None,
     bodies: bool = False,
     notes: Notes | None = None,
-    epoch: int | None = None,
     expanded: Collection[str] | None = None,
     costs: WorkDepth | None = None,
 ) -> str:
@@ -280,13 +279,12 @@ def describe_graph(
     :param handle: Returns the id to print on a row.
     :param bodies: Also print what each leaf kernel of a shown state computes, as Python.
     :param notes: Returns a line to print under a library node's row.
-    :param epoch: Printed on the first line.
     :param expanded: Labels of the states and maps whose content is shown (with leaf-kernel bodies); every other
         state is one row naming how many kernels it holds, every other map one row naming its nested states.
         ``None`` shows every content.
     :param costs: :func:`program_work_depth` of ``sdfg``, when the caller holds it already.
     """
-    header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
+    header = f"SDFG '{sdfg.label}'"
     opened = None if expanded is None else frozenset(expanded)
     twin = lowered_twin(sdfg) if bodies or opened else None
     known = program_work_depth(sdfg) if costs is None else costs

@@ -14,10 +14,10 @@ import dace as dc
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.names import block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
+from nestforge.ir.names import Namer, block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
-LABEL = re.compile(r"^(state|for|if|block|continue|break|return)(\d+)_(\d+)$")
-KERNEL = re.compile(r"^doall(\d+)_(\d+)$")
+LABEL = re.compile(r"^(state|for|if|block|continue|break|return)(\d+)$")
+KERNEL = re.compile(r"^doall(\d+)$")
 
 
 @dc.program
@@ -95,20 +95,46 @@ def test_labels_are_globally_unique():
     assert len(kernels) == len(set(kernels)), f"duplicate kernel label in {sorted(kernels)}"
 
 
-def test_index_is_typed_so_one_kind_numbers_from_zero_at_each_depth():
-    """Five kernels at depth 3 are doall3_0..doall3_4 -- the index counts that kind at that level, so
-    it never depends on how many blocks of another kind happen to sit beside them."""
+def test_each_kind_is_numbered_from_zero_across_the_program():
+    """One counter per kind: the doalls are doall0, doall1, ..., whatever depth they sit at and whatever blocks of
+    another kind sit beside them."""
     sdfg = two_maps.to_sdfg(simplify=True)
     normalize_labels(sdfg)
-    by_kind_level = {}
+    by_kind = {}
     for block in all_blocks(sdfg):
-        kind, level, index = LABEL.match(block.label).groups()
-        by_kind_level.setdefault((kind, int(level)), []).append(int(index))
-    for entry in all_maps(sdfg):
-        level, index = KERNEL.match(entry.map.label).groups()
-        by_kind_level.setdefault(("doall", int(level)), []).append(int(index))
-    for key, indices in by_kind_level.items():
-        assert sorted(indices) == list(range(len(indices))), f"{key} is numbered {sorted(indices)}"
+        kind, index = LABEL.match(block.label).groups()
+        by_kind.setdefault(kind, []).append(int(index))
+    by_kind["doall"] = [int(KERNEL.match(entry.map.label).group(1)) for entry in all_maps(sdfg)]
+    for kind, indices in by_kind.items():
+        assert sorted(indices) == list(range(len(indices))), f"{kind} is numbered {sorted(indices)}"
+
+
+def test_a_retired_name_is_never_handed_out_again():
+    sdfg = two_maps.to_sdfg(simplify=True)
+    namer = Namer()
+    normalize_labels(sdfg, namer)
+    first = all_maps(sdfg)[0]
+    retired = first.map.label
+
+    namer.retire((retired,))
+    normalize_labels(sdfg, namer)
+
+    assert first.map.label != retired
+    assert retired not in [entry.map.label for entry in all_maps(sdfg)]
+
+
+def test_a_name_survives_a_second_pass_of_its_namer_after_a_new_row_appears():
+    sdfg = two_maps.to_sdfg(simplify=True)
+    namer = Namer()
+    normalize_labels(sdfg, namer)
+    before = [entry.map.label for entry in all_maps(sdfg)]
+    state = next(iter(sdfg.states()))
+    state.add_mapped_tasklet("fresh", {"k": "0:4"}, {}, "o = 1", {"o": dc.Memlet("A[k]")})
+
+    normalize_labels(sdfg, namer)
+
+    after = [entry.map.label for entry in all_maps(sdfg)]
+    assert set(before) < set(after), (before, after)
 
 
 def test_a_frontend_source_line_label_does_not_survive():

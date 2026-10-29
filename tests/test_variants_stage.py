@@ -98,7 +98,7 @@ def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model():
 def test_a_shared_measurement_is_gated_at_each_cells_own_rung():
     """A build shared by a strict and a looser cell is timed once, but ``ok`` must be read at each cell's
     rung: inheriting the strict verdict would fail a looser cell whose build is correct at its tolerance."""
-    strict = KernelVerdict("strict-ieee", maxdiff=1e-14, md_rel=1e-14, dtype_floor=2.3e-16, time_us=5.0)
+    strict = KernelVerdict("strict-ieee", maxdiff=5e-14, md_rel=5e-14, dtype_floor=2.3e-16, time_us=5.0)
 
     loose = dataclasses.replace(strict, fp_mode="contract-fma")
 

@@ -27,7 +27,7 @@ def session(tmp_path) -> Session:
 
 
 def loop_labels(sut: Session) -> list[str]:
-    return re.findall(r"\b(for\d+_\d+)\b", sut.describe())
+    return re.findall(r"\b(for\d+)\b", sut.describe())
 
 
 def loop_count(sut: Session) -> int:
@@ -45,13 +45,13 @@ def test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop
     sut = session(tmp_path)
     (loop,) = loop_labels(sut)
 
-    tiled = sut.apply_move("tile-for", [loop], sut.epoch, tile_sizes=[8])
+    tiled = sut.apply_move("tile-for", [loop], tile_sizes=[8])
 
     assert tiled.status is MoveStatus.APPLIED, tiled
     assert loop_count(sut) == 2
     computes_running_sum(sut)
     (move,) = sut.list_moves("untile-for")
-    untiled = sut.apply_move("untile-for", list(move.labels), sut.epoch)
+    untiled = sut.apply_move("untile-for", list(move.labels))
     assert untiled.status is MoveStatus.APPLIED, untiled
     assert loop_count(sut) == 1
     computes_running_sum(sut)
@@ -61,7 +61,7 @@ def test_a_for_tile_is_one_size_of_at_least_two(tmp_path):
     sut = session(tmp_path)
     (loop,) = loop_labels(sut)
 
-    result = sut.apply_move("tile-for", [loop], sut.epoch, tile_sizes=[8, 8])
+    result = sut.apply_move("tile-for", [loop], tile_sizes=[8, 8])
 
     assert result.status is MoveStatus.ILLEGAL
     assert "one size of at least 2" in result.reason

@@ -168,7 +168,7 @@ class Script:
         """Apply ``move``; raises :class:`ReplayError` unless it applied."""
         if self.finished:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
-        result = self.session.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes, move.implementation)
+        result = self.session.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation)
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
         done = AppliedMove(

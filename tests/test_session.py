@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session: the epoch guard on labeled calls, kernels named by name, and plain JSON-able results. The wrapped
+"""Session: labels that stay on their rows and retire with them, kernels named by name, and plain JSON-able results. The wrapped
 stages have their own tests."""
 
 import time
@@ -36,6 +36,21 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
         C[i] = T[i] * 2.0 + live_out[i]  # consumer reads both
 
 
+@dace.program
+def three_maps(A: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
+    T = np.empty_like(A)
+    for i in dace.map[0:N]:
+        T[i] = A[i] + 1.0
+    for i in dace.map[0:N]:
+        C[i] = T[i] * 2.0
+    for i in dace.map[0:N]:
+        D[i] = A[i] - 1.0
+
+
+def map_labels(session: Session) -> list[str]:
+    return [label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
+
+
 def make_session(tmp_path=None) -> Session:
     return Session(vertical_pair.to_sdfg(simplify=True), work_dir=str(tmp_path) if tmp_path else None)
 
@@ -44,42 +59,54 @@ def top_level_map_count(sdfg) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.states())
 
 
-def test_a_move_bumps_the_epoch_and_its_labels_go_stale():
+def test_a_move_retires_the_labels_it_took_and_names_the_fused_row_afresh():
     s = make_session()
     (move,) = s.list_moves("doall-fusion")
-    assert move.epoch == 0
 
-    applied = s.apply_move(move.kind, move.labels, move.epoch)
+    applied = s.apply_move(move.kind, move.labels)
+    again = s.apply_move(move.kind, move.labels)
 
-    assert (applied.status, s.epoch) == (MoveStatus.APPLIED, 1)
-    assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.STALE
+    assert applied.status is MoveStatus.APPLIED
+    assert (again.status, again.reason) == (
+        MoveStatus.NOT_FOUND,
+        f"no tree row is labeled {', '.join(move.labels)} ({', '.join(move.labels)} changed; read the tree again).",
+    )
+    (fused,) = [label for label, (obj, _) in s.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
+    assert fused not in move.labels
 
 
-def test_default_scopes_bumps_the_epoch_and_names_kernels_with_their_boundary_sets():
+def test_a_row_no_move_touched_keeps_its_label():
+    s = Session(three_maps.to_sdfg(simplify=True))
+    first, second, third = map_labels(s)
+
+    s.apply_move("doall-fusion", [first, second])
+
+    assert third in map_labels(s)
+
+
+def test_default_scopes_names_kernels_with_their_boundary_sets():
     s = make_session()
     kernels = s.default_scopes()
-    assert s.epoch == 1
     assert [k.name for k in kernels] == ["extcall_0", "extcall_1"]
     producer = next(k for k in kernels if k.writes == ("T",))
     assert producer.reads == ("A", "B") and producer.symbols == ("N",) and producer.parallel
 
 
-def test_a_no_op_default_scopes_keeps_the_epoch_so_labels_stay_valid():
+def test_a_no_op_default_scopes_keeps_every_label():
     sdfg = dace.SDFG("no_maps")
     sdfg.add_state_after(sdfg.add_state())
     session = Session(sdfg)
+    before = list(session.row_index())
     assert session.default_scopes() == []
-    assert session.epoch == 0
+    assert list(session.row_index()) == before
 
 
-def test_canonicalize_then_default_moves_bump_the_epoch_each_time_and_reduce_top_level_maps():
+def test_canonicalize_then_default_moves_reduce_top_level_maps():
     sdfg = live_and_transient.to_sdfg(simplify=True)
     frontend_maps = top_level_map_count(sdfg)
     session = Session(sdfg, targets=Targets())
     session.canonicalize()
-    assert session.epoch == 1
     session.default_moves()
-    assert session.epoch == 2
     assert top_level_map_count(session.sdfg) < frontend_maps
 
 
@@ -101,11 +128,11 @@ def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatc
     s = make_session()
     tree = s.describe()
     assert tree.splitlines()[1] == (
-        "(no work= or depth= this epoch: work-depth analysis failed: RecursionError: maximum recursion depth exceeded)"
+        "(no work= or depth=: work-depth analysis failed: RecursionError: maximum recursion depth exceeded)"
     )
     assert "work=" not in "\n".join(tree.splitlines()[2:])
     (move,) = s.list_moves("doall-fusion")
-    assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
+    assert s.apply_move(move.kind, move.labels).status is MoveStatus.APPLIED
     assert "no work= or depth=" in s.describe().splitlines()[1]
     assert s.costs == {} and s.costs_skipped is not None
 
@@ -117,15 +144,15 @@ def test_describe_skips_costs_when_work_depth_outlasts_its_budget(monkeypatch):
     assert "work-depth analysis took over 1 s" in s.describe().splitlines()[1]
 
 
-def test_costs_come_back_on_the_next_epoch_once_work_depth_works(monkeypatch):
+def test_costs_come_back_after_the_next_change_once_work_depth_works(monkeypatch):
     def fail(*args, **kwargs):
         raise ValueError("The argument 'nan' is not comparable.")
 
     s = make_session()
     with monkeypatch.context() as patch:
         patch.setattr(introspect.work_depth, "analyze_sdfg", fail)
-        assert s.describe().splitlines()[1].startswith("(no work= or depth= this epoch")
+        assert s.describe().splitlines()[1].startswith("(no work= or depth=")
     (move,) = s.list_moves("doall-fusion")
-    result = s.apply_move(move.kind, move.labels, move.epoch)
+    result = s.apply_move(move.kind, move.labels)
     assert result.status is MoveStatus.APPLIED
     assert s.costs_skipped is None and "no work= or depth=" not in s.describe()

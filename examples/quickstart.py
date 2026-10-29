@@ -36,10 +36,7 @@ def save(session: Session, out: Path, label: str) -> None:
 def show_tree(session: Session, out: Path, label: str) -> None:
     """Print the program's structure tree, every state and map expanded, and save it as ``trees/<label>.txt``."""
     rows = session.row_index()
-    session.expand(
-        [name for name, (obj, _) in rows.items() if isinstance(obj, (dace.SDFGState, dace.nodes.MapEntry))],
-        session.epoch,
-    )
+    session.expand([name for name, (obj, _) in rows.items() if isinstance(obj, (dace.SDFGState, dace.nodes.MapEntry))])
     tree = session.describe()
     (out / "trees").mkdir(parents=True, exist_ok=True)
     (out / "trees" / f"{label}.txt").write_text(tree + "\n")

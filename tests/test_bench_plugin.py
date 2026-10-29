@@ -25,7 +25,7 @@ from hpcagent_bench.config import SubmitFeedback
 from hpcagent_bench.harness import tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
-from hpcagent_bench.harness.routes import ROUTES, RouteRequest
+from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
 from hpcagent_bench.harness.task import Task
 from hpcagent_bench.skill_frontmatter import split_frontmatter
@@ -94,22 +94,40 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 
 
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
-    epoch = 1  # get_cpf canonicalizes once
-    tree = post("view_tree", episode="episode-scope", expand=["state0_0"], epoch=epoch).answer["result"]
-    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
+    rows = [
+        line.lstrip("|`- ").split()[0]
+        for line in post("get_cpf", episode="episode-scope").answer["result"].splitlines()[1:]
+    ]
+    states = [row for row in rows if row.startswith("state")]
+    tree = post("view_tree", episode="episode-scope", expand=states).answer["result"]
+    maps = [line.lstrip("|`- ").split()[0] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
 
-    scoped = post("set_scope", episode="episode-scope", labels=maps[:2], epoch=epoch).answer["result"]
-    unset = post("unset_scope", episode="episode-scope", name=scoped["reason"], epoch=epoch + 1).answer["result"]
+    scoped = post("set_scope", episode="episode-scope", labels=maps[:2]).answer["result"]
+    unset = post("unset_scope", episode="episode-scope", name=scoped["reason"]).answer["result"]
 
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
+
+
+def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
+
+    manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
+    wire = {"moves": Phase.STRUCTURED, "scopes": Phase.SCOPES, "kernels": Phase.UNSTRUCTURED, "codegen": Phase.CODEGEN}
+
+    for name, phase in manifest["phases"].items():
+        assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == wire.get(name)), name
+    assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
+        t for t, d in TOOLS.items() if d.phase == Phase.ANY
+    )
 
 
 def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_served(loaded: None) -> None:
     from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
 
-    packet = tomllib.loads((PLUGIN / "plugin.toml").read_text())["packets"]["nestforge"]["tools"]
+    packet = PACKETS["nestforge"].tools
 
-    assert {TOOLS[tool].phase for tool in packet} <= {Phase.STRUCTURED, Phase.ANY}
+    assert packet[-1] == plugins.NEXT_PHASE
+    assert {TOOLS[tool].phase for tool in packet[:-1]} == {Phase.STRUCTURED, Phase.ANY}
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
     assert PACKETS["nestforge"].skills == ("nestforge",)
@@ -123,9 +141,9 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
 def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
     from hpcagent_bench_plugins.nestforge.wire import TOOLS
 
-    packet = tomllib.loads((PLUGIN / "plugin.toml").read_text())["packets"]["nestforge-full"]["tools"]
+    packet = PACKETS["nestforge-full"].tools
 
-    assert sorted(packet) == sorted(TOOLS)
+    assert sorted(packet) == sorted((*TOOLS, plugins.NEXT_PHASE))
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()
@@ -144,7 +162,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
 def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:
     stub.dies_on = "apply_move"
 
-    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"], epoch=1)
+    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"])
     again = post("get_cpf", "episode-crash")
 
     assert (died.code, died.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), died.answer
@@ -163,12 +181,30 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
 
 
+def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
+    judge = FakeJudge()
+    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-round")
+
+    next_phase.serve(judge, request)
+
+    assert judge.code == HTTPStatus.OK, judge.answer
+    assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
+    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("scopes", 200), ("placement", 200)]
+    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
+        ("run_defaults", {"stage": "scopes"}),
+        ("run_defaults", {"stage": "placement"}),
+    ]
+
+
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
-    stub.replies["apply_move"] = Reply(error="ValueError: the labels were read at epoch 1, the tree is at epoch 2")
+    stub.replies["apply_move"] = Reply(error="ValueError: doall-fusion takes 2 label(s); got 1")
 
-    judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"], epoch=1)
+    judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"])
 
-    assert judge.code == HTTPStatus.BAD_REQUEST and "epoch" in judge.answer["error"], judge.answer
+    assert judge.code == HTTPStatus.BAD_REQUEST and "takes 2 label" in judge.answer["error"], judge.answer
 
 
 def test_concurrent_calls_of_one_episode_start_one_session_and_reach_it_one_at_a_time(stub: Stub) -> None:
@@ -194,7 +230,7 @@ def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(lo
 
     moved = post("apply_move", **first)
 
-    assert tree.code == HTTPStatus.OK and "epoch" in str(tree.answer["result"])
+    assert tree.code == HTTPStatus.OK and "doall" in str(tree.answer["result"])
     assert moved.code == HTTPStatus.OK and moved.answer["result"]["status"] == "applied"
     performance = moved.answer["performance"]
     structured = performance["structured"]
@@ -331,12 +367,12 @@ def test_a_program_finalized_after_the_structured_phase_gets_the_default_kernels
 
 
 @pytest.mark.judge
-def test_a_program_without_kernels_is_one_entry_that_asks_for_its_scratch(loaded: None, judge_url: str) -> None:
-    # atax's two products are library nodes, so no scope is made; tmp = A @ x lives in the judge's scratch
+def test_each_library_product_is_a_kernel_and_the_program_asks_for_its_scratch(loaded: None, judge_url: str) -> None:
+    # atax's two products are library nodes, each its own default kernel; tmp = A @ x lives in the judge's scratch
 
     final = post("finalize", episode="episode-final-atax", kernel="atax").answer["result"]
 
-    assert final["kernels"] == {} and final["workspace_bytes"] != "0", final
+    assert len(final["kernels"]) == 2 and final["workspace_bytes"] != "0", final
     grade = graded(judge_url, "atax", final)
     assert grade.build_ok is True and grade.correct is True, grade.detail
 

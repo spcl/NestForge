@@ -88,19 +88,21 @@ def test_an_expanded_kernel_row_carries_its_work_and_depth():
     state = session.row_index()[kernel_state(session)][1]
     assert state is not None
 
-    assert session.expand([state.label], session.epoch) == f"ok: expanded {state.label}"
+    assert session.expand([state.label]) == f"ok: expanded {state.label}"
 
     (kernel,) = [line for line in session.describe().splitlines() if "reads=" in line]
     assert kernel.endswith("  work=N depth=1"), kernel
-    assert session.epoch == 0
 
 
-def test_an_expansion_closes_when_the_program_changes():
+def test_an_expansion_stays_open_while_its_row_lives_and_closes_when_a_change_retires_it():
     session = Session(vector_add.to_sdfg(simplify=True))
     state = session.row_index()[kernel_state(session)][1]
     assert state is not None
-    session.expand([state.label], session.epoch)
+    session.expand([state.label])
 
     session.bump()
+    kept = [line for line in session.describe().splitlines() if "reads=" in line]
+    session.bump([state.label])
 
+    assert kept, "a change that left the state alone closed it"
     assert not [line for line in session.describe().splitlines() if "reads=" in line]

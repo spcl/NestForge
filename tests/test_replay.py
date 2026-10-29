@@ -60,7 +60,7 @@ def test_pick_finds_the_one_interchange() -> None:
     session = s231_session()
     move = Script(session).pick("interchange-for-doall", reads=["bb"], writes=["aa"])
     assert move.kind == "interchange-for-doall"
-    assert move.epoch == session.epoch
+    assert set(move.labels) <= set(session.row_index())
     assert len(move.labels) == 2
 
 
@@ -70,11 +70,11 @@ def test_pick_refuses_a_filter_nothing_matches() -> None:
         script.pick("interchange-for-doall", writes=["bb"])
 
 
-def test_apply_refuses_a_stale_move() -> None:
+def test_apply_refuses_a_move_whose_rows_a_move_retired() -> None:
     script = Script(s231_session())
     move = script.pick("interchange-for-doall")
     script.apply(move)
-    with pytest.raises(ReplayError, match="stale"):
+    with pytest.raises(ReplayError, match="not_found"):
         script.apply(move)
     assert [m.kind for m in script.applied] == ["interchange-for-doall"]
 

@@ -114,7 +114,7 @@ def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp
 def test_an_agent_placement_keeps_a_parallel_kernel_on_the_host_and_its_operands_in_host_memory(tmp_path):
     session = kernel_session(True, tmp_path)
 
-    result = session.place({"extcall_0": "cpu"}, session.epoch)
+    result = session.place({"extcall_0": "cpu"})
 
     assert result.devices == {"extcall_0": "cpu"} and result.copies == ()
     assert not any(storage in GPU_RESIDENT_STORAGES for storage in operand_storages(session, "extcall_0"))
@@ -124,29 +124,28 @@ def test_placing_again_starts_from_the_program_before_the_first_placement(tmp_pa
     session = kernel_session(True, tmp_path)
     session.place()
 
-    again = session.place({"extcall_0": "cpu"}, session.epoch)
+    again = session.place({"extcall_0": "cpu"})
 
     assert again.status is MoveStatus.APPLIED and again.copies == ()
     assert session.kernel("extcall_0").schedule != dace.ScheduleType.GPU_Device
 
 
 @pytest.mark.parametrize(
-    ("gpu", "devices", "epoch", "status", "reason"),
+    ("gpu", "devices", "status", "reason"),
     [
-        (True, {"extcall_0": "gpu"}, 7, MoveStatus.STALE, "epoch 7"),
-        (True, {"extcall_9": "gpu"}, None, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
-        (True, {"extcall_0": "tpu"}, None, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
-        (False, {"extcall_0": "gpu"}, None, MoveStatus.ILLEGAL, "GPU is not a target"),
+        (True, {"extcall_9": "gpu"}, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
+        (True, {"extcall_0": "tpu"}, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
+        (False, {"extcall_0": "gpu"}, MoveStatus.ILLEGAL, "GPU is not a target"),
     ],
 )
-def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, epoch, status, reason):
+def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, status, reason):
     session = kernel_session(gpu, tmp_path)
-    before, epoch_before = session.sdfg.to_json(), session.epoch
+    before = session.sdfg.to_json()
 
-    result = session.place(devices, session.epoch if epoch is None else epoch)
+    result = session.place(devices)
 
     assert result.status is status and reason in result.reason, result
-    assert (session.sdfg.to_json(), session.epoch) == (before, epoch_before)
+    assert session.sdfg.to_json() == before
 
 
 def test_default_scopes_after_gpu_placement_finds_no_further_scope(tmp_path):
@@ -249,8 +248,8 @@ def test_a_kernel_placed_on_the_gpu_keeps_its_own_arrays_off_the_host_stack(tmp_
     session = Session(staged_scale.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
     session.describe()
     maps = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
-    name = session.set_scope(maps, session.epoch).reason
+    name = session.set_scope(maps).reason
 
-    session.place({name: "gpu"}, session.epoch)
+    session.place({name: "gpu"})
 
     assert session.kernel(name).standalone_sdfg.arrays["t"].storage != dace.StorageType.Register

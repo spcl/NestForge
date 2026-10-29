@@ -1,0 +1,4 @@
+# The agent of the nestforge packet writes no C++ either: the task prompt's C++ guide is off.
+task:
+  set:
+    lang_cpp: {enabled: false}

@@ -1,7 +1,7 @@
 # Build
 
-[Overview](../README.md) · related: [5 Kernels](stages/5-kernels.md),
-[6 Variants](stages/6-variants.md)
+[Overview](../README.md) · related: [5 Kernels](stages.md#stage-5-kernels),
+[6 Variants](stages.md#stage-6-variants)
 
 `nestforge/build/` compiles with one chosen compiler, flag set and OpenMP runtime, and calls kernels
 through ctypes, so timings compare generated code, free of `CompiledSDFG` marshaling.

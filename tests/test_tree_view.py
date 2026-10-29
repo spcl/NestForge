@@ -37,45 +37,45 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 
 GOLDEN = """\
 SDFG 'shaped'
-|- state0_0
-|  `- doall1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
-   |- state1_0
-   `- if1_0
-      |- block2_0  when A[i] > 0.0
-      |  `- state3_0
-      `- block2_1  else
-         `- state3_1
+|- state0
+|  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+`- for0  i=1:20  num_states=3  work=19 depth=19
+   |- state1
+   `- if0
+      |- block0  when A[i] > 0.0
+      |  `- state2
+      `- block1  else
+         `- state3
 """
 
-#: The agent's view after it expands ``state0_0``: that state's kernels and their bodies, the rest still closed.
+#: The agent's view after it expands ``state0``: that state's kernels and their bodies, the rest still closed.
 OPENED = """\
 SDFG 'shaped'
-|- state0_0
-|  `- doall1_0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+|- state0
+|  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
 |     : test_tree_view_shaped_A_index = A[i]
 |     : B_slice = test_tree_view_shaped_A_index + 1.0
 |     : B[i] = B_slice
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
-   |- state1_0
-   `- if1_0
-      |- block2_0  when A[i] > 0.0
-      |  `- state3_0
-      `- block2_1  else
-         `- state3_1
+`- for0  i=1:20  num_states=3  work=19 depth=19
+   |- state1
+   `- if0
+      |- block0  when A[i] > 0.0
+      |  `- state2
+      `- block1  else
+         `- state3
 """
 
 #: What an agent sees before it expands anything: every block, no state's kernels.
 COLLAPSED = """\
 SDFG 'shaped'
-|- state0_0  doalls=1
-`- for0_0  i=1:20  num_states=3  work=19 depth=19
-   |- state1_0
-   `- if1_0
-      |- block2_0  when A[i] > 0.0
-      |  `- state3_0
-      `- block2_1  else
-         `- state3_1
+|- state0  doalls=1
+`- for0  i=1:20  num_states=3  work=19 depth=19
+   |- state1
+   `- if0
+      |- block0  when A[i] > 0.0
+      |  `- state2
+      `- block1  else
+         `- state3
 """
 
 
@@ -98,7 +98,7 @@ def test_a_state_shows_its_kernels_only_once_expanded():
     normalize_labels(sdfg)
 
     collapsed = describe_graph(sdfg, expanded=())
-    opened = describe_graph(sdfg, expanded=["state0_0"])
+    opened = describe_graph(sdfg, expanded=["state0"])
 
     assert collapsed + "\n" == COLLAPSED
     assert opened + "\n" == OPENED
@@ -108,18 +108,9 @@ def test_every_line_is_a_guide_then_one_labelled_thing():
     for line in tree_of(shaped).splitlines()[1:]:
         assert re.match(
             r"^(\|  |   )*(\|- |`- )"
-            r"(state|for|if|block|continue|break|return|doall)\d+_\d+\b",
+            r"(state|for|if|block|continue|break|return|doall)\d+\b",
             line,
         ), line
-
-
-def test_indentation_tracks_the_level_in_the_label():
-    """A line's depth in the tree and the level in its canonical name are the same number, so the
-    agent can read either one."""
-    for line in tree_of(shaped).splitlines()[1:]:
-        guide, body = re.match(r"^((?:\|  |   )*(?:\|- |`- ))(.*)$", line).groups()
-        level = int(re.match(r"^[a-z]+(\d+)_", body).group(1))
-        assert len(guide) == 3 * (level + 1), f"level {level} at guide width {len(guide)}: {line}"
 
 
 def test_every_row_the_session_prints_is_a_label_its_labeled_calls_take():
@@ -445,7 +436,7 @@ def test_only_states_and_maps_expand():
     session = Session(shaped.to_sdfg(simplify=True))
     loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, LoopRegion))
 
-    sut = session.expand([loop], session.epoch)
+    sut = session.expand([loop])
 
     assert sut == f"illegal: only states and maps expand; {loop} is neither."
     assert session.expanded == set()
