@@ -21,7 +21,6 @@ def test_every_move_kind_is_listed_with_the_tree_rows_it_takes_in_order() -> Non
 def test_the_skill_page_names_every_move_kind() -> None:
     page = PAGE.read_text()
 
-    unnamed = [kind for kind in MOVE_SHAPES if f"`{kind}`" not in page and not kind.startswith("interchange-")]
+    unnamed = [kind for kind in MOVE_SHAPES if f"`{kind}`" not in page]
 
     assert not unnamed
-    assert "`interchange-*`" in page
