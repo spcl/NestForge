@@ -55,22 +55,14 @@ name = "NestForge"
 skills = ["nestforge"]
 agent = ["moves"]
 tools = ["get_performance", "finalize"]
-about = "prompt/about.md"
-off = [
-    "file_tools", "build", "syntax_check", "index_buffers", "stop_policy",
-    "build_flags", "optimizations", "lang_cpp", "lang_fortran",
-]
-replace = { sending_code = "prompt/agent/sending_code.md", failures = "prompt/agent/failures.md", end_to_end = "prompt/agent/end_to_end.md", keep_improving = "prompt/agent/keep_improving.md", delivery = "prompt/task/delivery.md" }
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml"]
 
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]
 extends = "nestforge"
 name = "NestForge (all phases)"
 agent = ["moves", "scopes", "kernels", "codegen"]
-off = [
-    "file_tools", "build", "syntax_check", "index_buffers", "stop_policy",
-    "build_flags", "optimizations", "lang_fortran",
-]
+overlays = ["nestforge:prompt/overlay.yaml"]
 
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.

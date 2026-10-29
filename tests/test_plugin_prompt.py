@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The nestforge packet's prompt table reshapes both of the bench's prompts: the agent writes no code, delivers
+"""The nestforge packet's prompt overlays reshape both of the bench's prompts: the agent writes no code, delivers
 finalize's library, reads what NestForge does right after the intro, and the workflow says which phases are its own."""
 
 import pytest
@@ -22,17 +22,18 @@ def registered(nestforge_plugin: tuple[Plugin, ...]) -> None:
     pass
 
 
-def test_the_table_switches_the_coding_blocks_off_and_inserts_what_nestforge_does_after_the_intro(
+def test_the_overlay_switches_the_coding_blocks_off_and_inserts_what_nestforge_does_after_the_intro(
     registered: None,
 ) -> None:
     """The agent half is rendered by the bench's user-plugins CI (the bench checkout holds agent/prompt.md); here
-    the compiled overlay reads every text and inserts what NestForge does after the intro."""
-    sut = prompt_build.load_overlay("plugin:nestforge/nestforge").agent
+    the overlay reads every text and inserts what NestForge does after the intro, and the phases fill the workflow."""
+    sut = prompt_build.load_overlay("nestforge:prompt/overlay.yaml").agent
+    workflow = next(o.agent for o in prompt_build.overlays_for((), "nestforge") if o.name == "nestforge (phases)")
 
     edits = dict(sut.set)
     assert {"build", "syntax_check", "index_buffers"} <= {k for k, e in edits.items() if e.enabled is False}
     assert [(i.after, i.block.text) for i in sut.insert] == [("intro", ABOUT)]
-    assert "expand-library" in dict(edits["workflow"].vars)["WORKFLOW"]
+    assert "expand-library" in dict(dict(workflow.set)["workflow"].vars)["WORKFLOW"]
 
 
 def test_the_task_prompt_delivers_finalizes_library_and_drops_the_coding_guides(registered: None) -> None:

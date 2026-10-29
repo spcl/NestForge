@@ -1,0 +1,25 @@
+# NestForge's prompt: what it does follows the intro of both prompts; the agent writes no code, so the build and
+# language guidance is off, and NestForge's own texts say how to send, recover and finish.
+agent:
+  set:
+    file_tools: {enabled: false}
+    build: {enabled: false}
+    syntax_check: {enabled: false}
+    index_buffers: {enabled: false}
+    stop_policy: {enabled: false}
+    sending_code: {text: "file:agent/sending_code.md"}
+    failures: {text: "file:agent/failures.md"}
+    end_to_end: {text: "file:agent/end_to_end.md"}
+    keep_improving: {text: "file:agent/keep_improving.md"}
+  insert:
+    - after: intro
+      block: {id: nestforge, text: "file:about.md"}
+task:
+  set:
+    build_flags: {enabled: false}
+    optimizations: {enabled: false}
+    lang_fortran: {enabled: false}
+    delivery: {text: "file:task/delivery.md"}
+  insert:
+    - after: intro
+      block: {id: nestforge, text: "file:about.md"}
