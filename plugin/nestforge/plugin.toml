@@ -15,14 +15,13 @@ kernels = ["jacobi_1d", "tsvc_2_s231"]
 language = "cpp"
 
 # The phases of a NestForge run, in the order a packet lists them. A phase's tools are served while the agent runs
-# it; run by default, it is its summary in the prompt and its `default` call (none: finalize builds every kernel).
+# it; run by default, it is its summary in the prompt and finalize builds it with NestForge's defaults.
 # tests/test_bench_plugin.py keeps each phase's tools those of its wire.py phase.
 [phases.moves]
 title = "Moves"
 summary = "NestForge applies its default fusion."
 text = "prompt/phases/moves.md"
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
-default = { tool = "run_defaults", args = { stage = "moves" } }
 
 [phases.scopes]
 title = "Scopes"
@@ -30,13 +29,11 @@ summary = "Each top-level doall, a library call included, is a kernel of its own
 text = "prompt/phases/scopes.md"
 tools = ["set_scope", "unset_scope"]
 mode = "default"
-default = { tool = "run_defaults", args = { stage = "scopes" } }
 
 [phases.placement]
 title = "Placement"
 summary = "Each kernel runs on the CPU with threads, or on the GPU when the setup targets one."
 mode = "default"
-default = { tool = "run_defaults", args = { stage = "placement" } }
 
 [phases.kernels]
 title = "Kernel code"

@@ -71,18 +71,6 @@ costs one call, not a broken program.
   `hipBLAS`, ...). `list_moves` lists one move per implementation the row may take. A host library keeps its kernel
   on the CPU, a device library puts it on the GPU.
 
-## Flow
-
-1. `get_cpf`, then `view_tree` to open the states and doalls worth reading (largest `work=` first): time spent
-   elsewhere cannot move the total much.
-2. `list_move_kinds` once; then `list_moves`, `apply_move`. `apply_move` returns the performance: keep a move when
-   the whole-program time drops, else apply its inverse when `list_moves` offers one.
-3. `run_defaults stage=moves` applies the default fusion; `stage=finish` finishes after your own moves.
-4. `finalize`, then `score` / `submit` with the `library` and `workspace_bytes` it returns.
-
-Without `set_scope` in your tool list, scopes (which doalls become one compiled kernel), GPU placement and the
-compiler configuration are not yours to choose: `get_performance` and `finalize` run their defaults.
-
 ## Scopes and kernels (when your tool list has them)
 
 Settle the moves first: a move or a new scope rebuilds the kernels it touches, and the sources you wrote for them
