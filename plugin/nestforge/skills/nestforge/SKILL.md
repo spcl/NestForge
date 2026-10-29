@@ -37,39 +37,98 @@ applies: {explicit: true}
 ## Moves
 
 `list_move_kinds` lists every kind with the rows it takes, in order, and the DaCe transformation it runs.
-`list_moves` lists the moves legal right now as `kind` + `labels`, with `tile_sizes` on a tiling move (the
-sizes it was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as
-listed, or with your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal
-costs one call, not a broken program.
+`list_moves` lists the moves legal right now as `kind` + `labels`, with `tile_sizes` on a tiling move (the sizes it
+was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as listed, or with
+your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not
+a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
 
-- Fusion (`for-fusion`, `doall-fusion`): one loop or map instead of two; less memory traffic, intermediates
-  become scalars. `doall-fusion` fuses a producer and its consumer (in place when the producer updates the array),
-  recomputes what a consumer reads of a window (a stencil) on the fly, or fuses two independent maps over one range.
-- `for-fission`: one loop per independent statement group.
-- `doall-fission`: split per computation, one map per independent output group. Follow it with `doall-fusion` on the
-  pieces that share data.
-- `subgraph-fission`: split per state, after the named state of the map's body.
-- Interchange (`interchange-*`): reorder a loop, map or guard with the one directly inside it.
-- Tiling (`tile-doall`, `tile-for` and their `untile-` inverses): `apply_move` with `tile_sizes` turns a loop into
-  a loop over tiles holding a loop over one tile's points, so a tile's working set fits a cache. A doall takes one
-  size per dimension (`[32, 32]`), a for loop one size (`[64]`); a size need not divide the range. A tiled for loop
-  keeps its order; interchange then blocks a nest. `untile-doall` takes the tile doall and its point doall back to
-  one, `untile-for` the tile for loop.
-- Choosing tile sizes: a tile's data should fit the cache it is meant for (the innermost tile the closest cache, the
-  next one the cache after it) and its innermost size should be a multiple of the machine's vector width, so no
-  remainder loop runs per tile. Read the sizes from the machine you run on; `get_performance` after the move tells
-  you whether it paid.
-- `collapse-doalls` merges a doall and the doall directly inside it into one multi-dimensional doall (one parallel
-  space); `expand-doall` splits one back into nested doalls.
-- `expand-library`: a `lib_<family>` row becomes the plain maps and tasklets that compute it (a gemm becomes a
-  zero fill and a multiply map with a `+` reduction), in canonical form, so the moves above reach inside it. Expand
-  a library call when fusing it with its neighbours saves memory traffic; leave it when the vendor call is faster.
-  `list_moves` offers it only on calls with a vendor-free expansion. A library call fuses with a doall only once
-  expanded: unexpanded it is a black box.
-- `set-library-implementation`: a `lib_<family>` row keeps its row and is built through the `implementation` you
-  pass: loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one (`cuBLAS`,
-  `hipBLAS`, ...). `list_moves` lists one move per implementation the row may take. A host library keeps its kernel
-  on the CPU, a device library puts it on the GPU.
+Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
+
+### Fusion: fewer loops, less memory traffic
+
+**`for-fusion`** `[for, for]`, LoopFusion. Two adjacent loops over the same range become one.
+```
+for i in 0:N: A[i] = f(X[i])          for i in 0:N:
+for i in 0:N: B[i] = g(A[i])    ->        A[i] = f(X[i]); B[i] = g(A[i])
+```
+Pays when the second loop reads what the first wrote: the value is still in a register or cache. Refused when an
+iteration of the fused loop would read a value a later iteration of the first loop writes.
+
+**`doall-fusion`** `[doall, doall]` of one state, MapFusionVertical / OTFMapFusion / MapFusionHorizontal.
+```
+doall i: T[i] = A[i] * 2               doall i:
+doall i: C[i] = T[i] + 1        ->         t = A[i] * 2; C[i] = t + 1     (T is gone)
+```
+A producer and its consumer: the intermediate array becomes a scalar (kept as the array when the producer updates it
+in place). A consumer reading a window of the producer (a stencil) recomputes those values on the fly. Two independent
+doalls over one range fuse side by side. Pays by removing a whole array's write and read; a recomputing fusion pays
+only while the recomputation is cheaper than the traffic.
+
+### Fission: split a loop, one piece per computation
+
+**`for-fission`** `[for]`, LoopFission. A loop of independent statement groups becomes one loop per group.
+```
+for i: A[i] = f(i); B[i] = g(i)   ->   for i: A[i] = f(i)
+                                       for i: B[i] = g(i)
+```
+Pays when the groups want different orders, or when one group is parallel and the other is not.
+
+**`doall-fission`** `[doall]`, MapFission. One doall per independent output group.
+```
+doall i: A[i] = f(i); B[i] = g(A[i])   ->   doall i: A[i] = f(i)
+                                            doall i: B[i] = g(A[i])
+```
+Usually followed by `doall-fusion` of the pieces that share data, with different neighbors.
+
+**`subgraph-fission`** `[doall, state]`, SubgraphFission. A doall whose body is a small program of states (expand
+the doall to see them) is cut after the named state: the states up to it in one doall, the rest in a second; values
+passed between the parts become arrays. Pays when the parts want different schedules.
+
+### Interchange: reorder two nested loops
+
+**`interchange-doall-doall`** `[outer doall, inner doall]`, MapInterchange. `doall i: doall j: B` becomes
+`doall j: doall i: B`. Pays when it puts the index that walks memory contiguously innermost.
+
+**`interchange-for-doall`** `[for, doall]`, MoveLoopIntoMap. `for t: doall i: B` becomes `doall i: for t: B`. One
+parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps.
+
+**`interchange-doall-for`** `[doall, for]`, MapLoopInterchange. `doall i: for t: B` becomes `for t: doall i: B`; the
+loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.
+
+**`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
+fuse with its neighbors. **`interchange-for-if`** `[for, if]`, MoveLoopInvariantIfUp: the inverse, for a condition
+that does not change inside the loop; the test then runs once instead of once per iteration.
+
+### Tiling: work in cache-sized blocks
+
+**`tile-doall`** `[doall]` with `tile_sizes` (one per dimension, `[32, 32]`), MapTiling.
+```
+doall i in 0:N: B   ->   doall i0 in 0:N step 32:
+                             doall i in i0:min(i0+32, N): B
+```
+**`tile-for`** `[for]` with one size (`[64]`), LoopTiling: the same for a sequential loop, same iterations in the same
+order; follow it with an interchange to block a nest. A size need not divide the range. Pays when a tile's data fits
+the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
+vector width. Read those sizes from the machine you run on; `get_performance` after the move tells whether it paid.
+**`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
+
+### Shape of a doall
+
+**`collapse-doalls`** `[outer doall, inner doall]`, MapCollapse: `doall i: doall j: B` becomes `doall (i, j): B`,
+one parallel space, so short ranges still give every thread work. **`expand-doall`** `[doall]`, MapExpansion: the
+inverse.
+
+### Library calls
+
+**`expand-library`** `[lib_<family>]`, the library's own pure expansion, then canonicalization. The call becomes the
+doalls and statements that compute it (a gemm: a zero fill and a multiply doall with a `+` reduction), so the moves
+above reach inside it. A library call fuses with a doall only once expanded. Expand when fusing it with its neighbors
+saves memory traffic; keep it when the vendor call is faster. Offered only on calls with a vendor-free expansion.
+
+**`set-library-implementation`** `[lib_<family>]` with `implementation`. The row and its label stay; the call is
+built through loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one
+(`cuBLAS`, `hipBLAS`, ...). `list_moves` lists one move per implementation the row may take. A host library keeps its
+kernel on the CPU, a device library puts it on the GPU.
 
 ## Scopes and kernels (when your tool list has them)
 
