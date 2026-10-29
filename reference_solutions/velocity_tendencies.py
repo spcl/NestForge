@@ -398,7 +398,7 @@ def solve(script: Script, ctx: Context) -> None:
     for piece in _subruns(_runs(script)):
         labels = tuple(block.label for block in piece)
         try:
-            result = session.set_scope(labels, session.epoch)
+            result = session.set_scope(labels)
         except (KeyError, RuntimeError, ValueError) as err:
             raise ReplayError(f"define-scope {list(labels)} raised {type(err).__name__}: {err}") from err
         if result.status.name != "APPLIED":
@@ -412,7 +412,7 @@ def solve(script: Script, ctx: Context) -> None:
         except (FuseError, KeyError, RuntimeError, ValueError) as err:
             _dump("original.cpp", source)
             refusals.append(f"{list(labels)} outlined {name}, rewrite refused: {err}")
-            session.unset_scope(name, session.epoch)
+            session.unset_scope(name)
             continue
         session.default_scopes()
         _drop_unused_boundary_copies(session.sdfg)
