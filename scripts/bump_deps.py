@@ -24,8 +24,8 @@ BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
 RELAYOUT = "https://github.com/ThrudPrimrose/relayout.git"
 #: The bench's pyproject.toml at one commit.
 BENCH_PYPROJECT = "https://raw.githubusercontent.com/spcl/HPCAgent-Bench/{sha}/pyproject.toml"
-#: The bench branch NestForge tracks.
-BENCH_BRANCH = "main"
+#: The bench branch NestForge tracks: the release it ships with (main lacks its phase routes until the release merges).
+BENCH_BRANCH = "release-v0.4.0"
 #: Where each package's pin is written: the dependency, and for DaCe and relayout also the uv override.
 PIN_COUNT = {"hpcagent_bench": 1, "hpcagent-agent": 1, "dace": 2, "relayout": 2}
 
