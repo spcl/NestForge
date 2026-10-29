@@ -58,7 +58,7 @@ class Case:
         self.rng = np.random.default_rng(seed)
         self.session = Session(sdfg, targets=Targets(gpu=gpu), work_dir=str(tmp_path))
         self.session.canonicalize()
-        self.status = self.session.set_scope(random_block_run(self.session, self.rng), self.session.epoch).status
+        self.status = self.session.set_scope(random_block_run(self.session, self.rng)).status
 
     def place_and_build(self) -> dict[str, str]:
         """Default scopes, every kernel on a random device when the GPU is a target, and a random half of the kernels
@@ -68,7 +68,7 @@ class Case:
         session.default_scopes()
         names = [ext.name for ext in external_calls(session.sdfg)]
         devices = {name: ("cpu", "gpu")[int(self.rng.integers(2))] for name in names} if session.targets.gpu else {}
-        session.place(devices or None, session.epoch if devices else None)
+        session.place(devices or None)
         implementations = {name: ("DaceReference", "ExternCall")[int(self.rng.integers(2))] for name in names}
         for name, implementation in implementations.items():
             if implementation == "ExternCall":

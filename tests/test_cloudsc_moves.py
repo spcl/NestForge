@@ -70,12 +70,12 @@ def test_a_random_move_keeps_the_program_correct_or_is_refused(canonical: Progra
     pending: list[str] = []
     applied = refused = 0
     for kind, labels in moves(session, rng):
-        before, epoch = session.sdfg.hash_sdfg(), session.epoch
-        result = session.apply_move(kind, labels, epoch)
+        before = session.sdfg.hash_sdfg()
+        result = session.apply_move(kind, labels)
         step = f"{kind} {' '.join(labels)}"
         if result.status is MoveStatus.ILLEGAL:
             refused += 1
-            assert session.epoch == epoch and session.sdfg.hash_sdfg() == before, (
+            assert session.sdfg.hash_sdfg() == before, (
                 f"seed={seed}: refused {step} ({result.reason}) still changed the program"
             )
             continue

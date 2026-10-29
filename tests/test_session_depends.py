@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Session over the kernel dependency graph: one graph per epoch, the kernel listing, the tree's dependency lines,
-and the per-epoch JSON snapshot."""
+"""Session over the kernel dependency graph: one graph per program change, the kernel listing, the tree's dependency
+lines, and the JSON snapshot of each program."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def scoped_session(sdfg: dace.SDFG, work_dir: Path) -> Session:
     return session
 
 
-def test_the_kernel_graph_is_computed_once_per_epoch_and_again_after_a_mutation(tmp_path):
+def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path):
     session = Session(chain.to_sdfg(simplify=True), work_dir=str(tmp_path))
     before = session.kernel_graph()
     assert session.kernel_graph() is before
@@ -81,7 +81,7 @@ def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path)
 
 def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-    session.expand([session.row_index()["extcall_1"][1].label], session.epoch)
+    session.expand([session.row_index()["extcall_1"][1].label])
 
     lines = session.describe(deps=True).splitlines()
 

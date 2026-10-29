@@ -88,16 +88,16 @@ def test_map_fission_is_listed_for_the_multi_output_map():
     assert move.labels == (all_map_entries(session.sdfg)[0].map.label,)
 
 
-def test_map_fission_splits_the_map_by_statement_and_stales_prior_labels_and_matches_numpy():
+def test_map_fission_splits_the_map_by_statement_and_retires_its_label_and_matches_numpy():
     session = Session(multi_statement_map_sdfg())
     assert len(all_map_entries(session.sdfg)) == 1
 
     (move,) = session.list_moves("doall-fission")
-    result = session.apply_move(move.kind, move.labels, move.epoch)
+    result = session.apply_move(move.kind, move.labels)
 
-    assert (result.status, session.epoch) == (MoveStatus.APPLIED, 1)
+    assert result.status == MoveStatus.APPLIED
     assert len(all_map_entries(session.sdfg)) == 2  # the outer map split, one map per statement
-    assert session.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.STALE
+    assert session.apply_move(move.kind, move.labels).status is MoveStatus.NOT_FOUND
 
     scopes = tasklet_scopes(session.sdfg)
     assert scopes["one"] is not None and scopes["two"] is not None

@@ -94,12 +94,11 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 
 
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
-    epoch = 1  # get_cpf canonicalizes once
-    tree = post("view_tree", episode="episode-scope", expand=["state0_0"], epoch=epoch).answer["result"]
+    tree = post("view_tree", episode="episode-scope", expand=["state0"]).answer["result"]
     maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
 
-    scoped = post("set_scope", episode="episode-scope", labels=maps[:2], epoch=epoch).answer["result"]
-    unset = post("unset_scope", episode="episode-scope", name=scoped["reason"], epoch=epoch + 1).answer["result"]
+    scoped = post("set_scope", episode="episode-scope", labels=maps[:2]).answer["result"]
+    unset = post("unset_scope", episode="episode-scope", name=scoped["reason"]).answer["result"]
 
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
 
@@ -158,7 +157,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
 def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:
     stub.dies_on = "apply_move"
 
-    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"], epoch=1)
+    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"])
     again = post("get_cpf", "episode-crash")
 
     assert (died.code, died.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), died.answer
@@ -196,11 +195,11 @@ def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_mov
 
 
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
-    stub.replies["apply_move"] = Reply(error="ValueError: the labels were read at epoch 1, the tree is at epoch 2")
+    stub.replies["apply_move"] = Reply(error="ValueError: doall-fusion takes 2 label(s); got 1")
 
-    judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"], epoch=1)
+    judge = post("apply_move", "episode-stale", kind="fuse", labels=["map_0"])
 
-    assert judge.code == HTTPStatus.BAD_REQUEST and "epoch" in judge.answer["error"], judge.answer
+    assert judge.code == HTTPStatus.BAD_REQUEST and "takes 2 label" in judge.answer["error"], judge.answer
 
 
 def test_concurrent_calls_of_one_episode_start_one_session_and_reach_it_one_at_a_time(stub: Stub) -> None:
@@ -226,7 +225,7 @@ def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(lo
 
     moved = post("apply_move", **first)
 
-    assert tree.code == HTTPStatus.OK and "epoch" in str(tree.answer["result"])
+    assert tree.code == HTTPStatus.OK and "doall" in str(tree.answer["result"])
     assert moved.code == HTTPStatus.OK and moved.answer["result"]["status"] == "applied"
     performance = moved.answer["performance"]
     structured = performance["structured"]

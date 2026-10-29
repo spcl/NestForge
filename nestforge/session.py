@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the one API over the seven stages, shared by the deterministic driver, humans and agents.
 
-Callers name tree rows by their labels together with the epoch they read them at, and kernels by name. Every
-mutation of the program bumps the epoch and regenerates the labels, so a label from before it is refused instead of
-acting on a moved graph. Every stage has a deterministic default; the agent calls are the alternatives to it.
+Callers name tree rows by their labels and kernels by name. A label stays on its row while the row lives; a change
+retires the labels of the rows it consumed and names what it made afresh, so a label read before it either still
+names the same row or is refused as unknown, never acting on a moved graph. Every stage has a deterministic default; the agent calls are the alternatives to it.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from nestforge.ir.introspect import (
     tree_rows,
 )
 from nestforge.ir.loops import loop_symbol_values
-from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
+from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import (
@@ -120,7 +120,6 @@ class Move(Record):
 
     kind: str
     labels: tuple[str, ...]
-    epoch: int
     #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
     tile_sizes: tuple[int, ...] = ()
     #: For ``set-library-implementation``, the implementation it sets.
@@ -247,7 +246,7 @@ class Session:
         "name",
         "targets",
         "sizes",
-        "epoch",
+        "namer",
         "rows",
         "expanded",
         "costs",
@@ -273,21 +272,23 @@ class Session:
         work_dir: str | None = None,
         sizes: dict[str, int] | None = None,
         codegen: Codegen = "first",
+        namer: Namer | None = None,
     ) -> None:
         """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
         :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
-            ``first``, stage 5's first configuration; ``sweep``, the fastest correct one of stage 6's sweep."""
+            ``first``, stage 5's first configuration; ``sweep``, the fastest correct one of stage 6's sweep.
+        :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default."""
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
         self.sizes = dict(sizes) if sizes is not None else {}
-        self.epoch = 0
-        normalize_labels(sdfg)
+        self.namer = namer if namer is not None else Namer()
+        normalize_labels(sdfg, self.namer)
         self.rows: dict[str, Row] | None = None
-        # labels whose content describe() shows, and the work and depth it prints; both reset each epoch
+        # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: set[str] = set()
         self.costs: WorkDepth | None = None
-        # why describe() printed no costs this epoch, or None when it printed them
+        # why describe() printed no costs for this program, or None when it printed them
         self.costs_skipped: str | None = None
         self.work_dir = Path(work_dir) if work_dir else scratch_dir()
         self.kernel_deps: KernelGraph | None = None
@@ -306,13 +307,14 @@ class Session:
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
 
-    def bump(self) -> None:
-        self.epoch += 1
-        normalize_labels(self.sdfg)
+    def bump(self, consumed: Sequence[str] = ()) -> None:
+        """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
+        self.namer.retire(tuple(consumed))
+        normalize_labels(self.sdfg, self.namer)
         # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
         force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
-        self.expanded = set()
+        self.expanded = {label for label in self.expanded if label in self.row_index()}
         self.costs = None
         self.costs_skipped = None
         self.kernel_deps = None
@@ -320,24 +322,23 @@ class Session:
         self.measured = None
 
     def row_index(self) -> dict[str, Row]:
-        """Tree label -> ``(block or node, state)``, built once per epoch."""
+        """Tree label -> ``(block or node, state)``, built once per change of the program."""
         if self.rows is None:
             self.rows = tree_rows(self.sdfg)
         return self.rows
 
-    def named_rows(self, kind: str, names: tuple[str, ...], epoch: int) -> list[Row] | MoveResult:
-        """The rows ``names`` label at ``epoch``, or the ``stale`` or ``not-found`` result."""
-        if epoch != self.epoch:
-            reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe again."
-            return MoveResult(status=MoveStatus.STALE, kind=kind, labels=names, reason=reason)
+    def named_rows(self, kind: str, names: tuple[str, ...]) -> list[Row] | MoveResult:
+        """The rows ``names`` label, or the ``not-found`` result: a label no row holds, or one a change retired."""
         rows = self.row_index()
         missing = [name for name in names if name not in rows]
         if missing:
+            gone = [name for name in missing if name in self.namer.retired]
+            why = f" ({', '.join(gone)} changed; read the tree again)" if gone else ""
             return MoveResult(
                 status=MoveStatus.NOT_FOUND,
                 kind=kind,
                 labels=names,
-                reason=f"no tree row is labeled {', '.join(missing)}.",
+                reason=f"no tree row is labeled {', '.join(missing)}{why}.",
             )
         return [rows[name] for name in names]
 
@@ -352,7 +353,7 @@ class Session:
     # Stage 2: moves
 
     def describe(self, bodies: bool = False, deps: bool = False) -> str:
-        """The program as a text tree headed by the epoch; rows are named by the labels the labeled calls take.
+        """The program as a text tree; rows are named by the labels the labeled calls take.
         Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
         once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
         if self.costs is None:
@@ -361,19 +362,18 @@ class Session:
             self.sdfg,
             bodies=bodies,
             notes=self.deps_line if deps else None,
-            epoch=self.epoch,
             expanded=self.expanded,
             costs=self.costs,
         )
         if self.costs_skipped is None:
             return tree
         header, _, rows = tree.partition("\n")
-        return f"{header}\n(no work= or depth= this epoch: {self.costs_skipped})\n{rows}"
+        return f"{header}\n(no work= or depth=: {self.costs_skipped})\n{rows}"
 
-    def expand(self, labels: Sequence[str], epoch: int) -> str:
+    def expand(self, labels: Sequence[str]) -> str:
         """Show the content of the states and maps ``labels`` name (kernels, nested maps and leaf bodies; a map's
         nested states) until the program changes; returns what opened, or why nothing did."""
-        rows = self.named_rows("expand", tuple(labels), epoch)
+        rows = self.named_rows("expand", tuple(labels))
         if isinstance(rows, MoveResult):
             return f"{spelled(rows.status)}: {rows.reason}"
         closed = [name for name, (obj, _) in zip(labels, rows) if not isinstance(obj, (SDFGState, nodes.MapEntry))]
@@ -382,13 +382,11 @@ class Session:
         self.expanded.update(labels)
         return f"ok: expanded {', '.join(labels)}"
 
-    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = (), epoch: int | None = None) -> str:
-        """:meth:`collapse` then :meth:`expand` (labels read at ``epoch``), and the tree after them, each note first."""
+    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = ()) -> str:
+        """:meth:`collapse` then :meth:`expand`, and the tree after them, each note first."""
         notes = [self.collapse(collapse)] if collapse else []
-        if expand and epoch is None:
-            notes.append("illegal: expand needs the epoch its labels were read at.")
-        elif expand:
-            notes.append(self.expand(expand, epoch))
+        if expand:
+            notes.append(self.expand(expand))
         return "\n".join([*notes, self.describe()])
 
     def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
@@ -422,28 +420,26 @@ class Session:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
                 moves += [
-                    Move(kind=k, labels=labels, epoch=self.epoch, implementation=name)
-                    for name in implementations(node, self.targets.gpu)
+                    Move(kind=k, labels=labels, implementation=name) for name in implementations(node, self.targets.gpu)
                 ]
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
-                moves.append(Move(kind=k, labels=labels, epoch=self.epoch, tile_sizes=sizes))
+                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes))
         return moves
 
     def apply_move(
         self,
         kind: str,
         labels: Sequence[str],
-        epoch: int,
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
     ) -> MoveResult:
-        """Apply one fusion, fission or interchange to the tree rows ``labels`` name, as read at ``epoch``.
+        """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
+        the move makes are named afresh.
 
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
-        :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :returns: The outcome; nothing but ``applied`` touches the program.
@@ -453,7 +449,7 @@ class Session:
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
-        rows = self.named_rows(kind, names, epoch)
+        rows = self.named_rows(kind, names)
         if isinstance(rows, MoveResult):
             return rows
         plan = plan_move(kind, rows, tile_sizes, implementation)
@@ -473,7 +469,8 @@ class Session:
         # read them
         narrow_nested_memlets(self.sdfg)
         self.unplaced = None
-        self.bump()
+        # setting an implementation changes a property of the row, not the row: its label stays
+        self.bump(() if kind == SET_IMPLEMENTATION else names)
         return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
 
     def metrics(self, label: str) -> str:
@@ -526,34 +523,30 @@ class Session:
             for ext, boundary in lowered
         ]
 
-    def set_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
+    def set_scope(self, labels: Sequence[str]) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
         blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
 
-        :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them at ``epoch``.
-        :param epoch: The epoch those labels were read at.
+        :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them.
         :returns: ``applied`` with the new kernel's name as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
-        rows = self.named_rows("define-scope", names, epoch)
+        rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
         self.unplaced = None
-        self.bump()
+        self.bump(names)
         return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
 
-    def unset_scope(self, name: str, epoch: int) -> MoveResult:
+    def unset_scope(self, name: str) -> MoveResult:
         """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
         dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
         """
-        if epoch != self.epoch:
-            reason = f"kernels read at epoch {epoch}; the program is at epoch {self.epoch}."
-            return MoveResult(status=MoveStatus.STALE, kind="unset-scope", labels=(name,), reason=reason)
         calls = {ext.name: ext for ext in external_calls(self.sdfg)}
         if name not in calls:
             reason = f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}."
@@ -576,7 +569,7 @@ class Session:
         return MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
 
     def kernel_graph(self) -> KernelGraph:
-        """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per epoch."""
+        """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per change."""
         if self.kernel_deps is None:
             self.kernel_deps = kernel_dependencies(self.sdfg)
         return self.kernel_deps
@@ -610,18 +603,13 @@ class Session:
 
     # Stage 4: placement
 
-    def place(self, devices: dict[str, str] | None = None, epoch: int | None = None) -> PlaceResult:
+    def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
         """Run each kernel on a device and insert the host/device copies. Kernels ``devices`` leaves out keep the
         default: parallel kernels on the GPU when it is a target, the rest on the CPU. A later call starts again
         from the program before the first placement.
 
         :param devices: Kernel name -> ``cpu`` or ``gpu``.
-        :param epoch: The epoch the kernel names were read at; required with ``devices``.
         """
-        if devices is not None and epoch != self.epoch:
-            return PlaceResult(
-                status=MoveStatus.STALE, reason=f"kernels read at epoch {epoch}; the program is at {self.epoch}."
-            )
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
@@ -643,7 +631,7 @@ class Session:
     # Stage 5: kernels
 
     def default_kernel(self, name: str) -> KernelSource:
-        """The kernel's CPF unit for its device, rendered once per epoch."""
+        """The kernel's CPF unit for its device, rendered once per change of the program."""
         if name not in self.sources:
             ext = self.kernel(name)
             self.sources[name] = schedule_kernel(ext, node_boundary(ext), self.work_dir / name / "kernel")
@@ -873,11 +861,18 @@ class Session:
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
-        copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes, codegen=self.codegen)
+        # same labels, same namer state: what was read on this session names the same rows of the copy
+        copied = Session(
+            copy.deepcopy(self.sdfg),
+            self.targets,
+            self.name,
+            sizes=self.sizes,
+            codegen=self.codegen,
+            namer=copy.deepcopy(self.namer),
+        )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
         copied.swept, copied.swept_dir = self.swept, self.swept_dir
-        # same epoch, same labels: what was read on this session names the same rows of the copy
-        copied.epoch, copied.unplaced = self.epoch, copy.deepcopy(self.unplaced)
+        copied.unplaced = copy.deepcopy(self.unplaced)
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied

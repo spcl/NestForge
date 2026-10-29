@@ -16,13 +16,13 @@ from nestforge.server import Reply, Setup
 
 #: Each tool's predefined answer, shaped as the session's own.
 REPLIES: dict[str, Reply] = {
-    "get_cpf": Reply(result="epoch 1\n`- state0_0\n   |- kernel map_0 [i=0:N]\n   `- kernel map_1 [i=0:N]"),
-    "view_tree": Reply(result="epoch 1\n`- state0_0"),
-    "list_moves": Reply(result=[{"kind": "fuse", "labels": ["map_0", "map_1"], "epoch": 1}]),
-    "apply_move": Reply(result={"status": "applied", "reason": "", "epoch": 2}),
-    "run_defaults": Reply(result={"status": "applied", "reason": "", "epoch": 2}),
-    "set_scope": Reply(result={"status": "applied", "reason": "kernel_0", "epoch": 2}),
-    "unset_scope": Reply(result={"status": "applied", "reason": "", "epoch": 3}),
+    "get_cpf": Reply(result="`- state0\n   |- kernel map_0 [i=0:N]\n   `- kernel map_1 [i=0:N]"),
+    "view_tree": Reply(result="`- state0"),
+    "list_moves": Reply(result=[{"kind": "fuse", "labels": ["map_0", "map_1"]}]),
+    "apply_move": Reply(result={"status": "applied", "reason": ""}),
+    "run_defaults": Reply(result={"status": "applied", "reason": ""}),
+    "set_scope": Reply(result={"status": "applied", "reason": "kernel_0"}),
+    "unset_scope": Reply(result={"status": "applied", "reason": ""}),
     "list_kernels": Reply(result=[{"name": "kernel_0", "device": "cpu", "arguments": ["A", "B"]}]),
     "read_kernel": Reply(result="void kernel_0(double* A, double* B) {}"),
     "write_kernel": Reply(result={"status": "ok", "reason": ""}),

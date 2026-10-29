@@ -94,7 +94,7 @@ class StubAgent(FlavorOptimizer):
             if not isinstance(moves, list) or not moves:
                 break
             move = pick.choice(moves)
-            tool("apply_move", task.kernel, kind=move["kind"], labels=move["labels"], epoch=move["epoch"])
+            tool("apply_move", task.kernel, kind=move["kind"], labels=move["labels"])
         final = tool("finalize", task.kernel)["result"]
         assert isinstance(final, dict), final
         return Submission(

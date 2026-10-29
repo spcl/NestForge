@@ -36,7 +36,6 @@ class NoArgs(Args):
 class ViewTree(Args):
     expand: list[str] = pydantic.Field(default_factory=list, description="State or map labels to open.")
     collapse: list[str] = pydantic.Field(default_factory=list, description="Labels to close again.")
-    epoch: int | None = pydantic.Field(None, description="The epoch the labels were read at; needed with expand.")
 
 
 class ListMoves(Args):
@@ -45,7 +44,6 @@ class ListMoves(Args):
 
 class Labeled(Args):
     labels: list[str] = pydantic.Field(description="Tree labels as view_tree printed them.")
-    epoch: int = pydantic.Field(description="The epoch those labels were read at.")
 
 
 class ApplyMove(Labeled):
@@ -69,7 +67,6 @@ class RunDefaults(Args):
 
 class UnsetScope(Args):
     name: str = pydantic.Field(description="The kernel to inline back, as list_kernels names it.")
-    epoch: int = pydantic.Field(description="The epoch of the latest tree.")
 
 
 class KernelName(Args):
@@ -111,7 +108,7 @@ TOOLS: dict[str, ToolDef] = {
     "get_cpf": ToolDef(
         Phase.STRUCTURED,
         NoArgs,
-        "Start here: the program in canonical parallel form, as a labeled tree headed by its epoch.",
+        "Start here: the program in canonical parallel form, as a labeled tree.",
         Effect.READ,
     ),
     "view_tree": ToolDef(
@@ -136,7 +133,7 @@ TOOLS: dict[str, ToolDef] = {
         Phase.STRUCTURED,
         ApplyMove,
         "Apply one move as list_moves listed it (or with your own tile_sizes); answers with the outcome and the "
-        "whole-program performance. The epoch advances: read the tree again before the next move.",
+        "whole-program performance. The rows it took are renamed: read the tree again before the next move.",
     ),
     "run_defaults": ToolDef(Phase.STRUCTURED, RunDefaults, "Finish one stage with NestForge's default heuristic."),
     "set_scope": ToolDef(

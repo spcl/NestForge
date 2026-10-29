@@ -45,7 +45,7 @@ def test_the_nest_an_interchange_builds_gets_per_iteration_memlets():
     s = Session(row_recurrence.to_sdfg(simplify=True), targets=Targets(gpu=False), sizes={"N": SIZE})
     s.canonicalize()
     (move,) = s.list_moves("interchange-for-doall")
-    assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
+    assert s.apply_move(move.kind, move.labels).status is MoveStatus.APPLIED
     assert_per_iteration(nest_memlets(s.sdfg))
     s.finish_moves()
     assert_per_iteration(nest_memlets(s.sdfg))

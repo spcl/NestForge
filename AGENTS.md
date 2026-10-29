@@ -1,16 +1,16 @@
 # AGENTS.md
 
 Guide for LLM agents that drive NestForge and for coding agents that change it. Stage details live in
-[docs/stages](docs/stages/); agents reach NestForge through the bench plugin in [plugin/nestforge](plugin/nestforge).
+[docs/stages.md](docs/stages.md); agents reach NestForge through the bench plugin in [plugin/nestforge](plugin/nestforge).
 
 ## Driving NestForge
 
 The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagent-bench-plugin); the
-[method prompt](plugin/nestforge/methods/nestforge/method.md) is what the agent reads.
+[skill page](plugin/nestforge/skills/nestforge/SKILL.md) and [prompt texts](plugin/nestforge/prompt/) are what the agent reads.
 
 - Never edit SDFG nodes or memlets; request moves. Each move is checked for legality before it applies.
-- Name rows by the labels the tree prints, unique across the program, with the epoch from its first line. Labels
-  regenerate after every change: an old epoch returns `stale`. Only `applied` changed the program.
+- Name rows by the labels the tree prints, unique across the program. A row keeps its label while it lives; a move
+  retires the labels it took, which then return `not-found`. Only `applied` changed the program.
 - When no move fuses two regions that should run as one, `set_scope` makes them one kernel; `unset_scope` undoes it.
 - Keep a change when the whole-program time drops and the program stays correct: wrong and fast loses.
 

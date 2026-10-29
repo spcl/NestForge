@@ -38,7 +38,7 @@ def straight_pair(session: Session) -> tuple[str, str]:
 def applied_and_valid(base: Session, move: Move) -> MoveStatus:
     """``move`` applied on a copy of ``base``, whose program must still validate."""
     sut = base.trial()
-    status = sut.apply_move(move.kind, move.labels, move.epoch, move.tile_sizes, move.implementation).status
+    status = sut.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation).status
     sut.sdfg.validate()
     return status
 
@@ -78,12 +78,12 @@ def test_a_straight_run_of_blocks_becomes_one_kernel_and_unsetting_it_restores_a
     sut = base.trial()
     labels = straight_pair(sut)
 
-    scoped = sut.set_scope(labels, sut.epoch)
-    stale = sut.set_scope(labels, sut.epoch - 1)
-    unset = sut.unset_scope(scoped.reason, sut.epoch)
+    scoped = sut.set_scope(labels)
+    stale = sut.set_scope(labels)
+    unset = sut.unset_scope(scoped.reason)
 
     assert scoped.status is MoveStatus.APPLIED, scoped
-    assert stale.status is MoveStatus.STALE
+    assert stale.status is MoveStatus.NOT_FOUND
     assert unset.status is MoveStatus.APPLIED, unset
     assert not external_calls(sut.sdfg)
     assert not (why := program_mismatch(sut, inputs, reference)), why

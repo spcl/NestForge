@@ -7,17 +7,17 @@ applies: {explicit: true}
 
 ## The tree
 
-`get_cpf` and `view_tree` print the program as a tree headed by `SDFG '<name>'  epoch=<n>`.
+`get_cpf` and `view_tree` print the program as a tree headed by `SDFG '<name>'`.
 
 | row | is |
 |---|---|
-| `for<L>_<i>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
-| `if<L>_<i>` | a branch; its arms print as `when <cond>` / `else` |
-| `state<L>_<i>` | one step of the program; collapsed it shows `doalls=<k>` (library calls counted), expanded its doalls |
-| `doall<L>_<i>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
-| `lib_<family><L>_<i>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall: it runs as a vendor or library call unless you expand it |
+| `for<n>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
+| `if<n>` | a branch; its arms print as `when <cond>` / `else` |
+| `state<n>` | one step of the program; collapsed it shows `doalls=<k>` (library calls counted), expanded its doalls |
+| `doall<n>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
+| `lib_<family><n>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall: it runs as a vendor or library call unless you expand it |
 
-- `L` is the nesting level, `i` the position at that level. Labels are names, not positions you compute.
+- A label is a row's name: it stays on the row while the row lives. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
 - `view_tree expand=[labels]` opens states and doalls; `collapse=[labels]` closes them. A doall whose body is a small
   program shows that program's states once expanded: those states are where `subgraph-fission` cuts.
@@ -31,13 +31,13 @@ applies: {explicit: true}
   top-level doall (with what it holds), a library call among them, is one kernel, run on the CPU with threads or on
   the GPU. A top-level for
   loop stays a loop on the host that launches the kernels inside it.
-- Every move bumps the epoch and relabels the tree. Pass the epoch you read the labels at; a stale one is refused,
-  so read the tree again after each move.
+- A move retires the labels of the rows it took and names the rows it made afresh; every other row keeps its label.
+  A retired label is refused as unknown, so read the tree again after each move.
 
 ## Moves
 
 `list_move_kinds` lists every kind with the rows it takes, in order, and the DaCe transformation it runs.
-`list_moves` lists the moves legal right now as `kind` + `labels` + `epoch`, with `tile_sizes` on a tiling move (the
+`list_moves` lists the moves legal right now as `kind` + `labels`, with `tile_sizes` on a tiling move (the
 sizes it was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as
 listed, or with your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal
 costs one call, not a broken program.
