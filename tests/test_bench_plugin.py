@@ -94,8 +94,13 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 
 
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
-    tree = post("view_tree", episode="episode-scope", expand=["state0"]).answer["result"]
-    maps = [line.split()[1] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
+    rows = [
+        line.lstrip("|`- ").split()[0]
+        for line in post("get_cpf", episode="episode-scope").answer["result"].splitlines()[1:]
+    ]
+    states = [row for row in rows if row.startswith("state")]
+    tree = post("view_tree", episode="episode-scope", expand=states).answer["result"]
+    maps = [line.lstrip("|`- ").split()[0] for line in tree.splitlines() if line.lstrip("|`- ").startswith("doall")]
 
     scoped = post("set_scope", episode="episode-scope", labels=maps[:2]).answer["result"]
     unset = post("unset_scope", episode="episode-scope", name=scoped["reason"]).answer["result"]
