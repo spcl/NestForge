@@ -23,6 +23,7 @@ from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
 from dace.data import Array
 from dace.libraries.standard.nodes.external_call import external_calls
+from dace.sdfg.scope import is_devicelevel_gpu
 from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
 
 from nestforge.build.toolchain import (
@@ -147,19 +148,30 @@ def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]
             yield desc
 
 
+def on_device(sdfg: dace.SDFG) -> bool:
+    """Whether ``sdfg`` runs inside a GPU kernel, where a register array is per-thread memory."""
+    node = sdfg.parent_nsdfg_node
+    return node is not None and is_devicelevel_gpu(sdfg.parent.sdfg, sdfg.parent, node)
+
+
 def force_register_arrays(sdfg: dace.SDFG, kernels: bool = True) -> int:
-    """Pin every array headed for registers to ``Register(force=True)``, so on the CPU it stays on the stack, a
-    symbolic size as a variable-length array, instead of a heap allocation per scope: unforced register arrays,
-    scope-lived arrays inside a map (DaCe's rule), and, with ``kernels``, a host kernel's scope-lived arrays. Returns
-    how many."""
+    """Settle where every array headed for registers lives: unforced register arrays, scope-lived arrays inside a map
+    (DaCe's rule), and, with ``kernels``, a host kernel's scope-lived arrays. Map-scoped arrays and arrays of a
+    constant size are pinned to ``Register(force=True)``, so they stay on the stack; a host array whose size names a
+    symbol is a heap allocation, never a variable-length array of the problem's size (CloudSC's kernels held
+    megabytes of them). Returns how many."""
     pinned = force_map_scoped_registers(sdfg)
     for owned, scope_default in [
         *((s, False) for s in sdfg.all_sdfgs_recursive()),
         *((s, True) for s in (kernel_sdfgs(sdfg) if kernels else ())),
     ]:
         arrays = list(stack_candidates(owned, scope_default=scope_default))
+        heap = not on_device(owned)
         for desc in arrays:
-            desc.storage = dace.StorageType.Register(force=True)
+            if heap and dace.symbolic.issymbolic(desc.total_size, owned.constants):
+                desc.storage = dace.StorageType.CPU_Heap
+            else:
+                desc.storage = dace.StorageType.Register(force=True)
         pinned += len(arrays)
     return pinned
 

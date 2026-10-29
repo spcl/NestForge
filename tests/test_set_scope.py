@@ -169,20 +169,22 @@ def test_default_scopes_lowers_the_maps_left_after_a_group():
     assert_same_values(reference, session.sdfg, ("A", "C"))
 
 
-def test_a_kernels_scope_arrays_stay_on_the_stack():
-    """``T`` lives inside the grouped kernel; codegen gives it registers once the kernel expands, and without
-    ``force`` a symbolic size there is a heap allocation per call instead of a variable-length array."""
-    session, _ = session_and_reference(three_stages)
+def test_a_kernels_problem_sized_scope_array_is_a_heap_allocation_not_a_stack_array():
+    """``T`` lives inside the grouped kernel and has the problem's size ``N``: on the stack it would be a
+    variable-length array that grows with the input until the stack overflows."""
+    session, reference = session_and_reference(three_stages)
     first, second, _ = map_labels(session)
     session.set_scope([first, second], session.epoch)
     session.default_scopes()
     (grouped,) = [ext for ext in external_calls(session.sdfg) if "T" in ext.standalone_sdfg.arrays]
 
-    assert grouped.standalone_sdfg.arrays["T"].storage == dace.StorageType.Register(force=True)
+    assert grouped.standalone_sdfg.arrays["T"].storage == dace.StorageType.CPU_Heap
+    assert "double T[" not in session.kernel_source(grouped.name), "T is no variable-length array in the unit"
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         session.sdfg(A=np.ones(SIZE), C=np.zeros(SIZE), N=SIZE)
     assert not [w for w in caught if "Variable-length array" in str(w.message)]
+    assert_same_values(reference, session.sdfg, ("A", "C"))
 
 
 @pytest.mark.parametrize("simplify", [True, False])
