@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A :class:`Session` in a process of its own, driven over a pipe: the caller's threads never fork, and a crash in
 generated code ends this process, not the caller. The HPCAgent-Bench plugin serves each episode's kernel with one.
-HPCAgent-Bench is imported in the child only, so importing nestforge never loads it."""
+HPCAgent-Bench is imported when a session starts, so importing nestforge never loads it."""
 
 from __future__ import annotations
 
@@ -170,11 +170,15 @@ class SessionProcess:
     __slots__ = ("__weakref__", "connection", "process")
 
     def __init__(self, setup: Setup, target: Callable[[Connection, Setup], None] = serve) -> None:
+        from hpcagent_bench.plugins import openmp_environment
+
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
         self.process = context.Process(target=target, args=(child, setup))
-        self.process.start()
+        # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
+        with openmp_environment("nestforge"):
+            self.process.start()
         child.close()
         weakref.finalize(self, self.process.kill)
         ready = self.receive()

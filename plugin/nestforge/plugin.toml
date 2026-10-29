@@ -1,6 +1,8 @@
 # NestForge as a user plugin: point HPCAGENT_BENCH_USER_PLUGIN_DIRS at this folder.
 name = "nestforge"
 description = "Whole-program DaCe optimization: legal moves, scoped kernels, placement, with performance feedback."
+# Every kernel links LLVM libomp; the bench starts the session process in libomp's OpenMP context.
+openmp = "libomp"
 
 # The packages nestforge and nestforge_bench, built from the repository into the judge's interpreter; their
 # dependencies are the benchmark's own, at its pins.
