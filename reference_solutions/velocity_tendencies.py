@@ -226,7 +226,7 @@ def tile_columns(source: str) -> str:
     The rendered kernel has no ``__dace_tile``. Its parallel axis is the block, which is one trip at
     preset M, and each nest then walks every column. This puts those column walks inside one tile loop.
     """
-    entry = re.search(r"extern \"C\" void (\w+)\([^;]*\)\s*\{", source)
+    entry = re.search(r"extern \"C\" void (\w+)\([^;{]*\)\s*\{", source)  # the parameters hold no brace
     if entry is None:
         raise FuseError('the kernel has no extern "C" entry')
     sweeps = len(re.findall(r"< nproma", source))
@@ -395,8 +395,11 @@ def solve(script: Script, ctx: Context) -> None:
     session = script.session
     session.default_moves()
     refusals: list[str] = []
-    for piece in _subruns(_runs(script)):
-        labels = tuple(block.label for block in piece)
+    tried = 0
+    # an unset kernel comes back under new labels, so the pieces are read again after each refusal, in the same order
+    while (pieces := _subruns(_runs(script)))[tried:]:
+        labels = tuple(block.label for block in pieces[tried])
+        tried += 1
         try:
             result = session.set_scope(labels)
         except (KeyError, RuntimeError, ValueError) as err:
