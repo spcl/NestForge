@@ -3,7 +3,7 @@
 """Every phase an agent drives, end to end on a big program: the bench's cloudsc_monolith, canonicalized once.
 
 Structured (moves, scopes, placement) keeps the whole program within the bench's grading tolerance; the
-unstructured phase takes back a kernel's own source and refuses a wrong entry; the codegen phase sweeps a kernel and
+kernels phase takes back a kernel's own source and refuses a wrong entry; the codegen phase sweeps a kernel and
 links a winner; the performance feedback reports a correct program, its offloading and every kernel."""
 
 from collections import Counter

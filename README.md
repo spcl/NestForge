@@ -22,7 +22,7 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
 run the `nestforge` packet with `--source-mode any` (`finalize` hands the judge a library). The `nestforge` packet
-exposes the structured phase; scopes, placement and kernel builds run their defaults in `get_performance` and
+exposes the moves phase; scopes, placement and kernel builds run their defaults in `get_performance` and
 `finalize`. The `nestforge-full` packet exposes every phase: the agent may also set scopes and write and tune kernels.
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
