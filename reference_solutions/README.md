@@ -20,6 +20,7 @@ python -m nestforge.replay reference_solutions/<kernel>.py
 | `bfs` | the default, then the `interchange-doall-for` it leaves on `reach` (the source-vertex loop back outside the target-vertex map) | GPU | 1415.5 ms | 390.5 ms | 3.62x (main `fb130f1`; see the note below) |
 | `velocity_tendencies` | the default, then the edge phase as one kernel rewritten to one 64-column tile (no menu move; see the note below) | CPU, 72 threads | 159.52 ms | 118.26 ms | 1.35x (main `fb130f1`, DaCe `0f8ac0227`) |
 | `harris_corner` | every producer fused by hand into the box-sum doall that reads it (the products, then `Ix`, `Iy` and their chains; recomputed per tap), then the default: one kernel `img -> R` | GPU | 27.53 ms | 22.14 ms | 1.24x (6 alternated rounds, 1.15-1.39x; DaCe `98482ac25`) |
+| `cholesky2` | `expand-library` of the `np.linalg.cholesky` call (NestForge's own loops instead of the library), then the default | CPU, 72 threads | 22.7 s | 121 ms | 187x (3 alternated rounds; DaCe `98482ac25`) |
 
 Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracle; NestForge main `0e1a475`, DaCe `f77695949`, HPCAgent-Bench `1fa634af`. `aes_graupel` was timed at DaCe `3469167e5`, HPCAgent-Bench `0cc69ba`.
 
@@ -28,6 +29,8 @@ Preset M on a Daint GH200 node, mean of 5 calls, every variant matches the oracl
 `fuse_physics_into_scan` also declares a decoy: the reference, then the physics map interchanged so the levels are outermost, which leaves only the 90 levels parallel on the GPU (300 ms, 0.05x of the default).
 
 `harris_corner` was timed with the per-kernel check against the emitted Python skipped (moves, scopes, placement and kernel builds once, then the whole program against the bench oracle): that check runs the fused kernel as a Python loop over every point, hours at preset M, so a plain `python -m nestforge.replay` of this file at M is very slow. On the CPU the same route is slower than the default (0.75x at 2048 x 4096, DaCe `0f8ac0227`), so the reference there is the default.
+
+`cholesky2` is CI-skipped: the per-kernel check against the emitted Python fails on the expanded Cholesky kernel (`NameError: name 'conj' is not defined`, a NestForge emitter gap, also seen on `quatrex_rgf`); the timings above check the whole program against the bench oracle. It depends on the device: on the GPU the same `expand-library` takes 9.5 s against the default's 8.5 ms (the vendor solver), so the GPU reference is the default and the expansion is its decoy; on the CPU the decoy is `set-library-implementation` to OpenBLAS, which times like the default (22.3 s). The CPU default's 22 s (about 1 Gop/s for the factorization) is far below what OpenBLAS reaches on one core, so part of this gain is the library setup on Daint, not only the schedule; the default still takes that path.
 
 `cloudsc_nproma` is CI-skipped: the kernel is not in HPCAgent-Bench `main` (it came with spcl/HPCAgent-Bench#124, which was reverted; its files are at bench commit `d22922c5c`), and on DaCe `7683e143` its `doall-fission` reads and writes `pfplsx` through one access node, a cyclic state that the stages after fusion reject (`NetworkXUnfeasible` in `route_ordering_through_data`). On main the default still leaves the route on the menu. At 72 threads the route was 1.19x at preset M and 2.04x at `NPROMA` 1024 (older pins).
 
