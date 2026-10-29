@@ -25,7 +25,7 @@ from hpcagent_bench.config import SubmitFeedback
 from hpcagent_bench.harness import tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
-from hpcagent_bench.harness.routes import ROUTES, RouteRequest
+from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
 from hpcagent_bench.harness.task import Task
 from hpcagent_bench.skill_frontmatter import split_frontmatter
@@ -122,7 +122,8 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
 
     packet = PACKETS["nestforge"].tools
 
-    assert {TOOLS[tool].phase for tool in packet} == {Phase.STRUCTURED, Phase.ANY}
+    assert packet[-1] == plugins.NEXT_PHASE
+    assert {TOOLS[tool].phase for tool in packet[:-1]} == {Phase.STRUCTURED, Phase.ANY}
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
     assert PACKETS["nestforge"].skills == ("nestforge",)
@@ -138,7 +139,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
 
     packet = PACKETS["nestforge-full"].tools
 
-    assert sorted(packet) == sorted(TOOLS)
+    assert sorted(packet) == sorted((*TOOLS, plugins.NEXT_PHASE))
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()
@@ -174,6 +175,24 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     judge = post("get_cpf", "episode-unstartable")
 
     assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+
+
+def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
+    judge = FakeJudge()
+    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-round")
+
+    next_phase.serve(judge, request)
+
+    assert judge.code == HTTPStatus.OK, judge.answer
+    assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
+    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("scopes", 200), ("placement", 200)]
+    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
+        ("run_defaults", {"stage": "scopes"}),
+        ("run_defaults", {"stage": "placement"}),
+    ]
 
 
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
