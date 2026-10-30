@@ -45,6 +45,9 @@ runtimes it needs by name instead of relying on the host process having them loa
   points and clang++ or icpx code through `__kmpc_*`, so every compiler shares one thread pool.
   `openmp_compile_flags` and `openmp_link_flags` select it per compiler. The program link swaps DaCe's default
   runtime for libomp, for that compile only.
+  libomp is found through the compiler, an LLVM driver, `llvm-config`, then `LD_LIBRARY_PATH` and `LIBRARY_PATH`. Where
+  there is no apt (an HPC uenv or module system), install libomp (for example `conda install -p <prefix> llvm-openmp`)
+  and put `<prefix>/lib` on both variables, or a build stops with `LookupError: no libomp`.
 - **CUDA.** A GPU kernel links cudart from the nvcc that built it.
 
 `ExternalCall` carries these link items, and the program links them after its objects.

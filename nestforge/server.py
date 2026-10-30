@@ -62,6 +62,11 @@ CLOSE_TIMEOUT_S = 5.0
 TOOL_TIMEOUT_S = 1800.0
 
 
+#: The bench setting that points an ML kernel's PyTorch reference at a KernelBench checkout; a pip install of the
+#: bench does not ship the submodule.
+KERNELBENCH_DIR_VAR = "HPCAGENT_BENCH_ML_KERNELBENCH_DIR"
+
+
 @dataclass(frozen=True, slots=True)
 class Setup:
     """Which kernel a session serves: a bench kernel name, the size preset, the graded datatype and the device."""
@@ -104,7 +109,10 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     try:
         expected = compiled_reference(kernel.spec, dict(data))
     except ReferenceUnavailable as err:
-        print(f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}", file=sys.stderr, flush=True)
+        hint = f"; set {KERNELBENCH_DIR_VAR} to a KernelBench checkout" if "KernelBench" in str(err) else ""
+        print(
+            f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}", file=sys.stderr, flush=True
+        )
         return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
     return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
