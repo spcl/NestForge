@@ -97,7 +97,7 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
 
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "start() checked the kernel"
-    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset))
+    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(size_rung(setup.preset)))
     # the program names an argument the generator renamed by its new name; unmapped, it would run on zeros
     renames = kernel.renames()
     # a scalar argument (cloudsc's timestep ptsphy) is a 0-d array; dropping it would zero it
@@ -118,6 +118,14 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
 
 
+def size_rung(preset: str) -> str:
+    """The rung a session of the judge's ``preset`` token runs on: a fuzzed token (``XL+fuzz``, ``fuzzed``) draws its
+    sizes around a rung, and a session measures on that rung."""
+    from hpcagent_bench.spec import parse_preset
+
+    return parse_preset(preset).anchor.text
+
+
 def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
     """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on. The agent drives the
     moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
@@ -125,7 +133,7 @@ def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, 
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
     session = Session(
-        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset), codegen=codegen
+        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, size_rung(setup.preset)), codegen=codegen
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.canonicalize()
