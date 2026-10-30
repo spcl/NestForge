@@ -25,6 +25,8 @@ dependencies = [
     "pydantic>=2",
     "pyyaml",
     "sympy",
+    # DaCe's einsum of three or more operands imports it, but DaCe lists it only under its testing extras.
+    "opt-einsum>=3.0",
     # The tip of HPCAgent-Bench main, and the DaCe and relayout commits it pins (the bench owns them);
     # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
     # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
