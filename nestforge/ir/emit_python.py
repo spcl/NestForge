@@ -62,7 +62,7 @@ class UnsupportedNest(Exception):
 NP_FUNCTIONS = {
     **{fn: fn for fn in ("sqrt", "cbrt", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sin", "cos")},
     **{fn: fn for fn in ("tan", "sinh", "cosh", "tanh", "floor", "ceil", "sign", "power", "abs", "arctan2")},
-    **{fn: fn for fn in ("copysign", "fmin", "fmax", "hypot", "trunc")},
+    **{fn: fn for fn in ("copysign", "fmin", "fmax", "hypot", "trunc", "conj")},
     **{"asin": "arcsin", "acos": "arccos", "atan": "arctan", "atan2": "arctan2", "fabs": "abs", "pow": "power"},
     **{"re": "real", "im": "imag"},  # the frontend spells z.real and z.imag as SymPy's re and im
     **{"CMod": "fmod", "FtnMod": "fmod", "bitwise_invert": "invert"},  # C's truncating modulo is fmod
