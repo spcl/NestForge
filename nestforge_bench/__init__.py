@@ -56,15 +56,17 @@ class ReferenceOptimizer(FlavorOptimizer):
             print(f"nestforge_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
         solve = solution.solve if solution is not None else baseline
         solve(script, Context("gpu" if gpu else "cpu", ncores(), preset))
-        # the judge takes a library only from its shared folder
-        root = pathlib.Path(shared_dir()) / "nestforge"
+        # the judge reads an episode's library from the episode's folder, the one writable folder under /shared
+        root = self._workdir or pathlib.Path(shared_dir()) / "nestforge"
         root.mkdir(parents=True, exist_ok=True)
         out = pathlib.Path(tempfile.mkdtemp(prefix=f"reference-{pathlib.PurePath(task.kernel).name}-", dir=root))
         final = session.finalize(out)
         submission = Submission(
             language=task.language, library=str(final.library), workspace_bytes=final.workspace_bytes
         )
-        weakref.finalize(submission, shutil.rmtree, str(out), ignore_errors=True)
+        # an episode's folder outlives this process: a deferred /submit grades the library after the run
+        if self._workdir is None:
+            weakref.finalize(submission, shutil.rmtree, str(out), ignore_errors=True)
         return submission
 
 

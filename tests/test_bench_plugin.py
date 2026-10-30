@@ -4,6 +4,7 @@
 structured and kernel phases served with performance feedback, and ``finalize``'s library graded by the judge."""
 
 import contextlib
+import gc
 import inspect
 import multiprocessing
 import pathlib
@@ -12,6 +13,7 @@ import threading
 import tomllib
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
+from types import SimpleNamespace
 
 import pytest
 from dace.codegen.common import get_gpu_backend
@@ -332,6 +334,27 @@ def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeyp
         sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
 
     assert presets == ["fuzzed"]
+
+
+def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FinalizedSession:
+        def finalize(self, out: pathlib.Path) -> SimpleNamespace:
+            library = out / "libkernel.so"
+            library.touch()
+            return SimpleNamespace(library=library, workspace_bytes="0")
+
+    monkeypatch.setattr(nestforge_bench, "start", lambda setup: (FinalizedSession(), None, None))
+    monkeypatch.setattr(nestforge_bench, "baseline", lambda script, ctx: None)
+    monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: None)
+    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
+
+    library = pathlib.Path(sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu").library)
+    gc.collect()
+
+    assert library.parent.parent == tmp_path
+    assert library.is_file(), "a deferred /submit still needs it after the submission is gone"
 
 
 # s231 has a reference solution; the diamond has none and runs the default moves
