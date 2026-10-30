@@ -317,7 +317,8 @@ def libomp_cmake_args(compiler: str) -> list[str]:
     if library is None:
         raise LookupError(
             f"no lib{LIBOMP} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search path "
-            "names one, and the process's one OpenMP runtime is libomp"
+            "names one, and the process's one OpenMP runtime is libomp; install libomp (scripts/setup_apt.sh) or put "
+            "its directory on LIBRARY_PATH and LD_LIBRARY_PATH"
         )
     return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP}", f"-DOpenMP_{LIBOMP}_LIBRARY={library}"]
 

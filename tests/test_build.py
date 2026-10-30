@@ -450,6 +450,26 @@ def test_libomp_lookup_asks_the_compiler_then_an_llvm_driver_then_llvm_config(
     assert runtime_library("omp", "g++") == expected
 
 
+def test_a_libomp_on_library_path_alone_serves_the_program_build(tmp_path, monkeypatch, cold_lookup_caches):
+    """An HPC uenv has no apt libomp: the library path is the only place it can be named."""
+    bin_dir = isolate_lookup(tmp_path, monkeypatch)
+    write_tool(bin_dir, "g++", "libomp.so")
+    (tmp_path / "libomp.so").write_bytes(b"")
+    monkeypatch.setenv("LIBRARY_PATH", str(tmp_path))
+
+    args = build_mod.libomp_cmake_args("g++")
+
+    assert args == ["-DOpenMP_CXX_LIB_NAMES=omp", f"-DOpenMP_omp_LIBRARY={tmp_path}/libomp.so"]
+
+
+def test_a_missing_libomp_error_names_where_to_put_it(tmp_path, monkeypatch, cold_lookup_caches):
+    bin_dir = isolate_lookup(tmp_path, monkeypatch)
+    write_tool(bin_dir, "g++", "libomp.so")
+
+    with pytest.raises(LookupError, match=r"no libomp for g\+\+.*LIBRARY_PATH and LD_LIBRARY_PATH"):
+        build_mod.libomp_cmake_args("g++")
+
+
 OMP_KERNEL_CXX = """extern "C" double kern(const double *a, int n) {
   double s = 0.0;
   #pragma omp parallel for reduction(+:s)
