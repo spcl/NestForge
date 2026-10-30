@@ -61,6 +61,23 @@ def test_a_two_dimensional_map_is_two_nested_parallel_for_loops_over_caller_buff
 
 
 @dace.program
+def conjugate(a: dace.complex128[N], b: dace.complex128[N]):
+    for i in dace.map[0:N]:
+        with dace.tasklet:
+            value << a[i]
+            conjugated = conj(value)  # noqa: F821 -- tasklet code, the intrinsic an expanded Cholesky calls
+            conjugated >> b[i]
+
+
+def test_a_tasklet_conjugate_is_numpys():
+    a = np.array([1 + 2j, 3 - 4j, -5j])
+
+    call, _ = emit_and_run(conjugate.to_sdfg(simplify=True), {"a": a}, {"N": 3})
+
+    np.testing.assert_array_equal(call["b"], np.conj(a))
+
+
+@dace.program
 def reduce_sum(a: dace.float64[N], out: dace.float64[1]):
     out[0] = 0.0
     for i in dace.map[0:N]:

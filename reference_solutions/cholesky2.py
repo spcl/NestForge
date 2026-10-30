@@ -11,10 +11,6 @@ from nestforge.replay import Context, Script
 
 KERNEL = "cholesky2"
 CONFIGS = (Context("cpu", 72, "M"),)
-CI_SKIP = (
-    "the replay's per-kernel check emits Python for the expanded Cholesky kernel that calls an undefined conj "
-    "(NameError: name 'conj' is not defined); the whole program builds and matches the bench oracle"
-)
 
 
 def solve(s: Script, ctx: Context) -> None:
