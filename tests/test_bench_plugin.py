@@ -32,8 +32,9 @@ from hpcagent_bench.skill_frontmatter import split_frontmatter
 from hpcagent_bench.vocabulary import PACKETS
 from stub_session import Stub, install
 
+import nestforge_bench
 from nestforge.paths import REPO_ROOT
-from nestforge.server import CALLS, Reply
+from nestforge.server import CALLS, Reply, Setup
 from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -312,6 +313,25 @@ def graded(judge_url: str, kernel: str, final: dict[str, object], language: Lang
     grade = tools.JudgeClient(judge_url).submit(submission, kernel)
     assert isinstance(grade, GradeAnswer), grade
     return grade
+
+
+def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Started(Exception):
+        pass
+
+    presets: list[str] = []
+
+    def recording_start(setup: Setup) -> None:
+        presets.append(setup.preset)
+        raise Started
+
+    monkeypatch.setattr(nestforge_bench, "start", recording_start)
+    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference")
+
+    with config.scoped_environment({"HPCAGENT_BENCH_SERVICE_PRESET": "XL+fuzz"}), pytest.raises(Started):
+        sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
+
+    assert presets == ["fuzzed"]
 
 
 # s231 has a reference solution; the diamond has none and runs the default moves

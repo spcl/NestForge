@@ -21,6 +21,7 @@ from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.optimizers import FlavorOptimizer
 from hpcagent_bench.harness.sandbox import shared_dir
 from hpcagent_bench.harness.task import Task
+from hpcagent_bench.spec import resolve_preset
 
 from nestforge.paths import REPO_ROOT
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
@@ -46,13 +47,15 @@ class ReferenceOptimizer(FlavorOptimizer):
     def tune(self, task: Task, pipeline: str) -> Submission:
         gpu = task.image != "cpu"
         service = config.current().service
-        session, _, _ = start(Setup(task.kernel, service.preset, service.datatype, gpu))
+        # the service's preset is a token ("XL+fuzz"); the judge grades on the preset it resolves to
+        preset = resolve_preset(service.preset).text
+        session, _, _ = start(Setup(task.kernel, preset, service.datatype, gpu))
         script = Script(session)
         solution = reference_solution(task.kernel)
         if solution is None:
             print(f"nestforge_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
         solve = solution.solve if solution is not None else baseline
-        solve(script, Context("gpu" if gpu else "cpu", ncores(), service.preset))
+        solve(script, Context("gpu" if gpu else "cpu", ncores(), preset))
         # the judge takes a library only from its shared folder
         root = pathlib.Path(shared_dir()) / "nestforge"
         root.mkdir(parents=True, exist_ok=True)
