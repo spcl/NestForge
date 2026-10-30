@@ -4,7 +4,7 @@
 
 from helpers import corpus_kernel
 
-from nestforge.server import Setup, bench_data
+from nestforge.server import Setup, bench_data, size_rung
 
 
 def test_a_renamed_argument_reaches_the_program_by_its_new_name():
@@ -18,3 +18,8 @@ def test_a_renamed_argument_reaches_the_program_by_its_new_name():
 
 def test_a_kernel_without_renames_keeps_its_names():
     assert corpus_kernel("tsvc_2_s231").renames() == {}
+
+
+def test_a_fuzzed_token_runs_a_session_on_its_rung():
+    """A judge on ``XL+fuzz`` hands the token to the reference flavor and ``fuzzed`` to the agent's route."""
+    assert [size_rung(token) for token in ("S", "M+fuzz", "XL+fuzz", "fuzzed")] == ["S", "M", "XL", "XL"]
