@@ -74,6 +74,9 @@ HPCAgent-Bench (`main`) is pinned to a commit SHA in `pyproject.toml`, and DaCe 
 commit pins (the bench owns them); `python scripts/bump_deps.py [bench-branch]` moves all three. NestForge is a user
 plugin of the bench (`plugin/nestforge`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it.
 NestForge assumes Linux.
+A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch
+reference and its outputs go unchecked (`correct: null`). Point `HPCAGENT_BENCH_ML_KERNELBENCH_DIR` at an
+initialized KernelBench checkout to check them.
 
 ## Layout
 
