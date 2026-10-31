@@ -285,6 +285,8 @@ class Session:
         self.namer = namer if namer is not None else Namer()
         normalize_labels(sdfg, self.namer)
         self.rows: dict[str, Row] | None = None
+        #: Every move that changed the program, in order.
+        self.applied: list[MoveResult] = []
         # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: set[str] = set()
         self.costs: WorkDepth | None = None
@@ -471,7 +473,9 @@ class Session:
         self.unplaced = None
         # setting an implementation changes a property of the row, not the row: its label stays
         self.bump(() if kind == SET_IMPLEMENTATION else names)
-        return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+        done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+        self.applied.append(done)
+        return done
 
     def metrics(self, label: str) -> str:
         """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""

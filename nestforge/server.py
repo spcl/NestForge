@@ -41,6 +41,7 @@ CALLS: dict[str, Callable[..., object]] = {
     "list_move_kinds": lambda session: move_kinds(),
     "list_moves": Session.list_moves,
     "apply_move": Session.apply_move,
+    "applied_moves": lambda session: session.applied,
     "run_defaults": Session.run_defaults,
     "set_scope": Session.set_scope,
     "unset_scope": Session.unset_scope,

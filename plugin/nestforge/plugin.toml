@@ -56,7 +56,7 @@ tools = ["tune_kernel"]
 name = "NestForge"
 skills = ["nestforge"]
 agent = ["moves"]
-tools = ["get_performance", "finalize", "score", "submit"]
+tools = ["get_performance", "applied_moves", "finalize", "score", "submit"]
 overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml"]
 # The judge takes only a library, and the agent has no shell or editor: what is graded is what the tools built.
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }

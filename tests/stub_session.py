@@ -28,6 +28,7 @@ REPLIES: dict[str, Reply] = {
     "write_kernel": Reply(result={"status": "ok", "reason": ""}),
     "tune_kernel": Reply(result={"kernel": "kernel_0", "cells": 4, "winner": "gcc-O3", "config": {}}),
     "get_performance": Reply(result=None),
+    "applied_moves": Reply(result=[]),
     "finalize": Reply(result={"library": "/shared/nestforge/libfuse_diamond.so", "workspace_bytes": "0"}),
 }
 

@@ -160,6 +160,7 @@ TOOLS: dict[str, ToolDef] = {
         "Whole-program time, offloading (devices, transfers) and per-kernel times, with hints.",
         Effect.READ,
     ),
+    "applied_moves": ToolDef(Phase.ANY, NoArgs, "Every move applied to this program so far, in order.", Effect.READ),
     "finalize": ToolDef(
         Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI; send its library and workspace_bytes."
     ),

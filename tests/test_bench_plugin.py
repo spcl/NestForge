@@ -158,6 +158,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "list_kernels",
         "read_kernel",
         "get_performance",
+        "applied_moves",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 

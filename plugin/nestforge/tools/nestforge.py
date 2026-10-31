@@ -38,7 +38,8 @@ def delivering(deliver: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[
         built = poster("finalize")(payload)
         if "error" in built:
             return {"ok": False, "error": built["error"]}
-        return deliver({**payload, **built["result"]})
+        final = built["result"]
+        return deliver({**payload, "library": final["library"], "workspace_bytes": final["workspace_bytes"]})
 
     return run
 
