@@ -242,6 +242,7 @@ class Session:
     """Owner of one program SDFG, driven stage by stage."""
 
     __slots__ = (
+        "applied",
         "sdfg",
         "name",
         "targets",

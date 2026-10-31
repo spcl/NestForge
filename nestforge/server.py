@@ -7,9 +7,7 @@ HPCAgent-Bench is imported when a session starts, so importing nestforge never l
 from __future__ import annotations
 
 import hashlib
-
 import json
-
 import multiprocessing
 import sys
 import weakref
@@ -38,7 +36,8 @@ def finalize(session: Session) -> Final:
     final = session.finalize(Path(shared_dir()) / "nestforge" / session.work_dir.name)
     # every score and submit finalizes first, so each graded library's moves are on record beside it
     digest = hashlib.sha256(final.library.read_bytes()).hexdigest()
-    line = {"library": str(final.library), "sha256": digest, "moves": [move.model_dump(mode="json") for move in session.applied]}
+    moves = [move.model_dump(mode="json") for move in session.applied]
+    line = {"library": str(final.library), "sha256": digest, "moves": moves}
     with (final.library.parent / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps(line) + "\n")
     return final
