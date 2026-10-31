@@ -56,10 +56,10 @@ tools = ["tune_kernel"]
 name = "NestForge"
 skills = ["nestforge"]
 agent = ["moves"]
-tools = ["get_performance", "finalize"]
+tools = ["get_performance", "finalize", "score", "submit"]
 overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml"]
-# finalize hands the judge a prebuilt library, not a source file
-env = { JUDGE_INPUT_MODE = "any" }
+# The judge takes only a library, and the agent has no shell or editor: what is graded is what the tools built.
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }
 
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]

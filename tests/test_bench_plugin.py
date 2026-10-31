@@ -119,7 +119,7 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     for name, phase in manifest["phases"].items():
         assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == name), name
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
-        t for t, d in TOOLS.items() if d.phase == Phase.ANY
+        (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "score", "submit")
     )
 
 
@@ -129,7 +129,8 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
     packet = PACKETS["nestforge"].tools
 
     assert packet[-1] == plugins.NEXT_PHASE
-    assert {TOOLS[tool].phase for tool in packet[:-1]} == {Phase.MOVES, Phase.ANY}
+    assert {TOOLS[tool].phase for tool in packet[:-1] if tool in TOOLS} == {Phase.MOVES, Phase.ANY}
+    assert {"score", "submit"} <= registry.OVERRIDES.keys() and {"score", "submit"} <= set(packet)
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
     assert PACKETS["nestforge"].skills == ("nestforge",)
@@ -145,7 +146,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
 
     packet = PACKETS["nestforge-full"].tools
 
-    assert sorted(packet) == sorted((*TOOLS, plugins.NEXT_PHASE))
+    assert sorted(packet) == sorted((*TOOLS, "score", "submit", plugins.NEXT_PHASE))
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()

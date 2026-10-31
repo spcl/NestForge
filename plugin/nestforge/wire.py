@@ -8,7 +8,7 @@ from typing import Literal, NamedTuple
 
 import pydantic
 
-__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "Phase", "ToolDef"]
+__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "ToolDef"]
 
 #: The judge route every tool posts to, as ``/nestforge/<tool>``.
 ROUTE = "nestforge"
