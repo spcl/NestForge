@@ -11,6 +11,7 @@ from typing import Any
 
 import pydantic
 from hpcagent_bench.cpf.cache import Target
+from hpcagent_bench.harness import sandbox
 from hpcagent_bench.harness.judge_wire import JudgeAnswer, JudgeError
 from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, route
 from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
