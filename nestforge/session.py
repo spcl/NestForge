@@ -243,6 +243,7 @@ class Session:
 
     __slots__ = (
         "applied",
+        "shared_root",
         "sdfg",
         "name",
         "targets",
@@ -288,6 +289,8 @@ class Session:
         self.rows: dict[str, Row] | None = None
         #: Every move that changed the program, in order.
         self.applied: list[MoveResult] = []
+        #: The folder under which finalize builds a library the judge accepts; the shared folder when ``None``.
+        self.shared_root: str | None = None
         # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: set[str] = set()
         self.costs: WorkDepth | None = None

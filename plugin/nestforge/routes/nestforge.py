@@ -64,7 +64,9 @@ def serve(judge: Judge, request: RouteRequest) -> None:
         kernels = episode.sessions
         if kernel not in kernels:
             gpu = canonical_parallel_form_target() is Target.GPU
-            setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu)
+            setup = Setup(
+                kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(request.episode_id))
+            )
             try:
                 kernels[kernel] = SessionProcess(setup)
             except LookupError as err:

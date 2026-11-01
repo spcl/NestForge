@@ -33,7 +33,9 @@ def finalize(session: Session) -> Final:
     """The session's program assembled into the folder the judge and the agent share, one folder per session."""
     from hpcagent_bench.harness.sandbox import shared_dir
 
-    final = session.finalize(Path(shared_dir()) / "nestforge" / session.work_dir.name)
+    root = session.shared_root or shared_dir()
+
+    final = session.finalize(Path(root) / "nestforge" / session.work_dir.name)
     # every score and submit finalizes first, so each graded library's moves are on record beside it
     digest = hashlib.sha256(final.library.read_bytes()).hexdigest()
     moves = [move.model_dump(mode="json") for move in session.applied]
@@ -85,6 +87,8 @@ class Setup:
     preset: str
     datatype: str
     gpu: bool
+    #: The episode\'s folder, where finalize builds; the shared folder when empty.
+    shared_root: str = ""
 
 
 class Reply(Record):
@@ -146,6 +150,7 @@ def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, 
         kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, size_rung(setup.preset)), codegen=codegen
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
+    session.shared_root = setup.shared_root
     session.canonicalize()
     inputs, reference = bench_data(setup)
     # after canonicalization: it is what promotes a scalar input to a symbol
