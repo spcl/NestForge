@@ -134,13 +134,15 @@ def set_one_scope(kernel: str, pick: random.Random) -> None:
             raise RuntimeError(f"set_scope: {done}")
 
 
-def write_back(kernel: str, info: dict[str, str]) -> None:
-    """``write_kernel`` of the source ``read_kernel`` showed, unchanged."""
+def write_back(kernel: str, info: dict[str, str]) -> bool:
+    """``write_kernel`` of the source ``read_kernel`` showed, unchanged; whether its oracle checked it, which a sweep
+    needs."""
     name = info["name"]
     source = tool("read_kernel", kernel, name=name)["result"]
     done = tool("write_kernel", kernel, name=name, source=source, language=kernel_language(info["device"]))["result"]
-    if done["status"] != spelled(KernelStatus.OK):
+    if done["status"] not in (spelled(KernelStatus.OK), spelled(KernelStatus.UNCHECKED)):
         raise RuntimeError(f"write_kernel {name}: {done}")
+    return done["status"] == spelled(KernelStatus.OK)
 
 
 class StubAgent(FlavorOptimizer):
@@ -171,9 +173,8 @@ class TwoStageStub(FlavorOptimizer):
         next_phase(kernel, "kernels")
         kernels = tool("list_kernels", kernel)["result"]
         assert isinstance(kernels, list), kernels
-        for info in kernels:
-            write_back(kernel, info)
+        checked = [info["name"] for info in kernels if write_back(kernel, info)]
         next_phase(kernel, "codegen")
-        for info in kernels:
-            tool("tune_kernel", kernel, name=info["name"])
+        for name in checked:
+            tool("tune_kernel", kernel, name=name)
         return finalized(task)
