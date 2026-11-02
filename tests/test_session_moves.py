@@ -463,8 +463,8 @@ def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_ar
     result = apply_listed(sut, "doall-fission")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFission")
-    # MapFission moves the split maps into the nested SDFG that was the map's body
-    assert top_level_maps(sut.sdfg) == []
+    # MapFission moves the split maps into the nested SDFG that was the map's body, and the move inlines it
+    assert len(top_level_maps(sut.sdfg)) > 1
     writes = map_writes(sut.sdfg)
     assert len(writes) > 1 and all(len(arrays) == 1 for arrays in writes), writes
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
