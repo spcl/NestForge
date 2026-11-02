@@ -148,7 +148,8 @@ out of the last phase starts that round: the moves reopen and the scopes and ker
   share in `get_performance`.
 - `read_kernel` gives the source NestForge rendered. `write_kernel` takes a replacement with the same entry
   (`extern "C"` name and parameters, in order) in `cpp` for a CPU kernel or the dialect `read_kernel` showed (`cuda`,
-  `hip`) for a GPU one. It is built and run against the kernel's oracle, and linked only when it matches, so a wrong
-  kernel never reaches `finalize`.
+  `hip`) for a GPU one. It is built and run against the kernel's oracle, and linked only when it matches. A kernel
+  with no oracle to match answers `unchecked`: it is linked, and only the whole program's check in `performance` says
+  whether it is right.
 - `tune_kernel` sweeps compilers and flags for one kernel and links the fastest correct build; run it last, on the
   source you keep.

@@ -315,6 +315,24 @@ def test_a_kernel_whose_oracle_never_finishes_is_unchecked_not_refused(tmp_path)
     assert verdict.unchecked == "its oracle did not finish" and not verdict.error and not verdict.ok
 
 
+def test_a_kernel_written_while_its_oracle_cannot_finish_is_linked_and_the_outcome_says_unchecked(
+    tmp_path, monkeypatch
+):
+    sut = session_of(scaled, tmp_path)
+    sut.default_scopes()
+    name = only_kernel(sut)
+    sut.check_sizes = {"N": SMALL}
+    source = sut.kernel_source(name)
+    monkeypatch.setattr(arena, "load_emitted", lambda oracle_source, oracle_name: SleepingOracle(oracle_name))
+    monkeypatch.setattr(kernel, "ORACLE_TIMEOUT_S", 0.5)
+
+    written = sut.set_kernel_source(name, source, "cpp", reps=1)
+
+    assert written.status is KernelStatus.UNCHECKED, written
+    assert "did not finish" in written.reason and written.time_us is None
+    assert sut.kernel_source(name) == source and sut.applied[-1].kind == "write-kernel"
+
+
 def test_a_long_call_gets_fewer_timed_runs_never_none():
     assert reps_within_budget(10, 0.001) == 10
     assert reps_within_budget(10, arena.TIMED_BUDGET_S / 2) == 2

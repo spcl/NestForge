@@ -218,6 +218,30 @@ def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_nam
     assert kernel.name not in session.builds
 
 
+def test_a_kernel_taking_a_computed_symbol_written_back_unchanged_is_linked_for_the_whole_program_to_check(tmp_path):
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
+    (kernel,) = session.default_scopes()
+    source = session.kernel_source(kernel.name)
+
+    outcome = session.set_kernel_source(kernel.name, source, "cpp", reps=1)
+
+    assert outcome.status is KernelStatus.UNCHECKED, outcome.reason
+    assert "m" in outcome.reason and "whole program" in outcome.reason
+    assert outcome.time_us is None, "a kernel that cannot run alone was not timed"
+    assert session.kernel_source(kernel.name) == source, "the written source is the kernel's library now"
+    assert session.applied[-1].kind == "write-kernel"
+
+
+def test_a_kernel_taking_a_computed_symbol_that_does_not_compile_is_a_failed_build_not_unchecked(tmp_path):
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
+    (kernel,) = session.default_scopes()
+    source = session.kernel_source(kernel.name) + "\nsyntax error;"
+
+    outcome = session.set_kernel_source(kernel.name, source, "cpp", reps=1)
+
+    assert outcome.status is KernelStatus.BUILD_FAILED, outcome
+
+
 def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
     session, name = one_kernel_session(tmp_path)
 

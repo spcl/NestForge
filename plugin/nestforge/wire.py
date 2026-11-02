@@ -156,7 +156,8 @@ TOOLS: dict[str, ToolDef] = {
     "write_kernel": ToolDef(
         Phase.KERNELS,
         WriteKernel,
-        "Replace a kernel's source; it is built, checked against the kernel's oracle and linked only when it matches.",
+        "Replace a kernel's source; it is built, checked against the kernel's oracle and linked only when it matches "
+        "(status unchecked: it has no oracle, so it is linked and the whole program checks it).",
         Effect.REPLACE,
     ),
     "tune_kernel": ToolDef(Phase.CODEGEN, TuneKernel, "Sweep compilers and flags for one kernel."),

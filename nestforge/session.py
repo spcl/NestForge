@@ -877,7 +877,8 @@ class Session:
             device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
         :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel; for a GPU kernel ``cuda`` or ``hip``, the
             dialect of this machine's GPU backend.
-        :returns: The outcome; only ``ok`` changes the kernel's library.
+        :returns: The outcome; ``ok`` and ``unchecked`` change the kernel's library. ``unchecked`` had no oracle to match
+            (:func:`~nestforge.stages.kernel.measure_kernel`), so the whole program checks the kernel.
         """
         default = self.default_kernel(name)
         if language != kernel_language(default.device):
@@ -915,13 +916,22 @@ class Session:
                 archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
             except RuntimeError as err:
                 return KernelOutcome(kernel=name, status=KernelStatus.BUILD_FAILED, reason=str(err)[-ERROR_TAIL:])
-            verdict = measure_kernel(archive, src, self.kernel_probe(name, src), reps, variant.fp_mode)
-        if not verdict.ok:
+            verdict = self.kernel_verdict(name, src, archive, reps, variant.fp_mode)
+        if not verdict.ok and not verdict.unchecked:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
             return KernelOutcome(kernel=name, status=KernelStatus.WRONG, reason=reason)
         self.bind(name, KernelBuild(src, variant, archive, verdict))
         self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind="write-kernel", labels=(name,), reason=""))
+        if verdict.unchecked:
+            return KernelOutcome(kernel=name, status=KernelStatus.UNCHECKED, reason=verdict.unchecked)
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
+
+    def kernel_verdict(self, name: str, src: KernelSource, archive: Path, reps: int, fp_mode: str) -> KernelVerdict:
+        """``archive`` against the kernel's oracle, unchecked when the oracle has no value for a symbol it takes."""
+        computed = computed_symbols(src, self.kernel_sizes(name))
+        if computed:
+            return unchecked_verdict(fp_mode, computed_symbols_reason(computed))
+        return measure_kernel(archive, src, self.kernel_probe(name, src), reps, fp_mode)
 
     def prepare_kernel(self, name: str) -> Prepared:
         """The kernel's NumPy oracle, from the boundary its source was rendered from. Not the node's: binding a library
@@ -1050,15 +1060,9 @@ class Session:
                 self.default_build(ext.name)
             build = self.builds[ext.name]
             if build.verdict is None:
-                sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
-                computed = computed_symbols(build.source, sizes)
                 with self.stopper.armed():
-                    build.verdict = (
-                        unchecked_verdict(fp_mode, computed_symbols_reason(computed))
-                        if computed
-                        else measure_kernel(
-                            build.archive, build.source, self.kernel_probe(ext.name, build.source), reps, fp_mode
-                        )
+                    build.verdict = self.kernel_verdict(
+                        ext.name, build.source, build.archive, reps, build.variant.fp_mode
                     )
             if build.remarks is None:
                 variant = build.variant

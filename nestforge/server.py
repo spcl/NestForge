@@ -296,7 +296,7 @@ def applied(reply: Reply) -> bool:
     """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
     result = reply.result
     status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
-    return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK)
+    return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK, KernelStatus.UNCHECKED)
 
 
 def timed_call(

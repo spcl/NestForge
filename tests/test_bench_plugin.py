@@ -43,9 +43,9 @@ from stub_session import Stub, install
 
 import nestforge_bench
 from nestforge.paths import REPO_ROOT
-from nestforge.records import MoveStatus
+from nestforge.records import KernelStatus, MoveStatus
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import MoveResult
+from nestforge.session import KernelOutcome, MoveResult
 from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -347,6 +347,16 @@ def test_a_refused_change_is_not_journaled(stub: Stub) -> None:
 
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
     assert answered.code == HTTPStatus.OK and route.journal_of("episode-refused", KERNEL) == []
+
+
+def test_a_kernel_written_without_a_check_is_journaled_as_the_change_it_is(stub: Stub) -> None:
+    written = KernelOutcome(kernel="kernel_0", status=KernelStatus.UNCHECKED, reason="the whole program checks it")
+    stub.replies["write_kernel"] = Reply(result=written)
+
+    post("write_kernel", "episode-unchecked", **SLOT_CALLS["write_kernel"])
+
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert [tool for tool, _ in route.journal_of("episode-unchecked", KERNEL)] == ["write_kernel"]
 
 
 def test_a_change_that_cannot_be_journaled_is_dropped_with_its_session_and_the_agent_is_told(

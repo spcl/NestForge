@@ -142,7 +142,9 @@ compiler vectorizes; stage 6 sweeps its flags.
 
 An agent reads `kernel_source(name)` (a GPU kernel's two units, split by the line `// ---- device unit ----`) and replaces it with `set_kernel_source(name, source, language)`. NestForge
 builds the new source, checks it against the kernel's [Python oracle](../oracle.md) and links it only when it
-matches; the status is `ok`, `refused`, `build-failed` or `wrong`.
+matches; the status is `ok`, `refused`, `build-failed` or `wrong`. A kernel with no oracle to match (a symbol only the
+running program computes, or an oracle that does not finish) is linked with status `unchecked`, and the whole program
+checks it.
 
 | | |
 |---|---|

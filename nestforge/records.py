@@ -26,9 +26,11 @@ class MoveStatus(enum.Enum):
 
 
 class KernelStatus(enum.Enum):
-    """What a kernel source did; only ``OK`` changed the kernel's library."""
+    """What a kernel source did. ``OK`` matched the oracle and ``UNCHECKED`` had no oracle to match: only these two
+    changed the kernel's library."""
 
     OK = enum.auto()
+    UNCHECKED = enum.auto()
     REFUSED = enum.auto()
     BUILD_FAILED = enum.auto()
     WRONG = enum.auto()
