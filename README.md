@@ -37,8 +37,9 @@ tool is listed with MCP annotations: reads are read-only, `write_kernel` and `un
 `Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not
 reached yet run with their defaults on a copy. The answer is reused until the program changes. `finalize` builds the
-program in the bench C ABI, each kernel linked from its own build, into the shared folder; submit it as
-`library=<library>` with its `workspace_bytes`.
+program in the bench C ABI, each kernel linked from its own build, into the shared folder. The packet's `score`,
+`submit` and `profile` replace the bench's: they take no code, and each sends the judge the library `finalize` built
+with its `workspace_bytes`, which that library's scratch needs.
 
 ## Quick start
 
