@@ -22,7 +22,7 @@ def nestforge_plugin() -> Iterator[tuple[Plugin, ...]]:
     """Every plugin the bench found with NestForge's folder as the user plugin dir, packets, routes and tools loaded."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
-        plugins.register.cache_clear()
+        plugins.register_once.cache_clear()
         plugins.load.cache_clear()
         tags.registry.cache_clear()
         found = plugins.load()
