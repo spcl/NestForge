@@ -39,8 +39,9 @@ reached yet run with their defaults on a copy, each kernel built in the first co
 measurements compare. The answer is reused until the program changes, and a kernel's until it does. Reads and moves
 (`apply_move`, `run_defaults`) answer at once without a time and take no device slot; `get_performance`, `write_kernel`,
 `tune_kernel` and `finalize` hold one. `finalize` builds the program in the bench C ABI, each kernel linked from its own
-build (the sweep's winner by default), into the shared folder; submit it as `library=<library>` with its
-`workspace_bytes`.
+build (the sweep's winner by default), into the shared folder. The packet's `score`, `submit` and `profile` replace the
+bench's: they take no code, and each sends the judge the library `finalize` built with its `workspace_bytes`, which that
+library's scratch needs.
 
 Every library call has its implementation from the start, the fastest this host has for the target, shown in the tree;
 `pure` loops come only from `expand-library` or `set-library-implementation`, or where a call has nothing else.

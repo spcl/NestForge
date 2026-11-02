@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.plugins import Plugin
-from hpcagent_agent.tools import registry
+from hpcagent_agent.tools import http_json, registry
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
@@ -42,6 +42,8 @@ from nestforge_bench import ReferenceOptimizer
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
+#: The bench tools the packet replaces: each takes no code and sends the library finalize built.
+OVERRIDDEN = {"profile", "score", "submit"}
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
 #: One valid call of tools that read, change or measure.
@@ -141,7 +143,7 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     for name, phase in manifest["phases"].items():
         assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == name), name
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
-        (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "score", "submit")
+        (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "profile", "score", "submit")
     )
 
 
@@ -152,7 +154,7 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
 
     assert packet[-1] == plugins.NEXT_PHASE
     assert {TOOLS[tool].phase for tool in packet[:-1] if tool in TOOLS} == {Phase.MOVES, Phase.ANY}
-    assert {"score", "submit"} <= registry.OVERRIDES.keys() and {"score", "submit"} <= set(packet)
+    assert OVERRIDDEN <= registry.OVERRIDES.keys() and OVERRIDDEN <= set(packet)
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
     assert PACKETS["nestforge"].skills == ("nestforge",)
@@ -163,12 +165,41 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
 
 
+def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scratch(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run's agents sent ``source`` the library judge refuses, or the library without the ``workspace_bytes`` that
+    library's scratch needs, a NULL workspace and a SIGSEGV. Neither can be said now, and finalize gets no instrument:
+    its arguments are forbidden."""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append((route, body))
+        return {"result": {"library": "/shared/lib.so", "workspace_bytes": "16*K + 128"}, "profiled": True}
+
+    monkeypatch.setattr(http_json, "post_judge", judge)
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)})
+    sut = registry.served(setup)["profile"]
+
+    answer = sut.run({"tool": "none", "threads": 24, "size": "S"})
+    refused = sut.run({"tool": "none", "source": "int main;"})
+
+    arguments = sut.input_schema["properties"].keys()
+    assert {"tool", "threads", "counter_group", "size"} <= arguments
+    assert not {"source", "source_file", "library", "workspace_bytes", "build"} & arguments
+    assert answer["profiled"] is True and refused["ok"] is False, (answer, refused)
+    assert [route for route, _ in calls] == ["/nestforge/finalize", "/profile"], "the refused call reaches no judge"
+    assert "tool" not in calls[0][1]
+    assert calls[1][1]["library"] == "/shared/lib.so" and calls[1][1]["workspace_bytes"] == "16*K + 128"
+    assert (calls[1][1]["tool"], calls[1][1]["threads"], calls[1][1]["size"]) == ("none", 24, "S")
+
+
 def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
     from hpcagent_bench_plugins.nestforge.wire import TOOLS
 
     packet = PACKETS["nestforge-full"].tools
 
-    assert sorted(packet) == sorted((*TOOLS, "score", "submit", plugins.NEXT_PHASE))
+    assert sorted(packet) == sorted((*TOOLS, *OVERRIDDEN, plugins.NEXT_PHASE))
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()
@@ -494,6 +525,28 @@ def test_a_program_finalized_after_the_structured_phase_gets_the_default_kernels
     assert final["kernels"], final
     grade = graded(judge_url, KERNEL, final)
     assert grade.build_ok is True and grade.correct is True, grade.detail
+
+
+@pytest.mark.judge
+def test_a_profile_of_a_program_with_scratch_runs_only_with_the_library_s_workspace_bytes(
+    loaded: None, judge_url: str
+) -> None:
+    kernel = "atax"
+    final = post("finalize", episode="episode-profile-atax", kernel=kernel).answer["result"]
+    assert final["workspace_bytes"] != "0", final
+    library = str(final["library"])
+    client = tools.JudgeClient(judge_url)
+
+    sut = client.profile(
+        Submission(language=Language.CPP, library=library, workspace_bytes=str(final["workspace_bytes"])),
+        kernel,
+        tool="none",
+        size=Preset.S,
+    )
+    without = client.profile(Submission(language=Language.CPP, library=library), kernel, tool="none", size=Preset.S)
+
+    assert sut.root.exit_code == 0 and sut.root.elapsed_ns, sut
+    assert without.root.exit_code != 0 and "SIGSEGV" in without.root.stderr, without
 
 
 @pytest.mark.judge

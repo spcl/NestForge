@@ -173,7 +173,5 @@ TOOLS: dict[str, ToolDef] = {
         Effect.READ,
     ),
     "applied_moves": ToolDef(Phase.ANY, NoArgs, "Every move applied to this program so far, in order.", Effect.READ),
-    "finalize": ToolDef(
-        Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI; send its library and workspace_bytes."
-    ),
+    "finalize": ToolDef(Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI."),
 }
