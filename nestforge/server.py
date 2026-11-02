@@ -67,6 +67,11 @@ CALLS: dict[str, Callable[..., object]] = {
 #: Tools whose answer carries :meth:`Session.performance`.
 TIMED = frozenset({"apply_move", "run_defaults", "write_kernel", "tune_kernel", "get_performance"})
 
+#: Tools that can change the session; one that fails, its timed answer included, leaves the session as it was.
+CHANGING = frozenset(
+    {"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel", "finalize"}
+)
+
 #: Seconds a closing session process gets before it is terminated.
 CLOSE_TIMEOUT_S = 5.0
 
@@ -174,6 +179,38 @@ def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
 
 
+def timed_call(
+    session: Session,
+    tool: str,
+    arguments: dict[str, object],
+    inputs: dict[str, np.ndarray],
+    reference: Reference | None,
+) -> Reply:
+    result = CALLS[tool](session, **arguments)
+    return Reply(result=result, performance=session.performance(inputs, reference) if tool in TIMED else None)
+
+
+def answer(
+    session: Session,
+    tool: str,
+    arguments: dict[str, object],
+    inputs: dict[str, np.ndarray],
+    reference: Reference | None,
+) -> Reply:
+    """The reply to one call. A move is not done until its program can be measured, so the session stays as it was
+    unless the whole answer succeeds; the error of a call that could have changed the program says so."""
+    if tool not in CHANGING:
+        try:
+            return timed_call(session, tool, arguments, inputs, reference)
+        except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+            return failure(err)
+    try:
+        with session.atomic():
+            return timed_call(session, tool, arguments, inputs, reference)
+    except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+        return Reply(error=f"{failure(err).error} (the program is unchanged)")
+
+
 def serve(connection: Connection, setup: Setup) -> None:
     """The child: build the session, report ready (or why not), then answer ``(tool, arguments)`` until closed."""
     try:
@@ -187,12 +224,7 @@ def serve(connection: Connection, setup: Setup) -> None:
             tool, arguments = connection.recv()
         except EOFError:
             return
-        try:
-            result = CALLS[tool](session, **arguments)
-            performance = session.performance(inputs, reference) if tool in TIMED else None
-            connection.send(Reply(result=result, performance=performance))
-        except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
-            connection.send(failure(err))
+        connection.send(answer(session, tool, arguments, inputs, reference))
 
 
 class SessionProcess:

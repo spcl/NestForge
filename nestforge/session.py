@@ -14,10 +14,12 @@ import copy
 import dataclasses
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
-from typing import Literal, cast
+from typing import Concatenate, Literal, cast
 
 import dace
 import numpy as np
@@ -238,6 +240,36 @@ def scratch_dir() -> Path:
     return path
 
 
+def undone_on_failure[**Params, Answer](
+    change: Callable[Concatenate[Session, Params], Answer],
+) -> Callable[Concatenate[Session, Params], Answer]:
+    """``change``, a :class:`Session` method, under :meth:`Session.atomic`."""
+
+    @wraps(change)
+    def guarded(session: Session, *args: Params.args, **kwargs: Params.kwargs) -> Answer:
+        with session.atomic():
+            return change(session, *args, **kwargs)
+
+    return guarded
+
+
+@dataclass(slots=True)
+class Checkpoint:
+    """What a change to the program can touch: :meth:`Session.atomic` puts it back when the change fails."""
+
+    sdfg: dace.SDFG
+    unplaced: dace.SDFG | None
+    namer: Namer
+    applied: list[MoveResult]
+    expanded: set[str]
+    costs: WorkDepth | None
+    costs_skipped: str | None
+    sources: dict[str, KernelSource]
+    builds: dict[str, KernelBuild]
+    prepared: dict[str, Prepared]
+    measured: Performance | None
+
+
 class Session:
     """Owner of one program SDFG, driven stage by stage."""
 
@@ -264,6 +296,7 @@ class Session:
         "swept_dir",
         "measured",
         "bench",
+        "in_atomic",
     )
 
     def __init__(
@@ -312,6 +345,43 @@ class Session:
         self.measured: Performance | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
+        # inside :meth:`atomic`: its outermost call owns the checkpoint
+        self.in_atomic = False
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """A failure inside the block leaves the session as it was: a rewrite in place cannot be undone, so the block
+        runs on the program while a copy waits to replace it. Calls nest; the outermost restores."""
+        if self.in_atomic:
+            yield
+            return
+        saved = Checkpoint(
+            copy.deepcopy(self.sdfg),
+            copy.deepcopy(self.unplaced),
+            copy.deepcopy(self.namer),
+            list(self.applied),
+            set(self.expanded),
+            self.costs,
+            self.costs_skipped,
+            dict(self.sources),
+            dict(self.builds),
+            dict(self.prepared),
+            self.measured,
+        )
+        self.in_atomic = True
+        try:
+            yield
+        except Exception:
+            self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
+            self.applied, self.expanded = saved.applied, saved.expanded
+            self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
+            # the rows and the kernel graph hold nodes of the program just dropped
+            self.rows, self.kernel_deps = None, None
+            self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
+            self.measured = saved.measured
+            raise
+        finally:
+            self.in_atomic = False
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
@@ -448,7 +518,7 @@ class Session:
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
-        :returns: The outcome; nothing but ``applied`` touches the program.
+        :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
         names = tuple(labels)
@@ -465,20 +535,21 @@ class Session:
                 plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
-        made = plan.commit()
-        if kind == EXPAND_LIBRARY:
-            # the expansion's maps join the program in canonical form, as rows the other moves take
-            settle(cast(list[nodes.NestedSDFG], made), self.targets)
-            inline_top_level_nsdfgs(self.sdfg)
-        structural_cleanup(self.sdfg)
-        # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule inference
-        # read them
-        narrow_nested_memlets(self.sdfg)
-        self.unplaced = None
-        # setting an implementation changes a property of the row, not the row: its label stays
-        self.bump(() if kind == SET_IMPLEMENTATION else names)
-        done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
-        self.applied.append(done)
+        with self.atomic():
+            made = plan.commit()
+            if kind == EXPAND_LIBRARY:
+                # the expansion's maps join the program in canonical form, as rows the other moves take
+                settle(cast(list[nodes.NestedSDFG], made), self.targets)
+                inline_top_level_nsdfgs(self.sdfg)
+            structural_cleanup(self.sdfg)
+            # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule
+            # inference read them
+            narrow_nested_memlets(self.sdfg)
+            self.unplaced = None
+            # setting an implementation changes a property of the row, not the row: its label stays
+            self.bump(() if kind == SET_IMPLEMENTATION else names)
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+            self.applied.append(done)
         return done
 
     def metrics(self, label: str) -> str:
@@ -498,12 +569,14 @@ class Session:
         except WORK_DEPTH_FAILURES as err:
             return f"{label}: no metrics, work-depth analysis failed: {type(err).__name__}: {err}"
 
+    @undone_on_failure
     def default_moves(self) -> str:
         """Stage 2 default: canonicalization's fusion stage and the stages after it."""
         fuse_and_finish(self.sdfg, self.targets)
         self.bump()
         return self.describe()
 
+    @undone_on_failure
     def finish_moves(self) -> str:
         """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
         finish(self.sdfg, self.targets)
@@ -513,6 +586,7 @@ class Session:
 
     # Stage 3: scopes
 
+    @undone_on_failure
     def default_scopes(self) -> list[KernelScope]:
         """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
         the program by its rules, large maps split first; returns the new kernels."""
@@ -531,6 +605,7 @@ class Session:
             for ext, boundary in lowered
         ]
 
+    @undone_on_failure
     def set_scope(self, labels: Sequence[str]) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
         blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
@@ -549,6 +624,7 @@ class Session:
         self.bump(names)
         return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
 
+    @undone_on_failure
     def unset_scope(self, name: str) -> MoveResult:
         """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
         dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
@@ -611,6 +687,7 @@ class Session:
 
     # Stage 4: placement
 
+    @undone_on_failure
     def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
         """Run each kernel on a device and insert the host/device copies. Kernels ``devices`` leaves out keep the
         default: parallel kernels on the GPU when it is a target, the rest on the CPU. A later call starts again
@@ -847,6 +924,7 @@ class Session:
 
     # Assembly
 
+    @undone_on_failure
     def finalize(self, out_dir: Path | None = None) -> Final:
         """The program as a bench library submission: a program without scopes gets the default scopes, one never
         placed on a GPU target the default placement, and every kernel without a build its default build
