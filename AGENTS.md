@@ -10,7 +10,8 @@ The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagen
 
 - Never edit SDFG nodes or memlets; request moves. Each move is checked for legality before it applies.
 - Name rows by the labels the tree prints, unique across the program. A row keeps its label while it lives; a move
-  retires the labels it took, which then return `not-found`. Only `applied` changed the program.
+  retires the labels it took, which then return `not-found`. Only `applied` changed the program; a call that fails
+  leaves it as it was.
 - When no move fuses two regions that should run as one, `set_scope` makes them one kernel; `unset_scope` undoes it.
 - Keep a change when the whole-program time drops and the program stays correct: wrong and fast loses.
 

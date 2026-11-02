@@ -79,7 +79,8 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 #: the session's program: a read or a move takes a fraction of a second and no device.
 MEASURING = TIMED | {"finalize"}
 
-#: Tools whose calls make the session's program what it is, so a fresh session repeats them.
+#: Tools whose calls make the session's program what it is, so a fresh session repeats them; one that fails, its timed
+#: answer included, leaves the session as it was.
 CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
@@ -244,7 +245,7 @@ def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
 
 
-def answer(
+def timed_call(
     session: Session,
     tool: str,
     arguments: dict[str, Any],
@@ -262,6 +263,25 @@ def answer(
         if tool == "get_performance":
             raise
         return Reply(result=result)
+
+
+def answer(
+    session: Session,
+    tool: str,
+    arguments: dict[str, Any],
+    data: tuple[dict[str, np.ndarray], Reference | None] | None,
+) -> Reply:
+    """The reply to one call. A change stays only if its whole answer succeeds, and its error says so."""
+    if tool not in CHANGING:
+        try:
+            return timed_call(session, tool, arguments, data)
+        except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+            return failure(err)
+    try:
+        with session.atomic():
+            return timed_call(session, tool, arguments, data)
+    except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+        return Reply(error=f"{failure(err).error} (the program is unchanged)")
 
 
 def serve(connection: Connection, setup: Setup) -> None:
