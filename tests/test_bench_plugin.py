@@ -79,6 +79,7 @@ class FakeJudge(JudgeHandler):
         self.answer: dict[str, object] = {}
         self.gone = threading.Event()
         self.slots = 0
+        self.terminal = False
 
     def reply(self, code: int, payload: JudgeAnswer) -> None:
         self.code, self.answer = code, payload.to_json()
@@ -87,8 +88,9 @@ class FakeJudge(JudgeHandler):
         finished.wait()
 
     @contextlib.contextmanager
-    def device_slot(self) -> Iterator[DeviceSlot]:
+    def device_slot(self, terminal: bool = False) -> Iterator[DeviceSlot]:
         self.slots += 1
+        self.terminal = terminal
         yield DeviceSlot("cpu", SLOT)
 
 
@@ -388,6 +390,28 @@ def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub
     assert slots == {
         tool: int(tool in {"get_performance", "finalize", "write_kernel", "tune_kernel"}) for tool in slots
     }
+
+
+def test_only_the_finalize_of_a_submission_queues_as_the_submission_does(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    def judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append(route)
+        return {"result": {"library": "/shared/lib.so", "workspace_bytes": "0"}}
+
+    monkeypatch.setattr(http_json, "post_judge", judge)
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)})
+    registry.served(setup)["submit"].run({})
+    registry.served(setup)["score"].run({})
+    terminal = FakeJudge()
+    request = {"terminal": ["1"]}, {"kernel": KERNEL}, "episode-terminal"
+    ROUTES["nestforge"].handler(terminal, RouteRequest(HTTPMethod.POST, ["nestforge", "finalize"], *request))
+
+    assert [calls[0], calls[2]] == ["/nestforge/finalize?terminal=1", "/nestforge/finalize"]
+    assert terminal.slots == 1 and terminal.terminal is True
+    assert post("finalize", "episode-terminal").terminal is False
 
 
 def test_a_measuring_call_reaches_its_session_with_its_slot_and_a_read_with_none(stub: Stub) -> None:

@@ -137,13 +137,15 @@ def holds_device(episode: Episode, kernel: str, name: str, episode_id: str) -> b
 
 
 @contextlib.contextmanager
-def device_slot(judge: Judge, episode: Episode, gone: threading.Event) -> Iterator[DeviceSlot | object | None]:
+def device_slot(
+    judge: Judge, episode: Episode, gone: threading.Event, terminal: bool
+) -> Iterator[DeviceSlot | object | None]:
     """A device slot, ``None`` if the client left; the episode's other measuring calls wait here, holding none."""
     if not locked(episode.measuring, gone):
         yield None
         return
     try:
-        with judge.device_slot() as slot:
+        with judge.device_slot(terminal) as slot:
             yield slot
     finally:
         episode.measuring.release()
@@ -240,7 +242,8 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
     measuring = holds_device(episode, kernel, name, request.episode_id)
-    with client_left(judge) as gone, device_slot(judge, episode, gone) if measuring else NO_SLOT as slot:
+    terminal = bool(request.query.get("terminal"))
+    with client_left(judge) as gone, device_slot(judge, episode, gone, terminal) if measuring else NO_SLOT as slot:
         if slot is None or not locked(episode.lock, gone):
             return None
         index = slot.index if isinstance(slot, DeviceSlot) else None

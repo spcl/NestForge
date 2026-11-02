@@ -33,12 +33,14 @@ for name, entry in TOOLS.items():
     tool(spec=spec, core=False, name=name, preview=name == "get_performance")(poster(name))
 
 
-def delivering(deliver: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+def delivering(
+    deliver: Callable[[dict[str, Any]], dict[str, Any]], finalize: str = "finalize"
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """``deliver`` of the library ``finalize`` builds from the session: the program is what the moves made of it."""
 
     def run(payload: dict[str, Any]) -> dict[str, Any]:
         # finalize takes no arguments: what the call adds (an instrument, say) is for ``deliver`` alone
-        built = poster("finalize")({"kernel": http_json.assigned_kernel(payload)})
+        built = poster(finalize)({"kernel": http_json.assigned_kernel(payload)})
         if "error" in built:
             return {"ok": False, "error": built["error"]}
         final = built["result"]
@@ -49,7 +51,9 @@ def delivering(deliver: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[
 
 SUBMIT = "Finalize the program as your moves left it and submit that library for the recorded grade. Takes no code."
 SCORE = "Finalize the program as your moves left it and preview that library's grade. Takes no code; never recorded."
-tool(spec=Spec(SUBMIT, NoArgs, submit.PROMPT, HINTS[Effect.ADD]), name="submit", overrides=True)(delivering(submit.run))
+tool(spec=Spec(SUBMIT, NoArgs, submit.PROMPT, HINTS[Effect.ADD]), name="submit", overrides=True)(
+    delivering(submit.run, "finalize?terminal=1")  # the build queues as the /submit it delivers to does
+)
 tool(spec=Spec(SCORE, NoArgs, f"- `score` -- {SCORE}", HINTS[Effect.READ]), name="score", preview=True, overrides=True)(
     delivering(score.run)
 )
