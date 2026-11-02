@@ -8,8 +8,10 @@ import gc
 import inspect
 import json
 import multiprocessing
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import threading
 import tomllib
@@ -23,7 +25,7 @@ from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.harness import subagents
 from hpcagent_agent.plugins import Plugin
 from hpcagent_agent.tools import http_json, registry, submit
-from hpcagent_bench import config, plugins
+from hpcagent_bench import config, packets, plugins
 from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
 from hpcagent_bench.columns import FRAMEWORKS
@@ -55,6 +57,8 @@ OVERRIDDEN = {"profile", "score", "submit"}
 SLOT = 3
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
+#: Seconds one tuner episode may take; the bench's own user-plugins test allows the same.
+TUNER_EPISODE_TIMEOUT_S = 900
 #: One valid call of tools that read, change or measure.
 SLOT_CALLS: dict[str, dict[str, object]] = {
     "get_cpf": {},
@@ -524,6 +528,15 @@ def test_the_subagent_packet_adds_the_kernel_optimizer_to_the_full_packet(loaded
     assert packet.phases == full.phases
 
 
+def test_the_two_stage_name_is_the_full_packet_and_only_that_packet_answers_to_it(loaded: None) -> None:
+    resolved = packets.resolve("nestforge-two-stage", "cpp")
+
+    assert resolved == packets.resolve("nestforge-full", "cpp")
+    assert next_phase.phases_of("nestforge-two-stage") == PACKETS["nestforge-full"].phases
+    assert PACKETS.canonical("nestforge-two-stage") == "nestforge-full"
+    assert "nestforge-two-stage" not in PACKETS.entries, "an alias is no packet of its own"
+
+
 def walk(episode: str, monkeypatch: pytest.MonkeyPatch) -> Callable[[], dict[str, object]]:
     """``next_phase`` of ``episode`` on the full packet."""
     monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge-full"].phases)
@@ -763,8 +776,7 @@ def serve_judge(ports: "multiprocessing.Queue[int]") -> None:
         server.serve_forever()
 
 
-@pytest.fixture
-def judge_url(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
+def spawned_judge(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
     """A judge in a spawned process, grading at S as the bench's own suite does. Not a thread of this one: a GPU
     grade initializes the device runtime in the judge's process, and a later test forking this one dies with it."""
     # The judge's shared folder, and the one the session process a test starts writes its library into.
@@ -782,6 +794,19 @@ def judge_url(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterat
     finally:
         judge.terminate()
         judge.join()
+
+
+@pytest.fixture
+def judge_url(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
+    yield from spawned_judge(monkeypatch, tmp_path)
+
+
+@pytest.fixture
+def two_stage_judge(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
+    """A spawned judge of a run on the two-stage packet, its routes and phase gate live, as a study's judge has them."""
+    monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
+    monkeypatch.setenv("HPCAGENT_BENCH_RECORD_PACKET", "nestforge-two-stage")
+    yield from spawned_judge(monkeypatch, tmp_path)
 
 
 def graded(judge_url: str, kernel: str, final: dict[str, object], language: Language = Language.CPP) -> GradeAnswer:
@@ -832,6 +857,43 @@ def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
 
     assert library.parent.parent == tmp_path
     assert library.is_file(), "a deferred /submit still needs it after the submission is gone"
+
+
+def tuner_episode(column: str, kernel: str, url: str, folder: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    """One episode of ``column`` as the bench runs a tuner: its own process, identity and folder, on the judge ``url``."""
+    episode, work = folder / "two-stage-episode", folder / "work"
+    episode.mkdir()
+    work.mkdir()
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hpcagent_bench.harness.run_tuner",
+            *("--workdir", str(work), "--cwd", str(episode), "--kernel", kernel, "--language", "cpp"),
+        ],
+        env={
+            **os.environ,
+            "TUNER": column,
+            "JUDGE_URL": url,
+            "JUDGE_RANK": "0",
+            "JUDGE_INPUT_MODE": InputMode.ANY.text,
+            "HPCAGENT_BENCH_EPISODE_ID": episode.name,
+        },
+        capture_output=True,
+        text=True,
+        timeout=TUNER_EPISODE_TIMEOUT_S,
+        check=False,
+    )
+
+
+@pytest.mark.judge
+def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_submission(
+    two_stage_judge: str, tmp_path: pathlib.Path
+) -> None:
+    done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", two_stage_judge, tmp_path)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
 
 
 # s231 has a reference solution; the diamond has none and runs the default moves

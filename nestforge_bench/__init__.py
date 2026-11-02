@@ -1,14 +1,16 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``nestforge_reference``: the HPCAgent-Bench column an agent's NestForge run is compared against. No LLM: the
-kernel's reference solution (``reference_solutions/<kernel>.py``) picks the moves, NestForge's default moves when the
-kernel has none, and scopes, placement and code generation run on the same defaults the agent's session uses.
+"""The HPCAgent-Bench columns of NestForge. ``nestforge_reference`` is the column an agent's run is compared against. No
+LLM: the kernel's reference solution (``reference_solutions/<kernel>.py``) picks the moves, NestForge's default moves
+when the kernel has none, and scopes, placement and code generation run on the same defaults the agent's session uses.
+``nestforge_stub`` and ``nestforge_two_stage`` stand in for an LLM agent in CI, through the tools an agent calls.
 
 A package of its own beside ``nestforge``: it imports HPCAgent-Bench, which no ``nestforge`` module may."""
 
 import hashlib
 import pathlib
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -25,9 +27,11 @@ from hpcagent_bench.spec import resolve_preset
 
 from nestforge.paths import REPO_ROOT
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
+from nestforge.records import KernelStatus, MoveStatus, spelled
 from nestforge.server import Setup, start
+from nestforge.session import kernel_language
 
-__all__ = ["ReferenceOptimizer", "StubAgent", "reference_solution"]
+__all__ = ["ReferenceOptimizer", "StubAgent", "TwoStageStub", "reference_solution"]
 
 #: Where the reference solutions live, one ``<kernel>.py`` each.
 SOLUTIONS = REPO_ROOT / "reference_solutions"
@@ -74,13 +78,69 @@ class ReferenceOptimizer(FlavorOptimizer):
 STUB_MOVES = 3
 
 
-def tool(name: str, kernel: str, **args: object) -> dict[str, object]:
+def tool(name: str, kernel: str, /, **args: object) -> dict[str, object]:
     """One NestForge tool call as the agent's tool makes it (``POST /nestforge/<name>`` under the episode's identity);
     raises with the judge's error."""
     answer = http_json.post_judge(f"/nestforge/{name}", {**args, "kernel": kernel})
     if "error" in answer:
         raise RuntimeError(f"{name}: {answer['error']}")
     return answer
+
+
+def next_phase(kernel: str, phase: str) -> None:
+    """End the kernel's phase as the agent's ``next_phase`` tool does; raises unless the judge moved it to ``phase``."""
+    answer = http_json.post_judge("/next_phase", {"kernel": kernel})
+    if answer.get("phase") != phase:
+        raise RuntimeError(f"next_phase, expected {phase}: {answer}")
+
+
+def seeded(kernel: str) -> random.Random:
+    """A generator seeded by the kernel's name, so a stub's run is repeatable."""
+    return random.Random(int.from_bytes(hashlib.sha256(kernel.encode()).digest()[:8], "big"))
+
+
+def apply_moves(kernel: str, pick: random.Random) -> None:
+    """Up to :data:`STUB_MOVES` legal moves, chosen by ``pick``."""
+    tool("get_cpf", kernel)
+    for _ in range(STUB_MOVES):
+        moves = tool("list_moves", kernel)["result"]
+        if not isinstance(moves, list) or not moves:
+            break
+        move = pick.choice(moves)
+        tool("apply_move", kernel, kind=move["kind"], labels=move["labels"])
+
+
+def finalized(task: Task) -> Submission:
+    """The library ``finalize`` builds from the kernel's session, as the submission."""
+    final = tool("finalize", task.kernel)["result"]
+    assert isinstance(final, dict), final
+    return Submission(
+        language=task.language, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
+    )
+
+
+def doalls(kernel: str) -> list[str]:
+    """The labels of the top-level doalls, read from the tree with its states open."""
+    states = re.findall(r"\bstate\d+\b", str(tool("view_tree", kernel)["result"]))
+    return re.findall(r"\bdoall\d+\b", str(tool("view_tree", kernel, expand=states)["result"]))
+
+
+def set_one_scope(kernel: str, pick: random.Random) -> None:
+    """Make one doall, chosen by ``pick``, a kernel, when the program has a doall."""
+    labels = doalls(kernel)
+    if labels:
+        done = tool("set_scope", kernel, labels=[pick.choice(labels)])["result"]
+        if done["status"] != spelled(MoveStatus.APPLIED):
+            raise RuntimeError(f"set_scope: {done}")
+
+
+def write_back(kernel: str, info: dict[str, str]) -> None:
+    """``write_kernel`` of the source ``read_kernel`` showed, unchanged."""
+    name = info["name"]
+    source = tool("read_kernel", kernel, name=name)["result"]
+    done = tool("write_kernel", kernel, name=name, source=source, language=kernel_language(info["device"]))["result"]
+    if done["status"] != spelled(KernelStatus.OK):
+        raise RuntimeError(f"write_kernel {name}: {done}")
 
 
 class StubAgent(FlavorOptimizer):
@@ -91,17 +151,29 @@ class StubAgent(FlavorOptimizer):
     __slots__ = ()
 
     def tune(self, task: Task, pipeline: str) -> Submission:
-        seed = int.from_bytes(hashlib.sha256(task.kernel.encode()).digest()[:8], "big")
-        pick = random.Random(seed)
-        tool("get_cpf", task.kernel)
-        for _ in range(STUB_MOVES):
-            moves = tool("list_moves", task.kernel)["result"]
-            if not isinstance(moves, list) or not moves:
-                break
-            move = pick.choice(moves)
-            tool("apply_move", task.kernel, kind=move["kind"], labels=move["labels"])
-        final = tool("finalize", task.kernel)["result"]
-        assert isinstance(final, dict), final
-        return Submission(
-            language=task.language, library=str(final["library"]), workspace_bytes=str(final["workspace_bytes"])
-        )
+        apply_moves(task.kernel, seeded(task.kernel))
+        return finalized(task)
+
+
+class TwoStageStub(FlavorOptimizer):
+    """``nestforge_two_stage``: the stand-in for an LLM agent on the two-stage packet, structured then unstructured.
+    It walks every phase of ``nestforge-full`` through the agent's tools and the judge's phase gate: the moves
+    :class:`StubAgent` applies, one scope, each kernel read and written back unchanged, each kernel tuned, then
+    finalize. Repeatable for the same reason. The judge must run with that packet as its ``record.packet``."""
+
+    __slots__ = ()
+
+    def tune(self, task: Task, pipeline: str) -> Submission:
+        kernel, pick = task.kernel, seeded(task.kernel)
+        apply_moves(kernel, pick)
+        next_phase(kernel, "scopes")
+        set_one_scope(kernel, pick)
+        next_phase(kernel, "kernels")
+        kernels = tool("list_kernels", kernel)["result"]
+        assert isinstance(kernels, list), kernels
+        for info in kernels:
+            write_back(kernel, info)
+        next_phase(kernel, "codegen")
+        for info in kernels:
+            tool("tune_kernel", kernel, name=info["name"])
+        return finalized(task)

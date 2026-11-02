@@ -72,6 +72,7 @@ env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }
 [packets.nestforge-full]
 extends = "nestforge"
 name = "NestForge (all phases)"
+aliases = ["nestforge-two-stage"]
 agent = ["moves", "scopes", "kernels", "codegen"]
 overlays = ["nestforge:prompt/overlay.yaml"]
 
@@ -95,4 +96,11 @@ extends = ["dace_cpu_canon", "dace_gpu_canon"]
 name = "NestForge stub"
 full_name = "NestForge (stub agent)"
 optimizer = "nestforge_bench:StubAgent"
+extends = ["dace_cpu_canon"]
+
+# Two-stage NestForge for CI: a stub agent on `nestforge-full`, through every phase with the judge's gate on.
+[flavors.nestforge_two_stage]
+name = "NestForge two-stage"
+full_name = "NestForge (structured, then kernels; stub agent)"
+optimizer = "nestforge_bench:TwoStageStub"
 extends = ["dace_cpu_canon"]
