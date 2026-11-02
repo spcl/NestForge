@@ -6,6 +6,7 @@ structured and kernel phases served with performance feedback, and ``finalize``'
 import contextlib
 import gc
 import inspect
+import json
 import multiprocessing
 import pathlib
 import sys
@@ -19,7 +20,7 @@ import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the 
 import pytest
 from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.plugins import Plugin
-from hpcagent_agent.tools import http_json, registry
+from hpcagent_agent.tools import http_json, registry, submit
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
@@ -157,6 +158,17 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
         (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "profile", "score", "submit")
     )
+
+
+def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(loaded: None) -> None:
+    body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+
+    blind = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "blind"}))
+    single = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "single"}))
+
+    assert "get_performance" not in blind and "score" not in blind
+    assert "get_performance" in single
+    assert single["submit"].prompt == submit.PROMPT
 
 
 def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_served(loaded: None) -> None:
@@ -477,7 +489,7 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
 
 
-def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
+def test_next_phase_leaves_the_program_unscoped_so_the_moves_stay_and_returns_to_them(
     stub: Stub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
@@ -488,11 +500,24 @@ def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_mov
 
     assert judge.code == HTTPStatus.OK, judge.answer
     assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
-    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("scopes", 200), ("placement", 200)]
-    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
-        ("run_defaults", {"stage": "scopes"}),
-        ("run_defaults", {"stage": "placement"}),
-    ]
+    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("placement", 200)]
+    assert [call for call in stub.calls if call[0] == "run_defaults"] == [("run_defaults", {"stage": "placement"})]
+
+
+@pytest.mark.integration
+def test_next_phase_keeps_the_doall_moves_and_finalize_still_gets_the_kernels(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
+    before = post("list_moves", "episode-stays").answer["result"]
+    judge = FakeJudge()
+    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-stays")
+
+    next_phase.serve(judge, request)
+
+    assert judge.code == HTTPStatus.OK, judge.answer
+    assert post("list_moves", "episode-stays").answer["result"] == before
+    assert post("finalize", "episode-stays").answer["result"]["kernels"]
 
 
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
@@ -558,6 +583,21 @@ def test_a_real_session_restarted_from_its_journal_is_the_program_the_agent_left
 
     assert post("get_cpf", "episode-rebuilt").answer["result"] == tree
     assert post("applied_moves", "episode-rebuilt").answer["result"] == applied and applied
+
+
+@pytest.mark.integration
+def test_each_finalize_keeps_its_library_and_records_what_was_graded(loaded: None) -> None:
+    first = post("finalize", "episode-twice").answer["result"]
+    moved = post("run_defaults", "episode-twice", stage="moves")
+    second = post("finalize", "episode-twice").answer["result"]
+
+    assert moved.code == HTTPStatus.OK and first["library"] != second["library"]
+    assert pathlib.Path(first["library"]).is_file() and pathlib.Path(second["library"]).is_file()
+    folder = pathlib.Path(first["library"]).parent.parent
+    lines = [json.loads(line) for line in (folder / "applied_moves.jsonl").read_text().splitlines()]
+    assert [line["library"] for line in lines] == [first["library"], second["library"]]
+    assert [move["kind"] for move in lines[1]["moves"]] == ["defaults-moves"]
+    assert lines[1]["kernels"] == second["kernels"] and lines[1]["device_code"] is False
 
 
 @pytest.mark.integration

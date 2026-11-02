@@ -43,14 +43,22 @@ def finalize(session: Session) -> Final:
     """The session's program assembled into the folder the judge and the agent share, one folder per session."""
     from hpcagent_bench.harness.sandbox import shared_dir
 
-    root = session.shared_root or shared_dir()
-
-    final = session.finalize(Path(root) / "nestforge" / session.work_dir.name)
+    folder = Path(session.shared_root or shared_dir()) / "nestforge" / session.work_dir.name
+    folder.mkdir(parents=True, exist_ok=True)
+    # a folder per finalize: a grade still copying an earlier library must not read this one
+    final = session.finalize(Path(tempfile.mkdtemp(prefix="final-", dir=folder)))
     # every score and submit finalizes first, so each graded library's moves are on record beside it
     digest = hashlib.sha256(final.library.read_bytes()).hexdigest()
     moves = [move.model_dump(mode="json") for move in session.applied]
-    line = {"library": str(final.library), "sha256": digest, "moves": moves}
-    with (final.library.parent / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
+    device_code = bool(final.device_source)
+    line = {
+        "library": str(final.library),
+        "sha256": digest,
+        "moves": moves,
+        "kernels": final.kernels,
+        "device_code": device_code,
+    }
+    with (folder / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps(line) + "\n")
     return final
 
@@ -342,7 +350,8 @@ def serve(connection: Connection, setup: Setup) -> None:
         try:
             pin(slot, setup.gpu, cores, environment)
             if data is None and tool in MEASURING:
-                data = session_data(setup, session)
+                with session.stopper.armed():
+                    data = session_data(setup, session)
             connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))
