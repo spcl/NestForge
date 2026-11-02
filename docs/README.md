@@ -19,7 +19,7 @@ judge route do.
 | IR helpers | `nestforge/ir/` | Tree rows and labels (`names`, `introspect`), outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM) and `nestforge_stub` (CI stand-in for an agent). |
+| Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,
@@ -55,7 +55,7 @@ The packets:
 | Packet | Agent works | For |
 |---|---|---|
 | `nestforge` | `moves` | Structured only. The agent writes no code. |
-| `nestforge-full` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
+| `nestforge-full`, also `nestforge-two-stage` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
 | `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for

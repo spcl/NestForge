@@ -23,7 +23,7 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
 run the `nestforge` packet; it sets the library input mode itself (`finalize` hands the judge a library). The `nestforge` packet
 exposes the moves phase; scopes, placement and kernel builds run their defaults in `get_performance` and
-`finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet is structured, then unstructured:
+`finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet, also named `nestforge-two-stage`, is structured, then unstructured:
 the agent settles moves and scopes, placement fixes the kernels, and it then writes and tunes them one at a time.
 `nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent.
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
@@ -33,7 +33,7 @@ tool is listed with MCP annotations: reads are read-only, `write_kernel` and `un
 |---|---|---|
 | structured (stages 1-2) | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` | both |
 | any | `get_performance`, `finalize` | both |
-| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full`, `nestforge-subagents` |
+| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` (`nestforge-two-stage`), `nestforge-subagents` |
 
 `write_kernel`, `tune_kernel` and `get_performance` answer with `Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not
