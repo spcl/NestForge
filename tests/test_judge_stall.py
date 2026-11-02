@@ -220,6 +220,26 @@ def test_an_oracle_too_slow_for_the_timed_sizes_checks_at_the_small_ones_and_tim
     assert all(value.shape[0] == SMALL for value in probe.oracle.values())
 
 
+class SteadyOracle:
+    """An emitted module whose kernel takes the same time at every size."""
+
+    def __init__(self, name: str) -> None:
+        setattr(self, name, lambda **_: time.sleep(0.1))
+
+
+@pytest.mark.parametrize(("program", "compares_at_size"), [(factor, True), (scaled, False)])
+def test_a_library_oracle_is_tried_at_the_timed_sizes_and_a_loop_only_if_it_scales_in_time(
+    tmp_path, monkeypatch, program, compares_at_size
+):
+    boundary, prep = oracle_of(program, tmp_path)
+    monkeypatch.setattr(arena, "load_emitted", lambda source, name: SteadyOracle(name))
+    monkeypatch.setattr(kernel, "ORACLE_TIMEOUT_S", 0.5)
+
+    probe = bounded_probe(prep, boundary, {"N": SIZE}, {"N": SMALL}, full=True)
+
+    assert (probe.checked is probe.timed) == compares_at_size
+
+
 def test_a_quick_oracle_compares_at_the_timed_sizes_whatever_it_costs_to_start(tmp_path):
     boundary, prep = oracle_of(scaled, tmp_path)
 

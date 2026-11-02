@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -364,7 +365,8 @@ def bounded_probe(
     prep: Prepared, boundary: Boundary, sizes: dict[str, int], check_sizes: dict[str, int], full: bool
 ) -> Probe:
     """A probe whose oracle takes at most :data:`ORACLE_TIMEOUT_S` per size. The oracle runs at ``check_sizes``, and at
-    ``sizes`` too (the probe then compares there) when ``full`` and the first run says it would finish in time.
+    ``sizes`` too (the probe then compares there) when ``full`` and it should finish in time: a loop scales from the
+    first run; a library call's time at small sizes says nothing, and one call costs little, so it is always tried.
 
     :param full: Whether ``sizes`` may be tried; an oracle known to be out of time there is not tried again."""
     timed = Workload(make_inputs(boundary, sizes), sizes)
@@ -374,7 +376,8 @@ def bounded_probe(
         return Probe(timed, checked, {}, f"its oracle did not finish ({small.error}); the whole program checks it")
     outputs, seconds = small
     scale = math.prod(sizes[s] / check_sizes[s] for s in boundary.symbols if sizes.get(s) and check_sizes.get(s))
-    if full and seconds * scale <= ORACLE_TIMEOUT_S:
+    interpreted = re.search(r"^\s*(for|while) ", prep.numpy_source, re.MULTILINE)
+    if full and (not interpreted or seconds * scale <= ORACLE_TIMEOUT_S):
         at_size = bounded_oracle(prep, boundary, timed.inputs, sizes, ORACLE_TIMEOUT_S)
         if not isinstance(at_size, Failure):
             return Probe(timed, timed, at_size[0])
