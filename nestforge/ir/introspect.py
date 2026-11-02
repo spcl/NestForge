@@ -219,7 +219,7 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
 WORK_DEPTH_BUDGET_S = 60
 #: What the work-depth pass raises on a program it cannot cost: SymPy recursion on large nests, an unorderable NaN; an
 #: unbounded loop below the top of an SDFG (looked up among the top-level blocks), a loop inside an uncounted one (no
-#: range recorded for it), a WCR memlet whose subset is its other subset.
+#: range recorded for it), a WCR memlet whose subset is its other subset, SymPy's ``simplify`` on some sums of a tiled loop.
 WORK_DEPTH_FAILURES = (
     RecursionError,
     ValueError,
@@ -228,6 +228,7 @@ WORK_DEPTH_FAILURES = (
     NodeNotFoundError,
     KeyError,
     AttributeError,
+    StopIteration,
 )
 #: Longest exception message kept as the reason costs were skipped.
 SKIP_REASON_CHARS = 160

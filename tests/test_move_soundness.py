@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
+from nestforge.ir import introspect
 from nestforge.ir.introspect import guarded_work_depth
 from nestforge.ir.names import top_level_nsdfgs
 from nestforge.records import MoveStatus
@@ -214,3 +215,14 @@ def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_pat
 
     for move in sut.list_moves("doall-fission"):
         assert sut.apply_move("doall-fission", move.labels).status is MoveStatus.APPLIED
+
+
+def test_a_stop_iteration_out_of_sympys_sum_simplification_leaves_a_tree(tmp_path, monkeypatch):
+    def sum_add_failure(*args: object) -> None:
+        raise StopIteration  # sympy/simplify/simplify.py sum_add, on warpx_boris_push after tile-for
+
+    sut = session(stencil, tmp_path)
+    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", sum_add_failure)
+    sut.bump()
+
+    assert "no work= or depth=" in sut.describe()
