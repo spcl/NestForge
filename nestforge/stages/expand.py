@@ -5,6 +5,9 @@ canonical parallel form, so the other moves reach inside it."""
 
 from __future__ import annotations
 
+import copy
+from typing import cast
+
 import dace
 from dace import cpf_lowering
 from dace.codegen import cpf
@@ -15,6 +18,7 @@ from dace.sdfg.state import SDFGState
 from dace.transformation.passes.canonicalize.finalize import (
     CPU_FAST_IMPLEMENTATIONS,
     canonicalize_fast_library_priority,
+    canonicalize_set_fast_implementations,
 )
 
 from nestforge.stages.canonicalize import Targets, canonicalize
@@ -34,7 +38,7 @@ def expansion(node: nodes.LibraryNode) -> str | None:
 
 def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
     """The implementations ``node`` may be set to: the ones a kernel unit renders (loops, the host vendor library,
-    with a GPU target the device library of this machine's GPU), besides the one already chosen."""
+    with a GPU target the device library of this machine's GPU), besides its current one."""
     name = type(node).__name__
     offered = (
         *cpf.VENDOR_IMPLEMENTATIONS_HOST,
@@ -42,8 +46,7 @@ def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
         *cpf.RENDERABLE_IMPLEMENTATIONS,
         *(device_implementations(name) if gpu else ()),
     )
-    chosen = node.implementation if not node.auto_select_implementation else None
-    return tuple(dict.fromkeys(i for i in offered if i in node.implementations and i != chosen))
+    return tuple(dict.fromkeys(i for i in offered if i in node.implementations and i != node.implementation))
 
 
 def device_implementations(name: str) -> tuple[str, ...]:
@@ -85,6 +88,30 @@ def pin_pure_without_library(sdfg: dace.SDFG) -> list[str]:
             set_implementation(node, "pure")
             pinned.append(node.label)
     return pinned
+
+
+def set_default_implementations(sdfg: dace.SDFG, targets: Targets) -> None:
+    """Give every library call left to automatic selection the fastest implementation this host has for the target,
+    by finalization's own rules, so the session shows what a kernel will build. It stays automatic: the choice follows
+    the call when a move changes its surroundings, until ``set-library-implementation`` pins one. Worked out on a copy,
+    as finalization also rewrites schedules. A call with a fast lowering this host lacks is pinned to ``pure``; a call
+    whose only implementation is ``pure`` has it by default."""
+    calls = [node for node, _ in sdfg.all_nodes_recursive() if selectable(node)]
+    if not calls:
+        return
+    if not targets.gpu:
+        pin_pure_without_library(sdfg)
+    twin = copy.deepcopy(sdfg)
+    pairs = list(zip(sdfg.all_nodes_recursive(), twin.all_nodes_recursive()))
+    canonicalize_set_fast_implementations(twin, dace.DeviceType.GPU if targets.gpu else dace.DeviceType.CPU)
+    for (node, _), (chosen, _) in pairs:
+        if selectable(node) and node.auto_select_implementation:
+            node.implementation = cast(nodes.LibraryNode, chosen).implementation
+
+
+def selectable(node: object) -> bool:
+    """Whether ``node`` is a library call, not a kernel NestForge built."""
+    return isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall)
 
 
 def expand_library(state: SDFGState, node: nodes.LibraryNode) -> list[nodes.NestedSDFG]:

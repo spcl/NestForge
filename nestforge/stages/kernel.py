@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,7 @@ from nestforge.build.arena import (
     TIMED_REPS,
     DeviceCall,
     accumulating_outputs,
+    bounded_oracle,
     call_device,
     call_native,
     diff_stats,
@@ -60,6 +63,9 @@ from nestforge.stages.placement import kernel_device
 DEVICE_UNIT_SUFFIX = "_device"
 # Line that separates the host and device units in the one text an agent reads and writes for a GPU kernel.
 DEVICE_UNIT_MARKER = "// ---- device unit ----"
+
+#: Seconds a kernel's NumPy oracle may run per size: its loops are interpreted, about 1000x slower than the kernel's.
+ORACLE_TIMEOUT_S = 60.0
 
 
 @dataclass(slots=True)
@@ -108,9 +114,12 @@ def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
     return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
 
 
-def unchecked_verdict(fp_mode: str, symbols: list[str]) -> KernelVerdict:
-    reason = f"takes {', '.join(symbols)}, which only the running program computes; the whole program checks it"
+def unchecked_verdict(fp_mode: str, reason: str) -> KernelVerdict:
     return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), unchecked=reason)
+
+
+def computed_symbols_reason(symbols: list[str]) -> str:
+    return f"takes {', '.join(symbols)}, which only the running program computes; the whole program checks it"
 
 
 def abi_ready_copy(boundary: Boundary) -> dace.SDFG:
@@ -188,8 +197,11 @@ class KernelNumbers(Result):
     time_us: float
 
 
-def kernel_numbers(oracle: dict[str, np.ndarray], outputs: dict[str, np.ndarray], time_us: float) -> KernelNumbers:
-    md, md_rel = diff_stats(oracle, outputs)
+def kernel_numbers(
+    oracle: dict[str, np.ndarray] | None, outputs: dict[str, np.ndarray], time_us: float
+) -> KernelNumbers:
+    """``oracle`` is ``None`` for a kernel timed at sizes it was not checked at: there is nothing to compare."""
+    md, md_rel = (0.0, 0.0) if oracle is None else diff_stats(oracle, outputs)
     return KernelNumbers(maxdiff=md, md_rel=md_rel, dtype_floor=dtype_floor(outputs), time_us=time_us)
 
 
@@ -197,7 +209,7 @@ def measure_on_cpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray],
+    oracle: dict[str, np.ndarray] | None,
     sizes: dict[str, int],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -216,7 +228,7 @@ def measure_on_gpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray],
+    oracle: dict[str, np.ndarray] | None,
     sizes: dict[str, int],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -248,7 +260,8 @@ class KernelForm:
     schedule: Callable[[Boundary], dace.SDFG]
     build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str]], None]
     measure: Callable[
-        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, int], int], KernelNumbers | Failure
+        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, dict[str, int], int],
+        KernelNumbers | Failure,
     ]
     runtime: Callable[[str], list[str]]
 
@@ -321,21 +334,70 @@ def use_kernel_library(ext: ExternalCall, lib_path: Path, src: KernelSource, run
     ext.implementation = "ExternCall"
 
 
-def measure_kernel(
-    archive: Path,
-    src: KernelSource,
-    inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray],
-    sizes: dict[str, int],
-    reps: int,
-    fp_mode: str,
-) -> KernelVerdict:
+@dataclass(frozen=True, slots=True)
+class Workload:
+    """Inputs and the sizes they were drawn at."""
+
+    inputs: dict[str, np.ndarray]
+    sizes: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """What a build of a kernel is measured on: timed on ``timed``, compared on ``checked`` to the ``oracle`` outputs
+    of those inputs. ``checked`` is ``timed`` unless the oracle cannot finish at the timed sizes; a kernel checked at
+    a smaller size is timed without a comparison. ``unchecked`` says why the oracle finished at no size: such a kernel
+    goes unchecked, and the whole program checks it."""
+
+    timed: Workload
+    checked: Workload
+    oracle: dict[str, np.ndarray]
+    unchecked: str = ""
+
+
+def full_probe(prep: Prepared, boundary: Boundary, sizes: dict[str, int]) -> Probe:
+    """A probe at ``sizes``, however long the oracle takes."""
+    timed = Workload(make_inputs(boundary, sizes), sizes)
+    return Probe(timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
+
+
+def bounded_probe(
+    prep: Prepared, boundary: Boundary, sizes: dict[str, int], check_sizes: dict[str, int], full: bool
+) -> Probe:
+    """A probe whose oracle takes at most :data:`ORACLE_TIMEOUT_S` per size. The oracle runs at ``check_sizes``, and at
+    ``sizes`` too (the probe then compares there) when ``full`` and the first run says it would finish in time.
+
+    :param full: Whether ``sizes`` may be tried; an oracle known to be out of time there is not tried again."""
+    timed = Workload(make_inputs(boundary, sizes), sizes)
+    checked = Workload(make_inputs(boundary, check_sizes), check_sizes)
+    start = time.perf_counter()
+    outputs = bounded_oracle(prep, boundary, checked.inputs, check_sizes, ORACLE_TIMEOUT_S)
+    if isinstance(outputs, Failure):
+        return Probe(timed, checked, {}, f"its oracle did not finish ({outputs.error}); the whole program checks it")
+    scale = math.prod(sizes[s] / check_sizes[s] for s in boundary.symbols if sizes.get(s) and check_sizes.get(s))
+    if full and (time.perf_counter() - start) * scale <= ORACLE_TIMEOUT_S:
+        at_size = bounded_oracle(prep, boundary, timed.inputs, sizes, ORACLE_TIMEOUT_S)
+        if not isinstance(at_size, Failure):
+            return Probe(timed, timed, at_size)
+    return Probe(timed, checked, outputs)
+
+
+def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp_mode: str) -> KernelVerdict:
     """Call the twin's C entry in an isolated child (forked for a CPU kernel, spawned for a GPU kernel): one run
-    compared to ``oracle``, then ``reps`` timed runs. A crash or timeout comes back as a verdict with ``error`` set."""
-    res = kernel_form(src.device).measure(archive.with_suffix(".so"), src, inputs, oracle, sizes, reps)
-    if isinstance(res, Failure):
-        return failed_verdict(fp_mode, res.error)
-    return KernelVerdict(fp_mode, res.maxdiff, res.md_rel, res.dtype_floor, res.time_us)
+    compared to the oracle, then ``reps`` timed runs. A crash or timeout comes back as a verdict with ``error`` set."""
+    if probe.unchecked:
+        return unchecked_verdict(fp_mode, probe.unchecked)
+    measure, shared = kernel_form(src.device).measure, archive.with_suffix(".so")
+    checked = measure(shared, src, probe.checked.inputs, probe.oracle, probe.checked.sizes, reps)
+    if isinstance(checked, Failure):
+        return failed_verdict(fp_mode, checked.error)
+    verdict = KernelVerdict(fp_mode, checked.maxdiff, checked.md_rel, checked.dtype_floor, checked.time_us)
+    if probe.checked is probe.timed or not verdict.ok:
+        return verdict
+    timed = measure(shared, src, probe.timed.inputs, None, probe.timed.sizes, reps)
+    if isinstance(timed, Failure):
+        return failed_verdict(fp_mode, timed.error)
+    return dataclasses.replace(verdict, time_us=timed.time_us)
 
 
 def validate_kernel(
@@ -347,6 +409,4 @@ def validate_kernel(
     fp_mode: str = "strict-ieee",
 ) -> KernelVerdict:
     """:func:`measure_kernel` on seeded inputs against the kernel's NumPy oracle."""
-    inputs = make_inputs(src.boundary, sizes)
-    oracle = run_oracle(prep, src.boundary, inputs, sizes)
-    return measure_kernel(archive, src, inputs, oracle, sizes, reps, fp_mode)
+    return measure_kernel(archive, src, full_probe(prep, src.boundary, sizes), reps, fp_mode)

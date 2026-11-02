@@ -57,6 +57,10 @@ class ApplyMove(Labeled):
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."
     )
+    current: str | None = pydantic.Field(
+        None,
+        description="set-library-implementation: the row's implementation as list_moves showed it, if you send it.",
+    )
 
 
 class RunDefaults(Args):
@@ -134,10 +138,15 @@ TOOLS: dict[str, ToolDef] = {
     "apply_move": ToolDef(
         Phase.MOVES,
         ApplyMove,
-        "Apply one move as list_moves listed it (or with your own tile_sizes); answers with the outcome and the "
-        "whole-program performance. It retires the labels of the rows it took: read the tree again before the next move.",
+        "Apply one move as list_moves listed it (or with your own tile_sizes); answers at once with the outcome, not "
+        "with a time: call get_performance after the moves you want to compare. It retires the labels of the rows it "
+        "took: read the tree again before the next move.",
     ),
-    "run_defaults": ToolDef(Phase.MOVES, RunDefaults, "Finish one stage with NestForge's default heuristic."),
+    "run_defaults": ToolDef(
+        Phase.MOVES,
+        RunDefaults,
+        "Finish one stage with NestForge's default heuristic; call get_performance to time it.",
+    ),
     "set_scope": ToolDef(
         Phase.SCOPES,
         Labeled,
@@ -157,7 +166,10 @@ TOOLS: dict[str, ToolDef] = {
     "get_performance": ToolDef(
         Phase.ANY,
         NoArgs,
-        "Whole-program time, offloading (devices, transfers) and per-kernel times, with hints.",
+        "Measure the program as it stands: whole-program time, offloading (devices, transfers) and per-kernel times, "
+        "with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's compiler "
+        "sweep makes the graded library faster than this. It waits for a device slot and takes minutes on the first "
+        "call; kernels a move left unchanged are not measured again, and an unchanged program answers at once.",
         Effect.READ,
     ),
     "applied_moves": ToolDef(Phase.ANY, NoArgs, "Every move applied to this program so far, in order.", Effect.READ),

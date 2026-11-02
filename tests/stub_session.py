@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from hpcagent_bench.harness.routes import ROUTES
 
-from nestforge.server import Reply, Setup
+from nestforge.server import MEASURING, Reply, Setup
 
 #: Each tool's predefined answer, shaped as the session's own.
 REPLIES: dict[str, Reply] = {
@@ -61,7 +61,7 @@ class StubSession:
         time.sleep(DELAY_S)
         self.alive = True
 
-    def call(self, tool: str, arguments: dict[str, Any]) -> Reply:
+    def call(self, tool: str, arguments: dict[str, Any], gone: threading.Event | None = None) -> Reply:
         stub = self.stub
         with stub.lock:
             stub.in_flight += 1
@@ -73,6 +73,8 @@ class StubSession:
         if tool == stub.dies_on:
             self.alive = False
             return Reply(error="the session process died (exit code -9)")
+        if gone is not None and gone.is_set() and tool in MEASURING:
+            return Reply(error="stopped", stopped=True)
         return stub.replies[tool]
 
     def close(self) -> None:

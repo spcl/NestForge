@@ -18,6 +18,7 @@ from nestforge.corpus.translate import prepare
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     KernelVerdict,
+    full_probe,
     kernel_runtime_libraries,
     schedule_kernel,
     use_kernel_library,
@@ -115,7 +116,7 @@ def test_the_sweep_measures_every_build_and_the_fastest_correct_build_wins(tmp_p
     prep = prepare(boundary, ext.name)
     variants = gcc_variants(cost_model="default")
 
-    result = select_variant(src, prep, {"N": 1037}, 3, variants, tmp_path / "variants")
+    result = select_variant(src, full_probe(prep, boundary, {"N": 1037}), 3, variants, tmp_path / "variants")
 
     assert len(result.cells) == len(variants) == len(flags.FP_LEVELS)
     assert all(cell.verdict.error == "" for cell in result.cells), [c.verdict.error for c in result.cells]
@@ -147,9 +148,8 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     sdfg, ext, boundary = lowered_vadd()
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     prep = prepare(boundary, ext.name)
-    result = select_variant(
-        src, prep, {"N": 257}, 1, gcc_variants(fp_mode="strict-ieee", cost_model="default"), tmp_path / "variants"
-    )
+    variants = gcc_variants(fp_mode="strict-ieee", cost_model="default")
+    result = select_variant(src, full_probe(prep, boundary, {"N": 257}), 1, variants, tmp_path / "variants")
     assert result.library is not None, [c.verdict.error for c in result.cells]
 
     runtime = kernel_runtime_libraries(src, result.winner.variant.compiler)
@@ -187,7 +187,7 @@ def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wi
     prep = prepare(boundary, ext.name)
     variants = device_variants("gpu")
 
-    result = select_variant(src, prep, {"N": 1037}, 3, variants, tmp_path / "variants")
+    result = select_variant(src, full_probe(prep, boundary, {"N": 1037}), 3, variants, tmp_path / "variants")
 
     assert variants and len(result.cells) == len(variants)
     assert all(cell.verdict.error == "" for cell in result.cells), [c.verdict.error for c in result.cells]

@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Emit an SDFG or an extracted nest as one plain Python function, the kernel's correctness oracle.
 
-Tasklets and interstate code are already Python. :func:`lower` prepares a copy: library nodes expand to their pure
-implementations, nested SDFGs bind their connectors to the outer arrays, DaCe's ``InlineTaskletConnectors`` turns
-connectors into direct array accesses, and :func:`unique_connectors` names the rest uniquely, since a Python function
-has one flat scope. Every array is a caller-allocated buffer; a transient scalar is a local variable."""
+Tasklets and interstate code are already Python. A library call stays a library call: NumPy's, which runs the BLAS and
+LAPACK the reference runs (:data:`LIBRARY_CALLS`); only a node with no such spelling expands. :func:`lower` prepares a
+copy: those nodes expand, nested SDFGs bind their connectors to the outer arrays, DaCe's ``InlineTaskletConnectors``
+turns connectors into direct array accesses, and :func:`unique_connectors` names the rest uniquely, since a Python
+function has one flat scope. Every array is a caller-allocated buffer; a transient scalar is a local variable."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import importlib.util
 import re
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -87,6 +88,14 @@ COMBINE = {
     dtypes.ReductionType.Product: "{0} * {1}",
     dtypes.ReductionType.Min: "np.minimum({0}, {1})",
     dtypes.ReductionType.Max: "np.maximum({0}, {1})",
+}
+
+#: Reduction -> the NumPy ufunc whose ``reduce`` is that library call.
+REDUCTION_UFUNCS = {
+    dtypes.ReductionType.Sum: "np.add",
+    dtypes.ReductionType.Product: "np.multiply",
+    dtypes.ReductionType.Min: "np.minimum",
+    dtypes.ReductionType.Max: "np.maximum",
 }
 
 
@@ -198,17 +207,18 @@ def memlet_parts(memlet: dace.Memlet) -> tuple[str, subsets.Subset | None, subse
     return data, subset, other
 
 
-def expand_to_pure(sdfg: dace.SDFG) -> None:
-    """Expand every library node, choosing its ``pure`` implementation where it has one."""
+def expand_unspelled(sdfg: dace.SDFG) -> None:
+    """Expand every library node with no :func:`spelling`, choosing its ``pure`` implementation where it has one; every
+    other node stays the library call it is."""
     for attempt in range(EXPANSION_ROUNDS):
-        libraries = [node for node, state in placed(sdfg, nodes.LibraryNode)]
+        libraries = [(node, state) for node, state in placed(sdfg, nodes.LibraryNode) if spelling(node) is None]
         if not libraries:
             return
-        for node in libraries:
+        for node, state in libraries:
             # dace.library.node erases the class type, hiding its implementations from pyright
             if "pure" in node.implementations:  # pyright: ignore[reportAttributeAccessIssue]
                 node.implementation = "pure"
-        sdfg.expand_library_nodes(recursive=False)
+            node.expand(state, *([node.implementation] if node.implementation else []))
     raise UnsupportedNest(f"library nodes of {sdfg.name} still expand to library nodes after {attempt + 1} rounds")
 
 
@@ -387,9 +397,13 @@ def rename_connector(state: SDFGState, node: nodes.Tasklet, old: str, new: str) 
 
 
 def lower(sdfg: dace.SDFG, expand: bool = True) -> None:
-    """Prepare ``sdfg`` for emission, in place; ``expand=False`` leaves library nodes, which emission refuses."""
+    """Prepare ``sdfg`` for emission, in place; ``expand=False`` leaves every library node, and emission refuses one
+    with no spelling."""
     if expand:
-        expand_to_pure(sdfg)
+        expand_unspelled(sdfg)
+    if placed(sdfg, nodes.LibraryNode) and not placed(sdfg, nodes.NestedSDFG):
+        for nested in list(sdfg.all_sdfgs_recursive()):
+            RemoveViews().apply_pass(nested, {})  # a call reads the window itself, not a transient view of it
     if placed(sdfg, nodes.NestedSDFG):
         inline_sdfgs(sdfg)
         bind_nests_through_views(sdfg)
@@ -695,9 +709,128 @@ def enclosing_loop(block: ControlFlowBlock) -> LoopRegion | None:
     return region if isinstance(region, LoopRegion) else None
 
 
+def read_of(scope: Scope, state: SDFGState, node: nodes.Node, connector: str) -> str:
+    """What ``node`` reads through ``connector``."""
+    (edge,) = state.in_edges_by_connector(node, connector)
+    return access(scope, *memlet_parts(edge.data)[:2])
+
+
+def write_of(scope: Scope, state: SDFGState, node: nodes.Node, connector: str) -> str:
+    """What ``node`` writes through ``connector``."""
+    (edge,) = state.out_edges_by_connector(node, connector)
+    return access(scope, *memlet_parts(edge.data)[:2])
+
+
+def transposed(text: str, flag: bool) -> str:
+    return f"({text}).T" if flag else text
+
+
+def cholesky_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    factor = f"np.linalg.cholesky({read_of(scope, state, node, '_a')})"
+    return [f"{write_of(scope, state, node, '_b')} = {factor if node.lower else f'({factor}).conj().T'}"]
+
+
+def matmul_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    """``c = alpha op(a) op(b) + beta c``; ``beta`` reads ``c`` itself, or the ``_cin`` a Gemm takes it from."""
+    target = write_of(scope, state, node, "_c")
+    a = transposed(read_of(scope, state, node, "_a"), node.transA)
+    b = transposed(read_of(scope, state, node, "_b"), node.transB)
+    product = f"({node.alpha}) * np.matmul({a}, {b})"
+    if str(node.beta) in ("0", "0.0"):
+        return [f"{target} = {product}"]
+    before = read_of(scope, state, node, "_cin") if "_cin" in node.in_connectors else target
+    return [f"{target} = {product} + ({node.beta}) * {before}"]
+
+
+def kept_axes(subset: subsets.Subset, axes: Iterable[int]) -> tuple[int, ...]:
+    """``axes`` of ``subset`` as axes of what :func:`index` selects, which drops the single-element ones."""
+    ranges: list[tuple[Any, Any, Any]] = as_range(subset).ranges
+    kept = [axis for axis, (begin, end, _) in enumerate(ranges) if begin != end]
+    return tuple(kept.index(axis) for axis in axes if axis in kept)
+
+
+def identity_text(identity: object) -> str:
+    """A reduction's identity as Python: an integer stays one, so an integer reduction stays exact; ``float`` spells
+    infinities."""
+    text = str(identity)
+    return text if text.lstrip("-").isdigit() else f"float({str(float(text))!r})"
+
+
+def reduce_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    (edge,) = state.in_edges_by_connector(node, node.INPUT_CONNECTOR_NAME)
+    data, subset, _ = memlet_parts(edge.data)
+    arguments = [access(scope, data, subset), "axis=None"]
+    if node.axes is not None:
+        assert subset is not None, "a reduction over axes reads a range"
+        arguments[1] = f"axis={kept_axes(subset, node.axes)}"
+    if node.identity is not None:
+        arguments.append(f"initial={identity_text(node.identity)}")
+    ufunc = REDUCTION_UFUNCS[detect_reduction_type(node.wcr)]
+    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = {ufunc}.reduce({', '.join(arguments)})"]
+
+
+def fill_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    connector = node.VALUE_CONNECTOR_NAME
+    edges = list(state.in_edges_by_connector(node, connector))
+    value = read_of(scope, state, node, connector) if edges else repr(node.value)
+    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = {value}"]
+
+
+def transpose_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    return [f"{write_of(scope, state, node, '_out')} = np.transpose({read_of(scope, state, node, '_inp')})"]
+
+
+def copy_node_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    value = read_of(scope, state, node, node.INPUT_CONNECTOR_NAME)
+    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = {value}"]
+
+
+def fft_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    """NumPy's transform over the node's axes, scaled by the node's factor: the node's own transform is unnormalized in
+    both directions, which ``norm="forward"`` makes of NumPy's inverse. A half spectrum's real side sets the lengths."""
+    (edge,) = state.in_edges_by_connector(node, "_inp")
+    data, subset, _ = memlet_parts(edge.data)
+    assert subset is not None, "a transform reads a range"
+    axes = kept_axes(subset, range(subset.dims()) if node.axes is None else node.axes)
+    target = write_of(scope, state, node, "_out")
+    inverse = type(node).__name__ == "IFFT"
+    arguments = [access(scope, data, subset), f"axes={axes}"]
+    if inverse:
+        arguments.append('norm="forward"')
+    if inverse and node.half_spectrum:
+        arguments.append(f"s=tuple({target}.shape[axis] for axis in {axes})")
+    call = f"np.fft.{'i' if inverse else ''}{'r' if node.half_spectrum else ''}fftn({', '.join(arguments)})"
+    return [f"{target} = ({node.factor}) * {call}"]
+
+
+#: A library node type's spelling: the lines of its library call.
+LIBRARY_CALLS = {
+    "Cholesky": cholesky_lines,
+    "MatMul": matmul_lines,
+    "Gemm": matmul_lines,
+    "Transpose": transpose_lines,
+    "Reduce": reduce_lines,
+    "FillLibraryNode": fill_lines,
+    "CopyLibraryNode": copy_node_lines,
+    "FFT": fft_lines,
+    "IFFT": fft_lines,
+}
+
+
+def spelling(node: nodes.LibraryNode) -> Callable[[Scope, SDFGState, nodes.LibraryNode], list[str]] | None:
+    """How ``node`` is emitted as a library call, ``None`` when it has no such spelling."""
+    if type(node).__name__ == "Reduce" and detect_reduction_type(node.wcr) not in REDUCTION_UFUNCS:
+        return None
+    return LIBRARY_CALLS.get(type(node).__name__)
+
+
 def node_lines(scope: Scope, state: SDFGState, node: nodes.Node, order: list[nodes.Node]) -> list[str]:
     if isinstance(node, nodes.Tasklet):
         return tasklet_lines(scope, state, node)
+    if isinstance(node, nodes.LibraryNode):
+        lines = spelling(node)
+        if lines is not None:
+            return lines(scope, state, node)
     if isinstance(node, nodes.AccessNode):
         return copy_lines(scope, state, node)
     if isinstance(node, nodes.MapEntry):
@@ -792,6 +925,8 @@ def module(fn_name: str, args: list[str], body: list[str]) -> str:
     """The standalone module defining ``fn_name(args)`` with ``body``; refuses code Python rejects."""
     function = "\n".join([f"def {fn_name}({', '.join(args)}):", *indent(body)])
     imports = "import math\n\nimport numpy as np\n" if re.search(r"\bmath\.", function) else "import numpy as np\n"
+    # a half spectrum's extent is an integer division, which DaCe spells as a call
+    imports += "from operator import floordiv as int_floor\n" if "int_floor(" in function else ""
     # a DaCe precondition guard calls abort()
     guard = "\n\ndef abort():\n    raise RuntimeError('DaCe precondition violated')\n" if "abort(" in function else ""
     source = f"{imports}{guard}\n\n{function}\n"
@@ -816,6 +951,16 @@ def map_python(state: SDFGState, entry: nodes.MapEntry, body_only: bool = False)
 
 
 # extracted nests
+
+
+def factored_inputs(sdfg: dace.SDFG) -> list[str]:
+    """The containers a Cholesky of the lowered ``sdfg`` factors, which must be positive definite."""
+    return [
+        memlet_parts(edge.data)[0]
+        for node, state in placed(sdfg, nodes.LibraryNode)
+        if type(node).__name__ == "Cholesky"
+        for edge in state.in_edges_by_connector(node, "_a")
+    ]
 
 
 def oracle_sdfg(boundary: Boundary) -> dace.SDFG:

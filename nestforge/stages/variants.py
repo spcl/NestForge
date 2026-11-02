@@ -12,7 +12,6 @@ from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
 
 from nestforge.build import flags
-from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.toolchain import (
     CudaToolchain,
     HipToolchain,
@@ -21,10 +20,10 @@ from nestforge.build.toolchain import (
     discover_hip_toolchains,
     discover_toolchains,
 )
-from nestforge.corpus.translate import Prepared
 from nestforge.stages.kernel import (
     KernelSource,
     KernelVerdict,
+    Probe,
     build_kernel_library,
     failed_verdict,
     measure_kernel,
@@ -130,22 +129,33 @@ def device_variants(device: str, compilers: Sequence[str] | None = None) -> list
     return VARIANTS_BY_DEVICE[device](compilers)
 
 
+def measure_variant(src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path) -> VariantCell:
+    """One sweep cell: ``variant``'s build of ``src`` under ``out_dir``, measured."""
+    try:
+        archive = build_kernel_library(src, variant.compiler, list(variant.flags), out_dir)
+    except RuntimeError as err:
+        return VariantCell(variant, failed_verdict(variant.fp_mode, str(err)))
+    return VariantCell(variant, measure_kernel(archive, src, probe, reps, variant.fp_mode), archive)
+
+
 def select_variant(
-    src: KernelSource, prep: Prepared, sizes: dict[str, int], reps: int, variants: Sequence[Variant], out_dir: Path
+    src: KernelSource,
+    probe: Probe,
+    reps: int,
+    variants: Sequence[Variant],
+    out_dir: Path,
+    done: dict[Variant, VariantCell] | None = None,
 ) -> VariantResult:
     """Build every variant of ``src`` under ``out_dir``, time each against the NumPy oracle at its own FP rung, and
-    return all cells with the fastest correct one as winner; a failed build is a cell without an archive."""
-    inputs = make_inputs(src.boundary, sizes)
-    oracle = run_oracle(prep, src.boundary, inputs, sizes)
-    cells: list[VariantCell] = []
+    return all cells with the fastest correct one as winner; a failed build is a cell without an archive.
+
+    :param done: Cells of an earlier sweep of the same source that was stopped; each new cell joins them, so the next
+        sweep goes on from there."""
+    finished = done if done is not None else {}
     for index, variant in enumerate(variants):
-        try:
-            archive = build_kernel_library(src, variant.compiler, list(variant.flags), out_dir / f"v{index}")
-        except RuntimeError as err:
-            cells.append(VariantCell(variant, failed_verdict(variant.fp_mode, str(err))))
-            continue
-        verdict = measure_kernel(archive, src, inputs, oracle, sizes, reps, variant.fp_mode)
-        cells.append(VariantCell(variant, verdict, archive))
+        if variant not in finished:
+            finished[variant] = measure_variant(src, probe, reps, variant, out_dir / f"v{index}")
+    cells = [finished[variant] for variant in variants]
     correct = [cell for cell in cells if cell.verdict.ok]
     winner = min(correct, key=lambda cell: cell.verdict.time_us) if correct else None
     return VariantResult(cells, winner, src.symbol, list(src.abi_order))

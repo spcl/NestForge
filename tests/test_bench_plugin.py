@@ -28,7 +28,7 @@ from hpcagent_bench.harness import tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
-from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, ServiceConfig, make_server
+from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, JudgeHandler, ServiceConfig, make_server
 from hpcagent_bench.harness.task import Task
 from hpcagent_bench.skill_frontmatter import split_frontmatter
 from hpcagent_bench.vocabulary import PACKETS
@@ -44,21 +44,41 @@ PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
+#: One valid call of tools that read, change or measure.
+SLOT_CALLS: dict[str, dict[str, object]] = {
+    "get_cpf": {},
+    "view_tree": {},
+    "list_moves": {},
+    "applied_moves": {},
+    "apply_move": {"kind": "fuse", "labels": ["map_0", "map_1"]},
+    "run_defaults": {"stage": "moves"},
+    "set_scope": {"labels": ["map_0"]},
+    "get_performance": {},
+    "finalize": {},
+    "write_kernel": {"name": "kernel_0", "source": "x", "language": "cpp"},
+    "tune_kernel": {"name": "kernel_0"},
+}
 
 
-class FakeJudge:
+class FakeJudge(JudgeHandler):
     """The part of ``service.JudgeHandler`` a route uses; keeps the last answer."""
 
     def __init__(self) -> None:
         self.cfg = RunConfig(preset=Preset.S)
         self.code = 0
         self.answer: dict[str, object] = {}
+        self.gone = threading.Event()
+        self.slots = 0
 
     def reply(self, code: int, payload: JudgeAnswer) -> None:
         self.code, self.answer = code, payload.to_json()
 
+    def watch_client(self, finished: threading.Event) -> None:
+        finished.wait()
+
     @contextlib.contextmanager
     def device_slot(self) -> Iterator[object]:
+        self.slots += 1
         yield object()
 
 
@@ -73,8 +93,10 @@ def loaded(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[None]:
             session.close()
 
 
-def post(tool: str, episode: str = "episode-cpu", kernel: str = KERNEL, **body: object) -> FakeJudge:
-    judge = FakeJudge()
+def post(
+    tool: str, episode: str = "episode-cpu", kernel: str = KERNEL, judge: FakeJudge | None = None, **body: object
+) -> FakeJudge:
+    judge = judge if judge is not None else FakeJudge()
     request = RouteRequest(HTTPMethod.POST, ["nestforge", tool], {}, {"kernel": kernel, **body}, episode)
     ROUTES["nestforge"].handler(judge, request)
     return judge
@@ -170,8 +192,71 @@ def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fres
     again = post("get_cpf", "episode-crash")
 
     assert (died.code, died.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), died.answer
-    assert "starts a fresh session" in died.answer["error"]
+    assert "fresh session" in died.answer["error"]
     assert again.code == HTTPStatus.OK and len(stub.started) == 2
+
+
+def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_is_lost(stub: Stub) -> None:
+    first = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+    post("apply_move", "episode-replay", **first)
+    post("view_tree", "episode-replay")
+    post("set_scope", "episode-replay", labels=["map_0"])
+    stub.dies_on = "get_performance"
+
+    died = post("get_performance", "episode-replay")
+    stub.dies_on = ""
+    before = len(stub.calls)
+    answered = post("list_moves", "episode-replay")
+
+    assert died.code == HTTPStatus.INTERNAL_SERVER_ERROR and answered.code == HTTPStatus.OK
+    repeated = [tool for tool, _ in stub.calls[before:]]
+    assert repeated == ["apply_move", "set_scope", "list_moves"], "the changes in order, then the call; no read"
+    assert len(stub.started) == 2
+
+
+def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub: Stub) -> None:
+    slots = {tool: post(tool, "episode-slots", **body).slots for tool, body in SLOT_CALLS.items()}
+
+    assert slots == {
+        tool: int(tool in {"get_performance", "finalize", "write_kernel", "tune_kernel"}) for tool in slots
+    }
+
+
+def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stub: Stub) -> None:
+    episode = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.get("episode-gone")
+    judge = FakeJudge()
+    judge.gone.set()
+
+    with episode.lock:
+        left = post("apply_move", "episode-gone", judge=judge, kind="fuse", labels=["map_0", "map_1"])
+
+    assert left.code == 0 and stub.calls == [], "no answer, and the session never saw it"
+
+
+def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_applying_it_twice(stub: Stub) -> None:
+    move = {"kind": "fuse", "labels": ["map_0", "map_1"], "tile_sizes": [], "implementation": None, "current": None}
+    judge = FakeJudge()
+    judge.gone.set()
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    request = RouteRequest(HTTPMethod.POST, [], {}, {}, "episode-retry")
+    reply = route.run_call(
+        route.EPISODES.get("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone
+    )
+
+    retried = post("apply_move", "episode-retry", **move)
+
+    assert reply.result == {"status": "applied", "reason": ""}
+    assert retried.code == HTTPStatus.OK and retried.answer["result"] == reply.result
+    assert [tool for tool, _ in stub.calls].count("apply_move") == 1, "the retry did not move the program again"
+
+
+def test_a_measuring_call_that_ran_out_of_budget_says_so_and_keeps_the_session(stub: Stub) -> None:
+    stub.replies["get_performance"] = Reply(error="ran out of its 1500 s budget", stopped=True)
+
+    stopped = post("get_performance", "episode-budget")
+
+    assert stopped.code == HTTPStatus.SERVICE_UNAVAILABLE and "budget" in stopped.answer["error"]
+    assert post("view_tree", "episode-budget").code == HTTPStatus.OK and len(stub.started) == 1
 
 
 def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,16 +312,17 @@ def test_an_unknown_argument_is_refused(loaded: None) -> None:
 
 
 @pytest.mark.integration
-def test_the_structured_phase_returns_the_tree_and_a_move_returns_performance(loaded: None) -> None:
+def test_the_structured_phase_returns_the_tree_and_get_performance_measures_a_move(loaded: None) -> None:
     tree = post("get_cpf")
     moves = post("list_moves")
     first = moves.answer["result"][0]
 
     moved = post("apply_move", **first)
+    performance = post("get_performance").answer["performance"]
 
     assert tree.code == HTTPStatus.OK and "doall" in str(tree.answer["result"])
     assert moved.code == HTTPStatus.OK and moved.answer["result"]["status"] == "applied"
-    performance = moved.answer["performance"]
+    assert moved.answer["performance"] is None, "a move answers at once; a time is asked for"
     structured = performance["structured"]
     assert "error" not in structured and structured["time_us"] > 0
     assert structured["correct"] is True, structured
@@ -425,9 +511,10 @@ def test_each_library_product_is_a_kernel_and_the_program_asks_for_its_scratch(l
 def test_a_gpu_target_reports_its_offloading(loaded: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGUAGE", "cuda")
 
-    judge = post("run_defaults", episode="episode-gpu", stage="placement")
+    placed = post("run_defaults", episode="episode-gpu", stage="placement")
+    judge = post("get_performance", episode="episode-gpu")
 
-    assert judge.code == HTTPStatus.OK
+    assert placed.code == HTTPStatus.OK and judge.code == HTTPStatus.OK
     offloading = judge.answer["performance"]["offloading"]
     assert "gpu" in offloading["devices"].values()
     assert offloading["transfer_bytes"] > 0

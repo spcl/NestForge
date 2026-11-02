@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import sympy
 from dace import subsets
+from dace.libraries.standard.nodes import Scan
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
 from helpers import nest_to_python, run_emitted, sdfg_to_python
@@ -246,7 +247,7 @@ def matmul(A: dace.float64[N, M], B: dace.float64[M, N], C: dace.float64[N, N]):
     C[:] = A @ B
 
 
-def test_a_library_node_expands_to_its_pure_loops():
+def test_a_library_node_stays_the_library_call_numpy_has_for_it():
     sdfg = matmul.to_sdfg(simplify=True)
     assert any(isinstance(n, nodes.LibraryNode) for n, _ in sdfg.all_nodes_recursive())
     rng = np.random.default_rng(4)
@@ -254,8 +255,58 @@ def test_a_library_node_expands_to_its_pure_loops():
 
     call, source = emit_and_run(sdfg, {"A": A, "B": B}, {"N": 4, "M": 3})
 
-    assert "@" not in body_of(source) and "for " in source
+    assert "np.matmul(" in body_of(source) and "for " not in source, source
     np.testing.assert_allclose(call["C"], A @ B, rtol=1e-14)
+
+
+def test_a_library_node_numpy_cannot_spell_expands_to_its_loops():
+    sdfg = running_total.to_sdfg(simplify=True)
+    assert any(isinstance(n, Scan) for n, _ in sdfg.all_nodes_recursive())
+    a = np.random.default_rng(5).random(6)
+
+    call, source = emit_and_run(sdfg, {"a": a}, {"N": 6})
+
+    assert "for " in source or "while " in source, source
+    np.testing.assert_allclose(call["b"], np.cumsum(a), rtol=1e-14)
+
+
+@dace.program
+def spectrum(a: dace.complex128[N, M], b: dace.complex128[N, M]):
+    b[:] = np.fft.fftn(a)
+
+
+@dace.program
+def one_axis_back(a: dace.complex128[N, M], b: dace.complex128[N, M]):
+    b[:] = np.fft.ifft(a, axis=1)
+
+
+@dace.program
+def half_and_back(a: dace.float64[N, M], b: dace.float64[N, M]):
+    half = np.fft.rfftn(a)
+    b[:] = np.fft.irfftn(half, s=(N, M))
+
+
+@pytest.mark.parametrize(
+    ("program", "dtype", "expected"),
+    [
+        (spectrum, complex, np.fft.fftn),
+        (one_axis_back, complex, lambda a: np.fft.ifft(a, axis=1)),
+        (half_and_back, float, lambda a: a),
+    ],
+)
+def test_a_fourier_transform_stays_numpys_and_scales_as_the_node_says(program, dtype, expected):
+    sdfg = program.to_sdfg(simplify=True)
+    a = np.random.default_rng(6).random((4, 6)).astype(dtype)
+
+    call, source = emit_and_run(sdfg, {"a": a}, {"N": 4, "M": 6})
+
+    assert "np.fft." in source and "for " not in source, source
+    np.testing.assert_allclose(call["b"], expected(a), rtol=1e-12, atol=1e-12)
+
+
+@dace.program
+def running_total(a: dace.float64[N], b: dace.float64[N]):
+    b[:] = np.cumsum(a)
 
 
 @dace.program

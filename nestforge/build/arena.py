@@ -6,6 +6,7 @@ that binds its arguments once and times repeated calls."""
 from __future__ import annotations
 
 import ctypes
+import mmap
 import os
 import time
 from collections.abc import Sequence
@@ -17,10 +18,10 @@ import numpy as np
 from dace import symbolic
 
 from nestforge.build import flags
-from nestforge.build.isolation import Result
+from nestforge.build.isolation import Failure, Result, run_isolated
 from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
 from nestforge.corpus.translate import Prepared
-from nestforge.ir.emit_python import load_emitted, oracle_sdfg, scratch_arrays
+from nestforge.ir.emit_python import factored_inputs, load_emitted, oracle_sdfg, scratch_arrays
 from nestforge.ir.extract import Boundary
 
 
@@ -45,13 +46,29 @@ def make_inputs(boundary: Boundary, sizes: dict[str, int], seed: int = 0) -> dic
         shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
         arrays[name] = np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt)
+    for name in factored_inputs(sdfg):
+        if name in boundary.inputs:
+            arrays[name] = positive_definite(arrays[name])
     return arrays
+
+
+def positive_definite(array: np.ndarray) -> np.ndarray:
+    """``array`` made a positive definite matrix: a factorization of random numbers fails, and both sides of the
+    comparison would stop at a pivot of their own."""
+    return (array @ array.T + array.shape[0] * np.eye(array.shape[0])).astype(array.dtype)
 
 
 def run_oracle(
     prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int]
 ) -> dict[str, np.ndarray]:
     """The outputs of the kernel's NumPy oracle on copies of ``inputs``."""
+    args = {k: v.copy() for k, v in inputs.items()}
+    call_oracle(prep, boundary, args, sizes)
+    return {o: args[o] for o in boundary.outputs}
+
+
+def call_oracle(prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+    """The kernel's NumPy oracle on ``args``, in place."""
     missing = [s for s in boundary.symbols if s not in sizes]
     if missing:
         raise KeyError(
@@ -59,10 +76,35 @@ def run_oracle(
             f"extracted nest); pass them in `sizes`"
         )
     module = load_emitted(prep.numpy_source, prep.name)
-    args = {k: v.copy() for k, v in inputs.items()}
-    call = {**args, **{s: int(sizes[s]) for s in boundary.symbols}}
-    vars(module)[prep.name](**call)
-    return {o: args[o] for o in boundary.outputs}
+    vars(module)[prep.name](**{**args, **{s: int(sizes[s]) for s in boundary.symbols}})
+
+
+def shared_copy(array: np.ndarray) -> np.ndarray:
+    """``array`` in anonymous shared memory, so a forked child's writes reach the parent."""
+    memory = mmap.mmap(-1, max(array.nbytes, 1))
+    shared = np.ndarray(array.shape, array.dtype, buffer=memory)
+    shared[...] = array
+    return shared
+
+
+class OracleDone(Result):
+    """The oracle's child finished; its outputs are in the shared arrays."""
+
+
+def bounded_oracle(
+    prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int], timeout_s: float
+) -> dict[str, np.ndarray] | Failure:
+    """:func:`run_oracle` in a forked child, which an interpreted nest cannot hold past ``timeout_s``, nor a crash take
+    the caller down: a :class:`Failure` when it did not finish. An oracle's loops are interpreted Python: hours at a
+    size whose compiled kernel takes a minute."""
+    args = {k: shared_copy(v) for k, v in inputs.items()}
+
+    def work() -> OracleDone:
+        call_oracle(prep, boundary, args, sizes)
+        return OracleDone()
+
+    done = run_isolated(work, OracleDone, timeout_s)
+    return done if isinstance(done, Failure) else {o: args[o] for o in boundary.outputs}
 
 
 def accumulating_outputs(boundary: Boundary, buffers: dict[str, np.ndarray]) -> list[str]:
@@ -110,7 +152,9 @@ def call_native(
     outputs = {o: work[o].copy() for o in boundary.outputs} if copy_outputs else None
     total = 0.0
     rewind(snapshot)  # the warm call primes the caches from the same state a timed rep sees
+    warm = time.perf_counter()
     fn(*args)
+    reps = reps_within_budget(reps, time.perf_counter() - warm)
     for _ in range(reps):
         rewind(snapshot)
         t0 = time.perf_counter()
@@ -125,6 +169,15 @@ US_PER_S = 1e6
 
 #: Timed calls per measurement, after one warm-up call.
 TIMED_REPS = 10
+
+#: Seconds of timed calls one measurement aims for: a call too long for :data:`TIMED_REPS` of them gets fewer, never none.
+TIMED_BUDGET_S = 60.0
+
+
+def reps_within_budget(reps: int, call_s: float) -> int:
+    """``reps``, cut so that calls of ``call_s`` seconds stay near :data:`TIMED_BUDGET_S`; a call is never left untimed."""
+    return max(1, min(reps, int(TIMED_BUDGET_S / call_s))) if call_s > 0.0 else reps
+
 
 #: ``cudaMemcpyKind`` / ``hipMemcpyKind`` values (the same in both runtimes).
 HOST_TO_DEVICE = 1
@@ -210,13 +263,17 @@ def time_device_reps(
     outputs = {name: host[name].copy() for name in output_names if name in memory.pointers}
     for name, buffer in outputs.items():
         memory.download(name, buffer)
-    total = 0.0
-    for rep in range(reps + 1):
+    for name in restore:
+        memory.upload(name, host[name])
+    warm = time.perf_counter()
+    fn(*args)
+    reps, total = reps_within_budget(reps, time.perf_counter() - warm), 0.0
+    for _ in range(reps):
         for name in restore:
             memory.upload(name, host[name])
         t0 = time.perf_counter()
         fn(*args)
-        total += (time.perf_counter() - t0) if rep > 0 else 0.0
+        total += time.perf_counter() - t0
     return outputs, total / reps * US_PER_S
 
 

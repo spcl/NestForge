@@ -11,6 +11,10 @@ excluding the `fuse` stage, so stage 2 owns every fusion decision, then `structu
 body made one nested SDFG and every reduction moved out of it: `map { nested SDFG } -> access node -wcr->`). No stage
 after `fuse` runs, so nothing specializes. It is never searched.
 
+Right after it, and after every change, `set_default_implementations` gives each library call left to automatic
+selection the implementation finalization would pick for it: the fastest this host has for the target, never `pure`
+while another exists. The tree prints it, and it stays automatic until `set-library-implementation` pins one.
+
 | | |
 |---|---|
 | default | `Session.canonicalize()` |
@@ -177,7 +181,9 @@ compiler remarks from one extra compile of the current variant (`-fopt-info-vec-
 Failures rank first; the report keeps at most eight hints.
 
 `performance(inputs, reference)` gives every phase's feedback in one record, on a copy completed with the default
-scopes and placement; kernels keep the libraries already linked, the rest get the default build:
+scopes and placement; kernels keep the libraries already linked, the rest get the default build. A served session
+builds them with `codegen="first"`, one configuration, so two measurements compare and a kernel a move left unchanged
+keeps its build and verdict; `finalize` keeps the sweep:
 
 - `structured`: the whole program's time, and whether its outputs match `reference` (the bench's own reference and
   grading tolerance, when the plugin has one);

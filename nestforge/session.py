@@ -10,11 +10,12 @@ names the same row or is refused as unknown, never acting on a moved graph. Ever
 from __future__ import annotations
 
 import atexit
+import contextlib
 import copy
 import dataclasses
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -51,21 +52,25 @@ from nestforge.stages.canonicalize import (
     narrow_nested_memlets,
     structural_cleanup,
 )
-from nestforge.stages.expand import implementations, settle
+from nestforge.stages.expand import implementations, set_default_implementations, settle
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
     KernelSource,
     KernelVerdict,
+    Probe,
+    bounded_probe,
     build_kernel_library,
+    computed_symbols_reason,
+    full_probe,
     kernel_form,
     kernel_runtime_libraries,
     kernel_text,
+    measure_kernel,
     schedule_kernel,
     split_kernel_text,
     unchecked_verdict,
     use_kernel_library,
-    validate_kernel,
 )
 from nestforge.stages.moves import (
     EXPAND_LIBRARY,
@@ -88,7 +93,7 @@ from nestforge.stages.scopes import (
     lower_group_to_external_call,
     node_boundary,
 )
-from nestforge.stages.variants import Variant, device_variants, select_variant
+from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
@@ -99,6 +104,40 @@ def kernel_language(device: str) -> str:
     """The ``write_kernel`` language of a kernel on ``device``: ``cpp`` on the CPU, the GPU form's dialect on the GPU
     (``cuda`` or ``hip``)."""
     return "cpp" if device == "cpu" else kernel_form(device).language
+
+
+class Stopped(BaseException):
+    """A stopped call's work ends here: not an ``Exception``, so no refused build or failed run absorbs it."""
+
+
+class Stopper:
+    """Stops long measuring work between signals of the caller. Only an armed section stops at once, in the middle of a
+    build or a run; it holds no change to the program, so stopping there leaves the session whole."""
+
+    __slots__ = ("armed_now", "asked")
+
+    def __init__(self) -> None:
+        self.armed_now = False
+        self.asked = False
+
+    def ask(self) -> None:
+        """Stop the call: at once in an armed section, else on entering the next one."""
+        self.asked = True
+        if self.armed_now:
+            raise Stopped
+
+    def clear(self) -> None:
+        self.asked = False
+
+    @contextlib.contextmanager
+    def armed(self) -> Iterator[None]:
+        before, self.armed_now = self.armed_now, True
+        try:
+            if self.asked:
+                raise Stopped
+            yield
+        finally:
+            self.armed_now = before
 
 
 def computed_symbols(src: KernelSource, sizes: dict[str, int]) -> list[str]:
@@ -122,8 +161,9 @@ class Move(Record):
     labels: tuple[str, ...]
     #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
     tile_sizes: tuple[int, ...] = ()
-    #: For ``set-library-implementation``, the implementation it sets.
+    #: For ``set-library-implementation``, the implementation it sets, and the one the call has now.
     implementation: str | None = None
+    current: str | None = None
 
 
 class KernelScope(Record):
@@ -206,12 +246,14 @@ class Sweep(Record):
 
 @dataclass(slots=True)
 class KernelBuild:
-    """The library a kernel links now: the unit it was built from, the variant that built it, its last verdict."""
+    """The library a kernel links now: the unit it was built from, the variant that built it, its last verdict and
+    the compiler's remarks on it."""
 
     source: KernelSource
     variant: Variant
     archive: Path
     verdict: KernelVerdict | None = None
+    remarks: str | None = None
 
 
 #: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
@@ -221,9 +263,12 @@ SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
 
 
 def kept(build: KernelBuild, folder: Path) -> KernelBuild:
-    """``build`` with its units and archive copied into ``folder``, so it outlives the work directory it was built in."""
+    """``build`` with its units, archive and shared twin copied into ``folder``, so it outlives the work directory it
+    was built in."""
     folder.mkdir(parents=True, exist_ok=True)
-    copies = {path: Path(shutil.copy2(path, folder / path.name)) for path in [*build.source.units, build.archive]}
+    shared = build.archive.with_suffix(".so")
+    paths = [*build.source.units, build.archive, *([shared] if shared.exists() else [])]
+    copies = {path: Path(shutil.copy2(path, folder / path.name)) for path in paths}
     device = build.source.device_unit
     source = dataclasses.replace(
         build.source, unit=copies[build.source.unit], device_unit=copies[device] if device is not None else None
@@ -262,8 +307,13 @@ class Session:
         "codegen",
         "swept",
         "swept_dir",
+        "first_builds",
+        "sweep_cells",
+        "check_sizes",
+        "oracles_out_of_time",
         "measured",
         "bench",
+        "stopper",
     )
 
     def __init__(
@@ -308,15 +358,25 @@ class Session:
         self.swept: dict[SweepKey, KernelBuild] = {}
         # where a cached winner's units and archive are kept, so they outlive the trial that swept them
         self.swept_dir = self.work_dir / "swept"
+        # first-configuration builds by the same key, with their verdicts: a move rebuilds only the kernels it changed
+        self.first_builds: dict[SweepKey, KernelBuild] = {}
+        # the cells of a stopped sweep, by the same key
+        self.sweep_cells: dict[SweepKey, dict[Variant, VariantCell]] = {}
+        # the sizes a kernel's oracle falls back to when it cannot finish at ``sizes``; None: no bound on the oracle
+        self.check_sizes: dict[str, int] | None = None
+        # the oracles (by source) that did not finish at ``sizes``, so a retry does not spend their budget again
+        self.oracles_out_of_time: set[str] = set()
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Performance | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
+        self.stopper = Stopper()
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
         self.namer.retire(tuple(consumed))
         normalize_labels(self.sdfg, self.namer)
+        set_default_implementations(self.sdfg, self.targets)
         # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
         force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
@@ -426,7 +486,8 @@ class Session:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
                 moves += [
-                    Move(kind=k, labels=labels, implementation=name) for name in implementations(node, self.targets.gpu)
+                    Move(kind=k, labels=labels, implementation=name, current=node.implementation)
+                    for name in implementations(node, self.targets.gpu)
                 ]
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
@@ -439,6 +500,7 @@ class Session:
         labels: Sequence[str],
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
+        current: str | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh.
@@ -448,6 +510,8 @@ class Session:
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
+        :param current: For ``set-library-implementation``, the row's implementation as :meth:`list_moves` listed it;
+            the move is refused if it changed since.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -460,9 +524,12 @@ class Session:
             return rows
         plan = plan_move(kind, rows, tile_sizes, implementation)
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
-            offered = implementations(cast(nodes.LibraryNode, rows[0][0]), self.targets.gpu)
+            node = cast(nodes.LibraryNode, rows[0][0])
+            offered = implementations(node, self.targets.gpu)
             if implementation not in offered:
                 plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
+            elif current is not None and current != node.implementation:
+                plan = f"{names[0]} is {node.implementation} now, not {current}; read the moves again."
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         made = plan.commit()
@@ -665,7 +732,8 @@ class Session:
         its device, and link it into the kernel's ``ExternalCall``."""
         src = self.default_kernel(name)
         variant = self.first_variant(src.device)
-        archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
+        with self.stopper.armed():
+            archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
         self.bind(name, KernelBuild(src, variant, archive))
         return KernelLibrary(
             kernel=name,
@@ -723,13 +791,12 @@ class Session:
             name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)
         )
         variant = self.first_variant(src.device)
-        try:
-            archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
-        except RuntimeError as err:
-            return KernelOutcome(kernel=name, status=KernelStatus.BUILD_FAILED, reason=str(err)[-ERROR_TAIL:])
-        verdict = validate_kernel(
-            archive, src, self.prepare_kernel(name), self.kernel_sizes(name), reps, variant.fp_mode
-        )
+        with self.stopper.armed():
+            try:
+                archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
+            except RuntimeError as err:
+                return KernelOutcome(kernel=name, status=KernelStatus.BUILD_FAILED, reason=str(err)[-ERROR_TAIL:])
+            verdict = measure_kernel(archive, src, self.kernel_probe(name, src), reps, variant.fp_mode)
         if not verdict.ok:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
             return KernelOutcome(kernel=name, status=KernelStatus.WRONG, reason=reason)
@@ -744,6 +811,19 @@ class Session:
             self.prepared[name] = prepare(self.default_kernel(name).boundary, name)
         return self.prepared[name]
 
+    def kernel_probe(self, name: str, src: KernelSource) -> Probe:
+        """What builds of the kernel are measured on; without :attr:`check_sizes` the oracle runs at the kernel's sizes
+        however long it takes."""
+        prep, sizes = self.prepare_kernel(name), self.kernel_sizes(name)
+        if self.check_sizes is None:
+            return full_probe(prep, src.boundary, sizes)
+        check = {**self.loop_values(name, self.check_sizes), **self.check_sizes}
+        full = prep.numpy_source not in self.oracles_out_of_time
+        probe = bounded_probe(prep, src.boundary, sizes, check, full)
+        if probe.checked is not probe.timed:
+            self.oracles_out_of_time.add(prep.numpy_source)
+        return probe
+
     def need_sizes(self) -> dict[str, int]:
         if not self.sizes:
             raise ValueError("this session has no sizes; pass Session(..., sizes={symbol: value})")
@@ -753,8 +833,11 @@ class Session:
         """The sizes plus, for a kernel inside a sequential loop, a middle value of each loop iterator it takes;
         a value given in ``sizes`` wins."""
         sizes = self.need_sizes()
-        ext = self.kernel(name)
-        return {**loop_symbol_values(find_state_of_node(self.sdfg, ext), sizes), **sizes}
+        return {**self.loop_values(name, sizes), **sizes}
+
+    def loop_values(self, name: str, sizes: dict[str, int]) -> dict[str, int]:
+        """A middle value at ``sizes`` of each loop iterator around the kernel."""
+        return loop_symbol_values(find_state_of_node(self.sdfg, self.kernel(name)), sizes)
 
     # Stage 6: variants
 
@@ -775,13 +858,16 @@ class Session:
                 "them, so it cannot be swept. finalize builds its first configuration."
             )
         variants = device_variants(src.device, compilers)
-        prep = self.prepare_kernel(name)
-        result = select_variant(src, prep, sizes, reps, variants, self.work_dir / name / "variants")
+        key = self.sweep_key(name, src)
+        cells = self.sweep_cells.setdefault(key, {})
+        out_dir = self.swept_dir / f"{name}_cells_{len(self.sweep_cells)}"
+        with self.stopper.armed():
+            result = select_variant(src, self.kernel_probe(name, src), reps, variants, out_dir, cells)
         winner = result.winner
         if winner is not None and winner.archive is not None:
             build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
-            self.bind(name, build)
-            self.swept[self.sweep_key(name, src)] = kept(build, self.swept_dir / f"{name}_{len(self.swept)}")
+            self.swept[key] = kept(build, self.swept_dir / f"{name}_{len(self.swept)}")
+            self.bind(name, self.swept[key])
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
         variant = winner.variant
@@ -803,10 +889,10 @@ class Session:
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
         a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
         only the running program computes: its oracle has no value for it)."""
-        if self.codegen == "first":
-            self.optimize_kernel(name)
-            return
         src = self.default_kernel(name)
+        if self.codegen == "first":
+            self.first_build(name, src)
+            return
         if computed_symbols(src, self.kernel_sizes(name)):
             self.optimize_kernel(name)
             return
@@ -815,6 +901,17 @@ class Session:
             self.bind(name, known)
         elif self.sweep(name).winner is None:
             self.optimize_kernel(name)
+
+    def first_build(self, name: str, src: KernelSource) -> None:
+        """Stage 5's default build of ``src``, or the same build made for this source and these sizes before: a move
+        changes few kernels, and an unchanged kernel keeps its verdict."""
+        key = self.sweep_key(name, src)
+        known = self.first_builds.get(key)
+        if known is None:
+            self.optimize_kernel(name)
+            known = kept(self.builds[name], self.swept_dir / f"{name}_first_{len(self.first_builds)}")
+            self.first_builds[key] = known
+        self.bind(name, known)
 
     # Stage 7: feedback
 
@@ -833,16 +930,18 @@ class Session:
             if build.verdict is None:
                 sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
                 computed = computed_symbols(build.source, sizes)
-                build.verdict = (
-                    unchecked_verdict(fp_mode, computed)
-                    if computed
-                    else validate_kernel(
-                        build.archive, build.source, self.prepare_kernel(ext.name), sizes, reps, fp_mode
+                with self.stopper.armed():
+                    build.verdict = (
+                        unchecked_verdict(fp_mode, computed_symbols_reason(computed))
+                        if computed
+                        else measure_kernel(
+                            build.archive, build.source, self.kernel_probe(ext.name, build.source), reps, fp_mode
+                        )
                     )
-                )
-            variant = build.variant
-            remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
-            evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
+            if build.remarks is None:
+                variant = build.variant
+                build.remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
+            evidence.append(feedback.Evidence(ext.name, build.verdict, build.remarks))
         return evidence
 
     # Assembly
@@ -880,42 +979,60 @@ class Session:
         )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
         copied.swept, copied.swept_dir = self.swept, self.swept_dir
+        copied.first_builds, copied.sweep_cells = self.first_builds, self.sweep_cells
+        copied.check_sizes, copied.oracles_out_of_time = self.check_sizes, self.oracles_out_of_time
+        copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
 
     def performance(
-        self, inputs: dict[str, np.ndarray], reference: Reference | None = None, reps: int = TIMED_REPS
+        self,
+        inputs: dict[str, np.ndarray],
+        reference: Reference | None = None,
+        reps: int = TIMED_REPS,
+        codegen: Codegen | None = None,
     ) -> Performance:
         """Every phase's feedback at once (:mod:`~nestforge.stages.performance`): on a :meth:`trial`, the default
         scopes when none is defined, the default placement when none is chosen and the default kernel builds, then
         the whole program (checked against ``reference`` when given), its offloading and each kernel are timed. Reused
-        until the program changes."""
+        until the program changes.
+
+        :param codegen: How the kernels without a build of their own are built for this measurement; the session's
+            own ``codegen`` when ``None``."""
         if self.measured is not None:
             return self.measured
-        trial = self.trial()
-        if not external_calls(trial.sdfg):
-            trial.default_scopes()
-        devices = {ext.name: kernel_device(ext) for ext in external_calls(trial.sdfg)}
-        if trial.unplaced is None:
-            placed = trial.place()
+        with self.stopper.armed():
+            trial = self.trial()
+            trial.codegen = codegen if codegen is not None else self.codegen
+            try:
+                self.measured = trial.measure(inputs, reference, reps)
+            finally:
+                # the trial's builds are measured; a long session would otherwise keep every one until it exits
+                shutil.rmtree(trial.work_dir, ignore_errors=True)
+        return self.measured
+
+    def measure(self, inputs: dict[str, np.ndarray], reference: Reference | None, reps: int) -> Performance:
+        """The feedback of :meth:`performance` on this session, a self."""
+        if not external_calls(self.sdfg):
+            self.default_scopes()
+        devices = {ext.name: kernel_device(ext) for ext in external_calls(self.sdfg)}
+        if self.unplaced is None:
+            placed = self.place()
             devices, moves = placed.devices, placed.transfers
         else:
             try:
-                moves = tuple(transfers(trial.kernel_graph(), devices))
+                moves = tuple(transfers(self.kernel_graph(), devices))
             except UnsupportedProgram:
                 moves = None
-        evidence = trial.kernel_evidence(reps)
+        evidence = self.kernel_evidence(reps)
         program = time_program(
-            trial.sdfg, trial.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
+            self.sdfg, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
-        # the trial's builds are measured; a long session would otherwise keep every one until it exits
-        shutil.rmtree(trial.work_dir, ignore_errors=True)
-        self.measured = Performance(
+        return Performance(
             structured=program,
-            offloading=offload_report(trial.sdfg, devices, moves, self.sizes),
+            offloading=offload_report(self.sdfg, devices, moves, self.sizes),
             kernels=kernel_reports(evidence, devices),
             hints=feedback.report(evidence),
         )
-        return self.measured

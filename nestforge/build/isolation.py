@@ -5,6 +5,7 @@ taking down the caller. A child's answer is a :class:`Result` model, validated w
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import faulthandler
 import multiprocessing
@@ -114,6 +115,10 @@ def run_spawned[T: Result](target: Callable[[Any], T], payload: Any, timeout: fl
     sender.close()
     try:
         return spawned_result(receiver, child, timeout)
+    except BaseException:  # the caller was stopped: its child must not stay on the device
+        child.kill()
+        child.join()
+        raise
     finally:
         receiver.close()
         drop_openmp_registration(child.pid)
@@ -171,6 +176,11 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
     try:
         outcome = forked_result(pid, r, timeout)
         return outcome if isinstance(outcome, Failure) else parse_result(outcome, result)
+    except BaseException:  # the caller was stopped: its child must not stay on the cores
+        with contextlib.suppress(ProcessLookupError, ChildProcessError):
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        raise
     finally:
         drop_openmp_registration(pid)
 

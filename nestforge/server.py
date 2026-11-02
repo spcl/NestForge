@@ -2,14 +2,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A :class:`Session` in a process of its own, driven over a pipe: the caller's threads never fork, and a crash in
 generated code ends this process, not the caller. The HPCAgent-Bench plugin serves each episode's kernel with one.
-HPCAgent-Bench is imported when a session starts, so importing nestforge never loads it."""
+HPCAgent-Bench is imported when a session starts, so importing nestforge never loads it.
+
+A call that builds or runs code stops when its caller asks (:data:`STOP_SIGNAL`), keeping the session and everything
+it already built and measured, so the same call goes on from there."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import multiprocessing
+import os
+import signal
 import sys
+import threading
+import time
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,7 +30,7 @@ import numpy as np
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import Record
-from nestforge.session import Codegen, Session
+from nestforge.session import Codegen, Session, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
@@ -64,14 +72,38 @@ CALLS: dict[str, Callable[..., object]] = {
     "finalize": finalize,
 }
 
-#: Tools whose answer carries :meth:`Session.performance`.
-TIMED = frozenset({"apply_move", "run_defaults", "write_kernel", "tune_kernel", "get_performance"})
+#: Tools whose answer carries :meth:`Session.performance`; a move answers at once and is measured on request.
+TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
+
+#: Tools that build or run code, so they hold a device slot and need the bench's data. Everything else is Python on
+#: the session's program: a read or a move takes a fraction of a second and no device.
+MEASURING = TIMED | {"finalize"}
+
+#: Tools whose calls make the session's program what it is, so a fresh session repeats them.
+CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
+
+#: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
+CHECK_RUNG = "S"
+
+#: How the program's feedback builds its kernels: stage 5's first configuration of each kernel, as cheap to repeat
+#: after every move as a comparison needs. The compiler sweep of stage 6 stays with finalize, what is graded.
+FEEDBACK_CODEGEN: Codegen = "first"
 
 #: Seconds a closing session process gets before it is terminated.
 CLOSE_TIMEOUT_S = 5.0
 
-#: Seconds one tool call may take (a build of the whole program included) before its session is ended.
-TOOL_TIMEOUT_S = 1800.0
+#: Seconds of work one tool call may take before it is stopped; below the agents' own limit on a call (1800 s), so an
+#: agent reads why and what to do instead of its client's timeout.
+TOOL_TIMEOUT_S = 1500.0
+
+#: How often a waiting caller looks for its client and the session's answer.
+POLL_S = 0.25
+
+#: Seconds a stopped call gets to answer before its session is ended (a long NumPy call takes signals when it returns).
+STOP_GRACE_S = 30.0
+
+#: What asks a session process to stop its call.
+STOP_SIGNAL = signal.SIGUSR1
 
 
 #: The bench setting that points an ML kernel's PyTorch reference at a KernelBench checkout; a pip install of the
@@ -92,11 +124,15 @@ class Setup:
 
 
 class Reply(Record):
-    """One call's answer: the session's result and, for a timed tool, its performance; ``error`` instead on failure."""
+    """One call's answer: the session's result and, for a timed tool, its performance; ``error`` instead on failure.
+    ``stopped``: the call was stopped, nothing is wrong and the session keeps what it did. ``ended``: the session
+    process is gone, this call's change with it."""
 
     result: Any = None
     performance: Performance | None = None
     error: str = ""
+    stopped: bool = False
+    ended: bool = False
 
 
 def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
@@ -141,8 +177,14 @@ def size_rung(preset: str) -> str:
 
 
 def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
-    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on. The agent drives the
-    moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
+    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on."""
+    session = started_session(setup, codegen)
+    return session, *session_data(setup, session)
+
+
+def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
+    """The canonicalized session of ``setup``'s kernel, before any data. The agent drives the moves; scopes, placement
+    and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
     kernel = corpus_kernel(setup.kernel)
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
@@ -152,10 +194,30 @@ def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, 
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.shared_root = setup.shared_root
     session.canonicalize()
+    return session
+
+
+def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray], Reference | None]:
+    """The data ``session``'s whole program runs on; binds the sizes that come from it. Only code that runs needs it,
+    so a read never waits for the reference. Call it after canonicalization: that promotes a scalar input to a symbol."""
     inputs, reference = bench_data(setup)
-    # after canonicalization: it is what promotes a scalar input to a symbol
     session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
-    return session, inputs, reference
+    session.check_sizes = check_rung_sizes(setup, session)
+    return inputs, reference
+
+
+def check_rung_sizes(setup: Setup, session: Session) -> dict[str, int]:
+    """:attr:`Session.sizes` at :data:`CHECK_RUNG` where the rung gives a value."""
+    from hpcagent_bench.categories import Preset
+    from hpcagent_bench.frameworks.benchmark import Benchmark
+
+    kernel = corpus_kernel(setup.kernel)
+    assert kernel is not None, "the session started from it"
+    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(CHECK_RUNG))
+    renames = kernel.renames()
+    # a scalar argument comes back as an array in the program; a rung that names no value keeps the graded one
+    scalars = {renames.get(k, k): np.asarray(v) for k, v in data.items() if isinstance(v, (np.generic, int, float))}
+    return session.sizes | symbol_inputs(session.sdfg, scalars) | preset_sizes(kernel, CHECK_RUNG)
 
 
 def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, int]:
@@ -170,29 +232,75 @@ def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, i
     }
 
 
+def stopped_text(tool: str, timeout_s: float) -> str:
+    """What the agent reads when ``tool`` ran out of its budget: nothing was lost, and repeating it continues."""
+    return (
+        f"{tool} ran out of its {timeout_s:.0f} s budget and stopped. Your moves are kept, and every kernel it already "
+        "built and measured is cached: call it again to go on from there."
+    )
+
+
 def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
+
+
+def answer(
+    session: Session,
+    tool: str,
+    arguments: dict[str, Any],
+    data: tuple[dict[str, np.ndarray], Reference | None] | None,
+) -> Reply:
+    """``tool``'s result on ``session``, and its performance when it is timed. A stop during that measurement does not
+    undo the tool: its result stands, without the feedback."""
+    result = CALLS[tool](session, **arguments)
+    if tool not in TIMED:
+        return Reply(result=result)
+    assert data is not None, "a timed tool measures, so its data was loaded"
+    try:
+        return Reply(result=result, performance=session.performance(*data, codegen=FEEDBACK_CODEGEN))
+    except Stopped:
+        if tool == "get_performance":
+            raise
+        return Reply(result=result)
 
 
 def serve(connection: Connection, setup: Setup) -> None:
     """The child: build the session, report ready (or why not), then answer ``(tool, arguments)`` until closed."""
     try:
-        session, inputs, reference = start(setup)
+        session = started_session(setup)
     except Exception as err:  # noqa: BLE001 -- the caller reads why the session could not start
         connection.send(failure(err))
         return
+    signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
+    data: tuple[dict[str, np.ndarray], Reference | None] | None = None
     while True:
         try:
             tool, arguments = connection.recv()
         except EOFError:
             return
+        session.stopper.clear()
         try:
-            result = CALLS[tool](session, **arguments)
-            performance = session.performance(inputs, reference) if tool in TIMED else None
-            connection.send(Reply(result=result, performance=performance))
+            if data is None and tool in MEASURING:
+                data = session_data(setup, session)
+            connection.send(answer(session, tool, arguments, data))
+        except Stopped:
+            connection.send(Reply(stopped=True))
         except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
             connection.send(failure(err))
+
+
+def own_group(target: Callable[[Connection, Setup], None], connection: Connection, setup: Setup) -> None:
+    """``target`` in a process group of its own, so that ending the session ends the builds and runs it started."""
+    os.setpgrp()
+    target(connection, setup)
+
+
+def kill_group(pid: int | None) -> None:
+    """Kill the session process ``pid`` and everything it started; a group already gone is fine."""
+    assert pid is not None, "a started process has a pid"
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(pid, signal.SIGKILL)
 
 
 class SessionProcess:
@@ -206,16 +314,20 @@ class SessionProcess:
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
-        self.process = context.Process(target=target, args=(child, setup))
+        self.process = context.Process(target=own_group, args=(target, child, setup))
         # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
         with openmp_environment("nestforge"):
             self.process.start()
         child.close()
-        weakref.finalize(self, self.process.kill)
+        weakref.finalize(self, kill_group, self.process.pid)
         ready = self.receive()
         if ready.error:
             self.close()
             raise LookupError(ready.error)
+
+    def received(self, tool: str, timeout_s: float) -> Reply:
+        reply = self.receive()
+        return Reply(error=stopped_text(tool, timeout_s), stopped=True) if reply.stopped else reply
 
     def receive(self) -> Reply:
         try:
@@ -228,18 +340,41 @@ class SessionProcess:
         """Whether the session process still runs; a dead one answers no further call."""
         return self.process.is_alive()
 
-    def call(self, tool: str, arguments: dict[str, object], timeout_s: float = TOOL_TIMEOUT_S) -> Reply:
-        """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process; a call that does not
-        answer within ``timeout_s`` ends the session."""
+    def call(
+        self,
+        tool: str,
+        arguments: dict[str, object],
+        gone: threading.Event | None = None,
+        timeout_s: float = TOOL_TIMEOUT_S,
+    ) -> Reply:
+        """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process. A measuring call is stopped
+        once ``gone`` is set, and any call after ``timeout_s``.
+
+        :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry."""
         self.connection.send((tool, arguments))
-        if not self.connection.poll(timeout_s):
-            self.close()
-            return Reply(error=f"{tool} did not answer within {timeout_s:.0f} s; the session was ended")
-        return self.receive()
+        deadline = time.monotonic() + timeout_s
+        while not self.connection.poll(POLL_S):
+            client_left = gone is not None and gone.is_set() and tool in MEASURING
+            if client_left or time.monotonic() > deadline:
+                return self.stop(tool, timeout_s)
+        return self.received(tool, timeout_s)
+
+    def stop(self, tool: str, timeout_s: float) -> Reply:
+        """Stop the running ``tool``, a signal per poll (one sent before the session took the call would be lost); a
+        session that does not answer is ended, and only then its process is lost."""
+        pid, give_up = self.process.pid, time.monotonic() + STOP_GRACE_S
+        assert pid is not None, "a started process has a pid"
+        while time.monotonic() < give_up:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, STOP_SIGNAL)
+            if self.connection.poll(POLL_S):
+                return self.received(tool, timeout_s)
+        self.close()
+        return Reply(error=f"{tool} did not answer within {timeout_s:.0f} s; the session was ended")
 
     def close(self) -> None:
         self.connection.close()
         self.process.join(CLOSE_TIMEOUT_S)
         if self.process.is_alive():
-            self.process.kill()
+            kill_group(self.process.pid)
             self.process.join()

@@ -15,7 +15,7 @@ from pathlib import Path
 import dace
 import numpy as np
 
-from nestforge.build.arena import US_PER_S
+from nestforge.build.arena import US_PER_S, reps_within_budget
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
 from nestforge.build.toolchain import parse_params, signature
@@ -112,7 +112,7 @@ class ProgramCall:
 
 
 def run_program(call: ProgramCall) -> ProgramTime:
-    """Init once, one call checked against the reference, then the mean of ``reps`` timed calls."""
+    """Init once, one call checked against the reference, then the mean of up to ``reps`` timed calls."""
     built = BuiltSDFG(
         call.name,
         Path(call.so_path),
@@ -122,12 +122,14 @@ def run_program(call: ProgramCall) -> ProgramTime:
     )
     built.init(call.sizes)
     try:
+        start = time.perf_counter()
         built.program(call.buffers, call.sizes)
+        reps = reps_within_budget(call.reps, time.perf_counter() - start)
         mismatched = call.reference.mismatched(call.buffers) if call.reference is not None else None
         start = time.perf_counter()
-        for _ in range(call.reps):
+        for _ in range(reps):
             built.program(call.buffers, call.sizes)
-        return ProgramTime(time_us=(time.perf_counter() - start) / call.reps * US_PER_S, mismatched=mismatched)
+        return ProgramTime(time_us=(time.perf_counter() - start) / reps * US_PER_S, mismatched=mismatched)
     finally:
         built.close()
 

@@ -11,7 +11,7 @@ import pytest
 
 from nestforge.session import Session
 from nestforge.stages.feedback import Evidence, report, spills, vectorizer_reasons
-from nestforge.stages.kernel import KernelVerdict, unchecked_verdict
+from nestforge.stages.kernel import KernelVerdict, computed_symbols_reason, unchecked_verdict
 from nestforge.stages.performance import kernel_reports
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -101,7 +101,7 @@ def test_a_report_keeps_at_most_eight_hints_ranked_by_importance():
 
 def test_a_kernel_needing_a_value_the_program_computes_is_unchecked_not_wrong():
     """CloudSC's ``jmelt`` is read from an array the program fills, so no standalone run of its kernel exists."""
-    ev = Evidence("extcall_7", unchecked_verdict("strict-ieee", ["jmelt"]), "")
+    ev = Evidence("extcall_7", unchecked_verdict("strict-ieee", computed_symbols_reason(["jmelt"])), "")
 
     (kernel,) = kernel_reports([ev], {"extcall_7": "cpu"})
 

@@ -20,6 +20,7 @@ import sympy
 from dace import dtypes
 from dace.frontend.operations import detect_reduction_type
 from dace.frontend.python import astutils
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.performance_evaluation.helpers import get_uuid
@@ -433,7 +434,9 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> s
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     reads, writes = nest_reads_writes(state, node)
     if isinstance(node, nodes.LibraryNode):
-        return f"{node.label}  LIBNODE {type(node).__name__}  reads={reads} writes={writes}"
+        kind = type(node).__name__
+        chosen = "" if isinstance(node, ExternalCall) else f" [{node.implementation or 'auto'}]"
+        return f"{node.label}  LIBNODE {kind}{chosen}  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

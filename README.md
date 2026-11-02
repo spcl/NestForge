@@ -33,12 +33,20 @@ tool is listed with MCP annotations: reads are read-only, `write_kernel` and `un
 | any | `get_performance`, `finalize` | both |
 | scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` |
 
-`apply_move`, `run_defaults`, `write_kernel`, `tune_kernel` and `get_performance` answer with
-`Session.performance()`: the whole program's time and
+`write_kernel`, `tune_kernel` and `get_performance` answer with `Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not
-reached yet run with their defaults on a copy. The answer is reused until the program changes. `finalize` builds the
-program in the bench C ABI, each kernel linked from its own build, into the shared folder; submit it as
-`library=<library>` with its `workspace_bytes`.
+reached yet run with their defaults on a copy, each kernel built in the first configuration of the sweep so that two
+measurements compare. The answer is reused until the program changes, and a kernel's until it does. Reads and moves
+(`apply_move`, `run_defaults`) answer at once without a time and take no device slot; `get_performance`, `write_kernel`,
+`tune_kernel` and `finalize` hold one. `finalize` builds the program in the bench C ABI, each kernel linked from its own
+build (the sweep's winner by default), into the shared folder; submit it as `library=<library>` with its
+`workspace_bytes`.
+
+Every library call has its implementation from the start, the fastest this host has for the target, shown in the tree;
+`pure` loops come only from `expand-library` or `set-library-implementation`, or where a call has nothing else.
+
+A call stops when its client leaves or after `TOOL_TIMEOUT_S`, and the session keeps what it built and measured, so
+repeating the call goes on from there. The route journals every change, and a session that dies is rebuilt from it.
 
 ## Quick start
 

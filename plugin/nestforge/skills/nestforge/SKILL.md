@@ -15,7 +15,7 @@ applies: {explicit: true}
 | `if<n>` | a branch; its arms print as `when <cond>` / `else` |
 | `state<n>` | one step of the program; collapsed it shows `doalls=<k>` (library calls counted), expanded its doalls |
 | `doall<n>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
-| `lib_<family><n>  LIBNODE <Kind>  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall: it runs as a vendor or library call unless you expand it |
+| `lib_<family><n>  LIBNODE <Kind> [<implementation>]  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall. `[..]` is its current implementation: by default the fastest this host has for the target (OpenBLAS, FFTW3, or the device library), never `pure` while another exists. Loops only when you choose them |
 
 - A label is a row's name: it stays on the row while the row lives. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
@@ -40,6 +40,11 @@ applies: {explicit: true}
 was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as listed, or with
 your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not
 a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
+
+`apply_move` and `run_defaults` answer at once, without a time. `get_performance` measures the program as it stands:
+each kernel in one fixed compiler configuration, so two measurements compare (`finalize`'s sweep, what `score` and
+`submit` grade, is faster), and each kernel once until a move changes it. A kernel too slow for its oracle at the graded
+size is checked at a smaller one and timed at the graded size; the whole program is always checked at the graded size.
 
 Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
 
@@ -126,8 +131,9 @@ saves memory traffic; keep it when the vendor call is faster. Offered only on ca
 
 **`set-library-implementation`** `[lib_<family>]` with `implementation`. The row and its label stay; the call is
 built through loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one
-(`cuBLAS`, `hipBLAS`, ...). `list_moves` lists one move per implementation the row may take. A host library keeps its
-kernel on the CPU, a device library puts it on the GPU.
+(`cuBLAS`, `hipBLAS`, ...). The tree prints each call's implementation; `list_moves` lists one move per other
+implementation the row may take, with `current` the one it has. The default is already the fastest, so this move is for
+trying another. A host library keeps its kernel on the CPU, a device library puts it on the GPU.
 
 ## Scopes and kernels (when your tool list has them)
 

@@ -8,7 +8,10 @@ Every kernel carries a plain Python function that computes what its SDFG compute
 DaCe tasklets and interstate edges are already Python, so `nestforge/ir/emit_python.py` stays small. It lowers a
 copy of the kernel first:
 
-1. Library nodes expand to their `pure` implementation, which is plain SDFG components.
+1. A library call stays one: `Cholesky`, `MatMul`, `Gemm`, `Transpose`, `Reduce`, `FillLibraryNode` and `CopyLibraryNode`
+   are spelled as the NumPy call that runs the BLAS and LAPACK the reference runs (`LIBRARY_CALLS`), so the oracle of a
+   call costs what the call costs. A node with no such spelling (`Scan`, `FindFirst`, `ArgReduce`,
+   `ScatterConflictCheck`: linear, without a vendor library) expands in the oracle's copy only, to `pure` loops.
 2. Nested SDFGs are inlined.
 3. DaCe's `InlineTaskletConnectors` rewrites connectors into direct array accesses, as the CPF code generator does.
 4. `unique_connectors` names the connectors left, since a Python function has one flat scope.
@@ -16,6 +19,13 @@ copy of the kernel first:
 Then maps become nested `for` loops marked `# parallel`, loops become `while` loops, conditionals `if`/`elif`,
 write-conflict resolutions combine statements and copies slice assignments. A guard `if cond: abort()` calls an
 `abort()` the module defines to raise.
+
+## Cost
+
+A session's oracle runs in a forked child under `ORACLE_TIMEOUT_S`: first at the `S` rung, then at the graded sizes if
+that first run says it would finish in time. A kernel it cannot reach at the graded sizes is compared at `S` and timed at
+the graded sizes, and the whole program is still checked there against the bench's reference. A factorization's input
+is made positive definite (`make_inputs`), so both sides of the comparison factor the same matrix.
 
 ## Contract
 
