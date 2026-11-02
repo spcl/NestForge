@@ -9,6 +9,7 @@ import inspect
 import json
 import multiprocessing
 import pathlib
+import re
 import sys
 import threading
 import tomllib
@@ -611,6 +612,44 @@ def test_a_kernel_written_back_unchanged_is_linked_and_a_wrong_entry_is_refused(
     assert written.answer["result"]["status"] == "ok", written.answer
     assert written.answer["performance"]["structured"]["correct"] is True
     assert refused.answer["result"]["status"] == "refused", refused.answer
+
+
+@pytest.fixture
+def decoy(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Path:
+    """A secret in the run folder, which the judge reads and agent code must not."""
+    secret = tmp_path / "run" / "episode-secret"
+    secret.parent.mkdir()
+    secret.write_text("the-decoy-secret\n")
+    monkeypatch.setenv("RUN_DIR", str(secret.parent))
+    return secret
+
+
+@pytest.mark.integration
+def test_a_written_kernel_cannot_include_what_the_judge_hides(loaded: None, decoy: pathlib.Path) -> None:
+    name, source = kernel_round("episode-include")
+
+    written = post(
+        "write_kernel", "episode-include", name=name, source=f'{source}\n#include "{decoy}"\n', language="cpp"
+    )
+
+    assert written.answer["result"]["status"] == "build-failed", written.answer
+    assert "the-decoy-secret" not in written.answer["result"]["reason"]
+    assert "No such file" in written.answer["result"]["reason"]
+
+
+@pytest.mark.integration
+def test_a_written_kernel_cannot_open_what_the_judge_hides_when_it_runs(loaded: None, decoy: pathlib.Path) -> None:
+    name, source = kernel_round("episode-open")
+    entry = re.search(rf"void {name}\([^)]*\)\s*\{{", source)
+    assert entry is not None, source
+    # the kernel skips its work if it reads the file, so its oracle calls a kernel outside the seal wrong
+    guard = f'FILE* secret = fopen("{decoy}", "r"); if (secret != NULL) return;'
+    spying = f"#include <cstdio>\n{source[: entry.end()]}{guard}{source[entry.end() :]}"
+
+    written = post("write_kernel", "episode-open", name=name, source=spying, language="cpp")
+
+    assert written.answer["result"]["status"] == "ok", written.answer
+    assert written.answer["performance"]["structured"]["correct"] is True
 
 
 @pytest.mark.integration

@@ -42,6 +42,33 @@ OPENMP_REGISTRATION = "/dev/shm/__KMP_REGISTERED_LIB_{pid}_{uid}"
 #: Bytes read from a child's result pipe at a time.
 PIPE_CHUNK = 65536
 
+#: Set in a session that holds agent code, to the folder its builds and runs keep; the bench's seal hides the rest of
+#: what the judge can read. Unset, nothing is sealed: everything else that runs is code NestForge generated.
+SEAL_KEEP_ENV = "NESTFORGE_SEAL_KEEP"
+
+
+def sealed_argv(argv: list[str]) -> list[str]:
+    """``argv`` as a session holding agent code runs it: an agent's compile could ``#include`` the judge's secrets."""
+    keep = os.environ.get(SEAL_KEEP_ENV)
+    if keep is None:
+        return argv
+    from hpcagent_bench import seal
+
+    return seal.wrap(seal.grading_plan([keep]), argv)
+
+
+def enter_seal() -> None:
+    """Seal this child of a session holding agent code, as the bench seals a graded child."""
+    keep = os.environ.get(SEAL_KEEP_ENV)
+    if keep is None:
+        return
+    from hpcagent_bench import seal
+
+    plan = seal.grading_plan([keep])
+    if plan is not None:
+        seal.enter(plan)
+    seal.scrub_environment()
+
 
 def pause_openmp_pools() -> None:
     """Pause every loaded OpenMP runtime before a fork; a live libgomp pool deadlocks the child."""
@@ -143,6 +170,7 @@ def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any) ->
     """The spawned child's body; a Python exception comes back as an error."""
     faulthandler.disable()  # a child's segfault must not dump the parent's stack
     try:
+        enter_seal()
         result = target(payload)
     except BaseException as e:
         result = error_result(e)
@@ -164,6 +192,7 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
         os.close(r)
         faulthandler.disable()  # a child's segfault must not dump the parent's stack
         try:
+            enter_seal()
             payload = work_fn().model_dump_json()
         except BaseException as e:
             payload = error_result(e).model_dump_json()

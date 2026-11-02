@@ -443,8 +443,10 @@ def warn_once(tool: str, stderr: str) -> None:
 def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
     """Run a build command, reporting its warnings through :func:`warn_once`. A failure or timeout raises
     :class:`RuntimeError`, so a sweep moves on to its next cell."""
+    from nestforge.build.isolation import sealed_argv  # the package loads DaCe, and this module must not
+
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(sealed_argv(cmd), capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"command timed out after {timeout:.0f}s: {' '.join(cmd[:COMMAND_WORDS])} ... (the ceiling is NF_COMPILE_TIMEOUT)"

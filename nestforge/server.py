@@ -30,6 +30,7 @@ from typing import Any
 import dace
 import numpy as np
 
+from nestforge.build.isolation import SEAL_KEEP_ENV
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stopped
@@ -347,6 +348,8 @@ def serve(connection: Connection, setup: Setup) -> None:
         except EOFError:
             return
         session.stopper.clear()
+        if tool == "write_kernel":
+            environment[SEAL_KEEP_ENV] = tempfile.gettempdir()  # the session holds agent code from here on
         try:
             pin(slot, setup.gpu, cores, environment)
             if data is None and tool in MEASURING:
