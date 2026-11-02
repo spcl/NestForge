@@ -69,7 +69,7 @@ def test_cpu_target_keeps_the_kernel_on_the_host_and_leaves_the_graph_unchanged(
     assert result.model_dump(mode="json") == {
         "status": "applied",
         "reason": "",
-        "devices": {"extcall_0": "cpu"},
+        "devices": {"extcall_doall0": "cpu"},
         "copies": [],
         "transfers": [],
     }
@@ -81,9 +81,9 @@ def test_gpu_target_schedules_a_parallel_kernel_on_the_device_over_device_memory
 
     devices = session.place().devices
 
-    assert devices == {"extcall_0": "gpu"}
-    assert session.kernel("extcall_0").schedule == dace.ScheduleType.GPU_Device
-    storages = operand_storages(session, "extcall_0")
+    assert devices == {"extcall_doall0": "gpu"}
+    assert session.kernel("extcall_doall0").schedule == dace.ScheduleType.GPU_Device
+    storages = operand_storages(session, "extcall_doall0")
     assert len(storages) == 3 and all(storage in GPU_RESIDENT_STORAGES for storage in storages)
     session.sdfg.validate()
 
@@ -114,28 +114,28 @@ def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp
 def test_an_agent_placement_keeps_a_parallel_kernel_on_the_host_and_its_operands_in_host_memory(tmp_path):
     session = kernel_session(True, tmp_path)
 
-    result = session.place({"extcall_0": "cpu"})
+    result = session.place({"extcall_doall0": "cpu"})
 
-    assert result.devices == {"extcall_0": "cpu"} and result.copies == ()
-    assert not any(storage in GPU_RESIDENT_STORAGES for storage in operand_storages(session, "extcall_0"))
+    assert result.devices == {"extcall_doall0": "cpu"} and result.copies == ()
+    assert not any(storage in GPU_RESIDENT_STORAGES for storage in operand_storages(session, "extcall_doall0"))
 
 
 def test_placing_again_starts_from_the_program_before_the_first_placement(tmp_path):
     session = kernel_session(True, tmp_path)
     session.place()
 
-    again = session.place({"extcall_0": "cpu"})
+    again = session.place({"extcall_doall0": "cpu"})
 
     assert again.status is MoveStatus.APPLIED and again.copies == ()
-    assert session.kernel("extcall_0").schedule != dace.ScheduleType.GPU_Device
+    assert session.kernel("extcall_doall0").schedule != dace.ScheduleType.GPU_Device
 
 
 @pytest.mark.parametrize(
     ("gpu", "devices", "status", "reason"),
     [
         (True, {"extcall_9": "gpu"}, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
-        (True, {"extcall_0": "tpu"}, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
-        (False, {"extcall_0": "gpu"}, MoveStatus.ILLEGAL, "GPU is not a target"),
+        (True, {"extcall_doall0": "tpu"}, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
+        (False, {"extcall_doall0": "gpu"}, MoveStatus.ILLEGAL, "GPU is not a target"),
     ],
 )
 def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, status, reason):

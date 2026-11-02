@@ -26,6 +26,7 @@ from dace.libraries.standard.nodes.external_call import ExternalCall, data_name,
 from dace.sdfg import nodes
 from dace.sdfg.state import AbstractControlFlowRegion, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.transformation.passes.outline_to_external_calls import reference_sdfg
+from dace.utils import find_new_name
 
 from nestforge.corpus.translate import prepare
 from nestforge.ir.dace_types import strings
@@ -147,6 +148,17 @@ def kernel_names(sdfg: dace.SDFG, count: int) -> list[str]:
     """``count`` kernel names no kernel of ``sdfg`` holds; a name keys a kernel's library and work directory."""
     taken = {ext.name for ext in external_calls(sdfg)}
     return [name for name in (f"extcall_{i}" for i in range(len(taken) + count)) if name not in taken][:count]
+
+
+def row_kernel_names(sdfg: dace.SDFG, rows: Sequence[Row]) -> list[str]:
+    """One kernel name per row, after its label: a row keeps its label, so a move that adds or drops another kernel
+    leaves this one's name, and with it its build. Split pieces can share a label."""
+    taken = {ext.name for ext in external_calls(sdfg)}
+    names: list[str] = []
+    for obj, _ in rows:
+        names.append(find_new_name(f"extcall_{tree_name(obj)}", taken))
+        taken.add(names[-1])
+    return names
 
 
 def lower_nests_to_external_call(sdfg: dace.SDFG) -> list[tuple[ExternalCall, Boundary]]:
@@ -420,7 +432,7 @@ def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[Extern
             "crosses the kernel boundary by value"
         )
     out: list[tuple[ExternalCall, Boundary]] = []
-    for (obj, state), name in zip(units, kernel_names(sdfg, len(units))):
+    for (obj, state), name in zip(units, row_kernel_names(sdfg, units)):
         if isinstance(obj, nodes.LibraryNode):
             assert state is not None, "a library row carries its state"
             boundary = extract_state_nodes(state.sdfg, state, [obj], name)

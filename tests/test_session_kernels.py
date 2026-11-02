@@ -92,7 +92,7 @@ def test_a_kernel_without_its_standalone_sdfg_is_refused_before_it_is_scheduled(
     session, name = one_kernel_session(tmp_path)
     session.kernel(name).standalone_sdfg = None
 
-    with pytest.raises(ValueError, match="ExternalCall 'extcall_0' has no standalone SDFG"):
+    with pytest.raises(ValueError, match="ExternalCall 'extcall_doall0' has no standalone SDFG"):
         session.optimize_kernel(name)
 
 

@@ -13,6 +13,7 @@ from nestforge.ir.names import top_level_map_entries
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.scopes import row_kernel_names
 
 N = dace.symbol("N")
 
@@ -86,10 +87,39 @@ def test_a_row_no_move_touched_keeps_its_label():
 
 def test_default_scopes_names_kernels_with_their_boundary_sets():
     s = make_session()
+    labels = map_labels(s)
     kernels = s.default_scopes()
-    assert [k.name for k in kernels] == ["extcall_0", "extcall_1"]
+    assert [k.name for k in kernels] == [f"extcall_{label}" for label in labels]
     producer = next(k for k in kernels if k.writes == ("T",))
     assert producer.reads == ("A", "B") and producer.symbols == ("N",) and producer.parallel
+
+
+def test_a_move_that_drops_a_kernel_leaves_the_next_kernels_name():
+    """The build cache keys on the name, which a positional name would change for every kernel behind the move."""
+    untouched, moved = Session(three_maps.to_sdfg(simplify=True)), Session(three_maps.to_sdfg(simplify=True))
+    first, second, third = map_labels(moved)
+    moved.apply_move("doall-fusion", [first, second])
+
+    before, after = [[k.name for k in s.default_scopes()] for s in (untouched, moved)]
+
+    assert sorted(before) == [f"extcall_{label}" for label in sorted((first, second, third))]
+    assert f"extcall_{third}" in after and len(after) == len(before) - 1
+
+
+def test_rows_sharing_a_label_get_kernel_names_of_their_own():
+    sdfg = dace.SDFG("split")
+    sdfg.add_array("A", (4,), dace.float64)
+    sdfg.add_array("B", (4,), dace.float64)
+    state = sdfg.add_state()
+    rows = []
+    for out in ("A", "B"):
+        _, entry, _ = state.add_mapped_tasklet(
+            "piece", {"i": "0:3"}, {}, "o = 1", {"o": dace.Memlet(f"{out}[i]")}, external_edges=True
+        )
+        entry.map.label = "doall0"
+        rows.append((entry, state))
+
+    assert row_kernel_names(sdfg, rows) == ["extcall_doall0", "extcall_doall0_0"]
 
 
 def test_a_no_op_default_scopes_keeps_every_label():

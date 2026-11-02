@@ -39,7 +39,7 @@ def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path):
 
     after = session.kernel_graph()
     assert after is not before
-    assert (before.kernels, after.kernels) == ((), ("extcall_0", "extcall_1"))
+    assert (before.kernels, after.kernels) == ((), ("extcall_doall0", "extcall_doall1"))
 
 
 def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
@@ -49,7 +49,7 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
 
     assert [kernel.model_dump(mode="json") for kernel in kernels] == [
         {
-            "name": "extcall_0",
+            "name": "extcall_doall0",
             "device": "cpu",
             "parallel": True,
             "inputs": ["A", "B"],
@@ -59,13 +59,13 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
             "carried": {},
         },
         {
-            "name": "extcall_1",
+            "name": "extcall_doall1",
             "device": "cpu",
             "parallel": True,
             "inputs": ["T"],
             "outputs": ["C"],
             "symbols": ["N"],
-            "depends": {"T": ["extcall_0.T"], "N": ["program"]},
+            "depends": {"T": ["extcall_doall0.T"], "N": ["program"]},
             "carried": {},
         },
     ]
@@ -81,13 +81,13 @@ def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path)
 
 def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-    session.expand([session.row_index()["extcall_1"][1].label])
+    session.expand([session.row_index()["extcall_doall1"][1].label])
 
     lines = session.describe(deps=True).splitlines()
 
-    row = next(index for index, line in enumerate(lines) if "extcall_1  LIBNODE" in line)
-    assert lines[row + 1].endswith("extcall_1: T <- extcall_0.T, N <- program")
-    assert "extcall_1: T <- extcall_0.T" not in session.describe()
+    row = next(index for index, line in enumerate(lines) if "extcall_doall1  LIBNODE" in line)
+    assert lines[row + 1].endswith("extcall_doall1: T <- extcall_doall0.T, N <- program")
+    assert "extcall_doall1: T <- extcall_doall0.T" not in session.describe()
 
 
 def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path):
@@ -97,7 +97,7 @@ def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path
 
     kernels = session.default_scopes()
 
-    assert [kernel.name for kernel in kernels] == ["extcall_0", "extcall_1"]
+    assert [kernel.name for kernel in kernels] == ["extcall_doall0", "extcall_doall1"]
     with pytest.raises(UnsupportedProgram, match="'R' .* Reference"):
         session.kernel_graph()
     with pytest.raises(UnsupportedProgram, match="'R' .* Reference"):

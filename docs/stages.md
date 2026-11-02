@@ -74,7 +74,7 @@ agent's catalog.
 ## Stage 3: Scopes
 
 A scope is the atomic unit later stages optimize. Each scope is outlined into a standalone SDFG and replaced by an
-`ExternalCall` library node (`extcall_N`) that carries the kernel's Python oracle and boundary, and a `parallel`
+`ExternalCall` library node (`extcall_<row>`) that carries the kernel's Python oracle and boundary, and a `parallel`
 flag. `unset_scope(name)` inlines a kernel back (its standalone SDFG, kernel-local containers transient again),
 dropping any placement first.
 

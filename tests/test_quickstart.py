@@ -64,20 +64,20 @@ def test_cpu_quickstart_prints_one_line_per_stage_and_saves_every_artifact(quick
         "3-scopes.sdfg",
         "5-kernels.sdfg",
     ]
-    kernel_dir = out / "kernels" / "extcall_0"
-    assert sorted(p.name for p in kernel_dir.iterdir()) == ["extcall_0.cpp", "libextcall_0.a"]
+    kernel_dir = out / "kernels" / "extcall_doall0"
+    assert sorted(p.name for p in kernel_dir.iterdir()) == ["extcall_doall0.cpp", "libextcall_doall0.a"]
     (bound,) = list(lib_paths(json.loads((out / "5-kernels.sdfg").read_text())))
-    assert Path(bound).read_bytes() == (kernel_dir / "libextcall_0.a").read_bytes()
+    assert Path(bound).read_bytes() == (kernel_dir / "libextcall_doall0.a").read_bytes()
     config = json.loads((out / "6-variants.json").read_text())
-    assert list(config) == ["extcall_0"]
-    assert list(config["extcall_0"]) == ["compiler", "fp_mode", "cost_model", "flags", "time_us"]
-    assert config["extcall_0"]["fp_mode"] in flags.FP_LEVELS
-    assert config["extcall_0"]["cost_model"] in flags.COST_MODELS
-    assert "-O3" in config["extcall_0"]["flags"]
-    linking_frames = [p for p in (out / "program").glob("*.cpp") if 'extern "C" void extcall_0(' in p.read_text()]
+    assert list(config) == ["extcall_doall0"]
+    assert list(config["extcall_doall0"]) == ["compiler", "fp_mode", "cost_model", "flags", "time_us"]
+    assert config["extcall_doall0"]["fp_mode"] in flags.FP_LEVELS
+    assert config["extcall_doall0"]["cost_model"] in flags.COST_MODELS
+    assert "-O3" in config["extcall_doall0"]["flags"]
+    linking_frames = [p for p in (out / "program").glob("*.cpp") if 'extern "C" void extcall_doall0(' in p.read_text()]
     assert len(linking_frames) == 1
     feedback = (out / "7-feedback.txt").read_text().splitlines()
-    assert feedback[0].startswith("kernel times: extcall_0 ") and 2 <= len(feedback) <= 9
+    assert feedback[0].startswith("kernel times: extcall_doall0 ") and 2 <= len(feedback) <= 9
 
 
 def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_run):
@@ -85,7 +85,7 @@ def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_
 
     lines = (out / "kernel_deps.txt").read_text().splitlines()
 
-    assert lines[0].startswith("extcall_0: ")
+    assert lines[0].startswith("extcall_doall0: ")
     assert all(f"  {line}" in stdout.splitlines() for line in lines)
 
 
@@ -130,9 +130,9 @@ def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
     lines = (out / "kernel_deps.txt").read_text().splitlines()
 
     assert lines == [
-        "extcall_0: A <- extcall_1.A | program [carried: for0], N <- program",
-        "extcall_1: B <- extcall_0.B, N <- program",
-        "exit: A <- extcall_1.A | program, B <- extcall_0.B | program",
+        "extcall_doall6: A <- extcall_doall10.A | program [carried: for0], N <- program",
+        "extcall_doall10: B <- extcall_doall6.B, N <- program",
+        "exit: A <- extcall_doall10.A | program, B <- extcall_doall6.B | program",
     ]
 
 
@@ -141,7 +141,7 @@ def test_jacobi_builds_and_sweeps_both_kernels(jacobi_run):
 
     config = json.loads((out / "6-variants.json").read_text())
 
-    assert list(config) == ["extcall_0", "extcall_1"]
+    assert list(config) == ["extcall_doall6", "extcall_doall10"]
     assert all(
         sorted(p.name for p in (out / "kernels" / name).iterdir()) == [f"{name}.cpp", f"lib{name}.a"] for name in config
     )

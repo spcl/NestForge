@@ -7,12 +7,12 @@ can reach it. It is the kernel-only view the agent reads, and stage 4 uses it to
 implies. It reads the program and never changes it.
 
 ```
-extcall_0: A <- extcall_1.A | program [carried: for0], N <- program
-extcall_1: B <- extcall_0.B, N <- program
-exit: A <- extcall_1.A | program, B <- extcall_0.B | program
+extcall_doall6: A <- extcall_doall10.A | program [carried: for0], N <- program
+extcall_doall10: B <- extcall_doall6.B, N <- program
+exit: A <- extcall_doall10.A | program, B <- extcall_doall6.B | program
 ```
 
-- **Producers.** `program` (a program input or free symbol not written before), `extcall_i.arg` (a kernel
+- **Producers.** `program` (a program input or free symbol not written before), `<kernel>.arg` (a kernel
   output), or `host:<state>` (any other writer).
 - **Whole containers.** A read reads all of it, a write replaces all of it. A view stands for its root array.
 - **Control flow.** `if` without `else` keeps the incoming producers; a loop runs to a fixpoint and tags what
