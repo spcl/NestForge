@@ -64,8 +64,9 @@ DEVICE_UNIT_SUFFIX = "_device"
 # Line that separates the host and device units in the one text an agent reads and writes for a GPU kernel.
 DEVICE_UNIT_MARKER = "// ---- device unit ----"
 
-#: Seconds a kernel's NumPy oracle may run per size: its loops are interpreted, about 1000x slower than the kernel's.
-ORACLE_TIMEOUT_S = 60.0
+#: Seconds a kernel's NumPy oracle may run per size: its loops are interpreted, about 1000x slower than the kernel's,
+#: and a program has dozens of kernels (harris_corner has 48, each about 55 s at XL).
+ORACLE_TIMEOUT_S = 10.0
 
 
 @dataclass(slots=True)
