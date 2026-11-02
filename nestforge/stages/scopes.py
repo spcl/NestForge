@@ -281,7 +281,7 @@ MAX_CUTS = 2
 
 def parallel_maps(state: SDFGState) -> list[Row] | None:
     """The state's top-level maps when, besides access nodes, it holds only parallel maps; ``None`` otherwise."""
-    work = [node for node in state.scope_children()[None] if not isinstance(node, nodes.AccessNode)]
+    work = [node for node in state.scope_children()[None] if not isinstance(node, (nodes.AccessNode, ExternalCall))]
     if all(is_parallel_nest(node) for node in work):
         return [(node, state) for node in work]
     return None
@@ -289,6 +289,10 @@ def parallel_maps(state: SDFGState) -> list[Row] | None:
 
 def holds_parallel_map(block: ControlFlowBlock) -> bool:
     return any(is_parallel_nest(node) for node, _ in block.all_nodes_recursive())
+
+
+def holds_kernel(block: ControlFlowBlock) -> bool:
+    return any(isinstance(node, ExternalCall) for node, _ in block.all_nodes_recursive())
 
 
 def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
@@ -310,7 +314,13 @@ def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
 
 
 def block_units(block: ControlFlowBlock) -> list[Row]:
-    """The default scopes of one top-level block that is not a state."""
+    """The default scopes of one top-level block that is not a state; a block holding a kernel is never taken whole,
+    since no kernel nests another."""
+    units = open_block(block)
+    return [unit for unit in units if unit[1] is not None or not holds_kernel(unit[0])]
+
+
+def open_block(block: ControlFlowBlock) -> list[Row]:
     if not holds_parallel_map(block):
         return [(block, None)] if isinstance(block, LoopRegion) else []
     if isinstance(block, LoopRegion):

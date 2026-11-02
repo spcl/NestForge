@@ -131,12 +131,13 @@ kernel on the CPU, a device library puts it on the GPU.
 
 ## Scopes and kernels (when your tool list has them)
 
-Settle the moves first: a move or a new scope rebuilds the kernels it touches, and the sources you wrote for them
-are dropped.
+Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase gives what no scope covers
+its default scope and fixes the kernels, so the source you write for a kernel stays until a new round. `next_phase`
+out of the last phase starts that round: the moves reopen and the scopes and kernel code are dropped, so `score` first.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
   a straight run of blocks. Group doalls that pass an array between them: inside one kernel you can keep that array in
-  registers or cache instead of memory. `unset_scope` undoes it.
+  registers or cache instead of memory. `unset_scope` undoes it while the kernels are not fixed.
 - `list_kernels` shows each kernel's device, its arguments and which kernels produce them; start with the largest
   share in `get_performance`.
 - `read_kernel` gives the source NestForge rendered. `write_kernel` takes a replacement with the same entry

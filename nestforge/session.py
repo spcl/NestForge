@@ -216,6 +216,8 @@ class KernelBuild:
 
 #: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
 Codegen = Literal["first", "sweep"]
+#: What :meth:`Session.run_defaults` finishes.
+Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 #: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
 SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
 
@@ -256,6 +258,7 @@ class Session:
         "work_dir",
         "kernel_deps",
         "unplaced",
+        "unscoped",
         "sources",
         "builds",
         "prepared",
@@ -300,6 +303,8 @@ class Session:
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
         self.unplaced: dace.SDFG | None = None
+        # the program before its first kernel and the row names it carries, so a new round starts from it
+        self.unscoped: tuple[dace.SDFG, Namer] | None = None
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
@@ -395,18 +400,24 @@ class Session:
             notes.append(self.expand(expand))
         return "\n".join([*notes, self.describe()])
 
-    def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
-        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes` or
-        :meth:`place`."""
+    def run_defaults(self, stage: Stage) -> object:
+        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes`,
+        :meth:`place` after the default scopes of what no scope covers, or :meth:`rewind`."""
         match stage:
             case "moves":
                 return self.default_moves()
             case "finish":
                 return self.finish_moves()
             case "scopes":
+                self.keep_unscoped()
                 return self.default_scopes()
             case "placement":
+                self.keep_unscoped()
+                if self.unplaced is None:
+                    self.default_scopes()
                 return self.place()
+            case "round":
+                return self.rewind()
 
     def collapse(self, labels: Sequence[str]) -> str:
         """Hide again what :meth:`expand` opened under ``labels``; a label not open is ignored."""
@@ -513,6 +524,20 @@ class Session:
 
     # Stage 3: scopes
 
+    def keep_unscoped(self) -> None:
+        """Keep the program for :meth:`rewind` while it has no kernel."""
+        if not external_calls(self.sdfg):
+            self.unscoped = copy.deepcopy(self.sdfg), copy.deepcopy(self.namer)
+
+    def rewind(self) -> str:
+        """Back to the program before its first kernel, row labels included, so the moves work on it again; the
+        scopes, the placement and every kernel's code are dropped. Without a kept program this changes nothing."""
+        if self.unscoped is not None:
+            self.sdfg, self.namer = self.unscoped
+            self.unscoped, self.unplaced = None, None
+            self.bump()
+        return self.describe()
+
     def default_scopes(self) -> list[KernelScope]:
         """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
         the program by its rules, large maps split first; returns the new kernels."""
@@ -542,6 +567,7 @@ class Session:
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
+        self.keep_unscoped()
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
@@ -848,24 +874,27 @@ class Session:
     # Assembly
 
     def finalize(self, out_dir: Path | None = None) -> Final:
-        """The program as a bench library submission: a program without scopes gets the default scopes, one never
-        placed on a GPU target the default placement, and every kernel without a build its default build
-        (:meth:`default_build`), then the program is rendered in the bench C ABI and built, each
-        kernel linked from its own archive.
+        """The program as a bench library submission, built on a :meth:`trial` so that a score on the way leaves this
+        session where it was: a program without scopes gets the default scopes, one never placed on a GPU target the
+        default placement, and every kernel without a build its default build (:meth:`default_build`), then the
+        program is rendered in the bench C ABI and built, each kernel linked from its own archive.
 
         :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
-        if not external_calls(self.sdfg):
-            self.default_scopes()
-        if self.targets.gpu and self.unplaced is None:
-            self.place()  # a GPU program is assembled as placed
-        for ext in external_calls(self.sdfg):
-            if ext.name not in self.builds:
-                self.default_build(ext.name)
-        variants = {name: build.variant.label for name, build in self.builds.items()}
-        return assemble(self.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+        trial = self.trial()
+        if not external_calls(trial.sdfg):
+            trial.default_scopes()
+        if trial.targets.gpu and trial.unplaced is None:
+            trial.place()  # a GPU program is assembled as placed
+        for ext in external_calls(trial.sdfg):
+            if ext.name not in trial.builds:
+                trial.default_build(ext.name)
+        variants = {name: build.variant.label for name, build in trial.builds.items()}
+        final = assemble(trial.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+        shutil.rmtree(trial.work_dir, ignore_errors=True)
+        return final
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
