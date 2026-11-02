@@ -72,6 +72,7 @@ SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_d
 
 ```bash
 sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
+export "$(bash scripts/setup_hptt.sh "$HOME/hptt" | tail -1)"          # HPTT for tensor transposes; sets HPTT_ROOT
 pip install -e ".[dev]"                                                 # or: uv pip install -e ".[dev]"
 pre-commit install                                                      # ruff check, ruff format, headers
 pytest -m "not integration and not cloudsc and not gpu and not vendor"  # unit set, as CI runs it
@@ -86,6 +87,8 @@ NestForge assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch
 reference and its outputs go unchecked (`correct: null`). Point `HPCAGENT_BENCH_ML_KERNELBENCH_DIR` at an
 initialized KernelBench checkout to check them.
+Keep `HPTT_ROOT` set when building: on the CPU, DaCe lowers a top-level tensor transpose (8 of the 23 `conv2d_*`
+kernels have one) only to HPTT, and without it the build stops with `SilentPureLowering`.
 
 ## Layout
 

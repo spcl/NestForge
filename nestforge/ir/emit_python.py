@@ -164,6 +164,11 @@ class Normalize(ast.NodeTransformer):
         name = node.func.id if isinstance(node.func, ast.Name) else ""
         if name in BINARY_OPS and len(node.args) == 2:
             return ast.copy_location(ast.BinOp(node.args[0], BINARY_OPS[name](), node.args[1]), node)
+        if name == "ceiling" and len(node.args) == 1:  # SymPy's spelling, in a size printed into a loop bound
+            rounded = ast.Call(func=numpy_attr("ceil"), args=node.args, keywords=[])
+            return ast.copy_location(
+                ast.Call(func=ast.Name(id="int", ctx=ast.Load()), args=[rounded], keywords=[]), node
+            )
         if name == "int_ceil" and len(node.args) == 2:  # ceil(a / b) == -((-a) // b)
             neg = ast.BinOp(ast.UnaryOp(ast.USub(), node.args[0]), ast.FloorDiv(), node.args[1])
             return ast.copy_location(ast.UnaryOp(ast.USub(), neg), node)

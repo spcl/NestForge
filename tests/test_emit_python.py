@@ -697,6 +697,29 @@ def test_dace_integer_division_heads_become_python_operators_with_their_meaning(
     assert eval(ceil_text, {"a": a, "b": b}) == math.ceil(a / b)  # noqa: S307
 
 
+@pytest.mark.parametrize("a, b", [(7, 2), (-7, 2), (8, 4), (0, 3), (5, 1)])
+def test_sympys_ceiling_in_a_loop_bound_becomes_an_integer(a: int, b: int) -> None:
+    """spcl/NestForge#52 (conv2d_gelu_global_avg_pool): a size printed as ``ceiling(...)`` reached the oracle as an
+    undefined name. It must be an ``int``, since it ends up in ``range``."""
+    names = Names(frozenset(), frozenset())
+    quotient, plain = expr("ceiling(a / b)", names), expr("ceiling(a - b) + 1", names)
+
+    assert "ceiling" not in quotient and "ceiling" not in plain
+    scope = {"a": a, "b": b, "np": np}
+    assert eval(quotient, scope) == math.ceil(a / b)  # noqa: S307 -- the emitted expression
+    assert eval(plain, scope) == a - b + 1  # noqa: S307
+    assert all(isinstance(eval(text, scope), int) for text in (quotient, plain))  # noqa: S307
+    assert list(range(0, eval(plain, scope))) == list(range(a - b + 1))  # noqa: S307
+
+
+@pytest.mark.parametrize("a, b", [(np.uint32(7), 2), (7, 2.5)])
+def test_sympys_ceiling_of_an_unsigned_or_float_quotient_is_the_integer_ceiling(a: int | np.uint32, b: float) -> None:
+    """Negating an unsigned numerator wraps, and a float divisor floors to a float: neither may bound a loop."""
+    bound = eval(expr("ceiling(a / b)", Names(frozenset(), frozenset())), {"a": a, "b": b, "np": np})  # noqa: S307
+
+    assert type(bound) is int and bound == math.ceil(float(a) / b)
+
+
 def test_a_widened_extent_names_only_sizes_not_max():
     """A loop end widened against its start folds ``Max(N - 1, 0)`` to ``N - 1``: the manifest declares no ``Max``."""
     n = sympy.Symbol("N")

@@ -48,6 +48,11 @@ runtimes it needs by name instead of relying on the host process having them loa
   libomp is found through the compiler, an LLVM driver, `llvm-config`, then `LD_LIBRARY_PATH` and `LIBRARY_PATH`. Where
   there is no apt (an HPC uenv or module system), install libomp (for example `conda install -p <prefix> llvm-openmp`)
   and put `<prefix>/lib` on both variables, or a build stops with `LookupError: no libomp`.
+- **Vendor libraries.** DaCe lowers a top-level library node to its fast implementation and refuses its serial
+  `pure` loop when that library is missing (`SilentPureLowering`, naming the lowerings it looked for). A
+  `TensorTranspose` needs HPTT: `scripts/setup_hptt.sh <prefix>` builds it, and `HPTT_ROOT=<prefix>` must be set for
+  the build (CI does both). A `Gemm` or `BatchedMatMul` needs OpenBLAS: `scripts/setup_apt.sh` installs it; on an HPC
+  uenv or module system, put its `include` on `CPATH` and its `lib` on `LIBRARY_PATH` and `LD_LIBRARY_PATH`.
 - **CUDA.** A GPU kernel links cudart from the nvcc that built it.
 
 `ExternalCall` carries these link items, and the program links them after its objects.
