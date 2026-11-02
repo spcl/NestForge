@@ -168,6 +168,8 @@ TOOLS: dict[str, ToolDef] = {
         "call; kernels a move left unchanged are not measured again, and an unchanged program answers at once.",
         Effect.READ,
     ),
-    "applied_moves": ToolDef(Phase.ANY, NoArgs, "Every move applied to this program so far, in order.", Effect.READ),
+    "applied_moves": ToolDef(
+        Phase.ANY, NoArgs, "Every change this program holds, in order: moves, defaults, scopes, kernels.", Effect.READ
+    ),
     "finalize": ToolDef(Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI."),
 }

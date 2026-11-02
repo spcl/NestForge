@@ -29,7 +29,8 @@ for name, entry in TOOLS.items():
     spec = Spec(
         f"[{entry.phase}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
     )
-    tool(spec=spec, core=False, name=name)(poster(name))
+    # in blind mode no tool answers how the program does
+    tool(spec=spec, core=False, name=name, preview=name == "get_performance")(poster(name))
 
 
 def delivering(deliver: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -48,9 +49,7 @@ def delivering(deliver: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[
 
 SUBMIT = "Finalize the program as your moves left it and submit that library for the recorded grade. Takes no code."
 SCORE = "Finalize the program as your moves left it and preview that library's grade. Takes no code; never recorded."
-tool(spec=Spec(SUBMIT, NoArgs, f"- `submit` -- {SUBMIT}", HINTS[Effect.ADD]), name="submit", overrides=True)(
-    delivering(submit.run)
-)
+tool(spec=Spec(SUBMIT, NoArgs, submit.PROMPT, HINTS[Effect.ADD]), name="submit", overrides=True)(delivering(submit.run))
 tool(spec=Spec(SCORE, NoArgs, f"- `score` -- {SCORE}", HINTS[Effect.READ]), name="score", preview=True, overrides=True)(
     delivering(score.run)
 )

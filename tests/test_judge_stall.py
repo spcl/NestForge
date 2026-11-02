@@ -8,6 +8,7 @@ import re
 import signal
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import dace
 import numpy as np
@@ -22,11 +23,21 @@ from nestforge.build.isolation import Failure, Result, run_isolated
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.emit_python import oracle_sdfg
 from nestforge.ir.extract import Boundary
-from nestforge.records import KernelOutcomeStatus, MoveStatus
+from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveStatus
 from nestforge.session import Session, Stopped, Stopper
 from nestforge.stages import kernel, variants
-from nestforge.stages.kernel import KernelSource, Probe, Workload, bounded_probe, build_kernel_library, measure_kernel
+from nestforge.stages.finalize import BenchTarget
+from nestforge.stages.kernel import (
+    KernelSource,
+    Probe,
+    Workload,
+    bounded_probe,
+    build_kernel_library,
+    measure_kernel,
+    unchecked_verdict,
+)
 from nestforge.stages.scopes import node_boundary
+from nestforge.stages.variants import device_variants
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64
@@ -416,3 +427,169 @@ def test_a_session_with_no_library_call_is_untouched_by_the_default_step(tmp_pat
     sut = session_of(scaled, tmp_path)
 
     assert library_rows(sut) == []
+
+
+def states(session: Session) -> list[str]:
+    return re.findall(r"\b(state\d+)\b", session.describe())
+
+
+def test_a_default_after_a_placement_is_not_undone_by_the_next_placement(tmp_path):
+    sut = session_of(two_nests, tmp_path)
+    separate = sut.view(states(sut)).count("doall")
+    sut.run_defaults("placement")
+    sut.run_defaults("moves")
+    assert sut.unplaced is None
+    fused = sut.view(states(sut)).count("doall")
+    assert fused < separate, "the fixture's maps fuse"
+
+    sut.run_defaults("finish")
+    assert sut.unplaced is None
+
+    assert sut.run_defaults("placement").status is MoveStatus.APPLIED
+    assert sut.view(states(sut)).count("doall") == fused, "the placement started from the fused program"
+
+
+def test_the_session_lists_every_change_the_program_holds_and_no_refused_one(tmp_path):
+    sut = session_of(two_loops, tmp_path)
+    assert sut.applied == []
+    sut.run_defaults("moves")
+    sut.run_defaults("scopes")
+    (name, *_) = [ext.name for ext in external_calls(sut.sdfg)]
+
+    assert sut.unset_scope(name).status is MoveStatus.APPLIED
+    assert sut.unset_scope("no_kernel").status is MoveStatus.NOT_FOUND
+    (row, *_) = re.findall(r"\b(doall\w*)", sut.view(states(sut)))
+    assert sut.set_scope([row]).status is MoveStatus.APPLIED
+
+    assert [move.kind for move in sut.applied] == ["defaults-moves", "defaults-scopes", "unset-scope", "define-scope"]
+
+
+def test_a_default_that_found_nothing_to_do_is_not_listed(tmp_path):
+    sut = session_of(scaled, tmp_path)
+    sut.run_defaults("scopes")
+    listed = len(sut.applied)
+
+    sut.run_defaults("scopes")
+
+    assert len(sut.applied) == listed
+
+
+def test_a_written_kernel_is_listed(tmp_path):
+    sut = session_of(scaled, tmp_path)
+    sut.default_scopes()
+    name = only_kernel(sut)
+
+    written = sut.set_kernel_source(name, sut.kernel_source(name), "cpp")
+
+    assert written.status is KernelStatus.OK, written
+    assert [(move.kind, move.labels) for move in sut.applied] == [("write-kernel", (name,))]
+
+
+def test_a_repeated_stop_leaves_the_cleanup_of_the_first_to_finish():
+    stopper = Stopper()
+    cleaned = False
+
+    with pytest.raises(Stopped), stopper.armed():
+        try:
+            with stopper.armed():
+                stopper.ask()
+        finally:
+            stopper.ask()  # the caller signals every poll until it hears back
+            cleaned = True
+
+    assert cleaned
+
+
+def test_a_stop_in_an_outer_section_leaves_its_cleanup_to_finish():
+    stopper = Stopper()
+    cleaned = False
+
+    with pytest.raises(Stopped), stopper.armed():
+        try:
+            stopper.ask()
+        finally:
+            stopper.ask()
+            cleaned = True
+
+    assert cleaned
+
+
+def finalizing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, assembling: object) -> tuple[Session, list[Session]]:
+    """A bench session whose assembly runs ``assembling``, and every trial it makes."""
+    sut = session_of(scaled, tmp_path)
+    sut.bench = BenchTarget("jacobi_1d", "float64", False)
+    sut.codegen = "first"
+    trials: list[Session] = []
+    trial = Session.trial
+
+    def counted(session: Session) -> Session:
+        trials.append(trial(session))
+        return trials[-1]
+
+    monkeypatch.setattr(Session, "trial", counted)
+    monkeypatch.setattr(session_module, "assemble", assembling)
+    return sut, trials
+
+
+def test_a_stop_during_assembly_leaves_the_session_as_it_was_and_no_trial_behind(tmp_path, monkeypatch):
+    def stopped_in_assembly(*args: object) -> None:
+        sut.stopper.ask()
+
+    sut, trials = finalizing(tmp_path, monkeypatch, stopped_in_assembly)
+    tree = sut.describe()
+
+    with pytest.raises(Stopped):
+        sut.finalize()
+
+    assert sut.describe() == tree
+    assert [trial.work_dir.exists() for trial in trials] == [False]
+
+
+def test_a_failed_finalize_leaves_no_trial_behind(tmp_path, monkeypatch):
+    def failing(*args: object) -> None:
+        raise RuntimeError("the assembled program did not build")
+
+    sut, trials = finalizing(tmp_path, monkeypatch, failing)
+
+    with pytest.raises(RuntimeError):
+        sut.finalize()
+
+    assert [trial.work_dir.exists() for trial in trials] == [False]
+
+
+def test_a_sweep_of_an_older_source_returns_to_its_own_folder(tmp_path, monkeypatch):
+    sut = Session(scaled.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE}, codegen="sweep")
+    (scoped,) = sut.default_scopes()
+    folders: list[str] = []
+
+    def recorded(src: KernelSource, probe: object, reps: int, chosen: object, out_dir: Path, cells: object) -> object:
+        folders.append(out_dir.name)
+        return variants.VariantResult([], None, src.symbol, list(src.abi_order))
+
+    monkeypatch.setattr(session_module, "select_variant", recorded)
+    monkeypatch.setattr(Session, "kernel_probe", lambda session, name, src: None)
+    sut.sweep(scoped.name)
+    sut.sizes = {"N": SMALL}
+    sut.sweep(scoped.name)
+    sut.sizes = {"N": SIZE}
+    sut.sweep(scoped.name)
+
+    assert folders == [f"{scoped.name}_cells_0", f"{scoped.name}_cells_1", f"{scoped.name}_cells_0"]
+
+
+def test_two_filtered_sweeps_of_one_source_build_in_different_folders(tmp_path, monkeypatch):
+    built: list[str] = []
+    gcc, clang = device_variants("cpu")[:2]
+
+    def measured(src: object, probe: object, reps: int, variant: object, out_dir: Path) -> object:
+        built.append(out_dir.name)
+        return variants.VariantCell(variant, unchecked_verdict("strict-ieee", "stub"), out_dir)
+
+    monkeypatch.setattr(variants, "measure_variant", measured)
+    source = SimpleNamespace(symbol="kernel", abi_order=[])
+    cells: dict[object, object] = {}
+
+    variants.select_variant(source, None, 1, [gcc], tmp_path, cells)
+    variants.select_variant(source, None, 1, [clang], tmp_path, cells)
+
+    assert built == ["v0", "v1"]

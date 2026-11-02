@@ -14,8 +14,10 @@ import hashlib
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 import weakref
@@ -28,9 +30,10 @@ from typing import Any
 import dace
 import numpy as np
 
+from nestforge.build.isolation import SEAL_KEEP_ENV
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import Record
-from nestforge.session import Codegen, Session, Stopped
+from nestforge.records import KernelStatus, MoveStatus, Record
+from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
@@ -41,14 +44,22 @@ def finalize(session: Session) -> Final:
     """The session's program assembled into the folder the judge and the agent share, one folder per session."""
     from hpcagent_bench.harness.sandbox import shared_dir
 
-    root = session.shared_root or shared_dir()
-
-    final = session.finalize(Path(root) / "nestforge" / session.work_dir.name)
+    folder = Path(session.shared_root or shared_dir()) / "nestforge" / session.work_dir.name
+    folder.mkdir(parents=True, exist_ok=True)
+    # a folder per finalize: a grade still copying an earlier library must not read this one
+    final = session.finalize(Path(tempfile.mkdtemp(prefix="final-", dir=folder)))
     # every score and submit finalizes first, so each graded library's moves are on record beside it
     digest = hashlib.sha256(final.library.read_bytes()).hexdigest()
     moves = [move.model_dump(mode="json") for move in session.applied]
-    line = {"library": str(final.library), "sha256": digest, "moves": moves}
-    with (final.library.parent / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
+    device_code = bool(final.device_source)
+    line = {
+        "library": str(final.library),
+        "sha256": digest,
+        "moves": moves,
+        "kernels": final.kernels,
+        "device_code": device_code,
+    }
+    with (folder / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps(line) + "\n")
     return final
 
@@ -79,9 +90,11 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 #: the session's program: a read or a move takes a fraction of a second and no device.
 MEASURING = TIMED | {"finalize"}
 
-#: Tools whose calls make the session's program what it is, so a fresh session repeats them; one that fails, its timed
-#: answer included, leaves the session as it was.
+#: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
+
+#: What a fresh session repeats to be the program the agent left. Not ``tune_kernel``: finalize sweeps anyway.
+REPEATED = CHANGING - {"tune_kernel"}
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
 CHECK_RUNG = "S"
@@ -245,16 +258,26 @@ def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
 
 
+def applied(reply: Reply) -> bool:
+    """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
+    result = reply.result
+    status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
+    return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK)
+
+
 def timed_call(
     session: Session,
     tool: str,
     arguments: dict[str, Any],
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
+    timed: bool = True,
 ) -> Reply:
     """``tool``'s result on ``session``, and its performance when it is timed. A stop during that measurement does not
-    undo the tool: its result stands, without the feedback."""
+    undo the tool: its result stands, without the feedback.
+
+    :param timed: False for a rebuild's repeat: nobody reads its performance."""
     result = CALLS[tool](session, **arguments)
-    if tool not in TIMED:
+    if tool not in TIMED or not timed:
         return Reply(result=result)
     assert data is not None, "a timed tool measures, so its data was loaded"
     try:
@@ -270,22 +293,46 @@ def answer(
     tool: str,
     arguments: dict[str, Any],
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
+    timed: bool = True,
 ) -> Reply:
     """The reply to one call. A change stays only if its whole answer succeeds, and its error says so."""
     if tool not in CHANGING:
         try:
-            return timed_call(session, tool, arguments, data)
+            return timed_call(session, tool, arguments, data, timed)
         except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
             return failure(err)
     try:
         with session.atomic():
-            return timed_call(session, tool, arguments, data)
+            return timed_call(session, tool, arguments, data, timed)
     except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
         return Reply(error=f"{failure(err).error} (the program is unchanged)")
 
 
+def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str]) -> None:
+    """What this call starts runs as a graded child of device slot ``slot`` does: on the slot's cores and memory, with
+    a team of their size, and on its GPU; on all of ``cores`` without a slot. Each call starts from the session's first
+    ``cores`` and ``environment``, as the bench narrows the current mask and device list."""
+    from hpcagent_bench import flags
+    from hpcagent_bench.harness import native_call
+
+    os.sched_setaffinity(0, cores)
+    os.environ.clear()
+    os.environ.update(environment)
+    if slot is None:
+        return
+    cpus = native_call.grading_cpus(slot)
+    if cpus:
+        os.sched_setaffinity(0, cpus)
+        native_call.bind_memory(native_call.numa_nodes(cpus))
+        os.environ.update(flags.cpu_env(flags.Mode.MULTI_CORE, threads=native_call.slot_threads(cpus)))
+        os.environ.update(native_call.CHILD_BIND_ENV)
+    if gpu:
+        native_call.restrict_visible_device(os.environ, slot)
+
+
 def serve(connection: Connection, setup: Setup) -> None:
-    """The child: build the session, report ready (or why not), then answer ``(tool, arguments)`` until closed."""
+    """The child: build the session, report ready (or why not), then answer ``(tool, arguments, slot, timed)`` until
+    closed: ``slot`` is the device slot the call holds, ``timed`` as :func:`timed_call` takes it."""
     try:
         session = started_session(setup)
     except Exception as err:  # noqa: BLE001 -- the caller reads why the session could not start
@@ -294,25 +341,44 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
+    cores, environment = os.sched_getaffinity(0), dict(os.environ)
     while True:
         try:
-            tool, arguments = connection.recv()
+            tool, arguments, slot, timed = connection.recv()
         except EOFError:
             return
         session.stopper.clear()
+        if tool == "write_kernel":
+            environment[SEAL_KEEP_ENV] = tempfile.gettempdir()  # the session holds agent code from here on
         try:
+            pin(slot, setup.gpu, cores, environment)
             if data is None and tool in MEASURING:
-                data = session_data(setup, session)
-            connection.send(answer(session, tool, arguments, data))
+                with session.stopper.armed():
+                    data = session_data(setup, session)
+            connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))
         except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
             connection.send(failure(err))
 
 
-def own_group(target: Callable[[Connection, Setup], None], connection: Connection, setup: Setup) -> None:
-    """``target`` in a process group of its own, so that ending the session ends the builds and runs it started."""
+def end_with_parent(parent: int, scratch: str) -> None:
+    """End the session once ``parent``, the judge, is gone: only the judge bounds its calls. Not ``PR_SET_PDEATHSIG``,
+    which fires when the creating thread ends, and a handler thread ends with its connection."""
+    while os.getppid() == parent:
+        time.sleep(POLL_S)
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.killpg(0, signal.SIGKILL)
+
+
+def own_group(
+    target: Callable[[Connection, Setup], None], connection: Connection, setup: Setup, parent: int, scratch: str
+) -> None:
+    """``target`` in a process group of its own, so that ending the session ends the builds and runs it started, and
+    with its temporary files in ``scratch``, which outlives a SIGKILL of the session."""
     os.setpgrp()
+    tempfile.tempdir = os.environ["TMPDIR"] = scratch
+    threading.Thread(target=end_with_parent, args=(parent, scratch), daemon=True).start()
     target(connection, setup)
 
 
@@ -323,23 +389,35 @@ def kill_group(pid: int | None) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
+def end_session(pid: int | None, scratch: str) -> None:
+    """Kill the session process ``pid`` with what it started, and remove its files."""
+    kill_group(pid)
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
 class SessionProcess:
     """The caller's handle on one session process."""
 
-    __slots__ = ("__weakref__", "connection", "process")
+    __slots__ = ("__weakref__", "connection", "end", "process")
 
     def __init__(self, setup: Setup, target: Callable[[Connection, Setup], None] = serve) -> None:
         from hpcagent_bench.plugins import openmp_environment
 
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
+        scratch = tempfile.mkdtemp(prefix="nfsession_")
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
-        self.process = context.Process(target=own_group, args=(target, child, setup))
+        self.process = context.Process(target=own_group, args=(target, child, setup, os.getpid(), scratch))
         # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
         with openmp_environment("nestforge"):
             self.process.start()
         child.close()
-        weakref.finalize(self, kill_group, self.process.pid)
+        self.end = weakref.finalize(self, end_session, self.process.pid, scratch)
+        deadline = time.monotonic() + TOOL_TIMEOUT_S
+        while not self.connection.poll(POLL_S):
+            if time.monotonic() > deadline:
+                self.close()
+                raise LookupError(f"the session did not start within {TOOL_TIMEOUT_S:.0f} s")
         ready = self.receive()
         if ready.error:
             self.close()
@@ -352,7 +430,8 @@ class SessionProcess:
     def receive(self) -> Reply:
         try:
             return self.connection.recv()
-        except EOFError:
+        except (EOFError, ConnectionResetError):
+            self.process.join(CLOSE_TIMEOUT_S)
             return Reply(error=f"the session process died (exit code {self.process.exitcode})")
 
     @property
@@ -366,14 +445,22 @@ class SessionProcess:
         arguments: dict[str, object],
         gone: threading.Event | None = None,
         timeout_s: float = TOOL_TIMEOUT_S,
+        slot: int | None = None,
+        timed: bool = True,
     ) -> Reply:
         """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process. A measuring call is stopped
         once ``gone`` is set, and any call after ``timeout_s``.
 
-        :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry."""
-        self.connection.send((tool, arguments))
+        :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry.
+        :param slot: The device slot the call holds, which what it starts runs on.
+        :param timed: False to leave out the performance of a timed tool."""
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):  # a dead session answers EOF below
+            self.connection.send((tool, arguments, slot, timed))
         deadline = time.monotonic() + timeout_s
         while not self.connection.poll(POLL_S):
+            if not self.alive:  # its forked child keeps the pipe open, so no EOF comes
+                kill_group(self.process.pid)
+                return self.receive()
             client_left = gone is not None and gone.is_set() and tool in MEASURING
             if client_left or time.monotonic() > deadline:
                 return self.stop(tool, timeout_s)
@@ -395,6 +482,6 @@ class SessionProcess:
     def close(self) -> None:
         self.connection.close()
         self.process.join(CLOSE_TIMEOUT_S)
-        if self.process.is_alive():
-            kill_group(self.process.pid)
-            self.process.join()
+        self.end()
+        self.process.kill()  # one still starting has no group yet
+        self.process.join()

@@ -127,6 +127,7 @@ class Stopper:
         """Stop the call: at once in an armed section, else on entering the next one."""
         self.asked = True
         if self.armed_now:
+            self.armed_now = False  # the caller signals until it hears back: cleanup on the way out runs to its end
             raise Stopped
 
     def clear(self) -> None:
@@ -140,7 +141,7 @@ class Stopper:
                 raise Stopped
             yield
         finally:
-            self.armed_now = before
+            self.armed_now = before and not self.asked
 
 
 def computed_symbols(src: KernelSource, sizes: dict[str, int]) -> list[str]:
@@ -371,7 +372,7 @@ class Session:
         self.namer = namer if namer is not None else Namer()
         normalize_labels(sdfg, self.namer)
         self.rows: dict[str, Row] | None = None
-        #: Every move that changed the program, in order.
+        #: Every call that changed the program, in order: moves, defaults, scopes and written kernels.
         self.applied: list[MoveResult] = []
         #: The folder under which finalize builds a library the judge accepts; the shared folder when ``None``.
         self.shared_root: str | None = None
@@ -528,16 +529,20 @@ class Session:
 
     def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
         """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes` or
-        :meth:`place`."""
+        :meth:`place`. A default that changed the program is on :attr:`applied`."""
+        done: object
         match stage:
             case "moves":
-                return self.default_moves()
+                done = self.default_moves()
             case "finish":
-                return self.finish_moves()
+                done = self.finish_moves()
             case "scopes":
-                return self.default_scopes()
+                done = self.default_scopes()
             case "placement":
-                return self.place()
+                done = self.place()
+        if done.status is MoveStatus.APPLIED if isinstance(done, PlaceResult) else done:
+            self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind=f"defaults-{stage}", labels=(), reason=""))
+        return done
 
     def collapse(self, labels: Sequence[str]) -> str:
         """Hide again what :meth:`expand` opened under ``labels``; a label not open is ignored."""
@@ -637,6 +642,7 @@ class Session:
     def default_moves(self) -> str:
         """Stage 2 default: canonicalization's fusion stage and the stages after it."""
         fuse_and_finish(self.sdfg, self.targets)
+        self.unplaced = None
         self.bump()
         return self.describe()
 
@@ -645,6 +651,7 @@ class Session:
         """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
         finish(self.sdfg, self.targets)
         narrow_nested_memlets(self.sdfg)
+        self.unplaced = None
         self.bump()
         return self.describe()
 
@@ -686,7 +693,9 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
         self.unplaced = None
         self.bump(names)
-        return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
+        done = MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
+        self.applied.append(done)
+        return done
 
     @undone_on_failure
     def unset_scope(self, name: str) -> MoveResult:
@@ -714,7 +723,9 @@ class Session:
         ext.expand(find_state_of_node(self.sdfg, ext), "DaceReference")
         inline_top_level_nsdfgs(self.sdfg)
         self.bump()
-        return MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
+        done = MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
+        self.applied.append(done)
+        return done
 
     def kernel_graph(self) -> KernelGraph:
         """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per change."""
@@ -875,6 +886,7 @@ class Session:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
             return KernelOutcome(kernel=name, status=KernelStatus.WRONG, reason=reason)
         self.bind(name, KernelBuild(src, variant, archive, verdict))
+        self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind="write-kernel", labels=(name,), reason=""))
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
 
     def prepare_kernel(self, name: str) -> Prepared:
@@ -934,7 +946,7 @@ class Session:
         variants = device_variants(src.device, compilers)
         key = self.sweep_key(name, src)
         cells = self.sweep_cells.setdefault(key, {})
-        out_dir = self.swept_dir / f"{name}_cells_{len(self.sweep_cells)}"
+        out_dir = self.swept_dir / f"{name}_cells_{list(self.sweep_cells).index(key)}"
         with self.stopper.armed():
             result = select_variant(src, self.kernel_probe(name, src), reps, variants, out_dir, cells)
         winner = result.winner
@@ -1033,19 +1045,22 @@ class Session:
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
-        trial = self.trial()
-        if not external_calls(trial.sdfg):
-            trial.default_scopes()
-        if trial.targets.gpu and trial.unplaced is None:
-            trial.place()  # a GPU program is assembled as placed
-        for ext in external_calls(trial.sdfg):
-            if ext.name not in trial.builds:
-                trial.default_build(ext.name)
-        variants = {name: build.variant.label for name, build in trial.builds.items()}
-        final = assemble(trial.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
-        # the library holds the kernels' archives; a long session would otherwise keep every trial until it exits
-        shutil.rmtree(trial.work_dir, ignore_errors=True)
-        return final
+        # all of it on a trial, so a stop anywhere changes nothing and keeps the session and its sweeps
+        with self.stopper.armed():
+            trial = self.trial()
+            try:
+                if not external_calls(trial.sdfg):
+                    trial.default_scopes()
+                if trial.targets.gpu and trial.unplaced is None:
+                    trial.place()  # a GPU program is assembled as placed
+                for ext in external_calls(trial.sdfg):
+                    if ext.name not in trial.builds:
+                        trial.default_build(ext.name)
+                variants = {name: build.variant.label for name, build in trial.builds.items()}
+                return assemble(trial.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+            finally:
+                # the library holds the kernels' archives; a long session would otherwise keep every trial until it exits
+                shutil.rmtree(trial.work_dir, ignore_errors=True)
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""

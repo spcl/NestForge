@@ -6,8 +6,10 @@ structured and kernel phases served with performance feedback, and ``finalize``'
 import contextlib
 import gc
 import inspect
+import json
 import multiprocessing
 import pathlib
+import re
 import sys
 import threading
 import tomllib
@@ -19,14 +21,15 @@ import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the 
 import pytest
 from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.plugins import Plugin
-from hpcagent_agent.tools import http_json, registry
+from hpcagent_agent.tools import http_json, registry, submit
 from hpcagent_bench import config, plugins
 from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
 from hpcagent_bench.columns import FRAMEWORKS
 from hpcagent_bench.config import SubmitFeedback
-from hpcagent_bench.harness import tools
+from hpcagent_bench.harness import sandbox, tools
 from hpcagent_bench.harness.envelope import Submission
+from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, JudgeHandler, ServiceConfig, make_server
@@ -37,7 +40,9 @@ from stub_session import Stub, install
 
 import nestforge_bench
 from nestforge.paths import REPO_ROOT
-from nestforge.server import CALLS, Reply, Setup
+from nestforge.records import MoveStatus
+from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
+from nestforge.session import MoveResult
 from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -45,6 +50,8 @@ PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
+#: The device slot a fake judge hands out.
+SLOT = 3
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
 #: One valid call of tools that read, change or measure.
@@ -80,9 +87,15 @@ class FakeJudge(JudgeHandler):
         finished.wait()
 
     @contextlib.contextmanager
-    def device_slot(self) -> Iterator[object]:
+    def device_slot(self) -> Iterator[DeviceSlot]:
         self.slots += 1
-        yield object()
+        yield DeviceSlot("cpu", SLOT)
+
+
+@pytest.fixture(autouse=True)
+def shared_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """Journals live on disk: each test has its own shared folder, so no run repeats another's moves."""
+    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))
 
 
 @pytest.fixture(scope="module")
@@ -146,6 +159,17 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
         (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "profile", "score", "submit")
     )
+
+
+def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(loaded: None) -> None:
+    body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+
+    blind = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "blind"}))
+    single = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "single"}))
+
+    assert "get_performance" not in blind and "score" not in blind
+    assert "get_performance" in single
+    assert single["submit"].prompt == submit.PROMPT
 
 
 def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_served(loaded: None) -> None:
@@ -246,6 +270,118 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
     assert len(stub.started) == 2
 
 
+MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+
+
+def test_a_session_that_died_between_calls_is_replaced_and_repeats_the_agents_moves(stub: Stub) -> None:
+    post("apply_move", "episode-idle", **MOVE)
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route.episode_of("episode-idle").sessions[KERNEL].alive = False
+    before = len(stub.calls)
+
+    answered = post("get_cpf", "episode-idle")
+
+    assert answered.code == HTTPStatus.OK and len(stub.started) == 2
+    assert [tool for tool, _ in stub.calls[before:]] == ["apply_move", "get_cpf"]
+
+
+def restart_judge() -> None:
+    """What a judge restart or an idle eviction leaves: nothing in memory."""
+    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    for episode in list(episodes.states):
+        episodes.drop(episode)
+
+
+def test_a_judge_restart_repeats_the_agents_changes_so_nothing_grades_the_canonical_program(stub: Stub) -> None:
+    post("apply_move", "episode-restart", **MOVE)
+    post("set_scope", "episode-restart", labels=["map_0"])
+    restart_judge()
+    before = len(stub.calls)
+
+    answered = post("finalize", "episode-restart")
+
+    assert answered.code == HTTPStatus.OK
+    assert [tool for tool, _ in stub.calls[before:]] == ["apply_move", "set_scope", "finalize"]
+    assert stub.calls[before][1]["labels"] == MOVE["labels"] and len(stub.started) == 2
+
+
+@pytest.mark.parametrize("line", ["not json", '["apply_move"]', "7"])
+def test_a_journal_that_cannot_be_read_fails_loudly_and_starts_no_session(stub: Stub, line: str) -> None:
+    post("apply_move", "episode-torn", **MOVE)
+    restart_judge()
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    with route.journal_file("episode-torn", KERNEL).open("a") as journal:
+        journal.write(line + "\n")
+    started = len(stub.started)
+
+    judge = post("finalize", "episode-torn")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "journal" in judge.answer["error"] and len(stub.started) == started
+
+
+def test_a_change_a_rebuild_refuses_fails_loudly_instead_of_grading_a_program_without_it(stub: Stub) -> None:
+    post("apply_move", "episode-diverged", **MOVE)
+    restart_judge()
+    refused = MoveResult(status=MoveStatus.NOT_FOUND, kind="fuse", labels=("map_0",), reason="no such row")
+    stub.replies["apply_move"] = Reply(result=refused)
+
+    judge = post("finalize", "episode-diverged")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "no such row" in judge.answer["error"] and "finalize" not in [tool for tool, _ in stub.calls]
+
+
+def test_a_refused_change_is_not_journaled(stub: Stub) -> None:
+    refused = MoveResult(status=MoveStatus.ILLEGAL, kind="fuse", labels=("map_0",), reason="cannot fuse")
+    stub.replies["apply_move"] = Reply(result=refused)
+
+    answered = post("apply_move", "episode-refused", **MOVE)
+
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert answered.code == HTTPStatus.OK and route.journal_of("episode-refused", KERNEL) == []
+
+
+def test_a_change_that_cannot_be_journaled_is_dropped_with_its_session_and_the_agent_is_told(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+
+    def full(episode_id: str, kernel: str, call: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(route, "record", full)
+
+    judge = post("apply_move", "episode-full", **MOVE)
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "disk full" in judge.answer["error"] and not route.episode_of("episode-full").sessions
+
+
+def test_a_relaunched_attempt_works_in_its_own_folder_and_inherits_no_moves(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    (tmp_path / "agent-0").mkdir()
+    (tmp_path / "agent-1").mkdir()
+    folders = tmp_path / sandbox.AGENT_FOLDERS_LOG
+    line = '{{"episode_id": "episode-again", "folder": "{}"}}\n'
+    folders.write_text(line.format("agent-0"))
+    monkeypatch.setenv("RUN_DIR", str(tmp_path))
+    post("apply_move", "episode-again", **MOVE)
+
+    folders.write_text(line.format("agent-0") + line.format("agent-1"))
+    post("get_cpf", "episode-again")
+
+    assert [setup.shared_root for setup in stub.started] == [str(tmp_path / f"agent-{n}") for n in range(2)]
+    assert [tool for tool, _ in stub.calls] == ["apply_move", "get_cpf"], "the second attempt starts anew"
+
+
+def test_an_unused_episode_ends_its_session_within_the_hour_and_never_under_a_running_call(loaded: None) -> None:
+    idle = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.idle_seconds
+
+    assert TOOL_TIMEOUT_S + STOP_GRACE_S < idle <= 3600.0
+
+
 def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub: Stub) -> None:
     slots = {tool: post(tool, "episode-slots", **body).slots for tool, body in SLOT_CALLS.items()}
 
@@ -254,8 +390,62 @@ def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub
     }
 
 
+def test_a_measuring_call_reaches_its_session_with_its_slot_and_a_read_with_none(stub: Stub) -> None:
+    post("get_performance", "episode-pinned")
+    post("view_tree", "episode-pinned")
+
+    assert [held[0] for held in stub.held] == [SLOT, None]
+
+
+def written_then_lost(episode: str) -> None:
+    """``episode``'s journal holds a written kernel, and its session is gone."""
+    post("write_kernel", episode, **SLOT_CALLS["write_kernel"])
+    post("tune_kernel", episode, name="kernel_0")
+    restart_judge()
+
+
+def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:
+    written_then_lost("episode-rebuild")
+    before = len(stub.calls)
+
+    judge = post("view_tree", "episode-rebuild")
+
+    assert judge.slots == 1
+    assert [tool for tool, _ in stub.calls[before:]] == ["write_kernel", "view_tree"], "a sweep is finalize's to repeat"
+    assert stub.held[before:] == [(SLOT, False, True), (SLOT, True, True)]
+
+
+def test_a_read_after_a_rebuild_takes_no_slot(stub: Stub) -> None:
+    written_then_lost("episode-rebuilt-once")
+    post("view_tree", "episode-rebuilt-once")
+
+    assert post("view_tree", "episode-rebuilt-once").slots == 0
+
+
+def test_a_rebuild_out_of_budget_fails_loudly_and_the_next_call_tries_again(stub: Stub) -> None:
+    written_then_lost("episode-out")
+    stub.replies["write_kernel"] = Reply(error="ran out of its 1500 s budget", stopped=True)
+
+    judge = post("finalize", "episode-out")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    stub.replies["write_kernel"] = Reply(result={"status": "ok", "reason": ""})
+    assert post("finalize", "episode-out").code == HTTPStatus.OK
+
+
+def test_an_episodes_second_measuring_call_waits_without_holding_a_slot(stub: Stub) -> None:
+    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-queue")
+    judge = FakeJudge()
+    judge.gone.set()
+
+    with episode.measuring:
+        left = post("get_performance", "episode-queue", judge=judge)
+
+    assert left.slots == 0 and left.code == 0 and stub.calls == []
+
+
 def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stub: Stub) -> None:
-    episode = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.get("episode-gone")
+    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-gone")
     judge = FakeJudge()
     judge.gone.set()
 
@@ -271,9 +461,7 @@ def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_apply
     judge.gone.set()
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
     request = RouteRequest(HTTPMethod.POST, [], {}, {}, "episode-retry")
-    reply = route.run_call(
-        route.EPISODES.get("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone
-    )
+    reply = route.run_call(route.episode_of("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone)
 
     retried = post("apply_move", "episode-retry", **move)
 
@@ -302,7 +490,7 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
 
 
-def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
+def test_next_phase_leaves_the_program_unscoped_so_the_moves_stay_and_returns_to_them(
     stub: Stub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
@@ -313,11 +501,24 @@ def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_mov
 
     assert judge.code == HTTPStatus.OK, judge.answer
     assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
-    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("scopes", 200), ("placement", 200)]
-    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
-        ("run_defaults", {"stage": "scopes"}),
-        ("run_defaults", {"stage": "placement"}),
-    ]
+    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("placement", 200)]
+    assert [call for call in stub.calls if call[0] == "run_defaults"] == [("run_defaults", {"stage": "placement"})]
+
+
+@pytest.mark.integration
+def test_next_phase_keeps_the_doall_moves_and_finalize_still_gets_the_kernels(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
+    before = post("list_moves", "episode-stays").answer["result"]
+    judge = FakeJudge()
+    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-stays")
+
+    next_phase.serve(judge, request)
+
+    assert judge.code == HTTPStatus.OK, judge.answer
+    assert post("list_moves", "episode-stays").answer["result"] == before
+    assert post("finalize", "episode-stays").answer["result"]["kernels"]
 
 
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
@@ -371,6 +572,36 @@ def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
 
 
 @pytest.mark.integration
+def test_a_real_session_restarted_from_its_journal_is_the_program_the_agent_left(loaded: None) -> None:
+    move = post("list_moves", "episode-rebuilt").answer["result"][0]
+    post("apply_move", "episode-rebuilt", **move)
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert route.journal_of("episode-rebuilt", KERNEL)[0][1]["labels"] == list(move["labels"])
+    tree = post("get_cpf", "episode-rebuilt").answer["result"]
+    applied = post("applied_moves", "episode-rebuilt").answer["result"]
+
+    restart_judge()
+
+    assert post("get_cpf", "episode-rebuilt").answer["result"] == tree
+    assert post("applied_moves", "episode-rebuilt").answer["result"] == applied and applied
+
+
+@pytest.mark.integration
+def test_each_finalize_keeps_its_library_and_records_what_was_graded(loaded: None) -> None:
+    first = post("finalize", "episode-twice").answer["result"]
+    moved = post("run_defaults", "episode-twice", stage="moves")
+    second = post("finalize", "episode-twice").answer["result"]
+
+    assert moved.code == HTTPStatus.OK and first["library"] != second["library"]
+    assert pathlib.Path(first["library"]).is_file() and pathlib.Path(second["library"]).is_file()
+    folder = pathlib.Path(first["library"]).parent.parent
+    lines = [json.loads(line) for line in (folder / "applied_moves.jsonl").read_text().splitlines()]
+    assert [line["library"] for line in lines] == [first["library"], second["library"]]
+    assert [move["kind"] for move in lines[1]["moves"]] == ["defaults-moves"]
+    assert lines[1]["kernels"] == second["kernels"] and lines[1]["device_code"] is False
+
+
+@pytest.mark.integration
 def test_a_kernel_written_back_unchanged_is_linked_and_a_wrong_entry_is_refused(loaded: None) -> None:
     name, source = kernel_round("episode-kernel")
 
@@ -381,6 +612,44 @@ def test_a_kernel_written_back_unchanged_is_linked_and_a_wrong_entry_is_refused(
     assert written.answer["result"]["status"] == "ok", written.answer
     assert written.answer["performance"]["structured"]["correct"] is True
     assert refused.answer["result"]["status"] == "refused", refused.answer
+
+
+@pytest.fixture
+def decoy(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Path:
+    """A secret in the run folder, which the judge reads and agent code must not."""
+    secret = tmp_path / "run" / "episode-secret"
+    secret.parent.mkdir()
+    secret.write_text("the-decoy-secret\n")
+    monkeypatch.setenv("RUN_DIR", str(secret.parent))
+    return secret
+
+
+@pytest.mark.integration
+def test_a_written_kernel_cannot_include_what_the_judge_hides(loaded: None, decoy: pathlib.Path) -> None:
+    name, source = kernel_round("episode-include")
+
+    written = post(
+        "write_kernel", "episode-include", name=name, source=f'{source}\n#include "{decoy}"\n', language="cpp"
+    )
+
+    assert written.answer["result"]["status"] == "build-failed", written.answer
+    assert "the-decoy-secret" not in written.answer["result"]["reason"]
+    assert "No such file" in written.answer["result"]["reason"]
+
+
+@pytest.mark.integration
+def test_a_written_kernel_cannot_open_what_the_judge_hides_when_it_runs(loaded: None, decoy: pathlib.Path) -> None:
+    name, source = kernel_round("episode-open")
+    entry = re.search(rf"void {name}\([^)]*\)\s*\{{", source)
+    assert entry is not None, source
+    # the kernel skips its work if it reads the file, so its oracle calls a kernel outside the seal wrong
+    guard = f'FILE* secret = fopen("{decoy}", "r"); if (secret != NULL) return;'
+    spying = f"#include <cstdio>\n{source[: entry.end()]}{guard}{source[entry.end() :]}"
+
+    written = post("write_kernel", "episode-open", name=name, source=spying, language="cpp")
+
+    assert written.answer["result"]["status"] == "ok", written.answer
+    assert written.answer["performance"]["structured"]["correct"] is True
 
 
 @pytest.mark.integration

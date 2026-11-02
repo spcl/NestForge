@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from nestforge.build.isolation import sealed_argv
 from nestforge.build.toolchain import COMPILE_TIMEOUT_S, compiler_family, openmp_compile_flags
 from nestforge.stages.kernel import KernelSource, KernelVerdict
 
@@ -73,7 +74,9 @@ def compiler_remarks(src: KernelSource, compiler: str, flags: list[str]) -> str:
             [compiler, *kept, *extra, *remark_flags(compiler), "-c", str(unit), "-o", f"{scratch}/{unit.stem}.o"]
             for unit in src.units
         ]
-        done = [subprocess.run(cmd, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S) for cmd in cmds]
+        done = [
+            subprocess.run(sealed_argv(cmd), capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S) for cmd in cmds
+        ]
     return "".join(d.stderr for d in done)
 
 

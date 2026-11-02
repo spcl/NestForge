@@ -5,7 +5,9 @@ record, and the parent survives each one. The assertions read the returned model
 coverage with it.
 """
 
+import contextlib
 import ctypes
+import multiprocessing
 import os
 import signal
 import threading
@@ -13,7 +15,14 @@ import time
 import warnings
 from pathlib import Path
 
-from nestforge.build.isolation import ERROR_CHARS, OPENMP_REGISTRATION, Failure, Result, run_isolated
+from nestforge.build.isolation import (
+    ERROR_CHARS,
+    LIBOMP_SONAMES,
+    OPENMP_REGISTRATION,
+    Failure,
+    Result,
+    run_isolated,
+)
 
 #: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
 ISOLATION_WAIT_S = 5.0
@@ -33,6 +42,10 @@ class Done(Result):
 
 class Pid(Result):
     pid: int
+
+
+class Mask(Result):
+    cpus: list[int]
 
 
 class Opaque(Result):
@@ -145,3 +158,25 @@ def test_a_child_using_libomp_leaves_no_registration_behind():
     assert len(pids) == ISOLATED_RUNS, f"a child failed: {results}"
     left = [pid for pid in pids if Path(OPENMP_REGISTRATION.format(pid=pid, uid=os.getuid())).exists()]
     assert not left, f"children {left} left their libomp registration in shared memory"
+
+
+def child_mask_under_a_live_libomp() -> tuple[int, list[int]]:
+    """The CPU a caller with an initialized libomp narrowed itself to, and the mask of its isolated child."""
+    for soname in LIBOMP_SONAMES:  # the name differs by install, and one that loads is enough
+        with contextlib.suppress(OSError):
+            ctypes.CDLL(soname).omp_get_max_threads()
+            break
+    cpu = min(os.sched_getaffinity(0))
+    os.sched_setaffinity(0, {cpu})
+    child = run_isolated(lambda: Mask(cpus=sorted(os.sched_getaffinity(0))), Mask)
+    assert isinstance(child, Mask), child
+    return cpu, child.cpus
+
+
+def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
+    """libomp's fork handler puts a child on the mask it first saw, so a slot's pin would not reach it. In a spawned
+    process: this one must not initialize libomp, nor narrow its mask."""
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        cpu, cpus = pool.apply(child_mask_under_a_live_libomp)
+
+    assert cpus == [cpu]

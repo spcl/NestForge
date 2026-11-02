@@ -152,9 +152,9 @@ def select_variant(
     :param done: Cells of an earlier sweep of the same source that was stopped; each new cell joins them, so the next
         sweep goes on from there."""
     finished = done if done is not None else {}
-    for index, variant in enumerate(variants):
+    for variant in variants:
         if variant not in finished:
-            finished[variant] = measure_variant(src, probe, reps, variant, out_dir / f"v{index}")
+            finished[variant] = measure_variant(src, probe, reps, variant, out_dir / f"v{len(finished)}")
     cells = [finished[variant] for variant in variants]
     correct = [cell for cell in cells if cell.verdict.ok]
     winner = min(correct, key=lambda cell: cell.verdict.time_us) if correct else None
