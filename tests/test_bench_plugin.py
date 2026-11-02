@@ -27,6 +27,7 @@ from hpcagent_bench.columns import FRAMEWORKS
 from hpcagent_bench.config import SubmitFeedback
 from hpcagent_bench.harness import sandbox, tools
 from hpcagent_bench.harness.envelope import Submission
+from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, JudgeHandler, ServiceConfig, make_server
@@ -47,6 +48,8 @@ PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
+#: The device slot a fake judge hands out.
+SLOT = 3
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
 #: One valid call of tools that read, change or measure.
@@ -82,9 +85,9 @@ class FakeJudge(JudgeHandler):
         finished.wait()
 
     @contextlib.contextmanager
-    def device_slot(self) -> Iterator[object]:
+    def device_slot(self) -> Iterator[DeviceSlot]:
         self.slots += 1
-        yield object()
+        yield DeviceSlot("cpu", SLOT)
 
 
 @pytest.fixture(autouse=True)
@@ -372,6 +375,60 @@ def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub
     assert slots == {
         tool: int(tool in {"get_performance", "finalize", "write_kernel", "tune_kernel"}) for tool in slots
     }
+
+
+def test_a_measuring_call_reaches_its_session_with_its_slot_and_a_read_with_none(stub: Stub) -> None:
+    post("get_performance", "episode-pinned")
+    post("view_tree", "episode-pinned")
+
+    assert [held[0] for held in stub.held] == [SLOT, None]
+
+
+def written_then_lost(episode: str) -> None:
+    """``episode``'s journal holds a written kernel, and its session is gone."""
+    post("write_kernel", episode, **SLOT_CALLS["write_kernel"])
+    post("tune_kernel", episode, name="kernel_0")
+    restart_judge()
+
+
+def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:
+    written_then_lost("episode-rebuild")
+    before = len(stub.calls)
+
+    judge = post("view_tree", "episode-rebuild")
+
+    assert judge.slots == 1
+    assert [tool for tool, _ in stub.calls[before:]] == ["write_kernel", "view_tree"], "a sweep is finalize's to repeat"
+    assert stub.held[before:] == [(SLOT, False, True), (SLOT, True, True)]
+
+
+def test_a_read_after_a_rebuild_takes_no_slot(stub: Stub) -> None:
+    written_then_lost("episode-rebuilt-once")
+    post("view_tree", "episode-rebuilt-once")
+
+    assert post("view_tree", "episode-rebuilt-once").slots == 0
+
+
+def test_a_rebuild_out_of_budget_fails_loudly_and_the_next_call_tries_again(stub: Stub) -> None:
+    written_then_lost("episode-out")
+    stub.replies["write_kernel"] = Reply(error="ran out of its 1500 s budget", stopped=True)
+
+    judge = post("finalize", "episode-out")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    stub.replies["write_kernel"] = Reply(result={"status": "ok", "reason": ""})
+    assert post("finalize", "episode-out").code == HTTPStatus.OK
+
+
+def test_an_episodes_second_measuring_call_waits_without_holding_a_slot(stub: Stub) -> None:
+    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-queue")
+    judge = FakeJudge()
+    judge.gone.set()
+
+    with episode.measuring:
+        left = post("get_performance", "episode-queue", judge=judge)
+
+    assert left.slots == 0 and left.code == 0 and stub.calls == []
 
 
 def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stub: Stub) -> None:

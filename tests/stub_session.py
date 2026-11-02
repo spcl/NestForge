@@ -45,6 +45,8 @@ class Stub:
     dies_on: str = ""
     started: list[Setup] = field(default_factory=list)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: Per call, in order: its device slot, whether it was timed and whether its client's departure reached it.
+    held: list[tuple[int | None, bool, bool]] = field(default_factory=list)
     in_flight: int = 0
     most_in_flight: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -61,7 +63,14 @@ class StubSession:
         time.sleep(DELAY_S)
         self.alive = True
 
-    def call(self, tool: str, arguments: dict[str, Any], gone: threading.Event | None = None) -> Reply:
+    def call(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        gone: threading.Event | None = None,
+        slot: int | None = None,
+        timed: bool = True,
+    ) -> Reply:
         stub = self.stub
         with stub.lock:
             stub.in_flight += 1
@@ -70,6 +79,7 @@ class StubSession:
         with stub.lock:
             stub.in_flight -= 1
             stub.calls.append((tool, arguments))
+            stub.held.append((slot, timed, gone is not None))
         if tool == stub.dies_on:
             self.alive = False
             return Reply(error="the session process died (exit code -9)")

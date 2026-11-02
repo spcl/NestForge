@@ -20,6 +20,7 @@ from urllib.parse import quote
 import pydantic
 from hpcagent_bench.cpf.cache import Target
 from hpcagent_bench.harness import sandbox
+from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from hpcagent_bench.harness.judge_wire import JudgeAnswer, JudgeError
 from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, route
 from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
@@ -39,13 +40,15 @@ SESSION_IDLE_S = 3600.0
 
 class Episode:
     """One episode's session processes by kernel name. A session answers one call at a time over its pipe, so
-    ``lock`` serializes the episode's calls (an agent may send several at once). ``orphans`` keeps, per kernel, a
-    finished change whose client had left, so that the client's retry reads the answer instead of repeating the change."""
+    ``lock`` serializes the episode's calls (an agent may send several at once), and ``measuring`` lets one of its
+    measuring calls queue for a device slot. ``orphans`` keeps, per kernel, a finished change whose client had left, so
+    that the client's retry reads the answer instead of repeating the change."""
 
-    __slots__ = ("lock", "orphans", "sessions")
+    __slots__ = ("lock", "measuring", "orphans", "sessions")
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.measuring = threading.Lock()
         self.sessions: dict[str, SessionProcess] = {}
         self.orphans: dict[str, tuple[Call, Reply]] = {}
 
@@ -121,8 +124,36 @@ def locked(lock: threading.Lock, gone: threading.Event) -> bool:
     return True
 
 
-def session_of(episode: Episode, judge: Judge, kernel: str, episode_id: str) -> SessionProcess:
-    """The kernel's session; a new one repeats the episode's changes, so it is the program the agent left.
+def holds_device(episode: Episode, kernel: str, name: str, episode_id: str) -> bool:
+    """Whether the call ``name`` builds or runs code: a measuring tool, or a call a rebuild has to build for."""
+    if name in MEASURING:
+        return True
+    session = episode.sessions.get(kernel)
+    if session is not None and session.alive:
+        return False
+    with contextlib.suppress(LookupError):  # session_of answers it
+        return any(tool in MEASURING for tool, _ in journal_of(episode_id, kernel))
+    return False
+
+
+@contextlib.contextmanager
+def device_slot(judge: Judge, episode: Episode, gone: threading.Event) -> Iterator[DeviceSlot | object | None]:
+    """A device slot, ``None`` if the client left; the episode's other measuring calls wait here, holding none."""
+    if not locked(episode.measuring, gone):
+        yield None
+        return
+    try:
+        with judge.device_slot() as slot:
+            yield slot
+    finally:
+        episode.measuring.release()
+
+
+def session_of(
+    episode: Episode, judge: Judge, kernel: str, episode_id: str, gone: threading.Event, slot: int | None
+) -> SessionProcess:
+    """The kernel's session; a new one repeats the episode's changes, so it is the program the agent left. A repeat
+    measures nothing, and stops as the call that caused it does.
 
     :raises LookupError: The session could not start, or could not repeat a change."""
     session = episode.sessions.get(kernel)
@@ -134,7 +165,7 @@ def session_of(episode: Episode, judge: Judge, kernel: str, episode_id: str) -> 
     setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(episode_id)))
     session = SessionProcess(setup)
     for tool, arguments in journal:
-        repeated = session.call(tool, arguments)
+        repeated = session.call(tool, arguments, gone, slot=slot, timed=False)
         if not applied(repeated):
             session.close()
             raise LookupError(f"repeating {tool} {arguments} failed: {repeated.error or repeated.result}")
@@ -143,7 +174,13 @@ def session_of(episode: Episode, judge: Judge, kernel: str, episode_id: str) -> 
 
 
 def run_call(
-    episode: Episode, judge: Judge, request: RouteRequest, kernel: str, call: Call, gone: threading.Event
+    episode: Episode,
+    judge: Judge,
+    request: RouteRequest,
+    kernel: str,
+    call: Call,
+    gone: threading.Event,
+    slot: int | None = None,
 ) -> Reply:
     """``call`` on the kernel's session; a change whose client left keeps its answer for the retry.
 
@@ -153,8 +190,8 @@ def run_call(
         orphan = episode.orphans.pop(kernel, None)
         if orphan is not None and orphan[0] == call:
             return orphan[1]
-    session = session_of(episode, judge, kernel, request.episode_id)
-    reply = session.call(name, arguments, gone)
+    session = session_of(episode, judge, kernel, request.episode_id, gone, slot)
+    reply = session.call(name, arguments, gone, slot=slot)
     if not session.alive:
         # The call's change is not journaled, so the next session is the program before it.
         del episode.sessions[kernel]
@@ -202,11 +239,13 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     episode = episode_of(request.episode_id)
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
-    with client_left(judge) as gone, judge.device_slot() if name in MEASURING else NO_SLOT as slot:
+    measuring = holds_device(episode, kernel, name, request.episode_id)
+    with client_left(judge) as gone, device_slot(judge, episode, gone) if measuring else NO_SLOT as slot:
         if slot is None or not locked(episode.lock, gone):
             return None
+        index = slot.index if isinstance(slot, DeviceSlot) else None
         try:
-            reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone)
+            reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone, index)
         except LookupError as err:
             error = f"{name}: the session could not start: {err}"
             return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))

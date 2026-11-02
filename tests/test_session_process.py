@@ -4,6 +4,7 @@
 call stops when asked and leaves its session answering; it starts in the bench's llvm OpenMP context, whose libomp is
 the one runtime NestForge links."""
 
+import json
 import multiprocessing
 import os
 import pathlib
@@ -12,6 +13,7 @@ import tempfile
 import threading
 import time
 from multiprocessing.connection import Connection
+from typing import Any
 
 import pytest
 from hpcagent_agent import plugins as agent_plugins
@@ -178,6 +180,54 @@ def test_the_session_keeps_its_files_in_a_folder_the_judge_removes_even_after_a_
     session.close()
 
     assert not scratch.exists()
+
+
+def report_pin(connection: Connection, setup: Setup) -> None:
+    """A session answering, per call, what a child it forks and one it spawns would run on after :func:`server.pin`."""
+    connection.send(Reply())
+    cores, environment = os.sched_getaffinity(0), dict(os.environ)
+    while True:
+        try:
+            _, _, slot, _ = connection.recv()
+        except EOFError:
+            return
+        server.pin(slot, setup.gpu, cores, environment)
+        reader, writer = os.pipe()
+        child = os.fork()
+        if child == 0:
+            os.write(writer, json.dumps(placement()).encode())
+            os._exit(0)
+        os.close(writer)
+        forked = json.loads(os.read(reader, 1 << 16))
+        os.waitpid(child, 0)
+        with multiprocessing.get_context("spawn").Pool(1) as pool:
+            connection.send(Reply(result=(forked, pool.apply(placement))))
+
+
+def placement() -> dict[str, Any]:
+    """Where this process runs and what an OpenMP team and a GPU runtime see here."""
+    keys = ("OMP_NUM_THREADS", "OMP_PROC_BIND", "OMP_PLACES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    return {"cpus": sorted(os.sched_getaffinity(0)), **{key: os.environ.get(key) for key in keys}}
+
+
+def test_a_slot_pins_what_the_call_starts_and_the_next_call_starts_from_the_whole_mask(monkeypatch):
+    monkeypatch.setenv("OMP_NUM_THREADS", "96")
+    monkeypatch.setenv("HPCAGENT_BENCH_JUDGE_GPUS_PER_NODE", "0")
+    monkeypatch.setenv("HPCAGENT_BENCH_JUDGE_CPU_SLOTS_PER_NODE", "2")
+    session = SessionProcess(SETUP, target=report_pin)
+
+    unpinned = session.call("view_tree", {}).result[0]
+    first = session.call("get_performance", {}, slot=0).result
+    second = session.call("get_performance", {}, slot=1).result
+    again = session.call("view_tree", {}).result[0]
+    session.close()
+
+    assert unpinned == again and unpinned["OMP_NUM_THREADS"] == "96", "a call without a slot gets everything back"
+    for forked, spawned in (first, second):
+        assert forked == spawned, "a fork and a spawn inherit the same pin"
+        assert forked["OMP_NUM_THREADS"] == str(len(forked["cpus"])) and forked["OMP_PLACES"] == "cores"
+        assert set(forked["cpus"]) < set(unpinned["cpus"])
+    assert not set(first[0]["cpus"]) & set(second[0]["cpus"]), "two slots share no core"
 
 
 def test_a_call_that_does_not_answer_in_time_ends_the_session(monkeypatch):

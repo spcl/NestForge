@@ -261,11 +261,14 @@ def timed_call(
     tool: str,
     arguments: dict[str, Any],
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
+    timed: bool = True,
 ) -> Reply:
     """``tool``'s result on ``session``, and its performance when it is timed. A stop during that measurement does not
-    undo the tool: its result stands, without the feedback."""
+    undo the tool: its result stands, without the feedback.
+
+    :param timed: False for a rebuild's repeat: nobody reads its performance."""
     result = CALLS[tool](session, **arguments)
-    if tool not in TIMED:
+    if tool not in TIMED or not timed:
         return Reply(result=result)
     assert data is not None, "a timed tool measures, so its data was loaded"
     try:
@@ -281,22 +284,46 @@ def answer(
     tool: str,
     arguments: dict[str, Any],
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
+    timed: bool = True,
 ) -> Reply:
     """The reply to one call. A change stays only if its whole answer succeeds, and its error says so."""
     if tool not in CHANGING:
         try:
-            return timed_call(session, tool, arguments, data)
+            return timed_call(session, tool, arguments, data, timed)
         except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
             return failure(err)
     try:
         with session.atomic():
-            return timed_call(session, tool, arguments, data)
+            return timed_call(session, tool, arguments, data, timed)
     except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
         return Reply(error=f"{failure(err).error} (the program is unchanged)")
 
 
+def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str]) -> None:
+    """What this call starts runs as a graded child of device slot ``slot`` does: on the slot's cores and memory, with
+    a team of their size, and on its GPU; on all of ``cores`` without a slot. Each call starts from the session's first
+    ``cores`` and ``environment``, as the bench narrows the current mask and device list."""
+    from hpcagent_bench import flags
+    from hpcagent_bench.harness import native_call
+
+    os.sched_setaffinity(0, cores)
+    os.environ.clear()
+    os.environ.update(environment)
+    if slot is None:
+        return
+    cpus = native_call.grading_cpus(slot)
+    if cpus:
+        os.sched_setaffinity(0, cpus)
+        native_call.bind_memory(native_call.numa_nodes(cpus))
+        os.environ.update(flags.cpu_env(flags.Mode.MULTI_CORE, threads=native_call.slot_threads(cpus)))
+        os.environ.update(native_call.CHILD_BIND_ENV)
+    if gpu:
+        native_call.restrict_visible_device(os.environ, slot)
+
+
 def serve(connection: Connection, setup: Setup) -> None:
-    """The child: build the session, report ready (or why not), then answer ``(tool, arguments)`` until closed."""
+    """The child: build the session, report ready (or why not), then answer ``(tool, arguments, slot, timed)`` until
+    closed: ``slot`` is the device slot the call holds, ``timed`` as :func:`timed_call` takes it."""
     try:
         session = started_session(setup)
     except Exception as err:  # noqa: BLE001 -- the caller reads why the session could not start
@@ -305,16 +332,18 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
+    cores, environment = os.sched_getaffinity(0), dict(os.environ)
     while True:
         try:
-            tool, arguments = connection.recv()
+            tool, arguments, slot, timed = connection.recv()
         except EOFError:
             return
         session.stopper.clear()
         try:
+            pin(slot, setup.gpu, cores, environment)
             if data is None and tool in MEASURING:
                 data = session_data(setup, session)
-            connection.send(answer(session, tool, arguments, data))
+            connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))
         except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
@@ -404,13 +433,17 @@ class SessionProcess:
         arguments: dict[str, object],
         gone: threading.Event | None = None,
         timeout_s: float = TOOL_TIMEOUT_S,
+        slot: int | None = None,
+        timed: bool = True,
     ) -> Reply:
         """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process. A measuring call is stopped
         once ``gone`` is set, and any call after ``timeout_s``.
 
-        :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry."""
+        :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry.
+        :param slot: The device slot the call holds, which what it starts runs on.
+        :param timed: False to leave out the performance of a timed tool."""
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):  # a dead session answers EOF below
-            self.connection.send((tool, arguments))
+            self.connection.send((tool, arguments, slot, timed))
         deadline = time.monotonic() + timeout_s
         while not self.connection.poll(POLL_S):
             if not self.alive:  # its forked child keeps the pipe open, so no EOF comes
