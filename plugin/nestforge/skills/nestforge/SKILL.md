@@ -111,7 +111,7 @@ doall i in 0:N: B   ->   doall i0 in 0:N step 32:
                              doall i in i0:min(i0+32, N): B
 ```
 **`tile-for`** `[for]` with one size (`[64]`), LoopTiling: the same for a sequential loop, same iterations in the same
-order; follow it with an interchange to block a nest. A size need not divide the range. Pays when a tile's data fits
+order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
 vector width. Read those sizes from the machine you run on; `get_performance` after the move tells whether it paid.
 **`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.

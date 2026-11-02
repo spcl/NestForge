@@ -22,6 +22,7 @@ from dace.frontend.operations import detect_reduction_type
 from dace.frontend.python import astutils
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
+from dace.sdfg.graph import NodeNotFoundError
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.performance_evaluation.helpers import get_uuid
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
@@ -216,8 +217,19 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
 
 #: Wall-clock seconds DaCe's work-depth pass may take before the tree prints without costs.
 WORK_DEPTH_BUDGET_S = 60
-#: What the work-depth pass raises on a program it cannot cost: SymPy recursion on large nests, an unorderable NaN.
-WORK_DEPTH_FAILURES = (RecursionError, ValueError, TypeError, ArithmeticError)
+#: What the work-depth pass raises on a program it cannot cost: SymPy recursion on large nests, an unorderable NaN; an
+#: unbounded loop below the top of an SDFG (looked up among the top-level blocks), a loop inside an uncounted one (no
+#: range recorded for it), a WCR memlet whose subset is its other subset, SymPy's ``simplify`` on some sums of a tiled loop.
+WORK_DEPTH_FAILURES = (
+    RecursionError,
+    ValueError,
+    TypeError,
+    ArithmeticError,
+    NodeNotFoundError,
+    KeyError,
+    AttributeError,
+    StopIteration,
+)
 #: Longest exception message kept as the reason costs were skipped.
 SKIP_REASON_CHARS = 160
 

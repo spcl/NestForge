@@ -12,13 +12,15 @@ from typing import Any, cast
 
 import dace
 import sympy
+from dace.data import Scalar
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
-from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.subsets import Range
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
@@ -38,6 +40,8 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     MapTilePair,
     UntileLoops,
     eliminate_pinned_maps,
+    enclosing_loop_variables,
+    exact_bounds,
     map_tile_pairs,
     untile_map_pair,
 )
@@ -292,6 +296,31 @@ def group_statements(body: dace.SDFG) -> None:
                 nest_state_subgraph(body, state, SubgraphView(state, group))
 
 
+def nests_scalar_output(body: dace.SDFG) -> bool:
+    """Whether :func:`group_statements` would nest a group writing a scalar the map passes out: MapFission gives ``body``
+    an array for that scalar and leaves the new nest's connector a scalar, which memlet propagation refuses."""
+    for state in body.states():
+        for group in statement_groups(state):
+            if sum(isinstance(n, nodes.CodeNode) for n in group) < 2:
+                continue
+            for node in group:
+                for edge in state.out_edges(node):
+                    written = edge.dst.desc(body) if isinstance(edge.dst, nodes.AccessNode) else None
+                    if isinstance(written, Scalar) and not written.transient:
+                        return True
+    return False
+
+
+def derives_from_params(body: nodes.NestedSDFG, entry: nodes.MapEntry) -> bool:
+    """Whether ``body`` binds a symbol of its own to an expression of the map's parameters (OTF fusion's ``_i0: i - 1``).
+    MapFission rebinds only a parameter passed under its own name, so the binding would outlive the map defining it."""
+    params = set(entry.map.params)
+    return any(
+        name not in params and params & {str(s) for s in dace.symbolic.pystr_to_symbolic(str(value)).free_symbols}
+        for name, value in body.symbol_mapping.items()
+    )
+
+
 def plan_map_fission(row: Row) -> Rewrite | str:
     """Split a map by its independent output groups: a nested-SDFG body by ``MapFission``'s nested pattern, a flat
     body writing two or more outputs by its component pattern (not per tasklet, which would turn locals into
@@ -303,7 +332,7 @@ def plan_map_fission(row: Row) -> Rewrite | str:
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
         move = pattern(MapFission, state.sdfg, where, expr_index=1)
-        if move is None:
+        if move is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
             return MAP_FISSION_REFUSED
         return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
@@ -344,6 +373,10 @@ def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
     loop, entry = loop_row[0], map_row[0]
     if loop_maps(loop) != [entry]:
         return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that."
+    # MoveLoopIntoMap passes a nest only the SDFG's symbols and data, and raises on an outer loop's iterator
+    read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
+    if read & enclosing_loop_variables(loop):
+        return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
     return pattern(MoveLoopIntoMap, loop.sdfg, {"loop": loop}) or LOOP_INTO_MAP_REFUSED
 
 
@@ -418,9 +451,16 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
             "(1 leaves a dimension untiled), at least one of 2 or more."
         )
     options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
-    return pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options) or (
-        f"blocked by MapTiling: {entry.map.label} cannot be tiled."
-    )
+    move = pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options)
+    if move is None:
+        return f"blocked by MapTiling: {entry.map.label} cannot be tiled."
+
+    def commit() -> None:
+        move.commit()
+        # MapTiling's approximate SymExpr bound is text no DaCe analysis reads back (work depth, the tile pair search)
+        entry.map.range = Range([exact_bounds(rng) for rng in entry.map.range])
+
+    return Rewrite(move.name, commit)
 
 
 def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
@@ -474,6 +514,8 @@ def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if len(tile_sizes) != 1 or tile_sizes[0] < 2:
         return f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2."
+    if any(isinstance(jump, BreakBlock) for jump in loop_analysis.loop_jumps(loop)):
+        return f"{loop.label} holds a break, which would leave one tile and not the loop."
     where, options = {"loop": loop}, {"tile_size": tile_sizes[0]}
     if not LoopTiling.can_be_applied_to(loop.sdfg, options=options, **where):
         return f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1."
@@ -589,8 +631,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
-        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order; "
-        "follow it with an interchange to block a nest.",
+        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
     ),
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
 }

@@ -603,7 +603,8 @@ class Session:
             if kind == EXPAND_LIBRARY:
                 # the expansion's maps join the program in canonical form, as rows the other moves take
                 settle(cast(list[nodes.NestedSDFG], made), self.targets)
-                inline_top_level_nsdfgs(self.sdfg)
+            # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps correct
+            inline_top_level_nsdfgs(self.sdfg)
             structural_cleanup(self.sdfg)
             # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule
             # inference read them
