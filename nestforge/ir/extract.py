@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from typing import TypeAlias, cast
 
 import dace
+from dace import dtypes
+from dace.frontend.operations import detect_reduction_type
+from dace.libraries.standard.nodes.external_call import one_element
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
@@ -66,7 +69,24 @@ def find_state_of_node(sdfg: dace.SDFG, node: nodes.Node) -> SDFGState:
     raise ValueError(f"node {node} not found in any state of SDFG {sdfg.label}")
 
 
+def start_reductions(nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> None:
+    """A reduction leaving a nest through one element is combined into the target outside, and a kernel's call takes
+    that element from a local nothing sets: the nest starts it at the reduction's identity."""
+    for edge in state.out_edges(nsdfg_node):
+        if edge.data.wcr is None or not one_element(edge.data) or edge.src_conn in nsdfg_node.in_connectors:
+            continue
+        dtype = nsdfg_node.sdfg.arrays[edge.src_conn].dtype
+        identity = dtypes.reduction_identity(dtype, detect_reduction_type(edge.data.wcr))
+        if identity is None:  # a custom reduction names no identity
+            continue
+        start = nsdfg_node.sdfg.add_state_before(nsdfg_node.sdfg.start_block, is_start_block=True)
+        tasklet = start.add_tasklet("start_reduction", {}, {"out"}, f"out = {identity}")
+        memlet = dace.Memlet(data=edge.src_conn, subset=edge.data.subset)
+        start.add_edge(tasklet, "out", start.add_write(edge.src_conn), None, memlet)
+
+
 def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> Boundary:
+    start_reductions(nsdfg_node, state)
     inputs = sorted(nsdfg_node.in_connectors.keys())
     outputs = sorted(nsdfg_node.out_connectors.keys())
     symbols = sorted(str(s) for s in nsdfg_node.symbol_mapping.keys())

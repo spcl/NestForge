@@ -19,6 +19,7 @@ from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.subsets import Range
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
@@ -38,6 +39,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     MapTilePair,
     UntileLoops,
     eliminate_pinned_maps,
+    exact_bounds,
     map_tile_pairs,
     untile_map_pair,
 )
@@ -428,9 +430,16 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
             "(1 leaves a dimension untiled), at least one of 2 or more."
         )
     options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
-    return pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options) or (
-        f"blocked by MapTiling: {entry.map.label} cannot be tiled."
-    )
+    move = pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options)
+    if move is None:
+        return f"blocked by MapTiling: {entry.map.label} cannot be tiled."
+
+    def commit() -> None:
+        move.commit()
+        # MapTiling's approximate SymExpr bound is text no DaCe analysis reads back (work depth, the tile pair search)
+        entry.map.range = Range([exact_bounds(rng) for rng in entry.map.range])
+
+    return Rewrite(move.name, commit)
 
 
 def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
