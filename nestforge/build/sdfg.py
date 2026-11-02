@@ -23,6 +23,7 @@ from dace.codegen import codegen
 from dace.codegen import compiler as dace_compiler
 from dace.data import Array
 from dace.libraries.standard.nodes.external_call import external_calls
+from dace.sdfg.scope import is_devicelevel_gpu
 from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
 
 from nestforge.build.toolchain import (
@@ -36,6 +37,8 @@ from nestforge.build.toolchain import (
     bind_argument,
     cudart_dir,
     cudart_link_flags,
+    hip_link_flags,
+    hip_runtime_dir,
     lib_linkable,
     openmp_compile_flags,
     openmp_link_flags,
@@ -123,9 +126,10 @@ def new_gpu_codegen() -> AbstractContextManager[object]:
 
 
 def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
-    """Each kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time."""
+    """Each host kernel's standalone SDFG, nested ones included: an ``ExternalCall`` expands it at build time. A GPU
+    kernel's arrays are device memory, and a host stack pin would survive its offloading."""
     for node in external_calls(sdfg):
-        if node.standalone_sdfg is not None:
+        if node.standalone_sdfg is not None and node.schedule not in dace.dtypes.GPU_SCHEDULES:
             yield from node.standalone_sdfg.all_sdfgs_recursive()
 
 
@@ -144,18 +148,30 @@ def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]
             yield desc
 
 
-def force_register_arrays(sdfg: dace.SDFG) -> int:
-    """Pin every array headed for registers to ``Register(force=True)``, so on the CPU it stays on the stack, a
-    symbolic size as a variable-length array, instead of a heap allocation per scope: unforced register arrays,
-    scope-lived arrays inside a map (DaCe's rule), and a kernel's scope-lived arrays. Returns how many."""
+def on_device(sdfg: dace.SDFG) -> bool:
+    """Whether ``sdfg`` runs inside a GPU kernel, where a register array is per-thread memory."""
+    node = sdfg.parent_nsdfg_node
+    return node is not None and is_devicelevel_gpu(sdfg.parent.sdfg, sdfg.parent, node)
+
+
+def force_register_arrays(sdfg: dace.SDFG, kernels: bool = True) -> int:
+    """Settle where every array headed for registers lives: unforced register arrays, scope-lived arrays inside a map
+    (DaCe's rule), and, with ``kernels``, a host kernel's scope-lived arrays. Map-scoped arrays and arrays of a
+    constant size are pinned to ``Register(force=True)``, so they stay on the stack; a host array whose size names a
+    symbol is a heap allocation, never a variable-length array of the problem's size (CloudSC's kernels held
+    megabytes of them). Returns how many."""
     pinned = force_map_scoped_registers(sdfg)
     for owned, scope_default in [
         *((s, False) for s in sdfg.all_sdfgs_recursive()),
-        *((s, True) for s in kernel_sdfgs(sdfg)),
+        *((s, True) for s in (kernel_sdfgs(sdfg) if kernels else ())),
     ]:
         arrays = list(stack_candidates(owned, scope_default=scope_default))
+        heap = not on_device(owned)
         for desc in arrays:
-            desc.storage = dace.StorageType.Register(force=True)
+            if heap and dace.symbolic.issymbolic(desc.total_size, owned.constants):
+                desc.storage = dace.StorageType.CPU_Heap
+            else:
+                desc.storage = dace.StorageType.Register(force=True)
         pinned += len(arrays)
     return pinned
 
@@ -254,18 +270,40 @@ def link_shared(linker: str, inputs: Sequence[str], link_libs: Sequence[str], sh
     run([linker, "-shared", AS_NEEDED, *inputs, *link_libs, "-o", str(shared)])
 
 
-def build_cuda_archive(
-    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+def build_device_archive(
+    sources: Sequence[Path],
+    archive: Path,
+    shared: Path,
+    compiler: str,
+    flags: Sequence[str],
+    libraries: Sequence[str],
+    runtime: Sequence[str],
 ) -> float:
-    """Compile each CUDA unit with ``nvcc``, archive the objects, and link ``shared`` with the host compiler against
-    ``libraries`` and the ``libcudart`` that ``nvcc`` itself links."""
+    """Compile each device unit with ``compiler`` (nvcc or hipcc), archive the objects, and link ``shared`` with the
+    host compiler against ``libraries`` and the device ``runtime`` the compiler itself links."""
     archive.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     objs = [archive.parent / f"{source.stem}.o" for source in sources]
     for source, obj in zip(sources, objs):
-        run([nvcc, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
-    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *cudart_link_flags(cudart_dir(nvcc))])
+        run([compiler, *[f for f in flags if f != "-shared"], "-c", str(source), "-o", str(obj)])
+    archive_and_link(objs, archive, shared, DEFAULT_COMPILER, [*libraries, *runtime])
     return time.perf_counter() - t0
+
+
+def build_cuda_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, nvcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
+    """:func:`build_device_archive` with ``nvcc`` and the ``libcudart`` it links."""
+    runtime = cudart_link_flags(cudart_dir(nvcc))
+    return build_device_archive(sources, archive, shared, nvcc, flags, libraries, runtime)
+
+
+def build_hip_archive(
+    sources: Sequence[Path], archive: Path, shared: Path, hipcc: str, flags: Sequence[str], libraries: Sequence[str]
+) -> float:
+    """:func:`build_device_archive` with ``hipcc`` and the ``libamdhip64`` of its ROCm."""
+    runtime = hip_link_flags(hip_runtime_dir(hipcc))
+    return build_device_archive(sources, archive, shared, hipcc, flags, libraries, runtime)
 
 
 def program_compiler() -> str:
@@ -279,7 +317,8 @@ def libomp_cmake_args(compiler: str) -> list[str]:
     if library is None:
         raise LookupError(
             f"no lib{LIBOMP} for {compiler}: neither it, an LLVM driver, llvm-config nor the library search path "
-            "names one, and the process's one OpenMP runtime is libomp"
+            "names one, and the process's one OpenMP runtime is libomp; install libomp (scripts/setup_apt.sh) or put "
+            "its directory on LIBRARY_PATH and LD_LIBRARY_PATH"
         )
     return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP}", f"-DOpenMP_{LIBOMP}_LIBRARY={library}"]
 

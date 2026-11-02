@@ -5,10 +5,10 @@
 For every kernel, four programs leave stage 2: ``stage1`` (no move), ``default`` (canonicalization's fusion stage and
 the passes after it, ``Session.default_moves``), ``guided`` (``Session.guided_moves``: apply the legal move with the
 lowest score change while it is negative, nothing is built to choose; then ``Session.finish_moves``) and
-``default+guided`` (the default, then the score's moves on top). Each then takes the stage 3 to 5 defaults, every kernel is checked
-against the NumPy oracle and timed, and the program time is the sum of kernel time times calls. Prints one table and
-writes ``<out>/score_demo.json``. ``--static`` stops after stage 2 (no build): a cheap probe of what each
-pipeline chooses.
+``default+guided`` (the default, then the score's moves on top). Each then takes the stage 3 to 5 defaults, every
+kernel is checked against the NumPy oracle and timed, and the program time is the sum of kernel time times calls.
+Prints one table and writes ``<out>/score_demo.json``. ``--static`` stops after stage 2 (no build): a cheap probe of
+what each pipeline chooses.
 
 Run it alone on a node: the timings are serial. OpenMP kernels use the threads of ``OMP_NUM_THREADS``."""
 
@@ -64,14 +64,14 @@ def stage2(session: Session, pipeline: str) -> dict:
         moves = [{"kind": m.kind, "labels": list(m.labels), "d_score": m.d_score} for m in session.guided_moves()]
     if pipeline == "guided":
         session.finish_moves()
-    return {"moves": moves, "choose_s": time.perf_counter() - t, **session.score_terms()}
+    terms = session.score_terms()
+    return {"moves": moves, "choose_s": time.perf_counter() - t, "E": terms.entries, "lines": terms.lines}
 
 
 def kernel_calls(session: Session, name: str) -> float:
     state = find_state_of_node(session.sdfg, session.kernel(name))
-    sizes = {k: float(v) for k, v in session.sizes.items()}
-    trips, _ = enclosing_trips(state, sizes)
-    outer, _ = outer_iterations(state.sdfg, sizes)
+    trips, _ = enclosing_trips(state, session.sizes)
+    outer, _ = outer_iterations(state.sdfg, session.sizes)
     return trips * outer
 
 

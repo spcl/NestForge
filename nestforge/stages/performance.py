@@ -52,9 +52,11 @@ class OffloadReport(Record):
 
 
 class KernelReport(Record):
+    """One kernel against its oracle; ``correct`` is ``None`` when it cannot run alone (``error`` says why)."""
+
     name: str
     device: str
-    correct: bool
+    correct: bool | None
     time_us: float | None
     share: float | None
     error: str = ""
@@ -207,10 +209,10 @@ def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[Ke
         KernelReport(
             name=ev.kernel,
             device=devices.get(ev.kernel, "cpu"),
-            correct=ev.verdict.ok,
+            correct=None if ev.verdict.unchecked else ev.verdict.ok,
             time_us=ev.verdict.time_us if ev.verdict.ok else None,
             share=ev.verdict.time_us / total if ev.verdict.ok and total > 0 else None,
-            error=ev.verdict.error,
+            error=ev.verdict.error or ev.verdict.unchecked,
         )
         for ev in evidence
     ]

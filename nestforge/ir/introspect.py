@@ -6,9 +6,12 @@ nest reads and writes."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import functools
-from collections.abc import Callable, Collection
+import signal
+import threading
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -210,6 +213,50 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
     return rows
 
 
+#: Wall-clock seconds DaCe's work-depth pass may take before the tree prints without costs.
+WORK_DEPTH_BUDGET_S = 60
+#: What the work-depth pass raises on a program it cannot cost: SymPy recursion on large nests, an unorderable NaN.
+WORK_DEPTH_FAILURES = (RecursionError, ValueError, TypeError, ArithmeticError)
+#: Longest exception message kept as the reason costs were skipped.
+SKIP_REASON_CHARS = 160
+
+
+class WorkDepthTimeout(Exception):
+    """The work-depth pass outlasted :data:`WORK_DEPTH_BUDGET_S`."""
+
+
+@contextlib.contextmanager
+def time_budget(seconds: int) -> Iterator[None]:
+    """Raise :class:`WorkDepthTimeout` in the body after ``seconds``; only the main thread can be interrupted by a
+    signal, so elsewhere the body runs unbounded."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def expire(signum: int, frame: object) -> None:
+        raise WorkDepthTimeout
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def guarded_work_depth(sdfg: dace.SDFG) -> tuple[WorkDepth, str | None]:
+    """:func:`program_work_depth`, or no costs and why, when the pass raises or outlasts :data:`WORK_DEPTH_BUDGET_S`.
+    Costs only annotate the tree, so a program DaCe cannot cost still gets one."""
+    try:
+        with time_budget(WORK_DEPTH_BUDGET_S):
+            return program_work_depth(sdfg), None
+    except WorkDepthTimeout:
+        return {}, f"work-depth analysis took over {WORK_DEPTH_BUDGET_S} s"
+    except WORK_DEPTH_FAILURES as err:
+        return {}, f"work-depth analysis failed: {type(err).__name__}: {str(err)[:SKIP_REASON_CHARS]}"
+
+
 def program_work_depth(sdfg: dace.SDFG) -> WorkDepth:
     """Work and depth of every loop, state, map and nested SDFG of ``sdfg``, by one pass of DaCe's analysis (which
     works on a copy)."""
@@ -224,7 +271,6 @@ def describe_graph(
     handle: Handle | None = None,
     bodies: bool = False,
     notes: Notes | None = None,
-    epoch: int | None = None,
     expanded: Collection[str] | None = None,
     costs: WorkDepth | None = None,
 ) -> str:
@@ -233,13 +279,12 @@ def describe_graph(
     :param handle: Returns the id to print on a row.
     :param bodies: Also print what each leaf kernel of a shown state computes, as Python.
     :param notes: Returns a line to print under a library node's row.
-    :param epoch: Printed on the first line.
     :param expanded: Labels of the states and maps whose content is shown (with leaf-kernel bodies); every other
         state is one row naming how many kernels it holds, every other map one row naming its nested states.
         ``None`` shows every content.
     :param costs: :func:`program_work_depth` of ``sdfg``, when the caller holds it already.
     """
-    header = f"SDFG '{sdfg.label}'" if epoch is None else f"SDFG '{sdfg.label}'  epoch={epoch}"
+    header = f"SDFG '{sdfg.label}'"
     opened = None if expanded is None else frozenset(expanded)
     twin = lowered_twin(sdfg) if bodies or opened else None
     known = program_work_depth(sdfg) if costs is None else costs
@@ -356,8 +401,8 @@ def innermost(loop: LoopRegion) -> bool:
     return not any(isinstance(b, LoopRegion) for b in loop.all_control_flow_blocks(recursive=True))
 
 
-def kernel_count(state: SDFGState) -> int:
-    """The top-level maps and library nodes of ``state``."""
+def doall_count(state: SDFGState) -> int:
+    """The top-level doalls of ``state``: maps, and library calls, each a black-box doall."""
     return sum(
         isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) and state.entry_node(n) is None for n in state.nodes()
     )
@@ -367,8 +412,8 @@ def block_row(tree: Tree, block: ControlFlowBlock) -> str:
     """A block's row: :func:`block_line`, then its size when it is collapsed or innermost, then its cost."""
     text = block_line(block, tree.defs)
     if isinstance(block, SDFGState):
-        count = kernel_count(block)
-        return f"{text}  kernels={count}" if count and not tree.shows(block.label) else text
+        count = doall_count(block)
+        return f"{text}  doalls={count}" if count and not tree.shows(block.label) else text
     if isinstance(block, LoopRegion):
         if innermost(block):
             text += f"  num_states={state_count(block)}"
@@ -388,7 +433,7 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> s
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     reads, writes = nest_reads_writes(state, node)
     if isinstance(node, nodes.LibraryNode):
-        return f"{node.label}  LIBNODE  reads={reads} writes={writes}"
+        return f"{node.label}  LIBNODE {type(node).__name__}  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
     folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

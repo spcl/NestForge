@@ -12,7 +12,7 @@ from nestforge.ir.depends import KernelGraph, kernel_dependencies
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import Transfer, transfers
+from nestforge.stages.placement import OffloadKernels, Transfer, transfers
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -101,9 +101,7 @@ def test_gpu_placement_copies_the_inputs_to_the_device_and_the_output_back(tmp_p
 
 
 def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp_path):
-    session = kernel_session(True, tmp_path, scale_then_prefix)
-    loop = next(label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.sdfg.state.LoopRegion))
-    assert session.set_scope([loop], session.epoch).status is MoveStatus.APPLIED
+    session = kernel_session(True, tmp_path, scale_then_prefix)  # the map, and the sequential loop as a kernel too
     parallel = {k.name: k.parallel for k in session.list_kernels()}
     assert sorted(parallel.values()) == [False, True], parallel
 
@@ -116,7 +114,7 @@ def test_a_sequential_kernel_stays_on_the_cpu_beside_a_gpu_kernel_by_default(tmp
 def test_an_agent_placement_keeps_a_parallel_kernel_on_the_host_and_its_operands_in_host_memory(tmp_path):
     session = kernel_session(True, tmp_path)
 
-    result = session.place({"extcall_0": "cpu"}, session.epoch)
+    result = session.place({"extcall_0": "cpu"})
 
     assert result.devices == {"extcall_0": "cpu"} and result.copies == ()
     assert not any(storage in GPU_RESIDENT_STORAGES for storage in operand_storages(session, "extcall_0"))
@@ -126,29 +124,28 @@ def test_placing_again_starts_from_the_program_before_the_first_placement(tmp_pa
     session = kernel_session(True, tmp_path)
     session.place()
 
-    again = session.place({"extcall_0": "cpu"}, session.epoch)
+    again = session.place({"extcall_0": "cpu"})
 
     assert again.status is MoveStatus.APPLIED and again.copies == ()
     assert session.kernel("extcall_0").schedule != dace.ScheduleType.GPU_Device
 
 
 @pytest.mark.parametrize(
-    ("gpu", "devices", "epoch", "status", "reason"),
+    ("gpu", "devices", "status", "reason"),
     [
-        (True, {"extcall_0": "gpu"}, 7, MoveStatus.STALE, "epoch 7"),
-        (True, {"extcall_9": "gpu"}, None, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
-        (True, {"extcall_0": "tpu"}, None, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
-        (False, {"extcall_0": "gpu"}, None, MoveStatus.ILLEGAL, "GPU is not a target"),
+        (True, {"extcall_9": "gpu"}, MoveStatus.ILLEGAL, "no kernel is named extcall_9"),
+        (True, {"extcall_0": "tpu"}, MoveStatus.ILLEGAL, "'cpu' or 'gpu'"),
+        (False, {"extcall_0": "gpu"}, MoveStatus.ILLEGAL, "GPU is not a target"),
     ],
 )
-def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, epoch, status, reason):
+def test_a_placement_that_cannot_apply_changes_nothing(tmp_path, gpu, devices, status, reason):
     session = kernel_session(gpu, tmp_path)
-    before, epoch_before = session.sdfg.to_json(), session.epoch
+    before = session.sdfg.to_json()
 
-    result = session.place(devices, session.epoch if epoch is None else epoch)
+    result = session.place(devices)
 
     assert result.status is status and reason in result.reason, result
-    assert (session.sdfg.to_json(), session.epoch) == (before, epoch_before)
+    assert session.sdfg.to_json() == before
 
 
 def test_default_scopes_after_gpu_placement_finds_no_further_scope(tmp_path):
@@ -204,3 +201,55 @@ def test_placed_program_computes_on_the_gpu_what_numpy_computes(tmp_path):
     session.sdfg(a=a, b=b, c=c, N=256)
 
     np.testing.assert_allclose(c, 2.0 * a + b, rtol=1e-15, atol=0)
+
+
+@dace.program
+def doubled(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        b[i] = 2.0 * a[i]
+
+
+@dace.program
+def calls_doubled(a: dace.float64[N], b: dace.float64[N]):
+    doubled(a, b)
+
+
+def test_gpu_offloading_places_a_nested_sdfg_at_the_top_level_of_a_state():
+    """DaCe places a host-level nested SDFG with a fresh ``type(self)(taskloop_overrides, host_maps)``, so
+    ``OffloadKernels`` must build from DaCe's arguments alone (H1 `cloudsc_solver_carry`'s GPU reference raised
+    a missing-argument ``TypeError`` there)."""
+    sdfg = calls_doubled.to_sdfg(simplify=False)
+    (nested,) = [
+        node
+        for state in sdfg.states()
+        for node in state.nodes()
+        if isinstance(node, dace.nodes.NestedSDFG) and state.entry_node(node) is None
+    ]
+
+    OffloadKernels(host_kernels=[]).apply_pass(sdfg, {})
+
+    maps = [node for node, _ in nested.sdfg.all_nodes_recursive() if isinstance(node, dace.nodes.MapEntry)]
+    assert maps and all(entry.map.schedule == dace.ScheduleType.GPU_Device for entry in maps)
+    sdfg.validate()
+
+
+@dace.program
+def staged_scale(a: dace.float64[N], b: dace.float64[N]):
+    t = np.empty_like(a)
+    for i in dace.map[0:N]:
+        t[i] = a[i] * 2.0
+    for i in dace.map[0:N]:
+        b[i] = t[N - 1 - i] + 1.0
+
+
+def test_a_kernel_placed_on_the_gpu_keeps_its_own_arrays_off_the_host_stack(tmp_path):
+    """Pinned to ``Register(force=True)`` when the scope was set, ``t`` stayed a host stack array the device kernels
+    wrote through, corrupting the host stack."""
+    session = Session(staged_scale.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
+    session.describe()
+    maps = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
+    name = session.set_scope(maps).reason
+
+    session.place({name: "gpu"})
+
+    assert session.kernel(name).standalone_sdfg.arrays["t"].storage != dace.StorageType.Register

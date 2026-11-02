@@ -12,6 +12,7 @@ import os
 
 import numpy as np
 import pytest
+from dace import symbolic
 from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 from nestforge.build.isolation import Result, run_isolated
@@ -47,6 +48,16 @@ def test_corpus_exposes_dace_kernels():
     } <= science
     learning = [k.short_name for k in iter_dace_kernels("machine_learning")]
     assert len(learning) >= 5, learning
+
+
+def test_a_symbol_the_manifest_declares_small_is_small_for_the_defaults():
+    """Unless declared small, a symbol is assumed big; warpx_boris_push's manifest declares ``nsteps`` small."""
+    sdfg = corpus_kernel("warpx_boris_push").to_sdfg()
+
+    facts = sdfg.facts()
+    small = {name for name in sdfg.symbols if symbolic.is_small_extent(symbolic.pystr_to_symbolic(name), facts)}
+
+    assert small == {"nsteps"}
 
 
 def test_the_loop_level_track_builds_to_sdfgs():

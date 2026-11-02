@@ -2,18 +2,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session stages 5 and 6: optimize a kernel, replace its source, sweep its configurations, link the winner."""
 
+import shutil
 from pathlib import Path
 
 import dace
 import numpy as np
 import pytest
+from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
+from helpers import corpus_kernel
 
 from nestforge.build import flags
+from nestforge.corpus.bench import preset_sizes
 from nestforge.records import KernelStatus
-from nestforge.session import Session
+from nestforge.session import Session, external_calls
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import kernel_arguments
+from nestforge.stages.scopes import kernel_arguments, node_boundary
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -151,6 +155,79 @@ def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
     assert_program_computes(session.sdfg)
 
 
+def test_a_sweeping_session_relinks_the_winner_its_trial_swept_after_the_trial_is_gone(tmp_path):
+    """Under ``codegen="sweep"`` an unbuilt kernel gets the sweep's winner; the session relinks the winner a trial
+    swept (as :meth:`Session.performance` does, which removes the trial's folder after measuring) instead of sweeping
+    again, and the program still computes 2a + b."""
+    session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 256}, codegen="sweep")
+    (kernel,) = session.default_scopes()
+    trial = session.trial()
+    trial.default_build(kernel.name)
+    swept = trial.builds[kernel.name]
+    shutil.rmtree(trial.work_dir)
+
+    session.default_build(kernel.name)
+
+    linked = session.builds[kernel.name]
+    assert swept.verdict is not None and swept.verdict.ok, "a sweep winner is a timed, correct build"
+    assert linked.variant == swept.variant and linked.verdict == swept.verdict, "relinked, not swept again"
+    assert linked.archive.is_file() and linked.archive.is_relative_to(tmp_path)
+    assert_program_computes(session.sdfg)
+
+
+def computed_bound_sdfg() -> dace.SDFG:
+    """b[i] = 2 a[i] for i < m, where m = N - 1 is assigned on an interstate edge: only the running program has it."""
+    sdfg = dace.SDFG("computed_bound")
+    sdfg.add_array("a", [N], dace.float64)
+    sdfg.add_array("b", [N], dace.float64)
+    sdfg.add_symbol("m", dace.int64)
+    first = sdfg.add_state("first")
+    body = sdfg.add_state_after(first, "body", assignments={"m": "N - 1"})
+    body.add_mapped_tasklet(
+        "double",
+        {"i": "0:m"},
+        {"x": dace.Memlet("a[i]")},
+        "y = 2.0 * x",
+        {"y": dace.Memlet("b[i]")},
+        external_edges=True,
+    )
+    return sdfg
+
+
+def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_5s_configuration(tmp_path):
+    """The sweep's oracle has no value for a symbol the program computes (CloudSC's ``jmelt``), so such a kernel
+    gets the first configuration instead of a sweep."""
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64}, codegen="sweep")
+    (kernel,) = session.default_scopes()
+
+    session.default_build(kernel.name)
+
+    build = session.builds[kernel.name]
+    assert "m" in build.source.boundary.symbols
+    assert build.variant == session.first_variant(build.source.device)
+    assert build.verdict is None, "no sweep timed it"
+
+
+def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_named(tmp_path):
+    session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
+    (kernel,) = session.default_scopes()
+
+    with pytest.raises(ValueError, match=r"\['m'\].*cannot be swept"):
+        session.sweep(kernel.name, reps=1)
+
+    assert kernel.name not in session.builds
+
+
+def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
+    session, name = one_kernel_session(tmp_path)
+
+    session.default_build(name)
+
+    build = session.builds[name]
+    assert build.variant == session.first_variant(build.source.device)
+    assert build.verdict is None, "no sweep timed it"
+
+
 def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
     """A compiler filter that matches nothing leaves the kernel on its DaCe reference expansion."""
     session, name = one_kernel_session(tmp_path, 64)
@@ -161,7 +238,7 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
 
 
 @pytest.mark.gpu
-def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path):
+def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_model(tmp_path):
     sdfg = scaled_sum.to_sdfg(simplify=True)
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
     session.default_scopes()
@@ -171,7 +248,62 @@ def test_a_gpu_sweep_reports_an_nvcc_configuration_without_a_cost_model(tmp_path
 
     assert result.winner is not None
     config = result.config
-    assert config.compiler.startswith("nvcc-") and config.cost_model == flags.NO_COST_MODEL
-    assert config.fp_mode in flags.CUDA_FP and "-arch=native" in config.flags
+    compiler, fp_modes, arch = {
+        "cuda": ("nvcc-", flags.CUDA_FP, "-arch=native"),
+        "hip": ("hipcc-", flags.HIP_FP, "--offload-arch=native"),
+    }[get_gpu_backend()]
+    assert config.compiler.startswith(compiler) and config.cost_model == flags.NO_COST_MODEL
+    assert config.fp_mode in fp_modes and arch in config.flags
     ext = session.kernel(name)
     assert ext.implementation == "ExternCall" and ext.lib_path.endswith(".a")
+
+
+@dace.program
+def pair_sum(x: dace.float64[1], y: dace.float64[1]):
+    t = np.empty(2, dtype=np.float64)
+    t[0] = 2.0 * x[0]
+    t[1] = x[0] + 1.0
+    y[0] = t[0] + t[1]
+
+
+@dace.program
+def calls_pair_sum(x: dace.float64[1], y: dace.float64[1]):
+    for _ in dace.map[0:1]:
+        pair_sum(x, y)
+
+
+@dace.program
+def nested_scratch(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        calls_pair_sum(a[i : i + 1], b[i : i + 1])
+
+
+def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(tmp_path):
+    """The oracle allocates the scratch it lifts out of a nest two levels down; the kernel allocates its own, so the
+    scratch is neither an argument of the kernel nor mistaken for one of its symbols (issue #20)."""
+    session = Session(nested_scratch.to_sdfg(simplify=False), work_dir=str(tmp_path), sizes={"N": 5})
+    for kernel in session.default_scopes():
+        node = session.kernel(kernel.name)
+        inputs, outputs, symbols = kernel_arguments(node)
+        assert set(symbols) <= set(session.sdfg.symbols) | {"N"}, symbols
+        info = session.optimize_kernel(kernel.name)
+        assert set(info.abi_order) == {*inputs, *outputs, *symbols}
+
+
+def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path):
+    """graupel_sedim2b's species and level loops are one kernel inside the substep loop, so ``NSUB`` is among its
+    symbols though its body never reads it. The built entry drops it, binding drops it from the node, and the oracle
+    prepared after that bind must still take every symbol validation passes from the source."""
+    kernel = corpus_kernel("graupel_sedim2b")
+    session = Session(kernel.to_sdfg(), Targets(gpu=False), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
+    session.canonicalize()
+    session.default_moves()
+    session.default_scopes()
+    dropped = []
+    for ext in external_calls(session.sdfg):
+        source_symbols = session.default_kernel(ext.name).boundary.symbols
+        session.optimize_kernel(ext.name)
+        dropped += [s for s in source_symbols if s not in node_boundary(session.kernel(ext.name)).symbols]
+        assert set(source_symbols) <= set(session.prepare_kernel(ext.name).args)
+    assert dropped, "some kernel's entry drops a symbol its body never reads; otherwise this test proves nothing"
+    assert len(session.kernel_evidence(reps=1)) == len(external_calls(session.sdfg))

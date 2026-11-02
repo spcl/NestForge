@@ -9,7 +9,7 @@ and DaCe `a161a3e62`, except the demo (NestForge `4a0862c`, DaCe `0270fcec6`).
 
 ## 1. The question
 
-Stage 2 offers moves (`map-fusion`, `loop-fission`, `map-fission`, `interchange-loop-map`, ...). Building and timing
+Stage 2 offers moves (`doall-fusion`, `for-fission`, `doall-fission`, `interchange-for-doall`, ...). Building and timing
 every candidate costs about 25 s on the CPU and up to 5 minutes on the GPU per program. We look for a number `S`,
 computed from the SDFG without building it, with one property:
 

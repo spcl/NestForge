@@ -8,8 +8,10 @@ import numpy as np
 import pytest
 
 from nestforge.session import Session
+from nestforge.stages import score
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.score import CACHE_BYTES, LINE_BYTES, WEIGHTS, build_name, program_terms
+from nestforge.stages.moves import EXPAND_LIBRARY, Rewrite
+from nestforge.stages.score import CACHE_BYTES, LINE_BYTES, UNSCORED, WEIGHTS, build_name, program_terms, rank_moves
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)
@@ -45,6 +47,13 @@ def map_in_loop(a: dace.float64[N, M]):
     for k in range(1, N):
         for j in dace.map[0:M]:
             a[k, j] = a[k - 1, j] * 0.5
+
+
+@dace.program
+def product(a: dace.float64[N, N], b: dace.float64[N, N], c: dace.float64[N, N]):
+    c[:] = a @ b
+    for i in dace.map[0:N]:
+        c[i, i] = c[i, i] + 1.0
 
 
 def session_of(program, tmp_path, sizes: dict[str, int]) -> Session:
@@ -86,15 +95,15 @@ def test_an_array_that_fits_the_cache_costs_its_lines_once(tmp_path):
 
 def test_ranking_scores_moves_on_copies_and_leaves_the_program_unchanged(tmp_path):
     session = session_of(chain, tmp_path, {"N": SIDE * SIDE})
-    before, epoch = session.sdfg.to_json(), session.epoch
+    before = session.sdfg.to_json()
 
     ranked = session.score_moves("cpu-omp")
 
     assert ranked, "two maps in a row offer a fusion"
     assert [m.d_score for m in ranked] == sorted(m.d_score for m in ranked)
     best = ranked[0]
-    assert best.kind == "map-fusion" and best.d_entries == -1 and best.d_score < 0
-    assert session.sdfg.to_json() == before and session.epoch == epoch
+    assert best.kind == "doall-fusion" and best.d_entries == -1 and best.d_score < 0
+    assert session.sdfg.to_json() == before
 
 
 def test_guided_moves_apply_the_best_move_while_it_lowers_the_score(tmp_path):
@@ -103,11 +112,51 @@ def test_guided_moves_apply_the_best_move_while_it_lowers_the_score(tmp_path):
 
     applied = session.guided_moves("cpu-omp")
 
-    assert [m.kind for m in applied] == ["map-fusion"]
+    assert [m.kind for m in applied] == ["doall-fusion"]
     after = session.score_terms()
-    assert after["E"] == start["E"] - 1 and after["score"] < start["score"]
+    assert after.entries == start.entries - 1
+    weights = WEIGHTS["cpu-omp"]
+    assert after.score(weights) - start.score(weights) == pytest.approx(applied[0].d_score)
     assert all(m.d_score >= 0 for m in session.score_moves("cpu-omp"))
     session.sdfg.validate()
+
+
+def test_the_score_ranks_no_move_that_takes_a_choice_or_that_the_session_finishes(tmp_path):
+    session = session_of(product, tmp_path, {"N": SIDE})
+    assert {EXPAND_LIBRARY, "tile-doall"} <= {m.kind for m in session.list_moves()}
+
+    assert not {m.kind for m in session.score_moves("cpu-omp")} & UNSCORED
+
+
+def test_a_move_dace_fails_to_apply_leaves_the_ranking_of_the_others(tmp_path, monkeypatch):
+    session = session_of(chain, tmp_path, {"N": SIDE * SIDE})
+
+    def fails() -> None:
+        raise ValueError("memlet propagation")
+
+    monkeypatch.setattr(score, "plan_move", lambda *_: Rewrite("fails", fails))
+
+    assert rank_moves(session.sdfg, session.sizes, WEIGHTS["cpu-omp"]) == []
+
+
+def test_a_bound_of_an_integer_function_evaluates_at_integer_sizes():
+    sdfg = dace.SDFG("sqrt_bound")
+    sdfg.add_array("a", [N], dace.float64)
+    sdfg.add_state().add_mapped_tasklet(
+        "fill", {"i": "0:Max(int_sqrt(N - 1) + 1, 1)"}, {}, "o = 1.0", {"o": dace.Memlet("a[i]")}, external_edges=True
+    )
+
+    terms = program_terms(sdfg, {"N": SIDE * SIDE})
+
+    assert terms.unresolved == 0 and terms.entries == 1
+
+
+def test_a_session_without_sizes_refuses_to_score():
+    session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=False))
+    session.canonicalize()
+
+    with pytest.raises(ValueError, match="no sizes"):
+        session.score_moves("cpu-omp")
 
 
 def test_build_name_picks_the_weights_of_the_target_and_thread_count():

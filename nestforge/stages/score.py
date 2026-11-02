@@ -17,7 +17,8 @@ move sequences; how, and where it fails: ``docs/score-design.md``.
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
+import math
+import os
 from dataclasses import dataclass, field
 
 import dace
@@ -28,12 +29,17 @@ from dace.subsets import Range
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.ir.introspect import tree_rows
-from nestforge.stages.moves import Rewrite, legal_moves, plan_move
+from nestforge.records import Record
+from nestforge.stages.canonicalize import narrow_nested_memlets, structural_cleanup
+from nestforge.stages.moves import EXPAND_LIBRARY, SET_IMPLEMENTATION, SIZED, Rewrite, legal_moves, plan_move
 
 #: Bytes in one cache line.
 LINE_BYTES = 64.0
 #: An array at most this large stays cached: its lines are fetched once, however often it is swept.
 CACHE_BYTES = 2.0**20
+#: Moves the score does not rank: a tiling or an implementation takes a choice of the caller, and an expansion's maps
+#: are canonicalized by the session.
+UNSCORED = frozenset({*SIZED, SET_IMPLEMENTATION, EXPAND_LIBRARY})
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,8 +58,7 @@ WEIGHTS: dict[str, ScoreWeights] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class ProgramTerms:
+class ProgramTerms(Record):
     """The two terms of one program; ``unresolved`` counts expressions left with a free symbol (counted as 1)."""
 
     entries: float
@@ -64,14 +69,14 @@ class ProgramTerms:
         return self.lines / weights.workers + weights.entry_cost * self.entries
 
 
-def evaluate(expr: object, sizes: dict[str, float]) -> float | None:
+def evaluate(expr: object, sizes: dict[str, int]) -> float | None:
     """``expr`` at ``sizes``, or ``None`` when a free symbol is left."""
     value = sympy.sympify(expr)
     value = value.subs({s: sizes[str(s)] for s in value.free_symbols if str(s) in sizes})
     return None if value.free_symbols else float(value)
 
 
-def loop_trips(loop: LoopRegion, sizes: dict[str, float]) -> float | None:
+def loop_trips(loop: LoopRegion, sizes: dict[str, int]) -> float | None:
     """Iterations of ``loop``, or ``None`` when a bound is unknown (also when it depends on an outer iterator)."""
     start, end = loop_analysis.get_init_assignment(loop), loop_analysis.get_loop_end(loop)
     stride = loop_analysis.get_loop_stride(loop)
@@ -80,7 +85,7 @@ def loop_trips(loop: LoopRegion, sizes: dict[str, float]) -> float | None:
     first, last, step = evaluate(start, sizes), evaluate(end, sizes), evaluate(stride, sizes)
     if first is None or last is None or step is None or step == 0:
         return None
-    return max(0.0, (last - first) / step + 1.0)
+    return max(0.0, math.floor((last - first) / step) + 1.0)
 
 
 # region entries
@@ -92,7 +97,7 @@ class Tally:
     unresolved: int = 0
 
 
-def state_entries(state: SDFGState, mult: float, sizes: dict[str, float], tally: Tally) -> None:
+def state_entries(state: SDFGState, mult: float, sizes: dict[str, int], tally: Tally) -> None:
     for node in state.nodes():
         if state.entry_node(node) is not None:
             continue
@@ -102,7 +107,7 @@ def state_entries(state: SDFGState, mult: float, sizes: dict[str, float], tally:
             region_entries(node.sdfg, mult, sizes, tally)
 
 
-def region_entries(cfg: ControlFlowRegion, mult: float, sizes: dict[str, float], tally: Tally) -> None:
+def region_entries(cfg: ControlFlowRegion, mult: float, sizes: dict[str, int], tally: Tally) -> None:
     """Add the region entries of ``cfg``, run ``mult`` times; a conditional counts its costliest branch."""
     for block in cfg.nodes():
         if isinstance(block, SDFGState):
@@ -141,7 +146,7 @@ def maps_around(state: SDFGState, node: nodes.Node) -> list[nodes.MapEntry]:
     return found
 
 
-def map_iterations(entries: list[nodes.MapEntry], sizes: dict[str, float]) -> tuple[float, int]:
+def map_iterations(entries: list[nodes.MapEntry], sizes: dict[str, int]) -> tuple[float, int]:
     total, unresolved = 1.0, 0
     for entry in entries:
         n = evaluate(entry.map.range.num_elements(), sizes)
@@ -152,7 +157,7 @@ def map_iterations(entries: list[nodes.MapEntry], sizes: dict[str, float]) -> tu
     return total, unresolved
 
 
-def outer_iterations(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, int]:
+def outer_iterations(sdfg: dace.SDFG, sizes: dict[str, int]) -> tuple[float, int]:
     """Product of the map ranges around the nested SDFG nodes that hold ``sdfg``, up to the program."""
     total, unresolved = 1.0, 0
     while sdfg.parent_nsdfg_node is not None and sdfg.parent is not None:
@@ -163,7 +168,7 @@ def outer_iterations(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, i
     return total, unresolved
 
 
-def enclosing_trips(state: SDFGState, sizes: dict[str, float]) -> tuple[float, int]:
+def enclosing_trips(state: SDFGState, sizes: dict[str, int]) -> tuple[float, int]:
     """Product of the trips of the loops around ``state``, through nested SDFGs."""
     mult, unresolved = 1.0, 0
     graph: ControlFlowRegion | None = state.parent_graph
@@ -227,13 +232,14 @@ def tasklet_iterator(sdfg: dace.SDFG, state: SDFGState, around: list[nodes.MapEn
 def lifted(expr: sympy.Basic, lift: tuple[dict[str, str], ...]) -> sympy.Basic:
     for mapping in lift:
         expr = expr.subs(
-            {s: dace.symbolic.pystr_to_symbolic(mapping[str(s)]) for s in expr.free_symbols if str(s) in mapping}
+            {s: dace.symbolic.pystr_to_symbolic(mapping[str(s)]) for s in expr.free_symbols if str(s) in mapping},
+            simultaneous=True,
         )
     return expr
 
 
 def stride_elements(
-    memlet: dace.Memlet, desc: dace.data.Data, it: TaskletIterator, sizes: dict[str, float]
+    memlet: dace.Memlet, desc: dace.data.Data, it: TaskletIterator, sizes: dict[str, int]
 ) -> float | None:
     """Elements between the accesses of two consecutive iterations of ``it``."""
     if not isinstance(memlet.subset, Range):
@@ -255,7 +261,7 @@ class LineTally:
 
 
 def tasklet_lines(
-    sdfg: dace.SDFG, state: SDFGState, tasklet: nodes.Tasklet, runs: float, sizes: dict[str, float], tally: LineTally
+    sdfg: dace.SDFG, state: SDFGState, tasklet: nodes.Tasklet, runs: float, sizes: dict[str, int], tally: LineTally
 ) -> None:
     around = maps_around(state, tasklet)
     it = tasklet_iterator(sdfg, state, around)
@@ -282,16 +288,9 @@ def tasklet_lines(
             tally.streamed += runs * volume * min(1.0, abs(stride) * desc.dtype.bytes / LINE_BYTES)
 
 
-def all_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
-    yield sdfg
-    for node, _ in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.NestedSDFG):
-            yield node.sdfg
-
-
-def program_lines(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, int]:
+def program_lines(sdfg: dace.SDFG, sizes: dict[str, int]) -> tuple[float, int]:
     tally = LineTally()
-    for inner in all_sdfgs(sdfg):
+    for inner in sdfg.all_sdfgs_recursive():
         outer, missing = outer_iterations(inner, sizes)
         tally.unresolved += missing
         for state in (b for b in inner.all_control_flow_blocks() if isinstance(b, SDFGState)):
@@ -305,15 +304,13 @@ def program_lines(sdfg: dace.SDFG, sizes: dict[str, float]) -> tuple[float, int]
 
 def program_terms(sdfg: dace.SDFG, sizes: dict[str, int]) -> ProgramTerms:
     """``E`` and ``lines`` of ``sdfg`` at ``sizes`` (a value for every symbol of the loop bounds and shapes)."""
-    values = {k: float(v) for k, v in sizes.items()}
     entries = Tally()
-    region_entries(sdfg, 1.0, values, entries)
-    lines, unresolved = program_lines(sdfg, values)
-    return ProgramTerms(entries.value, lines, entries.unresolved + unresolved)
+    region_entries(sdfg, 1.0, sizes, entries)
+    lines, unresolved = program_lines(sdfg, sizes)
+    return ProgramTerms(entries=entries.value, lines=lines, unresolved=entries.unresolved + unresolved)
 
 
-@dataclass(frozen=True, slots=True)
-class ScoredMove:
+class ScoredMove(Record):
     """One legal move and the change it makes to each term and to the score (negative: predicted faster)."""
 
     kind: str
@@ -321,6 +318,12 @@ class ScoredMove:
     d_entries: float
     d_lines: float
     d_score: float
+
+
+def omp_threads() -> int:
+    """``OMP_NUM_THREADS`` when set, else the CPU count (what an OpenMP runtime would use)."""
+    value = os.environ.get("OMP_NUM_THREADS", "")
+    return int(value) if value.isdigit() else os.cpu_count() or 1
 
 
 def build_name(gpu: bool, threads: int) -> str:
@@ -344,19 +347,27 @@ def score_move(
     plan = plan_move(kind, [rows[label] for label in labels])
     if not isinstance(plan, Rewrite):
         return None
-    plan.commit()
+    try:
+        plan.commit()
+    except ValueError:  # a listed move DaCe fails to apply (MapFission's memlet propagation): not a candidate
+        return None
+    # what Session.apply_move runs after every move: the score is of the program the move leaves
+    structural_cleanup(twin)
+    narrow_nested_memlets(twin)
     after = program_terms(twin, sizes)
     return ScoredMove(
-        kind,
-        labels,
-        after.entries - base.entries,
-        after.lines - base.lines,
-        after.score(weights) - base.score(weights),
+        kind=kind,
+        labels=labels,
+        d_entries=after.entries - base.entries,
+        d_lines=after.lines - base.lines,
+        d_score=after.score(weights) - base.score(weights),
     )
 
 
 def rank_moves(sdfg: dace.SDFG, sizes: dict[str, int], weights: ScoreWeights) -> list[ScoredMove]:
-    """Every legal move of ``sdfg`` with its score change, best (most negative) first; no move is applied."""
+    """Every legal move of ``sdfg`` but the :data:`UNSCORED` kinds with its score change, best (most negative) first;
+    no move is applied."""
     base = program_terms(sdfg, sizes)
-    scored = [score_move(sdfg, kind, labels, sizes, base, weights) for kind, labels in legal_moves(sdfg)]
+    moves = [(kind, labels) for kind, labels in legal_moves(sdfg) if kind not in UNSCORED]
+    scored = [score_move(sdfg, kind, labels, sizes, base, weights) for kind, labels in moves]
     return sorted((m for m in scored if m is not None), key=lambda m: m.d_score)

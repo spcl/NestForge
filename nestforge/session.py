@@ -2,22 +2,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the one API over the seven stages, shared by the deterministic driver, humans and agents.
 
-Callers name tree rows by their labels together with the epoch they read them at, and kernels by name. Every
-mutation of the program bumps the epoch and regenerates the labels, so a label from before it is refused instead of
-acting on a moved graph. Every stage has a deterministic default; the agent calls are the alternatives to it.
+Callers name tree rows by their labels and kernels by name. A label stays on its row while the row lives; a change
+retires the labels of the rows it consumed and names what it made afresh, so a label read before it either still
+names the same row or is refused as unknown, never acting on a moved graph. Every stage has a deterministic default; the agent calls are the alternatives to it.
 """
 
 from __future__ import annotations
 
 import atexit
 import copy
-import os
+import dataclasses
 import shutil
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import dace
 import numpy as np
@@ -31,31 +31,52 @@ from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import find_state_of_node
-from nestforge.ir.introspect import Row, WorkDepth, describe_graph, program_work_depth, tree_rows
+from nestforge.ir.introspect import (
+    WORK_DEPTH_FAILURES,
+    Row,
+    WorkDepth,
+    describe_graph,
+    guarded_work_depth,
+    tree_rows,
+)
 from nestforge.ir.loops import loop_symbol_values
-from nestforge.ir.names import inline_top_level_nsdfgs, normalize_labels
+from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
 from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
-from nestforge.stages.canonicalize import Targets, canonicalize, finish, fuse_and_finish
+from nestforge.stages.canonicalize import (
+    Targets,
+    canonicalize,
+    finish,
+    fuse_and_finish,
+    narrow_nested_memlets,
+    structural_cleanup,
+)
+from nestforge.stages.expand import implementations, settle
+from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
-    FORMS,
     KernelSource,
     KernelVerdict,
     build_kernel_library,
+    kernel_form,
     kernel_runtime_libraries,
     kernel_text,
     schedule_kernel,
     split_kernel_text,
+    unchecked_verdict,
     use_kernel_library,
     validate_kernel,
 )
 from nestforge.stages.moves import (
+    EXPAND_LIBRARY,
     MOVE_SHAPES,
+    SET_IMPLEMENTATION,
+    SIZED,
     Rewrite,
     check_kind,
     legal_moves,
     plan_move,
+    probe_sizes,
     scope_metrics,
     sdfg_metrics,
 )
@@ -63,27 +84,31 @@ from nestforge.stages.performance import Performance, Reference, kernel_reports,
 from nestforge.stages.placement import Transfer, check_devices, default_devices, kernel_device, place, transfers
 from nestforge.stages.scopes import (
     is_parallel_kernel,
+    lower_default_scopes,
     lower_group_to_external_call,
-    lower_nests_to_external_call,
     node_boundary,
 )
-from nestforge.stages.score import WEIGHTS, ScoredMove, build_name, program_terms, rank_moves
+from nestforge.stages.score import WEIGHTS, ProgramTerms, ScoredMove, build_name, omp_threads, program_terms, rank_moves
 from nestforge.stages.variants import Variant, device_variants, select_variant
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
 
+
 #: The kernel source language each device's kernels are written in.
-LANGUAGES = {"cpu": "cpp", "gpu": "cuda"}
+def kernel_language(device: str) -> str:
+    """The ``write_kernel`` language of a kernel on ``device``: ``cpp`` on the CPU, the GPU form's dialect on the GPU
+    (``cuda`` or ``hip``)."""
+    return "cpp" if device == "cpu" else kernel_form(device).language
+
+
+def computed_symbols(src: KernelSource, sizes: dict[str, int]) -> list[str]:
+    """The symbols kernel ``src`` takes that ``sizes`` has no value for: ones only the running program computes."""
+    return [s for s in src.boundary.symbols if s not in sizes]
+
 
 #: Upper bound on the moves :meth:`Session.guided_moves` applies; every move strictly lowers the score, so it ends.
 MAX_GUIDED_MOVES = 64
-
-
-def omp_threads() -> int:
-    """``OMP_NUM_THREADS`` when set, else the CPU count (what an OpenMP runtime would use)."""
-    value = os.environ.get("OMP_NUM_THREADS", "")
-    return int(value) if value.isdigit() else os.cpu_count() or 1
 
 
 class MoveResult(Record):
@@ -100,7 +125,10 @@ class Move(Record):
 
     kind: str
     labels: tuple[str, ...]
-    epoch: int
+    #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
+    tile_sizes: tuple[int, ...] = ()
+    #: For ``set-library-implementation``, the implementation it sets.
+    implementation: str | None = None
 
 
 class KernelScope(Record):
@@ -191,6 +219,23 @@ class KernelBuild:
     verdict: KernelVerdict | None = None
 
 
+#: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
+Codegen = Literal["first", "sweep"]
+#: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
+SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
+
+
+def kept(build: KernelBuild, folder: Path) -> KernelBuild:
+    """``build`` with its units and archive copied into ``folder``, so it outlives the work directory it was built in."""
+    folder.mkdir(parents=True, exist_ok=True)
+    copies = {path: Path(shutil.copy2(path, folder / path.name)) for path in [*build.source.units, build.archive]}
+    device = build.source.device_unit
+    source = dataclasses.replace(
+        build.source, unit=copies[build.source.unit], device_unit=copies[device] if device is not None else None
+    )
+    return KernelBuild(source, build.variant, copies[build.archive], build.verdict)
+
+
 def scratch_dir() -> Path:
     """A work directory of the session's own, removed when the process exits."""
     path = Path(tempfile.mkdtemp(prefix="nfsession_"))
@@ -202,21 +247,28 @@ class Session:
     """Owner of one program SDFG, driven stage by stage."""
 
     __slots__ = (
+        "applied",
+        "shared_root",
         "sdfg",
         "name",
         "targets",
         "sizes",
-        "epoch",
+        "namer",
         "rows",
         "expanded",
         "costs",
+        "costs_skipped",
         "work_dir",
         "kernel_deps",
         "unplaced",
         "sources",
         "builds",
         "prepared",
+        "codegen",
+        "swept",
+        "swept_dir",
         "measured",
+        "bench",
     )
 
     def __init__(
@@ -226,18 +278,29 @@ class Session:
         name: str | None = None,
         work_dir: str | None = None,
         sizes: dict[str, int] | None = None,
+        codegen: Codegen = "first",
+        namer: Namer | None = None,
     ) -> None:
-        """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7)."""
+        """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
+        :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
+            ``first``, stage 5's first configuration; ``sweep``, the fastest correct one of stage 6's sweep.
+        :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default."""
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
         self.sizes = dict(sizes) if sizes is not None else {}
-        self.epoch = 0
-        normalize_labels(sdfg)
+        self.namer = namer if namer is not None else Namer()
+        normalize_labels(sdfg, self.namer)
         self.rows: dict[str, Row] | None = None
-        # labels whose content describe() shows, and the work and depth it prints; both reset each epoch
+        #: Every move that changed the program, in order.
+        self.applied: list[MoveResult] = []
+        #: The folder under which finalize builds a library the judge accepts; the shared folder when ``None``.
+        self.shared_root: str | None = None
+        # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: set[str] = set()
         self.costs: WorkDepth | None = None
+        # why describe() printed no costs for this program, or None when it printed them
+        self.costs_skipped: str | None = None
         self.work_dir = Path(work_dir) if work_dir else scratch_dir()
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
@@ -245,39 +308,48 @@ class Session:
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
+        self.codegen = codegen
+        # sweep winners by kernel source and sizes, shared with every trial so a kernel is swept once
+        self.swept: dict[SweepKey, KernelBuild] = {}
+        # where a cached winner's units and archive are kept, so they outlive the trial that swept them
+        self.swept_dir = self.work_dir / "swept"
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Performance | None = None
+        # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
+        self.bench: BenchTarget | None = None
 
-    def bump(self) -> None:
-        self.epoch += 1
-        normalize_labels(self.sdfg)
-        force_register_arrays(self.sdfg)
+    def bump(self, consumed: Sequence[str] = ()) -> None:
+        """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
+        self.namer.retire(tuple(consumed))
+        normalize_labels(self.sdfg, self.namer)
+        # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
+        force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
-        self.expanded = set()
+        self.expanded = {label for label in self.expanded if label in self.row_index()}
         self.costs = None
+        self.costs_skipped = None
         self.kernel_deps = None
         self.sources, self.builds, self.prepared = {}, {}, {}
         self.measured = None
 
     def row_index(self) -> dict[str, Row]:
-        """Tree label -> ``(block or node, state)``, built once per epoch."""
+        """Tree label -> ``(block or node, state)``, built once per change of the program."""
         if self.rows is None:
             self.rows = tree_rows(self.sdfg)
         return self.rows
 
-    def named_rows(self, kind: str, names: tuple[str, ...], epoch: int) -> list[Row] | MoveResult:
-        """The rows ``names`` label at ``epoch``, or the ``stale`` or ``not-found`` result."""
-        if epoch != self.epoch:
-            reason = f"labels read at epoch {epoch}; the program is at epoch {self.epoch}. Describe again."
-            return MoveResult(status=MoveStatus.STALE, kind=kind, labels=names, reason=reason)
+    def named_rows(self, kind: str, names: tuple[str, ...]) -> list[Row] | MoveResult:
+        """The rows ``names`` label, or the ``not-found`` result: a label no row holds, or one a change retired."""
         rows = self.row_index()
         missing = [name for name in names if name not in rows]
         if missing:
+            gone = [name for name in missing if name in self.namer.retired]
+            why = f" ({', '.join(gone)} changed; read the tree again)" if gone else ""
             return MoveResult(
                 status=MoveStatus.NOT_FOUND,
                 kind=kind,
                 labels=names,
-                reason=f"no tree row is labeled {', '.join(missing)}.",
+                reason=f"no tree row is labeled {', '.join(missing)}{why}.",
             )
         return [rows[name] for name in names]
 
@@ -292,24 +364,27 @@ class Session:
     # Stage 2: moves
 
     def describe(self, bodies: bool = False, deps: bool = False) -> str:
-        """The program as a text tree headed by the epoch; rows are named by the labels the labeled calls take.
+        """The program as a text tree; rows are named by the labels the labeled calls take.
         Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
         once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
         if self.costs is None:
-            self.costs = program_work_depth(self.sdfg)
-        return describe_graph(
+            self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
+        tree = describe_graph(
             self.sdfg,
             bodies=bodies,
             notes=self.deps_line if deps else None,
-            epoch=self.epoch,
             expanded=self.expanded,
             costs=self.costs,
         )
+        if self.costs_skipped is None:
+            return tree
+        header, _, rows = tree.partition("\n")
+        return f"{header}\n(no work= or depth=: {self.costs_skipped})\n{rows}"
 
-    def expand(self, labels: Sequence[str], epoch: int) -> str:
+    def expand(self, labels: Sequence[str]) -> str:
         """Show the content of the states and maps ``labels`` name (kernels, nested maps and leaf bodies; a map's
         nested states) until the program changes; returns what opened, or why nothing did."""
-        rows = self.named_rows("expand", tuple(labels), epoch)
+        rows = self.named_rows("expand", tuple(labels))
         if isinstance(rows, MoveResult):
             return f"{spelled(rows.status)}: {rows.reason}"
         closed = [name for name, (obj, _) in zip(labels, rows) if not isinstance(obj, (SDFGState, nodes.MapEntry))]
@@ -318,11 +393,11 @@ class Session:
         self.expanded.update(labels)
         return f"ok: expanded {', '.join(labels)}"
 
-    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = (), epoch: int | None = None) -> str:
-        """:meth:`collapse` then :meth:`expand` (labels read at ``epoch``), and the tree after them, each note first."""
+    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = ()) -> str:
+        """:meth:`collapse` then :meth:`expand`, and the tree after them, each note first."""
         notes = [self.collapse(collapse)] if collapse else []
         if expand:
-            notes.append(self.expand(expand, self.epoch - 1 if epoch is None else epoch))
+            notes.append(self.expand(expand))
         return "\n".join([*notes, self.describe()])
 
     def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
@@ -349,15 +424,35 @@ class Session:
 
     def list_moves(self, kind: str | None = None) -> list[Move]:
         """Every legal move right now, of ``kind`` or of every kind."""
-        return [Move(kind=k, labels=tuple(labels), epoch=self.epoch) for k, labels in legal_moves(self.sdfg, kind)]
+        found = legal_moves(self.sdfg, kind)
+        rows = self.row_index() if any(k in SIZED or k == SET_IMPLEMENTATION for k, _ in found) else {}
+        moves: list[Move] = []
+        for k, labels in found:
+            if k == SET_IMPLEMENTATION:
+                node = cast(nodes.LibraryNode, rows[labels[0]][0])
+                moves += [
+                    Move(kind=k, labels=labels, implementation=name) for name in implementations(node, self.targets.gpu)
+                ]
+            else:
+                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
+                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes))
+        return moves
 
-    def apply_move(self, kind: str, labels: Sequence[str], epoch: int) -> MoveResult:
-        """Apply one fusion, fission or interchange to the tree rows ``labels`` name, as read at ``epoch``.
+    def apply_move(
+        self,
+        kind: str,
+        labels: Sequence[str],
+        tile_sizes: Sequence[int] = (),
+        implementation: str | None = None,
+    ) -> MoveResult:
+        """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
+        the move makes are named afresh.
 
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
-        :param epoch: The epoch :meth:`describe` or :meth:`list_moves` showed with those labels.
+        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
+        :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :returns: The outcome; nothing but ``applied`` touches the program.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -365,16 +460,31 @@ class Session:
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
-        rows = self.named_rows(kind, names, epoch)
+        rows = self.named_rows(kind, names)
         if isinstance(rows, MoveResult):
             return rows
-        plan = plan_move(kind, rows)
+        plan = plan_move(kind, rows, tile_sizes, implementation)
+        if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
+            offered = implementations(cast(nodes.LibraryNode, rows[0][0]), self.targets.gpu)
+            if implementation not in offered:
+                plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
-        plan.commit()
+        made = plan.commit()
+        if kind == EXPAND_LIBRARY:
+            # the expansion's maps join the program in canonical form, as rows the other moves take
+            settle(cast(list[nodes.NestedSDFG], made), self.targets)
+            inline_top_level_nsdfgs(self.sdfg)
+        structural_cleanup(self.sdfg)
+        # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule inference
+        # read them
+        narrow_nested_memlets(self.sdfg)
         self.unplaced = None
-        self.bump()
-        return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+        # setting an implementation changes a property of the row, not the row: its label stays
+        self.bump(() if kind == SET_IMPLEMENTATION else names)
+        done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+        self.applied.append(done)
+        return done
 
     def metrics(self, label: str) -> str:
         """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""
@@ -388,8 +498,10 @@ class Session:
             return f"{label} is a {type(obj).__name__}; metrics cover top-level maps, top-level loops and kernels."
         try:
             return f"{label}: {scope_metrics(self.sdfg, obj).suffix()}"
-        except TypeError as err:
+        except TypeError as err:  # scope_metrics' own refusal: not a top-level map or loop
             return str(err)
+        except WORK_DEPTH_FAILURES as err:
+            return f"{label}: no metrics, work-depth analysis failed: {type(err).__name__}: {err}"
 
     def default_moves(self) -> str:
         """Stage 2 default: canonicalization's fusion stage and the stages after it."""
@@ -397,14 +509,22 @@ class Session:
         self.bump()
         return self.describe()
 
+    def finish_moves(self) -> str:
+        """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
+        finish(self.sdfg, self.targets)
+        narrow_nested_memlets(self.sdfg)
+        self.bump()
+        return self.describe()
+
     def score_moves(self, build: str | None = None) -> list[ScoredMove]:
-        """Every legal move with the change of the static score (:mod:`~nestforge.stages.score`) it would make, best
-        first; nothing is applied. Needs a value in :attr:`sizes` for every loop bound and shape symbol.
+        """Every legal move :func:`~nestforge.stages.score.rank_moves` ranks with the change of the static score it
+        would make, best first; nothing is applied. Needs a value in :attr:`sizes` for every loop bound and shape
+        symbol.
 
         :param build: A key of :data:`~nestforge.stages.score.WEIGHTS`; default from the targets and the OpenMP
             thread count of this process.
         """
-        return rank_moves(self.sdfg, self.sizes, WEIGHTS[build or self.score_build()])
+        return rank_moves(self.sdfg, self.need_sizes(), WEIGHTS[build or self.score_build()])
 
     def guided_moves(self, build: str | None = None, limit: int = MAX_GUIDED_MOVES) -> list[ScoredMove]:
         """Stage 2 by the static score: apply the best-scored legal move while it lowers the score, at most ``limit``
@@ -416,7 +536,7 @@ class Session:
             if not ranked or ranked[0].d_score >= 0:
                 break
             best = ranked[0]
-            result = self.apply_move(best.kind, best.labels, self.epoch)
+            result = self.apply_move(best.kind, best.labels)
             if result.status is not MoveStatus.APPLIED:
                 break
             applied.append(best)
@@ -426,22 +546,16 @@ class Session:
         """The :data:`~nestforge.stages.score.WEIGHTS` key of this session's targets and OpenMP thread count."""
         return build_name(self.targets.gpu, omp_threads())
 
-    def score_terms(self) -> dict[str, float]:
-        """``E``, ``lines`` and the score of the program as it stands."""
-        terms = program_terms(self.sdfg, self.sizes)
-        return {"E": terms.entries, "lines": terms.lines, "score": terms.score(WEIGHTS[self.score_build()])}
-
-    def finish_moves(self) -> str:
-        """The stages after fusion, once :meth:`apply_move` chose the granularity by hand."""
-        finish(self.sdfg, self.targets)
-        self.bump()
-        return self.describe()
+    def score_terms(self) -> ProgramTerms:
+        """``E`` and ``lines`` of the program as it stands."""
+        return program_terms(self.sdfg, self.need_sizes())
 
     # Stage 3: scopes
 
     def default_scopes(self) -> list[KernelScope]:
-        """Stage 3 default: one kernel per parallel top-level map; returns the new kernels."""
-        lowered = lower_nests_to_external_call(self.sdfg)
+        """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
+        the program by its rules, large maps split first; returns the new kernels."""
+        lowered = lower_default_scopes(self.sdfg, self.targets)
         if lowered:
             self.unplaced = None
             self.bump()
@@ -456,44 +570,41 @@ class Session:
             for ext, boundary in lowered
         ]
 
-    def set_scope(self, labels: Sequence[str], epoch: int) -> MoveResult:
+    def set_scope(self, labels: Sequence[str]) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
         blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
 
-        :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them at ``epoch``.
-        :param epoch: The epoch those labels were read at.
+        :param labels: Tree labels of the maps, or of the blocks, as :meth:`describe` printed them.
         :returns: ``applied`` with the new kernel's name as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
-        rows = self.named_rows("define-scope", names, epoch)
+        rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
         self.unplaced = None
-        self.bump()
+        self.bump(names)
         return MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
 
-    def unset_scope(self, name: str, epoch: int) -> MoveResult:
+    def unset_scope(self, name: str) -> MoveResult:
         """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
         dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
         """
-        if epoch != self.epoch:
-            reason = f"kernels read at epoch {epoch}; the program is at epoch {self.epoch}."
-            return MoveResult(status=MoveStatus.STALE, kind="unset-scope", labels=(name,), reason=reason)
-        if self.unplaced is not None:
-            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
         calls = {ext.name: ext for ext in external_calls(self.sdfg)}
         if name not in calls:
             reason = f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}."
             return MoveResult(status=MoveStatus.NOT_FOUND, kind="unset-scope", labels=(name,), reason=reason)
-        ext = calls[name]
-        if ext.standalone_sdfg is None:
+        if calls[name].standalone_sdfg is None:
             reason = f"{name} keeps no SDFG of its nest to inline."
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
+        if self.unplaced is not None:
+            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+        ext = self.kernel(name)
+        assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
         # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only
         connected = {data_name(conn) for conn in (*ext.in_connectors, *ext.out_connectors)}
         for array, desc in ext.standalone_sdfg.arrays.items():
@@ -505,7 +616,7 @@ class Session:
         return MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
 
     def kernel_graph(self) -> KernelGraph:
-        """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per epoch."""
+        """What can reach every kernel argument and program output (:func:`kernel_dependencies`), once per change."""
         if self.kernel_deps is None:
             self.kernel_deps = kernel_dependencies(self.sdfg)
         return self.kernel_deps
@@ -539,18 +650,13 @@ class Session:
 
     # Stage 4: placement
 
-    def place(self, devices: dict[str, str] | None = None, epoch: int | None = None) -> PlaceResult:
+    def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
         """Run each kernel on a device and insert the host/device copies. Kernels ``devices`` leaves out keep the
         default: parallel kernels on the GPU when it is a target, the rest on the CPU. A later call starts again
         from the program before the first placement.
 
         :param devices: Kernel name -> ``cpu`` or ``gpu``.
-        :param epoch: The epoch the kernel names were read at; required with ``devices``.
         """
-        if devices is not None and epoch != self.epoch:
-            return PlaceResult(
-                status=MoveStatus.STALE, reason=f"kernels read at epoch {epoch}; the program is at {self.epoch}."
-            )
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
@@ -572,7 +678,7 @@ class Session:
     # Stage 5: kernels
 
     def default_kernel(self, name: str) -> KernelSource:
-        """The kernel's CPF unit for its device, rendered once per epoch."""
+        """The kernel's CPF unit for its device, rendered once per change of the program."""
         if name not in self.sources:
             ext = self.kernel(name)
             self.sources[name] = schedule_kernel(ext, node_boundary(ext), self.work_dir / name / "kernel")
@@ -621,15 +727,16 @@ class Session:
         :param source: A translation unit defining ``extern "C" void <name>(...)`` with the parameters, in order, of
             the default unit (:meth:`kernel_source` before any change). A GPU kernel may be two units, host then
             device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
-        :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel, ``cuda`` for a GPU kernel.
+        :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel; for a GPU kernel ``cuda`` or ``hip``, the
+            dialect of this machine's GPU backend.
         :returns: The outcome; only ``ok`` changes the kernel's library.
         """
         default = self.default_kernel(name)
-        if language != LANGUAGES[default.device]:
+        if language != kernel_language(default.device):
             return KernelOutcome(
                 kernel=name,
                 status=KernelStatus.REFUSED,
-                reason=f"a {default.device} kernel is {LANGUAGES[default.device]}.",
+                reason=f"a {default.device} kernel is {kernel_language(default.device)}.",
             )
         try:
             params = [p.name for p in parse_params(raw_signature(source, name))]
@@ -644,7 +751,7 @@ class Session:
         attempt = self.work_dir / name / f"agent{len(list((self.work_dir / name).glob('agent*')))}"
         attempt.mkdir(parents=True)
         host, device_text = split_kernel_text(source)
-        suffix = FORMS[default.device].suffix
+        suffix = kernel_form(default.device).suffix
         unit = attempt / f"{name}{suffix}"
         unit.write_text(host)
         device_unit = None
@@ -669,8 +776,11 @@ class Session:
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
 
     def prepare_kernel(self, name: str) -> Prepared:
+        """The kernel's NumPy oracle, from the boundary its source was rendered from. Not the node's: binding a library
+        sets the node's ``abi_order`` to the built entry's parameters, which drop a symbol the body never reads
+        (``NSUB`` of a nest inside the substep loop), and the oracle would no longer take what validation passes."""
         if name not in self.prepared:
-            self.prepared[name] = prepare(node_boundary(self.kernel(name)), name)
+            self.prepared[name] = prepare(self.default_kernel(name).boundary, name)
         return self.prepared[name]
 
     def need_sizes(self) -> dict[str, int]:
@@ -691,17 +801,26 @@ class Session:
         """Build and time the kernel's current source under every configuration of its device, link the fastest
         correct one, and summarize the sweep; ``config`` is the winner's compiler, FP mode, cost model, flags, time.
 
-        :param compilers: Toolchain names to keep (``gcc``, ``clang``, ``nvcc``, ``nvcc-13.1``, ...); every one
+        :param compilers: Toolchain names to keep (``gcc``, ``clang``, ``nvcc``, ``nvcc-13.1``, ``hipcc``, ...); every one
             discovered for the kernel's device when ``None``.
         """
         build = self.builds.get(name)
         src = build.source if build is not None else self.default_kernel(name)
+        sizes = self.kernel_sizes(name)
+        computed = computed_symbols(src, sizes)
+        if computed:
+            raise ValueError(
+                f"{name} takes {computed}, which only the running program computes; its oracle has no value for "
+                "them, so it cannot be swept. finalize builds its first configuration."
+            )
         variants = device_variants(src.device, compilers)
         prep = self.prepare_kernel(name)
-        result = select_variant(src, prep, self.kernel_sizes(name), reps, variants, self.work_dir / name / "variants")
+        result = select_variant(src, prep, sizes, reps, variants, self.work_dir / name / "variants")
         winner = result.winner
         if winner is not None and winner.archive is not None:
-            self.bind(name, KernelBuild(src, winner.variant, winner.archive, winner.verdict))
+            build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
+            self.bind(name, build)
+            self.swept[self.sweep_key(name, src)] = kept(build, self.swept_dir / f"{name}_{len(self.swept)}")
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
         variant = winner.variant
@@ -713,6 +832,28 @@ class Session:
             time_us=winner.verdict.time_us,
         )
         return Sweep(kernel=name, cells=len(result.cells), winner=variant.label, config=config)
+
+    def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
+        units = tuple(unit.read_text() for unit in src.units)
+        return name, units, tuple(sorted(self.kernel_sizes(name).items()))
+
+    def default_build(self, name: str) -> None:
+        """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
+        the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
+        a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
+        only the running program computes: its oracle has no value for it)."""
+        if self.codegen == "first":
+            self.optimize_kernel(name)
+            return
+        src = self.default_kernel(name)
+        if computed_symbols(src, self.kernel_sizes(name)):
+            self.optimize_kernel(name)
+            return
+        known = self.swept.get(self.sweep_key(name, src))
+        if known is not None:
+            self.bind(name, known)
+        elif self.sweep(name).winner is None:
+            self.optimize_kernel(name)
 
     # Stage 7: feedback
 
@@ -726,23 +867,61 @@ class Session:
         evidence: list[feedback.Evidence] = []
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
-                self.optimize_kernel(ext.name)
+                self.default_build(ext.name)
             build = self.builds[ext.name]
             if build.verdict is None:
-                prep = self.prepare_kernel(ext.name)
-                fp_mode = build.variant.fp_mode
-                build.verdict = validate_kernel(
-                    build.archive, build.source, prep, self.kernel_sizes(ext.name), reps, fp_mode
+                sizes, fp_mode = self.kernel_sizes(ext.name), build.variant.fp_mode
+                computed = computed_symbols(build.source, sizes)
+                build.verdict = (
+                    unchecked_verdict(fp_mode, computed)
+                    if computed
+                    else validate_kernel(
+                        build.archive, build.source, self.prepare_kernel(ext.name), sizes, reps, fp_mode
+                    )
                 )
             variant = build.variant
             remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
             evidence.append(feedback.Evidence(ext.name, build.verdict, remarks))
         return evidence
 
+    # Assembly
+
+    def finalize(self, out_dir: Path | None = None) -> Final:
+        """The program as a bench library submission: a program without scopes gets the default scopes, one never
+        placed on a GPU target the default placement, and every kernel without a build its default build
+        (:meth:`default_build`), then the program is rendered in the bench C ABI and built, each
+        kernel linked from its own archive.
+
+        :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
+        """
+        if self.bench is None:
+            raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
+        if not external_calls(self.sdfg):
+            self.default_scopes()
+        if self.targets.gpu and self.unplaced is None:
+            self.place()  # a GPU program is assembled as placed
+        for ext in external_calls(self.sdfg):
+            if ext.name not in self.builds:
+                self.default_build(ext.name)
+        variants = {name: build.variant.label for name, build in self.builds.items()}
+        return assemble(self.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
-        copied = Session(copy.deepcopy(self.sdfg), self.targets, self.name, sizes=self.sizes)
+        # same labels, same namer state: what was read on this session names the same rows of the copy
+        copied = Session(
+            copy.deepcopy(self.sdfg),
+            self.targets,
+            self.name,
+            sizes=self.sizes,
+            codegen=self.codegen,
+            namer=copy.deepcopy(self.namer),
+        )
+        # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
+        copied.swept, copied.swept_dir = self.swept, self.swept_dir
         copied.unplaced = copy.deepcopy(self.unplaced)
+        # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
+        copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
 
     def performance(
@@ -770,6 +949,8 @@ class Session:
         program = time_program(
             trial.sdfg, trial.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
+        # the trial's builds are measured; a long session would otherwise keep every one until it exits
+        shutil.rmtree(trial.work_dir, ignore_errors=True)
         self.measured = Performance(
             structured=program,
             offloading=offload_report(trial.sdfg, devices, moves, self.sizes),

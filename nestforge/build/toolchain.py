@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The compilers on PATH, the one OpenMP runtime every build links (LLVM libomp), CUDA's runtime, and the C
+"""The compilers on PATH, the one OpenMP runtime every build links (LLVM libomp), the CUDA and HIP runtimes, and the C
 signature parsing that binds a kernel entry through ctypes. Imports no DaCe; subprocess probes are cached."""
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,14 @@ from typing import Any
 import numpy as np
 
 C_SCALAR: dict[str, type[ctypes._SimpleCData]] = {
+    "int8_t": ctypes.c_int8,
+    "uint8_t": ctypes.c_uint8,
+    "int16_t": ctypes.c_int16,
+    "uint16_t": ctypes.c_uint16,
     "int32_t": ctypes.c_int32,
+    "uint32_t": ctypes.c_uint32,
     "int64_t": ctypes.c_int64,
+    "uint64_t": ctypes.c_uint64,
     "int": ctypes.c_int,
     "float": ctypes.c_float,
     "double": ctypes.c_double,
@@ -33,6 +40,8 @@ C_PTR: dict[str, type[ctypes._SimpleCData]] = {
     **C_SCALAR,
     "dace::complex64": ctypes.c_float,
     "dace::complex128": ctypes.c_double,
+    "std::complex<float>": ctypes.c_float,
+    "std::complex<double>": ctypes.c_double,
 }
 
 DEFAULT_COMPILER = "g++"
@@ -335,6 +344,47 @@ def cudart_link_flags(directory: str) -> list[str]:
     return [f"-L{directory}", "-lcudart", f"-Wl,-rpath,{directory}"]
 
 
+@dataclass(frozen=True, slots=True)
+class HipToolchain:
+    """One hipcc found on PATH, with its HIP release and the directory its ``libamdhip64`` lives in."""
+
+    hipcc: str
+    release: str
+    runtime_dir: str
+
+    @property
+    def name(self) -> str:
+        return f"hipcc-{self.release}"
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def hipcc_release(hipcc: str) -> str:
+    """``major.minor`` of the HIP release ``hipcc`` belongs to."""
+    out = subprocess.run([hipcc, "--version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S).stdout
+    match = re.search(r"HIP version: (\d+\.\d+)", out)
+    if match is None:
+        raise LookupError(f"{hipcc} --version names no HIP release: {out[:ERROR_TAIL]!r}")
+    return match.group(1)
+
+
+def hip_runtime_dir(hipcc: str) -> str:
+    """The directory holding the ``libamdhip64`` of ``hipcc``'s ROCm: ``<rocm>/lib`` beside its ``<rocm>/bin``."""
+    directory = Path(hipcc).resolve().parents[1] / "lib"
+    if not (directory / "libamdhip64.so").exists():
+        raise LookupError(f"{hipcc}: no libamdhip64.so in {directory}")
+    return str(directory)
+
+
+def discover_hip_toolchains() -> list[HipToolchain]:
+    """Every hipcc on PATH, one toolchain per distinct compiler."""
+    return [HipToolchain(hipcc, hipcc_release(hipcc), hip_runtime_dir(hipcc)) for hipcc in path_executables("hipcc")]
+
+
+def hip_link_flags(directory: str) -> list[str]:
+    """Link ``libamdhip64`` from ``directory`` and find it there again at load time."""
+    return [f"-L{directory}", "-lamdhip64", f"-Wl,-rpath,{directory}"]
+
+
 def needed_libraries(shared: Path) -> list[str]:
     """The ``NEEDED`` sonames of a shared object, in ``readelf -d`` order."""
     out = subprocess.run(
@@ -346,8 +396,33 @@ def needed_libraries(shared: Path) -> list[str]:
 #: Distinct warning kinds reported per tool before the rest are only counted.
 WARN_BUDGET: int = 5
 
-#: tool -> the warning kinds reported, in order.
-WARNED: dict[str, dict[str, None]] = {}
+
+class WarningLedger:
+    """The warning kinds reported per tool, in order. Compiles run on several threads, so every access holds
+    ``lock``."""
+
+    __slots__ = ("kinds", "lock")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.kinds: dict[str, dict[str, None]] = {}
+
+    def first_report(self, tool: str, kinds: str) -> bool:
+        """Record ``kinds`` for ``tool``; whether it is new and within :data:`WARN_BUDGET`."""
+        with self.lock:
+            seen = self.kinds.setdefault(tool, {})
+            if kinds in seen or len(seen) >= WARN_BUDGET:
+                return False
+            seen[kinds] = None
+            return True
+
+    def clear(self) -> None:
+        with self.lock:
+            self.kinds.clear()
+
+
+#: The process's ledger: a sweep of any session in this process reports a warning kind once.
+WARNED = WarningLedger()
 
 
 def warning_kinds(stderr: str) -> str:
@@ -360,10 +435,8 @@ def warn_once(tool: str, stderr: str) -> None:
     """Report a succeeding command's warnings, each kind once and at most :data:`WARN_BUDGET` kinds per tool, since
     a sweep compiles hundreds of cells."""
     kinds = warning_kinds(stderr)
-    seen = WARNED.setdefault(tool, {})
-    if kinds in seen or len(seen) >= WARN_BUDGET:
+    if not WARNED.first_report(tool, kinds):
         return
-    seen[kinds] = None
     warnings.warn(f"{tool} warnings [{kinds}]:\n{stderr[-ERROR_TAIL:]}")
 
 

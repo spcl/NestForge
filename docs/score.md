@@ -1,9 +1,10 @@
 # Static move score
 
-prev: [2 Moves](stages/2-moves.md)
+prev: [2 Moves](stages.md#stage-2-moves)
 
 `Session.score_moves()` ranks every legal stage 2 move without building anything, and `Session.guided_moves()` applies
-the best one while it lowers the score. Code: `nestforge/stages/score.py`.
+the best one while it lowers the score. Tilings, `set-library-implementation` and `expand-library` are not ranked.
+Code: `nestforge/stages/score.py`.
 
 ```
 S = lines / p + c * E        lower is better

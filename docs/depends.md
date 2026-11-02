@@ -1,13 +1,13 @@
 # Kernel DAG
 
-[Overview](../README.md) · related: [3 Scopes](stages/3-scopes.md), [4 Placement](stages/4-placement.md)
+[Overview](../README.md) · related: [3 Scopes](stages.md#stage-3-scopes), [4 Placement](stages.md#stage-4-placement)
 
 `kernel_dependencies(sdfg)` (`nestforge/ir/depends.py`) answers, for every `ExternalCall` argument, which producers
 can reach it. It is the kernel-only view the agent reads, and stage 4 uses it to list the transfers a placement
 implies. It reads the program and never changes it.
 
 ```
-extcall_0: A <- extcall_1.A | program [carried: for0_0], N <- program
+extcall_0: A <- extcall_1.A | program [carried: for0], N <- program
 extcall_1: B <- extcall_0.B, N <- program
 exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 ```
@@ -20,4 +20,4 @@ exit: A <- extcall_1.A | program, B <- extcall_0.B | program
 - **Refused** with `UnsupportedProgram`: `Reference` containers, a view that binds nothing, a kernel inside a
   nested SDFG or without an `abi_order`, and unmodeled control flow.
 
-`Session.kernel_graph()` computes it once per epoch; `list_kernels()` and `describe(deps=True)` show it.
+`Session.kernel_graph()` computes it once per program change; `list_kernels()` and `describe(deps=True)` show it.

@@ -8,6 +8,7 @@ import copy
 import ctypes
 import inspect
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,7 +48,9 @@ from nestforge.ir.emit_python import (
 from nestforge.ir.extract import Boundary, CfgNest, NestNode, extract_cfg_nest, extract_map_nest
 from nestforge.ir.introspect import body_lines, lowered_twin, tree_rows
 from nestforge.ir.names import ScopeChildren, normalize_labels
+from nestforge.session import Session
 from nestforge.stages.moves import Rewrite, legal_moves, plan_move
+from nestforge.stages.performance import Reference, time_program
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
 CTYPE = {
@@ -143,7 +146,7 @@ def run_emitted(source: str, fn_name: str, lowered: dace.SDFG, inputs: dict, siz
 def fusion_moves(sdfg: dace.SDFG) -> list[tuple[str, tuple[str, ...]]]:
     """Every legal loop or map fusion of ``sdfg`` as ``(kind, labels)``, after making its tree labels unique."""
     normalize_labels(sdfg)
-    return legal_moves(sdfg, "loop-fusion") + legal_moves(sdfg, "map-fusion")
+    return legal_moves(sdfg, "for-fusion") + legal_moves(sdfg, "doall-fusion")
 
 
 def apply_move(sdfg: dace.SDFG, move: tuple[str, tuple[str, ...]]) -> str:
@@ -160,7 +163,7 @@ def fission_to_fixpoint(sdfg: dace.SDFG) -> int:
     """Apply the first legal loop or map fission until none remains; returns how many applied."""
     for applied in range(200):  # bound: each fission strictly adds a nest
         normalize_labels(sdfg)
-        moves = legal_moves(sdfg, "loop-fission") + legal_moves(sdfg, "map-fission")
+        moves = legal_moves(sdfg, "for-fission") + legal_moves(sdfg, "doall-fission")
         if not moves:
             return applied
         apply_move(sdfg, moves[0])
@@ -291,7 +294,7 @@ def bench_manifest(boundary: Boundary, name: str, sizes: dict[str, int] | None =
 
 def bench_kernel(boundary: Boundary, name: str, out_dir: Path, sizes: dict[str, int] | None = None) -> BenchKernel:
     """Write ``<name>_numpy.py`` + ``<name>.yaml`` for one extracted kernel and build its ``BenchSpec``."""
-    from hpcagent_bench.spec import BenchSpec
+    from hpcagent_bench.spec import BenchSpec, KernelSite
 
     out_dir.mkdir(parents=True, exist_ok=True)
     source = prepare(boundary, name).numpy_source
@@ -299,6 +302,26 @@ def bench_kernel(boundary: Boundary, name: str, out_dir: Path, sizes: dict[str, 
     numpy_path = out_dir / f"{name}_numpy.py"
     numpy_path.write_text(source)
     yaml_path = out_dir / f"{name}.yaml"
-    yaml_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
-    spec = BenchSpec.from_dict(manifest | {"short_name": name, "module_name": name}, source=str(yaml_path))
+    outputs, arrays = set(manifest["output_args"]), manifest["init"]["arrays"]
+    args = {a: arrays[a] | ({"out": True} if a in outputs else {}) for a in manifest["array_args"]}
+    args |= {s: {"value": v} for s, v in manifest["init"].get("scalars", {}).items()}
+    raw = {"name": name, "level": manifest["level"], "parameters": manifest["parameters"], "args": args}
+    signature = tuple(manifest["input_args"])
+    site = KernelSite(short_name=name, relative_path=name, module_name=name, func_name=name, signature=signature)
+    yaml_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    spec = BenchSpec.from_dict(raw, site, source=str(yaml_path))
     return BenchKernel(name, numpy_path, yaml_path, source, manifest, spec)
+
+
+#: Big-program checks compare values, not speed: a Debug build of cloudsc_monolith takes about 20 s, Release 37 s.
+CHECK_BUILD_TYPE = "Debug"
+
+
+def program_mismatch(session: Session, inputs: dict[str, np.ndarray], reference: Reference) -> str:
+    """Why the session's whole program misses the bench ``reference``, or ``""`` when it matches."""
+    with dace.config.set_temporary("compiler", "build_type", value=CHECK_BUILD_TYPE):
+        out = Path(tempfile.mkdtemp(dir=session.work_dir)) / "program"
+        report = time_program(session.sdfg, out, inputs, reference, session.sizes, 1, False)
+    if report.error:
+        return report.error
+    return "" if report.correct else f"mismatched {report.mismatched}"

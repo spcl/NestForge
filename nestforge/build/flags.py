@@ -10,10 +10,10 @@ from collections.abc import Sequence
 #: FP modes, strictest first.
 FP_LEVELS: tuple[str, ...] = ("strict-ieee", "contract-fma", "fast-math")
 
-#: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` evaluates in the oracle's order, so only the
-#: dtype floor applies.
+#: Relative tolerance against the NumPy float64 oracle. ``strict-ieee`` keeps every operation's rounding but not the
+#: order of a reduction, which a parallel or library sum changes (NumPy sums pairwise): a few dozen ULP of float64.
 FP_RTOL: dict[str, float] = {
-    "strict-ieee": 0.0,
+    "strict-ieee": 1e-14,
     "contract-fma": 1e-13,
     "fast-math": 1e-5,
 }
@@ -106,3 +106,24 @@ def cuda_flag_matrix(build_flags: Sequence[str]) -> list[tuple[str, list[str]]]:
     """``(fp_level, flags)`` per GPU cell."""
     base = cuda_base_flags(build_flags)
     return [(level, base + fp) for level, fp in CUDA_FP.items()]
+
+
+#: What a CPF HIP unit needs (CPF names no build flags for its HIP dialect).
+HIP_BUILD_FLAGS: tuple[str, ...] = ("-std=c++20",)
+
+#: Device and host FP flags per mode a HIP kernel sweeps: hipcc is clang, so one contraction switch covers both.
+HIP_FP: dict[str, list[str]] = {
+    "strict-ieee": ["-ffp-contract=off"],
+    "contract-fma": ["-ffp-contract=fast"],
+}
+
+
+def hip_base_flags(build_flags: Sequence[str] = HIP_BUILD_FLAGS) -> list[str]:
+    """``build_flags``, then the prefix every HIP cell shares, compiled for the GPUs of this machine."""
+    return [*build_flags, "-O3", "--offload-arch=native", "-fPIC", "-shared"]
+
+
+def hip_flag_matrix(build_flags: Sequence[str] = HIP_BUILD_FLAGS) -> list[tuple[str, list[str]]]:
+    """``(fp_level, flags)`` per HIP cell."""
+    base = hip_base_flags(build_flags)
+    return [(level, base + fp) for level, fp in HIP_FP.items()]

@@ -1,6 +1,6 @@
 # Python oracle
 
-[Overview](../README.md) · related: [3 Scopes](stages/3-scopes.md), [5 Kernels](stages/5-kernels.md)
+[Overview](../README.md) · related: [3 Scopes](stages.md#stage-3-scopes), [5 Kernels](stages.md#stage-5-kernels)
 
 Every kernel carries a plain Python function that computes what its SDFG computes: the correctness oracle of stages
 5 and 6 (`nestforge/corpus/translate.py`, `prepare`). Its parameter order is the kernel's ABI order.
