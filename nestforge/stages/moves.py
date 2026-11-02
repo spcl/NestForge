@@ -5,25 +5,42 @@ transformations, and the symbolic work and depth of a scope."""
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
 import dace
 import sympy
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
+from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
+from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.transformation.dataflow.map_collapse import MapCollapse
+from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
-from dace.transformation.dataflow.map_fusion_in_place import MapFusionInPlace
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
+from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
+from dace.transformation.dataflow.tiling import MapTiling
+from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
+from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
+from dace.transformation.passes.analysis import loop_analysis
+from dace.transformation.passes.canonicalize.untile_loops import (
+    MapTilePair,
+    UntileLoops,
+    eliminate_pinned_maps,
+    map_tile_pairs,
+    untile_map_pair,
+)
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
 from dace.transformation.transformation import PatternTransformation
@@ -31,6 +48,8 @@ from dace.transformation.transformation import PatternTransformation
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
+from nestforge.records import Record
+from nestforge.stages.expand import expand_library, expansion, set_implementation
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,19 +60,54 @@ class Rewrite:
     commit: Callable[[], object]
 
 
+#: The move kind that turns a library call into maps, which the session then canonicalizes.
+EXPAND_LIBRARY = "expand-library"
+#: The move kind that picks a library call's implementation; it takes ``implementation``.
+SET_IMPLEMENTATION = "set-library-implementation"
+
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
-    "loop-fusion": (LoopRegion, LoopRegion),
-    "loop-fission": (LoopRegion,),
-    "map-fusion": (nodes.MapEntry, nodes.MapEntry),
-    "map-fission": (nodes.MapEntry,),
+    "for-fusion": (LoopRegion, LoopRegion),
+    "for-fission": (LoopRegion,),
+    "doall-fusion": (nodes.MapEntry, nodes.MapEntry),
+    "doall-fission": (nodes.MapEntry,),
     "subgraph-fission": (nodes.MapEntry, ControlFlowBlock),
-    "interchange-loop-map": (LoopRegion, nodes.MapEntry),
-    "interchange-map-loop": (nodes.MapEntry, LoopRegion),
-    "interchange-map-map": (nodes.MapEntry, nodes.MapEntry),
-    "interchange-if-loop": (ConditionalBlock, LoopRegion),
-    "interchange-loop-if": (LoopRegion, ConditionalBlock),
+    "interchange-for-doall": (LoopRegion, nodes.MapEntry),
+    "interchange-doall-for": (nodes.MapEntry, LoopRegion),
+    "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
+    "interchange-if-for": (ConditionalBlock, LoopRegion),
+    "interchange-for-if": (LoopRegion, ConditionalBlock),
+    EXPAND_LIBRARY: (nodes.LibraryNode,),
+    SET_IMPLEMENTATION: (nodes.LibraryNode,),
+    "tile-doall": (nodes.MapEntry,),
+    "untile-doall": (nodes.MapEntry, nodes.MapEntry),
+    "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
+    "expand-doall": (nodes.MapEntry,),
+    "tile-for": (LoopRegion,),
+    "untile-for": (LoopRegion,),
 }
+
+#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
+SIZED = frozenset({"tile-doall", "tile-for"})
+#: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
+PROBE_TILE = 32
+
+
+def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
+    """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension."""
+    if kind not in SIZED:
+        return ()
+    head = rows[0][0]
+    return (PROBE_TILE,) * (len(head.map.params) if isinstance(head, nodes.MapEntry) else 1)
+
+
+def probe_implementation(kind: str, rows: Sequence[Row]) -> str | None:
+    """The implementation :func:`legal_moves` checks :data:`SET_IMPLEMENTATION` with: any the node has; the session
+    lists one move per implementation it may take."""
+    if kind != SET_IMPLEMENTATION:
+        return None
+    return next(iter(cast(nodes.LibraryNode, rows[0][0]).implementations), None)
+
 
 STATE_BARRIER = (
     "nests are in different states, a control-flow dependency map fusion never crosses; fuse the loops around "
@@ -153,9 +207,25 @@ def plan_loop_fusion(first: Row, second: Row) -> Rewrite | str:
     return move or "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two."
 
 
+def vertical_refusal(state: SDFGState, producer: nodes.MapEntry, arr: nodes.AccessNode) -> str:
+    """Why ``MapFusionVertical`` likely refused to fuse through ``arr``, from the shape DaCe's checks reject."""
+    if any(isinstance(e.src, nodes.AccessNode) and e.src.data == arr.data for e in state.in_edges(producer)):
+        return (
+            f"the first map also reads '{arr.data}' (a recurrence); DaCe fuses through a container only when the "
+            "first map reads and writes the same elements of it"
+        )
+    if not state.sdfg.arrays[arr.data].transient:
+        return f"'{arr.data}' is also a program output, which the fused map would have to write as well"
+    return (
+        f"the second map reads elements of '{arr.data}' that another iteration of the first map writes, or the two "
+        "map ranges differ"
+    )
+
+
 def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
-    """Vertical through a transient in either data-flow order, else in place (the intermediate stays in memory, for
-    row-private recurrences vertical fusion refuses, spcl/NestForge#27), else horizontal when no data links the maps."""
+    """Vertical through the data linking the maps in either data-flow order (in place when the first map updates
+    it), else on the fly (the second map recomputes what it reads of the first), else horizontal when no data links
+    the maps."""
     state = node_state(first)
     if node_state(second) is not state:
         return STATE_BARRIER
@@ -164,16 +234,13 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     for producer, consumer in ((a, b), (b, a)):
         for arr in intermediates(state, producer, consumer):
             where = {"first_map_exit": state.exit_node(producer), "array": arr, "second_map_entry": consumer}
-            transient = sdfg.arrays[arr.data].transient
-            move = pattern(MapFusionVertical, sdfg, where) if transient else None
-            if move is None:
-                move = pattern(MapFusionInPlace, sdfg, where)
+            move = pattern(MapFusionVertical, sdfg, where) or pattern(
+                OTFMapFusion, sdfg, where, options={"recompute_windows": True}
+            )
             if move is not None:
                 return move
-            vertical = "" if transient else ", a live output (non-transient) vertical fusion would drop"
             reasons.append(
-                f"blocked on '{arr.data}'{vertical}: MapFusionVertical needs point-wise access to it, and in place "
-                "needs one body per map and every shared container row-private"
+                f"blocked by MapFusionVertical and OTFMapFusion on '{arr.data}': {vertical_refusal(state, producer, arr)}"
             )
     if reasons:
         return "; ".join(reasons) + "."
@@ -187,16 +254,58 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
     return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
 
 
+def statement_groups(state: SDFGState) -> list[list[nodes.Node]]:
+    """The independent computations of a map body's state: its code nodes, joined through the locals (transients)
+    they exchange, with those locals. A statement lowered to a chain of tasklets is one group."""
+    leader: dict[nodes.Node, nodes.Node] = {
+        n: n
+        for n in state.nodes()
+        if isinstance(n, nodes.CodeNode) or (isinstance(n, nodes.AccessNode) and n.desc(state.sdfg).transient)
+    }
+
+    def root(node: nodes.Node) -> nodes.Node:
+        while leader[node] is not node:
+            node = leader[node]
+        return node
+
+    for edge in state.edges():
+        if edge.src in leader and edge.dst in leader:
+            leader[root(edge.dst)] = root(edge.src)
+    groups: dict[nodes.Node, list[nodes.Node]] = {}
+    for node in leader:
+        groups.setdefault(root(node), []).append(node)
+    return [group for group in groups.values() if any(isinstance(n, nodes.CodeNode) for n in group)]
+
+
+def computations(body: dace.SDFG) -> int:
+    """The computations of a map body MapFission gives a map each: its control-flow regions, and the statement
+    groups of its states."""
+    return sum(1 if not isinstance(block, SDFGState) else len(statement_groups(block)) for block in body.nodes())
+
+
+def group_statements(body: dace.SDFG) -> None:
+    """Nest every statement group of more than one code node, so MapFission splits per statement, not per tasklet
+    (which would turn its locals into arrays)."""
+    for state in body.states():
+        for group in statement_groups(state):
+            if sum(isinstance(n, nodes.CodeNode) for n in group) > 1:
+                nest_state_subgraph(body, state, SubgraphView(state, group))
+
+
 def plan_map_fission(row: Row) -> Rewrite | str:
     """Split a map by its independent output groups: a nested-SDFG body by ``MapFission``'s nested pattern, a flat
     body writing two or more outputs by its component pattern (not per tasklet, which would turn locals into
     arrays)."""
     state, entry = node_state(row), row[0]
     body = map_body(state, entry)
+    if body is not None and computations(body.sdfg) < 2:
+        return "the map body is one computation; there is nothing to split."
     if body is not None:
-        return pattern(MapFission, state.sdfg, {"map_entry": entry, "nested_sdfg": body}, expr_index=1) or (
-            MAP_FISSION_REFUSED
-        )
+        where = {"map_entry": entry, "nested_sdfg": body}
+        move = pattern(MapFission, state.sdfg, where, expr_index=1)
+        if move is None:
+            return MAP_FISSION_REFUSED
+        return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
     move = pattern(MapFission, state.sdfg, {"map_entry": entry}, expr_index=0) if len(outputs) > 1 else None
     return move or MAP_FISSION_REFUSED
@@ -243,7 +352,10 @@ def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
     state, entry, loop = node_state(entry_row), entry_row[0], loop_row[0]
     body = map_body(state, entry)
     if body is None or body.sdfg.nodes() != [loop]:
-        return f"the body of {entry.map.label} is not exactly the loop {loop.label}."
+        return (
+            f"the body of {entry.map.label} is not exactly the loop {loop.label}; subgraph-fission the map around the "
+            "loop first, so the loop is the whole body of a map of its own."
+        )
     xform = MapLoopInterchange()
     match = {MapLoopInterchange.map_entry: state.node_id(entry), MapLoopInterchange.nested_sdfg: state.node_id(body)}
     xform.setup_match(state.sdfg, state.parent_graph.cfg_id, state.block_id, match, 0)
@@ -271,26 +383,242 @@ def plan_loop_if(loop_row: Row, cond_row: Row) -> Rewrite | str:
     return region_rewrite("MoveLoopInvariantIfUp", loop.sdfg, lambda: MoveLoopInvariantIfUp.hoist(loop))
 
 
+def plan_expand_library(row: Row) -> Rewrite | str:
+    node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
+    if isinstance(node, ExternalCall):
+        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+    implementation = expansion(node)
+    if implementation is None:
+        return (
+            f"{node.label} ({type(node).__name__}) has no vendor-free expansion (only {sorted(node.implementations)}); "
+            "it stays a library call."
+        )
+    return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
+
+
+def plan_set_implementation(row: Row, implementation: str | None = None) -> Rewrite | str:
+    node = cast(nodes.LibraryNode, row[0])
+    if isinstance(node, ExternalCall):
+        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+    if implementation is None:
+        return f"pass implementation, one of {sorted(node.implementations)}."
+    if implementation not in node.implementations:
+        return f"{node.label} ({type(node).__name__}) has no implementation {implementation!r}; it has {sorted(node.implementations)}."
+    return Rewrite(
+        f"{type(node).__name__} implementation {implementation}", lambda: set_implementation(node, implementation)
+    )
+
+
+def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    dims = len(entry.map.params)
+    if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes) or max(tile_sizes) < 2:
+        return (
+            f"{entry.map.label} has {dims} dimension(s) {entry.map.params}: pass tile_sizes, one positive size each "
+            "(1 leaves a dimension untiled), at least one of 2 or more."
+        )
+    options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
+    return pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options) or (
+        f"blocked by MapTiling: {entry.map.label} cannot be tiled."
+    )
+
+
+def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
+    return next((pair for pair in map_tile_pairs(state) if pair.outer is outer and pair.inner is inner), None)
+
+
+def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
+    outer, inner, state = cast(nodes.MapEntry, outer_row[0]), cast(nodes.MapEntry, inner_row[0]), node_state(outer_row)
+    pair = tile_pair(outer, inner, state) if node_state(inner_row) is state else None
+    if pair is None:
+        return (
+            f"{outer.map.label} is not a tile doall whose points are {inner.map.label}: name the doall stepping over "
+            "tiles, then the doall over one tile's points."
+        )
+
+    def commit() -> None:
+        # one tile dimension per pair: repeat until no tile kernel of these points is left
+        current: MapTilePair | None = pair
+        while current is not None:
+            untile_map_pair(state.sdfg, state, current)
+            eliminate_pinned_maps(state.sdfg, state, {current.outer})
+            current = next((p for p in map_tile_pairs(state) if p.inner is inner), None)
+        propagate_memlets_sdfg(state.sdfg.root_sdfg)
+
+    return Rewrite("untile_map_pair", commit)
+
+
+def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
+    outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
+    if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
+        return f"{inner.map.label} is not directly inside {outer.map.label}; name a doall, then the one inside it."
+    where = {"outer_map_entry": outer, "inner_map_entry": inner}
+    return pattern(MapCollapse, state.sdfg, where) or (
+        "blocked by MapCollapse: the outer doall holds more than the inner one, or the inner range reads the outer "
+        "parameter."
+    )
+
+
+def plan_expand_doall(row: Row) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    if len(entry.map.params) < 2:
+        return f"{entry.map.label} has one dimension; there is nothing to expand."
+    # every nested kernel keeps the kernel's own schedule: MapExpansion's default runs the inner ones sequentially
+    options = {"inner_schedule": entry.map.schedule}
+    return pattern(MapExpansion, state.sdfg, {"map_entry": entry}, options=options) or (
+        f"blocked by MapExpansion: {entry.map.label} cannot be split into nested kernels."
+    )
+
+
+def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    if len(tile_sizes) != 1 or tile_sizes[0] < 2:
+        return f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2."
+    where, options = {"loop": loop}, {"tile_size": tile_sizes[0]}
+    if not LoopTiling.can_be_applied_to(loop.sdfg, options=options, **where):
+        return f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1."
+    return region_rewrite("LoopTiling", loop.sdfg, lambda: LoopTiling.apply_to(loop.sdfg, options=options, **where))
+
+
+def plan_untile_for(row: Row) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    # the untiling decides legality as it rewrites, so it is tried on a copy first
+    trial = copy.deepcopy(loop.sdfg)
+    twin = next(r for r in trial.all_control_flow_regions(recursive=True) if r.label == loop.label)
+    if not isinstance(twin, LoopRegion) or not UntileLoops().untile_loop(twin, trial):
+        return f"{loop.label} is not a loop over tiles holding the loop over one tile's points."
+
+    def commit() -> None:
+        UntileLoops().untile_loop(loop, loop.sdfg)
+        propagate_memlets_sdfg(loop.sdfg.root_sdfg)
+
+    return region_rewrite("UntileLoops.untile_loop", loop.sdfg, commit)
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
-    "loop-fusion": plan_loop_fusion,
-    "loop-fission": plan_loop_fission,
-    "map-fusion": plan_map_fusion,
-    "map-fission": plan_map_fission,
+    "for-fusion": plan_loop_fusion,
+    "for-fission": plan_loop_fission,
+    "doall-fusion": plan_map_fusion,
+    "doall-fission": plan_map_fission,
     "subgraph-fission": plan_subgraph_fission,
-    "interchange-loop-map": plan_loop_map,
-    "interchange-map-loop": plan_map_loop,
-    "interchange-map-map": plan_map_map,
-    "interchange-if-loop": plan_if_loop,
-    "interchange-loop-if": plan_loop_if,
+    "interchange-for-doall": plan_loop_map,
+    "interchange-doall-for": plan_map_loop,
+    "interchange-doall-doall": plan_map_map,
+    "interchange-if-for": plan_if_loop,
+    "interchange-for-if": plan_loop_if,
+    EXPAND_LIBRARY: plan_expand_library,
+    SET_IMPLEMENTATION: plan_set_implementation,
+    "tile-doall": plan_tile_doall,
+    "untile-doall": plan_untile_doall,
+    "collapse-doalls": plan_collapse_doalls,
+    "expand-doall": plan_expand_doall,
+    "tile-for": plan_tile_for,
+    "untile-for": plan_untile_for,
 }
 
 
-def plan_move(kind: str, rows: Sequence[Row]) -> Rewrite | str:
-    """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated."""
+class MoveKind(Record):
+    """One move kind as the agent is told it: the tree rows it takes in order, the DaCe transformation it runs and
+    what it does."""
+
+    kind: str
+    rows: tuple[str, ...]
+    runs: str
+    does: str
+
+
+#: The tree keyword of each row type a move takes.
+ROW_KEYWORDS: dict[type, str] = {
+    LoopRegion: "for",
+    nodes.MapEntry: "doall",
+    ControlFlowBlock: "state",
+    ConditionalBlock: "if",
+    nodes.LibraryNode: "lib_<family>",
+}
+
+#: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
+MOVE_TEXT: dict[str, tuple[str, str]] = {
+    "for-fusion": ("LoopFusion", "two adjacent loops over the same range become one loop."),
+    "for-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
+    "doall-fusion": (
+        "MapFusionVertical / OTFMapFusion / MapFusionHorizontal",
+        "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar, "
+        "or stays the array when the producer updates it in place), a consumer that recomputes the producer's "
+        "values it reads on the fly (a stencil), or two independent maps over the same range.",
+    ),
+    "doall-fission": (
+        "MapFission",
+        "split per computation: one map per independent output group. The pieces often want doall-fusion afterwards: "
+        "fuse back the ones that share data.",
+    ),
+    "subgraph-fission": (
+        "SubgraphFission",
+        "split per state: the map's body is a program of states (expand the doall row to see them); the map is cut "
+        "after the named state, the states up to it in one map and the rest in a second.",
+    ),
+    "interchange-for-doall": (
+        "MoveLoopIntoMap",
+        "for t: doall i: B becomes doall i: for t: B (the doall goes outside).",
+    ),
+    "interchange-doall-for": (
+        "MapLoopInterchange",
+        "map i: for t: B becomes for t: map i: B; the loop must be the whole body of the map.",
+    ),
+    "interchange-doall-doall": ("MapInterchange", "swap a map with the map directly inside it."),
+    "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
+    "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
+    EXPAND_LIBRARY: (
+        "LibraryNode.expand (pure, else specialize), then canonicalization",
+        "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
+        "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
+        "unexpanded, it stays a vendor or library call built on its own.",
+    ),
+    SET_IMPLEMENTATION: (
+        "LibraryNode.implementation (implementation, one list_moves offers)",
+        "a library call, a black-box doall, keeps its row and is built through the named implementation: loops "
+        "(pure), the host vendor library (OpenBLAS, FFTW3) or, with a GPU target, the device one (cuBLAS, hipBLAS, "
+        "...), which also decides the device its kernel runs on.",
+    ),
+    "tile-doall": (
+        "MapTiling (tile_sizes, one per dimension)",
+        "doall i: B becomes doall i0 (step = tile size): doall i (one tile): B; each tile's working set fits a "
+        "cache or a thread block. A size need not divide the range.",
+    ),
+    "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
+    "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
+    "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "tile-for": (
+        "LoopTiling (tile_sizes, one size)",
+        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order; "
+        "follow it with an interchange to block a nest.",
+    ),
+    "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
+}
+
+
+def move_kinds() -> list[MoveKind]:
+    """Every move kind, in :data:`MOVE_SHAPES` order."""
+    return [
+        MoveKind(
+            kind=kind, rows=tuple(ROW_KEYWORDS[t] for t in shape), runs=MOVE_TEXT[kind][0], does=MOVE_TEXT[kind][1]
+        )
+        for kind, shape in MOVE_SHAPES.items()
+    ]
+
+
+def plan_move(
+    kind: str, rows: Sequence[Row], tile_sizes: Sequence[int] = (), implementation: str | None = None
+) -> Rewrite | str:
+    """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
+    ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`."""
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
             return f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}."
+    if kind in SIZED:
+        return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
+    if kind == SET_IMPLEMENTATION:
+        return PLANNERS[kind](*rows, implementation=implementation)
     return PLANNERS[kind](*rows)
 
 
@@ -308,6 +636,43 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
 
 
+def doall_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    return (((entry, state),) for state, entry in map_rows(sdfg))
+
+
+def for_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    return (((loop, None),) for loop in every_region_block(sdfg, LoopRegion))
+
+
+def starts_at(inner: LoopRegion, var: str) -> bool:
+    """Whether ``inner`` starts at loop variable ``var``, as the loop over one tile's points does."""
+    start = loop_analysis.get_init_assignment(inner)
+    return start is not None and var in {str(s) for s in start.free_symbols}
+
+
+def tile_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """Loops that step over tiles (a stride other than 1) and hold a loop starting at their variable: the only ones
+    untile-for can collapse; the untiling itself, tried on a copy, decides."""
+    for loop in every_region_block(sdfg, LoopRegion):
+        stride = loop_analysis.get_loop_stride(loop)
+        if stride is None or stride == 1 or not loop.loop_variable:
+            continue
+        if any(isinstance(b, LoopRegion) and starts_at(b, loop.loop_variable) for b in loop.nodes()):
+            yield ((loop, None),)
+
+
+def tile_pair_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    for owner in sdfg.all_sdfgs_recursive():
+        for state in owner.states():
+            yield from (((pair.outer, state), (pair.inner, state)) for pair in map_tile_pairs(state))
+
+
+def library_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    for owner in sdfg.all_sdfgs_recursive():
+        for state in owner.states():
+            yield from (((n, state),) for n in state.nodes() if isinstance(n, nodes.LibraryNode))
+
+
 def loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     for loop in every_region_block(sdfg, LoopRegion):
         out = loop.parent_graph.out_edges(loop)
@@ -316,14 +681,25 @@ def loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 def map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    """Map pairs of one state that share a scope or a data node, in node order."""
+    """Map pairs of one state that share a data node, and each map with the next map of its scope, in node order.
+    Only neighbors are offered unlinked: every pair of a scope would be quadratic (CloudSC lists 20k), and fusing
+    neighbors one after another reaches any horizontal fusion."""
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
             entries = [n for n in state.nodes() if isinstance(n, nodes.MapEntry)]
+            linked = {
+                frozenset((state.entry_node(into.src), out.dst))
+                for access in state.data_nodes()
+                for into in state.in_edges(access)
+                if isinstance(into.src, nodes.MapExit)
+                for out in state.out_edges(access)
+                if isinstance(out.dst, nodes.MapEntry)
+            }
             for i, a in enumerate(entries):
+                scope = state.entry_node(a)
+                neighbor = next((b for b in entries[i + 1 :] if state.entry_node(b) is scope), None)
                 for b in entries[i + 1 :]:
-                    linked = intermediates(state, a, b) or intermediates(state, b, a)
-                    if linked or state.entry_node(a) is state.entry_node(b):
+                    if b is neighbor or frozenset((a, b)) in linked:
                         yield (a, state), (b, state)
 
 
@@ -372,16 +748,24 @@ def loop_guard_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
-    "loop-fusion": loop_pairs,
-    "loop-fission": lambda sdfg: (((loop, None),) for loop in every_region_block(sdfg, LoopRegion)),
-    "map-fusion": map_pairs,
-    "map-fission": lambda sdfg: (((entry, state),) for state, entry in map_rows(sdfg)),
+    "for-fusion": loop_pairs,
+    "for-fission": for_rows,
+    "doall-fusion": map_pairs,
+    "doall-fission": doall_rows,
     "subgraph-fission": body_cuts,
-    "interchange-loop-map": loop_map_pairs,
-    "interchange-map-loop": map_loop_pairs,
-    "interchange-map-map": nested_map_pairs,
-    "interchange-if-loop": guard_loop_pairs,
-    "interchange-loop-if": loop_guard_pairs,
+    "interchange-for-doall": loop_map_pairs,
+    "interchange-doall-for": map_loop_pairs,
+    "interchange-doall-doall": nested_map_pairs,
+    "interchange-if-for": guard_loop_pairs,
+    "interchange-for-if": loop_guard_pairs,
+    EXPAND_LIBRARY: library_rows,
+    SET_IMPLEMENTATION: library_rows,
+    "tile-doall": doall_rows,
+    "untile-doall": tile_pair_rows,
+    "collapse-doalls": nested_map_pairs,
+    "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "tile-for": for_rows,
+    "untile-for": tile_loops,
 }
 
 
@@ -396,7 +780,8 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
         if name not in CANDIDATES:
             continue
         for rows in CANDIDATES[name](sdfg):
-            if isinstance(plan_move(name, rows), Rewrite):
+            probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
+            if isinstance(probe, Rewrite):
                 found[(name, tuple(tree_label(obj) for obj, _ in rows))] = None
     return list(found)
 

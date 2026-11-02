@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""map-fusion of two row recurrences after interchange-loop-map (spcl/NestForge#27): MapFusionVertical refuses the
-pair, the in-place fusion makes it, and the fused program still computes the recurrences."""
+"""doall-fusion of two row recurrences after interchange-for-doall (#27): the first map reads the array it writes other
+than point-wise, so MapFusionVertical fuses in place, and the fused program still computes the recurrences."""
 
 import dace
 import numpy as np
@@ -44,10 +44,10 @@ def writes(state: dace.SDFGState, entry: dace.nodes.MapEntry) -> set[str]:
 
 def interchange_sweep(s: Session, array: str) -> None:
     rows = s.row_index()
-    for move in s.list_moves("interchange-loop-map"):
+    for move in s.list_moves("interchange-for-doall"):
         entry, state = rows[move.labels[1]]
         if writes(state, entry) == {array}:
-            assert s.apply_move(move.kind, move.labels, move.epoch).status is MoveStatus.APPLIED
+            assert s.apply_move(move.kind, move.labels).status is MoveStatus.APPLIED
             return
     raise AssertionError(f"no interchange offered for the sweep writing {array}")
 
@@ -63,10 +63,10 @@ def test_row_recurrences_fuse_in_place_after_the_interchanges():
     interchange_sweep(s, "q")
     s.finish_moves()
     before = top_level_maps(s.sdfg)
-    moves = s.list_moves("map-fusion")
-    assert moves, "the two row maps must be offered as a map-fusion"
-    result = s.apply_move(moves[0].kind, moves[0].labels, moves[0].epoch)
-    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionInPlace")
+    moves = s.list_moves("doall-fusion")
+    assert moves, "the two row maps must be offered as a doall-fusion"
+    result = s.apply_move(moves[0].kind, moves[0].labels)
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionVertical")
     assert top_level_maps(s.sdfg) == before - 1
     s.sdfg.validate()
 

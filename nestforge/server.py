@@ -2,46 +2,81 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A :class:`Session` in a process of its own, driven over a pipe: the caller's threads never fork, and a crash in
 generated code ends this process, not the caller. The HPCAgent-Bench plugin serves each episode's kernel with one.
-HPCAgent-Bench is imported in the child only, so importing nestforge never loads it."""
+HPCAgent-Bench is imported when a session starts, so importing nestforge never loads it."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import multiprocessing
 import sys
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
+from pathlib import Path
 from typing import Any
 
+import dace
 import numpy as np
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import Record
-from nestforge.session import Session
+from nestforge.session import Codegen, Session
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.finalize import BenchTarget, Final
+from nestforge.stages.moves import move_kinds
 from nestforge.stages.performance import Performance, Reference
+
+
+def finalize(session: Session) -> Final:
+    """The session's program assembled into the folder the judge and the agent share, one folder per session."""
+    from hpcagent_bench.harness.sandbox import shared_dir
+
+    root = session.shared_root or shared_dir()
+
+    final = session.finalize(Path(root) / "nestforge" / session.work_dir.name)
+    # every score and submit finalizes first, so each graded library's moves are on record beside it
+    digest = hashlib.sha256(final.library.read_bytes()).hexdigest()
+    moves = [move.model_dump(mode="json") for move in session.applied]
+    line = {"library": str(final.library), "sha256": digest, "moves": moves}
+    with (final.library.parent / "applied_moves.jsonl").open("a", encoding="utf-8") as log:
+        log.write(json.dumps(line) + "\n")
+    return final
+
 
 #: Tool -> the session call it makes, the tool's validated arguments passed as keywords.
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
+    "list_move_kinds": lambda session: move_kinds(),
     "list_moves": Session.list_moves,
     "apply_move": Session.apply_move,
+    "applied_moves": lambda session: session.applied,
     "run_defaults": Session.run_defaults,
     "set_scope": Session.set_scope,
     "unset_scope": Session.unset_scope,
+    "list_kernels": Session.list_kernels,
+    "read_kernel": Session.kernel_source,
+    "write_kernel": Session.set_kernel_source,
+    "tune_kernel": Session.sweep,
     "get_performance": lambda session: None,
+    "finalize": finalize,
 }
 
 #: Tools whose answer carries :meth:`Session.performance`.
-TIMED = frozenset({"apply_move", "run_defaults", "get_performance"})
+TIMED = frozenset({"apply_move", "run_defaults", "write_kernel", "tune_kernel", "get_performance"})
 
 #: Seconds a closing session process gets before it is terminated.
 CLOSE_TIMEOUT_S = 5.0
 
 #: Seconds one tool call may take (a build of the whole program included) before its session is ended.
 TOOL_TIMEOUT_S = 1800.0
+
+
+#: The bench setting that points an ML kernel's PyTorch reference at a KernelBench checkout; a pip install of the
+#: bench does not ship the submodule.
+KERNELBENCH_DIR_VAR = "HPCAGENT_BENCH_ML_KERNELBENCH_DIR"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +87,8 @@ class Setup:
     preset: str
     datatype: str
     gpu: bool
+    #: The episode\'s folder, where finalize builds; the shared folder when empty.
+    shared_root: str = ""
 
 
 class Reply(Record):
@@ -74,26 +111,63 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
 
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "start() checked the kernel"
-    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(setup.preset))
-    inputs = {key: value for key, value in data.items() if isinstance(value, np.ndarray)}
+    data = Benchmark(kernel.short_name).get_data(preset=Preset.parse(size_rung(setup.preset)))
+    # the program names an argument the generator renamed by its new name; unmapped, it would run on zeros
+    renames = kernel.renames()
+    # a scalar argument (cloudsc's timestep ptsphy) is a 0-d array; dropping it would zero it
+    inputs = {
+        renames.get(key, key): np.asarray(value)
+        for key, value in data.items()
+        if isinstance(value, (np.ndarray, np.generic, int, float))
+    }
     try:
         expected = compiled_reference(kernel.spec, dict(data))
     except ReferenceUnavailable as err:
-        print(f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}", file=sys.stderr, flush=True)
+        hint = f"; set {KERNELBENCH_DIR_VAR} to a KernelBench checkout" if "KernelBench" in str(err) else ""
+        print(
+            f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}", file=sys.stderr, flush=True
+        )
         return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
-    return inputs, Reference(expected, rtol, atol)
+    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
 
 
-def start(setup: Setup) -> tuple[Session, dict[str, np.ndarray], Reference | None]:
-    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on."""
+def size_rung(preset: str) -> str:
+    """The rung a session of the judge's ``preset`` token runs on: a fuzzed token (``XL+fuzz``, ``fuzzed``) draws its
+    sizes around a rung, and a session measures on that rung."""
+    from hpcagent_bench.spec import parse_preset
+
+    return parse_preset(preset).anchor.text
+
+
+def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
+    """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on. The agent drives the
+    moves; scopes, placement and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
     kernel = corpus_kernel(setup.kernel)
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
-    session = Session(kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, setup.preset))
+    session = Session(
+        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, size_rung(setup.preset)), codegen=codegen
+    )
+    session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
+    session.shared_root = setup.shared_root
     session.canonicalize()
     inputs, reference = bench_data(setup)
+    # after canonicalization: it is what promotes a scalar input to a symbol
+    session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     return session, inputs, reference
+
+
+def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, int]:
+    """The integer scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's ``k``,
+    which canonicalization promotes to a symbol): only sizes bind a symbol, so each becomes one. A size the
+    preset already gives keeps the preset's value."""
+    free = {str(s) for s in sdfg.free_symbols}
+    return {
+        name: int(value)
+        for name, value in inputs.items()
+        if name in free and value.ndim == 0 and np.issubdtype(value.dtype, np.integer)
+    }
 
 
 def failure(err: BaseException) -> Reply:
@@ -127,11 +201,15 @@ class SessionProcess:
     __slots__ = ("__weakref__", "connection", "process")
 
     def __init__(self, setup: Setup, target: Callable[[Connection, Setup], None] = serve) -> None:
+        from hpcagent_bench.plugins import openmp_environment
+
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
         self.process = context.Process(target=target, args=(child, setup))
-        self.process.start()
+        # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
+        with openmp_environment("nestforge"):
+            self.process.start()
         child.close()
         weakref.finalize(self, self.process.kill)
         ready = self.receive()

@@ -22,7 +22,6 @@ class MoveStatus(enum.Enum):
 
     APPLIED = enum.auto()
     ILLEGAL = enum.auto()
-    STALE = enum.auto()
     NOT_FOUND = enum.auto()
 
 

@@ -25,12 +25,16 @@ dependencies = [
     "pydantic>=2",
     "pyyaml",
     "sympy",
-    # The tips of DaCe extended and HPCAgent-Bench@main; `python scripts/bump_deps.py` moves both. The bench pins its
-    # own DaCe, so [tool.uv] overrides it with this one.
-    "dace @ git+https://github.com/spcl/dace.git@af543a316dc3a031676f75a08a63632aa236d0dd",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@f43e5e9b7f2fbdaa83398c6e789055fa74375188",
+    # DaCe's einsum of three or more operands imports it, but DaCe lists it only under its testing extras.
+    "opt-einsum>=3.0",
+    # The tip of HPCAgent-Bench main, and the DaCe and relayout commits it pins (the bench owns them);
+    # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
+    # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
+    "dace @ git+https://github.com/spcl/dace.git@3ef7de40e3bbc3b172ca4d19effb8f217be97179",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@231bc1b45be5fa7e6962e8a0332201ace10d6278",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@f43e5e9b7f2fbdaa83398c6e789055fa74375188#subdirectory=agent",
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@231bc1b45be5fa7e6962e8a0332201ace10d6278#subdirectory=agent",
+    "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
 ]
 
 [project.optional-dependencies]
@@ -50,7 +54,10 @@ Homepage = "https://github.com/spcl/NestForge"
 Repository = "https://github.com/spcl/NestForge"
 
 [tool.uv]
-override-dependencies = ["dace @ git+https://github.com/spcl/dace.git@af543a316dc3a031676f75a08a63632aa236d0dd"]
+override-dependencies = [
+    "dace @ git+https://github.com/spcl/dace.git@3ef7de40e3bbc3b172ca4d19effb8f217be97179",
+    "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
+]
 
 [tool.setuptools.packages.find]
 include = ["nestforge*"]
@@ -70,7 +77,7 @@ ignore = ["UP031", "F821", "F841", "F823", "C408", "PYI041", "PYI042", "PYI016",
 exclude = ["*.ipynb"]
 
 [tool.pyright]
-include = ["nestforge", "scripts", "examples", "conftest.py"]
+include = ["nestforge", "nestforge_bench", "scripts", "examples", "conftest.py"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 
@@ -79,9 +86,11 @@ addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
 markers = [
     "integration: compiles and runs kernels; slow, its own CI job",
+    "judge: a finalized library graded by an in-process bench judge; its own CI job",
     "e2e: end-to-end with g++/clang++, so it runs on CI",
     "gpu: needs a CUDA device, never on CI",
     "vendor: needs a vendor compiler or library not installed on CI",
+    "cloudsc: every phase and random moves on canonicalized cloudsc_monolith against the bench reference; its own CI job",
 ]
 
 [tool.coverage.run]

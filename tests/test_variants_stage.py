@@ -98,7 +98,7 @@ def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model():
 def test_a_shared_measurement_is_gated_at_each_cells_own_rung():
     """A build shared by a strict and a looser cell is timed once, but ``ok`` must be read at each cell's
     rung: inheriting the strict verdict would fail a looser cell whose build is correct at its tolerance."""
-    strict = KernelVerdict("strict-ieee", maxdiff=1e-14, md_rel=1e-14, dtype_floor=2.3e-16, time_us=5.0)
+    strict = KernelVerdict("strict-ieee", maxdiff=5e-14, md_rel=5e-14, dtype_floor=2.3e-16, time_us=5.0)
 
     loose = dataclasses.replace(strict, fp_mode="contract-fma")
 
@@ -177,7 +177,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
 
 
 @pytest.mark.gpu
-def test_the_gpu_sweep_measures_every_nvcc_cell_and_a_correct_cell_wins(tmp_path):
+def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wins(tmp_path):
     sdfg = vadd.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))

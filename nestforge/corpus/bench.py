@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
     from hpcagent_bench.spec import BenchSpec
 
+#: The generated ``_dace.py``'s map of bench argument names to the program's, for names the generator renamed
+#: (``frac`` -> ``__frac``); the name is the generator's, read from the module.
+RENAMES = "__hpcagent_bench_renames__"
+
 #: Tracks whose ``_dace.py`` this module generates on demand (gitignored, never committed).
 DACE_TRACKS = ("loop_level_reasoning", "scientific_computing", "machine_learning")
 
@@ -62,8 +66,19 @@ class CorpusKernel:
             raise LookupError(f"no @dace.program found in {self.dace_file}")
         return programs[-1]
 
+    def renames(self) -> dict[str, str]:
+        """Bench argument name -> the program's, for each name the generator renamed; empty when none was."""
+        self.program()  # imports the module with HPCAgent-Bench's dtype globals set
+        return dict(vars(self.module()).get(RENAMES, {}))
+
     def to_sdfg(self, simplify: bool = True) -> dace.SDFG:
-        return self.program().to_sdfg(simplify=simplify)
+        """The program's SDFG with the manifest's small symbols declared small, as the bench's CPF route declares
+        them: unless declared, a symbol is assumed big, and the defaults choose schedules by that."""
+        from hpcagent_bench.cpf.canonical import declare_small, small_symbols
+
+        sdfg = self.program().to_sdfg(simplify=simplify)
+        declare_small(sdfg, small_symbols(self.spec))
+        return sdfg
 
 
 def module_path(short_name: str) -> str:
@@ -116,12 +131,22 @@ def materialize_dace_corpus() -> None:
         generate_dace_file(short_name)
 
 
+def is_size(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
-    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes."""
+    """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes.
+    An integer the manifest fixes for every preset (an ``args`` entry with a ``value`` that ``initialize()`` does not
+    return, or an ``init.constants`` entry) is a size too: ``aes_graupel``'s ``kstart`` bounds a loop, and nothing
+    else would bind it. A returned value is only a default the initializer replaces, so it stays out."""
+    init = kernel.spec.init
+    fixed = (
+        {}
+        if init is None
+        else {**init.constants, **{k: v for k, v in init.scalars.items() if k not in init.output_args}}
+    )
     rung = kernel.spec.parameters.get(preset, {})
     knobs = kernel.spec.config_names
-    return {
-        sym: size
-        for sym, size in rung.items()
-        if sym not in knobs and isinstance(size, int) and not isinstance(size, bool)
-    }
+    merged = {**fixed, **rung}
+    return {sym: int(size) for sym, size in merged.items() if sym not in knobs and is_size(size)}

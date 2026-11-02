@@ -9,10 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dace.codegen import cpf
+from dace.codegen.common import get_gpu_backend
 
 from nestforge.build import flags
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.toolchain import CudaToolchain, Toolchain, discover_cuda_toolchains, discover_toolchains
+from nestforge.build.toolchain import (
+    CudaToolchain,
+    HipToolchain,
+    Toolchain,
+    discover_cuda_toolchains,
+    discover_hip_toolchains,
+    discover_toolchains,
+)
 from nestforge.corpus.translate import Prepared
 from nestforge.stages.kernel import (
     KernelSource,
@@ -83,13 +91,28 @@ def enumerate_cuda_variants(toolchains: Sequence[CudaToolchain]) -> list[Variant
     ]
 
 
+def enumerate_hip_variants(toolchains: Sequence[HipToolchain]) -> list[Variant]:
+    """Every hipcc x GPU FP rung cell; a GPU cell has no cost model to sweep."""
+    return [
+        Variant(tc.hipcc, fp_mode, flags.NO_COST_MODEL, tuple(composed), tc.name)
+        for tc in toolchains
+        for fp_mode, composed in flags.hip_flag_matrix()
+    ]
+
+
 def cpu_variants(compilers: Sequence[str] | None) -> list[Variant]:
     """The CPU cells of every toolchain on PATH, narrowed to the toolchain names in ``compilers``."""
     return enumerate_variants([tc for tc in discover_toolchains() if compilers is None or tc.name in compilers])
 
 
 def gpu_variants(compilers: Sequence[str] | None) -> list[Variant]:
-    """The GPU cells of every nvcc on PATH; ``compilers`` names one (``nvcc-13.1``) or all of them (``nvcc``)."""
+    """The GPU cells of every compiler on PATH for this machine's GPU backend: nvcc for CUDA, hipcc for HIP.
+    ``compilers`` names one (``nvcc-13.1``, ``hipcc-6.3``) or all of a kind (``nvcc``, ``hipcc``)."""
+    if get_gpu_backend() == "hip":
+        hipccs = discover_hip_toolchains()
+        return enumerate_hip_variants(
+            [tc for tc in hipccs if compilers is None or "hipcc" in compilers or tc.name in compilers]
+        )
     nvccs = discover_cuda_toolchains()
     return enumerate_cuda_variants(
         [tc for tc in nvccs if compilers is None or "nvcc" in compilers or tc.name in compilers]

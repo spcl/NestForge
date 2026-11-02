@@ -2,23 +2,38 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``POST /nestforge/<tool>``: the judge half of every NestForge tool. Each episode's kernel is served by its own
 session process (:mod:`nestforge.server`), so the judge's threads never fork and a crash ends that process only.
-A tool the session does not serve yet answers 501."""
+A tool in the wire table that the session does not serve answers 501. A session that cannot start, crashes or times
+out is the judge's fault (500, :data:`JUDGE_FAULT_CAUSE`); 400 is only for the agent's own call."""
 
+import threading
 from http import HTTPMethod, HTTPStatus
 from typing import Any
 
 import pydantic
 from hpcagent_bench.cpf.cache import Target
+from hpcagent_bench.harness import sandbox
 from hpcagent_bench.harness.judge_wire import JudgeAnswer, JudgeError
 from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, route
 from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
+from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, Reply, SessionProcess, Setup
+from nestforge.server import CALLS, SessionProcess, Setup
 from nestforge.stages.performance import Performance
 
-#: Episode -> kernel name -> its session process.
-EPISODES: EpisodeStore[dict[str, SessionProcess]] = EpisodeStore(lambda episode: {})
+
+class Episode:
+    """One episode's session processes by kernel name. A session answers one call at a time over its pipe, so
+    ``lock`` serializes the episode's calls (an agent may send several at once)."""
+
+    __slots__ = ("lock", "sessions")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sessions: dict[str, SessionProcess] = {}
+
+
+EPISODES: EpisodeStore[Episode] = EpisodeStore(lambda episode: Episode())
 
 
 class ToolAnswer(JudgeAnswer):
@@ -42,22 +57,28 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     except pydantic.ValidationError as err:
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
     kernel = str(request.body.get("kernel") or "")
-    with judge.device_slot() as slot:
+    episode = EPISODES.get(request.episode_id)
+    # the episode lock first: a call waiting for its session holds no device slot
+    with episode.lock, judge.device_slot() as slot:
         if slot is None:
             return None
-        kernels = EPISODES.get(request.episode_id)
+        kernels = episode.sessions
         if kernel not in kernels:
             gpu = canonical_parallel_form_target() is Target.GPU
-            setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu)
+            setup = Setup(
+                kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(request.episode_id))
+            )
             try:
                 kernels[kernel] = SessionProcess(setup)
             except LookupError as err:
-                return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
+                error = f"{name}: the session could not start: {err}"
+                return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
         reply = kernels[kernel].call(name, args.model_dump())
         if not kernels[kernel].alive:
             # The next call starts a fresh session from the canonical program; this one's moves are lost.
             del kernels[kernel]
-            reply = Reply(error=f"{reply.error}; the next call starts a fresh session")
+            error = f"{name}: {reply.error}; the next call starts a fresh session"
+            return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
     if reply.error:
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {reply.error}"))
     return judge.reply(HTTPStatus.OK, ToolAnswer(tool=name, result=reply.result, performance=reply.performance))

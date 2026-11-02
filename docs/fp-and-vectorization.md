@@ -1,7 +1,7 @@
 # FP modes and vectorization
 
-[Overview](../README.md) · related: [5 Kernels](stages/5-kernels.md),
-[6 Variants](stages/6-variants.md)
+[Overview](../README.md) · related: [5 Kernels](stages.md#stage-5-kernels),
+[6 Variants](stages.md#stage-6-variants)
 
 Stage 5 leaves vectorization to the compiler. Stage 6 sweeps compiler, FP mode and the compiler's
 vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` defines both axes.
