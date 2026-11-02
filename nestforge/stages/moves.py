@@ -17,7 +17,7 @@ from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
-from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
@@ -292,6 +292,16 @@ def group_statements(body: dace.SDFG) -> None:
                 nest_state_subgraph(body, state, SubgraphView(state, group))
 
 
+def derives_from_params(body: nodes.NestedSDFG, entry: nodes.MapEntry) -> bool:
+    """Whether ``body`` binds a symbol of its own to an expression of the map's parameters (OTF fusion's ``_i0: i - 1``).
+    MapFission rebinds only a parameter passed under its own name, so the binding would outlive the map defining it."""
+    params = set(entry.map.params)
+    return any(
+        name not in params and params & {str(s) for s in dace.symbolic.pystr_to_symbolic(str(value)).free_symbols}
+        for name, value in body.symbol_mapping.items()
+    )
+
+
 def plan_map_fission(row: Row) -> Rewrite | str:
     """Split a map by its independent output groups: a nested-SDFG body by ``MapFission``'s nested pattern, a flat
     body writing two or more outputs by its component pattern (not per tasklet, which would turn locals into
@@ -303,7 +313,7 @@ def plan_map_fission(row: Row) -> Rewrite | str:
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
         move = pattern(MapFission, state.sdfg, where, expr_index=1)
-        if move is None:
+        if move is None or derives_from_params(body, entry):
             return MAP_FISSION_REFUSED
         return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
@@ -474,6 +484,8 @@ def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if len(tile_sizes) != 1 or tile_sizes[0] < 2:
         return f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2."
+    if any(isinstance(jump, BreakBlock) for jump in loop_analysis.loop_jumps(loop)):
+        return f"{loop.label} holds a break, which would leave one tile and not the loop."
     where, options = {"loop": loop}, {"tile_size": tile_sizes[0]}
     if not LoopTiling.can_be_applied_to(loop.sdfg, options=options, **where):
         return f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1."
