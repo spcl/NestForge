@@ -137,8 +137,8 @@ trying another. A host library keeps its kernel on the CPU, a device library put
 
 ## Scopes and kernels (when your tool list has them)
 
-Settle the moves first: a move or a new scope rebuilds the kernels it touches, and the sources you wrote for them
-are dropped.
+Settle the moves first: a move, a new scope or an unset scope rebuilds every kernel, and every source you wrote is
+dropped.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
   a straight run of blocks. Group doalls that pass an array between them: inside one kernel you can keep that array in
