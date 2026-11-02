@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import dace
 import sympy
+from dace.data import Scalar
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
@@ -295,6 +296,21 @@ def group_statements(body: dace.SDFG) -> None:
                 nest_state_subgraph(body, state, SubgraphView(state, group))
 
 
+def nests_scalar_output(body: dace.SDFG) -> bool:
+    """Whether :func:`group_statements` would nest a group writing a scalar the map passes out: MapFission gives ``body``
+    an array for that scalar and leaves the new nest's connector a scalar, which memlet propagation refuses."""
+    for state in body.states():
+        for group in statement_groups(state):
+            if sum(isinstance(n, nodes.CodeNode) for n in group) < 2:
+                continue
+            for node in group:
+                for edge in state.out_edges(node):
+                    written = edge.dst.desc(body) if isinstance(edge.dst, nodes.AccessNode) else None
+                    if isinstance(written, Scalar) and not written.transient:
+                        return True
+    return False
+
+
 def derives_from_params(body: nodes.NestedSDFG, entry: nodes.MapEntry) -> bool:
     """Whether ``body`` binds a symbol of its own to an expression of the map's parameters (OTF fusion's ``_i0: i - 1``).
     MapFission rebinds only a parameter passed under its own name, so the binding would outlive the map defining it."""
@@ -316,7 +332,7 @@ def plan_map_fission(row: Row) -> Rewrite | str:
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
         move = pattern(MapFission, state.sdfg, where, expr_index=1)
-        if move is None or derives_from_params(body, entry):
+        if move is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
             return MAP_FISSION_REFUSED
         return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)

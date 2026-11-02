@@ -202,3 +202,15 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
         assert sut.apply_move("expand-library", sut.list_moves("expand-library")[0].labels)
 
     assert "no work= or depth=" in sut.describe()
+
+
+def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_path):
+    kernel = corpus_kernel("gesummv")
+    assert kernel is not None
+    sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
+    sut.canonicalize()
+    while fusions := sut.list_moves("doall-fusion"):
+        assert sut.apply_move("doall-fusion", fusions[0].labels).status is MoveStatus.APPLIED
+
+    for move in sut.list_moves("doall-fission"):
+        assert sut.apply_move("doall-fission", move.labels).status is MoveStatus.APPLIED
