@@ -5,7 +5,9 @@ offered."""
 
 import dace
 import numpy as np
+import pytest
 
+from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.ir.introspect import guarded_work_depth
 from nestforge.ir.names import top_level_nsdfgs
 from nestforge.records import MoveStatus
@@ -91,6 +93,13 @@ def stencil(a: dace.float64[N], b: dace.float64[N]):
         b[i] = a[i - 1] + a[i + 1]
 
 
+@dace.program
+def carried_rows(P: dace.float64[N, N], Q: dace.float64[N, N]):
+    for i in range(1, N - 1):
+        for j in dace.map[1 : N - 1]:
+            Q[i, j] = np.sin(Q[i - 1, j]) + P[i, j]
+
+
 def session(program: dace.frontend.python.parser.DaceProgram, tmp_path) -> Session:
     sut = Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
@@ -171,3 +180,25 @@ def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path):
     a, b = np.arange(1.0, SIZE + 1) ** 2, np.zeros(SIZE)
     sut.sdfg(a=a, b=b, N=SIZE)
     np.testing.assert_array_equal(b[1:-1], a[:-2] + a[2:])
+
+
+def test_a_tiled_loop_over_a_map_is_not_offered_the_interchange_that_would_raise(tmp_path):
+    sut = session(carried_rows, tmp_path)
+    assert sut.list_moves("interchange-for-doall")
+    (tile,) = sut.list_moves("tile-for")[:1]
+    sut.apply_move("tile-for", tile.labels, tile_sizes=[4])
+
+    assert sut.list_moves("interchange-for-doall") == []
+
+
+@pytest.mark.parametrize(("name", "calls"), [("fission_dep_const_offset", 1), ("durbin", 3)])
+def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls, tmp_path):
+    kernel = corpus_kernel(name)
+    assert kernel is not None
+    sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
+    sut.canonicalize()
+
+    for _ in range(calls):
+        assert sut.apply_move("expand-library", sut.list_moves("expand-library")[0].labels)
+
+    assert "no work= or depth=" in sut.describe()

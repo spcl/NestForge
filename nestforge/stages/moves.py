@@ -39,6 +39,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     MapTilePair,
     UntileLoops,
     eliminate_pinned_maps,
+    enclosing_loop_variables,
     exact_bounds,
     map_tile_pairs,
     untile_map_pair,
@@ -356,6 +357,10 @@ def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
     loop, entry = loop_row[0], map_row[0]
     if loop_maps(loop) != [entry]:
         return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that."
+    # MoveLoopIntoMap passes a nest only the SDFG's symbols and data, and raises on an outer loop's iterator
+    read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
+    if read & enclosing_loop_variables(loop):
+        return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
     return pattern(MoveLoopIntoMap, loop.sdfg, {"loop": loop}) or LOOP_INTO_MAP_REFUSED
 
 
@@ -610,8 +615,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
-        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order; "
-        "follow it with an interchange to block a nest.",
+        "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
     ),
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
 }
