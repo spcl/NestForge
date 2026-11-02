@@ -280,8 +280,9 @@ MAX_CUTS = 2
 
 
 def parallel_maps(state: SDFGState) -> list[Row] | None:
-    """The state's top-level maps when, besides access nodes, it holds only parallel maps; ``None`` otherwise."""
-    work = [node for node in state.scope_children()[None] if not isinstance(node, nodes.AccessNode)]
+    """The state's top-level maps when, besides access nodes and built kernels, it holds only parallel maps; ``None``
+    otherwise."""
+    work = [node for node in state.scope_children()[None] if not isinstance(node, (nodes.AccessNode, ExternalCall))]
     if all(is_parallel_nest(node) for node in work):
         return [(node, state) for node in work]
     return None
@@ -324,16 +325,21 @@ def block_units(block: ControlFlowBlock) -> list[Row]:
     return [(block, None)]
 
 
+def holds_kernel(block: ControlFlowBlock) -> bool:
+    return any(isinstance(node, ExternalCall) for node, _ in block.all_nodes_recursive())
+
+
 def default_units(sdfg: dace.SDFG) -> list[Row]:
     """The default scopes, in program order: top-level maps with their state, and blocks taken whole (state
-    ``None``)."""
+    ``None``). A block holding a kernel is never taken whole: a kernel does not nest, and one bound to its library
+    expands to a C++ call no enclosing kernel can render."""
     units: list[Row] = []
     for block in in_order(sdfg):
         if isinstance(block, SDFGState):
             units += [(entry, block) for entry in top_level_doalls(block) if is_parallel_nest(entry)]
         else:
             units += block_units(block)
-    return units
+    return [(obj, state) for obj, state in units if state is not None or not holds_kernel(obj)]
 
 
 def statements(graph: dace.SDFG | ControlFlowBlock) -> int:

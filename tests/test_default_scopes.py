@@ -11,7 +11,7 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
-from nestforge.session import Session
+from nestforge.session import Session, external_calls
 from nestforge.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -178,3 +178,27 @@ def test_a_map_within_the_statement_limit_stays_one_kernel():
     kernels = session.default_scopes()
 
     assert len(kernels) == 1
+
+
+def test_a_second_default_scopes_makes_no_kernel_around_a_built_kernel():
+    """A kernel bound to its library expands to a CPP tasklet, which no enclosing kernel can render."""
+    session, _ = session_and_reference(time_steps)
+    first = session.default_scopes()
+    for kernel in external_calls(session.sdfg):
+        kernel.lib_path, kernel.symbol, kernel.implementation = "/nowhere/lib.a", kernel.name, "ExternCall"
+
+    assert session.default_scopes() == []
+    assert [ext.name for ext in external_calls(session.sdfg)] == [k.name for k in first]
+    assert blocks_of(session.sdfg, LoopRegion) == 1
+
+
+def test_default_scopes_keeps_a_chosen_kernel_inside_a_loop_and_scopes_the_rest():
+    session, _ = session_and_reference(time_steps)
+    first = next(label for label, row in session.row_index().items() if isinstance(row[0], dace.nodes.MapEntry))
+    chosen = session.set_scope([first]).reason
+
+    others = session.default_scopes()
+
+    assert len(others) == 1 and others[0].name != chosen
+    assert sorted(ext.name for ext in external_calls(session.sdfg)) == sorted([chosen, others[0].name])
+    assert blocks_of(session.sdfg, LoopRegion) == 1
