@@ -104,16 +104,6 @@ def numpy_attr(name: str) -> ast.Attribute:
     return ast.Attribute(value=ast.Name(id="np", ctx=ast.Load()), attr=name, ctx=ast.Load())
 
 
-def ceiling_call(arg: ast.expr) -> ast.expr:
-    """SymPy's ``ceiling`` as an integer, since it bounds loops and indices: ``ceiling(p / q)`` is ``-((-p) // q)``,
-    exact on integers; any other argument is rounded up with NumPy and made an ``int``."""
-    if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Div):
-        neg = ast.BinOp(ast.UnaryOp(ast.USub(), arg.left), ast.FloorDiv(), arg.right)
-        return ast.UnaryOp(ast.USub(), neg)
-    rounded = ast.Call(func=numpy_attr("ceil"), args=[arg], keywords=[])
-    return ast.Call(func=ast.Name(id="int", ctx=ast.Load()), args=[rounded], keywords=[])
-
-
 @dataclass(frozen=True, slots=True)
 class Names:
     """How data names of one SDFG are spelled: a transient scalar is a local, a scalar argument a 1-element buffer."""
@@ -166,7 +156,10 @@ class Normalize(ast.NodeTransformer):
         if name in BINARY_OPS and len(node.args) == 2:
             return ast.copy_location(ast.BinOp(node.args[0], BINARY_OPS[name](), node.args[1]), node)
         if name == "ceiling" and len(node.args) == 1:  # SymPy's spelling, in a size printed into a loop bound
-            return ast.copy_location(ceiling_call(node.args[0]), node)
+            rounded = ast.Call(func=numpy_attr("ceil"), args=node.args, keywords=[])
+            return ast.copy_location(
+                ast.Call(func=ast.Name(id="int", ctx=ast.Load()), args=[rounded], keywords=[]), node
+            )
         if name == "int_ceil" and len(node.args) == 2:  # ceil(a / b) == -((-a) // b)
             neg = ast.BinOp(ast.UnaryOp(ast.USub(), node.args[0]), ast.FloorDiv(), node.args[1])
             return ast.copy_location(ast.UnaryOp(ast.USub(), neg), node)
