@@ -7,6 +7,7 @@ import re
 
 import dace
 import numpy as np
+from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg.state import LoopRegion
 
 from nestforge.records import MoveStatus
@@ -57,6 +58,33 @@ def test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop
     computes_running_sum(sut)
 
 
+@dace.program
+def column_steps(a: dace.float64[N, N], b: dace.float64[N, N]):
+    for j in range(1, N):
+        for i in dace.map[0:N]:
+            a[j, i] = a[j - 1, i] + b[j, i]
+
+
+def test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_still_builds(tmp_path):
+    sut = Session(column_steps.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
+    sut.canonicalize()
+    sut.default_scopes()
+    (loop,) = loop_labels(sut)
+    (old,) = [r.loop_variable for r in sut.sdfg.all_control_flow_regions(recursive=True) if isinstance(r, LoopRegion)]
+
+    assert sut.apply_move("tile-for", [loop], tile_sizes=[8]).status is MoveStatus.APPLIED
+    (move,) = sut.list_moves("untile-for")
+    assert sut.apply_move("untile-for", list(move.labels)).status is MoveStatus.APPLIED
+
+    (ext,) = external_calls(sut.sdfg)
+    (new,) = [r.loop_variable for r in sut.sdfg.all_control_flow_regions(recursive=True) if isinstance(r, LoopRegion)]
+    assert new != old and new in ext.abi_order and old not in ext.abi_order
+    assert new in ext.standalone_sdfg.symbols and old not in ext.standalone_sdfg.symbols
+    sut.prepare_kernel(ext.name)
+    sut.default_build(ext.name)
+    assert ext.name in sut.builds
+
+
 def test_a_for_tile_is_one_size_of_at_least_two(tmp_path):
     sut = session(tmp_path)
     (loop,) = loop_labels(sut)
@@ -79,6 +107,7 @@ if __name__ == "__main__":
 
     for test in (
         test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop_back,
+        test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_still_builds,
         test_a_for_tile_is_one_size_of_at_least_two,
         test_an_untiled_for_loop_offers_no_untiling,
     ):
