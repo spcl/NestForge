@@ -4,13 +4,18 @@
 session process (:mod:`nestforge.server`), so the judge's threads never fork and a crash ends that process only.
 A tool in the wire table that the session does not serve answers 501. A session that cannot start, crashes or stops
 answering is the judge's fault (500, :data:`JUDGE_FAULT_CAUSE`); 400 is only for the agent's own call; 503 is a call
-that ran out of its budget and goes on when repeated. Moves are journaled here, so none of these loses one."""
+that ran out of its budget and goes on when repeated. Moves are journaled on disk before they are answered, so none
+of these loses one, nor does a judge restart; a journal that cannot be read or repeated is a judge fault, never a
+program without the agent's moves."""
 
 import contextlib
+import json
 import threading
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pydantic
 from hpcagent_bench.cpf.cache import Target
@@ -21,32 +26,66 @@ from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_para
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup
+from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, REPEATED, Reply, SessionProcess, Setup, applied
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
 NO_SLOT = contextlib.nullcontext(object())
 
+#: Seconds an unused episode keeps its processes and data; its journal stays. Above any one call's time (client
+#: timeout, or budget and stop grace), or a running call's episode could get a second session beside it.
+SESSION_IDLE_S = 3600.0
+
 
 class Episode:
     """One episode's session processes by kernel name. A session answers one call at a time over its pipe, so
-    ``lock`` serializes the episode's calls (an agent may send several at once). ``journals`` is what made each
-    program: a session that dies is rebuilt from it, so its moves survive. ``orphans`` keeps, per kernel, a finished
-    change whose client had left, so that the client's retry reads the answer instead of repeating the change."""
+    ``lock`` serializes the episode's calls (an agent may send several at once). ``orphans`` keeps, per kernel, a
+    finished change whose client had left, so that the client's retry reads the answer instead of repeating the change."""
 
-    __slots__ = ("journals", "lock", "orphans", "sessions")
+    __slots__ = ("lock", "orphans", "sessions")
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.sessions: dict[str, SessionProcess] = {}
-        self.journals: dict[str, list[Call]] = {}
         self.orphans: dict[str, tuple[Call, Reply]] = {}
 
 
 #: A tool and its validated arguments.
 Call = tuple[str, dict[str, Any]]
 
-EPISODES: EpisodeStore[Episode] = EpisodeStore(lambda episode: Episode())
+EPISODES: EpisodeStore[Episode] = EpisodeStore(lambda episode: Episode(), idle_seconds=SESSION_IDLE_S)
+
+
+def episode_of(episode_id: str) -> Episode:
+    """The state of ``episode_id``'s attempt: a relaunched attempt has a new folder and starts anew. An empty id stays
+    empty, for the store to refuse."""
+    return EPISODES.get(episode_id and f"{episode_id}@{sandbox.agent_root(episode_id)}")
+
+
+def journal_file(episode_id: str, kernel: str) -> Path:
+    """Where the journal of ``kernel`` lives: beside its library. The folder may be shared, so the name says whose."""
+    return sandbox.agent_root(episode_id) / "nestforge" / f"journal-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
+
+
+def journal_of(episode_id: str, kernel: str) -> list[Call]:
+    """The changes that made ``kernel``'s program, in order; none before the first.
+
+    :raises LookupError: There is a journal and it cannot be read."""
+    file = journal_file(episode_id, kernel)
+    try:
+        return [(tool, arguments) for tool, arguments in map(json.loads, file.read_text("utf-8").splitlines())]
+    except FileNotFoundError:
+        return []
+    except (OSError, TypeError, ValueError) as err:
+        raise LookupError(f"the journal {file} cannot be read: {err}") from err
+
+
+def record(episode_id: str, kernel: str, call: Call) -> None:
+    """Add ``call`` to the journal, before its answer goes out."""
+    file = journal_file(episode_id, kernel)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with file.open("a", encoding="utf-8") as journal:
+        journal.write(json.dumps(call) + "\n")
 
 
 class ToolAnswer(JudgeAnswer):
@@ -89,14 +128,15 @@ def session_of(episode: Episode, judge: Judge, kernel: str, episode_id: str) -> 
     session = episode.sessions.get(kernel)
     if session is not None:
         return session
+    journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
     setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(episode_id)))
     session = SessionProcess(setup)
-    for tool, arguments in episode.journals.get(kernel, ()):
+    for tool, arguments in journal:
         repeated = session.call(tool, arguments)
-        if repeated.error:
+        if not applied(repeated):
             session.close()
-            raise LookupError(f"repeating {tool} {arguments} failed: {repeated.error}")
+            raise LookupError(f"repeating {tool} {arguments} failed: {repeated.error or repeated.result}")
     episode.sessions[kernel] = session
     return session
 
@@ -106,7 +146,7 @@ def run_call(
 ) -> Reply:
     """``call`` on the kernel's session; a change whose client left keeps its answer for the retry.
 
-    :raises LookupError: The session could not start."""
+    :raises LookupError: The session could not start or rebuild its program."""
     name, arguments = call
     if name in CHANGING:
         orphan = episode.orphans.pop(kernel, None)
@@ -119,7 +159,14 @@ def run_call(
         del episode.sessions[kernel]
         return reply.model_copy(update={"ended": True})
     if name in CHANGING and not reply.error:
-        episode.journals.setdefault(kernel, []).append(call)
+        if name in REPEATED and applied(reply):
+            try:
+                record(request.episode_id, kernel, call)
+            except OSError as err:
+                # Unrecorded, the change would vanish with this session: it goes now, and the agent is told.
+                session.close()
+                del episode.sessions[kernel]
+                return Reply(error=f"the change could not be journaled: {err}", ended=True)
         if gone.is_set():
             episode.orphans[kernel] = (call, reply)
     return reply
@@ -151,7 +198,7 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     except pydantic.ValidationError as err:
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
     kernel = str(request.body.get("kernel") or "")
-    episode = EPISODES.get(request.episode_id)
+    episode = episode_of(request.episode_id)
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
     with client_left(judge) as gone, judge.device_slot() if name in MEASURING else NO_SLOT as slot:

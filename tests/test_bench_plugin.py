@@ -25,7 +25,7 @@ from hpcagent_bench.api import RunConfig
 from hpcagent_bench.categories import Baseline, InputMode, Language, Oracle, Preset, SourceMode
 from hpcagent_bench.columns import FRAMEWORKS
 from hpcagent_bench.config import SubmitFeedback
-from hpcagent_bench.harness import tools
+from hpcagent_bench.harness import sandbox, tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
@@ -37,7 +37,9 @@ from stub_session import Stub, install
 
 import nestforge_bench
 from nestforge.paths import REPO_ROOT
-from nestforge.server import CALLS, Reply, Setup
+from nestforge.records import MoveStatus
+from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
+from nestforge.session import MoveResult
 from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -83,6 +85,12 @@ class FakeJudge(JudgeHandler):
     def device_slot(self) -> Iterator[object]:
         self.slots += 1
         yield object()
+
+
+@pytest.fixture(autouse=True)
+def shared_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    """Journals live on disk: each test has its own shared folder, so no run repeats another's moves."""
+    monkeypatch.setenv("HPCAGENT_BENCH_SHARED_DIR", str(tmp_path))
 
 
 @pytest.fixture(scope="module")
@@ -246,6 +254,106 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
     assert len(stub.started) == 2
 
 
+MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+
+
+def restart_judge() -> None:
+    """What a judge restart or an idle eviction leaves: nothing in memory."""
+    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    for episode in list(episodes.states):
+        episodes.drop(episode)
+
+
+def test_a_judge_restart_repeats_the_agents_changes_so_nothing_grades_the_canonical_program(stub: Stub) -> None:
+    post("apply_move", "episode-restart", **MOVE)
+    post("set_scope", "episode-restart", labels=["map_0"])
+    restart_judge()
+    before = len(stub.calls)
+
+    answered = post("finalize", "episode-restart")
+
+    assert answered.code == HTTPStatus.OK
+    assert [tool for tool, _ in stub.calls[before:]] == ["apply_move", "set_scope", "finalize"]
+    assert stub.calls[before][1]["labels"] == MOVE["labels"] and len(stub.started) == 2
+
+
+@pytest.mark.parametrize("line", ["not json", '["apply_move"]', "7"])
+def test_a_journal_that_cannot_be_read_fails_loudly_and_starts_no_session(stub: Stub, line: str) -> None:
+    post("apply_move", "episode-torn", **MOVE)
+    restart_judge()
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    with route.journal_file("episode-torn", KERNEL).open("a") as journal:
+        journal.write(line + "\n")
+    started = len(stub.started)
+
+    judge = post("finalize", "episode-torn")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "journal" in judge.answer["error"] and len(stub.started) == started
+
+
+def test_a_change_a_rebuild_refuses_fails_loudly_instead_of_grading_a_program_without_it(stub: Stub) -> None:
+    post("apply_move", "episode-diverged", **MOVE)
+    restart_judge()
+    refused = MoveResult(status=MoveStatus.NOT_FOUND, kind="fuse", labels=("map_0",), reason="no such row")
+    stub.replies["apply_move"] = Reply(result=refused)
+
+    judge = post("finalize", "episode-diverged")
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "no such row" in judge.answer["error"] and "finalize" not in [tool for tool, _ in stub.calls]
+
+
+def test_a_refused_change_is_not_journaled(stub: Stub) -> None:
+    refused = MoveResult(status=MoveStatus.ILLEGAL, kind="fuse", labels=("map_0",), reason="cannot fuse")
+    stub.replies["apply_move"] = Reply(result=refused)
+
+    answered = post("apply_move", "episode-refused", **MOVE)
+
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert answered.code == HTTPStatus.OK and route.journal_of("episode-refused", KERNEL) == []
+
+
+def test_a_change_that_cannot_be_journaled_is_dropped_with_its_session_and_the_agent_is_told(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+
+    def full(episode_id: str, kernel: str, call: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(route, "record", full)
+
+    judge = post("apply_move", "episode-full", **MOVE)
+
+    assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
+    assert "disk full" in judge.answer["error"] and not route.episode_of("episode-full").sessions
+
+
+def test_a_relaunched_attempt_works_in_its_own_folder_and_inherits_no_moves(
+    stub: Stub, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    (tmp_path / "agent-0").mkdir()
+    (tmp_path / "agent-1").mkdir()
+    folders = tmp_path / sandbox.AGENT_FOLDERS_LOG
+    line = '{{"episode_id": "episode-again", "folder": "{}"}}\n'
+    folders.write_text(line.format("agent-0"))
+    monkeypatch.setenv("RUN_DIR", str(tmp_path))
+    post("apply_move", "episode-again", **MOVE)
+
+    folders.write_text(line.format("agent-0") + line.format("agent-1"))
+    post("get_cpf", "episode-again")
+
+    assert [setup.shared_root for setup in stub.started] == [str(tmp_path / f"agent-{n}") for n in range(2)]
+    assert [tool for tool, _ in stub.calls] == ["apply_move", "get_cpf"], "the second attempt starts anew"
+
+
+def test_an_unused_episode_ends_its_session_within_the_hour_and_never_under_a_running_call(loaded: None) -> None:
+    idle = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.idle_seconds
+
+    assert TOOL_TIMEOUT_S + STOP_GRACE_S < idle <= 3600.0
+
+
 def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub: Stub) -> None:
     slots = {tool: post(tool, "episode-slots", **body).slots for tool, body in SLOT_CALLS.items()}
 
@@ -255,7 +363,7 @@ def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub
 
 
 def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stub: Stub) -> None:
-    episode = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.get("episode-gone")
+    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-gone")
     judge = FakeJudge()
     judge.gone.set()
 
@@ -271,9 +379,7 @@ def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_apply
     judge.gone.set()
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
     request = RouteRequest(HTTPMethod.POST, [], {}, {}, "episode-retry")
-    reply = route.run_call(
-        route.EPISODES.get("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone
-    )
+    reply = route.run_call(route.episode_of("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone)
 
     retried = post("apply_move", "episode-retry", **move)
 
@@ -368,6 +474,21 @@ def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
     assert post("run_defaults", episode=episode, kernel=kernel, stage="scopes").code == HTTPStatus.OK
     name = post("list_kernels", episode=episode, kernel=kernel).answer["result"][0]["name"]
     return name, post("read_kernel", episode=episode, kernel=kernel, name=name).answer["result"]
+
+
+@pytest.mark.integration
+def test_a_real_session_restarted_from_its_journal_is_the_program_the_agent_left(loaded: None) -> None:
+    move = post("list_moves", "episode-rebuilt").answer["result"][0]
+    post("apply_move", "episode-rebuilt", **move)
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert route.journal_of("episode-rebuilt", KERNEL)[0][1]["labels"] == list(move["labels"])
+    tree = post("get_cpf", "episode-rebuilt").answer["result"]
+    applied = post("applied_moves", "episode-rebuilt").answer["result"]
+
+    restart_judge()
+
+    assert post("get_cpf", "episode-rebuilt").answer["result"] == tree
+    assert post("applied_moves", "episode-rebuilt").answer["result"] == applied and applied
 
 
 @pytest.mark.integration

@@ -29,8 +29,8 @@ import dace
 import numpy as np
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import Record
-from nestforge.session import Codegen, Session, Stopped
+from nestforge.records import KernelStatus, MoveStatus, Record
+from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
@@ -79,9 +79,11 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 #: the session's program: a read or a move takes a fraction of a second and no device.
 MEASURING = TIMED | {"finalize"}
 
-#: Tools whose calls make the session's program what it is, so a fresh session repeats them; one that fails, its timed
-#: answer included, leaves the session as it was.
+#: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
+
+#: What a fresh session repeats to be the program the agent left. Not ``tune_kernel``: finalize sweeps anyway.
+REPEATED = CHANGING - {"tune_kernel"}
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
 CHECK_RUNG = "S"
@@ -243,6 +245,13 @@ def stopped_text(tool: str, timeout_s: float) -> str:
 
 def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
+
+
+def applied(reply: Reply) -> bool:
+    """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
+    result = reply.result
+    status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
+    return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK)
 
 
 def timed_call(
