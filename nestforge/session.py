@@ -262,6 +262,8 @@ class KernelBuild:
 
 #: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
 Codegen = Literal["first", "sweep"]
+#: What :meth:`Session.run_defaults` finishes.
+Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 #: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
 SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
 
@@ -306,6 +308,7 @@ class Checkpoint:
 
     sdfg: dace.SDFG
     unplaced: dace.SDFG | None
+    unscoped: tuple[dace.SDFG, Namer, list[MoveResult]] | None
     namer: Namer
     applied: list[MoveResult]
     expanded: set[str]
@@ -335,6 +338,7 @@ class Session:
         "work_dir",
         "kernel_deps",
         "unplaced",
+        "unscoped",
         "sources",
         "builds",
         "prepared",
@@ -385,6 +389,8 @@ class Session:
         self.kernel_deps: KernelGraph | None = None
         # the program before stage 4, so a new placement starts from it
         self.unplaced: dace.SDFG | None = None
+        # the program before its first kernel, its row names and what it holds, so a new round starts from it
+        self.unscoped: tuple[dace.SDFG, Namer, list[MoveResult]] | None = None
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
@@ -419,6 +425,7 @@ class Session:
         saved = Checkpoint(
             copy.deepcopy(self.sdfg),
             copy.deepcopy(self.unplaced),
+            self.unscoped,  # replaced, never changed
             copy.deepcopy(self.namer),
             list(self.applied),
             set(self.expanded),
@@ -434,6 +441,7 @@ class Session:
             yield
         except (Exception, Stopped):
             self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
+            self.unscoped = saved.unscoped
             self.applied, self.expanded = saved.applied, saved.expanded
             self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
             # the rows and the kernel graph hold nodes of the program just dropped
@@ -527,20 +535,29 @@ class Session:
             notes.append(self.expand(expand))
         return "\n".join([*notes, self.describe()])
 
-    def run_defaults(self, stage: Literal["moves", "finish", "scopes", "placement"]) -> object:
-        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes` or
-        :meth:`place`. A default that changed the program is on :attr:`applied`."""
+    @undone_on_failure
+    def run_defaults(self, stage: Stage) -> object:
+        """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes`,
+        :meth:`place` after the default scopes of what no scope covers, or :meth:`rewind`. A default that changed the
+        program is on :attr:`applied`, which a round takes back to what the program it restores holds."""
         done: object
+        changed: object
         match stage:
             case "moves":
-                done = self.default_moves()
+                done = changed = self.default_moves()
             case "finish":
-                done = self.finish_moves()
+                done = changed = self.finish_moves()
             case "scopes":
-                done = self.default_scopes()
+                self.keep_unscoped()
+                done = changed = self.default_scopes()
             case "placement":
+                self.keep_unscoped()
+                scoped = self.default_scopes() if self.unplaced is None else []
                 done = self.place()
-        if done.status is MoveStatus.APPLIED if isinstance(done, PlaceResult) else done:
+                changed = scoped or done.status is MoveStatus.APPLIED
+            case "round":
+                return self.rewind()
+        if changed:
             self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind=f"defaults-{stage}", labels=(), reason=""))
         return done
 
@@ -657,6 +674,22 @@ class Session:
 
     # Stage 3: scopes
 
+    def keep_unscoped(self) -> None:
+        """Keep the program for :meth:`rewind` while it has no kernel."""
+        if not external_calls(self.sdfg):
+            self.unscoped = copy.deepcopy(self.sdfg), copy.deepcopy(self.namer), list(self.applied)
+
+    def rewind(self) -> str:
+        """Back to the program before its first kernel, row labels and :attr:`applied` included, so the moves work on
+        it again; the scopes, the placement and every kernel's code are dropped. Without a kept program this changes
+        nothing."""
+        if self.unscoped is not None:
+            # a copy: a failure puts the kept program back through :meth:`atomic`
+            self.sdfg, self.namer, self.applied = copy.deepcopy(self.unscoped)
+            self.unscoped, self.unplaced = None, None
+            self.bump()
+        return self.describe()
+
     @undone_on_failure
     def default_scopes(self) -> list[KernelScope]:
         """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
@@ -688,6 +721,7 @@ class Session:
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
+        self.keep_unscoped()
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)

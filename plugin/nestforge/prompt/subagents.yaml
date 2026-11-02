@@ -1,0 +1,5 @@
+# The kernels phase goes to subagents: the agent keeps the structure and the order, each kernel-optimizer one kernel.
+agent:
+  insert:
+    - after: nestforge
+      block: {id: nestforge_subagents, text: "file:agent/subagents.md"}

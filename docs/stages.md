@@ -76,7 +76,10 @@ agent's catalog.
 A scope is the atomic unit later stages optimize. Each scope is outlined into a standalone SDFG and replaced by an
 `ExternalCall` library node (`extcall_<row>`) that carries the kernel's Python oracle and boundary, and a `parallel`
 flag. `unset_scope(name)` inlines a kernel back (its standalone SDFG, kernel-local containers transient again),
-dropping any placement first.
+dropping any placement first. `run_defaults("placement")` first gives what no scope covers its default scope; a block
+holding a kernel is never taken whole, since no kernel nests another. The session keeps the program from before its first
+kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
+kernel, scopes are fixed from placement on, and a new round reopens both ([phases](README.md#the-phases)).
 
 The default (`default_units` in `nestforge/stages/scopes.py`) walks the program's top-level blocks:
 

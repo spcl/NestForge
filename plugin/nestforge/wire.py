@@ -60,10 +60,11 @@ class ApplyMove(Labeled):
 
 
 class RunDefaults(Args):
-    stage: Literal["moves", "finish", "scopes", "placement"] = pydantic.Field(
+    stage: Literal["moves", "finish", "scopes", "placement", "round"] = pydantic.Field(
         description="moves: default fusion and the stages after it; finish: the stages after your own moves; "
-        "scopes: the default kernels (parallel maps; sequential and mixed loops whole); placement: parallel kernels on "
-        "the GPU when it is a target."
+        "scopes: the default kernels (parallel maps; sequential and mixed loops whole); placement: fixes the kernels "
+        "(what no scope covers gets its default scope) and puts parallel kernels on the GPU when it is a target; "
+        "round: back to the program as the moves left it, dropping scopes and kernel code."
     )
 
 

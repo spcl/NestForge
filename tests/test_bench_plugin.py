@@ -13,13 +13,14 @@ import re
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http import HTTPMethod, HTTPStatus
 from types import SimpleNamespace
 
 import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the packet
 import pytest
 from dace.codegen.common import get_gpu_backend
+from hpcagent_agent.harness import subagents
 from hpcagent_agent.plugins import Plugin
 from hpcagent_agent.tools import http_json, registry, submit
 from hpcagent_bench import config, plugins
@@ -514,7 +515,62 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     assert (judge.code, judge.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), judge.answer
 
 
-def test_next_phase_leaves_the_program_unscoped_so_the_moves_stay_and_returns_to_them(
+def test_the_subagent_packet_adds_the_kernel_optimizer_to_the_full_packet(loaded: None) -> None:
+    packet, full = PACKETS["nestforge-subagents"], PACKETS["nestforge-full"]
+    agent = subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text())
+
+    assert packet.agents == (agent.name,) and sorted(packet.tools) == sorted(full.tools)
+    assert agent.tools is None, "a subagent lists no tools: the harnesses name them differently and the gate holds"
+    assert packet.phases == full.phases
+
+
+def walk(episode: str, monkeypatch: pytest.MonkeyPatch) -> Callable[[], dict[str, object]]:
+    """``next_phase`` of ``episode`` on the full packet."""
+    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge-full"].phases)
+
+    def step() -> dict[str, object]:
+        judge = FakeJudge()
+        next_phase.serve(judge, RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, episode))
+        assert judge.code == HTTPStatus.OK, judge.answer
+        return judge.answer
+
+    return step
+
+
+@pytest.mark.integration
+def test_the_full_packet_goes_from_structured_to_each_kernel_and_a_new_round_reopens_the_moves(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    episode = "episode-walk"
+    step = walk(episode, monkeypatch)
+    moves = post("list_moves", episode=episode).answer["result"]
+    assert moves
+
+    scopes, kernels = step(), step()
+    names = [kernel["name"] for kernel in post("list_kernels", episode=episode).answer["result"]]
+    closed = post("set_scope", episode=episode, labels=["doall0"])
+    written = [
+        post(
+            "write_kernel",
+            episode=episode,
+            name=name,
+            source=post("read_kernel", episode=episode, name=name).answer["result"],
+            language="cpp",
+        ).answer["result"]["status"]
+        for name in names
+    ]
+    codegen = step()
+    tuned = post("tune_kernel", episode=episode, name=names[0], compilers=["gcc"])
+    again = step()
+
+    assert (scopes["phase"], kernels["phase"], codegen["phase"]) == ("scopes", "kernels", "codegen")
+    assert names and closed.code == HTTPStatus.BAD_REQUEST and "scopes are fixed" in closed.answer["error"]
+    assert written == ["ok"] * len(names) and tuned.code == HTTPStatus.OK
+    assert (again["phase"], again["round"]) == ("moves", 2)
+    assert post("list_moves", episode=episode).answer["result"] == moves
+
+
+def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
     stub: Stub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
@@ -525,8 +581,16 @@ def test_next_phase_leaves_the_program_unscoped_so_the_moves_stay_and_returns_to
 
     assert judge.code == HTTPStatus.OK, judge.answer
     assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
-    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [("placement", 200)]
-    assert [call for call in stub.calls if call[0] == "run_defaults"] == [("run_defaults", {"stage": "placement"})]
+    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [
+        ("scopes", 200),
+        ("placement", 200),
+        ("round", 200),
+    ]
+    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
+        ("run_defaults", {"stage": "scopes"}),
+        ("run_defaults", {"stage": "placement"}),
+        ("run_defaults", {"stage": "round"}),
+    ]
 
 
 @pytest.mark.integration

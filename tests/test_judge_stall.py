@@ -436,7 +436,7 @@ def states(session: Session) -> list[str]:
 def test_a_default_after_a_placement_is_not_undone_by_the_next_placement(tmp_path):
     sut = session_of(two_nests, tmp_path)
     separate = sut.view(states(sut)).count("doall")
-    sut.run_defaults("placement")
+    sut.place()  # the placement itself: run_defaults would also make kernels, which default moves cannot fuse
     sut.run_defaults("moves")
     assert sut.unplaced is None
     fused = sut.view(states(sut)).count("doall")
@@ -445,7 +445,7 @@ def test_a_default_after_a_placement_is_not_undone_by_the_next_placement(tmp_pat
     sut.run_defaults("finish")
     assert sut.unplaced is None
 
-    assert sut.run_defaults("placement").status is MoveStatus.APPLIED
+    assert sut.place().status is MoveStatus.APPLIED
     assert sut.view(states(sut)).count("doall") == fused, "the placement started from the fused program"
 
 

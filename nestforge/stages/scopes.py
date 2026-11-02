@@ -304,6 +304,10 @@ def holds_parallel_map(block: ControlFlowBlock) -> bool:
     return any(is_parallel_nest(node) for node, _ in block.all_nodes_recursive())
 
 
+def holds_kernel(block: ControlFlowBlock) -> bool:
+    return any(isinstance(node, ExternalCall) for node, _ in block.all_nodes_recursive())
+
+
 def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
     """The scopes of a loop or branch body: each parallel map of its states, each loop in it opened ``depth`` more
     levels or else taken whole; ``None`` when the body holds other work, so the caller is taken whole."""
@@ -323,7 +327,13 @@ def opened(region: AbstractControlFlowRegion, depth: int) -> list[Row] | None:
 
 
 def block_units(block: ControlFlowBlock) -> list[Row]:
-    """The default scopes of one top-level block that is not a state."""
+    """The default scopes of one top-level block that is not a state; a block holding a kernel is never taken whole:
+    no kernel nests another, and one bound to its library expands to a C++ call no enclosing kernel can render."""
+    units = open_block(block)
+    return [unit for unit in units if unit[1] is not None or not holds_kernel(unit[0])]
+
+
+def open_block(block: ControlFlowBlock) -> list[Row]:
     if not holds_parallel_map(block):
         return [(block, None)] if isinstance(block, LoopRegion) else []
     if isinstance(block, LoopRegion):
@@ -337,21 +347,16 @@ def block_units(block: ControlFlowBlock) -> list[Row]:
     return [(block, None)]
 
 
-def holds_kernel(block: ControlFlowBlock) -> bool:
-    return any(isinstance(node, ExternalCall) for node, _ in block.all_nodes_recursive())
-
-
 def default_units(sdfg: dace.SDFG) -> list[Row]:
     """The default scopes, in program order: top-level maps with their state, and blocks taken whole (state
-    ``None``). A block holding a kernel is never taken whole: a kernel does not nest, and one bound to its library
-    expands to a C++ call no enclosing kernel can render."""
+    ``None``)."""
     units: list[Row] = []
     for block in in_order(sdfg):
         if isinstance(block, SDFGState):
             units += [(entry, block) for entry in top_level_doalls(block) if is_parallel_nest(entry)]
         else:
             units += block_units(block)
-    return [(obj, state) for obj, state in units if state is not None or not holds_kernel(obj)]
+    return units
 
 
 def statements(graph: dace.SDFG | ControlFlowBlock) -> int:

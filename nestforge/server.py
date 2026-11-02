@@ -10,6 +10,7 @@ it already built and measured, so the same call goes on from there."""
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import multiprocessing
@@ -29,11 +30,12 @@ from typing import Any
 
 import dace
 import numpy as np
+from dace.libraries.standard.nodes.external_call import external_calls
 
 from nestforge.build.isolation import SEAL_KEEP_ENV
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import KernelStatus, MoveStatus, Record
-from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stopped
+from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
@@ -64,17 +66,49 @@ def finalize(session: Session) -> Final:
     return final
 
 
+def has_kernels(session: Session) -> bool:
+    return bool(external_calls(session.sdfg))
+
+
+def is_placed(session: Session) -> bool:
+    return session.unplaced is not None
+
+
+#: Why a move is refused: moves take the rows of the program before its scopes.
+MOVES_CLOSED = "the program has kernels: moves are closed; next_phase reaches a new round, which reopens them"
+#: Why a scope is refused: the agent's kernel work builds on the kernels placement fixed.
+SCOPES_FIXED = "the kernels are placed: scopes are fixed; next_phase reaches a new round, which reopens them"
+
+
+def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
+    """``call``, refused with ``why`` while ``closed`` holds of the session."""
+
+    @functools.wraps(call)
+    def run(session: Session, **arguments: object) -> object:
+        if closed(session):
+            raise ValueError(why)
+        return call(session, **arguments)
+
+    return run
+
+
+def run_defaults(session: Session, stage: Stage) -> object:
+    if stage in ("moves", "finish") and has_kernels(session):
+        raise ValueError(MOVES_CLOSED)
+    return session.run_defaults(stage)
+
+
 #: Tool -> the session call it makes, the tool's validated arguments passed as keywords.
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
     "list_move_kinds": lambda session: move_kinds(),
     "list_moves": Session.list_moves,
-    "apply_move": Session.apply_move,
+    "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
     "applied_moves": lambda session: session.applied,
-    "run_defaults": Session.run_defaults,
-    "set_scope": Session.set_scope,
-    "unset_scope": Session.unset_scope,
+    "run_defaults": run_defaults,
+    "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
+    "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
     "list_kernels": Session.list_kernels,
     "read_kernel": Session.kernel_source,
     "write_kernel": Session.set_kernel_source,
