@@ -947,24 +947,29 @@ class Session:
     # Assembly
 
     def finalize(self, out_dir: Path | None = None) -> Final:
-        """The program as a bench library submission: a program without scopes gets the default scopes, one never
-        placed on a GPU target the default placement, and every kernel without a build its default build
-        (:meth:`default_build`), then the program is rendered in the bench C ABI and built, each
-        kernel linked from its own archive.
+        """The program as a bench library submission, built on a :meth:`trial`: score and submit call this, so the
+        program stays in its phase. On the copy a program without scopes gets the default scopes, one never placed on
+        a GPU target the default placement, and every kernel without a build its default build
+        (:meth:`default_build`), then the program is rendered in the bench C ABI and built, each kernel linked from
+        its own archive. A sweep's winner is kept in :attr:`swept`, so an unchanged program is not swept again.
 
         :param out_dir: Where the library is built; ``<work_dir>/final`` when ``None``.
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
-        if not external_calls(self.sdfg):
-            self.default_scopes()
-        if self.targets.gpu and self.unplaced is None:
-            self.place()  # a GPU program is assembled as placed
-        for ext in external_calls(self.sdfg):
-            if ext.name not in self.builds:
-                self.default_build(ext.name)
-        variants = {name: build.variant.label for name, build in self.builds.items()}
-        return assemble(self.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+        trial = self.trial()
+        if not external_calls(trial.sdfg):
+            trial.default_scopes()
+        if trial.targets.gpu and trial.unplaced is None:
+            trial.place()  # a GPU program is assembled as placed
+        for ext in external_calls(trial.sdfg):
+            if ext.name not in trial.builds:
+                trial.default_build(ext.name)
+        variants = {name: build.variant.label for name, build in trial.builds.items()}
+        final = assemble(trial.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+        # the library holds the kernels' archives; a long session would otherwise keep every trial until it exits
+        shutil.rmtree(trial.work_dir, ignore_errors=True)
+        return final
 
     def trial(self) -> Session:
         """A copy of this session in its own work directory, at the same stage, for defaults that must not stick."""
