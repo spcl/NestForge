@@ -183,14 +183,22 @@ class SleepingOracle:
         setattr(self, name, lambda **_: time.sleep(600))
 
 
+class LinearOracle:
+    """An emitted module whose kernel takes a millisecond per element."""
+
+    def __init__(self, name: str) -> None:
+        setattr(self, name, lambda N, **_: time.sleep(N * 1e-3))
+
+
 def test_a_bounded_oracle_runs_in_a_child_and_its_outputs_still_reach_the_caller(tmp_path):
     sizes = {"N": SIZE}
     boundary, prep = oracle_of(scaled, tmp_path)
     inputs = make_inputs(boundary, sizes)
 
-    outputs = bounded_oracle(prep, boundary, inputs, sizes, timeout_s=60.0)
+    answer = bounded_oracle(prep, boundary, inputs, sizes, timeout_s=60.0)
 
-    assert not isinstance(outputs, Failure)
+    assert not isinstance(answer, Failure)
+    outputs, _ = answer
     expected = run_oracle(prep, boundary, inputs, sizes)
     for name, value in expected.items():
         np.testing.assert_array_equal(outputs[name], value)
@@ -199,13 +207,25 @@ def test_a_bounded_oracle_runs_in_a_child_and_its_outputs_still_reach_the_caller
 def test_an_oracle_too_slow_for_the_timed_sizes_checks_at_the_small_ones_and_times_at_the_large(tmp_path, monkeypatch):
     sizes, small = {"N": 1 << 16}, {"N": SMALL}
     boundary, prep = oracle_of(scaled, tmp_path)
+    monkeypatch.setattr(arena, "load_emitted", lambda source, name: LinearOracle(name))
     monkeypatch.setattr(kernel, "ORACLE_TIMEOUT_S", 1.0)
+    started = time.monotonic()
 
     probe = bounded_probe(prep, boundary, sizes, small, full=True)
+
+    assert time.monotonic() - started < 1.0, "the size that would not fit is not tried"
 
     assert probe.checked is not probe.timed and not probe.unchecked, "an out-of-time oracle compares at the small sizes"
     assert probe.checked.sizes == small and probe.timed.sizes == sizes
     assert all(value.shape[0] == SMALL for value in probe.oracle.values())
+
+
+def test_a_quick_oracle_compares_at_the_timed_sizes_whatever_it_costs_to_start(tmp_path):
+    boundary, prep = oracle_of(scaled, tmp_path)
+
+    probe = bounded_probe(prep, boundary, {"N": SIZE}, {"N": SMALL}, full=True)
+
+    assert probe.checked is probe.timed, "the prediction reads the call, not the process around it"
 
 
 def test_a_kernel_wrong_at_the_small_sizes_is_wrong_whatever_it_costs_at_the_large(tmp_path):

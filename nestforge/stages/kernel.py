@@ -8,7 +8,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import math
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -370,15 +369,15 @@ def bounded_probe(
     :param full: Whether ``sizes`` may be tried; an oracle known to be out of time there is not tried again."""
     timed = Workload(make_inputs(boundary, sizes), sizes)
     checked = Workload(make_inputs(boundary, check_sizes), check_sizes)
-    start = time.perf_counter()
-    outputs = bounded_oracle(prep, boundary, checked.inputs, check_sizes, ORACLE_TIMEOUT_S)
-    if isinstance(outputs, Failure):
-        return Probe(timed, checked, {}, f"its oracle did not finish ({outputs.error}); the whole program checks it")
+    small = bounded_oracle(prep, boundary, checked.inputs, check_sizes, ORACLE_TIMEOUT_S)
+    if isinstance(small, Failure):
+        return Probe(timed, checked, {}, f"its oracle did not finish ({small.error}); the whole program checks it")
+    outputs, seconds = small
     scale = math.prod(sizes[s] / check_sizes[s] for s in boundary.symbols if sizes.get(s) and check_sizes.get(s))
-    if full and (time.perf_counter() - start) * scale <= ORACLE_TIMEOUT_S:
+    if full and seconds * scale <= ORACLE_TIMEOUT_S:
         at_size = bounded_oracle(prep, boundary, timed.inputs, sizes, ORACLE_TIMEOUT_S)
         if not isinstance(at_size, Failure):
-            return Probe(timed, timed, at_size)
+            return Probe(timed, timed, at_size[0])
     return Probe(timed, checked, outputs)
 
 

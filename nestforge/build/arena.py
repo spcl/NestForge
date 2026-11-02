@@ -67,8 +67,8 @@ def run_oracle(
     return {o: args[o] for o in boundary.outputs}
 
 
-def call_oracle(prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
-    """The kernel's NumPy oracle on ``args``, in place."""
+def call_oracle(prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray], sizes: dict[str, int]) -> float:
+    """The kernel's NumPy oracle on ``args``, in place; returns the seconds the call took."""
     missing = [s for s in boundary.symbols if s not in sizes]
     if missing:
         raise KeyError(
@@ -76,7 +76,9 @@ def call_oracle(prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray],
             f"extracted nest); pass them in `sizes`"
         )
     module = load_emitted(prep.numpy_source, prep.name)
+    start = time.perf_counter()
     vars(module)[prep.name](**{**args, **{s: int(sizes[s]) for s in boundary.symbols}})
+    return time.perf_counter() - start
 
 
 def shared_copy(array: np.ndarray) -> np.ndarray:
@@ -88,23 +90,24 @@ def shared_copy(array: np.ndarray) -> np.ndarray:
 
 
 class OracleDone(Result):
-    """The oracle's child finished; its outputs are in the shared arrays."""
+    """The oracle's child finished in ``seconds``; its outputs are in the shared arrays."""
+
+    seconds: float
 
 
 def bounded_oracle(
     prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int], timeout_s: float
-) -> dict[str, np.ndarray] | Failure:
+) -> tuple[dict[str, np.ndarray], float] | Failure:
     """:func:`run_oracle` in a forked child, which an interpreted nest cannot hold past ``timeout_s``, nor a crash take
-    the caller down: a :class:`Failure` when it did not finish. An oracle's loops are interpreted Python: hours at a
-    size whose compiled kernel takes a minute."""
+    the caller down: its outputs and the seconds of its call, or a :class:`Failure` when it did not finish. An oracle's
+    loops are interpreted Python: hours at a size whose compiled kernel takes a minute."""
     args = {k: shared_copy(v) for k, v in inputs.items()}
 
     def work() -> OracleDone:
-        call_oracle(prep, boundary, args, sizes)
-        return OracleDone()
+        return OracleDone(seconds=call_oracle(prep, boundary, args, sizes))
 
     done = run_isolated(work, OracleDone, timeout_s)
-    return done if isinstance(done, Failure) else {o: args[o] for o in boundary.outputs}
+    return done if isinstance(done, Failure) else ({o: args[o] for o in boundary.outputs}, done.seconds)
 
 
 def accumulating_outputs(boundary: Boundary, buffers: dict[str, np.ndarray]) -> list[str]:

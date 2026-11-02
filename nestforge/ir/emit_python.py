@@ -798,7 +798,7 @@ def fft_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[s
     if inverse:
         arguments.append('norm="forward"')
     if inverse and node.half_spectrum:
-        arguments.append(f"s=tuple({target}.shape[axis] for axis in {axes})")
+        arguments.append("s=(" + "".join(f"{target}.shape[{axis}], " for axis in axes) + ")")
     call = f"np.fft.{'i' if inverse else ''}{'r' if node.half_spectrum else ''}fftn({', '.join(arguments)})"
     return [f"{target} = ({node.factor}) * {call}"]
 
