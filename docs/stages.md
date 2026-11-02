@@ -11,9 +11,10 @@ excluding the `fuse` stage, so stage 2 owns every fusion decision, then `structu
 body made one nested SDFG and every reduction moved out of it: `map { nested SDFG } -> access node -wcr->`). No stage
 after `fuse` runs, so nothing specializes. It is never searched.
 
-Right after it, and after every change, `set_default_implementations` gives each library call left to automatic
-selection the implementation finalization would pick for it: the fastest this host has for the target, never `pure`
-while another exists. The tree prints it, and it stays automatic until `set-library-implementation` pins one.
+Right after it, and whenever a move makes a call without one, `set_default_implementations` gives each library call
+left to automatic selection the implementation finalization would pick for it: the fastest this host has for the target,
+never `pure` while another exists. The tree prints it, and it stays automatic until `set-library-implementation` pins
+one.
 
 | | |
 |---|---|

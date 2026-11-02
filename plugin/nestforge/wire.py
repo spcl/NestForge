@@ -57,10 +57,6 @@ class ApplyMove(Labeled):
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."
     )
-    current: str | None = pydantic.Field(
-        None,
-        description="set-library-implementation: the row's implementation as list_moves showed it, if you send it.",
-    )
 
 
 class RunDefaults(Args):

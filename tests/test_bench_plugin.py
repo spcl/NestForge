@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
 from types import SimpleNamespace
 
+import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the packet
 import pytest
 from dace.codegen.common import get_gpu_backend
 from hpcagent_agent.plugins import Plugin
@@ -265,7 +266,7 @@ def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stu
 
 
 def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_applying_it_twice(stub: Stub) -> None:
-    move = {"kind": "fuse", "labels": ["map_0", "map_1"], "tile_sizes": [], "implementation": None, "current": None}
+    move = {"kind": "fuse", "labels": ["map_0", "map_1"], "tile_sizes": [], "implementation": None}
     judge = FakeJudge()
     judge.gone.set()
     route = sys.modules[ROUTES["nestforge"].handler.__module__]

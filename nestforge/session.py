@@ -32,6 +32,7 @@ from nestforge.build.arena import TIMED_REPS
 from nestforge.build.sdfg import force_register_arrays
 from nestforge.build.toolchain import parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
+from nestforge.ir.dace_types import strings
 from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import find_state_of_node
 from nestforge.ir.introspect import (
@@ -570,7 +571,6 @@ class Session:
         labels: Sequence[str],
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
-        current: str | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh.
@@ -580,8 +580,6 @@ class Session:
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
-        :param current: For ``set-library-implementation``, the row's implementation as :meth:`list_moves` listed it;
-            the move is refused if it changed since.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -598,8 +596,6 @@ class Session:
             offered = implementations(node, self.targets.gpu)
             if implementation not in offered:
                 plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
-            elif current is not None and current != node.implementation:
-                plan = f"{names[0]} is {node.implementation} now, not {current}; read the moves again."
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         with self.atomic():
@@ -966,10 +962,10 @@ class Session:
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
         a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
         only the running program computes: its oracle has no value for it)."""
-        src = self.default_kernel(name)
         if self.codegen == "first":
-            self.first_build(name, src)
+            self.first_build(name)
             return
+        src = self.default_kernel(name)
         if computed_symbols(src, self.kernel_sizes(name)):
             self.optimize_kernel(name)
             return
@@ -979,10 +975,12 @@ class Session:
         elif self.sweep(name).winner is None:
             self.optimize_kernel(name)
 
-    def first_build(self, name: str, src: KernelSource) -> None:
-        """Stage 5's default build of ``src``, or the same build made for this source and these sizes before: a move
-        changes few kernels, and an unchanged kernel keeps its verdict."""
-        key = self.sweep_key(name, src)
+    def first_build(self, name: str) -> None:
+        """Stage 5's default build, or the one made before for the same kernel body and sizes: a move changes few
+        kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
+        ext = self.kernel(name)
+        body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
+        key = name, body, tuple(sorted(self.kernel_sizes(name).items()))
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)

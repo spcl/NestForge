@@ -12,9 +12,10 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
-from dace.libraries.standard.nodes.external_call import external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 
+from nestforge import session as session_module
 from nestforge.build import arena
 from nestforge.build.arena import bounded_oracle, make_inputs, reps_within_budget, run_oracle
 from nestforge.build.isolation import Failure, Result, run_isolated
@@ -41,6 +42,14 @@ def factor(a: dace.float64[N, N], b: dace.float64[N, N]):
 def product_total(a: dace.float64[N, N], c: dace.float64[N, N], total: dace.float64[1]):
     c[:] = a @ a
     total[0] = dace.reduce(lambda x, y: x + y, c)
+
+
+@dace.program
+def two_nests(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+    for i in dace.map[0:N]:
+        b[i] = 2.0 * a[i]
+    for i in dace.map[0:N]:
+        c[i] = 3.0 * a[i]
 
 
 @dace.program
@@ -87,20 +96,9 @@ def test_pure_comes_only_from_the_agent_and_the_tree_says_so(tmp_path):
     sut = session_of(factor, tmp_path)
     label = sut.list_moves("set-library-implementation")[0].labels
 
-    moved = sut.apply_move("set-library-implementation", label, implementation="pure", current="OpenBLAS")
+    moved = sut.apply_move("set-library-implementation", label, implementation="pure")
 
     assert moved.status is MoveStatus.APPLIED, moved
-    assert "[pure]" in library_rows(sut)[0]
-
-
-def test_a_move_listed_before_the_implementation_changed_is_refused_and_changes_nothing(tmp_path):
-    sut = session_of(factor, tmp_path)
-    label = sut.list_moves("set-library-implementation")[0].labels
-    sut.apply_move("set-library-implementation", label, implementation="pure")
-
-    stale = sut.apply_move("set-library-implementation", label, implementation="OpenBLAS", current="LAPACK")
-
-    assert stale.status is MoveStatus.ILLEGAL and "read the moves again" in stale.reason, stale
     assert "[pure]" in library_rows(sut)[0]
 
 
@@ -238,6 +236,31 @@ def test_a_library_oracle_is_tried_at_the_timed_sizes_and_a_loop_only_if_it_scal
     probe = bounded_probe(prep, boundary, {"N": SIZE}, {"N": SMALL}, full=True)
 
     assert (probe.checked is probe.timed) == compares_at_size
+
+
+def test_an_unchanged_kernel_keeps_its_build_without_a_render(tmp_path, monkeypatch):
+    sut = session_of(two_nests, tmp_path)
+    sut.default_scopes()
+    rendered: list[str] = []
+    render = session_module.schedule_kernel
+
+    def counted(ext: ExternalCall, *args: object) -> object:
+        rendered.append(ext.name)
+        return render(ext, *args)
+
+    monkeypatch.setattr(session_module, "schedule_kernel", counted)
+    names = [ext.name for ext in external_calls(sut.sdfg)]
+    trial = sut.trial()
+    trial.codegen = "first"
+    trial.kernel_evidence(reps=1)
+    assert sorted(rendered) == sorted(names)
+
+    rendered.clear()
+    again = sut.trial()
+    again.codegen = "first"
+    again.kernel_evidence(reps=1)
+
+    assert rendered == []
 
 
 def test_a_quick_oracle_compares_at_the_timed_sizes_whatever_it_costs_to_start(tmp_path):

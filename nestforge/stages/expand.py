@@ -92,12 +92,12 @@ def pin_pure_without_library(sdfg: dace.SDFG) -> list[str]:
 
 def set_default_implementations(sdfg: dace.SDFG, targets: Targets) -> None:
     """Give every library call left to automatic selection the fastest implementation this host has for the target,
-    by finalization's own rules, so the session shows what a kernel will build. It stays automatic: the choice follows
-    the call when a move changes its surroundings, until ``set-library-implementation`` pins one. Worked out on a copy,
-    as finalization also rewrites schedules. A call with a fast lowering this host lacks is pinned to ``pure``; a call
-    whose only implementation is ``pure`` has it by default."""
-    calls = [node for node, _ in sdfg.all_nodes_recursive() if selectable(node)]
-    if not calls:
+    by finalization's own rules, so the session shows what a kernel will build. It stays automatic: finalization chooses
+    again where a move put the call, until ``set-library-implementation`` pins one. Worked out on a copy, as
+    finalization also rewrites schedules, and only when a call has none yet, so a move on a large program pays no copy.
+    A call with a fast lowering this host lacks is pinned to ``pure``; a call whose only implementation is ``pure`` has
+    it by default."""
+    if not any(selectable(node) and node.implementation is None for node, _ in sdfg.all_nodes_recursive()):
         return
     if not targets.gpu:
         pin_pure_without_library(sdfg)
