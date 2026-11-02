@@ -257,6 +257,18 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
 MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
 
 
+def test_a_session_that_died_between_calls_is_replaced_and_repeats_the_agents_moves(stub: Stub) -> None:
+    post("apply_move", "episode-idle", **MOVE)
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route.episode_of("episode-idle").sessions[KERNEL].alive = False
+    before = len(stub.calls)
+
+    answered = post("get_cpf", "episode-idle")
+
+    assert answered.code == HTTPStatus.OK and len(stub.started) == 2
+    assert [tool for tool, _ in stub.calls[before:]] == ["apply_move", "get_cpf"]
+
+
 def restart_judge() -> None:
     """What a judge restart or an idle eviction leaves: nothing in memory."""
     episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES

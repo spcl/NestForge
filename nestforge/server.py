@@ -14,8 +14,10 @@ import hashlib
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 import weakref
@@ -319,9 +321,23 @@ def serve(connection: Connection, setup: Setup) -> None:
             connection.send(failure(err))
 
 
-def own_group(target: Callable[[Connection, Setup], None], connection: Connection, setup: Setup) -> None:
-    """``target`` in a process group of its own, so that ending the session ends the builds and runs it started."""
+def end_with_parent(parent: int, scratch: str) -> None:
+    """End the session once ``parent``, the judge, is gone: only the judge bounds its calls. Not ``PR_SET_PDEATHSIG``,
+    which fires when the creating thread ends, and a handler thread ends with its connection."""
+    while os.getppid() == parent:
+        time.sleep(POLL_S)
+    shutil.rmtree(scratch, ignore_errors=True)
+    os.killpg(0, signal.SIGKILL)
+
+
+def own_group(
+    target: Callable[[Connection, Setup], None], connection: Connection, setup: Setup, parent: int, scratch: str
+) -> None:
+    """``target`` in a process group of its own, so that ending the session ends the builds and runs it started, and
+    with its temporary files in ``scratch``, which outlives a SIGKILL of the session."""
     os.setpgrp()
+    tempfile.tempdir = os.environ["TMPDIR"] = scratch
+    threading.Thread(target=end_with_parent, args=(parent, scratch), daemon=True).start()
     target(connection, setup)
 
 
@@ -332,23 +348,35 @@ def kill_group(pid: int | None) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
+def end_session(pid: int | None, scratch: str) -> None:
+    """Kill the session process ``pid`` with what it started, and remove its files."""
+    kill_group(pid)
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
 class SessionProcess:
     """The caller's handle on one session process."""
 
-    __slots__ = ("__weakref__", "connection", "process")
+    __slots__ = ("__weakref__", "connection", "end", "process")
 
     def __init__(self, setup: Setup, target: Callable[[Connection, Setup], None] = serve) -> None:
         from hpcagent_bench.plugins import openmp_environment
 
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
+        scratch = tempfile.mkdtemp(prefix="nfsession_")
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
-        self.process = context.Process(target=own_group, args=(target, child, setup))
+        self.process = context.Process(target=own_group, args=(target, child, setup, os.getpid(), scratch))
         # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
         with openmp_environment("nestforge"):
             self.process.start()
         child.close()
-        weakref.finalize(self, kill_group, self.process.pid)
+        self.end = weakref.finalize(self, end_session, self.process.pid, scratch)
+        deadline = time.monotonic() + TOOL_TIMEOUT_S
+        while not self.connection.poll(POLL_S):
+            if time.monotonic() > deadline:
+                self.close()
+                raise LookupError(f"the session did not start within {TOOL_TIMEOUT_S:.0f} s")
         ready = self.receive()
         if ready.error:
             self.close()
@@ -361,7 +389,8 @@ class SessionProcess:
     def receive(self) -> Reply:
         try:
             return self.connection.recv()
-        except EOFError:
+        except (EOFError, ConnectionResetError):
+            self.process.join(CLOSE_TIMEOUT_S)
             return Reply(error=f"the session process died (exit code {self.process.exitcode})")
 
     @property
@@ -380,9 +409,13 @@ class SessionProcess:
         once ``gone`` is set, and any call after ``timeout_s``.
 
         :param gone: Set when the client left; a call that holds no device slot finishes either way, for its retry."""
-        self.connection.send((tool, arguments))
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):  # a dead session answers EOF below
+            self.connection.send((tool, arguments))
         deadline = time.monotonic() + timeout_s
         while not self.connection.poll(POLL_S):
+            if not self.alive:  # its forked child keeps the pipe open, so no EOF comes
+                kill_group(self.process.pid)
+                return self.receive()
             client_left = gone is not None and gone.is_set() and tool in MEASURING
             if client_left or time.monotonic() > deadline:
                 return self.stop(tool, timeout_s)
@@ -404,6 +437,6 @@ class SessionProcess:
     def close(self) -> None:
         self.connection.close()
         self.process.join(CLOSE_TIMEOUT_S)
-        if self.process.is_alive():
-            kill_group(self.process.pid)
-            self.process.join()
+        self.end()
+        self.process.kill()  # one still starting has no group yet
+        self.process.join()

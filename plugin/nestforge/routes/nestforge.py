@@ -126,8 +126,9 @@ def session_of(episode: Episode, judge: Judge, kernel: str, episode_id: str) -> 
 
     :raises LookupError: The session could not start, or could not repeat a change."""
     session = episode.sessions.get(kernel)
-    if session is not None:
+    if session is not None and session.alive:
         return session
+    episode.sessions.pop(kernel, None)  # its finalizer ends what a dead session left running
     journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
     setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(episode_id)))
