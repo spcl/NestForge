@@ -181,6 +181,7 @@ def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any) ->
 def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: float = RUN_TIMEOUT_S) -> T | Failure:
     """``work_fn()`` from a forked child, or a :class:`Failure` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
+    cpus = os.sched_getaffinity(0)
     r, w = os.pipe()
     with warnings.catch_warnings():
         # the fork is the point: the child runs only work_fn, and the OpenMP pools were paused above
@@ -191,6 +192,7 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
     if pid == 0:
         os.close(r)
         faulthandler.disable()  # a child's segfault must not dump the parent's stack
+        os.sched_setaffinity(0, cpus)  # an initialized libomp's fork handler widens the child to its own first mask
         try:
             enter_seal()
             payload = work_fn().model_dump_json()
