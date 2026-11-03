@@ -30,6 +30,7 @@ from typing import Any
 
 import dace
 import numpy as np
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import external_calls
 
 from nestforge.build.isolation import SEAL_KEEP_ENV
@@ -250,6 +251,9 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     """The data ``session``'s whole program runs on; binds the sizes that come from it. Only code that runs needs it,
     so a read never waits for the reference. Call it after canonicalization: that promotes a scalar input to a symbol."""
     inputs, reference = bench_data(setup)
+    kernel = corpus_kernel(setup.kernel)
+    assert kernel is not None, "the session started from it"
+    inputs |= closure_inputs(kernel.program(), session.sdfg)
     session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     session.check_sizes = check_rung_sizes(setup, session)
     return inputs, reference
@@ -279,6 +283,19 @@ def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, S
         name: value.item()
         for name, value in inputs.items()
         if name in free and value.ndim == 0 and numeric_scalar(value.dtype)
+    }
+
+
+def closure_inputs(program: DaceProgram, sdfg: dace.SDFG) -> dict[str, np.ndarray]:
+    """The arrays ``program`` computed when it was parsed, which ``sdfg`` takes as arguments: DaCe evaluates a
+    subscripted NumPy call on constants (cp2k_density_matrix_trs4's ``np.arange(3, dtype=np.int64)[None, :]``) once, at
+    parse time, and passes the result in as a closure array. Only the program holds its value, and the bench's inputs do not name it: left out, it would be
+    zero-filled with the outputs and the program would run on zeros. ``program`` must have been parsed (``to_sdfg``),
+    as :func:`started_session` does."""
+    return {
+        name: np.asarray(value)
+        for name, value in program.__sdfg_closure__().items()
+        if name in sdfg.arrays and isinstance(value, np.ndarray)
     }
 
 
