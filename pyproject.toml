@@ -31,9 +31,9 @@ dependencies = [
     # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
     # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
     "dace @ git+https://github.com/spcl/dace.git@7c06b5194a1c49a508c04a1e22902b9152fb3f65",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@8ae6702ae86c5d32b3eae8e3ed905c00bd31d5ec",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@b9f24cc4d30aa4ca356ac2c312e80e6512affc15",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@8ae6702ae86c5d32b3eae8e3ed905c00bd31d5ec#subdirectory=agent",
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@b9f24cc4d30aa4ca356ac2c312e80e6512affc15#subdirectory=agent",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
 ]
 

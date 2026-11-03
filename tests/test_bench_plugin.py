@@ -3,7 +3,9 @@
 """The NestForge bench plugin: loaded through HPCAgent-Bench's own plugin loader, every tool registered, the
 structured and kernel phases served with performance feedback, and ``finalize``'s library graded by the judge."""
 
+import asyncio
 import contextlib
+import copy
 import gc
 import inspect
 import json
@@ -15,14 +17,19 @@ import subprocess
 import sys
 import threading
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from http import HTTPMethod, HTTPStatus
 from types import SimpleNamespace
+from typing import Any
 
+import anthropic
 import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the packet
 import pytest
+from anthropic.types import Message
 from dace.codegen.common import get_gpu_backend
-from hpcagent_agent.harness import subagents
+from hpcagent_agent import plugins as agent_plugins
+from hpcagent_agent.driver import agent_driver
+from hpcagent_agent.harness import run_anthropic, runner_common, subagents
 from hpcagent_agent.plugins import Plugin
 from hpcagent_agent.tools import http_json, registry, submit
 from hpcagent_bench import config, packets, plugins
@@ -547,6 +554,23 @@ def test_the_two_stage_name_is_the_full_packet_and_only_that_packet_answers_to_i
     assert "nestforge-two-stage" not in PACKETS.entries, "an alias is no packet of its own"
 
 
+def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optimizer(
+    loaded: None, tmp_path: pathlib.Path
+) -> None:
+    environ = {
+        agent_plugins.USER_PLUGIN_DIRS_ENV: str(PLUGIN),
+        agent_plugins.PACKET_AGENTS_ENV: ",".join(packets.resolve("nestforge-subagents", "cpp").agents),
+    }
+
+    staged = agent_plugins.stage_agents(tmp_path, environ)
+    offered = subagents.load(tmp_path, environ)
+
+    shipped = subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text())
+    assert staged == ("kernel-optimizer",) and offered == (shipped,)
+    assert subagents.task_schema(offered)["properties"]["subagent_type"]["enum"] == [shipped.name]
+    assert shipped.name in subagents.task_description(offered)
+
+
 def walk(episode: str, monkeypatch: pytest.MonkeyPatch) -> Callable[[], dict[str, object]]:
     """``next_phase`` of ``episode`` on the full packet."""
     monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge-full"].phases)
@@ -812,10 +836,13 @@ def judge_url(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterat
 
 
 @pytest.fixture
-def two_stage_judge(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> Iterator[str]:
-    """A spawned judge of a run on the two-stage packet, its routes and phase gate live, as a study's judge has them."""
+def packet_judge(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> Iterator[str]:
+    """A spawned judge of a run on the packet the test's parameter names, its routes and phase gate live, as a study's
+    judge has them."""
     monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
-    monkeypatch.setenv("HPCAGENT_BENCH_RECORD_PACKET", "nestforge-two-stage")
+    monkeypatch.setenv("HPCAGENT_BENCH_RECORD_PACKET", request.param)
     yield from spawned_judge(monkeypatch, tmp_path)
 
 
@@ -897,13 +924,106 @@ def tuner_episode(column: str, kernel: str, url: str, folder: pathlib.Path) -> s
 
 
 @pytest.mark.judge
+@pytest.mark.parametrize("packet_judge", ["nestforge-two-stage"], indirect=True)
 def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_submission(
-    two_stage_judge: str, tmp_path: pathlib.Path
+    packet_judge: str, tmp_path: pathlib.Path
 ) -> None:
-    done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", two_stage_judge, tmp_path)
+    done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", packet_judge, tmp_path)
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
+
+
+class ScriptedModel:
+    """The model behind a harness: ``messages.stream`` answers each request with the next reply, keeping every request."""
+
+    def __init__(self, replies: list[list[dict[str, object]]]) -> None:
+        self.replies = iter(replies)
+        self.sent: list[dict[str, Any]] = []
+        self.messages = self
+
+    @contextlib.asynccontextmanager
+    async def stream(self, **params: Any) -> AsyncIterator[SimpleNamespace]:  # noqa: ANN401 -- the SDK's own keywords
+        self.sent.append({**params, "messages": copy.deepcopy(params["messages"])})
+        content = next(self.replies)
+        reply = Message(
+            id="scripted",
+            type="message",
+            role="assistant",
+            model="scripted",
+            content=content,
+            stop_reason="tool_use" if content[0]["type"] == "tool_use" else "end_turn",
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+
+        async def final() -> Message:
+            return reply
+
+        yield SimpleNamespace(get_final_message=final)
+
+
+def calls(name: str, **arguments: object) -> list[dict[str, object]]:
+    return [{"type": "tool_use", "id": f"use-{name}", "name": name, "input": arguments}]
+
+
+def says(text: str) -> list[dict[str, object]]:
+    return [{"type": "text", "text": text}]
+
+
+@pytest.mark.judge
+@pytest.mark.parametrize("packet_judge", ["nestforge-subagents"], indirect=True)
+def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_the_gate_of_its_phase(
+    loaded: None, packet_judge: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, work = tmp_path / "home", tmp_path / "work"
+    work.mkdir()
+    packet = packets.resolve("nestforge-subagents", "cpp")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("JUDGE_URL", packet_judge)
+    monkeypatch.setenv("JUDGE_RANK", "0")
+    monkeypatch.setenv(agent_plugins.PACKET_AGENTS_ENV, ",".join(packet.agents))
+    monkeypatch.setenv(registry.PACKET_TOOLS_ENV, ",".join(packet.tools))
+    for key, value in packet.env:
+        monkeypatch.setenv(key, value)
+    agent_plugins.stage_agents(home, os.environ)
+    model = ScriptedModel(
+        [
+            calls("next_phase"),
+            calls("next_phase"),
+            calls(subagents.TASK_TOOL, subagent_type="kernel-optimizer", prompt="Optimize the first kernel."),
+            calls("list_kernels"),
+            says("nothing to gain"),
+            says("every kernel is done"),
+        ]
+    )
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **options: model)
+    (work / "prompt.txt").write_text("Optimize the program.")
+    args = SimpleNamespace(
+        mcp_config=agent_driver.write_mcp_config(work, work, {"kernel": KERNEL}, 0, 0),
+        prompt=work / "prompt.txt",
+        workdir=work,
+        command_dir=work,
+        base_url="http://scripted.invalid",
+        request_timeout=None,
+        model="scripted",
+        max_output_tokens=100,
+        reasoning_effort="",
+        compaction_trigger=None,
+        resume_prompt="",
+    )
+    usage = runner_common.UsageLog(work / "usage.jsonl")
+
+    reason, detail = asyncio.run(run_anthropic.run_episode_async(args, usage))
+
+    first, _, _, started, listed, *_ = model.sent
+    assert reason is runner_common.EndReason.FINISHED, detail
+    assert started["system"] == subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text()).prompt
+    offered = {tool["name"] for tool in first["tools"]}
+    assert runner_common.READ_TOOL in offered, "the agent reads its skill pages"
+    assert runner_common.SHELL_TOOL not in offered, "the packet forbids a shell"
+    answer = listed["messages"][-1]["content"][0]
+    assert "is_error" not in answer, answer
+    assert re.search(r"extcall_\w+", str(answer["content"])), answer
 
 
 # s231 has a reference solution; the diamond has none and runs the default moves

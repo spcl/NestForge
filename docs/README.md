@@ -19,7 +19,7 @@ judge route do.
 | IR helpers | `nestforge/ir/` | Tree rows and labels (`names`, `introspect`), outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). |
+| Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all three in the bench's CI, the second on `nestforge-two-stage`. |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,
@@ -60,6 +60,8 @@ The packets:
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
 every caller of the route. A session serves one call at a time, so subagents running at once wait for each other.
+Every packet narrows the built-in tools to `Read`, so the agent reads skill pages and has no shell or editor on any
+harness that takes the packet: `claude`, `anthropic` and `openai`.
 
 ## How to extend it
 

@@ -48,7 +48,6 @@ from nestforge.build.toolchain import (
     support_rpath_flags,
 )
 
-
 #: What keeps an LLVM optimizer's report off the warnings: a loop it left unvectorized under ``omp simd``, in every
 #: ``no-vec`` cell or around a call it cannot see into, is a slower build the sweep times, no defect of the kernel.
 LLVM_QUIET_FLAGS: tuple[str, ...] = ("-Wno-pass-failed",)
