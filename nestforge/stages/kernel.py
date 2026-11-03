@@ -9,7 +9,7 @@ import copy
 import dataclasses
 import math
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +46,7 @@ from nestforge.build.sdfg import (
     program_compiler,
 )
 from nestforge.build.toolchain import (
+    SymbolValue,
     cudart_dir,
     cudart_link_flags,
     hip_link_flags,
@@ -211,7 +212,7 @@ def measure_on_cpu(
     src: KernelSource,
     inputs: dict[str, np.ndarray],
     oracle: dict[str, np.ndarray] | None,
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
     """The CPU twin, called in a forked child."""
@@ -230,7 +231,7 @@ def measure_on_gpu(
     src: KernelSource,
     inputs: dict[str, np.ndarray],
     oracle: dict[str, np.ndarray] | None,
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
     """The GPU twin, called in a freshly spawned interpreter: a child forked from a process that already holds a
@@ -261,7 +262,7 @@ class KernelForm:
     schedule: Callable[[Boundary], dace.SDFG]
     build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str]], None]
     measure: Callable[
-        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, dict[str, int], int],
+        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, Mapping[str, SymbolValue], int],
         KernelNumbers | Failure,
     ]
     runtime: Callable[[str], list[str]]
@@ -340,7 +341,7 @@ class Workload:
     """Inputs and the sizes they were drawn at."""
 
     inputs: dict[str, np.ndarray]
-    sizes: dict[str, int]
+    sizes: Mapping[str, SymbolValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,14 +357,18 @@ class Probe:
     unchecked: str = ""
 
 
-def full_probe(prep: Prepared, boundary: Boundary, sizes: dict[str, int]) -> Probe:
+def full_probe(prep: Prepared, boundary: Boundary, sizes: Mapping[str, SymbolValue]) -> Probe:
     """A probe at ``sizes``, however long the oracle takes."""
     timed = Workload(make_inputs(boundary, sizes), sizes)
     return Probe(timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
 
 
 def bounded_probe(
-    prep: Prepared, boundary: Boundary, sizes: dict[str, int], check_sizes: dict[str, int], full: bool
+    prep: Prepared,
+    boundary: Boundary,
+    sizes: Mapping[str, SymbolValue],
+    check_sizes: Mapping[str, SymbolValue],
+    full: bool,
 ) -> Probe:
     """A probe whose oracle takes at most :data:`ORACLE_TIMEOUT_S` per size. The oracle runs at ``check_sizes``, and at
     ``sizes`` too (the probe then compares there) when ``full`` and it should finish in time: a loop scales from the
@@ -407,7 +412,7 @@ def validate_kernel(
     archive: Path,
     src: KernelSource,
     prep: Prepared,
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int = TIMED_REPS,
     fp_mode: str = "strict-ieee",
 ) -> KernelVerdict:

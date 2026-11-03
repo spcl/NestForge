@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -179,10 +180,21 @@ class Param:
     ctype: CType
 
 
-def bind_argument(arg: str, ctype: CType, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> object:
-    """One ctypes argument: a buffer by pointer, a Scalar's one-element buffer by value, else a size by value."""
+#: The value of a program symbol: a size, or a scalar input canonicalization promoted to a symbol (a float too).
+SymbolValue = int | float
+#: Symbol ctypes that take a float: every other symbol ctype is an integer.
+FLOAT_CTYPES: tuple[CType, ...] = (ctypes.c_float, ctypes.c_double)
+
+
+def symbol_argument(ctype: CType, value: SymbolValue) -> object:
+    """A symbol by value, in its own C type: a float symbol keeps its fraction, an integer one is exact."""
+    return ctype(float(value)) if ctype in FLOAT_CTYPES else ctype(int(value))
+
+
+def bind_argument(arg: str, ctype: CType, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> object:
+    """One ctypes argument: a buffer by pointer, a Scalar's one-element buffer by value, else a symbol by value."""
     if arg not in buffers:
-        return ctype(int(sizes[arg]))
+        return symbol_argument(ctype, sizes[arg])
     if isinstance(ctype, POINTER_TYPE):
         return buffers[arg].ctypes.data_as(ctype)
     return ctype(buffers[arg].item())

@@ -33,6 +33,7 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 
 from nestforge.build.isolation import SEAL_KEEP_ENV
+from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
@@ -254,7 +255,7 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     return inputs, reference
 
 
-def check_rung_sizes(setup: Setup, session: Session) -> dict[str, int]:
+def check_rung_sizes(setup: Setup, session: Session) -> dict[str, SymbolValue]:
     """:attr:`Session.sizes` at :data:`CHECK_RUNG` where the rung gives a value."""
     from hpcagent_bench.categories import Preset
     from hpcagent_bench.frameworks.benchmark import Benchmark
@@ -268,16 +269,22 @@ def check_rung_sizes(setup: Setup, session: Session) -> dict[str, int]:
     return session.sizes | symbol_inputs(session.sdfg, scalars) | preset_sizes(kernel, CHECK_RUNG)
 
 
-def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, int]:
-    """The integer scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's ``k``,
-    which canonicalization promotes to a symbol): only sizes bind a symbol, so each becomes one. A size the
-    preset already gives keeps the preset's value."""
+def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, SymbolValue]:
+    """The numeric scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's integer
+    ``k``, cp2k_density_matrix_trs4's float ``threshold``; canonicalization promotes both to symbols): only sizes
+    bind a symbol, so each becomes one, a float kept a float. A size the preset already gives keeps the preset's
+    value."""
     free = {str(s) for s in sdfg.free_symbols}
     return {
-        name: int(value)
+        name: value.item()
         for name, value in inputs.items()
-        if name in free and value.ndim == 0 and np.issubdtype(value.dtype, np.integer)
+        if name in free and value.ndim == 0 and numeric_scalar(value.dtype)
     }
+
+
+def numeric_scalar(dtype: np.dtype) -> bool:
+    """An integer or a float, not a bool: the kinds a symbol takes."""
+    return np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
 
 
 def stopped_text(tool: str, timeout_s: float) -> str:

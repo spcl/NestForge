@@ -5,9 +5,13 @@ standalone check of the kernel needs a value for each."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import dace
 from dace.sdfg.state import ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
+
+from nestforge.build.toolchain import SymbolValue
 
 #: A loop's iteration count is halved to pick its middle iteration, an interior value that boundary reads miss.
 HALF = 2
@@ -40,7 +44,7 @@ def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol | str, int | f
     return first + (max(count, 1) - 1) // HALF * step
 
 
-def loop_symbol_values(state: SDFGState, sizes: dict[str, int]) -> dict[str, int]:
+def loop_symbol_values(state: SDFGState, sizes: Mapping[str, SymbolValue]) -> dict[str, int]:
     """A value for the iterator of each loop around ``state``: the middle of its range under ``sizes`` and the
     values already chosen for the loops outside it."""
     env: dict[dace.symbolic.symbol | str, int | float] = {dace.symbolic.symbol(k): v for k, v in sizes.items()}
