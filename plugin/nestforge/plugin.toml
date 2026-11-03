@@ -10,11 +10,17 @@ openmp = "libomp"
 root = "../.."
 command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
 
-# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, and the reference column.
+# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, the reference column, and the
+# two-stage stub through every phase of the packet it walks.
 [ci]
-optimizers = ["dace_cpu_canon_nestforge_stub", "dace_cpu_canon_nestforge_reference"]
+optimizers = [
+    "dace_cpu_canon_nestforge_stub",
+    "dace_cpu_canon_nestforge_reference",
+    "dace_cpu_canon_nestforge_two_stage",
+]
 kernels = ["jacobi_1d", "tsvc_2_s231"]
 language = "cpp"
+packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 
 # The phases of a NestForge run, in order. A packet's `agent` names the phases the agent runs with the phase's tools;
 # every other phase is its summary in the prompt and its `default` call when the agent calls next_phase (none: finalize
