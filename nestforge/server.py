@@ -21,10 +21,10 @@ import sys
 import tempfile
 import threading
 import time
-import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
+from multiprocessing.util import Finalize
 from pathlib import Path
 from typing import Any
 
@@ -440,13 +440,14 @@ class SessionProcess:
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         scratch = tempfile.mkdtemp(prefix="nfsession_")
-        # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller
+        # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller, ahead
+        # of the join of every child that multiprocessing makes at exit, which a weakref.finalize may come after
         self.process = context.Process(target=own_group, args=(target, child, setup, os.getpid(), scratch))
         # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
         with openmp_environment("nestforge"):
             self.process.start()
         child.close()
-        self.end = weakref.finalize(self, end_session, self.process.pid, scratch)
+        self.end = Finalize(self, end_session, args=(self.process.pid, scratch), exitpriority=0)
         deadline = time.monotonic() + TOOL_TIMEOUT_S
         while not self.connection.poll(POLL_S):
             if time.monotonic() > deadline:

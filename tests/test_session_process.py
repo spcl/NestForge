@@ -9,6 +9,8 @@ import multiprocessing
 import os
 import pathlib
 import signal
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -27,6 +29,8 @@ from nestforge.session import Stopped, Stopper
 SETUP = Setup(kernel="none", preset="S", datatype="float64", gpu=False)
 #: Seconds a test waits for what should happen at once.
 PROMPT_S = 10.0
+#: Seconds a caller that starts a session takes to import, start it and exit.
+CALLER_EXIT_S = 60.0
 
 
 def gone_within(pid: int, seconds: float) -> bool:
@@ -115,6 +119,43 @@ def busy_session_in_a_judge(marker: pathlib.Path) -> None:
     session.connection.send(("view_tree", {}))
     marker.write_text(str(session.process.pid))
     time.sleep(600)
+
+
+#: A caller whose interpreter met ``weakref.finalize`` before multiprocessing, as pytest's does: at exit it joins its
+#: children before ``weakref.finalize`` callbacks run.
+CALLER_LEAVING_A_SESSION = """
+import weakref
+
+
+class Early:
+    pass
+
+
+early = Early()
+weakref.finalize(early, print)
+
+from nestforge.server import SessionProcess
+from test_session_process import SETUP, ready_then_hang
+
+if __name__ == "__main__":
+    session = SessionProcess(SETUP, target=ready_then_hang)
+"""
+
+
+def test_a_caller_that_leaves_a_session_running_exits_and_ends_it(tmp_path):
+    caller = tmp_path / "caller.py"
+    caller.write_text(CALLER_LEAVING_A_SESSION)
+    tests = str(pathlib.Path(__file__).parent)
+
+    done = subprocess.run(
+        [sys.executable, str(caller)],
+        env={**os.environ, "PYTHONPATH": tests},
+        capture_output=True,
+        timeout=CALLER_EXIT_S,
+        check=False,
+    )
+
+    assert done.returncode == 0, done.stderr
 
 
 def test_a_session_that_never_reports_ready_is_ended_within_the_budget(monkeypatch):
