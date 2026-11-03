@@ -288,10 +288,10 @@ def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, S
 
 def closure_inputs(program: DaceProgram, sdfg: dace.SDFG) -> dict[str, np.ndarray]:
     """The arrays ``program`` computed when it was parsed, which ``sdfg`` takes as arguments: DaCe evaluates a
-    subscripted NumPy call on constants (cp2k_density_matrix_trs4's ``np.arange(3, dtype=np.int64)[None, :]``) once, at
-    parse time, and passes the result in as a closure array. Only the program holds its value, and the bench's inputs do not name it: left out, it would be
-    zero-filled with the outputs and the program would run on zeros. ``program`` must have been parsed (``to_sdfg``),
-    as :func:`started_session` does."""
+    subscripted NumPy call on constants (cp2k_density_matrix_trs4's ``np.arange(3, dtype=np.int64)[None, :]``) once,
+    at parse time, and passes the result in as a closure array. Only the program holds its value, and the bench's
+    inputs do not name it: left out, it would be zero-filled with the outputs and the program would run on zeros.
+    ``program`` must have been parsed (``to_sdfg``), as :func:`started_session` does."""
     return {
         name: np.asarray(value)
         for name, value in program.__sdfg_closure__().items()

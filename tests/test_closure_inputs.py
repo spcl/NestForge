@@ -1,8 +1,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A subscripted NumPy call on constants (cp2k_density_matrix_trs4's ``np.arange(3, dtype=np.int64)[None, :]``) is
-evaluated when the program is parsed and becomes a closure array, an argument of the SDFG that the bench's inputs do not name: ``closure_inputs`` binds its
-value, so the whole program does not run on zeros."""
+evaluated when the program is parsed and becomes a closure array, an argument of the SDFG that the bench's inputs do
+not name: ``closure_inputs`` binds its value, so the whole program does not run on zeros."""
 
 import dace
 import numpy as np
