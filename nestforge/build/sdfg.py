@@ -35,6 +35,7 @@ from nestforge.build.toolchain import (
     LIBOMP,
     Param,
     bind_argument,
+    compiler_family,
     cudart_dir,
     cudart_link_flags,
     hip_link_flags,
@@ -46,6 +47,11 @@ from nestforge.build.toolchain import (
     runtime_library,
     support_rpath_flags,
 )
+
+
+#: What keeps an LLVM optimizer's report off the warnings: a loop it left unvectorized under ``omp simd``, in every
+#: ``no-vec`` cell or around a call it cannot see into, is a slower build the sweep times, no defect of the kernel.
+LLVM_QUIET_FLAGS: tuple[str, ...] = ("-Wno-pass-failed",)
 
 
 @functools.lru_cache(maxsize=None, typed=True)
@@ -227,13 +233,14 @@ def build_commands(folder: Path | None, opts: BuildOptions) -> BuildCommands:
         warnings.warn(
             f"{Path(compiler).name} cannot link libomp; building serial, so every parallel map runs on one thread"
         )
+    quiet = list(LLVM_QUIET_FLAGS) if compiler_family(compiler) == "llvm" else []
     omp_c = openmp_compile_flags(compiler) if omp else []
     omp_l = openmp_link_flags(compiler) if omp else []
     includes = [f"-I{folder / 'include'}", f"-I{dace_runtime_include()}"] if folder is not None else []
     return BuildCommands(
         compiler=compiler,
         cflags=[f for f in opts.resolved_flags() if f != "-shared"],
-        compile_extra=[*omp_c, *includes],
+        compile_extra=[*omp_c, *quiet, *includes],
         # icx links libsvml/libimf from off the loader path without a RUNPATH
         link_libs=[*opts.libraries, *omp_l, *support_rpath_flags(compiler)],
     )

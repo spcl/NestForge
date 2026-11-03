@@ -339,6 +339,36 @@ def test_a_succeeding_compile_surfaces_its_warnings(tmp_path):
         toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "warn.o")])
 
 
+def llvm_build_under_warnings_as_errors(source: str, tmp_path: Path) -> None:
+    """``source`` through the sweep's one build, with no warning kind reported before this one."""
+    src = tmp_path / "kernel.cpp"
+    src.write_text(source)
+    toolchain_mod.WARNED.clear()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        build_mod.build_archive(
+            [src], None, tmp_path / "libkernel.a", tmp_path / "libkernel.so", build_mod.BuildOptions("clang++")
+        )
+
+
+def test_a_loop_the_optimizer_leaves_unvectorized_builds_under_warnings_as_errors(tmp_path):
+    """A kernel's ``omp simd`` is a request. A call the vectorizer cannot see into, or a sweep cell that turns the
+    vectorizer off, leaves the loop as it was: that is a slower cell, which the sweep times, not a broken kernel."""
+    source = 'extern "C" double opaque(double);\nextern "C" void kernel(long n, double* a) {\n'
+    source += "#pragma omp simd\n  for (long i = 0; i < n; ++i) a[i] = opaque(a[i]);\n}\n"
+
+    llvm_build_under_warnings_as_errors(source, tmp_path)
+
+    assert (tmp_path / "libkernel.a").is_file()
+
+
+def test_a_real_warning_of_an_llvm_build_stays_an_error_under_warnings_as_errors(tmp_path):
+    source = 'extern "C" int kernel(int n) {\n  int unused_variable = n;\n  return 0;\n}\n'
+
+    with pytest.raises(UserWarning, match="unused_variable"):
+        llvm_build_under_warnings_as_errors(source, tmp_path)
+
+
 def test_a_clean_compile_warns_about_nothing(tmp_path):
     """The sweep compiles thousands of cells; a run that warned unconditionally would bury the real ones."""
     src = tmp_path / "clean.cpp"
