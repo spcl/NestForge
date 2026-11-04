@@ -5,7 +5,7 @@ default stage 2 on top.
 
 That map is the loop over the 6 species of each level, with the column maps inside it: left whole, only its 6
 iterations run in parallel. Split, each statement becomes a species map the default collapses with its column map,
-so the parallel space is species by columns (1.90x at preset M, 72 threads, on bc07961)."""
+so the parallel space is species by columns (1.83x at preset M, 72 threads, on c2daa40, job 5256868)."""
 
 from nestforge.replay import Context, Script
 
@@ -19,8 +19,8 @@ def solve(s: Script, ctx: Context) -> None:
 
 
 def stage1(s: Script, ctx: Context) -> None:
-    """No move and no default fusions: the species map stays 6 wide, yet faster than the default (1.46x at M, 72
-    threads, job 5253180); the reference beats it by 1.29x."""
+    """No move and no default fusions: the species map stays 6 wide, yet faster than the default (1.38x at M, 72
+    threads, job 5256868); the reference beats it by 1.33x."""
     s.finish()
 
 
