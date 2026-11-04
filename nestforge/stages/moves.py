@@ -199,10 +199,14 @@ def loop_maps(loop: LoopRegion) -> list[nodes.MapEntry]:
 
 
 def intermediates(state: SDFGState, producer: nodes.MapEntry, consumer: nodes.MapEntry) -> list[nodes.AccessNode]:
-    """The access nodes the ``producer`` map writes and the ``consumer`` map reads."""
-    written = dict.fromkeys(e.dst for e in state.out_edges(state.exit_node(producer)))
+    """The access nodes the ``producer`` map writes and the ``consumer`` map reads; an edge with an empty memlet only
+    orders the two maps and reads nothing."""
+    written = dict.fromkeys(e.dst for e in state.out_edges(state.exit_node(producer)) if not e.data.is_empty())
     return [
-        a for a in written if isinstance(a, nodes.AccessNode) and any(e.dst is consumer for e in state.out_edges(a))
+        a
+        for a in written
+        if isinstance(a, nodes.AccessNode)
+        and any(e.dst is consumer and not e.data.is_empty() for e in state.out_edges(a))
     ]
 
 
