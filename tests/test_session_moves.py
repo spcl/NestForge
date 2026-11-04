@@ -689,6 +689,24 @@ def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_i
     assert digest(sut.sdfg) == before
 
 
+def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile_map():
+    """A tile's point map sits inside the tile map, so MapLoopInterchange cannot split its state; the move nests the
+    point map first. Result: tile doall, then the loop, then the point doall (tsvc_2_s233, fuse_physics_into_scan)."""
+    sut, reference = session_and_reference(map_loop)
+    (entry,) = top_level_maps(sut.sdfg)
+    assert sut.apply_move("tile-doall", [entry.map.label], [4]).status is MoveStatus.APPLIED
+
+    result = apply_listed(sut, "interchange-doall-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
+    (tile,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if tile in s.nodes())
+    (nest,) = [n for n in state.scope_children()[tile] if isinstance(n, nodes.NestedSDFG)]
+    (loop,) = [b for b in nest.sdfg.nodes() if isinstance(b, LoopRegion)]
+    assert [n for s in loop.nodes() if isinstance(s, SDFGState) for n in top_level_map_entries(s)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
 # if-loop interchange
 
 

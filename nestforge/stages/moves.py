@@ -389,13 +389,51 @@ def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
             f"the body of {entry.map.label} is not exactly the loop {loop.label}; subgraph-fission the map around the "
             "loop first, so the loop is the whole body of a map of its own."
         )
-    xform = MapLoopInterchange()
-    match = {MapLoopInterchange.map_entry: state.node_id(entry), MapLoopInterchange.nested_sdfg: state.node_id(body)}
-    xform.setup_match(state.sdfg, state.parent_graph.cfg_id, state.block_id, match, 0)
+    if state.entry_node(entry) is not None:
+        return plan_nested_map_loop(state, entry)
+    xform = map_loop_interchange(state, entry, body)
     reason = xform.refusal(state)
     if reason is not None:
         return f"blocked by MapLoopInterchange: {reason}."
     return Rewrite("MapLoopInterchange", lambda: xform.apply(state, state.sdfg))
+
+
+def map_loop_interchange(state: SDFGState, entry: nodes.MapEntry, body: nodes.NestedSDFG) -> MapLoopInterchange:
+    xform = MapLoopInterchange()
+    match = {MapLoopInterchange.map_entry: state.node_id(entry), MapLoopInterchange.nested_sdfg: state.node_id(body)}
+    xform.setup_match(state.sdfg, state.parent_graph.cfg_id, state.block_id, match, 0)
+    return xform
+
+
+def nest_map(state: SDFGState, entry: nodes.MapEntry) -> tuple[SDFGState, nodes.MapEntry, nodes.NestedSDFG]:
+    """Wrap the map at ``entry`` (inside another map) and its body in a nested SDFG of its own, whose one state holds
+    the map and its access nodes alone; that state, the map and its body there."""
+    nest = nest_state_subgraph(state.sdfg, state, state.scope_subgraph(entry))
+    root = state.sdfg.root_sdfg
+    set_nested_sdfg_parent_references(root)
+    root.reset_cfg_list()
+    (inner,) = nest.sdfg.states()
+    (inner_entry,) = top_level_map_entries(inner)
+    inner_body = map_body(inner, inner_entry)
+    assert inner_body is not None, "nesting keeps the map's body"
+    return inner, inner_entry, inner_body
+
+
+def plan_nested_map_loop(state: SDFGState, entry: nodes.MapEntry) -> Rewrite | str:
+    """``map i0: map i: for t: B`` -> ``map i0: for t: map i: B`` (the point map of a tile): ``MapLoopInterchange``
+    splits the state around the map it moves, which a map inside another map cannot be, so the inner map is nested
+    first; legality is read on a copy."""
+    twin, twin_state, twin_entry = detached_twin(state.sdfg, state, entry)
+    twin_inner, twin_inner_entry, twin_body = nest_map(twin_state, twin_entry)
+    reason = map_loop_interchange(twin_inner, twin_inner_entry, twin_body).refusal(twin_inner)
+    if reason is not None:
+        return f"blocked by MapLoopInterchange: {reason}."
+
+    def commit() -> None:
+        inner, inner_entry, body = nest_map(state, entry)
+        map_loop_interchange(inner, inner_entry, body).apply(inner, inner.sdfg)
+
+    return Rewrite("MapLoopInterchange", commit)
 
 
 def plan_if_loop(cond_row: Row, loop_row: Row) -> Rewrite | str:

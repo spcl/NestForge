@@ -9,7 +9,7 @@ import ctypes
 import mmap
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -19,13 +19,21 @@ from dace import symbolic
 
 from nestforge.build import flags
 from nestforge.build.isolation import Failure, Result, run_isolated
-from nestforge.build.toolchain import POINTER_TYPE, CType, bind_argument, entry, needed_libraries, parse_params
+from nestforge.build.toolchain import (
+    POINTER_TYPE,
+    CType,
+    SymbolValue,
+    bind_argument,
+    entry,
+    needed_libraries,
+    parse_params,
+)
 from nestforge.corpus.translate import Prepared
 from nestforge.ir.emit_python import factored_inputs, load_emitted, oracle_sdfg, scratch_arrays
 from nestforge.ir.extract import Boundary
 
 
-def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...]:
+def resolve_shape(shape: Sequence[Any], sizes: Mapping[str, SymbolValue]) -> tuple[int, ...]:
     env: dict[symbolic.symbol | str, int | float] = {symbolic.symbol(k): v for k, v in sizes.items()}
     return tuple(int(symbolic.evaluate(d, env)) for d in shape)
 
@@ -34,7 +42,7 @@ def resolve_shape(shape: Sequence[Any], sizes: dict[str, int]) -> tuple[int, ...
 INPUT_HIGH = 0.25
 
 
-def make_inputs(boundary: Boundary, sizes: dict[str, int], seed: int = 0) -> dict[str, np.ndarray]:
+def make_inputs(boundary: Boundary, sizes: Mapping[str, SymbolValue], seed: int = 0) -> dict[str, np.ndarray]:
     """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller."""
     sdfg = oracle_sdfg(boundary)  # the raw nest's scratch is too small
     rng = np.random.default_rng(seed)
@@ -59,7 +67,7 @@ def positive_definite(array: np.ndarray) -> np.ndarray:
 
 
 def run_oracle(
-    prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int]
+    prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]
 ) -> dict[str, np.ndarray]:
     """The outputs of the kernel's NumPy oracle on copies of ``inputs``."""
     args = {k: v.copy() for k, v in inputs.items()}
@@ -67,7 +75,9 @@ def run_oracle(
     return {o: args[o] for o in boundary.outputs}
 
 
-def call_oracle(prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray], sizes: dict[str, int]) -> float:
+def call_oracle(
+    prep: Prepared, boundary: Boundary, args: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]
+) -> float:
     """The kernel's NumPy oracle on ``args``, in place; returns the seconds the call took."""
     missing = [s for s in boundary.symbols if s not in sizes]
     if missing:
@@ -96,7 +106,11 @@ class OracleDone(Result):
 
 
 def bounded_oracle(
-    prep: Prepared, boundary: Boundary, inputs: dict[str, np.ndarray], sizes: dict[str, int], timeout_s: float
+    prep: Prepared,
+    boundary: Boundary,
+    inputs: dict[str, np.ndarray],
+    sizes: Mapping[str, SymbolValue],
+    timeout_s: float,
 ) -> tuple[dict[str, np.ndarray], float] | Failure:
     """:func:`run_oracle` in a forked child, which an interpreted nest cannot hold past ``timeout_s``, nor a crash take
     the caller down: its outputs and the seconds of its call, or a :class:`Failure` when it did not finish. An oracle's
@@ -134,7 +148,7 @@ def call_native(
     argtypes: list[CType],
     boundary: Boundary,
     inputs: dict[str, np.ndarray],
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int,
     copy_inputs: bool = True,
     copy_outputs: bool = True,
@@ -292,7 +306,7 @@ class DeviceCall:
     output_names: list[str]
     restore: list[str]
     inputs: dict[str, np.ndarray]
-    sizes: dict[str, int]
+    sizes: Mapping[str, SymbolValue]
     reps: int
 
 

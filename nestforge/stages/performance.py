@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import numpy as np
 from nestforge.build.arena import US_PER_S, reps_within_budget
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
-from nestforge.build.toolchain import parse_params, signature
+from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
 from nestforge.stages.placement import Transfer
@@ -106,7 +107,7 @@ class ProgramCall:
     source: str
     name: str
     buffers: dict[str, np.ndarray]
-    sizes: dict[str, int]
+    sizes: Mapping[str, SymbolValue]
     reps: int
     reference: Reference | None
 
@@ -134,7 +135,9 @@ def run_program(call: ProgramCall) -> ProgramTime:
         built.close()
 
 
-def program_buffers(sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: dict[str, int]) -> dict[str, np.ndarray]:
+def program_buffers(
+    sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]
+) -> dict[str, np.ndarray]:
     """Every non-transient array of ``sdfg``: from ``inputs`` where given, else zeros of its shape at ``sizes``."""
     buffers: dict[str, np.ndarray] = {}
     for name, desc in sdfg.arrays.items():
@@ -154,7 +157,7 @@ def time_program(
     out_dir: Path,
     inputs: dict[str, np.ndarray],
     reference: Reference | None,
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int,
     gpu: bool,
 ) -> ProgramReport:
@@ -178,7 +181,7 @@ def time_program(
 
 
 def offload_report(
-    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: dict[str, int]
+    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: Mapping[str, SymbolValue]
 ) -> OffloadReport:
     """Where each kernel runs and what crosses memory spaces, with bytes at ``sizes``."""
     transfers = None
@@ -197,7 +200,7 @@ def offload_report(
     return OffloadReport(devices=devices, transfers=transfers, transfer_bytes=total)
 
 
-def array_bytes(sdfg: dace.SDFG, name: str, sizes: dict[str, int]) -> int | None:
+def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
     desc = sdfg.arrays.get(name)
     if desc is None:
         return None

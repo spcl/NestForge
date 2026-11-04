@@ -11,7 +11,7 @@ import functools
 import time
 import warnings
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +34,7 @@ from nestforge.build.toolchain import (
     DEFAULT_FLAGS,
     LIBOMP,
     Param,
+    SymbolValue,
     bind_argument,
     compiler_family,
     cudart_dir,
@@ -46,6 +47,7 @@ from nestforge.build.toolchain import (
     run,
     runtime_library,
     support_rpath_flags,
+    symbol_argument,
 )
 
 #: What keeps an LLVM optimizer's report off the warnings: a loop it left unvectorized under ``omp simd``, in every
@@ -87,12 +89,12 @@ class BuiltSDFG:
         fn.argtypes = argtypes
         return fn
 
-    def init(self, sizes: dict[str, int]) -> None:
+    def init(self, sizes: Mapping[str, SymbolValue]) -> None:
         fn = self.function(f"__dace_init_{self.name}", ctypes.c_void_p, [p.ctype for p in self.init_params])
         # each parameter's own ctype: symbol widths differ between programs
-        self.handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self.init_params]))
+        self.handle = ctypes.c_void_p(fn(*[symbol_argument(p.ctype, sizes[p.name]) for p in self.init_params]))
 
-    def program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+    def program(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
         fn = self.function(f"__program_{self.name}", None, [ctypes.c_void_p] + [p.ctype for p in self.prog_params])
         args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
@@ -111,7 +113,7 @@ class BuiltSDFG:
         self.function(f"__dace_exit_{self.name}", ctypes.c_int, [ctypes.c_void_p])(self.handle)
         self.handle = None
 
-    def run(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+    def run(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Init, one program call, exit."""
         self.init(sizes)
         try:
