@@ -21,6 +21,7 @@ from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.subsets import Range
+from dace.transformation.dataflow.copy_to_map import CopyToMap
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
@@ -87,6 +88,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "untile-doall": (nodes.MapEntry, nodes.MapEntry),
     "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
     "expand-doall": (nodes.MapEntry,),
+    "copy-to-doall": (ControlFlowBlock,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
 }
@@ -139,6 +141,10 @@ SUBGRAPH_FISSION_REFUSED = (
     "blocked by SubgraphFission: the body branches, the edge after the cut assigns or branches, or MapFission "
     "refuses (a half holds a conditional, or an interstate assignment reads a map parameter)."
 )
+
+#: Every copy becomes a map: by default CopyToMap takes only copies whose two arrays differ in strides.
+COPY_TO_MAP_OPTIONS = {"ignore_strides": True}
+COPY_TO_MAP_REFUSED = "blocked by CopyToMap: the state holds no copy between two arrays outside a doall."
 
 
 def tree_label(obj: Any) -> str:
@@ -501,6 +507,37 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
+def plain_copies(state: SDFGState) -> list[tuple[nodes.AccessNode, nodes.AccessNode]]:
+    """The copies between two arrays at the top of ``state`` (``a[:] = b``) that ``CopyToMap`` turns into a map; an
+    edge with an empty memlet only orders the two nodes and copies nothing."""
+    return [
+        (e.src, e.dst)
+        for e in state.edges()
+        if not e.data.is_empty()
+        and isinstance(e.src, nodes.AccessNode)
+        and isinstance(e.dst, nodes.AccessNode)
+        and state.entry_node(e.src) is None
+        and CopyToMap.can_be_applied_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, a=e.src, b=e.dst)
+    ]
+
+
+def plan_copy_to_doall(row: Row) -> Rewrite | str:
+    """Every plain copy at the top of a state becomes a doall, so tiling and the lane interchange see it like the
+    doalls around it."""
+    state = row[0]
+    if not isinstance(state, SDFGState):
+        return f"{tree_label(state)} is not a state; copy-to-doall takes the state that holds the copy."
+    copies = plain_copies(state)
+    if not copies:
+        return COPY_TO_MAP_REFUSED
+
+    def commit() -> None:
+        for src, dst in copies:
+            CopyToMap.apply_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=src, b=dst)
+
+    return Rewrite("CopyToMap", commit)
+
+
 def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
     return next((pair for pair in map_tile_pairs(state) if pair.outer is outer and pair.inner is inner), None)
 
@@ -592,6 +629,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-doall": plan_untile_doall,
     "collapse-doalls": plan_collapse_doalls,
     "expand-doall": plan_expand_doall,
+    "copy-to-doall": plan_copy_to_doall,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
 }
@@ -667,6 +705,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
     "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
     "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "copy-to-doall": (
+        "CopyToMap",
+        "a plain copy between two arrays in the state (a[:] = b) becomes a doall over the copied elements, so "
+        "tile-doall and the interchanges treat it like the doalls around it.",
+    ),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
         "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
@@ -843,6 +886,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-doall": tile_pair_rows,
     "collapse-doalls": nested_map_pairs,
     "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "copy-to-doall": lambda sdfg: (((st, None),) for st in every_region_block(sdfg, SDFGState) if plain_copies(st)),
     "tile-for": for_rows,
     "untile-for": tile_loops,
 }

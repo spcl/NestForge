@@ -222,6 +222,14 @@ def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
         R[0] += A[i] + 1
 
 
+@dace.program
+def carry_each_step(x: dace.float64[N], c: dace.float64[N], out: dace.float64[N]):
+    for t in range(T):
+        for i in dace.map[0:N]:
+            out[i] = c[i] * 0.5 + x[i]
+        c[:] = out
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -839,3 +847,78 @@ def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
     arrays = random_arrays(q=(STEPS, SIZE, 3), pr=(SIZE,))
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE, NLEV=STEPS, NSPEC=3)
+
+
+# copy-to-doall
+
+
+def plain_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
+    """Copies between two arrays outside any map, as (source, destination)."""
+    return [
+        (e.src.data, e.dst.data)
+        for state in sdfg.states()
+        for e in state.edges()
+        if isinstance(e.src, nodes.AccessNode)
+        and isinstance(e.dst, nodes.AccessNode)
+        and state.entry_node(e.src) is None
+    ]
+
+
+def every_top_level_map(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
+    return [entry for state in sdfg.states() for entry in top_level_map_entries(state)]
+
+
+def test_copy_to_doall_turns_the_carry_copy_into_a_doall_and_keeps_the_values():
+    sut, reference = session_and_reference(carry_each_step)
+    assert plain_copies(sut.sdfg) == [("out", "c")]
+    maps_before = len(every_top_level_map(sut.sdfg))
+
+    result = apply_listed(sut, "copy-to-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "CopyToMap")
+    assert plain_copies(sut.sdfg) == []
+    assert len(every_top_level_map(sut.sdfg)) == maps_before + 1
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), c=(SIZE,), out=(SIZE,)), N=SIZE, T=STEPS)
+
+
+def test_the_doall_copy_to_doall_makes_can_be_tiled_like_the_others():
+    sut, reference = session_and_reference(carry_each_step)
+    apply_listed(sut, "copy-to-doall")
+    tileable = {move.labels for move in sut.list_moves("tile-doall")}
+    labels = [entry.map.label for entry in every_top_level_map(sut.sdfg)]
+
+    assert {(label,) for label in labels} <= tileable
+    for label in labels:
+        result = sut.apply_move("tile-doall", [label], [4])
+        assert result.status is MoveStatus.APPLIED, result
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), c=(SIZE,), out=(SIZE,)), N=SIZE, T=STEPS)
+
+
+def test_copy_to_doall_leaves_an_ordering_edge_alone():
+    """An empty memlet between two access nodes orders them and copies nothing (CloudSC seed 0: turned into a copy,
+    it overwrote ``form`` and ``liquid``)."""
+    sdfg = dace.SDFG("ordering_edge")
+    sdfg.add_array("a", [SIZE], dace.float64)
+    sdfg.add_array("b", [SIZE], dace.float64)
+    state = sdfg.add_state()
+    state.add_edge(state.add_access("a"), None, state.add_access("b"), None, dace.Memlet())
+    sut = Session(sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert sut.list_moves("copy-to-doall") == []
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def test_copy_to_doall_of_a_state_without_a_copy_is_illegal_and_changes_nothing():
+    sut = Session(two_indep.to_sdfg(simplify=True))
+    (state,) = [s for s in sut.sdfg.states() if top_level_map_entries(s)]
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("copy-to-doall") == []

@@ -120,7 +120,8 @@ vector width. Read those sizes from the machine you run on; `get_performance` af
 
 **`collapse-doalls`** `[outer doall, inner doall]`, MapCollapse: `doall i: doall j: B` becomes `doall (i, j): B`,
 one parallel space, so short ranges still give every thread work. **`expand-doall`** `[doall]`, MapExpansion: the
-inverse.
+inverse. **`copy-to-doall`** `[state]`, CopyToMap: each plain copy in the state (`a[:] = b`) becomes a doall over
+the copied elements, so `tile-doall` and the interchanges can take it with the doalls around it.
 
 ### Library calls
 
