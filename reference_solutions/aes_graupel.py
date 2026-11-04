@@ -16,3 +16,11 @@ CONFIGS = (Context("cpu", 72, "M"),)
 def solve(s: Script, ctx: Context) -> None:
     s.apply(s.pick("doall-fission", writes=["__inl1_sink", "__inl1_sx2x"]))
     s.defaults()
+
+
+def stage1(s: Script, ctx: Context) -> None:
+    """No move and no default fusions: the species map stays 6 wide, as in the default (not timed on bc07961)."""
+    s.finish()
+
+
+DECOYS = {"stage1": stage1}
