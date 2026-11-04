@@ -29,7 +29,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.build.arena import TIMED_REPS
-from nestforge.build.sdfg import force_register_arrays
+from nestforge.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from nestforge.build.toolchain import SymbolValue, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.dace_types import strings
@@ -708,6 +708,29 @@ class Session:
             )
             for ext, boundary in lowered
         ]
+
+    @undone_on_failure
+    def persist_temporaries(self, min_bytes: int = PERSISTENT_MIN_BYTES) -> MoveResult:
+        """Option, any time after the moves: allocate each large temporary of the program once, at init, instead of on
+        every call (:func:`~nestforge.build.sdfg.make_persistent`). It changes no loop; it saves the page faults of
+        fresh memory on each call. Needs :attr:`sizes`, to know which temporaries are large.
+
+        :param min_bytes: Smallest temporary, in bytes at :attr:`sizes`, that is kept.
+        :returns: ``applied`` with the names as ``reason``, or why nothing changed.
+        """
+        if not self.sizes:
+            reason = "the sizes are not set, so no temporary's size is known; set Session.sizes first."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+        names = make_persistent(self.sdfg, self.sizes, min_bytes)
+        if not names:
+            reason = f"no temporary of the program is a heap array of {min_bytes} bytes or more at these sizes."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+        if self.unplaced is not None:
+            make_persistent(self.unplaced, self.sizes, min_bytes)
+        self.bump()
+        done = MoveResult(status=MoveStatus.APPLIED, kind="persist-temporaries", labels=(), reason=", ".join(names))
+        self.applied.append(done)
+        return done
 
     @undone_on_failure
     def set_scope(self, labels: Sequence[str]) -> MoveResult:

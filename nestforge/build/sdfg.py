@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import dace
 import numpy as np
@@ -153,6 +153,51 @@ def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]
         )
         if unforced or scoped:
             yield desc
+
+
+#: A host transient of at least this many bytes is kept across program calls: below it, allocating it per call costs
+#: less than the page faults of a fresh megabyte (4086 minor faults per call for two 134 MB arrays).
+PERSISTENT_MIN_BYTES = 1 << 20
+
+
+def array_bytes(desc: Array, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The byte size of ``desc`` at ``sizes``, or ``None`` when an extent names a symbol ``sizes`` lacks (one the
+    program computes inside, which is unknown at init)."""
+    values = cast("dict[dace.symbolic.symbol | str, SymbolValue]", dict(sizes))  # evaluate's key type is invariant
+    count = 1
+    for extent in desc.shape:
+        try:
+            count *= int(dace.symbolic.evaluate(extent, values))
+        except (TypeError, ValueError, KeyError):
+            return None
+    return count * desc.dtype.bytes
+
+
+def persistent_candidates(
+    sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue], min_bytes: int
+) -> Iterator[tuple[str, Array]]:
+    """The program's own transients that are heap arrays of at least ``min_bytes`` at ``sizes`` and live for a scope:
+    kernels (``ExternalCall`` bodies), views, registers, device memory and arrays inside a GPU kernel are left out."""
+    for owned in sdfg.all_sdfgs_recursive():
+        if on_device(owned):
+            continue
+        for name, desc in owned.arrays.items():
+            heap = desc.storage in (dace.StorageType.Default, dace.StorageType.CPU_Heap)
+            if type(desc) is Array and desc.transient and heap and desc.lifetime == dace.AllocationLifetime.Scope:
+                size = array_bytes(desc, sizes)
+                if size is not None and size >= min_bytes:
+                    yield f"{owned.label}.{name}", desc
+
+
+def make_persistent(
+    sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue], min_bytes: int = PERSISTENT_MIN_BYTES
+) -> list[str]:
+    """Allocate each candidate (:func:`persistent_candidates`) once at init instead of on every program call; returns
+    their ``sdfg.array`` names. A transient is written before it is read, so a call never reads what the last left."""
+    found = list(persistent_candidates(sdfg, sizes, min_bytes))
+    for _, desc in found:
+        desc.lifetime = dace.AllocationLifetime.Persistent
+    return [name for name, _ in found]
 
 
 def on_device(sdfg: dace.SDFG) -> bool:

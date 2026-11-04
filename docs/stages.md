@@ -82,6 +82,11 @@ holding a kernel is never taken whole, since no kernel nests another. The sessio
 kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
 kernel, scopes are fixed from placement on, and a new round reopens both ([phases](README.md#the-phases)).
 
+`persist_temporaries(min_bytes)` is an option, not a scope: the program's heap transients of at least `min_bytes`
+(1 MiB by default, at `sizes`) are allocated once at init instead of on every call, which saves the page faults of fresh
+memory (1.26x on `fuse_physics_into_scan` at preset M). It needs `sizes`, leaves out transients whose extent names a symbol
+`sizes` lacks, and changes no loop (`nestforge/build/sdfg.py`, `make_persistent`).
+
 The default (`default_units` in `nestforge/stages/scopes.py`) walks the program's top-level blocks:
 
 | top-level block | scopes |
@@ -111,6 +116,7 @@ of the loop's range unless `sizes` gives a value.
 |---|---|
 | default | `default_scopes()` |
 | agent | `set_scope(labels)`, `unset_scope(name)` |
+| option | `persist_temporaries(min_bytes)` |
 | code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/loops.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
 
 ## Stage 4: Placement
