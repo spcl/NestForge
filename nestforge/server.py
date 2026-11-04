@@ -33,7 +33,7 @@ import numpy as np
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.build.isolation import SEAL_KEEP_ENV
+from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import KernelStatus, MoveStatus, Record
@@ -373,14 +373,14 @@ def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str
     from hpcagent_bench import flags
     from hpcagent_bench.harness import native_call
 
-    os.sched_setaffinity(0, cores)
+    restrict_cpus(cores)
     os.environ.clear()
     os.environ.update(environment)
     if slot is None:
         return
     cpus = native_call.grading_cpus(slot)
     if cpus:
-        os.sched_setaffinity(0, cpus)
+        restrict_cpus(cpus)
         native_call.bind_memory(native_call.numa_nodes(cpus))
         os.environ.update(flags.cpu_env(flags.Mode.MULTI_CORE, threads=native_call.slot_threads(cpus)))
         os.environ.update(native_call.CHILD_BIND_ENV)
@@ -399,7 +399,8 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
-    cores, environment = os.sched_getaffinity(0), dict(os.environ)
+    # the session's own mask, not the current one: libomp may have bound this thread to one CPU already
+    cores, environment = set(CHILD_CPUS.cpus), dict(os.environ)
     while True:
         try:
             tool, arguments, slot, timed = connection.recv()
