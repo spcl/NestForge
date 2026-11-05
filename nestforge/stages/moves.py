@@ -30,8 +30,9 @@ from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
 from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
 from dace.transformation.dataflow.tiling import MapTiling
+from dace.transformation.dataflow.trivial_map_elimination import TrivialMapElimination
 from dace.transformation.helpers import nest_state_subgraph
-from dace.transformation.interstate import MapLoopInterchange, SubgraphFission
+from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes
@@ -371,9 +372,81 @@ def plan_subgraph_fission(entry_row: Row, cut_row: Row) -> Rewrite | str:
     return pattern(SubgraphFission, state.sdfg, where, options={"cut": cut.label}) or SUBGRAPH_FISSION_REFUSED
 
 
+def scope_copies(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
+    """The arrays of access nodes inside ``entry``'s scope that no inner map reads or writes: a copy beside the map."""
+    children = state.scope_children()[entry]
+    inner = [n for n in children if isinstance(n, nodes.MapEntry)]
+    ends = set(inner) | {state.exit_node(m) for m in inner}
+    return [
+        n.data
+        for n in children
+        if isinstance(n, nodes.AccessNode) and not any(e.src in ends or e.dst in ends for e in state.all_edges(n))
+    ]
+
+
+def flatten_map_body(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.MapEntry]:
+    """Inline the nested SDFG that is the body of ``entry`` and drop its one-iteration maps; the maps now directly
+    inside ``entry``."""
+    body = map_body(state, entry)
+    assert body is not None, "the caller checked the body"
+    InlineSDFG.apply_to(state.sdfg, nested_sdfg=body, verify=False)
+    root = state.sdfg.root_sdfg
+    set_nested_sdfg_parent_references(root)
+    root.reset_cfg_list()
+    for inner in [n for n in state.scope_children()[entry] if isinstance(n, nodes.MapEntry)]:
+        if all(begin == end for begin, end, _ in inner.map.range):
+            TrivialMapElimination.apply_to(state.sdfg, map_entry=inner, verify=False)
+    return [n for n in state.scope_children()[entry] if isinstance(n, nodes.MapEntry)]
+
+
+def body_swap_blocker(state: SDFGState, entry: nodes.MapEntry) -> str | None:
+    """Why the map directly inside the body of ``entry`` cannot be swapped with it, or ``None``; this inlines the body
+    in ``state``, so it runs on a detached twin."""
+    body = map_body(state, entry)
+    if body is None or not InlineSDFG.can_be_applied_to(state.sdfg, nested_sdfg=body):
+        return f"blocked by InlineSDFG: the body of {entry.map.label} cannot be inlined."
+    inner = flatten_map_body(state, entry)
+    beside = (nodes.MapEntry, nodes.MapExit, nodes.AccessNode)
+    holds = [n for n in state.scope_children()[entry] if not isinstance(n, beside)]
+    if len(inner) != 1 or holds or scope_copies(state, entry):
+        return (
+            f"the body of {entry.map.label} holds more than one map or a computation or copy beside it; "
+            "doall-fission or subgraph-fission it first."
+        )
+    where = {"outer_map_entry": entry, "inner_map_entry": inner[0]}
+    return None if pattern(MapInterchange, state.sdfg, where) else MAP_INTERCHANGE_REFUSED
+
+
+def plan_body_map_map(state: SDFGState, outer: nodes.MapEntry, inner_row: Row) -> Rewrite | str:
+    """``map j: {nested SDFG: map k}`` -> ``map k: map j``: the body is inlined first (and its one-iteration maps
+    dropped), so the maps are directly nested; legality is read on a copy."""
+    inner, inner_state = inner_row[0], node_state(inner_row)
+    body = map_body(state, outer)
+    if body is None or inner_state.sdfg is not body.sdfg or len(body.sdfg.nodes()) != 1:
+        return (
+            f"{inner.map.label} is not directly inside {outer.map.label}, nor the one map in its body; name a map, "
+            "then the map directly inside it."
+        )
+    _, twin_state, twin_entry = detached_twin(state.sdfg, state, outer)
+    reason = body_swap_blocker(twin_state, twin_entry)
+    if reason is not None:
+        return reason
+
+    def commit() -> None:
+        (flat,) = flatten_map_body(state, outer)
+        MapInterchange.apply_to(state.sdfg, outer_map_entry=outer, inner_map_entry=flat, verify=False)
+        root = state.sdfg.root_sdfg
+        set_nested_sdfg_parent_references(root)
+        root.reset_cfg_list()
+
+    return Rewrite("MapInterchange", commit)
+
+
 def plan_map_map(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
-    if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
+    if node_state(inner_row) is not state:
+        return plan_body_map_map(state, outer, inner_row)
+    if state.entry_node(inner) is not outer:
         return (
             f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it."
         )
@@ -723,7 +796,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "MapLoopInterchange",
         "map i: for t: B becomes for t: map i: B; the loop must be the whole body of the map.",
     ),
-    "interchange-doall-doall": ("MapInterchange", "swap a map with the map directly inside it."),
+    "interchange-doall-doall": (
+        "MapInterchange",
+        "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
+        "inlined and its one-iteration maps dropped first).",
+    ),
     "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
     "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
     EXPAND_LIBRARY: (
@@ -904,6 +981,22 @@ def nested_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
             yield from (((outer, state), (inner, state)) for outer, inner in pairs)
 
 
+def body_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """A map whose body is a nested SDFG of one state holding exactly one map, with that map."""
+    for state, entry in map_rows(sdfg):
+        body = map_body(state, entry)
+        if body is None or len(body.sdfg.nodes()) != 1:
+            continue
+        inner_state = body.sdfg.nodes()[0]
+        if isinstance(inner_state, SDFGState) and len(inside := list(top_level_map_entries(inner_state))) == 1:
+            yield (entry, state), (inside[0], inner_state)
+
+
+def interchange_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    yield from nested_map_pairs(sdfg)
+    yield from body_map_pairs(sdfg)
+
+
 def guard_loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     for cond in every_region_block(sdfg, ConditionalBlock):
         sinks = cond.branches[0][1].sink_nodes() if cond.branches else []
@@ -925,7 +1018,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-for-doall": loop_map_pairs,
     "interchange-for-doalls": lane_loops,
     "interchange-doall-for": map_loop_pairs,
-    "interchange-doall-doall": nested_map_pairs,
+    "interchange-doall-doall": interchange_map_pairs,
     "interchange-if-for": guard_loop_pairs,
     "interchange-for-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,

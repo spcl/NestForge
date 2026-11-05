@@ -15,6 +15,8 @@ import pytest
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.transformation.helpers import nest_state_subgraph
 
 from nestforge.ir.names import normalize_labels
 from nestforge.records import MoveStatus
@@ -573,6 +575,56 @@ def test_map_map_interchange_of_a_triangular_nest_is_illegal():
 
 def test_naming_the_inner_map_first_is_illegal():
     sut = Session(nested.to_sdfg(simplify=True))
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-doall", ["doall1", "doall0"])
+
+    assert result.status is MoveStatus.ILLEGAL and "not directly inside" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def nested_in_body(program) -> tuple[Session, dace.SDFG]:
+    """A session on ``program`` whose inner map is wrapped in a nested SDFG of its own, and the program as it was."""
+    sdfg = program.to_sdfg(simplify=True)
+    sdfg.name = f"{sdfg.name}_{os.getpid()}"
+    reference = copy.deepcopy(sdfg)
+    reference.name = f"{sdfg.name}_reference"
+    (outer,) = top_level_maps(sdfg)
+    state = next(s for s in sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    nest_state_subgraph(sdfg, state, state.scope_subgraph(inner))
+    set_nested_sdfg_parent_references(sdfg)
+    sdfg.reset_cfg_list()
+    return Session(sdfg), reference
+
+
+def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map():
+    sut, reference = nested_in_body(nested)
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["j"], ["i"])
+    assert not [n for n in state.scope_children()[outer] if isinstance(n, nodes.NestedSDFG)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal():
+    sut, _ = nested_in_body(triangle)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-doall", ["doall0", "doall1"])
+
+    assert result.status is MoveStatus.ILLEGAL and "MapInterchange" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("interchange-doall-doall") == []
+
+
+def test_map_map_interchange_with_a_map_outside_the_body_names_the_body():
+    sut, _ = nested_in_body(nested)
     before = digest(sut.sdfg)
 
     result = sut.apply_move("interchange-doall-doall", ["doall1", "doall0"])
