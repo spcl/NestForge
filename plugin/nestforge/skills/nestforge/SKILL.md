@@ -93,7 +93,9 @@ passed between the parts become arrays. Pays when the parts want different sched
 **`interchange-doall-doall`** `[outer doall, inner doall]`, MapInterchange. `doall i: doall j: B` becomes
 `doall j: doall i: B`. Pays when it puts the index that walks memory contiguously innermost. The inner doall may also be
 the one map in the nested body of the outer (`doall j: {nested: doall k}`): the body is inlined and its one-iteration
-maps dropped, then the maps swap; refused when the body holds anything beside that map (a copy, a peeled level).
+maps dropped, then the maps swap; refused when the body holds anything beside that map (a copy, a peeled level). A
+one-iteration dimension of the inner map that reads the outer parameter (`jj in j:j`, what a fission leaves) is dropped
+first, and an inner map with one iteration only has nothing to swap.
 
 **`interchange-for-doall`** `[for, doall]`, MoveLoopIntoMap. `for t: doall i: B` becomes `doall i: for t: B`. One
 parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps.

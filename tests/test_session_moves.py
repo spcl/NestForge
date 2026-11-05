@@ -139,6 +139,13 @@ def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]):
 
 
 @dace.program
+def column_with_one_iteration(A: dace.float64[N, N], B: dace.float64[N, N]):
+    for j in dace.map[0:N]:
+        for k, jj in dace.map[0:N, j : j + 1]:
+            B[k, jj] = A[k, jj] * 2.0
+
+
+@dace.program
 def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
     for t in range(1, T):
         for i in dace.map[0:N]:
@@ -581,6 +588,23 @@ def test_naming_the_inner_map_first_is_illegal():
 
     assert result.status is MoveStatus.ILLEGAL and "not directly inside" in result.reason, result
     assert digest(sut.sdfg) == before
+
+
+def test_map_map_interchange_drops_the_one_iteration_dimension_that_reads_the_outer_parameter():
+    sut, reference = session_and_reference(column_with_one_iteration)
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(st for st in sut.sdfg.states() if outer in st.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert any(begin == end for begin, end, _ in inner.map.range), "the fixture keeps the one-iteration dimension"
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(st for st in sut.sdfg.states() if outer in st.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["k"], ["j"])
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
 def nested_in_body(program) -> tuple[Session, dace.SDFG]:

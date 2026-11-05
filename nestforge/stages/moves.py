@@ -450,8 +450,31 @@ def plan_map_map(outer_row: Row, inner_row: Row) -> Rewrite | str:
         return (
             f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it."
         )
+    if any(begin == end for begin, end, _ in inner.map.range):
+        return plan_trimmed_map_map(state, outer, inner)
     where = {"outer_map_entry": outer, "inner_map_entry": inner}
     return pattern(MapInterchange, state.sdfg, where) or MAP_INTERCHANGE_REFUSED
+
+
+def plan_trimmed_map_map(state: SDFGState, outer: nodes.MapEntry, inner: nodes.MapEntry) -> Rewrite | str:
+    """``map j: map k, jj in j:j`` -> ``map k: map j``: the inner map's one-iteration dimensions (the one-column map a
+    fission leaves, whose range reads ``j``) are dropped first, since ``MapInterchange`` refuses a range that reads
+    the outer parameter; legality is read on a copy."""
+    twin, twin_state, twin_outer = detached_twin(state.sdfg, state, outer)
+    twin_inner = twin_state.node(state.node_id(inner))
+    assert isinstance(twin_inner, nodes.MapEntry), "a deep copy keeps node ids"
+    TrivialMapElimination.apply_to(twin, map_entry=twin_inner, verify=False)
+    if twin_inner not in twin_state.nodes():
+        return f"{inner.map.label} has one iteration only; there is nothing to swap with {outer.map.label}."
+    where = {"outer_map_entry": twin_outer, "inner_map_entry": twin_inner}
+    if pattern(MapInterchange, twin, where) is None:
+        return MAP_INTERCHANGE_REFUSED
+
+    def commit() -> None:
+        TrivialMapElimination.apply_to(state.sdfg, map_entry=inner, verify=False)
+        MapInterchange.apply_to(state.sdfg, outer_map_entry=outer, inner_map_entry=inner, verify=False)
+
+    return Rewrite("MapInterchange", commit)
 
 
 def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
