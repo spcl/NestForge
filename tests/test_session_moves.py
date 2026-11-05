@@ -119,6 +119,24 @@ def lane_cross(A: dace.float64[T, N]):
 
 
 @dace.program
+def sweep_two_maps(A: dace.float64[T, N], B: dace.float64[T, N]):
+    for t in range(1, T):
+        for i in dace.map[0:N]:
+            A[t, i] = A[t - 1, i] + 1.0
+        for i in dace.map[0:N]:
+            B[t, i] = A[t, i] * 2.0 + B[t - 1, i]
+
+
+@dace.program
+def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]):
+    for t in range(1, T):
+        for i in dace.map[0:N]:
+            A[t, i] = A[t - 1, i] + 1.0
+        for i in dace.map[0 : N - 1]:
+            B[t, i] = A[t, i + 1] + B[t - 1, i]
+
+
+@dace.program
 def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
     for t in range(1, T):
         for i in dace.map[0:N]:
@@ -847,6 +865,45 @@ def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
     arrays = random_arrays(q=(STEPS, SIZE, 3), pr=(SIZE,))
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE, NLEV=STEPS, NSPEC=3)
+
+
+# interchange-for-doalls
+
+
+def test_the_loop_over_two_doalls_moves_inside_one_doall_over_their_shared_axis():
+    sut, reference = session_and_reference(sweep_two_maps)
+    assert sut.list_moves("interchange-for-doall") == []
+
+    result = apply_listed(sut, "interchange-for-doalls")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopIntoMap")
+    assert len(top_level_maps(sut.sdfg)) == 1
+    (entry,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if entry in s.nodes())
+    (body,) = [n for n in state.scope_children()[entry] if isinstance(n, nodes.NestedSDFG)]
+    assert [block for block in body.sdfg.nodes() if isinstance(block, LoopRegion)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
+def test_the_lane_hoist_is_not_offered_for_a_loop_over_one_doall():
+    sut = Session(sweep.to_sdfg(simplify=True))
+
+    assert sut.list_moves("interchange-for-doalls") == []
+    (loop,) = loops(sut.sdfg)
+    result = sut.apply_move("interchange-for-doalls", [loop.label])
+    assert result.status is MoveStatus.ILLEGAL and "interchange-for-doall" in result.reason, result
+
+
+def test_the_lane_hoist_that_would_cross_columns_is_illegal_and_changes_nothing():
+    sut = Session(sweep_two_maps_crossing.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-for-doalls", [loop.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "MoveLoopIntoMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("interchange-for-doalls") == []
 
 
 # copy-to-doall

@@ -53,6 +53,7 @@ agent's catalog.
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange` |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap` |
+| `interchange-for-doalls` | loop whose body holds several doalls over one axis | `MoveLoopIntoMap` with `lane_axis` (DaCe's lane analysis; the same rewrite as `InterchangeLoopsIntoLaneMaps`, without its CPU gates) |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
 | `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |
