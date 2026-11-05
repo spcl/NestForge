@@ -124,6 +124,10 @@ order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
 vector width. Read those sizes from the machine you run on; `get_performance` after the move tells whether it paid.
 **`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
+**`peel-for`** `[for]`, LoopPeeling plus folding: `for t: if t == 0: P else: Q` becomes `if loop runs: P; for t in 1..: Q`. The first
+iteration leaves the loop, runs only if the loop would have, and every `if` the loop variable settles (in the peeled
+iteration, or for all later ones) is replaced by its branch, so the body is plain states that `doall-fission`,
+`subgraph-fission` and the interchanges accept. Offered only for a loop with such an `if`; one the iteration does not settle stays.
 
 ### Shape of a doall
 

@@ -65,6 +65,7 @@ agent's catalog.
 | `copy-to-doall` | state holding a plain copy (`a[:] = b`) | `CopyToMap`, every such copy of the state; a one-element copy between arrays of different rank becomes a tasklet; other copies between arrays of different rank are not offered (DaCe raises on them) |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
+| `peel-for` | for loop with an `if` its loop variable decides | `LoopPeeling` of the first iteration (its constant-trip-count check is not asked), the peeled iteration run only if the loop would run, then every `if` the first iteration, or all later ones, settles is replaced by the branch it takes; the `ifs` it does not settle stay |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
 | `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 

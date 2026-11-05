@@ -257,6 +257,26 @@ def carry_each_step(x: dace.float64[N], c: dace.float64[N], out: dace.float64[N]
         c[:] = out
 
 
+@dace.program
+def first_step_differs(x: dace.float64[N], a: dace.float64[N]):
+    for t in range(T):
+        for i in range(N):
+            if t == 0:
+                a[i] = x[i]
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
+@dace.program
+def early_steps_differ(x: dace.float64[N], a: dace.float64[N]):
+    for t in range(T):
+        for i in range(N):
+            if t < 2:
+                a[i] = x[i] + t
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -844,6 +864,52 @@ def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
     assert result.status is MoveStatus.ILLEGAL and "MoveLoopInvariantIfUp" in result.reason, result
     assert digest(sut.sdfg) == before
     assert sut.list_moves("interchange-for-if") == []
+
+
+# peel-for
+
+
+def step_loop(sdfg: dace.SDFG) -> LoopRegion:
+    (loop,) = [b for b in loops(sdfg) if b.loop_variable == "t"]
+    return loop
+
+
+@pytest.mark.parametrize("steps", [0, 1, 5])
+def test_peel_for_takes_the_first_step_out_and_drops_the_guard_it_decided(steps):
+    sut, reference = session_and_reference(first_step_differs)
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+
+    result = apply_listed(sut, "peel-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopPeeling")
+    # only the guard that runs the peeled step when the loop would run at all is left
+    assert [[code.as_string for code, _ in cond.branches] for cond in conditionals(sut.sdfg)] == [["(0 < T)"]]
+    assert duplicate_labels(sut.sdfg) == {}
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_keeps_a_guard_that_the_later_steps_do_not_settle():
+    sut, reference = session_and_reference(early_steps_differ)
+
+    result = apply_listed(sut, "peel-for")
+
+    assert result.status is MoveStatus.APPLIED, result
+    # the guard on the peeled step, and `t < 2`, which the steps after the first do not settle
+    assert len(conditionals(sut.sdfg)) == 2
+    for steps in (0, 1, 2, 6):
+        assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_is_not_offered_for_a_guard_the_loop_variable_does_not_decide():
+    sut = Session(loop_guard.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("peel-for", [loop.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "LoopPeeling" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("peel-for") == []
 
 
 # refusals that never touch the graph
