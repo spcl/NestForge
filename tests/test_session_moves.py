@@ -1045,6 +1045,47 @@ def test_copy_to_doall_leaves_an_ordering_edge_alone():
     assert digest(sut.sdfg) == before
 
 
+def copy_between_ranks(
+    src_shape: tuple[int, ...], dst_shape: tuple[int, ...], read: str, write: str, name: str = "copy_ranks"
+) -> dace.SDFG:
+    """One state that copies ``a[read]`` into ``b[write]`` (arrays of different rank)."""
+    sdfg = dace.SDFG(f"{name}_{os.getpid()}")
+    sdfg.add_array("a", list(src_shape), dace.float64)
+    sdfg.add_array("b", list(dst_shape), dace.float64)
+    state = sdfg.add_state()
+    state.add_edge(
+        state.add_read("a"), None, state.add_write("b"), None, dace.Memlet(data="a", subset=read, other_subset=write)
+    )
+    return sdfg
+
+
+def test_copy_to_doall_turns_a_one_element_copy_between_ranks_into_a_tasklet():
+    """``a[3, 2] -> b[2]``: ``CopyToMap`` raises on it (W45-59, T45-48); the element is copied by a tasklet."""
+    sut = Session(copy_between_ranks((4, 5), (5,), "3, 2", "2"))
+    reference = copy_between_ranks((4, 5), (5,), "3, 2", "2", name="copy_ranks_reference")
+
+    result = apply_listed(sut, "copy-to-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "CopyToMap")
+    (state,) = sut.sdfg.states()
+    assert plain_copies(sut.sdfg) == []
+    assert [n.label for n in state.nodes() if isinstance(n, nodes.Tasklet)] == ["copy_element"]
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(4, 5), b=(5,)))
+
+
+def test_copy_to_doall_does_not_offer_a_block_copy_between_ranks_that_dace_raises_on():
+    """``a[0:2, 0:3] -> b[0:6]``: DaCe's check accepts it and its apply raises (W45-59, T45-48)."""
+    sut = Session(copy_between_ranks((4, 5), (6,), "0:2, 0:3", "0:6"))
+    (state,) = sut.sdfg.states()
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert sut.list_moves("copy-to-doall") == []
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
 def test_copy_to_doall_of_a_state_without_a_copy_is_illegal_and_changes_nothing():
     sut = Session(two_indep.to_sdfg(simplify=True))
     (state,) = [s for s in sut.sdfg.states() if top_level_map_entries(s)]

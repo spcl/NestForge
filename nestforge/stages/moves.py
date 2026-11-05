@@ -15,7 +15,7 @@ import sympy
 from dace.data import Scalar
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
-from dace.sdfg.graph import SubgraphView
+from dace.sdfg.graph import MultiConnectorEdge, SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
@@ -147,7 +147,10 @@ SUBGRAPH_FISSION_REFUSED = (
 
 #: Every copy becomes a map: by default CopyToMap takes only copies whose two arrays differ in strides.
 COPY_TO_MAP_OPTIONS = {"ignore_strides": True}
-COPY_TO_MAP_REFUSED = "blocked by CopyToMap: the state holds no copy between two arrays outside a doall."
+COPY_TO_MAP_REFUSED = (
+    "blocked by CopyToMap: the state holds no copy between two arrays outside a doall that it can turn into a map "
+    "(a copy between arrays of different rank is one only if it is a single element, which becomes a tasklet)."
+)
 
 
 def tree_label(obj: Any) -> str:
@@ -637,10 +640,38 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
+def one_element_copy(state: SDFGState, edge: MultiConnectorEdge) -> bool:
+    """Whether ``edge`` copies exactly one element between two arrays of different rank (``s[n - 1, i] -> carry[i]``):
+    ``CopyToMap`` raises on that (W45-59), and a one-element copy has no iteration to turn into a map."""
+    src, dst = edge.src, edge.dst
+    if not (isinstance(src, nodes.AccessNode) and isinstance(dst, nodes.AccessNode)):
+        return False
+    if len(src.desc(state.sdfg).shape) == len(dst.desc(state.sdfg).shape):
+        return False
+    sizes = (*edge.data.get_src_subset(edge, state).size(), *edge.data.get_dst_subset(edge, state).size())
+    return all(size == 1 for size in sizes)
+
+
+def copy_applies_on_twin(state: SDFGState, src: nodes.AccessNode, dst: nodes.AccessNode) -> bool:
+    """Whether ``CopyToMap`` applies to the copy ``src`` -> ``dst`` of arrays of different rank, tried on a copy of the
+    SDFG: its check says yes to copies it then raises on (W45-59)."""
+    twin = detach(state.sdfg)
+    twin_state = list(twin.states())[list(state.sdfg.states()).index(state)]
+    twin_src, twin_dst = twin_state.node(state.node_id(src)), twin_state.node(state.node_id(dst))
+    try:
+        CopyToMap.apply_to(
+            twin, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=twin_src, b=twin_dst, verify=False
+        )
+    except ValueError:  # raised from memlet_to_map by a copy between arrays of different rank
+        return False
+    return True
+
+
 def plain_copies(state: SDFGState) -> list[tuple[nodes.AccessNode, nodes.AccessNode]]:
-    """The copies between two arrays at the top of ``state`` (``a[:] = b``) that ``CopyToMap`` turns into a map; an
-    edge with an empty memlet only orders the two nodes and copies nothing."""
-    return [
+    """The copies between two arrays at the top of ``state`` (``a[:] = b``) that ``CopyToMap`` turns into a map, or
+    that are one element between arrays of different rank (a tasklet); an edge with an empty memlet only orders the two
+    nodes and copies nothing."""
+    copies = dict.fromkeys(
         (e.src, e.dst)
         for e in state.edges()
         if not e.data.is_empty()
@@ -648,7 +679,27 @@ def plain_copies(state: SDFGState) -> list[tuple[nodes.AccessNode, nodes.AccessN
         and isinstance(e.dst, nodes.AccessNode)
         and state.entry_node(e.src) is None
         and CopyToMap.can_be_applied_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, a=e.src, b=e.dst)
+    )
+    return [
+        (src, dst)
+        for src, dst in copies
+        if len(src.desc(state.sdfg).shape) == len(dst.desc(state.sdfg).shape)
+        or all(one_element_copy(state, e) for e in state.edges_between(src, dst) if not e.data.is_empty())
+        or copy_applies_on_twin(state, src, dst)
     ]
+
+
+def copy_to_tasklet(state: SDFGState, src: nodes.AccessNode, dst: nodes.AccessNode) -> None:
+    """Each one-element copy between ``src`` and ``dst`` runs in a tasklet (``out = element``), so it is a computation
+    like the others in the state."""
+    for edge in list(state.edges_between(src, dst)):
+        if edge.data.is_empty():
+            continue
+        read, write = edge.data.get_src_subset(edge, state), edge.data.get_dst_subset(edge, state)
+        tasklet = state.add_tasklet("copy_element", {"element"}, {"out"}, "out = element")
+        state.add_edge(src, None, tasklet, "element", dace.Memlet(data=src.data, subset=read))
+        state.add_edge(tasklet, "out", dst, None, dace.Memlet(data=dst.data, subset=write, wcr=edge.data.wcr))
+        state.remove_edge(edge)
 
 
 def plan_copy_to_doall(row: Row) -> Rewrite | str:
@@ -663,7 +714,11 @@ def plan_copy_to_doall(row: Row) -> Rewrite | str:
 
     def commit() -> None:
         for src, dst in copies:
-            CopyToMap.apply_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=src, b=dst)
+            edges = [e for e in state.edges_between(src, dst) if not e.data.is_empty()]
+            if all(one_element_copy(state, e) for e in edges):
+                copy_to_tasklet(state, src, dst)
+            else:
+                CopyToMap.apply_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=src, b=dst)
 
     return Rewrite("CopyToMap", commit)
 
@@ -849,7 +904,8 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "copy-to-doall": (
         "CopyToMap",
         "a plain copy between two arrays in the state (a[:] = b) becomes a doall over the copied elements, so "
-        "tile-doall and the interchanges treat it like the doalls around it.",
+        "tile-doall and the interchanges treat it like the doalls around it; a one-element copy between arrays of "
+        "different rank (s[n - 1, i] -> carry[i]) becomes a tasklet, which doall-fission counts as a computation.",
     ),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",

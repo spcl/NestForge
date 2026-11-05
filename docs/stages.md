@@ -61,7 +61,7 @@ agent's catalog.
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
 | `collapse-doalls` | doall, doall inside it | `MapCollapse` |
 | `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
-| `copy-to-doall` | state holding a plain copy (`a[:] = b`) | `CopyToMap`, every such copy of the state |
+| `copy-to-doall` | state holding a plain copy (`a[:] = b`) | `CopyToMap`, every such copy of the state; a one-element copy between arrays of different rank becomes a tasklet; other copies between arrays of different rank are not offered (DaCe raises on them) |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
