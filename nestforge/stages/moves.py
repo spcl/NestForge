@@ -18,13 +18,14 @@ from dace.sdfg import nodes
 from dace.sdfg.graph import MultiConnectorEdge, SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
-from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.subsets import Range
 from dace.transformation.dataflow.copy_to_map import CopyToMap
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
+from dace.transformation.dataflow.map_for_loop import MapToForLoop
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
@@ -37,6 +38,8 @@ from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
+from dace.transformation.interstate.state_fusion import StateFusion
+from dace.transformation.pass_pipeline import Pipeline
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.canonicalize.untile_loops import (
     MapTilePair,
@@ -48,6 +51,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     untile_map_pair,
 )
 from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
+from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
 from dace.transformation.transformation import PatternTransformation
@@ -91,6 +95,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "untile-doall": (nodes.MapEntry, nodes.MapEntry),
     "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
     "expand-doall": (nodes.MapEntry,),
+    "doall-to-for": (nodes.MapEntry,),
     "copy-to-doall": (ControlFlowBlock,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
@@ -216,15 +221,58 @@ def intermediates(state: SDFGState, producer: nodes.MapEntry, consumer: nodes.Ma
     ]
 
 
+#: LoopFusion without its guards against serializing a parallel loop, for loops whose parallelism is in maps inside.
+UNGUARDED_LOOP_FUSION = {"defer_doall": False, "dont_mix_known_parallel": False}
+
+
+def body_states(loop: LoopRegion) -> list[SDFGState]:
+    return [block for block in loop.all_control_flow_blocks() if isinstance(block, SDFGState)]
+
+
+def keeps_a_doall(loop: LoopRegion) -> bool:
+    """Whether a map runs inside ``loop``'s body: fused and sequential, the loop keeps that map's parallelism."""
+    return any(top_level_map_entries(state) for state in body_states(loop))
+
+
+def fuse_body_states(loop: LoopRegion) -> int:
+    """Merge consecutive states directly in ``loop`` while ``StateFusion`` allows, so the maps the two bodies brought
+    meet in one state, where ``doall-fusion`` takes them; how many merges."""
+    merged = 0
+    while True:
+        pair = next(
+            (
+                (edge.src, edge.dst)
+                for edge in loop.edges()
+                if isinstance(edge.src, SDFGState)
+                and isinstance(edge.dst, SDFGState)
+                and StateFusion.can_be_applied_to(loop.sdfg, first_state=edge.src, second_state=edge.dst)
+            ),
+            None,
+        )
+        if pair is None:
+            return merged
+        StateFusion.apply_to(loop.sdfg, first_state=pair[0], second_state=pair[1], verify=False)
+        merged += 1
+
+
 def plan_loop_fusion(first: Row, second: Row) -> Rewrite | str:
+    """The two loops become one, then the states of the merged body become one where ``StateFusion`` allows. Loops
+    that each hold a map fuse even when LoopFusion would rather leave one to ``LoopToMap``: sequential, the loop keeps
+    the maps' parallelism (``doall-to-for`` makes such loops on purpose)."""
     loop_a, loop_b = first[0], second[0]
     if loop_a.parent_graph is not loop_b.parent_graph:
         return "loops are in different control-flow regions; fuse the enclosing loops first."
     out = loop_a.parent_graph.out_edges(loop_a)
     if len(out) != 1 or out[0].dst is not loop_b:
         return "loops are not adjacent: exactly one sequencing edge must lead from the first to the second."
-    move = pattern(LoopFusion, loop_a.sdfg, {"first": loop_a, "second": loop_b})
-    return move or "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two."
+    sdfg, where = loop_a.sdfg, {"first": loop_a, "second": loop_b}
+    move = pattern(LoopFusion, sdfg, where)
+    if move is None and keeps_a_doall(loop_a) and keeps_a_doall(loop_b):
+        move = pattern(LoopFusion, sdfg, where, options=UNGUARDED_LOOP_FUSION)
+    if move is None:
+        return "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two."
+    fused = move
+    return region_rewrite(fused.name, sdfg, lambda: (fused.commit(), fuse_body_states(loop_a)))
 
 
 def vertical_refusal(state: SDFGState, producer: nodes.MapEntry, arr: nodes.AccessNode) -> str:
@@ -240,6 +288,26 @@ def vertical_refusal(state: SDFGState, producer: nodes.MapEntry, arr: nodes.Acce
         f"the second map reads elements of '{arr.data}' that another iteration of the first map writes, or the two "
         "map ranges differ"
     )
+
+
+def read_anywhere(sdfg: dace.SDFG, name: str) -> bool:
+    """Whether any state of ``sdfg`` reads container ``name``, or an interstate edge names it."""
+    if any(st.out_degree(n) > 0 for st in sdfg.states() for n in st.data_nodes() if n.data == name):
+        return True
+    return any(name in edge.data.free_symbols for edge in sdfg.all_interstate_edges())
+
+
+def dropping_dead_writes(move: Rewrite, sdfg: dace.SDFG, name: str) -> Rewrite:
+    """``move``, then DaCe's dead-dataflow elimination when the fusion left the intermediate ``name`` a transient no
+    one reads: the fused map would otherwise still store the whole array (its last reader fused into the same map)."""
+
+    def commit() -> None:
+        move.commit()
+        desc = sdfg.arrays.get(name)
+        if desc is not None and desc.transient and not read_anywhere(sdfg, name):
+            Pipeline([DeadDataflowElimination()]).apply_pass(sdfg, {})
+
+    return Rewrite(move.name, commit)
 
 
 def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
@@ -258,7 +326,7 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
                 OTFMapFusion, sdfg, where, options={"recompute_windows": True}
             )
             if move is not None:
-                return move
+                return dropping_dead_writes(move, sdfg, arr.data)
             reasons.append(
                 f"blocked by MapFusionVertical and OTFMapFusion on '{arr.data}': {vertical_refusal(state, producer, arr)}"
             )
@@ -770,6 +838,62 @@ def plan_expand_doall(row: Row) -> Rewrite | str:
     )
 
 
+def holds_a_doall(state: SDFGState, entry: nodes.MapEntry) -> bool:
+    """Whether another map runs inside the map at ``entry``, in its scope or in a nested SDFG of its body."""
+    for node in state.scope_subgraph(entry).nodes():
+        if isinstance(node, nodes.MapEntry) and node is not entry:
+            return True
+        if isinstance(node, nodes.NestedSDFG) and any(
+            isinstance(inner, nodes.MapEntry) for inner, _ in node.sdfg.all_nodes_recursive()
+        ):
+            return True
+    return False
+
+
+def drop_empty_states(region: ControlFlowRegion, blocks: Sequence[ControlFlowBlock]) -> None:
+    """Remove each of ``blocks`` that is an empty state between plain edges (no assignment, no condition)."""
+    for block in blocks:
+        if not isinstance(block, SDFGState) or block.nodes() or block not in region.nodes():
+            continue
+        ins, outs = region.in_edges(block), region.out_edges(block)
+        if (
+            len(outs) != 1
+            or len(ins) > 1
+            or any(e.data.assignments or not e.data.is_unconditional() for e in ins + outs)
+        ):
+            continue
+        successor, was_start = outs[0].dst, region.start_block is block
+        region.remove_node(block)
+        if ins:
+            region.add_edge(ins[0].src, successor, ins[0].data)
+        elif was_start:
+            region.start_block = region.node_id(successor)
+
+
+def plan_doall_to_for(row: Row) -> Rewrite | str:
+    """``doall k: doall j: B`` becomes ``for k: doall j: B``: the outer doall runs in order and the inner doalls stay
+    parallel, so its body can fuse with a sequential loop over the same range (``for-fusion``)."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    if state.entry_node(entry) is not None:
+        return f"{entry.map.label} is inside another doall; only an outermost doall becomes a loop."
+    if len(entry.map.params) != 1:
+        return f"{entry.map.label} has {len(entry.map.params)} dimensions; expand-doall it first."
+    if not holds_a_doall(state, entry):
+        return f"{entry.map.label} holds no doall inside: as a loop it would keep no parallelism."
+    sdfg, region = state.sdfg, state.parent_graph
+    move = pattern(MapToForLoop, sdfg, {"map_entry": entry})
+    if move is None:
+        return f"blocked by MapToForLoop: {entry.map.label} cannot become a loop."
+    sequential = move
+
+    def commit() -> None:
+        before = set(region.nodes())
+        sequential.commit()
+        drop_empty_states(region, [state, *(b for b in region.nodes() if b not in before)])
+
+    return region_rewrite(sequential.name, sdfg, commit)
+
+
 def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if len(tile_sizes) != 1 or tile_sizes[0] < 2:
@@ -815,6 +939,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-doall": plan_untile_doall,
     "collapse-doalls": plan_collapse_doalls,
     "expand-doall": plan_expand_doall,
+    "doall-to-for": plan_doall_to_for,
     "copy-to-doall": plan_copy_to_doall,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
@@ -901,6 +1026,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
     "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
     "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "doall-to-for": (
+        "MapToForLoop",
+        "doall k: doall j: B becomes for k: doall j: B: the outer doall runs in order and the doalls inside stay "
+        "parallel, so its body can for-fusion with a sequential loop over the same range (a physics pass into the "
+        "level scan it feeds).",
+    ),
     "copy-to-doall": (
         "CopyToMap",
         "a plain copy between two arrays in the state (a[:] = b) becomes a doall over the copied elements, so "
@@ -1106,6 +1237,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-doall": tile_pair_rows,
     "collapse-doalls": nested_map_pairs,
     "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
     "copy-to-doall": lambda sdfg: (((st, None),) for st in every_region_block(sdfg, SDFGState) if plain_copies(st)),
     "tile-for": for_rows,
     "untile-for": tile_loops,

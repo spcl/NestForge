@@ -46,9 +46,9 @@ agent's catalog.
 
 | kind | labels | DaCe |
 |---|---|---|
-| `for-fusion` | first, second loop | `LoopFusion` |
+| `for-fusion` | first, second loop | `LoopFusion`, then `StateFusion` of the merged body; loops that each hold a doall fuse without LoopFusion's guards against serializing a parallel loop (the doalls inside keep the parallelism) |
 | `for-fission` | loop | `LoopFission` |
-| `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal` |
+| `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal`; when the intermediate is left a transient no one reads, `DeadDataflowElimination` drops its stores |
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
@@ -61,6 +61,7 @@ agent's catalog.
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
 | `collapse-doalls` | doall, doall inside it | `MapCollapse` |
 | `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
+| `doall-to-for` | one-dimensional outermost doall that holds a doall | `MapToForLoop`: the outer doall becomes a loop, the doalls inside stay parallel; empty states it leaves are dropped |
 | `copy-to-doall` | state holding a plain copy (`a[:] = b`) | `CopyToMap`, every such copy of the state; a one-element copy between arrays of different rank becomes a tasklet; other copies between arrays of different rank are not offered (DaCe raises on them) |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |

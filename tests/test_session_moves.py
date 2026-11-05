@@ -1096,3 +1096,144 @@ def test_copy_to_doall_of_a_state_without_a_copy_is_illegal_and_changes_nothing(
     assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
     assert digest(sut.sdfg) == before
     assert sut.list_moves("copy-to-doall") == []
+
+
+# doall-to-for, for-fusion of loops that hold doalls, dead writes after doall-fusion (the route of
+# fuse_physics_into_scan: physics and y fused into the level scan)
+
+
+@dace.program
+def level_pass(A: dace.float64[N, N], B: dace.float64[N, N]):
+    for k, j in dace.map[0:N, 0:N]:
+        B[k, j] = A[k, j] * 2.0
+
+
+@dace.program
+def flat_pass(A: dace.float64[N], B: dace.float64[N]):
+    for j in dace.map[0:N]:
+        B[j] = A[j] * 2.0
+
+
+@dace.program
+def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+    for k, j in dace.map[0:N, 0:N]:
+        B[k, j] = A[k, j] * 2.0
+    for k, j in dace.map[0:N, 0:N]:
+        C[k, j] = A[k, j] + 1.0
+
+
+def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one():
+    sut, reference = session_and_reference(level_pass)
+    assert apply_listed(sut, "expand-doall").status is MoveStatus.APPLIED
+
+    result = apply_listed(sut, "doall-to-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapToForLoop")
+    (loop,) = loops(sut.sdfg)
+    (state,) = [b for b in loop.nodes() if isinstance(b, SDFGState)]
+    (inner,) = top_level_map_entries(state)
+    assert inner.map.params == ["j"] and inner.map.schedule is not dace.ScheduleType.Sequential
+    assert not any(isinstance(b, SDFGState) and not b.nodes() for b in sut.sdfg.nodes()), "no empty state is left"
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside():
+    sut = Session(flat_pass.to_sdfg(simplify=True))
+    (entry,) = top_level_maps(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("doall-to-for", [entry.map.label])
+
+    assert sut.list_moves("doall-to-for") == []
+    assert result.status is MoveStatus.ILLEGAL and "no parallelism" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states():
+    """LoopFusion by itself leaves a parallel loop to LoopToMap; here each loop holds a doall, so fusing them keeps
+    the parallelism, and the merged body is one state holding both doalls."""
+    sut, reference = session_and_reference(two_level_passes)
+    for _ in range(2):
+        apply_listed_first(sut, "expand-doall")
+        apply_listed_first(sut, "doall-to-for")
+
+    result = apply_listed(sut, "for-fusion")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopFusion")
+    (loop,) = loops(sut.sdfg)
+    (state,) = [b for b in loop.nodes() if isinstance(b, SDFGState)]
+    assert len(top_level_map_entries(state)) == 2
+    arrays = random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE), C=(SIZE, SIZE))
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
+
+
+def apply_listed_first(session: Session, kind: str) -> MoveResult:
+    move = session.list_moves(kind)[0]
+    result = session.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation)
+    assert result.status is MoveStatus.APPLIED, result
+    return result
+
+
+def one_temporary_two_states(name: str) -> dace.SDFG:
+    """Two states, each a producer map writing one row of the transient ``tmp`` and a consumer map reading it."""
+    sdfg = dace.SDFG(f"{name}_{os.getpid()}")
+    sdfg.add_array("A", (SIZE,), dace.float64)
+    sdfg.add_array("B", (2, SIZE), dace.float64)
+    sdfg.add_transient("tmp", (2, SIZE), dace.float64)
+    previous = None
+    for row in range(2):
+        state = sdfg.add_state(f"row{row}", is_start_block=previous is None)
+        if previous is not None:
+            sdfg.add_edge(previous, state, dace.InterstateEdge())
+        tmp = state.add_access("tmp")
+        state.add_mapped_tasklet(
+            f"make{row}",
+            {"i": f"0:{SIZE}"},
+            {"a": dace.Memlet("A[i]")},
+            f"t = a * {row + 2}.0",
+            {"t": dace.Memlet(f"tmp[{row}, i]")},
+            external_edges=True,
+            output_nodes={"tmp": tmp},
+        )
+        state.add_mapped_tasklet(
+            f"use{row}",
+            {"i": f"0:{SIZE}"},
+            {"t": dace.Memlet(f"tmp[{row}, i]")},
+            "b = t + 1.0",
+            {"b": dace.Memlet(f"B[{row}, i]")},
+            external_edges=True,
+            input_nodes={"tmp": tmp},
+        )
+        previous = state
+    sdfg.validate()
+    return sdfg
+
+
+def fuse_through(session: Session, name: str) -> None:
+    """Apply the listed ``doall-fusion`` whose first map writes ``name`` and whose second map reads it."""
+    rows = session.row_index()
+    for move in session.list_moves("doall-fusion"):
+        (first, first_state), (second, second_state) = (rows[label] for label in move.labels)
+        assert first_state is not None and second_state is not None
+        writes = {e.data.data for e in first_state.out_edges(first_state.exit_node(first))}
+        reads = {e.data.data for e in second_state.in_edges(second)}
+        if name in writes and name in reads:
+            result = session.apply_move(move.kind, move.labels)
+            assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionVertical"), result
+            return
+    raise AssertionError(f"no doall-fusion through {name} is listed")
+
+
+def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into():
+    """Each fusion keeps ``tmp`` while another map still reads a row of it; once its last reader is fused, nothing reads
+    it and its stores go, so the fused map writes only ``B``."""
+    reference = one_temporary_two_states("one_temporary_reference")
+    sut = Session(one_temporary_two_states("one_temporary"))
+
+    for _ in range(2):
+        fuse_through(sut, "tmp")
+
+    assert not [n for state in sut.sdfg.states() for n in state.data_nodes() if n.data == "tmp"]
+    assert all("tmp" not in writes for writes in map_writes(sut.sdfg)), map_writes(sut.sdfg)
+    arrays = random_arrays(A=(SIZE,), B=(2, SIZE))
+    assert_same_values(reference, sut.sdfg, arrays)

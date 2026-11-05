@@ -129,7 +129,9 @@ vector width. Read those sizes from the machine you run on; `get_performance` af
 
 **`collapse-doalls`** `[outer doall, inner doall]`, MapCollapse: `doall i: doall j: B` becomes `doall (i, j): B`,
 one parallel space, so short ranges still give every thread work. **`expand-doall`** `[doall]`, MapExpansion: the
-inverse. **`copy-to-doall`** `[state]`, CopyToMap: each plain copy in the state (`a[:] = b`) becomes a doall over
+inverse. **`doall-to-for`** `[doall]`, MapToForLoop: `doall k: doall j: B` becomes `for k: doall j: B`, the doalls
+inside staying parallel, so a pass over levels (`expand-doall` it first) can `for-fusion` with the level scan it
+feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls of the merged body. **`copy-to-doall`** `[state]`, CopyToMap: each plain copy in the state (`a[:] = b`) becomes a doall over
 the copied elements, so `tile-doall` and the interchanges can take it with the doalls around it. A one-element copy
 between arrays of different rank (`s[n - 1, i] -> carry[i]`) becomes a tasklet instead, which `doall-fission` counts as a
 computation; any other copy between arrays of different rank is not offered, since DaCe raises on it.
