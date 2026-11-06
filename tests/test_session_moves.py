@@ -280,6 +280,11 @@ def halving_then_first_step(x: dace.float64[N], a: dace.float64[N], edge: dace.i
 
 
 @dace.program
+def nested_first_step(x: dace.float64[N], a: dace.float64[N]):
+    first_step_differs(x, a, T=T)
+
+
+@dace.program
 def early_steps_differ(x: dace.float64[N], a: dace.float64[N]):
     for t in range(T):
         for i in range(N):
@@ -952,6 +957,19 @@ def test_peel_for_skips_a_while_loop_next_to_the_loop_it_peels():
         arrays = random_arrays(x=(SIZE,), a=(SIZE,))
         arrays["edge"] = np.array([64], dtype=np.int64)
         assert_same_values(reference, sut.sdfg, arrays, N=SIZE, T=steps)
+
+
+@pytest.mark.parametrize("steps", [0, 1, 5])
+def test_peel_for_peels_a_loop_inside_a_nested_sdfg(steps):
+    """The trial copy used to be of the nested SDFG alone, whose empty cfg_list made LoopPeeling fail (mg_vcycle)."""
+    sut, reference = session_and_reference(nested_first_step, simplify=False)
+    assert step_loop(sut.sdfg).sdfg is not sut.sdfg
+
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+    result = apply_listed(sut, "peel-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopPeeling")
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
 
 
 def test_peel_for_is_not_offered_for_a_guard_the_loop_variable_does_not_decide():

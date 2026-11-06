@@ -1075,8 +1075,9 @@ def plan_peel_for(row: Row) -> Rewrite | str:
     stride = loop_analysis.get_loop_stride(loop)
     if start is None or end is None or stride is None or symbolic.issymbolic(stride, loop.sdfg.constants):
         return f"blocked by LoopPeeling: {loop.label} is not a counted loop with a constant stride."
-    # the folding decides whether the move does anything, so it is tried on a copy first
-    trial = copy.deepcopy(loop.sdfg)
+    # the folding decides whether the move does anything, so it is tried on a copy first; of the root, since a deep
+    # copy of a nested SDFG alone has an empty cfg_list and LoopPeeling cannot find the loop's region in it
+    trial = copy.deepcopy(loop.sdfg.root_sdfg)
     twin = next(r for r in trial.all_control_flow_regions(recursive=True) if r.label == loop.label)
     if not isinstance(twin, LoopRegion) or peel_first_and_fold(twin) == 0:
         return PEEL_FOLDS_NOTHING.format(loop=loop.label)
