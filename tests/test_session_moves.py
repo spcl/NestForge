@@ -670,6 +670,19 @@ def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
+def test_map_map_interchange_reaches_a_body_map_that_keeps_one_full_dimension_beside_a_one_iteration_one():
+    sut, reference = nested_in_body(column_with_one_iteration)
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["k"], ["j"])
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
 def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal():
     sut, _ = nested_in_body(triangle)
     before = digest(sut.sdfg)

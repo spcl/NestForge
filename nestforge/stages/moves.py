@@ -467,8 +467,8 @@ def scope_copies(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
 
 
 def flatten_map_body(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.MapEntry]:
-    """Inline the nested SDFG that is the body of ``entry`` and drop its one-iteration maps; the maps now directly
-    inside ``entry``."""
+    """Inline the nested SDFG that is the body of ``entry`` and drop the one-iteration dimensions of its maps (a map
+    left with none goes); the maps now directly inside ``entry``."""
     body = map_body(state, entry)
     assert body is not None, "the caller checked the body"
     InlineSDFG.apply_to(state.sdfg, nested_sdfg=body, verify=False)
@@ -476,7 +476,7 @@ def flatten_map_body(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.MapE
     set_nested_sdfg_parent_references(root)
     root.reset_cfg_list()
     for inner in [n for n in state.scope_children()[entry] if isinstance(n, nodes.MapEntry)]:
-        if all(begin == end for begin, end, _ in inner.map.range):
+        if any(begin == end for begin, end, _ in inner.map.range):
             TrivialMapElimination.apply_to(state.sdfg, map_entry=inner, verify=False)
     return [n for n in state.scope_children()[entry] if isinstance(n, nodes.MapEntry)]
 
