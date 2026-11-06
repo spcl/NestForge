@@ -277,6 +277,20 @@ def early_steps_differ(x: dace.float64[N], a: dace.float64[N]):
                 a[i] = a[i] * 0.5 + x[i]
 
 
+@dace.program
+def guarded_map(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if K > 0:
+            b[i] = a[i] * 2.0 + 1.0
+
+
+@dace.program
+def parameter_guarded_map(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if i > 2:
+            b[i] = a[i] * 2.0 + 1.0
+
+
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
     return [
         node.label
@@ -910,6 +924,37 @@ def test_peel_for_is_not_offered_for_a_guard_the_loop_variable_does_not_decide()
     assert result.status is MoveStatus.ILLEGAL and "LoopPeeling" in result.reason, result
     assert digest(sut.sdfg) == before
     assert sut.list_moves("peel-for") == []
+
+
+# interchange-doall-if
+
+
+@pytest.mark.parametrize("k", [0, 3])
+def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k):
+    sut, reference = session_and_reference(guarded_map)
+    (move,) = sut.list_moves("interchange-doall-if")
+
+    result = sut.apply_move(move.kind, move.labels)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveMapInvariantIfUp")
+    assert duplicate_labels(sut.sdfg) == {}
+    (state,) = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    assert isinstance(state.parent_graph.parent_graph, ConditionalBlock)
+    a, b = random_arrays(a=(SIZE,))["a"], np.zeros(SIZE)
+    assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
+
+
+def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
+    sut = Session(parameter_guarded_map.to_sdfg(simplify=True))
+    labels = [m.labels for m in sut.list_moves("interchange-doall-if")]
+    (entry,) = [n for n, _ in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-if", [entry.map.label])
+
+    assert labels == []
+    assert result.status is MoveStatus.ILLEGAL and "MoveMapInvariantIfUp" in result.reason, result
+    assert digest(sut.sdfg) == before
 
 
 # refusals that never touch the graph

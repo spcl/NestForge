@@ -111,6 +111,10 @@ loop must be the doall's whole body. Brings the loop out, where it can fuse with
 **`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
 fuse with its neighbors. **`interchange-for-if`** `[for, if]`, MoveLoopInvariantIfUp: the inverse, for a condition
 that does not change inside the loop; the test then runs once instead of once per iteration.
+**`interchange-doall-if`** `[doall]`, MoveMapInvariantIfUp: `doall i: if c: B` becomes `if c: doall i: B` for a condition
+that does not read `i`; the test runs once, and the doall can then be reordered with the loops inside the branch. A doall
+with other work around the `if` is split into one doall per branch. DaCe's pass works on the whole SDFG, so the move is
+offered only when it would lift this one guard.
 
 ### Tiling: work in cache-sized blocks
 

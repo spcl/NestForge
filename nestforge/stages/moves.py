@@ -41,6 +41,7 @@ from dace.transformation.interstate.loop_peeling import LoopPeeling
 from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
+from dace.transformation.interstate.move_map_invariant_if_up import MoveMapInvariantIfUp
 from dace.transformation.interstate.state_fusion import StateFusion
 from dace.transformation.pass_pipeline import Pipeline
 from dace.transformation.passes.analysis import loop_analysis
@@ -91,6 +92,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
     "interchange-if-for": (ConditionalBlock, LoopRegion),
+    "interchange-doall-if": (nodes.MapEntry,),
     "interchange-for-if": (LoopRegion, ConditionalBlock),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
     SET_IMPLEMENTATION: (nodes.LibraryNode,),
@@ -156,6 +158,10 @@ SUBGRAPH_FISSION_REFUSED = (
 
 #: Every copy becomes a map: by default CopyToMap takes only copies whose two arrays differ in strides.
 COPY_TO_MAP_OPTIONS = {"ignore_strides": True}
+MAP_IF_REFUSED = (
+    "blocked by MoveMapInvariantIfUp: {map} holds no if that reads neither its parameters nor what its body writes, "
+    "or the pass would lift {lifted} guards, not the one above this doall."
+)
 PEEL_FOLDS_NOTHING = "blocked by LoopPeeling: no if in {loop} is settled by its first iteration or by the later ones; peeling would only copy the body."
 COPY_TO_MAP_REFUSED = (
     "blocked by CopyToMap: the state holds no copy between two arrays outside a doall that it can turn into a map "
@@ -1075,6 +1081,50 @@ def plan_peel_for(row: Row) -> Rewrite | str:
     return region_rewrite("LoopPeeling", loop.sdfg, lambda: peel_first_and_fold(loop))
 
 
+def state_of_map(sdfg: dace.SDFG, label: str) -> SDFGState:
+    """The state holding the map labeled ``label``, anywhere in ``sdfg``."""
+    for node, graph in sdfg.all_nodes_recursive():
+        if isinstance(node, nodes.MapEntry) and node.map.label == label and isinstance(graph, SDFGState):
+            return graph
+    raise KeyError(label)
+
+
+def guards_above(state: SDFGState) -> int:
+    """How many conditionals ``state`` sits under, through nested SDFGs up to the root."""
+    count, block = 0, state
+    while True:
+        parent = block.parent_graph
+        if parent is None:
+            outer = block.parent if isinstance(block, dace.SDFG) else None
+            if outer is None:
+                return count
+            block = outer
+            continue
+        count += isinstance(parent, ConditionalBlock)
+        block = parent
+
+
+def guarded_doalls(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The doalls whose nested-SDFG body holds a conditional as one of its top-level blocks."""
+    for state, entry in map_rows(sdfg):
+        body = map_body(state, entry)
+        if body is not None and any(isinstance(block, ConditionalBlock) for block in body.sdfg.nodes()):
+            yield ((entry, state),)
+
+
+def plan_map_if(row: Row) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    root = state.sdfg.root_sdfg
+    # the pass works on the whole SDFG, so the move is tried on a copy: it must lift one guard, above this doall
+    trial = copy.deepcopy(root)
+    before = guards_above(state_of_map(trial, entry.map.label))
+    lifted = MoveMapInvariantIfUp().apply_pass(trial, {}) or 0
+    after = state_of_map(trial, entry.map.label)
+    if lifted != 1 or guards_above(after) <= before:
+        return MAP_IF_REFUSED.format(map=entry.map.label, lifted=lifted)
+    return region_rewrite("MoveMapInvariantIfUp", root, lambda: MoveMapInvariantIfUp().apply_pass(root, {}))
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "for-fusion": plan_loop_fusion,
     "for-fission": plan_loop_fission,
@@ -1086,6 +1136,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
     "interchange-if-for": plan_if_loop,
+    "interchange-doall-if": plan_map_if,
     "interchange-for-if": plan_loop_if,
     EXPAND_LIBRARY: plan_expand_library,
     SET_IMPLEMENTATION: plan_set_implementation,
@@ -1161,6 +1212,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     ),
     "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
     "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
+    "interchange-doall-if": (
+        "MoveMapInvariantIfUp (tried on a copy; the move needs it to lift exactly one if, above this doall)",
+        "doall i: if c: B becomes if c: doall i: B, c not reading i. A doall that also holds work outside the if is "
+        "unswitched: if c: doall i: {A; B} else: doall i: A.",
+    ),
     EXPAND_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
@@ -1391,6 +1447,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
     "interchange-if-for": guard_loop_pairs,
+    "interchange-doall-if": guarded_doalls,
     "interchange-for-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,
     SET_IMPLEMENTATION: library_rows,
