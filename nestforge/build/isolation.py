@@ -22,10 +22,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
-OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
+OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so", "libomp.dylib")
 
-#: Sonames of LLVM libomp (``libiomp5`` is its Intel alias).
-LIBOMP_SONAMES = ("libomp.so.5", "libomp.so", "libiomp5.so")
+#: Sonames of LLVM libomp (``libiomp5`` is its Intel alias; ``libomp.dylib`` is its macOS name).
+LIBOMP_SONAMES = ("libomp.so.5", "libomp.so", "libiomp5.so", "libomp.dylib")
 
 #: ``omp_soft_pause`` of ``omp_pause_resource_t`` (OpenMP 5.0); unlike a hard pause it keeps threadprivate data.
 OMP_PAUSE_SOFT = 1
@@ -57,13 +57,30 @@ class ChildCpus:
     cpus: set[int]
 
 
+#: Whether the OS lets a process set its CPU mask (Linux does; macOS has no such call).
+HAS_AFFINITY = hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity")
+
+
+def process_cpus() -> set[int]:
+    """This process's CPU mask; every CPU where the OS has no mask."""
+    if HAS_AFFINITY:
+        return os.sched_getaffinity(0)
+    return set(range(os.cpu_count() or 1))
+
+
+def pin_cpus(cpus: set[int]) -> None:
+    """Set this process's CPU mask to ``cpus``; nothing where the OS has no mask."""
+    if HAS_AFFINITY:
+        os.sched_setaffinity(0, cpus)
+
+
 #: The process's mask at import, before any OpenMP runtime ran; only :func:`restrict_cpus` narrows it.
-CHILD_CPUS = ChildCpus(os.sched_getaffinity(0))
+CHILD_CPUS = ChildCpus(process_cpus())
 
 
 def restrict_cpus(cpus: set[int]) -> None:
     """Narrow this process to ``cpus``, and every child :func:`run_isolated` forks from here on."""
-    os.sched_setaffinity(0, cpus)
+    pin_cpus(cpus)
     CHILD_CPUS.cpus = set(cpus)
 
 
@@ -214,7 +231,7 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
         faulthandler.disable()  # a child's segfault must not dump the parent's stack
         # an initialized libomp's fork handler widens the child to its own first mask, and its binding of the caller
         # narrows the caller's: the child takes the mask NestForge chose (CHILD_CPUS), whatever OpenMP did since
-        os.sched_setaffinity(0, cpus)
+        pin_cpus(cpus)
         try:
             enter_seal()
             payload = work_fn().model_dump_json()

@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
+from nestforge.build import isolation
 from nestforge.build.isolation import (
     ERROR_CHARS,
+    HAS_AFFINITY,
     LIBOMP_SONAMES,
     OPENMP_REGISTRATION,
     Failure,
@@ -32,6 +34,9 @@ ISOLATION_WAIT_S = 5.0
 
 #: Isolated runs of the registration-leak test; one leak per run would show as that many files.
 ISOLATED_RUNS = 3
+
+#: The CPU-mask tests read and set the mask, which only Linux has.
+needs_affinity = pytest.mark.skipif(not HAS_AFFINITY, reason="the OS has no CPU-mask call (macOS)")
 
 
 class Answer(Result):
@@ -194,6 +199,7 @@ def child_mask_after_openmp_bound_the_caller() -> tuple[list[int], list[int], li
     return full, sorted(os.sched_getaffinity(0)), isolated_mask()
 
 
+@needs_affinity
 def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
     """libomp's fork handler puts a child on the mask it first saw, so a slot's pin would not reach it. In a spawned
     process: this one must not initialize libomp, nor narrow its mask."""
@@ -203,6 +209,7 @@ def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
     assert cpus == [cpu]
 
 
+@needs_affinity
 def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one():
     """libomp binds the thread that starts it to the first place, often one CPU; a child given that mask would run
     its whole team on one core and time the program tens of times slower (NestForge#75). In a spawned process, as
@@ -214,3 +221,16 @@ def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one()
         pytest.skip("one CPU: nothing for OpenMP to narrow")
     assert bound == full[:1]
     assert child == full
+
+
+def test_without_a_cpu_mask_call_a_child_runs_on_every_cpu_and_restricting_is_a_no_op(monkeypatch):
+    """On an OS with no CPU-mask call (macOS) the import must not fail: a child gets every CPU, and narrowing only
+    records the set."""
+    monkeypatch.setattr(isolation, "HAS_AFFINITY", False)
+    monkeypatch.setattr(isolation, "CHILD_CPUS", isolation.ChildCpus(isolation.process_cpus()))
+
+    assert isolation.CHILD_CPUS.cpus == set(range(os.cpu_count() or 1))
+    restrict_cpus({0})
+    assert isolation.CHILD_CPUS.cpus == {0}
+    child = run_isolated(lambda: Answer(value=1, name="ok"), Answer)
+    assert child == Answer(value=1, name="ok")
