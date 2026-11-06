@@ -1050,6 +1050,8 @@ def peel_first_and_fold(loop: LoopRegion) -> int:
 def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     """The loops with a conditional in their body that reads the loop variable."""
     for loop in every_region_block(sdfg, LoopRegion):
+        if not loop.loop_variable:
+            continue  # a while loop has no variable to peel on
         var = symbolic.symbol(loop.loop_variable)
         if any(
             isinstance(block, ConditionalBlock)

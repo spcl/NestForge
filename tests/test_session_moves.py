@@ -268,6 +268,18 @@ def first_step_differs(x: dace.float64[N], a: dace.float64[N]):
 
 
 @dace.program
+def halving_then_first_step(x: dace.float64[N], a: dace.float64[N], edge: dace.int64[1]):
+    while edge[0] > 4:
+        edge[0] = edge[0] // 2
+    for t in range(T):
+        for i in range(N):
+            if t == 0:
+                a[i] = x[i]
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
+@dace.program
 def early_steps_differ(x: dace.float64[N], a: dace.float64[N]):
     for t in range(T):
         for i in range(N):
@@ -925,6 +937,21 @@ def test_peel_for_keeps_a_guard_that_the_later_steps_do_not_settle():
     assert len(conditionals(sut.sdfg)) == 2
     for steps in (0, 1, 2, 6):
         assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_skips_a_while_loop_next_to_the_loop_it_peels():
+    """A while loop has no loop variable; listing peel-for used to raise on it (mg_vcycle)."""
+    sut, reference = session_and_reference(halving_then_first_step)
+    assert any(not loop.loop_variable for loop in loops(sut.sdfg))
+
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+    result = apply_listed(sut, "peel-for")
+
+    assert result.status is MoveStatus.APPLIED, result
+    for steps in (0, 1, 5):
+        arrays = random_arrays(x=(SIZE,), a=(SIZE,))
+        arrays["edge"] = np.array([64], dtype=np.int64)
+        assert_same_values(reference, sut.sdfg, arrays, N=SIZE, T=steps)
 
 
 def test_peel_for_is_not_offered_for_a_guard_the_loop_variable_does_not_decide():
