@@ -16,6 +16,9 @@ from nestforge.build.toolchain import SymbolValue
 #: A loop's iteration count is halved to pick its middle iteration, an interior value that boundary reads miss.
 HALF = 2
 
+#: A loop bound as DaCe hands it out: an expression, or the string it was parsed from.
+SymbolicBound = dace.symbolic.SymbolicType | str
+
 
 def enclosing_loops(state: SDFGState) -> list[LoopRegion]:
     """The counted loops around ``state``, outermost first, including those around the nested SDFGs it sits in."""
@@ -32,12 +35,23 @@ def enclosing_loops(state: SDFGState) -> list[LoopRegion]:
     return loops[::-1]
 
 
+def has_unvalued_symbol(bounds: list[SymbolicBound], env: dict[dace.symbolic.symbol | str, int | float]) -> bool:
+    """Whether a bound uses a symbol ``env`` has no value for: one only the running program computes."""
+    known = {str(name) for name in env}
+    return any(
+        str(free) not in known for bound in bounds for free in dace.symbolic.pystr_to_symbolic(bound).free_symbols
+    )
+
+
 def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol | str, int | float]) -> int | None:
-    """The iterator value halfway through ``loop`` under ``env``, or ``None`` for a loop that is not a counted range."""
+    """The iterator value halfway through ``loop`` under ``env``, or ``None`` for a loop that is not a counted range or
+    whose bounds use a symbol ``env`` has no value for (``gmres``'s ``kk_iter``, which the program computes)."""
     start = loop_analysis.get_init_assignment(loop)
     end = loop_analysis.get_loop_end(loop)
     stride = loop_analysis.get_loop_stride(loop)
     if start is None or end is None or stride is None:
+        return None
+    if has_unvalued_symbol([start, end, stride], env):
         return None
     first, last, step = (int(dace.symbolic.evaluate(x, env)) for x in (start, end, stride))
     count = (last - first) // step + 1
@@ -46,7 +60,8 @@ def middle_value(loop: LoopRegion, env: dict[dace.symbolic.symbol | str, int | f
 
 def loop_symbol_values(state: SDFGState, sizes: Mapping[str, SymbolValue]) -> dict[str, int]:
     """A value for the iterator of each loop around ``state``: the middle of its range under ``sizes`` and the
-    values already chosen for the loops outside it."""
+    values already chosen for the loops outside it. A loop whose bounds need a value neither has, and so any loop
+    inside it that needs its iterator, gets none."""
     env: dict[dace.symbolic.symbol | str, int | float] = {dace.symbolic.symbol(k): v for k, v in sizes.items()}
     values: dict[str, int] = {}
     for loop in enclosing_loops(state):
