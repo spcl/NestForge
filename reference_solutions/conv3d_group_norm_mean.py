@@ -7,8 +7,8 @@ bench's NumPy reference).
 The convolution is a reduction over the input channel and the kernel positions. After the default, the innermost
 kernel-position loop sits inside the output-point maps, and each output point calls it as a function that adds one
 product to ``acc`` in memory. The interchange puts that loop outside the five output maps, so the innermost loop is the
-output width, a contiguous ``omp simd`` loop that adds one product per element. Decoys: no move and no default
-fusions (``stage1``, 0.74-0.75x), and the same interchange before the default (``interchange-first``)."""
+output width, a contiguous ``omp simd`` loop that adds one product per element. Decoy: no move and no default
+fusions (``stage1``, 0.74-0.75x)."""
 
 from nestforge.replay import Context, Script
 
@@ -31,10 +31,4 @@ def stage1(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-def interchange_first(s: Script, ctx: Context) -> None:
-    """The interchange before the default: the default then redoes the fusions on the interchanged tree."""
-    s.apply(s.pick("interchange-doall-for"))
-    s.defaults()
-
-
-DECOYS = {"stage1": stage1, "interchange-first": interchange_first}
+DECOYS = {"stage1": stage1}
