@@ -544,6 +544,26 @@ def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not
     np.testing.assert_allclose(call["b"], 3 * a + 1)
 
 
+def test_a_nested_scratch_named_like_another_array_of_the_kernel_is_hoisted_under_a_new_name():
+    """DaCe numbers each SDFG's temporaries on its own: the nest's ``t[2]`` and the program's own ``t`` are two arrays."""
+    sdfg = nest_in_nest_with_scratch()
+    sdfg.add_array("t", [3, 3], dace.int32, transient=True)
+    lowered = copy.deepcopy(sdfg)
+    lower(lowered)
+
+    hoist_nested_scratch(lowered)
+
+    assert (lowered.arrays["t"].dtype, [str(d) for d in lowered.arrays["t"].shape]) == (dace.int32, ["3", "3"])
+    (renamed,) = [name for name in scratch_arrays(lowered) if [str(d) for d in lowered.arrays[name].shape] == ["2"]]
+    assert renamed != "t"
+    source = render("k", ["a", "b", *scratch_arrays(lowered), "N"], lowered)
+    a = np.random.default_rng(8).random(5)
+
+    call = run_emitted(source, "k", lowered, {"a": a}, {"N": 5})
+
+    np.testing.assert_allclose(call["b"], 3 * a + 1)
+
+
 WINDOW = 4
 
 

@@ -48,6 +48,7 @@ from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNeste
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
 from dace.transformation.passes.remove_views import RemoveViews
+from dace.utils import find_new_name
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import Boundary
@@ -1003,19 +1004,25 @@ def oracle_sdfg(boundary: Boundary) -> dace.SDFG:
 def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
     """Make the transient arrays of every nest :func:`lower` left nested (a multi-state body of a map) scratch of
     the kernel, which the caller allocates: the emitted body writes them, and a kernel allocates nothing. The oracle
-    runs serially, so one buffer serves every iteration of the enclosing map."""
+    runs serially, so one buffer serves every iteration of the enclosing map. DaCe numbers each SDFG's temporaries
+    (``__tmp3``) on its own, so a nest's scratch can share a name with an unrelated array of the kernel; that one is
+    renamed in its nest and hoisted under the new name."""
+    taken = {name for each in sdfg.all_sdfgs_recursive() for name in each.arrays}
     for nested in list(sdfg.all_sdfgs_recursive()):
         if nested is sdfg:
             continue
         local = names_of(nested).locals
-        for name, desc in nested.arrays.items():
+        for name, desc in list(nested.arrays.items()):
             if not desc.transient or name in local:
                 continue
             outer = sdfg.arrays.get(name)
             if outer is None:
                 sdfg.arrays[name] = copy.deepcopy(desc)
             elif outer.dtype != desc.dtype or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]:
-                raise UnsupportedNest(f"nested scratch {name!r} has another shape or type than the kernel's {name!r}")
+                fresh = find_new_name(name, taken)
+                taken.add(fresh)
+                nested.replace(name, fresh)
+                sdfg.arrays[fresh] = copy.deepcopy(nested.arrays[fresh])
 
 
 def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
