@@ -597,6 +597,48 @@ def test_a_strided_nested_window_scales_its_indices_by_the_stride():
     np.testing.assert_array_equal(call["b"], expected)
 
 
+def scatter_check_sdfg() -> dace.SDFG:
+    """``flag[0]`` is whether the index array ``idx`` repeats a value, by DaCe's scatter conflict check."""
+    from dace.libraries.sort.nodes.scatter_conflict_check import ScatterConflictCheck
+
+    sdfg = dace.SDFG("scatter_check")
+    sdfg.add_array("idx", [N], dace.int64)
+    sdfg.add_array("flag", [1], dace.int64)
+    state = sdfg.add_state()
+    check = ScatterConflictCheck("check")
+    state.add_node(check)
+    state.add_edge(state.add_read("idx"), None, check, "_idx_in", dace.Memlet("idx[0:N]"))
+    state.add_edge(check, "_count_out", state.add_write("flag"), None, dace.Memlet("flag[0]"))
+    return sdfg
+
+
+@pytest.mark.parametrize(
+    ("idx", "expected"),
+    [([3, 1, 2, 0], 0), ([3, 1, 3, 0], 1), ([-1, -1, 2, 0], 0), ([5, 5], 1), ([7], 0)],
+)
+def test_a_scatter_conflict_check_is_one_numpy_call_not_a_scratch_sized_by_the_data(idx, expected):
+    """The check's own expansion sizes a tag array from ``max(idx)``, which the caller cannot allocate; the oracle
+    flags a repeated non-negative value directly and skips a negative one, as the expansion does."""
+    values = np.array(idx, dtype=np.int64)
+
+    call, source = emit_and_run(scatter_check_sdfg(), {"idx": values}, {"N": len(idx)})
+
+    assert "np.unique(" in body_of(source) and "tags" not in source, source
+    assert call["flag"][0] == expected
+
+
+def test_a_subset_step_that_is_a_size_symbol_is_a_positive_slice_step():
+    """A pooling window's stride is a size parameter: positive by meaning, though sympy gives its symbol no sign."""
+    assert index(subsets.Range([(0, N - 1, M)])) == "0:N:M"
+
+
+@pytest.mark.parametrize("step", [-1, 0, N - M])
+def test_a_subset_step_not_provably_positive_has_no_sound_slice(step):
+    """A negative or zero step, or a difference of sizes, can be zero or negative: no NumPy slice is sound."""
+    with pytest.raises(UnsupportedNest, match="not provably positive"):
+        index(subsets.Range([(0, N - 1, step)]))
+
+
 def indexed_read_window(x_stride: int) -> dace.SDFG:
     """``y[0] = x[1]`` through an interstate symbol, whose index moves with the window."""
     inner = dace.SDFG("indexed")

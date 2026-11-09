@@ -434,6 +434,13 @@ def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
     return simple.xreplace({size: s for s, size in sizes.items()})
 
 
+def positive_as_sizes(expr: sympy.Expr) -> bool:
+    """Whether ``expr`` is positive with every symbol a positive integer, as sizes are; a bare symbol such as a
+    kernel size has no sign in sympy, and ``N - M`` stays unproven."""
+    sizes = {s: sympy.Symbol(str(s), integer=True, positive=True) for s in expr.free_symbols}
+    return expr.xreplace(sizes).is_positive is True
+
+
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
     """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
     refuse one whose extent the caller cannot evaluate."""
@@ -482,7 +489,7 @@ def index(subset: subsets.Subset) -> str:
         if symbolic.pystr_to_symbolic(end - begin) == 0:
             parts.append(begin_text)
             continue
-        if symbolic.pystr_to_symbolic(step).is_positive is not True:
+        if not positive_as_sizes(symbolic.pystr_to_symbolic(step)):
             raise UnsupportedNest(f"subset step {step} is not provably positive; no sound NumPy slice")
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
@@ -808,8 +815,22 @@ def fft_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[s
     return [f"{target} = ({node.factor}) * {call}"]
 
 
+def scatter_conflict_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    """The node's flag as NumPy: 1 when two in-range values of the index array are equal, else 0. A negative value is
+    skipped, and so is one at or past a wired ``_owner_out`` tag array's length; unwired, the node sizes its own tags
+    from ``max(idx) + 1``, a data-dependent extent the caller cannot allocate, so the pure expansion has no spelling."""
+    values = read_of(scope, state, node, node.INPUT_CONNECTOR_NAME)
+    mask = f"({values} >= 0)"
+    owned = list(state.out_edges_by_connector(node, node.SCRATCH_CONNECTOR_NAME))
+    if owned:
+        mask = f"({mask} & ({values} < {write_of(scope, state, node, node.SCRATCH_CONNECTOR_NAME)}.size))"
+    flag = f"np.unique(({values})[{mask}]).size != np.count_nonzero({mask})"
+    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = int({flag})"]
+
+
 #: A library node type's spelling: the lines of its library call.
 LIBRARY_CALLS = {
+    "ScatterConflictCheck": scatter_conflict_lines,
     "Cholesky": cholesky_lines,
     "MatMul": matmul_lines,
     "Gemm": matmul_lines,
