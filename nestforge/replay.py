@@ -181,6 +181,36 @@ class Script:
         self.applied.append(done)
         return done
 
+    def scope(
+        self,
+        *,
+        reads: Iterable[str] = (),
+        writes: Iterable[str] = (),
+        where: Callable[[Sequence[Row]], bool] | None = None,
+    ) -> AppliedMove:
+        """Stage 3: make one kernel of the one top-level block (a loop or a branch of the program) that reads ``reads``,
+        writes ``writes`` and satisfies ``where`` (:meth:`Session.set_scope`). Works after :meth:`defaults` or
+        :meth:`finish`, because the default scopes leave a block that already is a kernel alone.
+
+        :raises ReplayError: No block or several match, or the scope was not made.
+        """
+        rows = self.session.row_index()
+        top = set(map(id, self.session.sdfg.nodes()))
+        hits = [label for label, row in rows.items() if id(row[0]) in top and move_matches([row], reads, writes, where)]
+        if len(hits) != 1:
+            found = "no top-level block" if not hits else f"{len(hits)} top-level blocks"
+            raise ReplayError(
+                f"{found} match for a scope (reads {sorted(reads)}, writes {sorted(writes)}); "
+                f"top-level rows: {sorted(label for label, row in rows.items() if id(row[0]) in top)}\n"
+                + self.session.describe()
+            )
+        result = self.session.set_scope(hits)
+        if result.status is not MoveStatus.APPLIED:
+            raise ReplayError(f"set_scope {hits}: {result.status.name.lower()}: {result.reason}")
+        done = AppliedMove(kind=result.kind, labels=result.labels, reason=result.reason)
+        self.applied.append(done)
+        return done
+
     def finish(self) -> None:
         """Close stage 2 after hand-picked moves (:meth:`Session.finish_moves`)."""
         self.session.finish_moves()
