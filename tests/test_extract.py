@@ -3,10 +3,11 @@
 import dace
 import numpy as np
 from dace.sdfg.state import LoopRegion
+from dace.symbolic_facts import Predicate
 from helpers import extract_nest_to_sdfg
 
 from nestforge.ir.extract import Boundary, nest_defined_symbol_dtypes
-from nestforge.stages.scopes import parallel_top_level_maps
+from nestforge.stages.scopes import lower_nests_to_external_call, parallel_top_level_maps
 
 N = dace.symbol("N")
 
@@ -46,6 +47,48 @@ def test_the_parent_still_computes_after_extraction():
 def test_the_standalone_nest_computes_on_its_own():
     _, b = extracted_vadd()
     run_vadd(b.standalone_sdfg, seed=1)
+
+
+def positive_size_program() -> tuple[dace.SDFG, dace.SDFG]:
+    """A program whose size ``N`` is declared positive, with a map over a nested SDFG that assumes ``0 < N``."""
+    positive = frozenset({Predicate.POSITIVE})
+    inner = dace.SDFG("assumes_positive")
+    inner.add_symbol("N", dace.int64, predicates=positive)
+    inner.add_array("a", [N], dace.float64)
+    body = inner.add_state()
+    write = body.add_tasklet("write", {}, {"o"}, "o = 1.0")
+    body.add_edge(write, "o", body.add_write("a"), None, dace.Memlet("a[0]"))
+
+    outer = dace.SDFG("positive_size")
+    outer.add_symbol("N", dace.int64, predicates=positive)
+    outer.add_array("A", [N], dace.float64)
+    state = outer.add_state()
+    entry, leave = state.add_map("rows", {"i": "0:2"})  # a range over 0:N would itself prove N > 0
+    nested = state.add_nested_sdfg(inner, set(), {"a"}, symbol_mapping={"N": "N"})
+    state.add_nedge(entry, nested, dace.Memlet())
+    state.add_memlet_path(nested, leave, state.add_write("A"), src_conn="a", memlet=dace.Memlet("A[0:N]"))
+    return outer, inner
+
+
+def test_an_extracted_nest_keeps_the_sign_its_program_declares_for_a_size():
+    """Cutting the parent dropped ``N > 0``, so the nested SDFG that assumes it no longer validated in the kernel."""
+    outer, _ = positive_size_program()
+    psdfg, node = parallel_top_level_maps(outer)[0]
+
+    b = extract_nest_to_sdfg(psdfg, node, name="positive_nest")
+
+    assert b.standalone_sdfg.symbol_repo.params.predicates["N"] == frozenset({Predicate.POSITIVE})
+    b.standalone_sdfg.validate()
+
+
+def test_the_kernel_a_nest_becomes_keeps_the_sign_its_program_declares_for_a_size():
+    """The kernel DaCe builds is ``ExternalCall.standalone_sdfg``, a copy that cut the parent as well."""
+    outer, _ = positive_size_program()
+
+    ((call, _),) = lower_nests_to_external_call(outer)
+
+    assert call.standalone_sdfg.symbol_repo.params.predicates["N"] == frozenset({Predicate.POSITIVE})
+    call.standalone_sdfg.validate()
 
 
 # loop iterators are scope symbols, never SDFG symbols

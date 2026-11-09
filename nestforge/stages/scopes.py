@@ -36,6 +36,7 @@ from nestforge.ir.extract import (
     extract_map_nest,
     extract_state_nodes,
     find_state_of_node,
+    inherit_symbol_predicates,
 )
 from nestforge.ir.introspect import Row, nest_reads_writes
 from nestforge.ir.names import in_order, top_level_doalls, top_level_map_entries
@@ -116,6 +117,8 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
         standalone_sdfg=reference_sdfg(nsdfg),
         numpy_source=oracle.numpy_source,
     )
+    # DaCe's reference_sdfg cuts the parent, and with it the signs the program declares for the kernel's symbols
+    inherit_symbol_predicates(ext.standalone_sdfg, nsdfg, state)
     # The oracle's scratch is the oracle harness's to allocate; the kernel allocates its own.
     own = {*boundary.inputs, *boundary.outputs, *boundary.symbols}
     ext.abi_order = [arg for arg in oracle.args if arg in own]
