@@ -143,6 +143,12 @@ feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls 
 the copied elements, so `tile-doall` and the interchanges can take it with the doalls around it. A one-element copy
 between arrays of different rank (`s[n - 1, i] -> carry[i]`) becomes a tasklet instead, which `doall-fission` counts as a
 computation; any other copy between arrays of different rank is not offered, since DaCe raises on it.
+**`snapshot-reads`** `[doall]`, a doall of its own per slice: a doall that reads a slice of an array (`path[:, k]`,
+`path[k, :]`: one index per dimension, either a map parameter or a value the doall does not change) which another doall of
+the state writes first copies the slice into a transient, so the two doalls stop touching one array and `doall-fusion`
+can merge them (Floyd-Warshall: the `outer` temporary disappears). The copy is a doall, not a plain copy, which the
+cleanup after every move would fold back into a read of the array. Offered only where a slice is read and written by
+different doalls of one state.
 
 ### Library calls
 

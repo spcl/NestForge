@@ -65,6 +65,8 @@ from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
+from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
+from nestforge.stages.snapshot import snapshot, snapshot_applies, written_by_another_doall
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +104,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "expand-doall": (nodes.MapEntry,),
     "doall-to-for": (nodes.MapEntry,),
     "copy-to-doall": (ControlFlowBlock,),
+    "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
     "peel-for": (LoopRegion,),
@@ -802,6 +805,17 @@ def plan_copy_to_doall(row: Row) -> Rewrite | str:
     return Rewrite("CopyToMap", commit)
 
 
+def plan_snapshot_reads(row: Row) -> Rewrite | str:
+    """A doall that reads a slice of an array another doall of its state writes copies the slice first, so the two
+    stop touching one array and ``doall-fusion`` can merge them."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    if state.entry_node(entry) is not None:
+        return f"{entry.map.label} is inside another doall; only an outermost doall snapshots its reads."
+    if not snapshot_applies(state, entry):
+        return SNAPSHOT_REFUSED
+    return Rewrite("SnapshotReads", lambda: snapshot(state, entry))
+
+
 def tile_pair(outer: nodes.MapEntry, inner: nodes.MapEntry, state: SDFGState) -> MapTilePair | None:
     return next((pair for pair in map_tile_pairs(state) if pair.outer is outer and pair.inner is inner), None)
 
@@ -1149,6 +1163,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "expand-doall": plan_expand_doall,
     "doall-to-for": plan_doall_to_for,
     "copy-to-doall": plan_copy_to_doall,
+    "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
     "peel-for": plan_peel_for,
@@ -1251,6 +1266,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a plain copy between two arrays in the state (a[:] = b) becomes a doall over the copied elements, so "
         "tile-doall and the interchanges treat it like the doalls around it; a one-element copy between arrays of "
         "different rank (s[n - 1, i] -> carry[i]) becomes a tasklet, which doall-fission counts as a computation.",
+    ),
+    "snapshot-reads": (
+        "a doall of its own that copies each slice (SnapshotReads)",
+        "a doall that reads a slice of an array (path[:, k], path[k, :]: one index per dimension, a map parameter or a "
+        "value the doall does not change) which another doall of the state writes copies the slice into a transient "
+        "first, so the two doalls no longer touch one array and doall-fusion can merge them.",
     ),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
@@ -1460,6 +1481,9 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
     "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
     "copy-to-doall": lambda sdfg: (((st, None),) for st in every_region_block(sdfg, SDFGState) if plain_copies(st)),
+    "snapshot-reads": lambda sdfg: (
+        ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and written_by_another_doall(st, e)
+    ),
     "tile-for": for_rows,
     "untile-for": tile_loops,
     "peel-for": guarded_loops,

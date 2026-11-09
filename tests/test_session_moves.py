@@ -1406,3 +1406,60 @@ def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into
     assert all("tmp" not in writes for writes in map_writes(sut.sdfg)), map_writes(sut.sdfg)
     arrays = random_arrays(A=(SIZE,), B=(2, SIZE))
     assert_same_values(reference, sut.sdfg, arrays)
+
+
+# snapshot-reads: a doall that reads a slice of an array another doall writes copies the slice first (floyd_warshall)
+
+
+@dace.program
+def shortest_paths(path: dace.int32[N, N]):
+    outer = np.empty_like(path)
+    for k in range(N):
+        outer[:, :] = path[:, k][:, None] + path[k, :][None, :]
+        path[:, :] = np.minimum(path, outer)
+
+
+def positive_paths() -> dict[str, np.ndarray]:
+    return {"path": np.random.default_rng(0).integers(1, 50, size=(SIZE, SIZE)).astype(np.int32)}
+
+
+def snapshot_session() -> tuple[Session, dace.SDFG]:
+    sut, reference = session_and_reference(shortest_paths)
+    sut.canonicalize()
+    return sut, reference
+
+
+def test_snapshot_reads_copies_the_slices_so_doall_fusion_applies_and_values_stay():
+    sut, reference = snapshot_session()
+    assert sut.list_moves("doall-fusion") == [], "the reader and the writer share path: the fusion is illegal"
+    (move,) = sut.list_moves("snapshot-reads")
+
+    result = sut.apply_move(move.kind, move.labels)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "SnapshotReads")
+    copies = [a for a in sut.sdfg.arrays if a.startswith("path_snapshot")]
+    assert len(copies) == 2 and all(sut.sdfg.arrays[a].shape == (N,) and sut.sdfg.arrays[a].transient for a in copies)
+    assert sut.list_moves("doall-fusion"), "the reader no longer touches path"
+    assert sut.list_moves("snapshot-reads") == [], "a copy doall is not snapshotted again"
+    sut.sdfg.validate()
+    assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
+
+
+def test_snapshot_reads_then_the_default_fuses_the_pass_into_one_doall():
+    sut, reference = snapshot_session()
+    apply_listed(sut, "snapshot-reads")
+
+    sut.default_moves()
+
+    sut.sdfg.validate()
+    assert sut.list_moves("doall-fusion") == []
+    assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
+
+
+def test_snapshot_reads_is_not_offered_when_no_other_doall_writes_what_the_doall_reads():
+    sut, _ = session_and_reference(two_indep)
+    sut.canonicalize()
+
+    assert sut.list_moves("snapshot-reads") == []
+    result = sut.apply_move("snapshot-reads", [top_level_maps(sut.sdfg)[0].map.label])
+    assert result.status is MoveStatus.ILLEGAL and "snapshot-reads" in result.reason, result
