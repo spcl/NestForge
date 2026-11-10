@@ -87,7 +87,7 @@ def call_oracle(
         )
     module = load_emitted(prep.numpy_source, prep.name)
     start = time.perf_counter()
-    vars(module)[prep.name](**{**args, **{s: int(sizes[s]) for s in boundary.symbols}})
+    vars(module)[prep.name](**{**args, **{s: sizes[s] for s in boundary.symbols}})
     return time.perf_counter() - start
 
 

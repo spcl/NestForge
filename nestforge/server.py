@@ -346,8 +346,8 @@ def closure_inputs(program: DaceProgram, sdfg: dace.SDFG) -> dict[str, np.ndarra
 
 
 def numeric_scalar(dtype: np.dtype) -> bool:
-    """An integer or a float, not a bool: the kinds a symbol takes."""
-    return np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
+    """A bool, an integer or a float: the kinds a symbol takes (vexx_k's ``gamma_only`` flag becomes one)."""
+    return np.issubdtype(dtype, np.bool_) or np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
 
 
 def stopped_text(tool: str, timeout_s: float) -> str:
