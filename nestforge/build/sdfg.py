@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
+import hashlib
 import time
 import warnings
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
@@ -376,12 +377,29 @@ def libomp_cmake_args(compiler: str) -> list[str]:
     return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP}", f"-DOpenMP_{LIBOMP}_LIBRARY={library}"]
 
 
+#: CMake names a file ``cmake_object_order_depends_target_dacestub_<program name>`` (43 characters before the name),
+#: and a file name holds at most 255 bytes. Names stay well under that, which also leaves room for the other files
+#: CMake and ninja derive from the name (``<name>.dir``, ``lib<name>.so``).
+MAX_PROGRAM_NAME = 120
+NAME_DIGEST_LENGTH = 8
+
+
+def short_program_name(name: str) -> str:
+    """``name`` when it fits :data:`MAX_PROGRAM_NAME`, else its head plus a digest of the whole name, so two long
+    names sharing a head stay apart."""
+    if len(name) <= MAX_PROGRAM_NAME:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:NAME_DIGEST_LENGTH]
+    return f"{name[: MAX_PROGRAM_NAME - NAME_DIGEST_LENGTH - 1]}_{digest}"
+
+
 def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
     """Compile a program that links kernel libraries, with libomp as its one OpenMP runtime; the CMake
-    setting holds for this compile only."""
+    setting holds for this compile only. A name too long for CMake's file names is shortened on ``sdfg`` itself."""
     extra = [dace.config.Config.get("compiler", "extra_cmake_args"), *libomp_cmake_args(program_compiler())]
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]
+    sdfg.name = short_program_name(sdfg.name)  # the caller reads the name back, from the sdfg
     sdfg.build_folder = str(build_folder)
     force_register_arrays(sdfg)
     with (
