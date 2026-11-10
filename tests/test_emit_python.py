@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import sympy
 from dace import subsets
+from dace.libraries.blas.nodes.dot import Dot
 from dace.libraries.standard.nodes import Scan
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
@@ -844,3 +845,99 @@ def test_a_bare_inf_in_tasklet_code_runs_as_numpy_inf():
     call, _ = emit_and_run(sdfg, {"A": A}, {"N": 3})
 
     np.testing.assert_array_equal(call["B"], np.where(A > 0, A, -np.inf))
+
+
+SUM = "lambda p, q: p + q"
+PRODUCT = "lambda p, q: p * q"
+MINIMUM = "lambda p, q: min(p, q)"
+
+
+def accumulating_nest(inner: dace.SDFG, target: str, wcr: str) -> dace.SDFG:
+    """Every ``i`` of a map hands ``a[i]`` to the nest ``inner`` (connectors ``x`` and ``y``), and the edge leaving the
+    nest combines its ``y`` into ``acc[target]`` by ``wcr``."""
+    outer = dace.SDFG("accumulate")
+    outer.add_array("a", [N], dace.float64)
+    outer.add_array("acc", [1] if target == "0" else [N], dace.float64)
+    state = outer.add_state()
+    entry, exit_ = state.add_map("each", {"i": "0:N"})
+    node = state.add_nested_sdfg(inner, {"x"}, {"y"}, {"N": "N"})
+    state.add_memlet_path(state.add_read("a"), entry, node, dst_conn="x", memlet=dace.Memlet("a[i]"))
+    folded = dace.Memlet(f"acc[{target}]", wcr=wcr)
+    state.add_memlet_path(node, exit_, state.add_write("acc"), src_conn="y", memlet=folded)
+    return outer
+
+
+@pytest.mark.parametrize(
+    ("wcr", "fold"),
+    [(SUM, lambda before, values: before + values.sum()), (PRODUCT, lambda b, values: b * values.prod())],
+)
+def test_a_nest_that_writes_its_output_plainly_is_folded_into_the_target_the_outer_edge_combines(wcr, fold):
+    """The nest sets ``y = x``, then ``y = y + N``; the edge leaving it adds (or multiplies) that into ``acc[0]``. Run
+    inline as it stands, the first write would overwrite what ``acc[0]`` held, so only the last iteration counted."""
+    a = np.random.default_rng(7).random(6) + 0.5
+    sdfg = accumulating_nest(two_state_body("plain"), "0", wcr)
+
+    call, source = emit_and_run(sdfg, {"a": a, "acc": np.array([2.5])}, {"N": 6})
+
+    np.testing.assert_allclose(call["acc"][0], fold(2.5, a + 6), rtol=1e-13)
+    assert "nested_saved_0 = acc[0]" in source
+    assert source.count("nested_saved_0") == 2
+
+
+def range_body() -> dace.SDFG:
+    """``y[:] = x[0]``, then ``y[:] = y + 1``, each in its own state so the nest stays nested inside a map."""
+    inner = dace.SDFG("range_body")
+    inner.add_array("x", [1], dace.float64)
+    inner.add_array("y", [N], dace.float64)
+    first = inner.add_state(is_start_block=True)
+    first.add_mapped_tasklet(
+        "copy", {"k": "0:N"}, {"v": dace.Memlet("x[0]")}, "o = v", {"o": dace.Memlet("y[k]")}, external_edges=True
+    )
+    second = inner.add_state_after(first)
+    second.add_mapped_tasklet(
+        "bump", {"k": "0:N"}, {"v": dace.Memlet("y[k]")}, "o = v + 1.0", {"o": dace.Memlet("y[k]")}, external_edges=True
+    )
+    return inner
+
+
+def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held():
+    """A saved row must be a copy, since the body writes the row in place."""
+    a = np.random.default_rng(9).random(5)
+    acc = np.random.default_rng(10).random(5)
+    sdfg = accumulating_nest(range_body(), "0:N", SUM)
+
+    call, source = emit_and_run(sdfg, {"a": a, "acc": acc}, {"N": 5})
+
+    np.testing.assert_allclose(call["acc"], acc + (a + 1.0).sum(), rtol=1e-13)
+    assert "np.copy(acc[0:N])" in source
+
+
+def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held():
+    """#80: gramschmidt's ``expand-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
+    with the same WCR the outer edge has; the emitter refused it as ``writes through a write-conflict resolution``."""
+    sdfg = dace.SDFG("dot_rows")
+    sdfg.add_array("x", [M, N], dace.float64)
+    sdfg.add_array("y", [M, N], dace.float64)
+    sdfg.add_array("r", [M], dace.float64)
+    state = sdfg.add_state()
+    entry, exit_ = state.add_map("rows", {"k": "0:M"})
+    dot = Dot("dot")
+    dot.implementation = "pure"
+    state.add_node(dot)
+    state.add_memlet_path(state.add_read("x"), entry, dot, dst_conn="_x", memlet=dace.Memlet("x[k, 0:N]"))
+    state.add_memlet_path(state.add_read("y"), entry, dot, dst_conn="_y", memlet=dace.Memlet("y[k, 0:N]"))
+    state.add_memlet_path(dot, exit_, state.add_write("r"), src_conn="_result", memlet=dace.Memlet("r[k]", wcr=SUM))
+    sdfg.expand_library_nodes()
+    rng = np.random.default_rng(11)
+    x, y, r = rng.random((3, 5)), rng.random((3, 5)), np.array([1.0, -2.0, 3.0])
+
+    call, _ = emit_and_run(sdfg, {"x": x, "y": y, "r": r}, {"N": 5, "M": 3})
+
+    np.testing.assert_allclose(call["r"], r + (x * y).sum(axis=1), rtol=1e-14)
+
+
+def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identity():
+    sdfg = accumulating_nest(two_state_body("plain"), "0", MINIMUM)
+
+    with pytest.raises(UnsupportedNest, match="only a sum or product folds"):
+        sdfg_to_python(sdfg, "k")

@@ -108,6 +108,10 @@ EXPANSION_ROUNDS = 16
 HASH_DIGITS = 16
 #: The one-trip loop a nested SDFG's early return breaks out of.
 ONCE = "nested_once"
+#: Reductions whose identity is one literal in every dtype: the value a folded nest's body starts its target from.
+FOLD_IDENTITY = {dtypes.ReductionType.Sum: "0", dtypes.ReductionType.Product: "1"}
+#: Base of the local that holds a folded nest's target from before its body ran.
+FOLD_SAVED = "nested_saved"
 
 
 def numpy_attr(name: str) -> ast.Attribute:
@@ -680,11 +684,64 @@ def kernel_scratch(name: str, desc: dt.Data, sdfg: dace.SDFG) -> bool:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Fold:
+    """An output a nest's body writes plainly, which the edge leaving the nest combines into the target by a WCR."""
+
+    target: str
+    wcr: str
+    identity: str
+    ranged: bool
+
+
+def fold_of(scope: Scope, node: nodes.NestedSDFG, connector: str, memlet: dace.Memlet) -> Fold:
+    """How to emit the output ``connector`` of ``node``, whose body does not repeat the WCR of ``memlet`` on every write."""
+    wcr = memlet.wcr
+    assert wcr is not None, "a fold is an output with a write-conflict resolution"
+    if connector in node.in_connectors:
+        raise UnsupportedNest(
+            f"nested SDFG {node.label} reads {connector!r}, which a write-conflict resolution combines"
+        )
+    kind = detect_reduction_type(wcr)
+    if kind not in FOLD_IDENTITY:
+        raise UnsupportedNest(
+            f"nested SDFG {node.label} writes {connector!r} through {wcr!r}: only a sum or product folds"
+        )
+    data, subset, _ = memlet_parts(memlet)
+    single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
+    return Fold(access(scope, data, subset), wcr, FOLD_IDENTITY[kind], not single)
+
+
+def folded_lines(scope: Scope, node: nodes.NestedSDFG, body: list[str], folds: list[Fold]) -> list[str]:
+    """``body`` run from each fold's identity, then combined with the value its target held before: the body's own value
+    is what the outer write-conflict resolution adds to the target, however the body writes it."""
+    taken = set(re.findall(r"\w+", "\n".join(body)))
+    taken |= (
+        scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols) | set(node.sdfg.arrays) | set(node.sdfg.symbols)
+    )
+    before: list[str] = []
+    after: list[str] = []
+    for fold in folds:
+        saved = fresh_name(FOLD_SAVED, taken)
+        before += [f"{saved} = {'np.copy(' + fold.target + ')' if fold.ranged else fold.target}"]
+        before += [f"{fold.target} = {fold.identity}"]
+        after += [f"{fold.target} = {combine(fold.wcr, saved, fold.target)}"]
+    return [*python("\n".join(before), scope.names), *body, *python("\n".join(after), scope.names)]
+
+
 def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list[str]:
+    """A nested SDFG inlined; an output its body writes without the WCR of the edge leaving it is folded in."""
+    folds = [
+        fold_of(scope, node, edge.src_conn, edge.data)
+        for edge in state.out_edges(node)
+        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr)
+    ]
+    body = inlined_lines(scope, node)
+    return folded_lines(scope, node, body, folds) if folds else body
+
+
+def inlined_lines(scope: Scope, node: nodes.NestedSDFG) -> list[str]:
     """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
-    for edge in state.out_edges(node):
-        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr):
-            raise UnsupportedNest(f"nested SDFG {node.label} writes through a write-conflict resolution")
     inner_sdfg = node.sdfg
     outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
     binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if not passes_through(str(k), v)}
