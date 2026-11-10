@@ -28,14 +28,21 @@ from nestforge.stages.placement import Transfer
 class ProgramReport(Record):
     """The whole program at the session's sizes: its time, and whether its outputs match the reference (``None``
     without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run.
-    ``unchecked`` says why ``correct`` is ``None``: a time with it set is of a program nothing was compared against."""
+    ``unchecked`` says why ``correct`` is ``None``: a time with it set is of a program nothing was compared against.
+    ``reference`` is where the reference outputs came from (empty when there was none)."""
 
     time_us: float | None = None
     correct: bool | None = None
     mismatched: list[str] = []
     error: str = ""
     unchecked: str = ""
+    reference: str = ""
 
+
+#: ``Reference.source``: the bench's own reference (the torch model on a machine-learning kernel, else its oracles), or
+#: the kernel's NumPy function, which stands in when the bench's is unavailable.
+BENCH_REFERENCE = "bench"
+NUMPY_REFERENCE = "numpy"
 
 #: What ``ProgramReport.unchecked`` says when the program ran with no reference to compare its outputs against.
 NO_REFERENCE = "no reference outputs, so nothing was compared: a time here is of a program not known to be right"
@@ -90,6 +97,8 @@ class Reference:
     outputs: dict[str, np.ndarray]
     rtol: float
     atol: float
+    #: Where the outputs come from: :data:`BENCH_REFERENCE` or :data:`NUMPY_REFERENCE`.
+    source: str = "bench"
 
     def mismatched(self, buffers: dict[str, np.ndarray]) -> list[str]:
         """The outputs ``buffers`` gets wrong: exactly compared when both sides are integer, else ``allclose``."""
@@ -181,14 +190,19 @@ def time_program(
     timed = run_spawned(run_program, call) if gpu else run_isolated(lambda: run_program(call), ProgramTime)
     if isinstance(timed, Failure):
         return ProgramReport(error=timed.error)
-    return timed_report(timed)
+    return timed_report(timed, reference)
 
 
-def timed_report(timed: ProgramTime) -> ProgramReport:
+def timed_report(timed: ProgramTime, reference: Reference | None) -> ProgramReport:
     """The report of a program that ran: graded when it had a reference (``mismatched`` set), else marked unchecked."""
-    if timed.mismatched is None:
+    if timed.mismatched is None or reference is None:
         return ProgramReport(time_us=timed.time_us, unchecked=NO_REFERENCE)
-    return ProgramReport(time_us=timed.time_us, correct=not timed.mismatched, mismatched=timed.mismatched)
+    return ProgramReport(
+        time_us=timed.time_us,
+        correct=not timed.mismatched,
+        mismatched=timed.mismatched,
+        reference=reference.source,
+    )
 
 
 def offload_report(

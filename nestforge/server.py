@@ -10,8 +10,11 @@ it already built and measured, so the same call goes on from there."""
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import hashlib
+import importlib
+import inspect
 import json
 import multiprocessing
 import os
@@ -41,7 +44,7 @@ from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, S
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
-from nestforge.stages.performance import Performance, Reference
+from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
 
 
 def finalize(session: Session) -> Final:
@@ -206,16 +209,59 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
         for key, value in data.items()
         if isinstance(value, (np.ndarray, np.generic, int, float))
     }
+    source = BENCH_REFERENCE
     try:
         expected = compiled_reference(kernel.spec, dict(data))
     except ReferenceUnavailable as err:
         hint = f"; set {KERNELBENCH_DIR_VAR} to a KernelBench checkout" if "KernelBench" in str(err) else ""
+        try:
+            expected = numpy_outputs(kernel.spec, dict(data))
+        except ReferenceUnavailable as fallback:
+            print(
+                f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}; {fallback}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return inputs, None
+        source = NUMPY_REFERENCE
         print(
-            f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}", file=sys.stderr, flush=True
+            f"nestforge: {setup.kernel}: the bench has no reference ({err}{hint}); outputs are graded against the "
+            "kernel's NumPy function instead",
+            file=sys.stderr,
+            flush=True,
         )
-        return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
-    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
+    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol, source)
+
+
+def numpy_outputs(spec: Any, data: dict[str, Any]) -> dict[str, np.ndarray]:
+    """The outputs of the kernel's own NumPy function (``<module>_numpy.py`` of the bench) on a copy of ``data``,
+    by output name. Raises ``ReferenceUnavailable`` when the kernel has none or it does not run on ``data``."""
+    from hpcagent_bench.harness.grading import ReferenceUnavailable
+    from hpcagent_bench.harness.scoring import ieee_reference_data
+    from hpcagent_bench.spec import numpy_reference_path
+
+    path = numpy_reference_path(spec.relative_path, spec.module_name)
+    if path is None:
+        raise ReferenceUnavailable(f"{spec.short_name} has no NumPy function")
+    module_path = f"hpcagent_bench.benchmarks.{spec.relative_path.replace('/', '.')}.{path.stem}"
+    try:
+        function = vars(importlib.import_module(module_path))[spec.module_name]
+        names = list(inspect.signature(function).parameters)
+        widened = ieee_reference_data(dict(data))
+        # a function writes its outputs in place: give it copies, so the session's inputs stay as drawn
+        args = {name: copy.deepcopy(widened[name]) for name in names}
+        result = function(**args)
+        returned = [] if result is None else list(result) if isinstance(result, (tuple, list)) else [result]
+        unwritten = [name for name in spec.output_args if name not in args]
+        if len(unwritten) != len(returned):
+            raise ReferenceUnavailable(f"{path.name}: {len(returned)} returned values for outputs {unwritten}")
+        values = {name: args[name] for name in spec.output_args if name in args} | dict(zip(unwritten, returned))
+        return {name: np.asarray(values[name]) for name in spec.output_args}
+    except ReferenceUnavailable:
+        raise
+    except Exception as err:  # noqa: BLE001 -- any failure of the function is "no reference", named
+        raise ReferenceUnavailable(f"NumPy function of {spec.short_name}: {type(err).__name__}: {err}") from err
 
 
 def size_rung(preset: str) -> str:

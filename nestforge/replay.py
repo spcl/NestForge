@@ -277,6 +277,8 @@ class VariantRecord(Record):
     error: str = ""
     #: Why ``correct`` is ``None``: a time with it set is of a program nothing was compared against.
     unchecked: str = ""
+    #: Where the reference outputs came from (empty with none).
+    reference: str = ""
     speedup: float | None = None  # baseline time over this time
 
 
@@ -322,6 +324,7 @@ def run_variant(
         mismatched=tuple(perf.mismatched),
         error=perf.error,
         unchecked=perf.unchecked,
+        reference=perf.reference,
     )
 
 
