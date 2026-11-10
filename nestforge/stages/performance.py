@@ -27,12 +27,18 @@ from nestforge.stages.placement import Transfer
 
 class ProgramReport(Record):
     """The whole program at the session's sizes: its time, and whether its outputs match the reference (``None``
-    without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run."""
+    without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run.
+    ``unchecked`` says why ``correct`` is ``None``: a time with it set is of a program nothing was compared against."""
 
     time_us: float | None = None
     correct: bool | None = None
     mismatched: list[str] = []
     error: str = ""
+    unchecked: str = ""
+
+
+#: What ``ProgramReport.unchecked`` says when the program ran with no reference to compare its outputs against.
+NO_REFERENCE = "no reference outputs, so nothing was compared: a time here is of a program not known to be right"
 
 
 class TransferReport(Record):
@@ -175,8 +181,13 @@ def time_program(
     timed = run_spawned(run_program, call) if gpu else run_isolated(lambda: run_program(call), ProgramTime)
     if isinstance(timed, Failure):
         return ProgramReport(error=timed.error)
+    return timed_report(timed)
+
+
+def timed_report(timed: ProgramTime) -> ProgramReport:
+    """The report of a program that ran: graded when it had a reference (``mismatched`` set), else marked unchecked."""
     if timed.mismatched is None:
-        return ProgramReport(time_us=timed.time_us)
+        return ProgramReport(time_us=timed.time_us, unchecked=NO_REFERENCE)
     return ProgramReport(time_us=timed.time_us, correct=not timed.mismatched, mismatched=timed.mismatched)
 
 
