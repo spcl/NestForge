@@ -32,6 +32,7 @@ from dace import dtypes, subsets, symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.properties import CodeBlock
 from dace.sdfg import nodes
+from dace.sdfg.graph import MultiConnectorEdge
 from dace.sdfg.replace import replace_dict
 from dace.sdfg.state import (
     BreakBlock,
@@ -692,10 +693,33 @@ class Fold:
     wcr: str
     identity: str
     ranged: bool
+    #: The target is a local scalar with no value before the nest, so the body starts from the identity alone.
+    fresh: bool
 
 
-def fold_of(scope: Scope, node: nodes.NestedSDFG, connector: str, memlet: dace.Memlet) -> Fold:
-    """How to emit the output ``connector`` of ``node``, whose body does not repeat the WCR of ``memlet`` on every write."""
+def unwritten_local(scope: Scope, state: SDFGState, edge: MultiConnectorEdge[dace.Memlet]) -> bool:
+    """Whether ``edge`` writes a local scalar that holds no value before it: no other node of the SDFG writes it, and
+    the write crosses no map. Such a transient is fresh on each run of the nest (an emitted local would otherwise carry
+    the last iteration's value, or be unbound), so its WCR adds to the identity."""
+    memlet = edge.data
+    if memlet.data not in scope.names.locals:
+        return False
+    path = state.memlet_path(edge)
+    if any(isinstance(step.dst, nodes.MapExit) for step in path):
+        return False
+    return not any(
+        other is not path[-1]
+        for st in scope.sdfg.states()
+        for access_node in st.data_nodes()
+        if access_node.data == memlet.data
+        for other in st.in_edges(access_node)
+        if not other.data.is_empty()
+    )
+
+
+def fold_of(scope: Scope, state: SDFGState, node: nodes.NestedSDFG, edge: MultiConnectorEdge[dace.Memlet]) -> Fold:
+    """How to emit the output ``edge`` of ``node``, whose body does not repeat the WCR of the edge on every write."""
+    memlet, connector = edge.data, edge.src_conn
     wcr = memlet.wcr
     assert wcr is not None, "a fold is an output with a write-conflict resolution"
     if connector in node.in_connectors:
@@ -709,7 +733,8 @@ def fold_of(scope: Scope, node: nodes.NestedSDFG, connector: str, memlet: dace.M
         )
     data, subset, _ = memlet_parts(memlet)
     single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
-    return Fold(access(scope, data, subset), wcr, FOLD_IDENTITY[kind], not single)
+    fresh = unwritten_local(scope, state, edge)
+    return Fold(access(scope, data, subset), wcr, FOLD_IDENTITY[kind], not single, fresh)
 
 
 def folded_lines(scope: Scope, node: nodes.NestedSDFG, body: list[str], folds: list[Fold]) -> list[str]:
@@ -722,6 +747,9 @@ def folded_lines(scope: Scope, node: nodes.NestedSDFG, body: list[str], folds: l
     before: list[str] = []
     after: list[str] = []
     for fold in folds:
+        if fold.fresh:
+            before += [f"{fold.target} = {fold.identity}"]
+            continue
         saved = fresh_name(FOLD_SAVED, taken)
         before += [f"{saved} = {'np.copy(' + fold.target + ')' if fold.ranged else fold.target}"]
         before += [f"{fold.target} = {fold.identity}"]
@@ -732,7 +760,7 @@ def folded_lines(scope: Scope, node: nodes.NestedSDFG, body: list[str], folds: l
 def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list[str]:
     """A nested SDFG inlined; an output its body writes without the WCR of the edge leaving it is folded in."""
     folds = [
-        fold_of(scope, node, edge.src_conn, edge.data)
+        fold_of(scope, state, node, edge)
         for edge in state.out_edges(node)
         if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr)
     ]

@@ -32,6 +32,7 @@ from nestforge.ir.emit_python import (
     simplify_as_sizes,
 )
 from nestforge.ir.extract import Boundary
+from nestforge.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)
@@ -941,3 +942,29 @@ def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identit
 
     with pytest.raises(UnsupportedNest, match="only a sum or product folds"):
         sdfg_to_python(sdfg, "k")
+
+
+@dace.program
+def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N, N]):
+    for k in range(N):
+        nrm = np.dot(A[:, k], A[:, k])
+        R[k, k] = np.sqrt(nrm)
+        Q[:, k] = A[:, k] / R[k, k]
+        R[k, k + 1 :] = Q[:, k] @ A[:, k + 1 :]
+        A[:, k + 1 :] = A[:, k + 1 :] - Q[:, k][:, None] * R[k, k + 1 :][None, :]
+
+
+def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration():
+    """#80, gramschmidt after ``expand-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
+    WCR, and nothing else writes ``nrm``. Reading it first raised ``UnboundLocalError`` in the oracle, and would carry the
+    last column's norm into the next."""
+    session = Session(gramschmidt.to_sdfg(simplify=True))
+    session.canonicalize()
+    assert session.apply_move("expand-library", ("lib_blas0",)).status.name == "APPLIED"
+    A = np.random.default_rng(5).random((6, 4))
+
+    call, source = emit_and_run(session.sdfg, {"A": A.copy()}, {"M": 6, "N": 4})
+
+    assert "nested_saved" not in source
+    np.testing.assert_allclose(np.diag(call["R"]), np.abs(np.diag(np.linalg.qr(A)[1])), rtol=1e-12)
+    np.testing.assert_allclose(call["Q"] @ call["R"], A, rtol=1e-12)
