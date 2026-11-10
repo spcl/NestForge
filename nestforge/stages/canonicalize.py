@@ -65,7 +65,7 @@ def innermost_bodies(state: SDFGState) -> list[list[nodes.Node]]:
             continue
         exit_node = state.exit_node(entry)
         body = [n for n in children if n is not exit_node and not reduces_into(state, n, exit_node)]
-        if any(isinstance(n, nodes.EntryNode) for n in body):
+        if not body or any(isinstance(n, nodes.EntryNode) for n in body):  # only the reduction's access node
             continue
         if [type(n) for n in body] != [nodes.NestedSDFG]:
             bodies.append(body)
