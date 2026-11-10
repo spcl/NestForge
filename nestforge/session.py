@@ -15,7 +15,7 @@ import copy
 import dataclasses
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -29,8 +29,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.build.arena import TIMED_REPS
-from nestforge.build.sdfg import force_register_arrays
-from nestforge.build.toolchain import parse_params, raw_signature
+from nestforge.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
+from nestforge.build.toolchain import SymbolValue, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
 from nestforge.ir.dace_types import strings
 from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
@@ -144,7 +144,7 @@ class Stopper:
             self.armed_now = before and not self.asked
 
 
-def computed_symbols(src: KernelSource, sizes: dict[str, int]) -> list[str]:
+def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> list[str]:
     """The symbols kernel ``src`` takes that ``sizes`` has no value for: ones only the running program computes."""
     return [s for s in src.boundary.symbols if s not in sizes]
 
@@ -265,7 +265,7 @@ Codegen = Literal["first", "sweep"]
 #: What :meth:`Session.run_defaults` finishes.
 Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 #: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
-SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, int], ...]]
+SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...]]
 
 
 def kept(build: KernelBuild, folder: Path) -> KernelBuild:
@@ -361,7 +361,7 @@ class Session:
         targets: Targets | None = None,
         name: str | None = None,
         work_dir: str | None = None,
-        sizes: dict[str, int] | None = None,
+        sizes: Mapping[str, SymbolValue] | None = None,
         codegen: Codegen = "first",
         namer: Namer | None = None,
     ) -> None:
@@ -372,7 +372,7 @@ class Session:
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
-        self.sizes = dict(sizes) if sizes is not None else {}
+        self.sizes: dict[str, SymbolValue] = dict(sizes) if sizes is not None else {}
         self.namer = namer if namer is not None else Namer()
         normalize_labels(sdfg, self.namer)
         self.rows: dict[str, Row] | None = None
@@ -404,7 +404,7 @@ class Session:
         # the cells of a stopped sweep, by the same key
         self.sweep_cells: dict[SweepKey, dict[Variant, VariantCell]] = {}
         # the sizes a kernel's oracle falls back to when it cannot finish at ``sizes``; None: no bound on the oracle
-        self.check_sizes: dict[str, int] | None = None
+        self.check_sizes: dict[str, SymbolValue] | None = None
         # the oracles (by source) that did not finish at ``sizes``, so a retry does not spend their budget again
         self.oracles_out_of_time: set[str] = set()
         # :meth:`performance` of the current program, dropped by every change to it
@@ -710,6 +710,29 @@ class Session:
         ]
 
     @undone_on_failure
+    def persist_temporaries(self, min_bytes: int = PERSISTENT_MIN_BYTES) -> MoveResult:
+        """Option, any time after the moves: allocate each large temporary of the program once, at init, instead of on
+        every call (:func:`~nestforge.build.sdfg.make_persistent`). It changes no loop; it saves the page faults of
+        fresh memory on each call. Needs :attr:`sizes`, to know which temporaries are large.
+
+        :param min_bytes: Smallest temporary, in bytes at :attr:`sizes`, that is kept.
+        :returns: ``applied`` with the names as ``reason``, or why nothing changed.
+        """
+        if not self.sizes:
+            reason = "the sizes are not set, so no temporary's size is known; set Session.sizes first."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+        names = make_persistent(self.sdfg, self.sizes, min_bytes)
+        if not names:
+            reason = f"no temporary of the program is a heap array of {min_bytes} bytes or more at these sizes."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+        if self.unplaced is not None:
+            make_persistent(self.unplaced, self.sizes, min_bytes)
+        self.bump()
+        done = MoveResult(status=MoveStatus.APPLIED, kind="persist-temporaries", labels=(), reason=", ".join(names))
+        self.applied.append(done)
+        return done
+
+    @undone_on_failure
     def set_scope(self, labels: Sequence[str]) -> MoveResult:
         """Make one kernel of the regions ``labels`` name: several top-level maps of one state, or a straight run of
         blocks of one control-flow region, at any depth. The kernel written in stage 5 fuses what no move could.
@@ -954,18 +977,18 @@ class Session:
             self.oracles_out_of_time.add(prep.numpy_source)
         return probe
 
-    def need_sizes(self) -> dict[str, int]:
+    def need_sizes(self) -> dict[str, SymbolValue]:
         if not self.sizes:
             raise ValueError("this session has no sizes; pass Session(..., sizes={symbol: value})")
         return self.sizes
 
-    def kernel_sizes(self, name: str) -> dict[str, int]:
+    def kernel_sizes(self, name: str) -> dict[str, SymbolValue]:
         """The sizes plus, for a kernel inside a sequential loop, a middle value of each loop iterator it takes;
         a value given in ``sizes`` wins."""
         sizes = self.need_sizes()
         return {**self.loop_values(name, sizes), **sizes}
 
-    def loop_values(self, name: str, sizes: dict[str, int]) -> dict[str, int]:
+    def loop_values(self, name: str, sizes: Mapping[str, SymbolValue]) -> dict[str, int]:
         """A middle value at ``sizes`` of each loop iterator around the kernel."""
         return loop_symbol_values(find_state_of_node(self.sdfg, self.kernel(name)), sizes)
 

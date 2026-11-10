@@ -15,16 +15,17 @@ import signal
 import time
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 #: OpenMP runtimes whose thread pool must be torn down before a fork.
-OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so")
+OMP_RUNTIME_SONAMES = ("libgomp.so.1", "libomp.so.5", "libomp.so", "libiomp5.so", "libomp.dylib")
 
-#: Sonames of LLVM libomp (``libiomp5`` is its Intel alias).
-LIBOMP_SONAMES = ("libomp.so.5", "libomp.so", "libiomp5.so")
+#: Sonames of LLVM libomp (``libiomp5`` is its Intel alias; ``libomp.dylib`` is its macOS name).
+LIBOMP_SONAMES = ("libomp.so.5", "libomp.so", "libiomp5.so", "libomp.dylib")
 
 #: ``omp_soft_pause`` of ``omp_pause_resource_t`` (OpenMP 5.0); unlike a hard pause it keeps threadprivate data.
 OMP_PAUSE_SOFT = 1
@@ -45,6 +46,42 @@ PIPE_CHUNK = 65536
 #: Set in a session that holds agent code, to the folder its builds and runs keep; the bench's seal hides the rest of
 #: what the judge can read. Unset, nothing is sealed: everything else that runs is code NestForge generated.
 SEAL_KEEP_ENV = "NESTFORGE_SEAL_KEEP"
+
+
+@dataclass(slots=True)
+class ChildCpus:
+    """The CPUs an isolated child runs on. Not the caller's current mask: with ``OMP_PROC_BIND`` set, libomp binds
+    the thread that starts it to the first place, often one CPU, and a child given that mask runs its whole team
+    there."""
+
+    cpus: set[int]
+
+
+#: Whether the OS lets a process set its CPU mask (Linux does; macOS has no such call).
+HAS_AFFINITY = hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity")
+
+
+def process_cpus() -> set[int]:
+    """This process's CPU mask; every CPU where the OS has no mask."""
+    if HAS_AFFINITY:
+        return os.sched_getaffinity(0)
+    return set(range(os.cpu_count() or 1))
+
+
+def pin_cpus(cpus: set[int]) -> None:
+    """Set this process's CPU mask to ``cpus``; nothing where the OS has no mask."""
+    if HAS_AFFINITY:
+        os.sched_setaffinity(0, cpus)
+
+
+#: The process's mask at import, before any OpenMP runtime ran; only :func:`restrict_cpus` narrows it.
+CHILD_CPUS = ChildCpus(process_cpus())
+
+
+def restrict_cpus(cpus: set[int]) -> None:
+    """Narrow this process to ``cpus``, and every child :func:`run_isolated` forks from here on."""
+    pin_cpus(cpus)
+    CHILD_CPUS.cpus = set(cpus)
 
 
 def sealed_argv(argv: list[str]) -> list[str]:
@@ -181,7 +218,7 @@ def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any) ->
 def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: float = RUN_TIMEOUT_S) -> T | Failure:
     """``work_fn()`` from a forked child, or a :class:`Failure` on an exception, crash, timeout or bad result."""
     pause_openmp_pools()
-    cpus = os.sched_getaffinity(0)
+    cpus = CHILD_CPUS.cpus
     r, w = os.pipe()
     with warnings.catch_warnings():
         # the fork is the point: the child runs only work_fn, and the OpenMP pools were paused above
@@ -192,7 +229,9 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
     if pid == 0:
         os.close(r)
         faulthandler.disable()  # a child's segfault must not dump the parent's stack
-        os.sched_setaffinity(0, cpus)  # an initialized libomp's fork handler widens the child to its own first mask
+        # an initialized libomp's fork handler widens the child to its own first mask, and its binding of the caller
+        # narrows the caller's: the child takes the mask NestForge chose (CHILD_CPUS), whatever OpenMP did since
+        pin_cpus(cpus)
         try:
             enter_seal()
             payload = work_fn().model_dump_json()

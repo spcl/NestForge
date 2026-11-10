@@ -91,10 +91,19 @@ passed between the parts become arrays. Pays when the parts want different sched
 ### Interchange: reorder two nested loops
 
 **`interchange-doall-doall`** `[outer doall, inner doall]`, MapInterchange. `doall i: doall j: B` becomes
-`doall j: doall i: B`. Pays when it puts the index that walks memory contiguously innermost.
+`doall j: doall i: B`. Pays when it puts the index that walks memory contiguously innermost. The inner doall may also be
+the one map in the nested body of the outer (`doall j: {nested: doall k}`): the body is inlined and its one-iteration
+maps dropped, then the maps swap; refused when the body holds anything beside that map (a copy, a peeled level). A
+one-iteration dimension of the inner map that reads the outer parameter (`jj in j:j`, what a fission leaves) is dropped
+first, and an inner map with one iteration only has nothing to swap.
 
 **`interchange-for-doall`** `[for, doall]`, MoveLoopIntoMap. `for t: doall i: B` becomes `doall i: for t: B`. One
 parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps.
+
+**`interchange-for-doalls`** `[for]`, MoveLoopIntoMap with a lane axis. `for t: { doall i: A; doall i: B }` becomes
+`doall i: for t: { A; B }` when every doall of the body spans the same axis `i` and no column touches another's. One parallel
+region for all the doalls and steps, and each column's data stays in cache across `t`. A time loop whose iterator indexes
+nothing only grows each column's working set, so judge it by timing.
 
 **`interchange-doall-for`** `[doall, for]`, MapLoopInterchange. `doall i: for t: B` becomes `for t: doall i: B`; the
 loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.
@@ -102,6 +111,10 @@ loop must be the doall's whole body. Brings the loop out, where it can fuse with
 **`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
 fuse with its neighbors. **`interchange-for-if`** `[for, if]`, MoveLoopInvariantIfUp: the inverse, for a condition
 that does not change inside the loop; the test then runs once instead of once per iteration.
+**`interchange-doall-if`** `[doall]`, MoveMapInvariantIfUp: `doall i: if c: B` becomes `if c: doall i: B` for a condition
+that does not read `i`; the test runs once, and the doall can then be reordered with the loops inside the branch. A doall
+with other work around the `if` is split into one doall per branch. DaCe's pass works on the whole SDFG, so the move is
+offered only when it would lift this one guard.
 
 ### Tiling: work in cache-sized blocks
 
@@ -115,12 +128,27 @@ order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
 vector width. Read those sizes from the machine you run on; `get_performance` after the move tells whether it paid.
 **`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
+**`peel-for`** `[for]`, LoopPeeling plus folding: `for t: if t == 0: P else: Q` becomes `if loop runs: P; for t in 1..: Q`. The first
+iteration leaves the loop, runs only if the loop would have, and every `if` the loop variable settles (in the peeled
+iteration, or for all later ones) is replaced by its branch, so the body is plain states that `doall-fission`,
+`subgraph-fission` and the interchanges accept. Offered only for a loop with such an `if`; one the iteration does not settle stays.
 
 ### Shape of a doall
 
 **`collapse-doalls`** `[outer doall, inner doall]`, MapCollapse: `doall i: doall j: B` becomes `doall (i, j): B`,
 one parallel space, so short ranges still give every thread work. **`expand-doall`** `[doall]`, MapExpansion: the
-inverse.
+inverse. **`doall-to-for`** `[doall]`, MapToForLoop: `doall k: doall j: B` becomes `for k: doall j: B`, the doalls
+inside staying parallel, so a pass over levels (`expand-doall` it first) can `for-fusion` with the level scan it
+feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls of the merged body. **`copy-to-doall`** `[state]`, CopyToMap: each plain copy in the state (`a[:] = b`) becomes a doall over
+the copied elements, so `tile-doall` and the interchanges can take it with the doalls around it. A one-element copy
+between arrays of different rank (`s[n - 1, i] -> carry[i]`) becomes a tasklet instead, which `doall-fission` counts as a
+computation; any other copy between arrays of different rank is not offered, since DaCe raises on it.
+**`snapshot-reads`** `[doall]`, a doall of its own per slice: a doall that reads a slice of an array (`path[:, k]`,
+`path[k, :]`: one index per dimension, either a map parameter or a value the doall does not change) which another doall of
+the state writes first copies the slice into a transient, so the two doalls stop touching one array and `doall-fusion`
+can merge them (Floyd-Warshall: the `outer` temporary disappears). The copy is a doall, not a plain copy, which the
+cleanup after every move would fold back into a read of the array. Offered only where a slice is read and written by
+different doalls of one state.
 
 ### Library calls
 

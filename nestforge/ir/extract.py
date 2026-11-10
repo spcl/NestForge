@@ -85,18 +85,39 @@ def start_reductions(nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> None:
         start.add_edge(tasklet, "out", start.add_write(edge.src_conn), None, memlet)
 
 
+def inherit_symbol_predicates(standalone: dace.SDFG, nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> None:
+    """Declare on ``standalone`` the sign predicates the enclosing programs declare for the symbols the nest receives
+    under their own name. Cutting the parent drops them, and a nested SDFG inside the nest that assumes ``0 < N`` then
+    has nothing to prove it from."""
+    names = {name for name, value in nsdfg_node.symbol_mapping.items() if str(value) == name}
+    outer = state.sdfg
+    while names:
+        for name in sorted(names & standalone.symbols.keys()):
+            inherited = frozenset(outer.symbol_repo.params.predicates.get(name, ()))
+            if inherited:
+                declared = frozenset(standalone.symbol_repo.params.predicates.get(name, ()))
+                standalone.set_symbol_assumptions(name, declared | inherited)
+        enclosing = outer.parent_nsdfg_node
+        if enclosing is None or outer.parent_sdfg is None:
+            return
+        names = {name for name in names if str(enclosing.symbol_mapping.get(name)) == name}
+        outer = outer.parent_sdfg
+
+
 def boundary_from_nsdfg(nsdfg_node: nodes.NestedSDFG, state: SDFGState) -> Boundary:
     start_reductions(nsdfg_node, state)
     inputs = sorted(nsdfg_node.in_connectors.keys())
     outputs = sorted(nsdfg_node.out_connectors.keys())
     symbols = sorted(str(s) for s in nsdfg_node.symbol_mapping.keys())
+    standalone = detach(nsdfg_node.sdfg)
+    inherit_symbol_predicates(standalone, nsdfg_node, state)
     return Boundary(
         inputs=inputs,
         outputs=outputs,
         symbols=symbols,
         nsdfg_node=nsdfg_node,
         state=state,
-        standalone_sdfg=detach(nsdfg_node.sdfg),
+        standalone_sdfg=standalone,
     )
 
 

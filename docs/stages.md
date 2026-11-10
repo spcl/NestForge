@@ -46,22 +46,28 @@ agent's catalog.
 
 | kind | labels | DaCe |
 |---|---|---|
-| `for-fusion` | first, second loop | `LoopFusion` |
+| `for-fusion` | first, second loop | `LoopFusion`, then `StateFusion` of the merged body; loops that each hold a doall fuse without LoopFusion's guards against serializing a parallel loop (the doalls inside keep the parallelism) |
 | `for-fission` | loop | `LoopFission` |
-| `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal` |
+| `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal`; when the intermediate is left a transient no one reads, `DeadDataflowElimination` drops its stores |
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
-| `interchange-doall-doall` | outer, inner map | `MapInterchange` |
+| `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap` |
+| `interchange-for-doalls` | loop whose body holds several doalls over one axis | `MoveLoopIntoMap` with `lane_axis` (DaCe's lane analysis; the same rewrite as `InterchangeLoopsIntoLaneMaps`, without its CPU gates) |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
 | `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |
+| `interchange-doall-if` | doall whose body holds an if | `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
 | `tile-doall` | doall (+ `tile_sizes`, one per dimension) | `MapTiling` (`divides_evenly=False`) |
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
 | `collapse-doalls` | doall, doall inside it | `MapCollapse` |
 | `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
+| `doall-to-for` | one-dimensional outermost doall that holds a doall | `MapToForLoop`: the outer doall becomes a loop, the doalls inside stay parallel; empty states it leaves are dropped |
+| `copy-to-doall` | state holding a plain copy (`a[:] = b`) | `CopyToMap`, every such copy of the state; a one-element copy between arrays of different rank becomes a tasklet; other copies between arrays of different rank are not offered (DaCe raises on them) |
+| `snapshot-reads` | doall that reads a slice (one index per dimension: a map parameter or a value the doall does not change) of an array another doall of its state writes | a doall per slice copies it into a transient and the doall reads the transient, so `doall-fusion` can merge the two doalls; the copy is a doall because a plain copy is folded back by the cleanup |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
+| `peel-for` | for loop with an `if` its loop variable decides | `LoopPeeling` of the first iteration (its constant-trip-count check is not asked), the peeled iteration run only if the loop would run, then every `if` the first iteration, or all later ones, settles is replaced by the branch it takes; the `ifs` it does not settle stay |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
 | `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
@@ -80,6 +86,11 @@ dropping any placement first. `run_defaults("placement")` first gives what no sc
 holding a kernel is never taken whole, since no kernel nests another. The session keeps the program from before its first
 kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
 kernel, scopes are fixed from placement on, and a new round reopens both ([phases](README.md#the-phases)).
+
+`persist_temporaries(min_bytes)` is an option, not a scope: the program's heap transients of at least `min_bytes`
+(1 MiB by default, at `sizes`) are allocated once at init instead of on every call, which saves the page faults of fresh
+memory (1.26x on `fuse_physics_into_scan` at preset M). It needs `sizes`, leaves out transients whose extent names a symbol
+`sizes` lacks, and changes no loop (`nestforge/build/sdfg.py`, `make_persistent`).
 
 The default (`default_units` in `nestforge/stages/scopes.py`) walks the program's top-level blocks:
 
@@ -110,6 +121,7 @@ of the loop's range unless `sizes` gives a value.
 |---|---|
 | default | `default_scopes()` |
 | agent | `set_scope(labels)`, `unset_scope(name)` |
+| option | `persist_temporaries(min_bytes)` |
 | code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/loops.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
 
 ## Stage 4: Placement

@@ -32,6 +32,7 @@ from dace import dtypes, subsets, symbolic
 from dace.frontend.operations import detect_reduction_type
 from dace.properties import CodeBlock
 from dace.sdfg import nodes
+from dace.sdfg.graph import MultiConnectorEdge
 from dace.sdfg.replace import replace_dict
 from dace.sdfg.state import (
     BreakBlock,
@@ -48,6 +49,7 @@ from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNeste
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.inline_tasklet_connectors import InlineTaskletConnectors
 from dace.transformation.passes.remove_views import RemoveViews
+from dace.utils import find_new_name
 
 from nestforge.ir.dace_types import strings
 from nestforge.ir.extract import Boundary
@@ -107,6 +109,10 @@ EXPANSION_ROUNDS = 16
 HASH_DIGITS = 16
 #: The one-trip loop a nested SDFG's early return breaks out of.
 ONCE = "nested_once"
+#: Reductions whose identity is one literal in every dtype: the value a folded nest's body starts its target from.
+FOLD_IDENTITY = {dtypes.ReductionType.Sum: "0", dtypes.ReductionType.Product: "1"}
+#: Base of the local that holds a folded nest's target from before its body ran.
+FOLD_SAVED = "nested_saved"
 
 
 def numpy_attr(name: str) -> ast.Attribute:
@@ -434,6 +440,13 @@ def simplify_as_sizes(extent: sympy.Expr) -> sympy.Expr:
     return simple.xreplace({size: s for s, size in sizes.items()})
 
 
+def positive_as_sizes(expr: sympy.Expr) -> bool:
+    """Whether ``expr`` is positive with every symbol a positive integer, as sizes are; a bare symbol such as a
+    kernel size has no sign in sympy, and ``N - M`` stays unproven."""
+    sizes = {s: sympy.Symbol(str(s), integer=True, positive=True) for s in expr.free_symbols}
+    return expr.xreplace(sizes).is_positive is True
+
+
 def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
     """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
     refuse one whose extent the caller cannot evaluate."""
@@ -482,7 +495,7 @@ def index(subset: subsets.Subset) -> str:
         if symbolic.pystr_to_symbolic(end - begin) == 0:
             parts.append(begin_text)
             continue
-        if symbolic.pystr_to_symbolic(step).is_positive is not True:
+        if not positive_as_sizes(symbolic.pystr_to_symbolic(step)):
             raise UnsupportedNest(f"subset step {step} is not provably positive; no sound NumPy slice")
         stop = symbolic.symstr(end + 1, cpp_mode=False)
         parts.append(f"{begin_text}:{stop}" if step == 1 else f"{begin_text}:{stop}:{symbolic.symstr(step)}")
@@ -672,11 +685,91 @@ def kernel_scratch(name: str, desc: dt.Data, sdfg: dace.SDFG) -> bool:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Fold:
+    """An output a nest's body writes plainly, which the edge leaving the nest combines into the target by a WCR."""
+
+    target: str
+    wcr: str
+    identity: str
+    ranged: bool
+    #: The target is a local scalar with no value before the nest, so the body starts from the identity alone.
+    fresh: bool
+
+
+def unwritten_local(scope: Scope, state: SDFGState, edge: MultiConnectorEdge[dace.Memlet]) -> bool:
+    """Whether ``edge`` writes a local scalar that holds no value before it: no other node of the SDFG writes it, and
+    the write crosses no map. Such a transient is fresh on each run of the nest (an emitted local would otherwise carry
+    the last iteration's value, or be unbound), so its WCR adds to the identity."""
+    memlet = edge.data
+    if memlet.data not in scope.names.locals:
+        return False
+    path = state.memlet_path(edge)
+    if any(isinstance(step.dst, nodes.MapExit) for step in path):
+        return False
+    return not any(
+        other is not path[-1]
+        for st in scope.sdfg.states()
+        for access_node in st.data_nodes()
+        if access_node.data == memlet.data
+        for other in st.in_edges(access_node)
+        if not other.data.is_empty()
+    )
+
+
+def fold_of(scope: Scope, state: SDFGState, node: nodes.NestedSDFG, edge: MultiConnectorEdge[dace.Memlet]) -> Fold:
+    """How to emit the output ``edge`` of ``node``, whose body does not repeat the WCR of the edge on every write."""
+    memlet, connector = edge.data, edge.src_conn
+    wcr = memlet.wcr
+    assert wcr is not None, "a fold is an output with a write-conflict resolution"
+    if connector in node.in_connectors:
+        raise UnsupportedNest(
+            f"nested SDFG {node.label} reads {connector!r}, which a write-conflict resolution combines"
+        )
+    kind = detect_reduction_type(wcr)
+    if kind not in FOLD_IDENTITY:
+        raise UnsupportedNest(
+            f"nested SDFG {node.label} writes {connector!r} through {wcr!r}: only a sum or product folds"
+        )
+    data, subset, _ = memlet_parts(memlet)
+    single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
+    fresh = unwritten_local(scope, state, edge)
+    return Fold(access(scope, data, subset), wcr, FOLD_IDENTITY[kind], not single, fresh)
+
+
+def folded_lines(scope: Scope, node: nodes.NestedSDFG, body: list[str], folds: list[Fold]) -> list[str]:
+    """``body`` run from each fold's identity, then combined with the value its target held before: the body's own value
+    is what the outer write-conflict resolution adds to the target, however the body writes it."""
+    taken = set(re.findall(r"\w+", "\n".join(body)))
+    taken |= (
+        scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols) | set(node.sdfg.arrays) | set(node.sdfg.symbols)
+    )
+    before: list[str] = []
+    after: list[str] = []
+    for fold in folds:
+        if fold.fresh:
+            before += [f"{fold.target} = {fold.identity}"]
+            continue
+        saved = fresh_name(FOLD_SAVED, taken)
+        before += [f"{saved} = {'np.copy(' + fold.target + ')' if fold.ranged else fold.target}"]
+        before += [f"{fold.target} = {fold.identity}"]
+        after += [f"{fold.target} = {combine(fold.wcr, saved, fold.target)}"]
+    return [*python("\n".join(before), scope.names), *body, *python("\n".join(after), scope.names)]
+
+
 def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list[str]:
+    """A nested SDFG inlined; an output its body writes without the WCR of the edge leaving it is folded in."""
+    folds = [
+        fold_of(scope, state, node, edge)
+        for edge in state.out_edges(node)
+        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr)
+    ]
+    body = inlined_lines(scope, node)
+    return folded_lines(scope, node, body, folds) if folds else body
+
+
+def inlined_lines(scope: Scope, node: nodes.NestedSDFG) -> list[str]:
     """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
-    for edge in state.out_edges(node):
-        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr):
-            raise UnsupportedNest(f"nested SDFG {node.label} writes through a write-conflict resolution")
     inner_sdfg = node.sdfg
     outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
     binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if not passes_through(str(k), v)}
@@ -808,8 +901,22 @@ def fft_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[s
     return [f"{target} = ({node.factor}) * {call}"]
 
 
+def scatter_conflict_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
+    """The node's flag as NumPy: 1 when two in-range values of the index array are equal, else 0. A negative value is
+    skipped, and so is one at or past a wired ``_owner_out`` tag array's length; unwired, the node sizes its own tags
+    from ``max(idx) + 1``, a data-dependent extent the caller cannot allocate, so the pure expansion has no spelling."""
+    values = read_of(scope, state, node, node.INPUT_CONNECTOR_NAME)
+    mask = f"({values} >= 0)"
+    owned = list(state.out_edges_by_connector(node, node.SCRATCH_CONNECTOR_NAME))
+    if owned:
+        mask = f"({mask} & ({values} < {write_of(scope, state, node, node.SCRATCH_CONNECTOR_NAME)}.size))"
+    flag = f"np.unique(({values})[{mask}]).size != np.count_nonzero({mask})"
+    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = int({flag})"]
+
+
 #: A library node type's spelling: the lines of its library call.
 LIBRARY_CALLS = {
+    "ScatterConflictCheck": scatter_conflict_lines,
     "Cholesky": cholesky_lines,
     "MatMul": matmul_lines,
     "Gemm": matmul_lines,
@@ -982,19 +1089,25 @@ def oracle_sdfg(boundary: Boundary) -> dace.SDFG:
 def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
     """Make the transient arrays of every nest :func:`lower` left nested (a multi-state body of a map) scratch of
     the kernel, which the caller allocates: the emitted body writes them, and a kernel allocates nothing. The oracle
-    runs serially, so one buffer serves every iteration of the enclosing map."""
+    runs serially, so one buffer serves every iteration of the enclosing map. DaCe numbers each SDFG's temporaries
+    (``__tmp3``) on its own, so a nest's scratch can share a name with an unrelated array of the kernel; that one is
+    renamed in its nest and hoisted under the new name."""
+    taken = {name for each in sdfg.all_sdfgs_recursive() for name in each.arrays}
     for nested in list(sdfg.all_sdfgs_recursive()):
         if nested is sdfg:
             continue
         local = names_of(nested).locals
-        for name, desc in nested.arrays.items():
+        for name, desc in list(nested.arrays.items()):
             if not desc.transient or name in local:
                 continue
             outer = sdfg.arrays.get(name)
             if outer is None:
                 sdfg.arrays[name] = copy.deepcopy(desc)
             elif outer.dtype != desc.dtype or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]:
-                raise UnsupportedNest(f"nested scratch {name!r} has another shape or type than the kernel's {name!r}")
+                fresh = find_new_name(name, taken)
+                taken.add(fresh)
+                nested.replace(name, fresh)
+                sdfg.arrays[fresh] = copy.deepcopy(nested.arrays[fresh])
 
 
 def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:

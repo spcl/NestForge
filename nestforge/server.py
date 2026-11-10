@@ -10,8 +10,11 @@ it already built and measured, so the same call goes on from there."""
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import hashlib
+import importlib
+import inspect
 import json
 import multiprocessing
 import os
@@ -30,16 +33,18 @@ from typing import Any
 
 import dace
 import numpy as np
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.build.isolation import SEAL_KEEP_ENV
+from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
+from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
-from nestforge.stages.performance import Performance, Reference
+from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
 
 
 def finalize(session: Session) -> Final:
@@ -204,16 +209,59 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
         for key, value in data.items()
         if isinstance(value, (np.ndarray, np.generic, int, float))
     }
+    source = BENCH_REFERENCE
     try:
         expected = compiled_reference(kernel.spec, dict(data))
     except ReferenceUnavailable as err:
         hint = f"; set {KERNELBENCH_DIR_VAR} to a KernelBench checkout" if "KernelBench" in str(err) else ""
+        try:
+            expected = numpy_outputs(kernel.spec, dict(data))
+        except ReferenceUnavailable as fallback:
+            print(
+                f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}; {fallback}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return inputs, None
+        source = NUMPY_REFERENCE
         print(
-            f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}", file=sys.stderr, flush=True
+            f"nestforge: {setup.kernel}: the bench has no reference ({err}{hint}); outputs are graded against the "
+            "kernel's NumPy function instead",
+            file=sys.stderr,
+            flush=True,
         )
-        return inputs, None
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
-    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol)
+    return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol, source)
+
+
+def numpy_outputs(spec: Any, data: dict[str, Any]) -> dict[str, np.ndarray]:
+    """The outputs of the kernel's own NumPy function (``<module>_numpy.py`` of the bench) on a copy of ``data``,
+    by output name. Raises ``ReferenceUnavailable`` when the kernel has none or it does not run on ``data``."""
+    from hpcagent_bench.harness.grading import ReferenceUnavailable
+    from hpcagent_bench.harness.scoring import ieee_reference_data
+    from hpcagent_bench.spec import numpy_reference_path
+
+    path = numpy_reference_path(spec.relative_path, spec.module_name)
+    if path is None:
+        raise ReferenceUnavailable(f"{spec.short_name} has no NumPy function")
+    module_path = f"hpcagent_bench.benchmarks.{spec.relative_path.replace('/', '.')}.{path.stem}"
+    try:
+        function = vars(importlib.import_module(module_path))[spec.module_name]
+        names = list(inspect.signature(function).parameters)
+        widened = ieee_reference_data(dict(data))
+        # a function writes its outputs in place: give it copies, so the session's inputs stay as drawn
+        args = {name: copy.deepcopy(widened[name]) for name in names}
+        result = function(**args)
+        returned = [] if result is None else list(result) if isinstance(result, (tuple, list)) else [result]
+        unwritten = [name for name in spec.output_args if name not in args]
+        if len(unwritten) != len(returned):
+            raise ReferenceUnavailable(f"{path.name}: {len(returned)} returned values for outputs {unwritten}")
+        values = {name: args[name] for name in spec.output_args if name in args} | dict(zip(unwritten, returned))
+        return {name: np.asarray(values[name]) for name in spec.output_args}
+    except ReferenceUnavailable:
+        raise
+    except Exception as err:  # noqa: BLE001 -- any failure of the function is "no reference", named
+        raise ReferenceUnavailable(f"NumPy function of {spec.short_name}: {type(err).__name__}: {err}") from err
 
 
 def size_rung(preset: str) -> str:
@@ -249,12 +297,15 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     """The data ``session``'s whole program runs on; binds the sizes that come from it. Only code that runs needs it,
     so a read never waits for the reference. Call it after canonicalization: that promotes a scalar input to a symbol."""
     inputs, reference = bench_data(setup)
+    kernel = corpus_kernel(setup.kernel)
+    assert kernel is not None, "the session started from it"
+    inputs |= closure_inputs(kernel.program(), session.sdfg)
     session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     session.check_sizes = check_rung_sizes(setup, session)
     return inputs, reference
 
 
-def check_rung_sizes(setup: Setup, session: Session) -> dict[str, int]:
+def check_rung_sizes(setup: Setup, session: Session) -> dict[str, SymbolValue]:
     """:attr:`Session.sizes` at :data:`CHECK_RUNG` where the rung gives a value."""
     from hpcagent_bench.categories import Preset
     from hpcagent_bench.frameworks.benchmark import Benchmark
@@ -268,16 +319,35 @@ def check_rung_sizes(setup: Setup, session: Session) -> dict[str, int]:
     return session.sizes | symbol_inputs(session.sdfg, scalars) | preset_sizes(kernel, CHECK_RUNG)
 
 
-def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, int]:
-    """The integer scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's ``k``,
-    which canonicalization promotes to a symbol): only sizes bind a symbol, so each becomes one. A size the
-    preset already gives keeps the preset's value."""
+def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, SymbolValue]:
+    """The numeric scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's integer
+    ``k``, cp2k_density_matrix_trs4's float ``threshold``; canonicalization promotes both to symbols): only sizes
+    bind a symbol, so each becomes one, a float kept a float. A size the preset already gives keeps the preset's
+    value."""
     free = {str(s) for s in sdfg.free_symbols}
     return {
-        name: int(value)
+        name: value.item()
         for name, value in inputs.items()
-        if name in free and value.ndim == 0 and np.issubdtype(value.dtype, np.integer)
+        if name in free and value.ndim == 0 and numeric_scalar(value.dtype)
     }
+
+
+def closure_inputs(program: DaceProgram, sdfg: dace.SDFG) -> dict[str, np.ndarray]:
+    """The arrays ``program`` computed when it was parsed, which ``sdfg`` takes as arguments: DaCe evaluates a
+    subscripted NumPy call on constants (cp2k_density_matrix_trs4's ``np.arange(3, dtype=np.int64)[None, :]``) once,
+    at parse time, and passes the result in as a closure array. Only the program holds its value, and the bench's
+    inputs do not name it: left out, it would be zero-filled with the outputs and the program would run on zeros.
+    ``program`` must have been parsed (``to_sdfg``), as :func:`started_session` does."""
+    return {
+        name: np.asarray(value)
+        for name, value in program.__sdfg_closure__().items()
+        if name in sdfg.arrays and isinstance(value, np.ndarray)
+    }
+
+
+def numeric_scalar(dtype: np.dtype) -> bool:
+    """An integer or a float, not a bool: the kinds a symbol takes."""
+    return np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.floating)
 
 
 def stopped_text(tool: str, timeout_s: float) -> str:
@@ -349,14 +419,14 @@ def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str
     from hpcagent_bench import flags
     from hpcagent_bench.harness import native_call
 
-    os.sched_setaffinity(0, cores)
+    restrict_cpus(cores)
     os.environ.clear()
     os.environ.update(environment)
     if slot is None:
         return
     cpus = native_call.grading_cpus(slot)
     if cpus:
-        os.sched_setaffinity(0, cpus)
+        restrict_cpus(cpus)
         native_call.bind_memory(native_call.numa_nodes(cpus))
         os.environ.update(flags.cpu_env(flags.Mode.MULTI_CORE, threads=native_call.slot_threads(cpus)))
         os.environ.update(native_call.CHILD_BIND_ENV)
@@ -375,7 +445,8 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
-    cores, environment = os.sched_getaffinity(0), dict(os.environ)
+    # the session's own mask, not the current one: libomp may have bound this thread to one CPU already
+    cores, environment = set(CHILD_CPUS.cpus), dict(os.environ)
     while True:
         try:
             tool, arguments, slot, timed = connection.recv()

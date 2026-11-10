@@ -99,6 +99,31 @@ def test_s231_reference_puts_the_loop_inside_the_map() -> None:
     assert not top_loops(reference.session), "the j loop moved into the map"
 
 
+def column_scan_script() -> Script:
+    kernel = corpus_kernel("column_scan_nlev_nproma")
+    assert kernel is not None
+    session = Session(kernel.to_sdfg(), Targets(gpu=False), sizes=preset_sizes(kernel, "S"))
+    session.canonicalize()
+    return Script(session)
+
+
+def test_scope_after_the_default_makes_the_step_loop_one_kernel() -> None:
+    script = column_scan_script()
+    script.defaults()
+    done = script.scope(where=lambda rows: isinstance(rows[0][0], LoopRegion))
+    assert done.kind == "define-scope"
+    assert len(done.labels) == 1
+    assert not top_loops(script.session), "the step loop is outlined: no loop is left at the top"
+    assert [m.kind for m in script.applied] == ["define-scope"]
+
+
+def test_scope_refuses_a_filter_nothing_matches() -> None:
+    script = column_scan_script()
+    script.defaults()
+    with pytest.raises(ReplayError, match="no top-level block"):
+        script.scope(writes=["no_such_container"])
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
 def test_every_solution_replays_correctly(path: Path) -> None:

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import sympy
 from dace import subsets
+from dace.libraries.blas.nodes.dot import Dot
 from dace.libraries.standard.nodes import Scan
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
@@ -31,6 +32,7 @@ from nestforge.ir.emit_python import (
     simplify_as_sizes,
 )
 from nestforge.ir.extract import Boundary
+from nestforge.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)
@@ -544,6 +546,26 @@ def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not
     np.testing.assert_allclose(call["b"], 3 * a + 1)
 
 
+def test_a_nested_scratch_named_like_another_array_of_the_kernel_is_hoisted_under_a_new_name():
+    """DaCe numbers each SDFG's temporaries on its own: the nest's ``t[2]`` and the program's own ``t`` are two arrays."""
+    sdfg = nest_in_nest_with_scratch()
+    sdfg.add_array("t", [3, 3], dace.int32, transient=True)
+    lowered = copy.deepcopy(sdfg)
+    lower(lowered)
+
+    hoist_nested_scratch(lowered)
+
+    assert (lowered.arrays["t"].dtype, [str(d) for d in lowered.arrays["t"].shape]) == (dace.int32, ["3", "3"])
+    (renamed,) = [name for name in scratch_arrays(lowered) if [str(d) for d in lowered.arrays[name].shape] == ["2"]]
+    assert renamed != "t"
+    source = render("k", ["a", "b", *scratch_arrays(lowered), "N"], lowered)
+    a = np.random.default_rng(8).random(5)
+
+    call = run_emitted(source, "k", lowered, {"a": a}, {"N": 5})
+
+    np.testing.assert_allclose(call["b"], 3 * a + 1)
+
+
 WINDOW = 4
 
 
@@ -595,6 +617,48 @@ def test_a_strided_nested_window_scales_its_indices_by_the_stride():
     expected[1:8:2] = 2 * a[2:12:3]
     expected[7] = a[11] + 100
     np.testing.assert_array_equal(call["b"], expected)
+
+
+def scatter_check_sdfg() -> dace.SDFG:
+    """``flag[0]`` is whether the index array ``idx`` repeats a value, by DaCe's scatter conflict check."""
+    from dace.libraries.sort.nodes.scatter_conflict_check import ScatterConflictCheck
+
+    sdfg = dace.SDFG("scatter_check")
+    sdfg.add_array("idx", [N], dace.int64)
+    sdfg.add_array("flag", [1], dace.int64)
+    state = sdfg.add_state()
+    check = ScatterConflictCheck("check")
+    state.add_node(check)
+    state.add_edge(state.add_read("idx"), None, check, "_idx_in", dace.Memlet("idx[0:N]"))
+    state.add_edge(check, "_count_out", state.add_write("flag"), None, dace.Memlet("flag[0]"))
+    return sdfg
+
+
+@pytest.mark.parametrize(
+    ("idx", "expected"),
+    [([3, 1, 2, 0], 0), ([3, 1, 3, 0], 1), ([-1, -1, 2, 0], 0), ([5, 5], 1), ([7], 0)],
+)
+def test_a_scatter_conflict_check_is_one_numpy_call_not_a_scratch_sized_by_the_data(idx, expected):
+    """The check's own expansion sizes a tag array from ``max(idx)``, which the caller cannot allocate; the oracle
+    flags a repeated non-negative value directly and skips a negative one, as the expansion does."""
+    values = np.array(idx, dtype=np.int64)
+
+    call, source = emit_and_run(scatter_check_sdfg(), {"idx": values}, {"N": len(idx)})
+
+    assert "np.unique(" in body_of(source) and "tags" not in source, source
+    assert call["flag"][0] == expected
+
+
+def test_a_subset_step_that_is_a_size_symbol_is_a_positive_slice_step():
+    """A pooling window's stride is a size parameter: positive by meaning, though sympy gives its symbol no sign."""
+    assert index(subsets.Range([(0, N - 1, M)])) == "0:N:M"
+
+
+@pytest.mark.parametrize("step", [-1, 0, N - M])
+def test_a_subset_step_not_provably_positive_has_no_sound_slice(step):
+    """A negative or zero step, or a difference of sizes, can be zero or negative: no NumPy slice is sound."""
+    with pytest.raises(UnsupportedNest, match="not provably positive"):
+        index(subsets.Range([(0, N - 1, step)]))
 
 
 def indexed_read_window(x_stride: int) -> dace.SDFG:
@@ -782,3 +846,125 @@ def test_a_bare_inf_in_tasklet_code_runs_as_numpy_inf():
     call, _ = emit_and_run(sdfg, {"A": A}, {"N": 3})
 
     np.testing.assert_array_equal(call["B"], np.where(A > 0, A, -np.inf))
+
+
+SUM = "lambda p, q: p + q"
+PRODUCT = "lambda p, q: p * q"
+MINIMUM = "lambda p, q: min(p, q)"
+
+
+def accumulating_nest(inner: dace.SDFG, target: str, wcr: str) -> dace.SDFG:
+    """Every ``i`` of a map hands ``a[i]`` to the nest ``inner`` (connectors ``x`` and ``y``), and the edge leaving the
+    nest combines its ``y`` into ``acc[target]`` by ``wcr``."""
+    outer = dace.SDFG("accumulate")
+    outer.add_array("a", [N], dace.float64)
+    outer.add_array("acc", [1] if target == "0" else [N], dace.float64)
+    state = outer.add_state()
+    entry, exit_ = state.add_map("each", {"i": "0:N"})
+    node = state.add_nested_sdfg(inner, {"x"}, {"y"}, {"N": "N"})
+    state.add_memlet_path(state.add_read("a"), entry, node, dst_conn="x", memlet=dace.Memlet("a[i]"))
+    folded = dace.Memlet(f"acc[{target}]", wcr=wcr)
+    state.add_memlet_path(node, exit_, state.add_write("acc"), src_conn="y", memlet=folded)
+    return outer
+
+
+@pytest.mark.parametrize(
+    ("wcr", "fold"),
+    [(SUM, lambda before, values: before + values.sum()), (PRODUCT, lambda b, values: b * values.prod())],
+)
+def test_a_nest_that_writes_its_output_plainly_is_folded_into_the_target_the_outer_edge_combines(wcr, fold):
+    """The nest sets ``y = x``, then ``y = y + N``; the edge leaving it adds (or multiplies) that into ``acc[0]``. Run
+    inline as it stands, the first write would overwrite what ``acc[0]`` held, so only the last iteration counted."""
+    a = np.random.default_rng(7).random(6) + 0.5
+    sdfg = accumulating_nest(two_state_body("plain"), "0", wcr)
+
+    call, source = emit_and_run(sdfg, {"a": a, "acc": np.array([2.5])}, {"N": 6})
+
+    np.testing.assert_allclose(call["acc"][0], fold(2.5, a + 6), rtol=1e-13)
+    assert "nested_saved_0 = acc[0]" in source
+    assert source.count("nested_saved_0") == 2
+
+
+def range_body() -> dace.SDFG:
+    """``y[:] = x[0]``, then ``y[:] = y + 1``, each in its own state so the nest stays nested inside a map."""
+    inner = dace.SDFG("range_body")
+    inner.add_array("x", [1], dace.float64)
+    inner.add_array("y", [N], dace.float64)
+    first = inner.add_state(is_start_block=True)
+    first.add_mapped_tasklet(
+        "copy", {"k": "0:N"}, {"v": dace.Memlet("x[0]")}, "o = v", {"o": dace.Memlet("y[k]")}, external_edges=True
+    )
+    second = inner.add_state_after(first)
+    second.add_mapped_tasklet(
+        "bump", {"k": "0:N"}, {"v": dace.Memlet("y[k]")}, "o = v + 1.0", {"o": dace.Memlet("y[k]")}, external_edges=True
+    )
+    return inner
+
+
+def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held():
+    """A saved row must be a copy, since the body writes the row in place."""
+    a = np.random.default_rng(9).random(5)
+    acc = np.random.default_rng(10).random(5)
+    sdfg = accumulating_nest(range_body(), "0:N", SUM)
+
+    call, source = emit_and_run(sdfg, {"a": a, "acc": acc}, {"N": 5})
+
+    np.testing.assert_allclose(call["acc"], acc + (a + 1.0).sum(), rtol=1e-13)
+    assert "np.copy(acc[0:N])" in source
+
+
+def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held():
+    """#80: gramschmidt's ``expand-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
+    with the same WCR the outer edge has; the emitter refused it as ``writes through a write-conflict resolution``."""
+    sdfg = dace.SDFG("dot_rows")
+    sdfg.add_array("x", [M, N], dace.float64)
+    sdfg.add_array("y", [M, N], dace.float64)
+    sdfg.add_array("r", [M], dace.float64)
+    state = sdfg.add_state()
+    entry, exit_ = state.add_map("rows", {"k": "0:M"})
+    dot = Dot("dot")
+    dot.implementation = "pure"
+    state.add_node(dot)
+    state.add_memlet_path(state.add_read("x"), entry, dot, dst_conn="_x", memlet=dace.Memlet("x[k, 0:N]"))
+    state.add_memlet_path(state.add_read("y"), entry, dot, dst_conn="_y", memlet=dace.Memlet("y[k, 0:N]"))
+    state.add_memlet_path(dot, exit_, state.add_write("r"), src_conn="_result", memlet=dace.Memlet("r[k]", wcr=SUM))
+    sdfg.expand_library_nodes()
+    rng = np.random.default_rng(11)
+    x, y, r = rng.random((3, 5)), rng.random((3, 5)), np.array([1.0, -2.0, 3.0])
+
+    call, _ = emit_and_run(sdfg, {"x": x, "y": y, "r": r}, {"N": 5, "M": 3})
+
+    np.testing.assert_allclose(call["r"], r + (x * y).sum(axis=1), rtol=1e-14)
+
+
+def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identity():
+    sdfg = accumulating_nest(two_state_body("plain"), "0", MINIMUM)
+
+    with pytest.raises(UnsupportedNest, match="only a sum or product folds"):
+        sdfg_to_python(sdfg, "k")
+
+
+@dace.program
+def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N, N]):
+    for k in range(N):
+        nrm = np.dot(A[:, k], A[:, k])
+        R[k, k] = np.sqrt(nrm)
+        Q[:, k] = A[:, k] / R[k, k]
+        R[k, k + 1 :] = Q[:, k] @ A[:, k + 1 :]
+        A[:, k + 1 :] = A[:, k + 1 :] - Q[:, k][:, None] * R[k, k + 1 :][None, :]
+
+
+def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration():
+    """#80, gramschmidt after ``expand-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
+    WCR, and nothing else writes ``nrm``. Reading it first raised ``UnboundLocalError`` in the oracle, and would carry the
+    last column's norm into the next."""
+    session = Session(gramschmidt.to_sdfg(simplify=True))
+    session.canonicalize()
+    assert session.apply_move("expand-library", ("lib_blas0",)).status.name == "APPLIED"
+    A = np.random.default_rng(5).random((6, 4))
+
+    call, source = emit_and_run(session.sdfg, {"A": A.copy()}, {"M": 6, "N": 4})
+
+    assert "nested_saved" not in source
+    np.testing.assert_allclose(np.diag(call["R"]), np.abs(np.diag(np.linalg.qr(A)[1])), rtol=1e-12)
+    np.testing.assert_allclose(call["Q"] @ call["R"], A, rtol=1e-12)

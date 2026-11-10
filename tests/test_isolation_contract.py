@@ -15,12 +15,17 @@ import time
 import warnings
 from pathlib import Path
 
+import pytest
+
+from nestforge.build import isolation
 from nestforge.build.isolation import (
     ERROR_CHARS,
+    HAS_AFFINITY,
     LIBOMP_SONAMES,
     OPENMP_REGISTRATION,
     Failure,
     Result,
+    restrict_cpus,
     run_isolated,
 )
 
@@ -29,6 +34,9 @@ ISOLATION_WAIT_S = 5.0
 
 #: Isolated runs of the registration-leak test; one leak per run would show as that many files.
 ISOLATED_RUNS = 3
+
+#: The CPU-mask tests read and set the mask, which only Linux has.
+needs_affinity = pytest.mark.skipif(not HAS_AFFINITY, reason="the OS has no CPU-mask call (macOS)")
 
 
 class Answer(Result):
@@ -160,19 +168,38 @@ def test_a_child_using_libomp_leaves_no_registration_behind():
     assert not left, f"children {left} left their libomp registration in shared memory"
 
 
-def child_mask_under_a_live_libomp() -> tuple[int, list[int]]:
-    """The CPU a caller with an initialized libomp narrowed itself to, and the mask of its isolated child."""
+def start_libomp() -> None:
     for soname in LIBOMP_SONAMES:  # the name differs by install, and one that loads is enough
         with contextlib.suppress(OSError):
             ctypes.CDLL(soname).omp_get_max_threads()
-            break
-    cpu = min(os.sched_getaffinity(0))
-    os.sched_setaffinity(0, {cpu})
+            return
+
+
+def isolated_mask() -> list[int]:
     child = run_isolated(lambda: Mask(cpus=sorted(os.sched_getaffinity(0))), Mask)
     assert isinstance(child, Mask), child
-    return cpu, child.cpus
+    return child.cpus
 
 
+def child_mask_under_a_live_libomp() -> tuple[int, list[int]]:
+    """The CPU a caller with an initialized libomp narrowed itself to, and the mask of its isolated child."""
+    start_libomp()
+    cpu = min(os.sched_getaffinity(0))
+    restrict_cpus({cpu})
+    return cpu, isolated_mask()
+
+
+def child_mask_after_openmp_bound_the_caller() -> tuple[list[int], list[int], list[int]]:
+    """The caller's mask, its mask once narrowed to one CPU the way libomp binds its initial thread to the first place
+    (``OMP_PROC_BIND``), and the mask of its isolated child."""
+    full = sorted(os.sched_getaffinity(0))
+    os.environ.update(OMP_PROC_BIND="close", OMP_PLACES="cores")
+    start_libomp()
+    os.sched_setaffinity(0, {full[0]})  # what libomp's binding does to the thread that starts it
+    return full, sorted(os.sched_getaffinity(0)), isolated_mask()
+
+
+@needs_affinity
 def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
     """libomp's fork handler puts a child on the mask it first saw, so a slot's pin would not reach it. In a spawned
     process: this one must not initialize libomp, nor narrow its mask."""
@@ -180,3 +207,30 @@ def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
         cpu, cpus = pool.apply(child_mask_under_a_live_libomp)
 
     assert cpus == [cpu]
+
+
+@needs_affinity
+def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one():
+    """libomp binds the thread that starts it to the first place, often one CPU; a child given that mask would run
+    its whole team on one core and time the program tens of times slower (NestForge#75). In a spawned process, as
+    above."""
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        full, bound, child = pool.apply(child_mask_after_openmp_bound_the_caller)
+
+    if len(full) < 2:
+        pytest.skip("one CPU: nothing for OpenMP to narrow")
+    assert bound == full[:1]
+    assert child == full
+
+
+def test_without_a_cpu_mask_call_a_child_runs_on_every_cpu_and_restricting_is_a_no_op(monkeypatch):
+    """On an OS with no CPU-mask call (macOS) the import must not fail: a child gets every CPU, and narrowing only
+    records the set."""
+    monkeypatch.setattr(isolation, "HAS_AFFINITY", False)
+    monkeypatch.setattr(isolation, "CHILD_CPUS", isolation.ChildCpus(isolation.process_cpus()))
+
+    assert isolation.CHILD_CPUS.cpus == set(range(os.cpu_count() or 1))
+    restrict_cpus({0})
+    assert isolation.CHILD_CPUS.cpus == {0}
+    child = run_isolated(lambda: Answer(value=1, name="ok"), Answer)
+    assert child == Answer(value=1, name="ok")

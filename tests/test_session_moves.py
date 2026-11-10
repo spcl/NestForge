@@ -15,6 +15,8 @@ import pytest
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.transformation.helpers import nest_state_subgraph
 
 from nestforge.ir.names import normalize_labels
 from nestforge.records import MoveStatus
@@ -119,6 +121,31 @@ def lane_cross(A: dace.float64[T, N]):
 
 
 @dace.program
+def sweep_two_maps(A: dace.float64[T, N], B: dace.float64[T, N]):
+    for t in range(1, T):
+        for i in dace.map[0:N]:
+            A[t, i] = A[t - 1, i] + 1.0
+        for i in dace.map[0:N]:
+            B[t, i] = A[t, i] * 2.0 + B[t - 1, i]
+
+
+@dace.program
+def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]):
+    for t in range(1, T):
+        for i in dace.map[0:N]:
+            A[t, i] = A[t - 1, i] + 1.0
+        for i in dace.map[0 : N - 1]:
+            B[t, i] = A[t, i + 1] + B[t - 1, i]
+
+
+@dace.program
+def column_with_one_iteration(A: dace.float64[N, N], B: dace.float64[N, N]):
+    for j in dace.map[0:N]:
+        for k, jj in dace.map[0:N, j : j + 1]:
+            B[k, jj] = A[k, jj] * 2.0
+
+
+@dace.program
 def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
     for t in range(1, T):
         for i in dace.map[0:N]:
@@ -220,6 +247,65 @@ def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
         S[0] += A[i] * 2
     for i in dace.map[0:N]:
         R[0] += A[i] + 1
+
+
+@dace.program
+def carry_each_step(x: dace.float64[N], c: dace.float64[N], out: dace.float64[N]):
+    for t in range(T):
+        for i in dace.map[0:N]:
+            out[i] = c[i] * 0.5 + x[i]
+        c[:] = out
+
+
+@dace.program
+def first_step_differs(x: dace.float64[N], a: dace.float64[N]):
+    for t in range(T):
+        for i in range(N):
+            if t == 0:
+                a[i] = x[i]
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
+@dace.program
+def halving_then_first_step(x: dace.float64[N], a: dace.float64[N], edge: dace.int64[1]):
+    while edge[0] > 4:
+        edge[0] = edge[0] // 2
+    for t in range(T):
+        for i in range(N):
+            if t == 0:
+                a[i] = x[i]
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
+@dace.program
+def nested_first_step(x: dace.float64[N], a: dace.float64[N]):
+    first_step_differs(x, a, T=T)
+
+
+@dace.program
+def early_steps_differ(x: dace.float64[N], a: dace.float64[N]):
+    for t in range(T):
+        for i in range(N):
+            if t < 2:
+                a[i] = x[i] + t
+            else:
+                a[i] = a[i] * 0.5 + x[i]
+
+
+@dace.program
+def guarded_map(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if K > 0:
+            b[i] = a[i] * 2.0 + 1.0
+
+
+@dace.program
+def parameter_guarded_map(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if i > 2:
+            b[i] = a[i] * 2.0 + 1.0
 
 
 def tree_labels(sdfg: dace.SDFG) -> list[str]:
@@ -555,6 +641,86 @@ def test_naming_the_inner_map_first_is_illegal():
     assert digest(sut.sdfg) == before
 
 
+def test_map_map_interchange_drops_the_one_iteration_dimension_that_reads_the_outer_parameter():
+    sut, reference = session_and_reference(column_with_one_iteration)
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(st for st in sut.sdfg.states() if outer in st.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert any(begin == end for begin, end, _ in inner.map.range), "the fixture keeps the one-iteration dimension"
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(st for st in sut.sdfg.states() if outer in st.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["k"], ["j"])
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def nested_in_body(program) -> tuple[Session, dace.SDFG]:
+    """A session on ``program`` whose inner map is wrapped in a nested SDFG of its own, and the program as it was."""
+    sdfg = program.to_sdfg(simplify=True)
+    sdfg.name = f"{sdfg.name}_{os.getpid()}"
+    reference = copy.deepcopy(sdfg)
+    reference.name = f"{sdfg.name}_reference"
+    (outer,) = top_level_maps(sdfg)
+    state = next(s for s in sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    nest_state_subgraph(sdfg, state, state.scope_subgraph(inner))
+    set_nested_sdfg_parent_references(sdfg)
+    sdfg.reset_cfg_list()
+    return Session(sdfg), reference
+
+
+def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map():
+    sut, reference = nested_in_body(nested)
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["j"], ["i"])
+    assert not [n for n in state.scope_children()[outer] if isinstance(n, nodes.NestedSDFG)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_map_map_interchange_reaches_a_body_map_that_keeps_one_full_dimension_beside_a_one_iteration_one():
+    sut, reference = nested_in_body(column_with_one_iteration)
+
+    result = apply_listed(sut, "interchange-doall-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapInterchange")
+    (outer,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if outer in s.nodes())
+    (inner,) = [n for n in state.scope_children()[outer] if isinstance(n, nodes.MapEntry)]
+    assert (outer.map.params, inner.map.params) == (["k"], ["j"])
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal():
+    sut, _ = nested_in_body(triangle)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-doall", ["doall0", "doall1"])
+
+    assert result.status is MoveStatus.ILLEGAL and "MapInterchange" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("interchange-doall-doall") == []
+
+
+def test_map_map_interchange_with_a_map_outside_the_body_names_the_body():
+    sut, _ = nested_in_body(nested)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-doall", ["doall1", "doall0"])
+
+    assert result.status is MoveStatus.ILLEGAL and "not directly inside" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
 def test_loop_map_interchange_moves_the_loop_inside_the_map():
     sut, reference = session_and_reference(sweep)
 
@@ -689,6 +855,24 @@ def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_i
     assert digest(sut.sdfg) == before
 
 
+def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile_map():
+    """A tile's point map sits inside the tile map, so MapLoopInterchange cannot split its state; the move nests the
+    point map first. Result: tile doall, then the loop, then the point doall (tsvc_2_s233, fuse_physics_into_scan)."""
+    sut, reference = session_and_reference(map_loop)
+    (entry,) = top_level_maps(sut.sdfg)
+    assert sut.apply_move("tile-doall", [entry.map.label], [4]).status is MoveStatus.APPLIED
+
+    result = apply_listed(sut, "interchange-doall-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
+    (tile,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if tile in s.nodes())
+    (nest,) = [n for n in state.scope_children()[tile] if isinstance(n, nodes.NestedSDFG)]
+    (loop,) = [b for b in nest.sdfg.nodes() if isinstance(b, LoopRegion)]
+    assert [n for s in loop.nodes() if isinstance(s, SDFGState) for n in top_level_map_entries(s)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
 # if-loop interchange
 
 
@@ -724,6 +908,111 @@ def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
     assert result.status is MoveStatus.ILLEGAL and "MoveLoopInvariantIfUp" in result.reason, result
     assert digest(sut.sdfg) == before
     assert sut.list_moves("interchange-for-if") == []
+
+
+# peel-for
+
+
+def step_loop(sdfg: dace.SDFG) -> LoopRegion:
+    (loop,) = [b for b in loops(sdfg) if b.loop_variable == "t"]
+    return loop
+
+
+@pytest.mark.parametrize("steps", [0, 1, 5])
+def test_peel_for_takes_the_first_step_out_and_drops_the_guard_it_decided(steps):
+    sut, reference = session_and_reference(first_step_differs)
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+
+    result = apply_listed(sut, "peel-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopPeeling")
+    # only the guard that runs the peeled step when the loop would run at all is left
+    assert [[code.as_string for code, _ in cond.branches] for cond in conditionals(sut.sdfg)] == [["(0 < T)"]]
+    assert duplicate_labels(sut.sdfg) == {}
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_keeps_a_guard_that_the_later_steps_do_not_settle():
+    sut, reference = session_and_reference(early_steps_differ)
+
+    result = apply_listed(sut, "peel-for")
+
+    assert result.status is MoveStatus.APPLIED, result
+    # the guard on the peeled step, and `t < 2`, which the steps after the first do not settle
+    assert len(conditionals(sut.sdfg)) == 2
+    for steps in (0, 1, 2, 6):
+        assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_skips_a_while_loop_next_to_the_loop_it_peels():
+    """A while loop has no loop variable; listing peel-for used to raise on it (mg_vcycle)."""
+    sut, reference = session_and_reference(halving_then_first_step)
+    assert any(not loop.loop_variable for loop in loops(sut.sdfg))
+
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+    result = apply_listed(sut, "peel-for")
+
+    assert result.status is MoveStatus.APPLIED, result
+    for steps in (0, 1, 5):
+        arrays = random_arrays(x=(SIZE,), a=(SIZE,))
+        arrays["edge"] = np.array([64], dtype=np.int64)
+        assert_same_values(reference, sut.sdfg, arrays, N=SIZE, T=steps)
+
+
+@pytest.mark.parametrize("steps", [0, 1, 5])
+def test_peel_for_peels_a_loop_inside_a_nested_sdfg(steps):
+    """The trial copy used to be of the nested SDFG alone, whose empty cfg_list made LoopPeeling fail (mg_vcycle)."""
+    sut, reference = session_and_reference(nested_first_step, simplify=False)
+    assert step_loop(sut.sdfg).sdfg is not sut.sdfg
+
+    assert [m.labels for m in sut.list_moves("peel-for")] == [(step_loop(sut.sdfg).label,)]
+    result = apply_listed(sut, "peel-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopPeeling")
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), a=(SIZE,)), N=SIZE, T=steps)
+
+
+def test_peel_for_is_not_offered_for_a_guard_the_loop_variable_does_not_decide():
+    sut = Session(loop_guard.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("peel-for", [loop.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "LoopPeeling" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("peel-for") == []
+
+
+# interchange-doall-if
+
+
+@pytest.mark.parametrize("k", [0, 3])
+def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k):
+    sut, reference = session_and_reference(guarded_map)
+    (move,) = sut.list_moves("interchange-doall-if")
+
+    result = sut.apply_move(move.kind, move.labels)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveMapInvariantIfUp")
+    assert duplicate_labels(sut.sdfg) == {}
+    (state,) = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    assert isinstance(state.parent_graph.parent_graph, ConditionalBlock)
+    a, b = random_arrays(a=(SIZE,))["a"], np.zeros(SIZE)
+    assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
+
+
+def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
+    sut = Session(parameter_guarded_map.to_sdfg(simplify=True))
+    labels = [m.labels for m in sut.list_moves("interchange-doall-if")]
+    (entry,) = [n for n, _ in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-doall-if", [entry.map.label])
+
+    assert labels == []
+    assert result.status is MoveStatus.ILLEGAL and "MoveMapInvariantIfUp" in result.reason, result
+    assert digest(sut.sdfg) == before
 
 
 # refusals that never touch the graph
@@ -821,3 +1110,356 @@ def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapLoopInterchange")
     arrays = random_arrays(q=(STEPS, SIZE, 3), pr=(SIZE,))
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE, NLEV=STEPS, NSPEC=3)
+
+
+# interchange-for-doalls
+
+
+def test_the_loop_over_two_doalls_moves_inside_one_doall_over_their_shared_axis():
+    sut, reference = session_and_reference(sweep_two_maps)
+    assert sut.list_moves("interchange-for-doall") == []
+
+    result = apply_listed(sut, "interchange-for-doalls")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopIntoMap")
+    assert len(top_level_maps(sut.sdfg)) == 1
+    (entry,) = top_level_maps(sut.sdfg)
+    state = next(s for s in sut.sdfg.states() if entry in s.nodes())
+    (body,) = [n for n in state.scope_children()[entry] if isinstance(n, nodes.NestedSDFG)]
+    assert [block for block in body.sdfg.nodes() if isinstance(block, LoopRegion)]
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
+def test_the_lane_hoist_is_not_offered_for_a_loop_over_one_doall():
+    sut = Session(sweep.to_sdfg(simplify=True))
+
+    assert sut.list_moves("interchange-for-doalls") == []
+    (loop,) = loops(sut.sdfg)
+    result = sut.apply_move("interchange-for-doalls", [loop.label])
+    assert result.status is MoveStatus.ILLEGAL and "interchange-for-doall" in result.reason, result
+
+
+def test_the_lane_hoist_that_would_cross_columns_is_illegal_and_changes_nothing():
+    sut = Session(sweep_two_maps_crossing.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("interchange-for-doalls", [loop.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "MoveLoopIntoMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("interchange-for-doalls") == []
+
+
+# copy-to-doall
+
+
+def plain_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
+    """Copies between two arrays outside any map, as (source, destination)."""
+    return [
+        (e.src.data, e.dst.data)
+        for state in sdfg.states()
+        for e in state.edges()
+        if isinstance(e.src, nodes.AccessNode)
+        and isinstance(e.dst, nodes.AccessNode)
+        and state.entry_node(e.src) is None
+    ]
+
+
+def every_top_level_map(sdfg: dace.SDFG) -> list[nodes.MapEntry]:
+    return [entry for state in sdfg.states() for entry in top_level_map_entries(state)]
+
+
+def test_copy_to_doall_turns_the_carry_copy_into_a_doall_and_keeps_the_values():
+    sut, reference = session_and_reference(carry_each_step)
+    assert plain_copies(sut.sdfg) == [("out", "c")]
+    maps_before = len(every_top_level_map(sut.sdfg))
+
+    result = apply_listed(sut, "copy-to-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "CopyToMap")
+    assert plain_copies(sut.sdfg) == []
+    assert len(every_top_level_map(sut.sdfg)) == maps_before + 1
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), c=(SIZE,), out=(SIZE,)), N=SIZE, T=STEPS)
+
+
+def test_the_doall_copy_to_doall_makes_can_be_tiled_like_the_others():
+    sut, reference = session_and_reference(carry_each_step)
+    apply_listed(sut, "copy-to-doall")
+    tileable = {move.labels for move in sut.list_moves("tile-doall")}
+    labels = [entry.map.label for entry in every_top_level_map(sut.sdfg)]
+
+    assert {(label,) for label in labels} <= tileable
+    for label in labels:
+        result = sut.apply_move("tile-doall", [label], [4])
+        assert result.status is MoveStatus.APPLIED, result
+    assert_same_values(reference, sut.sdfg, random_arrays(x=(SIZE,), c=(SIZE,), out=(SIZE,)), N=SIZE, T=STEPS)
+
+
+def test_copy_to_doall_leaves_an_ordering_edge_alone():
+    """An empty memlet between two access nodes orders them and copies nothing (CloudSC seed 0: turned into a copy,
+    it overwrote ``form`` and ``liquid``)."""
+    sdfg = dace.SDFG("ordering_edge")
+    sdfg.add_array("a", [SIZE], dace.float64)
+    sdfg.add_array("b", [SIZE], dace.float64)
+    state = sdfg.add_state()
+    state.add_edge(state.add_access("a"), None, state.add_access("b"), None, dace.Memlet())
+    sut = Session(sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert sut.list_moves("copy-to-doall") == []
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def copy_between_ranks(
+    src_shape: tuple[int, ...], dst_shape: tuple[int, ...], read: str, write: str, name: str = "copy_ranks"
+) -> dace.SDFG:
+    """One state that copies ``a[read]`` into ``b[write]`` (arrays of different rank)."""
+    sdfg = dace.SDFG(f"{name}_{os.getpid()}")
+    sdfg.add_array("a", list(src_shape), dace.float64)
+    sdfg.add_array("b", list(dst_shape), dace.float64)
+    state = sdfg.add_state()
+    state.add_edge(
+        state.add_read("a"), None, state.add_write("b"), None, dace.Memlet(data="a", subset=read, other_subset=write)
+    )
+    return sdfg
+
+
+def test_copy_to_doall_turns_a_one_element_copy_between_ranks_into_a_tasklet():
+    """``a[3, 2] -> b[2]``: ``CopyToMap`` raises on it (W45-59, T45-48); the element is copied by a tasklet."""
+    sut = Session(copy_between_ranks((4, 5), (5,), "3, 2", "2"))
+    reference = copy_between_ranks((4, 5), (5,), "3, 2", "2", name="copy_ranks_reference")
+
+    result = apply_listed(sut, "copy-to-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "CopyToMap")
+    (state,) = sut.sdfg.states()
+    assert plain_copies(sut.sdfg) == []
+    assert [n.label for n in state.nodes() if isinstance(n, nodes.Tasklet)] == ["copy_element"]
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(4, 5), b=(5,)))
+
+
+def test_copy_to_doall_does_not_offer_a_block_copy_between_ranks_that_dace_raises_on():
+    """``a[0:2, 0:3] -> b[0:6]``: DaCe's check accepts it and its apply raises (W45-59, T45-48)."""
+    sut = Session(copy_between_ranks((4, 5), (6,), "0:2, 0:3", "0:6"))
+    (state,) = sut.sdfg.states()
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert sut.list_moves("copy-to-doall") == []
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def test_copy_to_doall_of_a_state_without_a_copy_is_illegal_and_changes_nothing():
+    sut = Session(two_indep.to_sdfg(simplify=True))
+    (state,) = [s for s in sut.sdfg.states() if top_level_map_entries(s)]
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("copy-to-doall", [state.label])
+
+    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
+    assert digest(sut.sdfg) == before
+    assert sut.list_moves("copy-to-doall") == []
+
+
+# doall-to-for, for-fusion of loops that hold doalls, dead writes after doall-fusion (the route of
+# fuse_physics_into_scan: physics and y fused into the level scan)
+
+
+@dace.program
+def level_pass(A: dace.float64[N, N], B: dace.float64[N, N]):
+    for k, j in dace.map[0:N, 0:N]:
+        B[k, j] = A[k, j] * 2.0
+
+
+@dace.program
+def flat_pass(A: dace.float64[N], B: dace.float64[N]):
+    for j in dace.map[0:N]:
+        B[j] = A[j] * 2.0
+
+
+@dace.program
+def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+    for k, j in dace.map[0:N, 0:N]:
+        B[k, j] = A[k, j] * 2.0
+    for k, j in dace.map[0:N, 0:N]:
+        C[k, j] = A[k, j] + 1.0
+
+
+def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one():
+    sut, reference = session_and_reference(level_pass)
+    assert apply_listed(sut, "expand-doall").status is MoveStatus.APPLIED
+
+    result = apply_listed(sut, "doall-to-for")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapToForLoop")
+    (loop,) = loops(sut.sdfg)
+    (state,) = [b for b in loop.nodes() if isinstance(b, SDFGState)]
+    (inner,) = top_level_map_entries(state)
+    assert inner.map.params == ["j"] and inner.map.schedule is not dace.ScheduleType.Sequential
+    assert not any(isinstance(b, SDFGState) and not b.nodes() for b in sut.sdfg.nodes()), "no empty state is left"
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside():
+    sut = Session(flat_pass.to_sdfg(simplify=True))
+    (entry,) = top_level_maps(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("doall-to-for", [entry.map.label])
+
+    assert sut.list_moves("doall-to-for") == []
+    assert result.status is MoveStatus.ILLEGAL and "no parallelism" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states():
+    """LoopFusion by itself leaves a parallel loop to LoopToMap; here each loop holds a doall, so fusing them keeps
+    the parallelism, and the merged body is one state holding both doalls."""
+    sut, reference = session_and_reference(two_level_passes)
+    for _ in range(2):
+        apply_listed_first(sut, "expand-doall")
+        apply_listed_first(sut, "doall-to-for")
+
+    result = apply_listed(sut, "for-fusion")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopFusion")
+    (loop,) = loops(sut.sdfg)
+    (state,) = [b for b in loop.nodes() if isinstance(b, SDFGState)]
+    assert len(top_level_map_entries(state)) == 2
+    arrays = random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE), C=(SIZE, SIZE))
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
+
+
+def apply_listed_first(session: Session, kind: str) -> MoveResult:
+    move = session.list_moves(kind)[0]
+    result = session.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation)
+    assert result.status is MoveStatus.APPLIED, result
+    return result
+
+
+def one_temporary_two_states(name: str) -> dace.SDFG:
+    """Two states, each a producer map writing one row of the transient ``tmp`` and a consumer map reading it."""
+    sdfg = dace.SDFG(f"{name}_{os.getpid()}")
+    sdfg.add_array("A", (SIZE,), dace.float64)
+    sdfg.add_array("B", (2, SIZE), dace.float64)
+    sdfg.add_transient("tmp", (2, SIZE), dace.float64)
+    previous = None
+    for row in range(2):
+        state = sdfg.add_state(f"row{row}", is_start_block=previous is None)
+        if previous is not None:
+            sdfg.add_edge(previous, state, dace.InterstateEdge())
+        tmp = state.add_access("tmp")
+        state.add_mapped_tasklet(
+            f"make{row}",
+            {"i": f"0:{SIZE}"},
+            {"a": dace.Memlet("A[i]")},
+            f"t = a * {row + 2}.0",
+            {"t": dace.Memlet(f"tmp[{row}, i]")},
+            external_edges=True,
+            output_nodes={"tmp": tmp},
+        )
+        state.add_mapped_tasklet(
+            f"use{row}",
+            {"i": f"0:{SIZE}"},
+            {"t": dace.Memlet(f"tmp[{row}, i]")},
+            "b = t + 1.0",
+            {"b": dace.Memlet(f"B[{row}, i]")},
+            external_edges=True,
+            input_nodes={"tmp": tmp},
+        )
+        previous = state
+    sdfg.validate()
+    return sdfg
+
+
+def fuse_through(session: Session, name: str) -> None:
+    """Apply the listed ``doall-fusion`` whose first map writes ``name`` and whose second map reads it."""
+    rows = session.row_index()
+    for move in session.list_moves("doall-fusion"):
+        (first, first_state), (second, second_state) = (rows[label] for label in move.labels)
+        assert first_state is not None and second_state is not None
+        writes = {e.data.data for e in first_state.out_edges(first_state.exit_node(first))}
+        reads = {e.data.data for e in second_state.in_edges(second)}
+        if name in writes and name in reads:
+            result = session.apply_move(move.kind, move.labels)
+            assert (result.status, result.reason) == (MoveStatus.APPLIED, "MapFusionVertical"), result
+            return
+    raise AssertionError(f"no doall-fusion through {name} is listed")
+
+
+def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into():
+    """Each fusion keeps ``tmp`` while another map still reads a row of it; once its last reader is fused, nothing reads
+    it and its stores go, so the fused map writes only ``B``."""
+    reference = one_temporary_two_states("one_temporary_reference")
+    sut = Session(one_temporary_two_states("one_temporary"))
+
+    for _ in range(2):
+        fuse_through(sut, "tmp")
+
+    assert not [n for state in sut.sdfg.states() for n in state.data_nodes() if n.data == "tmp"]
+    assert all("tmp" not in writes for writes in map_writes(sut.sdfg)), map_writes(sut.sdfg)
+    arrays = random_arrays(A=(SIZE,), B=(2, SIZE))
+    assert_same_values(reference, sut.sdfg, arrays)
+
+
+# snapshot-reads: a doall that reads a slice of an array another doall writes copies the slice first (floyd_warshall)
+
+
+@dace.program
+def shortest_paths(path: dace.int32[N, N]):
+    outer = np.empty_like(path)
+    for k in range(N):
+        outer[:, :] = path[:, k][:, None] + path[k, :][None, :]
+        path[:, :] = np.minimum(path, outer)
+
+
+def positive_paths() -> dict[str, np.ndarray]:
+    return {"path": np.random.default_rng(0).integers(1, 50, size=(SIZE, SIZE)).astype(np.int32)}
+
+
+def snapshot_session() -> tuple[Session, dace.SDFG]:
+    sut, reference = session_and_reference(shortest_paths)
+    sut.canonicalize()
+    return sut, reference
+
+
+def test_snapshot_reads_copies_the_slices_so_doall_fusion_applies_and_values_stay():
+    sut, reference = snapshot_session()
+    assert sut.list_moves("doall-fusion") == [], "the reader and the writer share path: the fusion is illegal"
+    (move,) = sut.list_moves("snapshot-reads")
+
+    result = sut.apply_move(move.kind, move.labels)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "SnapshotReads")
+    copies = [a for a in sut.sdfg.arrays if a.startswith("path_snapshot")]
+    assert len(copies) == 2 and all(sut.sdfg.arrays[a].shape == (N,) and sut.sdfg.arrays[a].transient for a in copies)
+    assert sut.list_moves("doall-fusion"), "the reader no longer touches path"
+    assert sut.list_moves("snapshot-reads") == [], "a copy doall is not snapshotted again"
+    sut.sdfg.validate()
+    assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
+
+
+def test_snapshot_reads_then_the_default_fuses_the_pass_into_one_doall():
+    sut, reference = snapshot_session()
+    apply_listed(sut, "snapshot-reads")
+
+    sut.default_moves()
+
+    sut.sdfg.validate()
+    assert sut.list_moves("doall-fusion") == []
+    assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
+
+
+def test_snapshot_reads_is_not_offered_when_no_other_doall_writes_what_the_doall_reads():
+    sut, _ = session_and_reference(two_indep)
+    sut.canonicalize()
+
+    assert sut.list_moves("snapshot-reads") == []
+    result = sut.apply_move("snapshot-reads", [top_level_maps(sut.sdfg)[0].map.label])
+    assert result.status is MoveStatus.ILLEGAL and "snapshot-reads" in result.reason, result

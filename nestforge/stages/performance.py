@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import ctypes
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import numpy as np
 from nestforge.build.arena import US_PER_S, reps_within_budget
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
-from nestforge.build.toolchain import parse_params, signature
+from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
 from nestforge.stages.placement import Transfer
@@ -26,12 +27,25 @@ from nestforge.stages.placement import Transfer
 
 class ProgramReport(Record):
     """The whole program at the session's sizes: its time, and whether its outputs match the reference (``None``
-    without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run."""
+    without one; ``mismatched`` names the outputs that differ). ``error`` set when it did not build or run.
+    ``unchecked`` says why ``correct`` is ``None``: a time with it set is of a program nothing was compared against.
+    ``reference`` is where the reference outputs came from (empty when there was none)."""
 
     time_us: float | None = None
     correct: bool | None = None
     mismatched: list[str] = []
     error: str = ""
+    unchecked: str = ""
+    reference: str = ""
+
+
+#: ``Reference.source``: the bench's own reference (the torch model on a machine-learning kernel, else its oracles), or
+#: the kernel's NumPy function, which stands in when the bench's is unavailable.
+BENCH_REFERENCE = "bench"
+NUMPY_REFERENCE = "numpy"
+
+#: What ``ProgramReport.unchecked`` says when the program ran with no reference to compare its outputs against.
+NO_REFERENCE = "no reference outputs, so nothing was compared: a time here is of a program not known to be right"
 
 
 class TransferReport(Record):
@@ -83,6 +97,8 @@ class Reference:
     outputs: dict[str, np.ndarray]
     rtol: float
     atol: float
+    #: Where the outputs come from: :data:`BENCH_REFERENCE` or :data:`NUMPY_REFERENCE`.
+    source: str = "bench"
 
     def mismatched(self, buffers: dict[str, np.ndarray]) -> list[str]:
         """The outputs ``buffers`` gets wrong: exactly compared when both sides are integer, else ``allclose``."""
@@ -106,7 +122,7 @@ class ProgramCall:
     source: str
     name: str
     buffers: dict[str, np.ndarray]
-    sizes: dict[str, int]
+    sizes: Mapping[str, SymbolValue]
     reps: int
     reference: Reference | None
 
@@ -134,7 +150,9 @@ def run_program(call: ProgramCall) -> ProgramTime:
         built.close()
 
 
-def program_buffers(sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: dict[str, int]) -> dict[str, np.ndarray]:
+def program_buffers(
+    sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]
+) -> dict[str, np.ndarray]:
     """Every non-transient array of ``sdfg``: from ``inputs`` where given, else zeros of its shape at ``sizes``."""
     buffers: dict[str, np.ndarray] = {}
     for name, desc in sdfg.arrays.items():
@@ -154,7 +172,7 @@ def time_program(
     out_dir: Path,
     inputs: dict[str, np.ndarray],
     reference: Reference | None,
-    sizes: dict[str, int],
+    sizes: Mapping[str, SymbolValue],
     reps: int,
     gpu: bool,
 ) -> ProgramReport:
@@ -172,13 +190,23 @@ def time_program(
     timed = run_spawned(run_program, call) if gpu else run_isolated(lambda: run_program(call), ProgramTime)
     if isinstance(timed, Failure):
         return ProgramReport(error=timed.error)
-    if timed.mismatched is None:
-        return ProgramReport(time_us=timed.time_us)
-    return ProgramReport(time_us=timed.time_us, correct=not timed.mismatched, mismatched=timed.mismatched)
+    return timed_report(timed, reference)
+
+
+def timed_report(timed: ProgramTime, reference: Reference | None) -> ProgramReport:
+    """The report of a program that ran: graded when it had a reference (``mismatched`` set), else marked unchecked."""
+    if timed.mismatched is None or reference is None:
+        return ProgramReport(time_us=timed.time_us, unchecked=NO_REFERENCE)
+    return ProgramReport(
+        time_us=timed.time_us,
+        correct=not timed.mismatched,
+        mismatched=timed.mismatched,
+        reference=reference.source,
+    )
 
 
 def offload_report(
-    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: dict[str, int]
+    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: Mapping[str, SymbolValue]
 ) -> OffloadReport:
     """Where each kernel runs and what crosses memory spaces, with bytes at ``sizes``."""
     transfers = None
@@ -197,7 +225,7 @@ def offload_report(
     return OffloadReport(devices=devices, transfers=transfers, transfer_bytes=total)
 
 
-def array_bytes(sdfg: dace.SDFG, name: str, sizes: dict[str, int]) -> int | None:
+def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
     desc = sdfg.arrays.get(name)
     if desc is None:
         return None

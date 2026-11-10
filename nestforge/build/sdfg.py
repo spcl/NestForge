@@ -8,14 +8,15 @@ from __future__ import annotations
 import copy
 import ctypes
 import functools
+import hashlib
 import time
 import warnings
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import dace
 import numpy as np
@@ -34,6 +35,7 @@ from nestforge.build.toolchain import (
     DEFAULT_FLAGS,
     LIBOMP,
     Param,
+    SymbolValue,
     bind_argument,
     compiler_family,
     cudart_dir,
@@ -46,6 +48,7 @@ from nestforge.build.toolchain import (
     run,
     runtime_library,
     support_rpath_flags,
+    symbol_argument,
 )
 
 #: What keeps an LLVM optimizer's report off the warnings: a loop it left unvectorized under ``omp simd``, in every
@@ -87,12 +90,12 @@ class BuiltSDFG:
         fn.argtypes = argtypes
         return fn
 
-    def init(self, sizes: dict[str, int]) -> None:
+    def init(self, sizes: Mapping[str, SymbolValue]) -> None:
         fn = self.function(f"__dace_init_{self.name}", ctypes.c_void_p, [p.ctype for p in self.init_params])
         # each parameter's own ctype: symbol widths differ between programs
-        self.handle = ctypes.c_void_p(fn(*[p.ctype(int(sizes[p.name])) for p in self.init_params]))
+        self.handle = ctypes.c_void_p(fn(*[symbol_argument(p.ctype, sizes[p.name]) for p in self.init_params]))
 
-    def program(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+    def program(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
         fn = self.function(f"__program_{self.name}", None, [ctypes.c_void_p] + [p.ctype for p in self.prog_params])
         args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
@@ -111,7 +114,7 @@ class BuiltSDFG:
         self.function(f"__dace_exit_{self.name}", ctypes.c_int, [ctypes.c_void_p])(self.handle)
         self.handle = None
 
-    def run(self, buffers: dict[str, np.ndarray], sizes: dict[str, int]) -> None:
+    def run(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Init, one program call, exit."""
         self.init(sizes)
         try:
@@ -151,6 +154,51 @@ def stack_candidates(sdfg: dace.SDFG, *, scope_default: bool) -> Iterator[Array]
         )
         if unforced or scoped:
             yield desc
+
+
+#: A host transient of at least this many bytes is kept across program calls: below it, allocating it per call costs
+#: less than the page faults of a fresh megabyte (4086 minor faults per call for two 134 MB arrays).
+PERSISTENT_MIN_BYTES = 1 << 20
+
+
+def array_bytes(desc: Array, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The byte size of ``desc`` at ``sizes``, or ``None`` when an extent names a symbol ``sizes`` lacks (one the
+    program computes inside, which is unknown at init)."""
+    values = cast("dict[dace.symbolic.symbol | str, SymbolValue]", dict(sizes))  # evaluate's key type is invariant
+    count = 1
+    for extent in desc.shape:
+        try:
+            count *= int(dace.symbolic.evaluate(extent, values))
+        except (TypeError, ValueError, KeyError):
+            return None
+    return count * desc.dtype.bytes
+
+
+def persistent_candidates(
+    sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue], min_bytes: int
+) -> Iterator[tuple[str, Array]]:
+    """The program's own transients that are heap arrays of at least ``min_bytes`` at ``sizes`` and live for a scope:
+    kernels (``ExternalCall`` bodies), views, registers, device memory and arrays inside a GPU kernel are left out."""
+    for owned in sdfg.all_sdfgs_recursive():
+        if on_device(owned):
+            continue
+        for name, desc in owned.arrays.items():
+            heap = desc.storage in (dace.StorageType.Default, dace.StorageType.CPU_Heap)
+            if type(desc) is Array and desc.transient and heap and desc.lifetime == dace.AllocationLifetime.Scope:
+                size = array_bytes(desc, sizes)
+                if size is not None and size >= min_bytes:
+                    yield f"{owned.label}.{name}", desc
+
+
+def make_persistent(
+    sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue], min_bytes: int = PERSISTENT_MIN_BYTES
+) -> list[str]:
+    """Allocate each candidate (:func:`persistent_candidates`) once at init instead of on every program call; returns
+    their ``sdfg.array`` names. A transient is written before it is read, so a call never reads what the last left."""
+    found = list(persistent_candidates(sdfg, sizes, min_bytes))
+    for _, desc in found:
+        desc.lifetime = dace.AllocationLifetime.Persistent
+    return [name for name, _ in found]
 
 
 def on_device(sdfg: dace.SDFG) -> bool:
@@ -329,12 +377,29 @@ def libomp_cmake_args(compiler: str) -> list[str]:
     return [f"-DOpenMP_CXX_LIB_NAMES={LIBOMP}", f"-DOpenMP_{LIBOMP}_LIBRARY={library}"]
 
 
+#: CMake names a file ``cmake_object_order_depends_target_dacestub_<program name>`` (43 characters before the name),
+#: and a file name holds at most 255 bytes. Names stay well under that, which also leaves room for the other files
+#: CMake and ninja derive from the name (``<name>.dir``, ``lib<name>.so``).
+MAX_PROGRAM_NAME = 120
+NAME_DIGEST_LENGTH = 8
+
+
+def short_program_name(name: str) -> str:
+    """``name`` when it fits :data:`MAX_PROGRAM_NAME`, else its head plus a digest of the whole name, so two long
+    names sharing a head stay apart."""
+    if len(name) <= MAX_PROGRAM_NAME:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:NAME_DIGEST_LENGTH]
+    return f"{name[: MAX_PROGRAM_NAME - NAME_DIGEST_LENGTH - 1]}_{digest}"
+
+
 def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
     """Compile a program that links kernel libraries, with libomp as its one OpenMP runtime; the CMake
-    setting holds for this compile only."""
+    setting holds for this compile only. A name too long for CMake's file names is shortened on ``sdfg`` itself."""
     extra = [dace.config.Config.get("compiler", "extra_cmake_args"), *libomp_cmake_args(program_compiler())]
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]
+    sdfg.name = short_program_name(sdfg.name)  # the caller reads the name back, from the sdfg
     sdfg.build_folder = str(build_folder)
     force_register_arrays(sdfg)
     with (
