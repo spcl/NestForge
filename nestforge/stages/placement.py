@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import dace
 from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import ExternalCall, call_site, external_calls
 from dace.sdfg import nodes
 from dace.transformation.passes.offloading.host_maps import HostMapSpec
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
@@ -60,6 +60,17 @@ class Placement:
 
 def kernel_device(ext: ExternalCall) -> str:
     return "gpu" if ext.schedule in dtypes.GPU_SCHEDULES else "cpu"
+
+
+def kernel_interfaces(sdfg: dace.SDFG) -> dict[str, tuple[object, ...]]:
+    """Per kernel: its device and each argument's storage, type and passing; a build fits while they are unchanged."""
+    out: dict[str, tuple[object, ...]] = {}
+    for node, state in sdfg.all_nodes_recursive():
+        if isinstance(node, ExternalCall):
+            site = call_site(node, state)
+            args = [(conn, desc.storage, desc.dtype, conn in site.by_value) for conn, desc in site.descriptors.items()]
+            out[node.name] = (kernel_device(node), *sorted(args, key=str))
+    return out
 
 
 def pinned_implementations(ext: ExternalCall) -> list[str]:

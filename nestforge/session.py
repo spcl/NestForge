@@ -89,7 +89,15 @@ from nestforge.stages.moves import (
     sdfg_metrics,
 )
 from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
-from nestforge.stages.placement import Transfer, check_devices, default_devices, kernel_device, place, transfers
+from nestforge.stages.placement import (
+    Transfer,
+    check_devices,
+    default_devices,
+    kernel_device,
+    kernel_interfaces,
+    place,
+    transfers,
+)
 from nestforge.stages.scopes import (
     is_parallel_kernel,
     lower_default_scopes,
@@ -833,6 +841,7 @@ class Session:
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
             return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
+        interfaces, builds = kernel_interfaces(self.sdfg), self.builds
         if self.unplaced is not None:
             self.sdfg = copy.deepcopy(self.unplaced)
             self.kernel_deps = None
@@ -843,6 +852,11 @@ class Session:
         self.unplaced = copy.deepcopy(self.sdfg)
         placement = place(self.sdfg, self.targets, chosen)
         self.bump()
+        # a build stays linked while placement leaves its kernel's device and argument storage as they were
+        placed = kernel_interfaces(self.sdfg)
+        for name, build in builds.items():
+            if placed.get(name, ()) == interfaces.get(name):
+                self.bind(name, build)
         return PlaceResult(
             status=MoveStatus.APPLIED, devices=dict(placement.devices), copies=tuple(placement.copies), transfers=moves
         )

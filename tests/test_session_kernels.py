@@ -12,11 +12,13 @@ from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import corpus_kernel
 
+from nestforge import session as session_module
 from nestforge.build import flags
 from nestforge.corpus.bench import preset_sizes
 from nestforge.records import KernelStatus
 from nestforge.session import Session, external_calls
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.finalize import BenchTarget
 from nestforge.stages.scopes import kernel_arguments, node_boundary
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -331,3 +333,29 @@ def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_u
         assert set(source_symbols) <= set(session.prepare_kernel(ext.name).args)
     assert dropped, "some kernel's entry drops a symbol its body never reads; otherwise this test proves nothing"
     assert len(session.kernel_evidence(reps=1)) == len(external_calls(session.sdfg))
+
+
+@dace.program
+def running_sum(a: dace.float64[N], b: dace.float64[N]):
+    b[0] = a[0]
+    for i in range(1, N):
+        b[i] = b[i - 1] + a[i]
+
+
+def test_finalize_on_a_gpu_target_keeps_a_written_kernel_placement_leaves_on_the_cpu(tmp_path, monkeypatch):
+    """finalize places a never-placed GPU program; a kernel that stays on the CPU keeps the source the agent wrote."""
+    session = Session(running_sum.to_sdfg(simplify=True), Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 64})
+    session.bench = BenchTarget("running_sum", "float64", True)
+    session.default_scopes()
+    (kernel,) = session.list_kernels()
+    assert kernel.device == "cpu" and not kernel.parallel, "a recurrence stays on the CPU"
+    written = "// written by the agent\n" + session.kernel_source(kernel.name)
+    assert session.set_kernel_source(kernel.name, written, "cpp", reps=1).status is KernelStatus.OK
+    assembled = []
+    monkeypatch.setattr(session_module, "assemble", lambda sdfg, *args: assembled.append(sdfg))
+
+    session.finalize(tmp_path / "final")
+
+    (sdfg,) = assembled
+    (ext,) = external_calls(sdfg)
+    assert ext.lib_path == str(session.builds[kernel.name].archive), "the trial links the written kernel"
