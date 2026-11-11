@@ -6,7 +6,7 @@ records its data and symbols and the nested SDFG node that stage 3 replaces with
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias, cast
 
@@ -193,15 +193,17 @@ def define_symbol(
     defined[target] = table[target] = inferred
 
 
-def nest_defined_symbol_dtypes(sdfg: dace.SDFG, region: CfgNest) -> dict[str, dace.dtypes.typeclass]:
-    """Each symbol an interstate assignment inside the nest defines, with its dtype. Loop iterators are scope
-    symbols, typed by DaCe's nesting helper, so they are left out."""
+def nest_defined_symbol_dtypes(
+    sdfg: dace.SDFG, region: CfgNest, earlier: Mapping[str, dace.dtypes.typeclass] | None = None
+) -> dict[str, dace.dtypes.typeclass]:
+    """Each symbol an interstate assignment inside the nest defines, with its dtype, reading the ``earlier`` blocks'
+    definitions. Loop iterators are scope symbols, typed by DaCe's nesting helper, so they are left out."""
     loop_variables = {
         b.loop_variable
         for b in [region, *region.all_control_flow_blocks()]
         if isinstance(b, LoopRegion) and b.loop_variable
     }
-    table = symbol_table(sdfg)
+    table = symbol_table(sdfg) | dict(earlier or {})
     dtypes: dict[str, dace.dtypes.typeclass] = {}
     for e in region.all_interstate_edges():
         for target, rhs in e.data.assignments.items():
@@ -222,7 +224,7 @@ def blocks_defined_symbol_dtypes(
     defined: dict[str, dace.dtypes.typeclass] = {}
     for block in blocks:
         if isinstance(block, CfgNest):
-            defined |= nest_defined_symbol_dtypes(parent_sdfg, block)
+            defined |= nest_defined_symbol_dtypes(parent_sdfg, block, defined)
     table = symbol_table(parent_sdfg) | defined
     for edge in blocks[0].parent_graph.edges():
         if edge.src in blocks and edge.dst in blocks:

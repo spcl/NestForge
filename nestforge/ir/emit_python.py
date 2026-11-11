@@ -19,14 +19,15 @@ import importlib.util
 import re
 import shutil
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import dace
+import numpy as np
 import sympy
 from dace import data as dt
 from dace import dtypes, subsets, symbolic
@@ -45,6 +46,7 @@ from dace.sdfg.state import (
     ReturnBlock,
     SDFGState,
 )
+from dace.sdfg.type_inference import infer_expr_type
 from dace.sdfg.utils import dfs_topological_sort, get_view_edge, inline_sdfgs, map_view_to_array
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 from dace.transformation.passes.analysis import loop_analysis
@@ -114,6 +116,8 @@ ONCE = "nested_once"
 FOLD_IDENTITY = {dtypes.ReductionType.Sum: "0", dtypes.ReductionType.Product: "1"}
 #: Base of the local that holds a folded nest's target from before its body ran.
 FOLD_SAVED = "nested_saved"
+#: The emitted helper that rounds as ``std::round``: a half away from zero, where NumPy rounds it to even.
+ROUND = "round_half_away"
 
 
 def numpy_attr(name: str) -> ast.Attribute:
@@ -126,30 +130,99 @@ class Names:
 
     locals: frozenset[str]
     scalars: frozenset[str]
+    #: The containers, for their offsets and dtypes, and the symbol dtypes.
+    arrays: Mapping[str, dt.Data] = field(default_factory=dict)
+    symbols: Mapping[str, dtypes.typeclass] = field(default_factory=dict)
 
 
 def names_of(sdfg: dace.SDFG) -> Names:
     single = {name for name, desc in sdfg.arrays.items() if isinstance(desc, dt.Scalar) or desc.total_size == 1}
     local = frozenset(name for name in single if sdfg.arrays[name].transient)
-    return Names(local, frozenset(n for n in single - local if isinstance(sdfg.arrays[n], dt.Scalar)))
+    scalars = frozenset(n for n in single - local if isinstance(sdfg.arrays[n], dt.Scalar))
+    return Names(local, scalars, sdfg.arrays, sdfg.symbols)
+
+
+def plus(value: ast.expr, offset: object) -> ast.expr:
+    return ast.BinOp(value, ast.Add(), ast.parse(symbolic.symstr(offset, cpp_mode=False), mode="eval").body)
+
+
+def shifted(index: ast.expr, desc: dt.Data | None) -> ast.expr:
+    """``index`` into ``desc`` moved by its offset, which DaCe adds to every index."""
+    if not isinstance(desc, dt.Array) or all(o == 0 for o in desc.offset):
+        return index
+    parts = index.elts if isinstance(index, ast.Tuple) else [index]
+    moved: list[ast.expr] = []
+    for part, offset in zip(parts, desc.offset):
+        if isinstance(part, ast.Slice):
+            lower, upper = (None if b is None else plus(b, offset) for b in (part.lower, part.upper))
+            moved.append(ast.Slice(lower, upper, part.step))
+        else:
+            moved.append(plus(part, offset))
+    return ast.Tuple(moved, ast.Load()) if isinstance(index, ast.Tuple) else moved[0]
+
+
+#: Dtypes a Python float or complex already holds exactly, so a local of one needs no cast.
+PYTHON_EXACT = frozenset({"float64", "complex128"})
 
 
 class Normalize(ast.NodeTransformer):
-    """Rewrite DaCe spellings to NumPy and Python, and data names to how the emitted function holds them."""
+    """Rewrite DaCe spellings to NumPy and Python, and data names to how the emitted function holds them; tasklet
+    code divides and takes remainders as C does."""
 
-    __slots__ = ("names",)
+    __slots__ = ("names", "tasklet")
 
-    def __init__(self, names: Names) -> None:
-        self.names = names
+    def __init__(self, names: Names, tasklet: bool = False) -> None:
+        self.names, self.tasklet = names, tasklet
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
         base = node.value
         if isinstance(base, ast.Name) and base.id in self.names.locals:
             return ast.copy_location(ast.Name(id=base.id, ctx=node.ctx), node)
         if isinstance(base, ast.Name):  # the base is a buffer, never a scalar to index
-            node.slice = self.visit(node.slice)
+            node.slice = shifted(self.visit(node.slice), self.names.arrays.get(base.id))
             return node
         return self.generic_visit(node)
+
+    def integral(self, operand: ast.expr) -> bool:
+        table = {**self.names.symbols, **{name: desc.dtype for name, desc in self.names.arrays.items()}}
+        try:
+            dtype = infer_expr_type(ast.unparse(operand), table)
+        except Exception:  # inference walks arbitrary expression ASTs; an untypeable operand is not integral
+            return False
+        return isinstance(dtype, dtypes.typeclass) and np.issubdtype(dtype.as_numpy_dtype(), np.integer)
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        if not self.tasklet or not isinstance(node.op, (ast.Div, ast.Mod)):
+            return self.generic_visit(node)
+        integral = isinstance(node.op, ast.Div) and self.integral(node.left) and self.integral(node.right)
+        self.generic_visit(node)
+        fmod = ast.Call(func=numpy_attr("fmod"), args=[node.left, node.right], keywords=[])
+        if isinstance(node.op, ast.Mod):  # C's % truncates
+            return ast.copy_location(fmod, node)
+        if integral:  # C's integer / truncates; a - fmod(a, b) is a multiple of b
+            return ast.copy_location(ast.BinOp(ast.BinOp(node.left, ast.Sub(), fmod), ast.FloorDiv(), node.right), node)
+        return node
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> ast.AST:
+        base = node.target.value if isinstance(node.target, ast.Subscript) else node.target
+        local = isinstance(base, ast.Name) and base.id in self.names.locals
+        if not local and not (self.tasklet and isinstance(node.op, (ast.Div, ast.Mod))):
+            return self.generic_visit(node)
+        value = ast.BinOp(copy.deepcopy(node.target), node.op, node.value)
+        for each in ast.walk(value.left):
+            if isinstance(each, (ast.Name, ast.Subscript)):
+                each.ctx = ast.Load()
+        return self.visit(ast.copy_location(ast.Assign(targets=[node.target], value=value), node))
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        self.generic_visit(node)
+        target = node.targets[0]
+        name = target.id if isinstance(target, ast.Name) and len(node.targets) == 1 else ""
+        if name in self.names.locals and name in self.names.arrays:  # a local is a C variable of its dtype
+            dtype = np.dtype(self.names.arrays[name].dtype.as_numpy_dtype()).name
+            if dtype not in PYTHON_EXACT:
+                node.value = ast.Call(func=numpy_attr(dtype), args=[node.value], keywords=[])
+        return node
 
     def visit_Name(self, node: ast.Name) -> ast.AST:
         if node.id in self.names.scalars and isinstance(node.ctx, ast.Load):
@@ -179,6 +252,10 @@ class Normalize(ast.NodeTransformer):
         if name == "int_ceil" and len(node.args) == 2:  # ceil(a / b) == -((-a) // b)
             neg = ast.BinOp(ast.UnaryOp(ast.USub(), node.args[0]), ast.FloorDiv(), node.args[1])
             return ast.copy_location(ast.UnaryOp(ast.USub(), neg), node)
+        if name in ("round", "iround") and len(node.args) == 1:  # std::round, half away from zero
+            rounded = ast.Call(func=ast.Name(id=ROUND, ctx=ast.Load()), args=node.args, keywords=[])
+            whole = ast.Call(func=ast.Name(id="int", ctx=ast.Load()), args=[rounded], keywords=[])
+            return ast.copy_location(whole if name == "iround" else rounded, node)
         if name in BUILTINS:
             node.func = ast.Name(id=BUILTINS[name], ctx=ast.Load())
         elif name in NP_FUNCTIONS:
@@ -188,13 +265,13 @@ class Normalize(ast.NodeTransformer):
         return node
 
 
-def python(code: str, names: Names) -> list[str]:
-    """``code`` (statements or an expression) as emitted Python lines."""
+def python(code: str, names: Names, tasklet: bool = False) -> list[str]:
+    """``code`` (statements or an expression) as emitted Python lines; ``tasklet`` code has C arithmetic."""
     try:
         tree = ast.parse(code.strip())
     except SyntaxError as exc:
         raise UnsupportedNest(f"not Python: {code!r}") from exc
-    return ast.unparse(ast.fix_missing_locations(Normalize(names).visit(tree))).splitlines()
+    return ast.unparse(ast.fix_missing_locations(Normalize(names, tasklet).visit(tree))).splitlines()
 
 
 def expr(value: object, names: Names) -> str:
@@ -532,6 +609,14 @@ def combine(wcr: str | ast.AST, target: str, value: str) -> str:
     return COMBINE[kind].format(target, value) if kind in COMBINE else f"({text})({target}, {value})"
 
 
+def wcr_identity(desc: dt.Data, wcr: str | ast.AST) -> str:
+    """The value a write-conflict resolution on ``desc`` leaves unchanged."""
+    identity = dtypes.reduction_identity(desc.dtype, detect_reduction_type(wcr) or dtypes.ReductionType.Custom)
+    if identity is None:
+        raise UnsupportedNest(f"write-conflict resolution {wcr!r} has no identity to start a partial write from")
+    return identity_text(identity)
+
+
 @dataclass(frozen=True, slots=True)
 class Scope:
     """Where emission is: the SDFG whose names are in use, and the iterators and outer names a write must not hit."""
@@ -555,7 +640,7 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
     """A tasklet's body between the reads and writes of the connectors it still has."""
     if node.code.language != dtypes.Language.Python:
         raise UnsupportedNest(f"tasklet {node.label} is {node.code.language.name}, not Python")
-    body = python(node.code.as_string, scope.names)
+    body = python(node.code.as_string, scope.names, tasklet=True)
     used = {n.id for n in ast.walk(ast.parse(node.code.as_string)) if isinstance(n, ast.Name)}
     before: list[str] = []
     for edge in state.in_edges(node):
@@ -570,9 +655,12 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
         data, subset, other = memlet_parts(edge.data)
         target = access(scope, data, subset)
         single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
-        # the body writes some elements of a range, or may skip a dynamic write: start from what is there
+        # the body writes some elements of a range, or may skip a dynamic write: start from what is there, or from the
+        # identity of a write-conflict resolution, which combines with what is there after
         if edge.data.dynamic or not single:
-            before.append(f"{edge.src_conn} = {target}")
+            seed = target if edge.data.wcr is None else wcr_identity(scope.sdfg.arrays[data], edge.data.wcr)
+            seed = seed if single or edge.data.wcr is None else f"np.full_like({target}, {seed})"
+            before.append(f"{edge.src_conn} = {seed}")
         if single or edge.data.wcr is not None:  # a range is written through its view
             value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
             after.append(f"{target} = {value}")
@@ -763,7 +851,7 @@ def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list
     folds = [
         fold_of(scope, state, node, edge)
         for edge in state.out_edges(node)
-        if edge.data.wcr is not None and not combines_inside(node.sdfg, edge.src_conn, edge.data.wcr)
+        if edge.data.wcr is not None and not combines_inside(node.sdfg, memlet_parts(edge.data)[0], edge.data.wcr)
     ]
     body = inlined_lines(scope, node)
     return folded_lines(scope, node, body, folds) if folds else body
@@ -858,10 +946,10 @@ def kept_axes(subset: subsets.Subset, axes: Iterable[int]) -> tuple[int, ...]:
 
 
 def identity_text(identity: object) -> str:
-    """A reduction's identity as Python: an integer stays one, so an integer reduction stays exact; ``float`` spells
-    infinities."""
+    """A reduction's identity as Python: an integer stays one, so an integer reduction stays exact; an infinity is
+    ``inf``, which :class:`Normalize` spells as NumPy's."""
     text = str(identity)
-    return text if text.lstrip("-").isdigit() else f"float({str(float(text))!r})"
+    return text if text.lstrip("-").isdigit() else repr(float(text))
 
 
 def reduce_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
@@ -874,7 +962,11 @@ def reduce_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> lis
     if node.identity is not None:
         arguments.append(f"initial={identity_text(node.identity)}")
     ufunc = REDUCTION_UFUNCS[detect_reduction_type(node.wcr)]
-    return [f"{write_of(scope, state, node, node.OUTPUT_CONNECTOR_NAME)} = {ufunc}.reduce({', '.join(arguments)})"]
+    (out,) = state.out_edges_by_connector(node, node.OUTPUT_CONNECTOR_NAME)
+    target, value = access(scope, *memlet_parts(out.data)[:2]), f"{ufunc}.reduce({', '.join(arguments)})"
+    if node.identity is None or out.data.wcr is not None:  # DaCe reduces into what the output holds
+        value = combine(node.wcr if out.data.wcr is None else out.data.wcr, target, value)
+    return [f"{target} = {value}"]
 
 
 def fill_lines(scope: Scope, state: SDFGState, node: nodes.LibraryNode) -> list[str]:
@@ -951,8 +1043,8 @@ def node_lines(scope: Scope, state: SDFGState, node: nodes.Node, order: list[nod
         return tasklet_lines(scope, state, node)
     if isinstance(node, nodes.LibraryNode):
         lines = spelling(node)
-        if lines is not None:
-            return lines(scope, state, node)
+        if lines is not None:  # a subset prints SymPy's spellings
+            return [line for text in lines(scope, state, node) for line in python(text, scope.names)]
     if isinstance(node, nodes.AccessNode):
         return copy_lines(scope, state, node)
     if isinstance(node, nodes.MapEntry):
@@ -1051,6 +1143,8 @@ def module(fn_name: str, args: list[str], body: list[str]) -> str:
     imports += "from operator import floordiv as int_floor\n" if "int_floor(" in function else ""
     # a DaCe precondition guard calls abort()
     guard = "\n\ndef abort():\n    raise RuntimeError('DaCe precondition violated')\n" if "abort(" in function else ""
+    if f"{ROUND}(" in function:
+        guard += f"\n\ndef {ROUND}(x):\n    whole = np.trunc(x)\n    return whole + np.copysign(np.abs(x - whole) >= 0.5, x)\n"
     source = f"{imports}{guard}\n\n{function}\n"
     try:
         compile(source, fn_name, "exec")
@@ -1103,6 +1197,7 @@ def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
     (``__tmp3``) on its own, so a nest's scratch can share a name with an unrelated array of the kernel; that one is
     renamed in its nest and hoisted under the new name."""
     taken = {name for each in sdfg.all_sdfgs_recursive() for name in each.arrays}
+    hoisted: set[str] = set()  # nests share scratch with each other only, never with a kernel array
     for nested in list(sdfg.all_sdfgs_recursive()):
         if nested is sdfg:
             continue
@@ -1113,9 +1208,15 @@ def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
             outer = sdfg.arrays.get(name)
             if outer is None:
                 sdfg.arrays[name] = copy.deepcopy(desc)
-            elif outer.dtype != desc.dtype or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]:
+                hoisted.add(name)
+            elif (
+                name not in hoisted
+                or outer.dtype != desc.dtype
+                or [str(d) for d in outer.shape] != [str(d) for d in desc.shape]
+            ):
                 fresh = find_new_name(name, taken)
                 taken.add(fresh)
+                hoisted.add(fresh)
                 nested.replace(name, fresh)
                 sdfg.arrays[fresh] = copy.deepcopy(nested.arrays[fresh])
 
