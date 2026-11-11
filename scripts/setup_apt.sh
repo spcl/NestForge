@@ -40,6 +40,10 @@ SUDO=sudo
 APT_UPDATED=0
 # A stalled mirror must fail and retry, not hang the job: CI once waited an hour on one Release file.
 APT_NET=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+# A hosted runner's mirror list names Canonical hosts only; when their DNS is down nothing installs
+if [ -f /etc/apt/apt-mirrors.txt ] && ! grep -q mirrors.edge.kernel.org /etc/apt/apt-mirrors.txt; then
+  printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:9\n' | $SUDO tee -a /etc/apt/apt-mirrors.txt >/dev/null
+fi
 if [ -n "$ARCHIVES" ]; then mkdir -p "$ARCHIVES/partial"; APT_NET+=(-o "Dir::Cache::Archives=$ARCHIVES"); fi
 apt_update_once() { [ "$APT_UPDATED" -eq 1 ] || { $SUDO apt-get "${APT_NET[@]}" update -y; APT_UPDATED=1; }; }
 
