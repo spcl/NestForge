@@ -753,7 +753,7 @@ def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
 
     result = sut.apply_move("interchange-for-doall", [loop.label, outside.label])
 
-    assert result.status is MoveStatus.ILLEGAL and "not the one map directly inside" in result.reason, result
+    assert result.status is MoveStatus.ILLEGAL and "not a doall directly inside" in result.reason, result
     assert digest(sut.sdfg) == before
 
 
