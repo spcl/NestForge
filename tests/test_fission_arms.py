@@ -49,6 +49,17 @@ def conditional_body(a: f64[N], b: f64[N], c: f64[N]):
             c[i] = c[i - 1]
 
 
+@dace.program
+def guard_reads_recurrence(a: f64[N], b: f64[N], c: f64[N]):
+    for i in range(1, N):
+        if b[i - 1] > 0.5:
+            b[i] = b[i - 1] + a[i]
+            c[i] = c[i - 1] + a[i]
+        else:
+            b[i] = b[i - 1]
+            c[i] = c[i - 1]
+
+
 def test_fission_splits_independent_recurrences_value_preserving():
     inputs = random_vectors(names=("a", "b", "c"))
     ref = run(two_independent_recurrences.to_sdfg(simplify=True), inputs, 48)
@@ -66,8 +77,10 @@ def test_fission_splits_independent_recurrences_value_preserving():
     [
         (two_independent_recurrences, ("a", "b", "c"), True),
         (three_independent_statements, ("a", "b", "c", "d"), True),
-        # a known gap: for-fission does not split a loop whose body is one if/else, though splitting it is legal
-        (conditional_body, ("a", "b", "c"), False),
+        # each part keeps its own copy of the if/else: the guard reads only ``a``, which neither part writes
+        (conditional_body, ("a", "b", "c"), True),
+        # the guard reads ``b``, which one part writes: a copy of the loop would test the other part's ``b``
+        (guard_reads_recurrence, ("a", "b", "c"), False),
     ],
 )
 def test_fission_is_value_preserving(prog, names, splits):
