@@ -52,8 +52,7 @@ agent's catalog.
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
-| `interchange-for-doall` | loop, its map | `MoveLoopIntoMap` |
-| `interchange-for-doalls` | loop whose body holds several doalls over one axis | `MoveLoopIntoMap` with `lane_axis` (DaCe's lane analysis; the same rewrite as `InterchangeLoopsIntoLaneMaps`, without its CPU gates) |
+| `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; a loop over several doalls takes `doall-fusion` of them first (the loop must hold one map) |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
 | `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |

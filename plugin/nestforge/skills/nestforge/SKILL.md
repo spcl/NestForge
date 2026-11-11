@@ -98,12 +98,10 @@ one-iteration dimension of the inner map that reads the outer parameter (`jj in 
 first, and an inner map with one iteration only has nothing to swap.
 
 **`interchange-for-doall`** `[for, doall]`, MoveLoopIntoMap. `for t: doall i: B` becomes `doall i: for t: B`. One
-parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps.
-
-**`interchange-for-doalls`** `[for]`, MoveLoopIntoMap with a lane axis. `for t: { doall i: A; doall i: B }` becomes
-`doall i: for t: { A; B }` when every doall of the body spans the same axis `i` and no column touches another's. One parallel
-region for all the doalls and steps, and each column's data stays in cache across `t`. A time loop whose iterator indexes
-nothing only grows each column's working set, so judge it by timing.
+parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps. For `for t: { doall i: A; doall i: B }`, apply
+`doall-fusion` to the two doalls first (the loop must hold exactly one map), then this move: `doall i: for t: { A; B }`, one
+parallel region for all the doalls and steps, each column's data staying in cache across `t`. A time loop whose iterator
+indexes nothing only grows each column's working set, so judge it by timing.
 
 **`interchange-doall-for`** `[doall, for]`, MapLoopInterchange. `doall i: for t: B` becomes `for t: doall i: B`; the
 loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.

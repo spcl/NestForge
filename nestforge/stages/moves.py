@@ -39,7 +39,7 @@ from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, Subgr
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_peeling import LoopPeeling
 from dace.transformation.interstate.loop_tiling import LoopTiling
-from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes
+from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
 from dace.transformation.interstate.move_map_invariant_if_up import MoveMapInvariantIfUp
 from dace.transformation.interstate.state_fusion import StateFusion
@@ -54,7 +54,6 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     map_tile_pairs,
     untile_map_pair,
 )
-from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
@@ -90,7 +89,6 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "doall-fission": (nodes.MapEntry,),
     "subgraph-fission": (nodes.MapEntry, ControlFlowBlock),
     "interchange-for-doall": (LoopRegion, nodes.MapEntry),
-    "interchange-for-doalls": (LoopRegion,),
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
     "interchange-if-for": (ConditionalBlock, LoopRegion),
@@ -564,41 +562,15 @@ def plan_trimmed_map_map(state: SDFGState, outer: nodes.MapEntry, inner: nodes.M
 
 def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
     loop, entry = loop_row[0], map_row[0]
-    if loop_maps(loop) != [entry]:
-        return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that."
+    inside = loop_maps(loop)
+    if inside != [entry]:
+        more = f"; the loop holds {len(inside)} maps, doall-fusion them first" if len(inside) > 1 else ""
+        return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that{more}."
     # MoveLoopIntoMap passes a nest only the SDFG's symbols and data, and raises on an outer loop's iterator
     read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
     if read & enclosing_loop_variables(loop):
         return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
     return pattern(MoveLoopIntoMap, loop.sdfg, {"loop": loop}) or LOOP_INTO_MAP_REFUSED
-
-
-LANE_HOIST_REFUSED = (
-    "blocked by MoveLoopIntoMap: the loop bounds are not analyzable, or the body is not one component of states whose "
-    "maps all span the lane axis."
-)
-
-
-def plan_loop_lanes(loop_row: Row) -> Rewrite | str:
-    """``for t: { doall i: A; doall i: B; ... }`` -> ``doall i: for t: { A; B; ... }``: the loop moves inside one map
-    over the axis every map of its body shares (DaCe's lane analysis, as ``InterchangeLoopsIntoLaneMaps`` runs it, but
-    without its CPU gates: whether the hoist pays is the caller's to judge)."""
-    loop = loop_row[0]
-    if inside_a_map(loop):
-        return f"{loop.label} is inside a doall; hoist the loop of the outermost doall's body instead."
-    if lane_axis_of(loop) is None:
-        return f"the body of {loop.label} does not hold two doalls over one shared axis; use interchange-for-doall."
-    read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
-    if read & enclosing_loop_variables(loop):
-        return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
-    lanes = analyze_lanes(loop, loop.sdfg, True)
-    if lanes.refusal is not None:
-        return f"blocked by MoveLoopIntoMap: {lanes.refusal}"
-    move = pattern(MoveLoopIntoMap, loop.sdfg, {"loop": loop}, options={"cfg_body": True, "lane_axis": True})
-    if move is None:
-        return LANE_HOIST_REFUSED
-    sdfg = loop.sdfg
-    return region_rewrite(move.name, sdfg, lambda: (move.commit(), propagate_memlets_sdfg(sdfg)))
 
 
 def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
@@ -1149,7 +1121,6 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "doall-fission": plan_map_fission,
     "subgraph-fission": plan_subgraph_fission,
     "interchange-for-doall": plan_loop_map,
-    "interchange-for-doalls": plan_loop_lanes,
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
     "interchange-if-for": plan_if_loop,
@@ -1212,12 +1183,6 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "interchange-for-doall": (
         "MoveLoopIntoMap",
         "for t: doall i: B becomes doall i: for t: B (the doall goes outside).",
-    ),
-    "interchange-for-doalls": (
-        "MoveLoopIntoMap",
-        "for t: { doall i: A; doall i: B; ... } becomes doall i: for t: { A; B; ... } when every doall of the body spans "
-        "the same axis i and no column touches another's elements: one parallel region instead of one per doall and "
-        "step, and each column's data stays in cache across t.",
     ),
     "interchange-doall-for": (
         "MapLoopInterchange",
@@ -1415,12 +1380,6 @@ def loop_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
             yield (loop, None), (inside[0], find_state_of_node(loop.sdfg, inside[0]))
 
 
-def lane_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    for loop in every_region_block(sdfg, LoopRegion):
-        if len(loop_maps(loop)) > 1 and lane_axis_of(loop) is not None and not inside_a_map(loop):
-            yield ((loop, None),)
-
-
 def nested_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     for owner in sdfg.all_sdfgs_recursive():
         for state in owner.states():
@@ -1467,7 +1426,6 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "doall-fission": doall_rows,
     "subgraph-fission": body_cuts,
     "interchange-for-doall": loop_map_pairs,
-    "interchange-for-doalls": lane_loops,
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
     "interchange-if-for": guard_loop_pairs,

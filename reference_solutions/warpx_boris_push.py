@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""WarpX Boris momentum pusher: move the step loop inside the particle maps (``interchange-for-doalls``), then the
+"""WarpX Boris momentum pusher: fuse the maps of the step loop (``doall-fusion``), move the loop inside the one particle map (``interchange-for-doall``), then the
 default stage 2 on top.
 
 The kernel pushes every particle ``nsteps`` times; each step is a chain of elementwise maps over the particles. The
@@ -16,7 +16,9 @@ CONFIGS = (Context("cpu", 72, "L"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("interchange-for-doalls", writes=["ux", "uy", "uz"]))
+    while fusions := s.session.list_moves("doall-fusion"):
+        s.apply(fusions[0])
+    s.apply(s.pick("interchange-for-doall", writes=["ux", "uy", "uz"]))
     s.defaults()
 
 
