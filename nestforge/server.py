@@ -130,10 +130,8 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 MEASURING = TIMED | {"finalize"}
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
+#: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
 CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
-
-#: What a fresh session repeats to be the program the agent left. Not ``tune_kernel``: finalize sweeps anyway.
-REPEATED = CHANGING - {"tune_kernel"}
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
 CHECK_RUNG = "S"
@@ -207,7 +205,7 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     inputs = {
         renames.get(key, key): np.asarray(value)
         for key, value in data.items()
-        if isinstance(value, (np.ndarray, np.generic, int, float))
+        if isinstance(value, (np.ndarray, np.generic, int, float, complex))
     }
     source = BENCH_REFERENCE
     try:
@@ -246,7 +244,7 @@ def numpy_outputs(spec: Any, data: dict[str, Any]) -> dict[str, np.ndarray]:
         raise ReferenceUnavailable(f"{spec.short_name} has no NumPy function")
     module_path = f"hpcagent_bench.benchmarks.{spec.relative_path.replace('/', '.')}.{path.stem}"
     try:
-        function = vars(importlib.import_module(module_path))[spec.module_name]
+        function = vars(importlib.import_module(module_path))[spec.func_name]
         names = list(inspect.signature(function).parameters)
         widened = ieee_reference_data(dict(data))
         # a function writes its outputs in place: give it copies, so the session's inputs stay as drawn

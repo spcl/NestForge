@@ -46,7 +46,12 @@ class CorpusKernel:
         assert spec is not None and spec.loader is not None, f"{self.dace_file} is not importable"
         module = importlib.util.module_from_spec(spec)
         sys.modules[self.module_path] = module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            # a half-run module cached here would be served to the next caller
+            sys.modules.pop(self.module_path, None)
+            raise
         return module
 
     def program(self) -> dace.frontend.python.parser.DaceProgram:
@@ -95,7 +100,8 @@ def track_names(track: str | None) -> list[str]:
 
 
 def generate_dace_file(short_name: str) -> None:
-    """Regenerate hpcagent_bench's gitignored ``_dace.py`` of a :data:`DACE_TRACKS` kernel if it is missing."""
+    """Regenerate hpcagent_bench's gitignored ``_dace.py`` of a :data:`DACE_TRACKS` kernel if it is missing or stale
+    (a fingerprinted check, under a millisecond when fresh)."""
     from hpcagent_bench import autogen
 
     if short_name.split("/", 1)[0] in DACE_TRACKS:
@@ -111,8 +117,7 @@ def corpus_kernel(name: str) -> CorpusKernel | None:
         return None
     spec = BenchSpec.load(short_name)
     dace_file = KERNELS[short_name].parent / f"{spec.module_name}_dace.py"  # a renamed kernel keeps its module stem
-    if not dace_file.exists():
-        generate_dace_file(short_name)
+    generate_dace_file(short_name)
     if not dace_file.exists():
         return None
     return CorpusKernel(short_name, module_path(short_name), dace_file, spec)

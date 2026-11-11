@@ -457,8 +457,10 @@ def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and
     judge = post("view_tree", "episode-rebuild")
 
     assert judge.slots == 1
-    assert [tool for tool, _ in stub.calls[before:]] == ["write_kernel", "view_tree"], "a sweep is finalize's to repeat"
-    assert stub.held[before:] == [(SLOT, False, True), (SLOT, True, True)]
+    assert [tool for tool, _ in stub.calls[before:]] == ["write_kernel", "tune_kernel", "view_tree"], (
+        "a tuning is replayed: finalize never sweeps a kernel that already has a build"
+    )
+    assert stub.held[before:] == [(SLOT, False, True), (SLOT, False, True), (SLOT, True, True)]
 
 
 def test_a_read_after_a_rebuild_takes_no_slot(stub: Stub) -> None:

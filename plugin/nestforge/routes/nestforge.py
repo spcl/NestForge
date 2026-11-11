@@ -27,7 +27,7 @@ from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_para
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, REPEATED, Reply, SessionProcess, Setup, applied
+from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
@@ -199,7 +199,7 @@ def run_call(
         del episode.sessions[kernel]
         return reply.model_copy(update={"ended": True})
     if name in CHANGING and not reply.error:
-        if name in REPEATED and applied(reply):
+        if applied(reply):
             try:
                 record(request.episode_id, kernel, call)
             except OSError as err:

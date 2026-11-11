@@ -264,6 +264,8 @@ class KernelBuild:
 Codegen = Literal["first", "sweep"]
 #: What :meth:`Session.run_defaults` finishes.
 Stage = Literal["moves", "finish", "scopes", "placement", "round"]
+#: A measurement and what it was of: the inputs, the reference, the repetitions and the codegen.
+Measured = tuple[dict[str, np.ndarray], Reference | None, int, Codegen, Performance]
 #: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
 SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...]]
 
@@ -317,7 +319,7 @@ class Checkpoint:
     sources: dict[str, KernelSource]
     builds: dict[str, KernelBuild]
     prepared: dict[str, Prepared]
-    measured: Performance | None
+    measured: Measured | None
 
 
 class Session:
@@ -408,7 +410,7 @@ class Session:
         # the oracles (by source) that did not finish at ``sizes``, so a retry does not spend their budget again
         self.oracles_out_of_time: set[str] = set()
         # :meth:`performance` of the current program, dropped by every change to it
-        self.measured: Performance | None = None
+        self.measured: Measured | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -1019,7 +1021,8 @@ class Session:
         winner = result.winner
         if winner is not None and winner.archive is not None:
             build = KernelBuild(src, winner.variant, winner.archive, winner.verdict)
-            self.swept[key] = kept(build, self.swept_dir / f"{name}_{len(self.swept)}")
+            # a folder of its own: a count reused by a sweep again of a key would overwrite a linked winner
+            self.swept[key] = kept(build, Path(tempfile.mkdtemp(prefix=f"{name}_", dir=self.swept_dir)))
             self.bind(name, self.swept[key])
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
@@ -1154,28 +1157,32 @@ class Session:
         """Every phase's feedback at once (:mod:`~nestforge.stages.performance`): on a :meth:`trial`, the default
         scopes when none is defined, the default placement when none is chosen and the default kernel builds, then
         the whole program (checked against ``reference`` when given), its offloading and each kernel are timed. Reused
-        until the program changes.
+        for the same arguments until the program changes.
 
         :param codegen: How the kernels without a build of their own are built for this measurement; the session's
             own ``codegen`` when ``None``."""
-        if self.measured is not None:
-            return self.measured
+        codegen = codegen if codegen is not None else self.codegen
+        cached = self.measured
+        if cached is not None and cached[0] is inputs and cached[1] is reference and cached[2:4] == (reps, codegen):
+            return cached[4]
         with self.stopper.armed():
             trial = self.trial()
-            trial.codegen = codegen if codegen is not None else self.codegen
+            trial.codegen = codegen
             try:
-                self.measured = trial.measure(inputs, reference, reps)
+                measured = trial.measure(inputs, reference, reps)
             finally:
                 # the trial's builds are measured; a long session would otherwise keep every one until it exits
                 shutil.rmtree(trial.work_dir, ignore_errors=True)
-        return self.measured
+        self.measured = inputs, reference, reps, codegen, measured
+        return measured
 
     def measure(self, inputs: dict[str, np.ndarray], reference: Reference | None, reps: int) -> Performance:
         """The feedback of :meth:`performance` on this session, a self."""
         if not external_calls(self.sdfg):
             self.default_scopes()
         devices = {ext.name: kernel_device(ext) for ext in external_calls(self.sdfg)}
-        if self.unplaced is None:
+        # as finalize: placing a CPU program changes nothing but drops its kernels' builds
+        if self.targets.gpu and self.unplaced is None:
             placed = self.place()
             devices, moves = placed.devices, placed.transfers
         else:

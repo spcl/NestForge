@@ -309,10 +309,12 @@ def run_variant(
         steps(script, ctx)
         if not script.finished:
             script.finish()
+        tree = trial.describe()
+        perf = trial.performance(data[0], data[1], reps).structured
     except ReplayError as err:
         return VariantRecord(name=name, moves=tuple(script.applied), error=str(err))
-    tree = trial.describe()
-    perf = trial.performance(data[0], data[1], reps).structured
+    except Exception as err:  # noqa: BLE001 -- one variant failing is its record, the others still run
+        return VariantRecord(name=name, moves=tuple(script.applied), error=f"{type(err).__name__}: {err}")
     return VariantRecord(
         name=name,
         moves=tuple(script.applied),
