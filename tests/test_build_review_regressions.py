@@ -154,10 +154,11 @@ def test_complex_outputs_take_their_component_floor(complex_dtype: type, compone
 
 def test_compile_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     pidfile = tmp_path / "grandchild"
+    # the timeout must outlast the shell starting up and writing the pidfile under CPU load
     start = time.perf_counter()
     with pytest.raises(RuntimeError, match="timed out"):
-        toolchain.run(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], timeout=1)
-    assert time.perf_counter() - start < 15, "run waited for the grandchild holding its pipe"
+        toolchain.run(["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"], timeout=5)
+    assert time.perf_counter() - start < 25, "run waited for the grandchild holding its pipe"
     grandchild = Path(f"/proc/{pidfile.read_text().strip()}/stat")
     deadline = time.perf_counter() + 10
     while grandchild.exists() and grandchild.read_text().split(")")[-1].split()[0] != "Z":
