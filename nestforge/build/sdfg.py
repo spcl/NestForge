@@ -12,7 +12,7 @@ import hashlib
 import time
 import warnings
 from _ctypes import dlclose  # release a built .so mapping (BuiltSDFG.unload)
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +26,7 @@ from dace.data import Array
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg.scope import is_devicelevel_gpu
 from dace.transformation.passes.canonicalize.finalize import force_map_scoped_registers
+from dace.transformation.passes.persistent_transients import MakeTransientsPersistent, persistent_size_symbols
 
 from nestforge.build.toolchain import (
     AR,
@@ -80,29 +81,42 @@ class BuiltSDFG:
     #: wall time of compiling and linking the .so
     compile_seconds: float = 0.0
     handle: ctypes.c_void_p | None = field(default=None, repr=False)
+    #: typed entry points by symbol, bound once: a timed call must not pay for ctypes' lookup and typing
+    entries: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def function(self, symbol: str, restype: Any, argtypes: list[Any]) -> Any:
         """The C function ``symbol`` of the mapped library, typed."""
         if self.lib is None:
             raise RuntimeError(f"{self.name}: {symbol} called after unload(); the compiled library is not mapped")
-        fn = self.lib[symbol]  # ctypes CDLL indexing (not getattr) binds the entry point
-        fn.restype = restype
-        fn.argtypes = argtypes
-        return fn
+        if symbol not in self.entries:
+            fn = self.lib[symbol]  # ctypes CDLL indexing (not getattr) binds the entry point
+            fn.restype = restype
+            fn.argtypes = argtypes
+            self.entries[symbol] = fn
+        return self.entries[symbol]
 
     def init(self, sizes: Mapping[str, SymbolValue]) -> None:
         fn = self.function(f"__dace_init_{self.name}", ctypes.c_void_p, [p.ctype for p in self.init_params])
         # each parameter's own ctype: symbol widths differ between programs
-        self.handle = ctypes.c_void_p(fn(*[symbol_argument(p.ctype, sizes[p.name]) for p in self.init_params]))
+        handle = fn(*[symbol_argument(p.ctype, sizes[p.name]) for p in self.init_params])
+        if handle is None:
+            raise RuntimeError(f"__dace_init_{self.name} failed (returned NULL)")
+        self.handle = ctypes.c_void_p(handle)
+
+    def bind(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> Callable[[], None]:
+        """``__program_N(handle, args...)`` with its arguments bound once, for repeated in-place calls (init must
+        have run; ``buffers`` must keep their memory)."""
+        fn = self.function(f"__program_{self.name}", None, [ctypes.c_void_p] + [p.ctype for p in self.prog_params])
+        args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
+        return functools.partial(fn, self.handle, *args)
 
     def program(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Call ``__program_N(handle, args...)`` once, in place (init must have run)."""
-        fn = self.function(f"__program_{self.name}", None, [ctypes.c_void_p] + [p.ctype for p in self.prog_params])
-        args = [bind_argument(p.name, p.ctype, buffers, sizes) for p in self.prog_params]
-        fn(self.handle, *args)
+        self.bind(buffers, sizes)()
 
     def unload(self) -> None:
         """Close the library, so a long sweep does not keep one mapping per kernel."""
+        self.entries.clear()
         if self.lib is not None:
             dlclose(self.lib._handle)
             self.lib = None
@@ -111,8 +125,10 @@ class BuiltSDFG:
         """Run ``__dace_exit`` on the open handle, if any; call it before :meth:`unload`."""
         if self.handle is None:
             return
-        self.function(f"__dace_exit_{self.name}", ctypes.c_int, [ctypes.c_void_p])(self.handle)
-        self.handle = None
+        handle, self.handle = self.handle, None
+        status = self.function(f"__dace_exit_{self.name}", ctypes.c_int, [ctypes.c_void_p])(handle)
+        if status != 0:
+            raise RuntimeError(f"__dace_exit_{self.name} failed (status {status})")
 
     def run(self, buffers: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]) -> None:
         """Init, one program call, exit."""
@@ -177,14 +193,20 @@ def array_bytes(desc: Array, sizes: Mapping[str, SymbolValue]) -> int | None:
 def persistent_candidates(
     sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue], min_bytes: int
 ) -> Iterator[tuple[str, Array]]:
-    """The program's own transients that are heap arrays of at least ``min_bytes`` at ``sizes`` and live for a scope:
-    kernels (``ExternalCall`` bodies), views, registers, device memory and arrays inside a GPU kernel are left out."""
+    """The program's own transients that are heap arrays of at least ``min_bytes`` at ``sizes``, live for a scope and
+    that DaCe's :class:`MakeTransientsPersistent` would promote (none used inside a parallel map, where each thread
+    needs its own): kernels (``ExternalCall`` bodies), views, registers, device memory and arrays inside a GPU kernel
+    are left out."""
+    promotable, allowed = MakeTransientsPersistent(toplevel_only=True), persistent_size_symbols(sdfg)
+    unit_extents: dict[Any, bool] = {}
     for owned in sdfg.all_sdfgs_recursive():
         if on_device(owned):
             continue
+        promoted = promotable._promote_in(owned, allowed, unit_extents)
         for name, desc in owned.arrays.items():
             heap = desc.storage in (dace.StorageType.Default, dace.StorageType.CPU_Heap)
-            if type(desc) is Array and desc.transient and heap and desc.lifetime == dace.AllocationLifetime.Scope:
+            scoped = desc.lifetime == dace.AllocationLifetime.Scope
+            if name in promoted and type(desc) is Array and desc.transient and heap and scoped:
                 size = array_bytes(desc, sizes)
                 if size is not None and size >= min_bytes:
                     yield f"{owned.label}.{name}", desc
@@ -239,7 +261,7 @@ def generate_program_folder(sdfg: dace.SDFG, out_dir: Path) -> Path:
     folder = Path(dace_compiler.generate_program_folder(sdfg, code_objects, str(out_dir)))
     frame = folder / "src" / "cpu" / f"{sdfg.name}.cpp"
     if not frame.exists():
-        frame = next(folder.glob("src/cpu/*.cpp"))
+        raise FileNotFoundError(f"DaCe wrote no frame {frame} for {sdfg.name}")
     return frame
 
 

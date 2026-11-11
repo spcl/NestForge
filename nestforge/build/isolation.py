@@ -227,20 +227,19 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
         )
         pid = os.fork()
     if pid == 0:
-        os.close(r)
-        faulthandler.disable()  # a child's segfault must not dump the parent's stack
-        # an initialized libomp's fork handler widens the child to its own first mask, and its binding of the caller
-        # narrows the caller's: the child takes the mask NestForge chose (CHILD_CPUS), whatever OpenMP did since
-        pin_cpus(cpus)
-        try:
-            enter_seal()
-            payload = work_fn().model_dump_json()
-        except BaseException as e:
-            payload = error_result(e).model_dump_json()
-        try:
+        try:  # the child never returns into the caller's code, whatever raises
+            try:
+                os.close(r)
+                faulthandler.disable()  # a child's segfault must not dump the parent's stack
+                # an initialized libomp's fork handler widens the child to its own first mask, and its binding of the
+                # caller narrows the caller's: the child takes the mask NestForge chose (CHILD_CPUS), whatever OpenMP did
+                pin_cpus(cpus)
+                enter_seal()
+                payload = work_fn().model_dump_json()
+            except BaseException as e:
+                payload = error_result(e).model_dump_json()
             os.write(w, payload.encode())
         finally:
-            os.close(w)
             os._exit(0)
     os.close(w)
     try:

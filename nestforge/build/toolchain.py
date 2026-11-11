@@ -5,16 +5,18 @@ signature parsing that binds a kernel entry through ctypes. Imports no DaCe; sub
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import functools
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -326,29 +328,44 @@ def nvcc_linker_flag(flag: str) -> str:
     return "-Xlinker=" + flag.removeprefix("-Wl,")
 
 
+def linked_library_dir(compiler: str, flags: list[str], source_name: str, library: str) -> str:
+    """The first ``-L`` directory holding ``lib<library>.so`` (or a versioned soname) on ``compiler``'s own verbose
+    link of a probe library against ``-l<library>``."""
+    with tempfile.TemporaryDirectory(prefix=f"nf_{library}_") as scratch:
+        source = Path(scratch) / source_name
+        source.write_text("int nf_link_probe() { return 0; }\n")
+        link = [compiler, "-v", "-shared", *flags, str(source), "-o", str(Path(scratch) / "probe.so"), f"-l{library}"]
+        proc = subprocess.run(link, capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
+    output = proc.stdout + proc.stderr
+    if proc.returncode != 0:
+        raise LookupError(f"{compiler} cannot link -l{library}:\n{output[-ERROR_TAIL:]}")
+    for directory in re.findall(r"(?<=-L)\S+", output):
+        candidate = Path(directory.strip('"'))
+        if any(candidate.glob(f"lib{library}.so*")):
+            return str(candidate.resolve())
+    raise LookupError(f"{compiler} names no directory holding lib{library}.so in its link line")
+
+
 @functools.lru_cache(maxsize=None, typed=True)
 def cudart_dir(nvcc: str) -> str:
     """The directory ``nvcc`` links ``libcudart`` from, read off its own verbose link of a probe library."""
-    with tempfile.TemporaryDirectory(prefix="nf_cudart_") as scratch:
-        source = Path(scratch) / "probe.cu"
-        source.write_text("int nf_cudart_probe() { return 0; }\n")
-        link = [nvcc, "-v", "-shared", "-Xcompiler=-fPIC", nvcc_linker_flag(AS_NEEDED), str(source)]
-        proc = subprocess.run(
-            [*link, "-o", str(Path(scratch) / "probe.so"), "-lcudart"],
-            capture_output=True,
-            text=True,
-            timeout=COMPILE_TIMEOUT_S,
-        )
-    for directory in re.findall(r"(?<=-L)\S+", proc.stdout + proc.stderr):
-        candidate = Path(directory.strip('"'))
-        if (candidate / "libcudart.so").exists():
-            return str(candidate.resolve())
-    raise LookupError(f"{nvcc} names no directory holding libcudart.so in its link line")
+    return linked_library_dir(nvcc, ["-Xcompiler=-fPIC", nvcc_linker_flag(AS_NEEDED)], "probe.cu", "cudart")
+
+
+def discover_toolchains_of[T](exe: str, make: Callable[[str], T]) -> list[T]:
+    """``make(path)`` of every ``exe`` on PATH; one whose release or runtime cannot be found is skipped, warned."""
+    found: list[T] = []
+    for path in path_executables(exe):
+        try:
+            found.append(make(path))
+        except (LookupError, OSError, subprocess.SubprocessError) as e:
+            warnings.warn(f"skipping {path}: {e}")
+    return found
 
 
 def discover_cuda_toolchains() -> list[CudaToolchain]:
-    """Every nvcc on PATH, one toolchain per distinct compiler."""
-    return [CudaToolchain(nvcc, nvcc_release(nvcc), cudart_dir(nvcc)) for nvcc in path_executables("nvcc")]
+    """Every working nvcc on PATH, one toolchain per distinct compiler."""
+    return discover_toolchains_of("nvcc", lambda nvcc: CudaToolchain(nvcc, nvcc_release(nvcc), cudart_dir(nvcc)))
 
 
 def cudart_link_flags(directory: str) -> list[str]:
@@ -379,17 +396,17 @@ def hipcc_release(hipcc: str) -> str:
     return match.group(1)
 
 
+@functools.lru_cache(maxsize=None, typed=True)
 def hip_runtime_dir(hipcc: str) -> str:
-    """The directory holding the ``libamdhip64`` of ``hipcc``'s ROCm: ``<rocm>/lib`` beside its ``<rocm>/bin``."""
-    directory = Path(hipcc).resolve().parents[1] / "lib"
-    if not (directory / "libamdhip64.so").exists():
-        raise LookupError(f"{hipcc}: no libamdhip64.so in {directory}")
-    return str(directory)
+    """The directory ``hipcc`` links ``libamdhip64`` from, read off its own verbose link of a host-only probe."""
+    return linked_library_dir(hipcc, ["-fPIC", AS_NEEDED, "-x", "c++"], "probe.cpp", "amdhip64")
 
 
 def discover_hip_toolchains() -> list[HipToolchain]:
-    """Every hipcc on PATH, one toolchain per distinct compiler."""
-    return [HipToolchain(hipcc, hipcc_release(hipcc), hip_runtime_dir(hipcc)) for hipcc in path_executables("hipcc")]
+    """Every working hipcc on PATH, one toolchain per distinct compiler."""
+    return discover_toolchains_of(
+        "hipcc", lambda hipcc: HipToolchain(hipcc, hipcc_release(hipcc), hip_runtime_dir(hipcc))
+    )
 
 
 def hip_link_flags(directory: str) -> list[str]:
@@ -457,13 +474,28 @@ def run(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
     :class:`RuntimeError`, so a sweep moves on to its next cell."""
     from nestforge.build.isolation import sealed_argv  # the package loads DaCe, and this module must not
 
-    try:
-        p = subprocess.run(sealed_argv(cmd), capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"command timed out after {timeout:.0f}s: {' '.join(cmd[:COMMAND_WORDS])} ... (the ceiling is NF_COMPILE_TIMEOUT)"
-        )
+    # its own process group: a timeout or an interrupt kills the compiler's children (cc1plus, ld) too
+    with subprocess.Popen(
+        sealed_argv(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True
+    ) as p:
+        try:
+            _, stderr = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_group(p)
+            raise RuntimeError(
+                f"command timed out after {timeout:.0f}s: {' '.join(cmd[:COMMAND_WORDS])} ... (the ceiling is NF_COMPILE_TIMEOUT)"
+            ) from None
+        except BaseException:
+            kill_group(p)
+            raise
     if p.returncode != 0:
-        raise RuntimeError(f"command failed: {' '.join(cmd[:COMMAND_WORDS])} ...\n{p.stderr[-ERROR_TAIL:]}")
-    if p.stderr.strip():
-        warn_once(Path(cmd[0]).name, p.stderr)
+        raise RuntimeError(f"command failed: {' '.join(cmd[:COMMAND_WORDS])} ...\n{stderr[-ERROR_TAIL:]}")
+    if stderr.strip():
+        warn_once(Path(cmd[0]).name, stderr)
+
+
+def kill_group(p: subprocess.Popen[str]) -> None:
+    """Kill ``p``'s whole process group and reap ``p``."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(p.pid, signal.SIGKILL)
+    p.communicate()

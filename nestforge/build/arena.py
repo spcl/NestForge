@@ -339,10 +339,10 @@ def call_device(call: DeviceCall) -> DeviceResult:
 
 
 def dtype_floor(arrays: dict[str, np.ndarray]) -> float:
-    """The loosest :data:`flags.DTYPE_RTOL` floor among ``arrays`` (one ULP of the narrowest format present)."""
-    return max(
-        (flags.DTYPE_RTOL[v.dtype.name] for v in arrays.values() if v.dtype.name in flags.DTYPE_RTOL), default=0.0
-    )
+    """The loosest :data:`flags.DTYPE_RTOL` floor among ``arrays`` (one ULP of the narrowest format present); a
+    complex array takes its component float's."""
+    floats = (np.finfo(v.dtype).dtype.name for v in arrays.values() if np.issubdtype(v.dtype, np.inexact))
+    return max((flags.DTYPE_RTOL[name] for name in floats if name in flags.DTYPE_RTOL), default=0.0)
 
 
 def rung_rtol(mode: str, floor: float) -> float:
