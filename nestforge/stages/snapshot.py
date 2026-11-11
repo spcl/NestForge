@@ -9,6 +9,7 @@ source by the cleanup that follows every move."""
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import cast
@@ -135,10 +136,10 @@ def copy_slice(state: SDFGState, entry: nodes.MapEntry, read: SliceRead) -> str:
     ranges = dict(zip(entry.map.params, entry.map.range.ranges, strict=True))
     sizes = [symbolic.simplify(ranges[param][1] - ranges[param][0] + 1) for _, param in read.walked]
     name, _ = sdfg.add_transient(read.data + SNAPSHOT_SUFFIX, sizes, sdfg.arrays[read.data].dtype, find_new_name=True)
-    params = {f"{COPY_PARAM}{i}": f"{ranges[p][0]}:{ranges[p][1] + 1}" for i, (_, p) in enumerate(read.walked)}
+    params = {f"{COPY_PARAM}{i}": f"0:{size}" for i, size in enumerate(sizes)}
     source: list[str] = [""] * len(sdfg.arrays[read.data].shape)
-    for i, (dim, _) in enumerate(read.walked):
-        source[dim] = f"{COPY_PARAM}{i}"
+    for i, (dim, param) in enumerate(read.walked):
+        source[dim] = f"{COPY_PARAM}{i} + ({ranges[param][0]})"
     for dim, index in read.fixed:
         source[dim] = str(index)
     state.add_mapped_tasklet(
@@ -198,6 +199,10 @@ def snapshot_applies(state: SDFGState, entry: nodes.MapEntry) -> bool:
         return False
     twin_state, twin_entry = scope_twin(state, entry)
     try:
-        return snapshot(twin_state, twin_entry, written)
+        applied = snapshot(twin_state, twin_entry, written)
+        # the twin lacks the doalls that write the transients it reads, which validation warns of
+        with warnings.catch_warnings(action="ignore", category=UserWarning):
+            twin_state.sdfg.validate()
+        return applied
     except (ValueError, KeyError, dace.sdfg.InvalidSDFGError):
         return False

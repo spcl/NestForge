@@ -16,7 +16,7 @@ from pathlib import Path
 import dace
 import numpy as np
 
-from nestforge.build.arena import US_PER_S, reps_within_budget
+from nestforge.build.arena import US_PER_S, reps_within_budget, rewind
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
 from nestforge.build.toolchain import SymbolValue, parse_params, signature
@@ -137,15 +137,20 @@ def run_program(call: ProgramCall) -> ProgramTime:
         parse_params(signature(call.source, f"__program_{call.name}")),
     )
     built.init(call.sizes)
+    pristine = [(buf, buf.copy()) for buf in call.buffers.values()]  # every call starts from the same inputs
     try:
         start = time.perf_counter()
         built.program(call.buffers, call.sizes)
         reps = reps_within_budget(call.reps, time.perf_counter() - start)
         mismatched = call.reference.mismatched(call.buffers) if call.reference is not None else None
-        start = time.perf_counter()
+        call_once = built.bind(call.buffers, call.sizes)  # rewind restores in place, so the bound pointers stay valid
+        total = 0.0
         for _ in range(reps):
-            built.program(call.buffers, call.sizes)
-        return ProgramTime(time_us=(time.perf_counter() - start) / reps * US_PER_S, mismatched=mismatched)
+            rewind(pristine)
+            start = time.perf_counter()
+            call_once()
+            total += time.perf_counter() - start
+        return ProgramTime(time_us=total / reps * US_PER_S, mismatched=mismatched)
     finally:
         built.close()
 

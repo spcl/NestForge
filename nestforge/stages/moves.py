@@ -841,7 +841,9 @@ def plan_untile_for(row: Row) -> Rewrite | str:
         return f"{loop.label} is not a loop over tiles holding the loop over one tile's points."
 
     def commit() -> None:
-        UntileLoops().untile_loop(loop, loop.sdfg)
+        # the copy has no parent, so it can untile what the program, with its parent's symbols, refuses
+        if not UntileLoops().untile_loop(loop, loop.sdfg):
+            raise ValueError(f"UntileLoops refused {loop.label} in place, though it untiled a parentless copy.")
         propagate_memlets_sdfg(loop.sdfg.root_sdfg)
 
     return region_rewrite("UntileLoops.untile_loop", loop.sdfg, commit)

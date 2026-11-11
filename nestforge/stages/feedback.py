@@ -74,9 +74,13 @@ def compiler_remarks(src: KernelSource, compiler: str, flags: list[str]) -> str:
             [compiler, *kept, *extra, *remark_flags(compiler), "-c", str(unit), "-o", f"{scratch}/{unit.stem}.o"]
             for unit in src.units
         ]
-        done = [
-            subprocess.run(sealed_argv(cmd), capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S) for cmd in cmds
-        ]
+        try:
+            done = [
+                subprocess.run(sealed_argv(cmd), capture_output=True, text=True, timeout=COMPILE_TIMEOUT_S)
+                for cmd in cmds
+            ]
+        except subprocess.TimeoutExpired as err:
+            return str(err)
     return "".join(d.stderr for d in done)
 
 
