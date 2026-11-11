@@ -290,7 +290,8 @@ out of the last phase starts that round: the moves reopen and the scopes and ker
   runs each kernel on `cpu` or `gpu` and fixes the scopes; a GPU kernel copies its arguments inside its call until
   `insert_copies` moves the copies into the program, where adjacent GPU kernels share them (`next_phase` inserts them
   otherwise). On a GPU kernel with its copies in, `stage-loads-shared` stages the tiles of the arrays its threads
-  reread (a stencil's input) in shared memory; do it last, since placing again drops it.
+  reread (a stencil's input) in shared memory, one thread block of `tile_sizes` threads per tile; do it last, since
+  placing again drops it.
 - `list_kernels` shows each kernel's device, its arguments and which kernels produce them; start with the largest
   share in `get_performance`.
 - `focus_kernel name=...` scopes your kernel work to one kernel: `write_kernel` and `tune_kernel` refuse every other

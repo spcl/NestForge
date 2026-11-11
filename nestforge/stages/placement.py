@@ -16,6 +16,7 @@ import dace
 from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall, call_site, external_calls
+from dace.ordered import OrderedSet
 from dace.sdfg import nodes
 from dace.transformation.passes.offloading.host_maps import HostMapSpec
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
@@ -47,6 +48,13 @@ class OffloadKernels(OffloadToAccelerator):
     ) -> None:
         super().__init__(taskloop_overrides, host_maps)
         self.host_kernels = list(host_kernels or ())
+
+    def find_taskloops(self, sdfg: dace.SDFG) -> None:
+        """DaCe's host maps, and every map outside the kernels pinned to the host: only a scope placed on the GPU
+        runs there, so the program's own maps stay host code, as in its CPU form."""
+        super().find_taskloops(sdfg)
+        for state in sdfg.states():
+            self._host_pinned |= OrderedSet(n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry))
 
     def assign_schedules(self, sdfg: dace.SDFG, host_level: bool = True) -> None:
         super().assign_schedules(sdfg, host_level)

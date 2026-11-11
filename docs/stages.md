@@ -69,7 +69,7 @@ agent's catalog.
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
-| `stage-loads-shared` | GPU kernel inside a GPU scope with its copies inserted (`list_moves(scope=...)` only) | `StageLoadsThroughSharedMemory` on that kernel: it is tiled into thread blocks (`AddThreadBlockMap`) and each array it only reads and reuses, with a constant footprint per thread, gets a `GPU_Shared` tile (halo included) filled by one block-collective copy and one barrier |
+| `stage-loads-shared` | GPU kernel inside a GPU scope with its copies inserted (`list_moves(scope=...)` only) | `StageLoadsThroughSharedMemory` on that kernel: it is tiled into thread blocks of `tile_sizes` threads (`AddThreadBlockMap`; listed with 32 per dimension, at most three) and each array it only reads and reuses, with a constant footprint per thread, gets a `GPU_Shared` tile (halo included) filled by one block-collective copy and one barrier |
 | `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |

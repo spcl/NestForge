@@ -126,8 +126,9 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
 DEVICE_KINDS = frozenset({"stage-loads-shared"})
 
-#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
-SIZED = frozenset({"tile-doall", "tile-for"})
+#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order (for
+#: ``stage-loads-shared``, the thread block: one size per dimension, at most three).
+SIZED = frozenset({"tile-doall", "tile-for", "stage-loads-shared"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
 #: The move kinds that take ``max_iterations``: the largest trip count the agent accepts to unroll.
@@ -141,7 +142,8 @@ def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
     if kind not in SIZED:
         return ()
     head = rows[0][0]
-    return (PROBE_TILE,) * (len(head.map.params) if isinstance(head, nodes.MapEntry) else 1)
+    dims = len(head.map.params) if isinstance(head, nodes.MapEntry) else 1
+    return (PROBE_TILE,) * (min(dims, 3) if kind == "stage-loads-shared" else dims)
 
 
 def probe_implementation(kind: str, rows: Sequence[Row]) -> str | None:
@@ -732,10 +734,18 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
-def plan_stage_loads_shared(row: Row) -> Rewrite | str:
-    """A GPU kernel stages the tiles of the arrays its threads reuse through shared memory."""
+def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
+    """A GPU kernel stages the tiles of the arrays its threads reuse through shared memory, one thread block of
+    ``tile_sizes`` threads per tile."""
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
-    move = pattern(StageLoadsThroughSharedMemory, state.sdfg, {"map_entry": entry})
+    dims = min(len(entry.map.params), 3)
+    if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
+        return (
+            f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass tile_sizes, the "
+            f"thread block, {dims} positive size(s)."
+        )
+    options = {"block_size": list(tile_sizes)}
+    move = pattern(StageLoadsThroughSharedMemory, state.sdfg, {"map_entry": entry}, options=options)
     if move is None:
         return (
             f"blocked by StageLoadsThroughSharedMemory: {entry.map.label} is no GPU kernel (place its scope on the GPU "
@@ -1204,7 +1214,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "(unroll-for, unroll-doall).",
     ),
     "stage-loads-shared": (
-        "StageLoadsThroughSharedMemory",
+        "StageLoadsThroughSharedMemory (tile_sizes, the thread block)",
         "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
         "included) of every array it only reads and reuses into shared memory, so global memory is read once.",
     ),
