@@ -35,6 +35,7 @@ from nestforge.build.arena import make_inputs, run_oracle
 from nestforge.build.sdfg import BuildOptions, dace_runtime_include, new_gpu_codegen
 from nestforge.build.toolchain import (
     C_PTR,
+    NEW_DTAGS,
     compiler_family,
     driver_lib_path,
     library_flags,
@@ -91,7 +92,7 @@ def test_owned_build_jacobi_matches_oracle(tmp_path):
 
 def without_search_paths(flags):
     """``flags`` without ``-L`` and ``-Wl,-rpath,`` entries: which runtime, not where it was found."""
-    return [f for f in flags if not f.startswith("-L") and not f.startswith("-Wl,-rpath")]
+    return [f for f in flags if not f.startswith(("-L", "-Wl,-rpath", NEW_DTAGS))]
 
 
 def test_openmp_flags_select_libomp_for_every_compiler_family():
@@ -141,7 +142,7 @@ def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(tmp_path, 
     # LD_LIBRARY_PATH (not LIBRARY_PATH): the loader searches it, the linker does not
     monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
     assert driver_lib_path("fakeomp", "g++") is None, "premise: the linker cannot find it unaided"
-    assert library_flags("fakeomp", "g++") == [f"-L{tmp_path}", f"-Wl,-rpath,{tmp_path}", "-lfakeomp"]
+    assert library_flags("fakeomp", "g++") == [f"-L{tmp_path}", f"-Wl,-rpath,{tmp_path}", NEW_DTAGS, "-lfakeomp"]
     assert lib_linkable("fakeomp", "g++")
 
 
@@ -536,7 +537,7 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
 
     flags = openmp_link_flags("g++")
 
-    assert flags == [f"-L{llvm_lib}", f"-Wl,-rpath,{llvm_lib}", "-l:libomp.so.5"]
+    assert flags == [f"-L{llvm_lib}", f"-Wl,-rpath,{llvm_lib}", NEW_DTAGS, "-l:libomp.so.5"]
     source, obj, shared = tmp_path / "kern.cpp", tmp_path / "kern.o", tmp_path / "libkern.so"
     source.write_text(OMP_KERNEL_CXX)
     subprocess.run([real_gxx, "-O2", "-fPIC", "-fopenmp", "-c", str(source), "-o", str(obj)], check=True, env=real_env)

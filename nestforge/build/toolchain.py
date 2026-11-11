@@ -135,6 +135,11 @@ def lib_linkable(soname: str, compiler: str = DEFAULT_COMPILER) -> bool:
     return runtime_library(soname, compiler) is not None
 
 
+#: Every rpath written as DT_RUNPATH: a DT_RPATH is searched before ``LD_LIBRARY_PATH``, so the build's OpenMP runtime
+#: would load beside the one the process runs on (two runtimes, the second pinned to one core).
+NEW_DTAGS = "-Wl,--enable-new-dtags"
+
+
 def library_flags(soname: str, compiler: str) -> list[str]:
     """Link ``lib<soname>`` and find it again at load time: ``-L`` and ``-rpath`` only when ``compiler`` does not
     find it unaided, and ``-l:<file>`` when only a versioned shared object provides it."""
@@ -144,7 +149,7 @@ def library_flags(soname: str, compiler: str) -> list[str]:
     library = f"-l{soname}" if found.name == f"lib{soname}.so" else f"-l:{found.name}"
     if driver_lib_path(soname, compiler) is not None:
         return [library]
-    return [f"-L{found.parent}", f"-Wl,-rpath,{found.parent}", library]
+    return [f"-L{found.parent}", f"-Wl,-rpath,{found.parent}", NEW_DTAGS, library]
 
 
 def openmp_compile_flags(compiler: str) -> list[str]:
@@ -164,7 +169,7 @@ def openmp_link_flags(compiler: str) -> list[str]:
 def support_rpath_flags(compiler: str) -> tuple[str, ...]:
     """``-rpath`` for the support libraries icx links from off the loader path (svml, imf, irng, intlc)."""
     found = driver_lib_path("svml", compiler)
-    return (f"-Wl,-rpath,{found.parent}",) if found else ()
+    return (f"-Wl,-rpath,{found.parent}", NEW_DTAGS) if found else ()
 
 
 #: The two ctypes shapes a kernel parameter can take: a scalar type, or a pointer to one.
@@ -353,7 +358,7 @@ def discover_cuda_toolchains() -> list[CudaToolchain]:
 
 def cudart_link_flags(directory: str) -> list[str]:
     """Link ``libcudart`` from ``directory`` and find it there again at load time."""
-    return [f"-L{directory}", "-lcudart", f"-Wl,-rpath,{directory}"]
+    return [f"-L{directory}", "-lcudart", f"-Wl,-rpath,{directory}", NEW_DTAGS]
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,7 +399,7 @@ def discover_hip_toolchains() -> list[HipToolchain]:
 
 def hip_link_flags(directory: str) -> list[str]:
     """Link ``libamdhip64`` from ``directory`` and find it there again at load time."""
-    return [f"-L{directory}", "-lamdhip64", f"-Wl,-rpath,{directory}"]
+    return [f"-L{directory}", "-lamdhip64", f"-Wl,-rpath,{directory}", NEW_DTAGS]
 
 
 def needed_libraries(shared: Path) -> list[str]:
