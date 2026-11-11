@@ -20,6 +20,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Callable, Iterable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -768,26 +769,35 @@ def nested_lines(scope: Scope, state: SDFGState, node: nodes.NestedSDFG) -> list
     return folded_lines(scope, node, body, folds) if folds else body
 
 
-def inlined_lines(scope: Scope, node: nodes.NestedSDFG) -> list[str]:
-    """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
-    inner_sdfg = node.sdfg
-    outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
+def nest_bindings(scope: Scope, node: nodes.NestedSDFG, outer_names: AbstractSet[str]) -> dict[str, str]:
+    """The symbols ``node`` binds, as expressions over ``scope``; refused when the nest would rebind an outer name."""
     binds = {str(k): expr(v, scope.names) for k, v in node.symbol_mapping.items() if not passes_through(str(k), v)}
     private = [
         n
-        for n, desc in inner_sdfg.arrays.items()
+        for n, desc in node.sdfg.arrays.items()
         if n not in scope.sdfg.arrays and n in outer_names and not kernel_scratch(n, desc, scope.sdfg)
     ]
     if private or binds.keys() & outer_names:
         raise UnsupportedNest(
             f"nested SDFG {node.label} rebinds outer names {sorted(private or binds.keys() & outer_names)}"
         )
+    return binds
+
+
+def binding_lines(binds: dict[str, str]) -> list[str]:
+    """``binds`` as assignments: one tuple assignment when a value reads another bound name, so all read the old."""
     reads = {str(s) for value in binds.values() for s in symbolic.pystr_to_symbolic(value).free_symbols}
-    lines = (
-        [f"{', '.join(binds)} = {', '.join(binds.values())}"]
-        if binds.keys() & reads
-        else [f"{k} = {v}" for k, v in binds.items()]
-    )
+    if binds.keys() & reads:
+        return [f"{', '.join(binds)} = {', '.join(binds.values())}"]
+    return [f"{k} = {v}" for k, v in binds.items()]
+
+
+def inlined_lines(scope: Scope, node: nodes.NestedSDFG) -> list[str]:
+    """A nested SDFG inlined: its symbols bound, then its body; an early return ends a one-trip loop."""
+    inner_sdfg = node.sdfg
+    outer_names = scope.active | set(scope.sdfg.arrays) | set(scope.sdfg.symbols)
+    binds = nest_bindings(scope, node, outer_names)
+    lines = binding_lines(binds)
     inner = scope_of(inner_sdfg, frozenset(outer_names | binds.keys()))
     body = region_lines(inner, inner_sdfg, None)
     returns = [b for b in inner_sdfg.all_control_flow_blocks() if isinstance(b, ReturnBlock)]
