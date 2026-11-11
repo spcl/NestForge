@@ -12,8 +12,8 @@ from nestforge.server import symbol_inputs
 
 
 def test_a_fixed_loop_bound_is_a_size():
-    # aes_graupel's args fix kstart and ivstart (not returned by initialize); kstart bounds the level loops
-    sizes = preset_sizes(corpus_kernel("aes_graupel"), "S")
+    # icon_aes_graupel's args fix kstart and ivstart (not returned by initialize); kstart bounds the level loops
+    sizes = preset_sizes(corpus_kernel("icon_aes_graupel"), "S")
     assert sizes["kstart"] == 10 and sizes["ivstart"] == 1
     assert {"nvec", "ke", "nsteps"} <= sizes.keys()
 

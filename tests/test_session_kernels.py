@@ -315,10 +315,10 @@ def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(
 
 
 def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path):
-    """graupel_sedim2b's species and level loops are one kernel inside the substep loop, so ``NSUB`` is among its
-    symbols though its body never reads it. The built entry drops it, binding drops it from the node, and the oracle
-    prepared after that bind must still take every symbol validation passes from the source."""
-    kernel = corpus_kernel("graupel_sedim2b")
+    """graupel_substep_sedimentation's species and level loops are one kernel inside the substep loop, so ``NSUB`` is
+    among its symbols though its body never reads it. The built entry drops it, binding drops it from the node, and the
+    oracle prepared after that bind must still take every symbol validation passes from the source."""
+    kernel = corpus_kernel("graupel_substep_sedimentation")
     session = Session(kernel.to_sdfg(), Targets(gpu=False), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
     session.canonicalize()
     session.default_moves()

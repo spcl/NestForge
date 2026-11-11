@@ -181,7 +181,10 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     XN, YN = 20, 16
     scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
     call, _ = alloc_run(
-        "scientific_computing/map_reduce/mandelbrot1/mandelbrot1", "mandelbrot", dict(xn=XN, yn=YN), scal
+        "scientific_computing/map_reduce/mandelbrot_escape_count/mandelbrot_escape_count",
+        "mandelbrot",
+        dict(xn=XN, yn=YN),
+        scal,
     )
 
     X = scal["xmin"] + np.arange(XN) * ((scal["xmax"] - scal["xmin"]) / (XN - 1))
@@ -206,7 +209,8 @@ def test_emission_does_not_mutate_caller_sdfg():
     inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
     from dace.sdfg import nodes
 
-    sdfg = corpus_kernel("scientific_computing/map_reduce/mandelbrot1/mandelbrot1").to_sdfg(simplify=True)
+    kernel = corpus_kernel("scientific_computing/map_reduce/mandelbrot_escape_count/mandelbrot_escape_count")
+    sdfg = kernel.to_sdfg(simplify=True)
 
     def nsdfg_in_subsets(g):
         return {

@@ -109,12 +109,13 @@ def corpus_kernel(name: str) -> CorpusKernel | None:
     short_name = KERNELS.path_key(name)
     if short_name is None:
         return None
-    dace_file = KERNELS[short_name].parent / f"{short_name.rsplit('/', 1)[-1]}_dace.py"
+    spec = BenchSpec.load(short_name)
+    dace_file = KERNELS[short_name].parent / f"{spec.module_name}_dace.py"  # a renamed kernel keeps its module stem
     if not dace_file.exists():
         generate_dace_file(short_name)
     if not dace_file.exists():
         return None
-    return CorpusKernel(short_name, module_path(short_name), dace_file, BenchSpec.load(short_name))
+    return CorpusKernel(short_name, module_path(short_name), dace_file, spec)
 
 
 def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
@@ -138,7 +139,7 @@ def is_size(value: object) -> bool:
 def preset_sizes(kernel: CorpusKernel, preset: str) -> dict[str, int]:
     """The integer symbol sizes of one preset in the kernel's manifest; config knobs merged into it are not sizes.
     An integer the manifest fixes for every preset (an ``args`` entry with a ``value`` that ``initialize()`` does not
-    return, or an ``init.constants`` entry) is a size too: ``aes_graupel``'s ``kstart`` bounds a loop, and nothing
+    return, or an ``init.constants`` entry) is a size too: ``icon_aes_graupel``'s ``kstart`` bounds a loop, and nothing
     else would bind it. A returned value is only a default the initializer replaces, so it stays out."""
     init = kernel.spec.init
     fixed = (

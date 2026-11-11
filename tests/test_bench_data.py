@@ -13,9 +13,10 @@ from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE
 
 
 def test_a_renamed_argument_reaches_the_program_by_its_new_name():
-    """graupel_sedim2b's generator renames ``frac`` to ``__frac``; under the old name the program ran on zeros."""
-    assert corpus_kernel("graupel_sedim2b").renames() == {"frac": "__frac"}
-    inputs, reference = bench_data(Setup("graupel_sedim2b", "S", "float64", False))
+    """graupel_substep_sedimentation's generator renames ``frac`` to ``__frac``; under the old name the program ran
+    on zeros."""
+    assert corpus_kernel("graupel_substep_sedimentation").renames() == {"frac": "__frac"}
+    inputs, reference = bench_data(Setup("graupel_substep_sedimentation", "S", "float64", False))
     assert "__frac" in inputs and "frac" not in inputs
     assert inputs["__frac"].any(), "the bench's fractions, not zeros"
     assert reference is not None and set(reference.outputs) == {"G", "fl", "prec", "q"}
@@ -35,7 +36,7 @@ def test_a_missing_kernelbench_reference_names_the_setting_that_points_at_one(mo
     monkeypatch.setattr(oracle_mod, "compiled_reference", no_submodule)
     monkeypatch.setattr(server_mod, "numpy_outputs", no_function)
 
-    inputs, reference = bench_data(Setup("graupel_sedim2b", "S", "float64", False))
+    inputs, reference = bench_data(Setup("graupel_substep_sedimentation", "S", "float64", False))
 
     assert reference is None and inputs
     assert KERNELBENCH_DIR_VAR in capsys.readouterr().err

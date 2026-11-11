@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """An empty memlet between two maps orders them and reads nothing, so it gives ``doall-fusion`` no intermediate.
 
-``efficientnet_b1`` and ``aes_graupel`` hold such an edge from a producer's output to a consumer map; the fusion check
-then handed its ``None`` subset to ``OTFMapFusion``, whose ``AttributeError`` broke the whole move menu.
+``efficientnet_b1`` and ``icon_aes_graupel`` hold such an edge from a producer's output to a consumer map; the fusion
+check then handed its ``None`` subset to ``OTFMapFusion``, whose ``AttributeError`` broke the whole move menu.
 """
 
 import dace
