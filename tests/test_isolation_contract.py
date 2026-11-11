@@ -217,8 +217,7 @@ def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one()
     with multiprocessing.get_context("spawn").Pool(1) as pool:
         full, bound, child = pool.apply(child_mask_after_openmp_bound_the_caller)
 
-    if len(full) < 2:
-        pytest.skip("one CPU: nothing for OpenMP to narrow")
+    assert len(full) >= 2, "one CPU: nothing for OpenMP to narrow"
     assert bound == full[:1]
     assert child == full
 
