@@ -17,11 +17,10 @@ between its body blocks that leaves each piece a quarter of the statements and p
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from functools import partial
 
 import dace
-from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import AbstractControlFlowRegion, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
@@ -35,10 +34,9 @@ from nestforge.ir.extract import (
     extract_blocks,
     extract_map_nest,
     extract_state_nodes,
-    find_state_of_node,
     inherit_symbol_predicates,
 )
-from nestforge.ir.introspect import Row, nest_reads_writes
+from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_doalls, top_level_map_entries
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import map_body, plan_subgraph_fission
@@ -132,21 +130,6 @@ def replace_nsdfg_with_external(boundary: Boundary, name: str) -> ExternalCall:
     return ext
 
 
-def host_length1_reads(sdfg: dace.SDFG, reads: Iterable[str], writes: Collection[str]) -> list[str]:
-    """Read-only inputs that are length-1 arrays in host memory: a host kernel takes a scalar by value, and only a
-    device pointer may carry one."""
-    return [
-        name
-        for name in reads
-        if name not in writes
-        and name in sdfg.arrays
-        and isinstance(desc := sdfg.arrays[name], dace.data.Array)
-        and not isinstance(desc, dace.data.View)
-        and desc.total_size == 1
-        and desc.storage not in GPU_RESIDENT_STORAGES
-    ]
-
-
 def kernel_names(sdfg: dace.SDFG, count: int) -> list[str]:
     """``count`` kernel names no kernel of ``sdfg`` holds; a name keys a kernel's library and work directory."""
     taken = {ext.name for ext in external_calls(sdfg)}
@@ -165,19 +148,8 @@ def row_kernel_names(sdfg: dace.SDFG, rows: Sequence[Row]) -> list[str]:
 
 
 def lower_nests_to_external_call(sdfg: dace.SDFG) -> list[tuple[ExternalCall, Boundary]]:
-    """Stage 3 default: replace every parallel top-level map with an ``ExternalCall``. Refuses before changing
-    anything if a nest reads a length-1 host array."""
+    """Stage 3 default: replace every parallel top-level map with an ``ExternalCall``."""
     refs = parallel_top_level_maps(sdfg)
-    offenders = [
-        (entry.map.label, name)
-        for parent, entry in refs
-        for name in host_length1_reads(parent, *nest_reads_writes(find_state_of_node(parent, entry), entry))
-    ]
-    if offenders:
-        raise ValueError(
-            f"nest inputs {offenders} are length-1 arrays in host memory; declare each as a Scalar, which "
-            "crosses the kernel boundary by value"
-        )
     out: list[tuple[ExternalCall, Boundary]] = []
     for (parent, entry), name in zip(refs, kernel_names(sdfg, len(refs))):
         boundary = extract_map_nest(parent, entry, name=name)
@@ -247,16 +219,6 @@ def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> Extract 
     return partial(extract_blocks, sdfg, order)
 
 
-def group_reads_writes(rows: Sequence[Row]) -> tuple[dict[str, None], dict[str, None]]:
-    reads: dict[str, None] = {}
-    writes: dict[str, None] = {}
-    for obj, state in rows:
-        read, written = nest_reads_writes(state, obj) if state is not None else obj.read_and_write_sets()
-        reads.update(dict.fromkeys(read))
-        writes.update(dict.fromkeys(written))
-    return reads, writes
-
-
 def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     """How to outline the regions ``rows`` name into one kernel, or why they cannot form one; changes nothing."""
     if not rows:
@@ -267,11 +229,6 @@ def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
         extract = block_group(sdfg, [obj for obj, _ in rows])
     else:
         return "name only top-level doalls (maps, library calls) or only control-flow blocks."
-    if isinstance(extract, str):
-        return extract
-    host_scalars = host_length1_reads(sdfg, *group_reads_writes(rows))
-    if host_scalars:
-        return f"inputs {host_scalars} are length-1 arrays in host memory; declare each as a Scalar."
     return extract
 
 
@@ -422,23 +379,9 @@ def split_large_maps(sdfg: dace.SDFG, max_statements: int) -> int:
 
 
 def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[ExternalCall, Boundary]]:
-    """Stage 3 default (:func:`default_units`, after :func:`split_large_maps`). Refuses before changing anything if a
-    scope reads a length-1 host array."""
+    """Stage 3 default (:func:`default_units`, after :func:`split_large_maps`)."""
     split_large_maps(sdfg, targets.max_statements)
     units = default_units(sdfg)
-    offenders = [
-        (tree_name(obj), name)
-        for obj, state in units
-        for name in host_length1_reads(
-            obj.sdfg if state is None else state.sdfg,
-            *(nest_reads_writes(state, obj) if state is not None else obj.read_and_write_sets()),
-        )
-    ]
-    if offenders:
-        raise ValueError(
-            f"scope inputs {offenders} are length-1 arrays in host memory; declare each as a Scalar, which "
-            "crosses the kernel boundary by value"
-        )
     out: list[tuple[ExternalCall, Boundary]] = []
     for (obj, state), name in zip(units, row_kernel_names(sdfg, units)):
         if isinstance(obj, nodes.LibraryNode):

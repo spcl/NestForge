@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Kernel optimization on four tiny kernels: the default kernel is a standalone CPF unit, its one C entry takes
+"""Kernel optimization on five tiny kernels: the default kernel is a standalone CPF unit, its one C entry takes
 CPF's argument order with the types ``ExternalCall`` declares, ``lib<kernel>.a`` defines that entry, and every
 built kernel matches its NumPy oracle."""
 
@@ -76,10 +76,10 @@ def scaled_by_cell(alpha: dace.float64[1], x: dace.float64[N], y: dace.float64[N
         y[i] = alpha[0] * x[i]
 
 
-KERNELS = [vadd, stencil_row_sum, axpy_in_place, scaled]
-KERNEL_IDS = ["vadd", "stencil_row_sum", "axpy_in_place", "scaled"]
+KERNELS = [vadd, stencil_row_sum, axpy_in_place, scaled, scaled_by_cell]
+KERNEL_IDS = ["vadd", "stencil_row_sum", "axpy_in_place", "scaled", "scaled_by_cell"]
 #: Extents off any vector width, so a compiler's remainder loop runs too.
-KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}]
+KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}, {"N": 1037}]
 #: DT_NEEDED soname stems of the OpenMP runtimes a library can name.
 OPENMP_RUNTIME_STEMS = ("libgomp", "libomp", "libiomp5")
 ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
@@ -241,16 +241,33 @@ def test_a_read_only_scalar_input_crosses_the_boundary_by_value(tmp_path):
     assert call == "extcall_0(_in_x, _out_y, N, _in_alpha);"
 
 
-def test_lowering_refuses_a_host_length_one_array_input_and_leaves_the_program_unchanged():
-    """A host kernel takes a scalar input by value; a length-1 array standing in for one is refused, not
-    converted, and nothing is extracted before the refusal."""
-    sdfg = scaled_by_cell.to_sdfg(simplify=True)
-    before = sdfg.to_json()
+@pytest.mark.e2e
+def test_the_program_hands_a_length_one_host_array_to_the_kernel_as_a_pointer_to_its_element(tmp_path):
+    """``alpha`` is a length-1 array in host memory: the prototype takes it by pointer, as the entry does, the call
+    passes the address of the parent's copy of its element, and the program's output matches NumPy."""
+    sdfg, ext, boundary = lowered_kernel(scaled_by_cell)
+    src = schedule_kernel(ext, boundary, tmp_path / "gen")
+    archive = build_kernel_library(src, "g++", None, tmp_path / "lib")
+    use_kernel_library(ext, archive, src, kernel_runtime_libraries(src, "g++"))
 
-    with pytest.raises(ValueError, match=r"alpha.*length-1 arrays in host memory"):
-        lower_nests_to_external_call(sdfg)
+    proto, call = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
-    assert sdfg.to_json() == before
+    assert proto == (
+        'extern "C" void extcall_0(const double * __restrict__ alpha, const double * __restrict__ x, '
+        "double * __restrict__ y, int64_t N);"
+    )
+    assert call == "extcall_0(&_in_alpha, _in_x, _out_y, N);"
+    assert [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))] == entry_params(src)
+    sdfg.expand_library_nodes()
+    compiled = compile_linked_program(sdfg, tmp_path / "parent")
+    x = np.random.default_rng(0).random(1037)
+
+    def run() -> MaxDiff:
+        y = np.zeros_like(x)
+        compiled(alpha=np.array([0.75]), x=x, y=y, N=x.size)
+        return MaxDiff(maxdiff=float(np.abs(y - 0.75 * x).max()))
+
+    assert run_isolated(run, MaxDiff) == MaxDiff(maxdiff=0.0)
 
 
 @pytest.mark.e2e
