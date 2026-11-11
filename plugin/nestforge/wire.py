@@ -52,7 +52,10 @@ class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
         default_factory=list,
-        description="tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64].",
+        description=(
+            "tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64]; "
+            "stage-loads-shared: the thread block, one size per dimension (at most 3), e.g. [256]."
+        ),
     )
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."

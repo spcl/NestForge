@@ -613,17 +613,19 @@ class Session:
         found = [move for move in legal_moves(structured, kind) if move[0] not in DEVICE_KINDS]
         found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k)]
         rows = self.row_index() if scope is None else tree_rows(structured)
+        # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
+        scoped: dict[str, str] = {} if scope is None else {"scope": scope}
         moves: list[Move] = []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
                 moves += [
-                    Move(kind=k, labels=labels, implementation=name, current=node.implementation, scope=scope)
+                    Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
                     for name in implementations(node, self.targets.gpu)
                 ]
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
-                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, scope=scope))
+                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
         return moves
 
     def apply_move(
@@ -642,7 +644,8 @@ class Session:
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
-        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
+        :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one; for
+            ``stage-loads-shared``, the thread block, one per dimension of the kernel (at most three).
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.

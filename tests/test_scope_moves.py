@@ -93,14 +93,49 @@ def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path)
     session, first, second = placed_on_gpu(tmp_path)
     program, other = session.sdfg.to_json(), session.kernel(second).standalone_sdfg.hash_sdfg()
 
-    done = session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), scope=first)
+    done = session.apply_move(
+        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
+    )
 
     body = session.kernel(first).standalone_sdfg
     shared = [name for name, desc in body.arrays.items() if desc.storage == dace.StorageType.GPU_Shared]
     assert done.status is MoveStatus.APPLIED and len(shared) == 1  # the tile of a, which neighbours reread; not b
     assert dace.ScheduleType.GPU_ThreadBlock in body_map_schedules(session, first)
+    kernels = [
+        n.map
+        for n, _ in body.all_nodes_recursive()
+        if isinstance(n, MapEntry) and n.map.schedule == dace.ScheduleType.GPU_Device
+    ]
+    assert [k.gpu_block_size for k in kernels] == [[64, 1, 1]]  # the block the agent passed, not the config default
     assert session.kernel(second).standalone_sdfg.hash_sdfg() == other
     assert session.sdfg.to_json() == program
+    session.sdfg.validate()
+
+
+def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    before = session.kernel(first).standalone_sdfg.hash_sdfg()
+
+    done = session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), scope=first)
+
+    assert done.status is not MoveStatus.APPLIED and "pass tile_sizes, the thread block" in done.reason
+    assert session.kernel(first).standalone_sdfg.hash_sdfg() == before
+
+
+def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_path):
+    session, first, second = two_kernels(tmp_path, gpu=True)
+    assert session.unset_scope(first).status is MoveStatus.APPLIED
+    session.place({second: "gpu"})
+
+    session.insert_copies()
+
+    top = [
+        n.map.schedule
+        for n, st in session.sdfg.all_nodes_recursive()
+        if isinstance(n, MapEntry) and st.sdfg is session.sdfg and st.entry_node(n) is None
+    ]
+    assert len(top) == 1 and top[0] != dace.ScheduleType.GPU_Device  # the unscoped doall
+    assert session.devices() == {second: "gpu"}
     session.sdfg.validate()
 
 
@@ -116,7 +151,9 @@ def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
 @pytest.mark.gpu
 def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy_computes(tmp_path):
     session, first, _ = placed_on_gpu(tmp_path)
-    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), scope=first)
+    session.apply_move(
+        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
+    )
     rng = np.random.default_rng(0)
     a, b, c = rng.random(1000), rng.random(1000), np.zeros(1000)
 
