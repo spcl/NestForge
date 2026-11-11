@@ -39,7 +39,7 @@ from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, Subgr
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_peeling import LoopPeeling
 from dace.transformation.interstate.loop_tiling import LoopTiling
-from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap
+from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes, single_map_body
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
 from dace.transformation.interstate.move_map_invariant_if_up import MoveMapInvariantIfUp
 from dace.transformation.interstate.state_fusion import StateFusion
@@ -54,6 +54,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     map_tile_pairs,
     untile_map_pair,
 )
+from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
@@ -560,17 +561,41 @@ def plan_trimmed_map_map(state: SDFGState, outer: nodes.MapEntry, inner: nodes.M
     return Rewrite("MapInterchange", commit)
 
 
+#: MoveLoopIntoMap's control-flow body: the maps of the loop's body, behind ifs or in several states, share one axis.
+LANE_BODY = {"cfg_body": True, "lane_axis": True}
+
+
+def loop_map_refusal(loop: LoopRegion, inside: list[nodes.MapEntry]) -> str:
+    if inside_a_map(loop):
+        return f"{loop.label} is inside a doall; move the loop of the outermost doall's body instead."
+    if len(inside) > 1:
+        if lane_axis_of(loop) is None:
+            return f"the doalls inside {loop.label} share no axis; doall-fusion or doall-fission them first."
+        lanes = analyze_lanes(loop, loop.sdfg, True)
+        if lanes.refusal is not None:
+            return f"blocked by MoveLoopIntoMap: {lanes.refusal}"
+    return LOOP_INTO_MAP_REFUSED
+
+
 def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
+    """``for t: doall i: B`` -> ``doall i: for t: B``. A body of several maps over one shared axis, in several states
+    or behind ifs, takes the same move (the lane analysis of ``MoveLoopIntoMap``): ``doall i: for t: {A; B; ...}``;
+    ``map_row`` names one of the maps."""
     loop, entry = loop_row[0], map_row[0]
     inside = loop_maps(loop)
-    if inside != [entry]:
-        more = f"; the loop holds {len(inside)} maps, doall-fusion them first" if len(inside) > 1 else ""
-        return f"{entry.map.label} is not the one map directly inside {loop.label}; MoveLoopIntoMap needs exactly that{more}."
+    if entry not in inside:
+        return f"{entry.map.label} is not a doall directly inside {loop.label}."
     # MoveLoopIntoMap passes a nest only the SDFG's symbols and data, and raises on an outer loop's iterator
     read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
     if read & enclosing_loop_variables(loop):
         return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
-    return pattern(MoveLoopIntoMap, loop.sdfg, {"loop": loop}) or LOOP_INTO_MAP_REFUSED
+    sdfg = loop.sdfg
+    move = pattern(MoveLoopIntoMap, sdfg, {"loop": loop}, options=LANE_BODY)
+    if move is None:
+        return loop_map_refusal(loop, inside)
+    if single_map_body(loop) is not None:
+        return move
+    return region_rewrite(move.name, sdfg, lambda: (move.commit(), propagate_memlets_sdfg(sdfg)))
 
 
 def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
@@ -1182,7 +1207,9 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     ),
     "interchange-for-doall": (
         "MoveLoopIntoMap",
-        "for t: doall i: B becomes doall i: for t: B (the doall goes outside).",
+        "for t: doall i: B becomes doall i: for t: B (the doall goes outside). A body of several doalls over one shared "
+        "axis, in several states or behind ifs, becomes doall i: for t: { A; B; ... } when no column touches another's "
+        "elements; the row names one of the doalls. doall-fusion the ones that fuse first.",
     ),
     "interchange-doall-for": (
         "MapLoopInterchange",
@@ -1376,7 +1403,8 @@ def map_loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 def loop_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     for loop in every_region_block(sdfg, LoopRegion):
         inside = loop_maps(loop)
-        if len(inside) == 1:
+        lanes = len(inside) > 1 and lane_axis_of(loop) is not None and not inside_a_map(loop)
+        if len(inside) == 1 or lanes:
             yield (loop, None), (inside[0], find_state_of_node(loop.sdfg, inside[0]))
 
 

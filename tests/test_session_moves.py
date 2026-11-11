@@ -1112,12 +1112,24 @@ def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE, NLEV=STEPS, NSPEC=3)
 
 
-# doall-fusion, then interchange-for-doall, over a loop of several doalls
+# interchange-for-doall over a loop of several doalls (doall-fusion first where it applies)
+
+
+@dace.program
+def sweep_doalls_behind_an_if(A: dace.float64[T, N], B: dace.float64[T, N]):
+    for t in range(1, T):
+        if K == 0:
+            for i in dace.map[0:N]:
+                A[t, i] = A[t - 1, i] + 1.0
+        else:
+            for i in dace.map[0:N]:
+                A[t, i] = A[t - 1, i] + 2.0
+        for i in dace.map[0:N]:
+            B[t, i] = A[t, i] * 2.0 + B[t - 1, i]
 
 
 def test_the_loop_over_two_doalls_takes_doall_fusion_then_interchange_for_doall():
     sut, reference = session_and_reference(sweep_two_maps)
-    assert sut.list_moves("interchange-for-doall") == []
 
     fused = apply_listed(sut, "doall-fusion")
     result = apply_listed(sut, "interchange-for-doall")
@@ -1128,23 +1140,49 @@ def test_the_loop_over_two_doalls_takes_doall_fusion_then_interchange_for_doall(
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-def test_the_interchange_over_two_doalls_says_to_fuse_them_first():
-    sut = Session(sweep_two_maps.to_sdfg(simplify=True))
+def test_the_loop_over_two_doalls_moves_inside_one_doall_without_fusing_them_first():
+    sut, reference = session_and_reference(sweep_two_maps)
+
+    result = apply_listed(sut, "interchange-for-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopIntoMap")
+    assert len(top_level_maps(sut.sdfg)) == 1
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE)), N=SIZE, T=STEPS)
+
+
+@pytest.mark.parametrize("branch", [0, 1])
+def test_doalls_in_separate_branches_and_states_move_inside_one_doall(branch):
+    sut, reference = session_and_reference(sweep_doalls_behind_an_if)
+    assert sut.list_moves("doall-fusion") == []
+
+    result = apply_listed(sut, "interchange-for-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopIntoMap")
+    assert len(top_level_maps(sut.sdfg)) == 1
+    arrays = random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE))
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE, T=STEPS, K=branch)
+
+
+def test_doalls_whose_columns_cross_are_not_offered_and_nothing_changes():
+    sut = Session(sweep_two_maps_crossing.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     first, _ = top_level_maps(sut.sdfg)
+    before = digest(sut.sdfg)
 
     result = sut.apply_move("interchange-for-doall", [loop.label, first.label])
 
-    assert result.status is MoveStatus.ILLEGAL and "doall-fusion" in result.reason, result
-
-
-def test_doalls_whose_columns_cross_are_not_fused_and_nothing_changes():
-    sut = Session(sweep_two_maps_crossing.to_sdfg(simplify=True))
-    before = digest(sut.sdfg)
-
-    assert sut.list_moves("doall-fusion") == []
     assert sut.list_moves("interchange-for-doall") == []
+    assert result.status is MoveStatus.ILLEGAL and "MoveLoopIntoMap" in result.reason, result
     assert digest(sut.sdfg) == before
+
+
+def test_a_map_that_is_not_inside_the_loop_is_not_a_target():
+    sut = Session(sweep_two_maps.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+
+    result = sut.apply_move("interchange-for-doall", [loop.label, "doall_nowhere"])
+
+    assert result.status is not MoveStatus.APPLIED, result
 
 
 # copy-to-doall
