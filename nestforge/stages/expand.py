@@ -6,6 +6,7 @@ canonical parallel form, so the other moves reach inside it."""
 from __future__ import annotations
 
 import copy
+import functools
 from typing import cast
 
 import dace
@@ -38,7 +39,8 @@ def expansion(node: nodes.LibraryNode) -> str | None:
 
 def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
     """The implementations ``node`` may be set to: the ones a kernel unit renders (loops, the host vendor library,
-    with a GPU target the device library of this machine's GPU), besides its current one."""
+    with a GPU target the device library of this machine's GPU) whose libraries this host has, besides its current
+    one."""
     name = type(node).__name__
     offered = (
         *cpf.VENDOR_IMPLEMENTATIONS_HOST,
@@ -46,7 +48,25 @@ def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
         *cpf.RENDERABLE_IMPLEMENTATIONS,
         *(device_implementations(name) if gpu else ()),
     )
-    return tuple(dict.fromkeys(i for i in offered if i in node.implementations and i != node.implementation))
+    return tuple(
+        dict.fromkeys(
+            i
+            for i in offered
+            if i in node.implementations and i != node.implementation and installed(node.implementations[i])
+        )
+    )
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def installed(expansion: type) -> bool:
+    """Whether every environment ``expansion`` builds against, dependencies included, passes its own DaCe
+    ``is_installed`` probe; one without a probe counts as present."""
+    names = {env.full_class_path() for env in expansion.environments}
+    return all(
+        env.is_installed()
+        for env in dace.library.get_environments_and_dependencies(names)
+        if "is_installed" in vars(env)
+    )
 
 
 def device_implementations(name: str) -> tuple[str, ...]:

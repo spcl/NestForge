@@ -152,7 +152,7 @@ saves memory traffic; keep it when the vendor call is faster. Offered only on ca
 **`set-library-implementation`** `[lib_<family>]` with `implementation`. The row and its label stay; the call is
 built through loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one
 (`cuBLAS`, `hipBLAS`, ...). The tree prints each call's implementation; `list_moves` lists one move per other
-implementation the row may take, with `current` the one it has. The default is already the fastest, so this move is for
+implementation the row may take whose library this machine has, with `current` the one it has. The default is already the fastest, so this move is for
 trying another. A host library keeps its kernel on the CPU, a device library puts it on the GPU.
 
 ## Scopes and kernels (when your tool list has them)

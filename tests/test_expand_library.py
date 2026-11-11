@@ -11,8 +11,8 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 
 from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.expand import pin_pure_without_library
+from nestforge.session import MoveResult, Session
+from nestforge.stages.expand import installed, pin_pure_without_library
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 24
@@ -187,3 +187,48 @@ def test_a_transpose_with_its_fast_library_is_left_to_the_selection(monkeypatch,
     pinned = pin_pure_without_library(sdfg)
 
     assert pinned == [] and node.auto_select_implementation
+
+
+def environment(found: bool) -> type:
+    """A DaCe environment whose ``is_installed`` probe answers ``found``."""
+
+    class Probed:
+        cmake_minimum_version = None
+        cmake_packages = cmake_variables = cmake_includes = cmake_libraries = []
+        cmake_compile_flags = cmake_link_flags = cmake_files = headers = state_fields = dependencies = []
+        init_code = finalize_code = ""
+
+        @staticmethod
+        def is_installed() -> bool:
+            return found
+
+    Probed.__name__ = f"Probed{found}"
+    return dace.library.environment(Probed)
+
+
+def offered_with_environment(tmp_path, monkeypatch, found: bool) -> tuple[str, set[str], MoveResult]:
+    """The ``Reduce`` row's offers once its first offered implementation needs an environment that is ``found``."""
+    sut = library_session(tmp_path)
+    reduce = row(tree(sut), "reduce")
+    (name, *_) = [m.implementation for m in sut.list_moves("set-library-implementation") if m.labels == (reduce,)]
+    node = next(n for n, _ in sut.sdfg.all_nodes_recursive() if type(n).__name__ == "Reduce")
+    monkeypatch.setattr(node.implementations[name], "environments", [environment(found)])
+    installed.cache_clear()
+    offered = {m.implementation for m in sut.list_moves("set-library-implementation") if m.labels == (reduce,)}
+    result = sut.apply_move("set-library-implementation", [reduce], implementation=name)
+    installed.cache_clear()
+    return name, offered, result
+
+
+def test_an_implementation_whose_library_this_host_lacks_is_not_offered(tmp_path, monkeypatch):
+    name, offered, result = offered_with_environment(tmp_path, monkeypatch, found=False)
+
+    assert name not in offered, offered
+    assert result.status is MoveStatus.ILLEGAL and "on this target" in result.reason, result
+
+
+def test_an_implementation_whose_library_this_host_has_is_offered(tmp_path, monkeypatch):
+    name, offered, result = offered_with_environment(tmp_path, monkeypatch, found=True)
+
+    assert name in offered, offered
+    assert result.status is MoveStatus.APPLIED, result
