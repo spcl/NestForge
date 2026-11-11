@@ -18,7 +18,6 @@ from helpers import corpus_kernel, run_emitted, sdfg_to_python
 from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.corpus.bench import iter_dace_kernels, module_path
-from nestforge.ir.emit_python import UnsupportedNest
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import node_boundary
@@ -352,15 +351,12 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
     N, npt = 150, 8
     rng = np.random.default_rng(0)
     data, radius = rng.random(N), rng.random(N)
-    try:
-        call, _ = alloc_run(
-            "scientific_computing/map_reduce/azimint_naive/azimint_naive",
-            "azimint_naive",
-            dict(N=N, npt=npt),
-            dict(data=data, radius=radius),
-        )
-    except UnsupportedNest:
-        pytest.xfail("nested-SDFG emission unavailable in this DaCe")
+    call, _ = alloc_run(
+        "scientific_computing/map_reduce/azimint_naive/azimint_naive",
+        "azimint_naive",
+        dict(N=N, npt=npt),
+        dict(data=data, radius=radius),
+    )
 
     rmax = radius.max()
     res = np.zeros(npt)

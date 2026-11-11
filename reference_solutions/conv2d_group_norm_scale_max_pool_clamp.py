@@ -15,10 +15,10 @@ from nestforge.replay import Context, Script
 KERNEL = "conv2d_group_norm_scale_max_pool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)
 CI_SKIP = (
-    "needs two DaCe fixes that the pin 7c06b5194 lacks: the edge validation of a strided slice with a symbolic step "
-    "(spcl/NestForge#86, fork commit 845c931cf) and the TTGT temporary of a sliced operand (#74, fork commit cc9642937); "
-    "and the bench's torch oracle is missing (T46-74), so the timings grade against the bench's NumPy function in float64 "
-    "at rtol 1e-8."
+    "on the pin c6dc4b695 (which has the DaCe fixes 845c931cf and cc9642937, spcl/NestForge#86 and #74) the baseline "
+    "fails with SilentPureLowering (canonicalize leaves library nodes on their serial 'pure' loop) at cpu:1:S; the "
+    "reference replays correctly. The bench's torch oracle is missing (T46-74), so the timings grade against the "
+    "bench's NumPy function in float64 at rtol 1e-8."
 )
 
 

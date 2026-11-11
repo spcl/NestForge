@@ -62,18 +62,19 @@ def test_fission_splits_independent_recurrences_value_preserving():
 
 
 @pytest.mark.parametrize(
-    "prog,names",
+    "prog,names,splits",
     [
-        (two_independent_recurrences, ("a", "b", "c")),
-        (three_independent_statements, ("a", "b", "c", "d")),
-        (conditional_body, ("a", "b", "c")),
+        (two_independent_recurrences, ("a", "b", "c"), True),
+        (three_independent_statements, ("a", "b", "c", "d"), True),
+        # a known gap: for-fission does not split a loop whose body is one if/else, though splitting it is legal
+        (conditional_body, ("a", "b", "c"), False),
     ],
 )
-def test_fission_is_value_preserving(prog, names):
+def test_fission_is_value_preserving(prog, names, splits):
     inputs = random_vectors(names=names)
     ref = run(prog.to_sdfg(simplify=True), inputs, 48)
     sdfg = prog.to_sdfg(simplify=True)
-    fission_to_fixpoint(sdfg)
+    assert (fission_to_fixpoint(sdfg) > 0) == splits, f"{prog.name}: split {'nothing' if splits else 'unexpectedly'}"
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg=f"{prog.name}: fission changed the value")
@@ -85,7 +86,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
     inputs = random_vectors(names=("a", "b", "c", "d"))
     ref = run(three_independent_statements.to_sdfg(simplify=True), inputs, 48)
     sdfg = three_independent_statements.to_sdfg(simplify=True)
-    fission_to_fixpoint(sdfg)
+    assert fission_to_fixpoint(sdfg) > 0
     while moves := fusion_moves(sdfg):
         apply_move(sdfg, moves[0])
     got = run(sdfg, inputs, 48)
@@ -160,7 +161,7 @@ def test_fission_no_op_on_single_statement():
     inputs = random_vectors(names=("a", "b"))
     ref = run(one_statement.to_sdfg(simplify=True), inputs, 48)
     sdfg = one_statement.to_sdfg(simplify=True)
-    fission_to_fixpoint(sdfg)  # nothing independent to split
+    assert fission_to_fixpoint(sdfg) == 0  # nothing independent to split
     got = run(sdfg, inputs, 48)
     for k in inputs:
         np.testing.assert_array_equal(got[k], ref[k], err_msg=k)

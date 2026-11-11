@@ -91,3 +91,4 @@ def test_a_random_move_keeps_the_program_correct_or_is_refused(canonical: Progra
         why = program_mismatch(session, inputs, reference)
         assert not why, f"seed={seed}: wrong after\n  " + "\n  ".join(pending) + f"\n{why}"
     print(f"seed={seed}: {applied} applied, {refused} refused")
+    assert applied > 0, f"seed={seed}: no move applied ({refused} refused), so nothing was checked"

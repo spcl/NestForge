@@ -44,8 +44,12 @@ def test_flag_matrix_atol_covers_every_level():
     # every emitted level has a validation tolerance, and strict is the tightest.
     assert set(flags.FP_RTOL) == set(flags.FP_LEVELS)
     assert flags.FP_RTOL["strict-ieee"] < flags.FP_RTOL["fast-math"]
-    for level, model, cflags in flags.flag_matrix("gnu"):
-        assert cflags[:1] == ["-O3"] and level in flags.FP_LEVELS and model in flags.COST_MODELS
+    gnu = {(level, model): cflags for level, model, cflags in flags.flag_matrix("gnu")}
+    assert len(gnu) == len(flags.FP_LEVELS) * len(flags.COST_MODELS)
+    assert gnu["fast-math", "no-vec"] == [*flags.BASE_FLAGS, *flags.fp_flags("gnu", "fast-math"), "-fno-tree-vectorize"]
+    # clang has no cheap knob: its cheap cells repeat the default ones and are dropped
+    llvm = [(level, model) for level, model, _ in flags.flag_matrix("llvm")]
+    assert len(llvm) == len(flags.FP_LEVELS) * 2 and all(model != "cheap" for _, model in llvm)
 
 
 def toolchain_labelled(label, cxx):

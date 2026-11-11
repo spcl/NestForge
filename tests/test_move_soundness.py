@@ -200,7 +200,8 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
     sut.canonicalize()
 
     for _ in range(calls):
-        assert sut.apply_move("expand-library", sut.list_moves("expand-library")[0].labels)
+        expand = sut.list_moves("expand-library")[0]
+        assert sut.apply_move("expand-library", expand.labels).status is MoveStatus.APPLIED
 
     assert "no work= or depth=" in sut.describe()
 

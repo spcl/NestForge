@@ -9,8 +9,8 @@ KERNEL = "cloudsc_nproma"
 CONFIGS = (Context("cpu", 1, "M"), Context("cpu", 72, "L"))
 CI_SKIP = (
     "cloudsc_nproma is not in HPCAgent-Bench main (it came with HPCAgent-Bench#124, which was reverted; files at "
-    "d22922c5c), and on DaCe 7683e143 its doall-fission (MapFission) reads and writes pfplsx through one access node, "
-    "a cyclic state the stages after fusion reject"
+    "d22922c5c), so it cannot load on the pin c6dc4b695; on DaCe 7683e143 (an ancestor of that pin) its doall-fission "
+    "(MapFission) read and wrote pfplsx through one access node, a cyclic state the stages after fusion reject"
 )
 
 

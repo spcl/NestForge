@@ -142,6 +142,18 @@ def test_every_solution_replays_correctly(path: Path) -> None:
     assert markdown([report]).count("| cpu, 1 thread(s), preset S |") == len(names)
 
 
+#: Solutions whose ``KERNEL`` is no bench kernel. cloudsc_nproma came with HPCAgent-Bench#124, which was reverted.
+NOT_IN_BENCH = frozenset({"cloudsc_nproma"})
+
+
+def test_every_solution_names_its_file_and_a_bench_kernel() -> None:
+    for path in SOLUTIONS:
+        kernel = load_solution(path).kernel
+        assert path.stem == kernel, f"{path.name} solves {kernel}"
+        resolves, exempt = corpus_kernel(kernel) is not None, kernel in NOT_IN_BENCH
+        assert resolves != exempt, f"{kernel}: bench kernel {resolves}, exempt {exempt}"
+
+
 def test_a_solution_states_why_ci_skips_it() -> None:
     """``CI_SKIP`` reaches the loaded solution; a script without it is replayed."""
     assert "MapFission" in load_solution(REPO_ROOT / "reference_solutions" / "cloudsc_nproma.py").ci_skip

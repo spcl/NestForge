@@ -218,11 +218,17 @@ def test_an_oracle_too_slow_for_the_timed_sizes_checks_at_the_small_ones_and_tim
     boundary, prep = oracle_of(scaled, tmp_path)
     monkeypatch.setattr(arena, "load_emitted", lambda source, name: LinearOracle(name))
     monkeypatch.setattr(kernel, "ORACLE_TIMEOUT_S", 1.0)
-    started = time.monotonic()
+    tried = []
+
+    def counted(prep, boundary, inputs, at, timeout_s):
+        tried.append(dict(at))
+        return bounded_oracle(prep, boundary, inputs, at, timeout_s)
+
+    monkeypatch.setattr(kernel, "bounded_oracle", counted)
 
     probe = bounded_probe(prep, boundary, sizes, small, full=True)
 
-    assert time.monotonic() - started < 1.0, "the size that would not fit is not tried"
+    assert tried == [small], "the size that would not fit is not tried"
 
     assert probe.checked is not probe.timed and not probe.unchecked, "an out-of-time oracle compares at the small sizes"
     assert probe.checked.sizes == small and probe.timed.sizes == sizes

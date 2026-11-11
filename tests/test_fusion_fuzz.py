@@ -156,6 +156,24 @@ def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
         )
 
 
+def test_fuzz_corpus_exercises_fusion_and_fission(tmp_path):
+    # the value tests pass vacuously if no seed fuses or fissions: count the moves over the same seeds
+    fused = 0
+    for seed in range(NCASES_FUSE):
+        sdfg = load_program(tmp_path, seed)[0].to_sdfg(simplify=True)
+        sdfg.apply_transformations_repeated(StateFusion)
+        fused += random_fuse_to_fixpoint(sdfg, seed)
+    split = fused_back = 0
+    for seed in range(NCASES_FISSION):
+        sdfg = load_program(tmp_path, seed + 500)[0].to_sdfg(simplify=True)
+        split += fission_to_fixpoint(sdfg)
+        sdfg.apply_transformations_repeated(StateFusion)
+        fused_back += random_fuse_to_fixpoint(sdfg, seed)
+    assert fused > 0, "no fuzz seed offered a fusion"
+    assert split > 0, "no fuzz seed offered a fission"
+    assert fused_back > 0, "no fissioned fuzz seed offered a fusion back"
+
+
 def test_generator_is_deterministic():
     assert gen_source(3) == gen_source(3)
     assert gen_source(3) != gen_source(4)

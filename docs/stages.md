@@ -25,7 +25,7 @@ one.
 ## Stage 2: Moves
 
 Stage 2 shapes the loop nests. The agent reads the structure tree and asks for moves; it never edits the graph.
-Every move is an existing DaCe transformation, checked for legality before it applies. No tiling.
+Every move is an existing DaCe transformation, checked for legality before it applies.
 
 `describe()` prints the tree. Every loop and state is a row; loop and map rows
 carry `work=` and `depth=` from one pass of DaCe's work-depth analysis, and an innermost loop, or a map holding a

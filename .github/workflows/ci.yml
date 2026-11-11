@@ -17,6 +17,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# bash -eo pipefail: a failing script piped into tail (setup_hptt.sh) fails its step
+defaults:
+  run:
+    shell: bash
+
 jobs:
   unit:
     runs-on: ubuntu-latest

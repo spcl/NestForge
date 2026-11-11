@@ -23,7 +23,8 @@ from helpers import bench_kernel, c_argtypes, corpus_kernel, emit_sources, extra
 
 from nestforge.build.toolchain import bind_argument, entry
 
-GCC_BASE_FLAGS = ["-O3", "-march=native", "-fPIC", "-shared"]
+# a fixed ISA with FMA, so the contraction modes differ on any CI host
+GCC_BASE_FLAGS = ["-O3", "-march=x86-64-v3", "-fPIC", "-shared"]
 FP_MODES = {
     "ieee-strict-seq": ["-ffp-contract=off", "-fno-tree-vectorize"],  # the stability baseline
     "contract-fast": ["-ffp-contract=fast"],  # FMA only, no reassociation
