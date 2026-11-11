@@ -16,7 +16,7 @@ from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.passes.canonicalize import canonicalize as dace_canonicalize
 from dace.transformation.passes.canonicalize import stage_labels
 from dace.transformation.passes.canonicalize.normalize_map_body import NormalizeMapBody
-from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup
+from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup, after_fusion_units, prepared
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
@@ -114,5 +114,8 @@ def fuse_and_finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
 
 
 def finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
-    """The stages after fusion, once moves chose the granularity by hand."""
+    """The lifts and cleanup that close each fusion round, then the stages after fusion, once moves chose the
+    granularity by hand."""
+    for unit in prepared(after_fusion_units(lift=True, lift_copy=True, target=targets.canon_target)):
+        unit.apply_pass(sdfg, {})
     return dace_canonicalize(sdfg, target=targets.canon_target, stages=after_fusion(targets))
