@@ -131,6 +131,10 @@ CALLS: dict[str, Callable[..., object]] = {
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
     "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
+    "list_scope_moves": Session.list_moves,
+    "apply_scope_move": Session.apply_move,
+    "place": Session.place,
+    "insert_copies": Session.insert_copies,
     "list_kernels": Session.list_kernels,
     "focus_kernel": Session.focus_kernel,
     "read_kernel": Session.kernel_source,
@@ -150,7 +154,18 @@ MEASURING = TIMED | {"finalize"}
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 #: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
 CHANGING = frozenset(
-    {"apply_move", "run_defaults", "set_scope", "unset_scope", "focus_kernel", "write_kernel", "tune_kernel"}
+    {
+        "apply_move",
+        "run_defaults",
+        "set_scope",
+        "unset_scope",
+        "apply_scope_move",
+        "place",
+        "insert_copies",
+        "focus_kernel",
+        "write_kernel",
+        "tune_kernel",
+    }
 )
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.

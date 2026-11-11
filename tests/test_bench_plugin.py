@@ -250,6 +250,7 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "view_tree",
         "list_move_kinds",
         "list_moves",
+        "list_scope_moves",
         "list_kernels",
         "read_kernel",
         "get_performance",

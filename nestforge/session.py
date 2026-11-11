@@ -79,6 +79,7 @@ from nestforge.stages.kernel import (
     use_kernel_library,
 )
 from nestforge.stages.moves import (
+    DEVICE_KINDS,
     EXPAND_LIBRARY,
     MOVE_SHAPES,
     PROBE_UNROLL,
@@ -96,9 +97,12 @@ from nestforge.stages.moves import (
 )
 from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
 from nestforge.stages.placement import (
+    Placement,
     Transfer,
     check_devices,
     default_devices,
+    has_device_memory,
+    insert_copies,
     kernel_device,
     kernel_interfaces,
     place,
@@ -173,6 +177,8 @@ class MoveResult(Record):
     kind: str
     labels: tuple[str, ...]
     reason: str
+    #: The kernel whose body the move rewrote; ``None`` for the program.
+    scope: str | None = None
 
 
 class Move(Record):
@@ -189,6 +195,8 @@ class Move(Record):
     max_iterations: int = PROBE_UNROLL
     #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
     config_values: dict[str, int | float] = {}
+    #: The kernel whose body the move rewrites; ``None`` for the program.
+    scope: str | None = None
 
 
 class KernelScope(Record):
@@ -213,6 +221,10 @@ class KernelInfo(Record):
     symbols: tuple[str, ...]
     depends: dict[str, list[str]]
     carried: dict[str, list[str]]
+
+
+def kernel_named(sdfg: dace.SDFG, name: str) -> ExternalCall:
+    return next(ext for ext in external_calls(sdfg) if ext.name == name)
 
 
 class PlaceResult(Record):
@@ -533,9 +545,12 @@ class Session:
             self.rows = tree_rows(self.sdfg)
         return self.rows
 
-    def named_rows(self, kind: str, names: tuple[str, ...]) -> list[Row] | MoveResult:
-        """The rows ``names`` label, or the ``not-found`` result: a label no row holds, or one a change retired."""
-        rows = self.row_index()
+    def named_rows(
+        self, kind: str, names: tuple[str, ...], rows: dict[str, Row] | None = None
+    ) -> list[Row] | MoveResult:
+        """The rows ``names`` label (in ``rows``, the program's by default), or the ``not-found`` result: a label no
+        row holds, or one a change retired."""
+        rows = self.row_index() if rows is None else rows
         missing = [name for name in names if name not in rows]
         if missing:
             gone = [name for name in missing if name in self.namer.retired]
@@ -547,6 +562,17 @@ class Session:
                 reason=f"no tree row is labeled {', '.join(missing)}{why}.",
             )
         return [rows[name] for name in names]
+
+    def move_programs(self, scope: str | None) -> tuple[dace.SDFG, dace.SDFG]:
+        """``(what the structured moves rewrite, what the device moves rewrite)``: the program, or the body of the
+        kernel ``scope`` before placement and as placement lowered it."""
+        if scope is None:
+            return self.sdfg, self.sdfg
+        lowered = self.kernel(scope).standalone_sdfg
+        source = lowered if self.unplaced is None else kernel_named(self.unplaced, scope).standalone_sdfg
+        if source is None or lowered is None:
+            raise ValueError(f"{scope} keeps no SDFG of its nest to rewrite.")
+        return source, lowered
 
     # Stage 1: canonicalize
 
@@ -612,8 +638,8 @@ class Session:
     @undone_on_failure
     def run_defaults(self, stage: Stage) -> object:
         """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes`,
-        :meth:`place` after the default scopes of what no scope covers, or :meth:`rewind`. A default that changed the
-        program is on :attr:`applied`, which a round takes back to what the program it restores holds."""
+        :meth:`default_placement` after the default scopes of what no scope covers, or :meth:`rewind`. A default that
+        changed the program is on :attr:`applied`, which a round takes back to what the program it restores holds."""
         done: object
         changed: object
         match stage:
@@ -627,8 +653,9 @@ class Session:
             case "placement":
                 self.keep_unscoped()
                 scoped = self.default_scopes() if self.unplaced is None else []
-                done = self.place()
-                changed = scoped or done.status is MoveStatus.APPLIED
+                placed = self.default_placement()
+                changed = scoped or placed is not None
+                done = placed or PlaceResult(status=MoveStatus.ILLEGAL, reason="the kernels are placed already.")
             case "round":
                 return self.rewind()
         if changed:
@@ -654,21 +681,23 @@ class Session:
         graph = self.kernel_graph()
         return graph.line(node.label) if node.label in graph.kernels else None
 
-    def list_moves(self, kind: str | None = None) -> list[Move]:
-        """Every legal move right now, of ``kind`` or of every kind."""
-        found = legal_moves(self.sdfg, kind)
-        rows = self.row_index() if any(k in SIZED or k == SET_IMPLEMENTATION for k, _ in found) else {}
+    def list_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
+        """Every legal move right now, of ``kind`` or of every kind, in the program or inside the kernel ``scope``."""
+        structured, device = self.move_programs(scope)
+        found = [move for move in legal_moves(structured, kind) if move[0] not in DEVICE_KINDS]
+        found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k)]
+        rows = self.row_index() if scope is None else tree_rows(structured)
         moves: list[Move] = []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
                 moves += [
-                    Move(kind=k, labels=labels, implementation=name, current=node.implementation)
+                    Move(kind=k, labels=labels, implementation=name, current=node.implementation, scope=scope)
                     for name in implementations(node, self.targets.gpu)
                 ]
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
-                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes))
+                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, scope=scope))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
         return moves
@@ -681,9 +710,12 @@ class Session:
         implementation: str | None = None,
         max_iterations: int = PROBE_UNROLL,
         config_values: Mapping[str, int | float] | None = None,
+        scope: str | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
-        the move makes are named afresh.
+        the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
+        placement, which is placed again; a device move (``stage-loads-shared``) rewrites the body as placed, and a
+        later placement drops it.
 
         :param kind: A key of :data:`~nestforge.stages.moves.MOVE_SHAPES`.
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
@@ -693,6 +725,7 @@ class Session:
         :param max_iterations: For ``unroll-for`` and ``unroll-doall``, the largest trip count to unroll.
         :param config_values: For ``propagate-config``, the run-time values of scalar arguments and free symbols;
             the program becomes a dispatch between the program specialized for them and the program as it was.
+        :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -702,10 +735,15 @@ class Session:
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
         if kind == ROLLBACK:
             return self.undo()
-        rows = self.named_rows(kind, names)
+        if scope is not None and kind == PROPAGATE_CONFIG:
+            reason = "propagate-config specializes the whole program, not a kernel's body: name no scope."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+        structured, device = self.move_programs(scope)
+        target = device if kind in DEVICE_KINDS else structured
+        rows = self.named_rows(kind, names, None if scope is None else tree_rows(target))
         if isinstance(rows, MoveResult):
             return rows
-        config = (config_values, self.sdfg, self.work_dir / "config")
+        config = (config_values, target, self.work_dir / "config")
         plan = plan_move(kind, rows, tile_sizes, implementation, max_iterations, *config)
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
@@ -721,21 +759,32 @@ class Session:
                 settle(cast(list[nodes.NestedSDFG], made), self.targets)
             if kind == PROPAGATE_CONFIG:
                 # a new program whose branches call nests; the inlining below makes their blocks rows
-                self.sdfg = cast(dace.SDFG, made)
-            # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps correct
-            inline_top_level_nsdfgs(self.sdfg)
-            structural_cleanup(self.sdfg)
-            # a copy the move made, or one the cleanup left, is a lib_copy row
-            explicit_copies(self.sdfg)
-            # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule
-            # inference read them
-            narrow_nested_memlets(self.sdfg)
-            self.unplaced = None
+                target = cast(dace.SDFG, made)
+                self.sdfg = target
+            if kind not in DEVICE_KINDS:
+                # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps
+                # correct
+                inline_top_level_nsdfgs(target)
+                structural_cleanup(target)
+                # a copy the move made, or one the cleanup left, is a lib_copy row
+                explicit_copies(target)
+                # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule
+                # inference read them
+                narrow_nested_memlets(target)
             # setting an implementation changes a property of the row, not the row: its label stays
-            self.bump(() if kind == SET_IMPLEMENTATION else names)
+            consumed = () if kind == SET_IMPLEMENTATION else names
+            if scope is None:
+                self.unplaced = None
+            else:
+                self.namer.retire(consumed)
+                normalize_labels(target, self.namer)
+                consumed = ()
+                if self.unplaced is not None and kind not in DEVICE_KINDS:
+                    self.lower_again()
+            self.bump(consumed)
             # a move DaCe's own check let through may still build what its validation refuses: refused here, undone
-            self.sdfg.validate()
-            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
+            target.validate()
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name, scope=scope)
             self.applied.append(done)
             self.remember()
         return done
@@ -932,9 +981,10 @@ class Session:
 
     @undone_on_failure
     def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
-        """Run each kernel on a device and insert the host/device copies. Kernels ``devices`` leaves out keep the
-        default: parallel kernels on the GPU when it is a target, the rest on the CPU. A later call starts again
-        from the program before the first placement.
+        """Run each kernel on a device. Kernels ``devices`` leaves out keep the default: parallel kernels on the GPU
+        when it is a target, the rest on the CPU. A GPU kernel is offloaded inside its call, copying its arguments at
+        its own boundary; :meth:`insert_copies` moves those copies into the program. A later call starts again from
+        the program before the first placement.
 
         :param devices: Kernel name -> ``cpu`` or ``gpu``.
         """
@@ -948,12 +998,30 @@ class Session:
         if self.unplaced is not None:
             self.sdfg = copy.deepcopy(self.unplaced)
             self.kernel_deps = None
-        try:
-            moves = tuple(transfers(self.kernel_graph(), chosen))
-        except UnsupportedProgram:
-            moves = None
+        moves = self.transfers(chosen)
         self.unplaced = copy.deepcopy(self.sdfg)
-        placement = place(self.sdfg, self.targets, chosen)
+        return self.placed(place(self.sdfg, chosen), moves, interfaces, builds)
+
+    @undone_on_failure
+    def insert_copies(self) -> PlaceResult:
+        """DaCe's offloading of the placed program: the GPU kernels' operands move to device memory and the host/device
+        copies sit at the kernels' boundaries in the program, so adjacent GPU kernels share them."""
+        if self.unplaced is None:
+            return PlaceResult(status=MoveStatus.ILLEGAL, reason="no kernel is placed yet; call place first.")
+        devices = self.devices()
+        moves = self.transfers(devices)
+        interfaces, builds = kernel_interfaces(self.sdfg), self.builds
+        self.sdfg = copy.deepcopy(self.unplaced)
+        return self.placed(insert_copies(self.sdfg, devices), moves, interfaces, builds)
+
+    def placed(
+        self,
+        placement: Placement,
+        moves: tuple[Transfer, ...] | None,
+        interfaces: dict[str, tuple[object, ...]],
+        builds: dict[str, KernelBuild],
+    ) -> PlaceResult:
+        """Bump the program after a placement; a build stays linked while its kernel's ``interfaces`` entry holds."""
         self.bump()
         # a build stays linked while placement leaves its kernel's device and argument storage as they were
         placed = kernel_interfaces(self.sdfg)
@@ -963,6 +1031,31 @@ class Session:
         return PlaceResult(
             status=MoveStatus.APPLIED, devices=dict(placement.devices), copies=tuple(placement.copies), transfers=moves
         )
+
+    def lower_again(self) -> None:
+        """The placed program again from :attr:`unplaced`, on the same devices and with copies where they were."""
+        devices, lower = self.devices(), insert_copies if has_device_memory(self.sdfg) else place
+        self.sdfg = copy.deepcopy(self.unplaced)
+        lower(self.sdfg, devices)
+
+    def devices(self) -> dict[str, str]:
+        """Every kernel's device."""
+        return {ext.name: kernel_device(ext) for ext in external_calls(self.sdfg)}
+
+    def transfers(self, devices: dict[str, str]) -> tuple[Transfer, ...] | None:
+        """The transfers the kernel DAG implies for ``devices``, or ``None`` when its analysis refuses the program."""
+        try:
+            return tuple(transfers(self.kernel_graph(), devices))
+        except UnsupportedProgram:
+            return None
+
+    def default_placement(self) -> PlaceResult | None:
+        """Stage 4 default: :meth:`place` unless placed, then :meth:`insert_copies` while a GPU kernel copies inside
+        its call; ``None`` when both are done."""
+        done = self.place() if self.unplaced is None else None
+        if "gpu" in self.devices().values() and not has_device_memory(self.sdfg):
+            done = self.insert_copies()
+        return done
 
     # Stage 5: kernels
 
@@ -984,6 +1077,8 @@ class Session:
         src = build.source
         runtime = kernel_runtime_libraries(src, build.variant.compiler)
         ext = self.kernel(name)
+        if kernel_device(ext) == "gpu" and not has_device_memory(self.sdfg):
+            raise ValueError(f"{name} takes device memory, which the program passes once insert_copies ran.")
         use_kernel_library(ext, build.archive, src, runtime)
         self.builds[name] = build
         self.measured = None
@@ -1263,8 +1358,8 @@ class Session:
             try:
                 if not external_calls(trial.sdfg):
                     trial.default_scopes()
-                if trial.targets.gpu and trial.unplaced is None:
-                    trial.place()  # a GPU program is assembled as placed
+                if trial.targets.gpu:
+                    trial.default_placement()  # a GPU program is assembled as placed, its copies inserted
                 for ext in external_calls(trial.sdfg):
                     if ext.name not in trial.builds:
                         trial.default_build(ext.name)
@@ -1328,16 +1423,11 @@ class Session:
         """The feedback of :meth:`performance` on this session, a self."""
         if not external_calls(self.sdfg):
             self.default_scopes()
-        devices = {ext.name: kernel_device(ext) for ext in external_calls(self.sdfg)}
         # as finalize: placing a CPU program changes nothing but drops its kernels' builds
-        if self.targets.gpu and self.unplaced is None:
-            placed = self.place()
-            devices, moves = placed.devices, placed.transfers
-        else:
-            try:
-                moves = tuple(transfers(self.kernel_graph(), devices))
-            except UnsupportedProgram:
-                moves = None
+        if self.targets.gpu:
+            self.default_placement()
+        devices = self.devices()
+        moves = self.transfers(devices)
         evidence = self.kernel_evidence(reps)
         program = time_program(
             self.sdfg, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()

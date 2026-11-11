@@ -69,6 +69,7 @@ class Case:
         names = [ext.name for ext in external_calls(session.sdfg)]
         devices = {name: ("cpu", "gpu")[int(self.rng.integers(2))] for name in names} if session.targets.gpu else {}
         session.place(devices or None)
+        session.default_placement()  # a GPU kernel's library takes device memory: the copies go in first
         implementations = {name: ("DaceReference", "ExternCall")[int(self.rng.integers(2))] for name in names}
         for name, implementation in implementations.items():
             if implementation == "ExternCall":

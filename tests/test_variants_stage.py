@@ -23,7 +23,7 @@ from nestforge.stages.kernel import (
     schedule_kernel,
     use_kernel_library,
 )
-from nestforge.stages.placement import default_devices, place
+from nestforge.stages.placement import default_devices, insert_copies
 from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
 
@@ -184,7 +184,7 @@ def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wi
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
+    insert_copies(sdfg, default_devices(sdfg, Targets(gpu=True)))
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     prep = prepare(boundary, ext.name)
     variants = device_variants("gpu")

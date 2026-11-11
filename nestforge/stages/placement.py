@@ -1,7 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 4: the device of every kernel, the host/device copies DaCe's offloading inserts for it, and the
-transfers the kernel DAG implies. Default: parallel kernels on the GPU when it is a target, the rest on the CPU."""
+transfers the kernel DAG implies. Default: parallel kernels on the GPU when it is a target, the rest on the CPU.
+
+A GPU kernel is lowered inside its call: DaCe's ``OffloadToAccelerator`` runs on the kernel's body, its arguments in
+the memory the call passes them in. :func:`place` passes host memory, so the body copies at its own boundary and the
+program around the call is unchanged; :func:`insert_copies` offloads the program first, so the copies sit around the
+calls, shared by adjacent GPU kernels, and the bodies receive device memory."""
 
 from __future__ import annotations
 
@@ -131,12 +136,42 @@ def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) ->
     return None
 
 
-def place(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> Placement:
-    """Run every kernel on its device of ``devices`` (checked by :func:`check_devices`), in place. With a kernel on
-    the GPU, DaCe's ``OffloadToAccelerator`` schedules it and inserts the copies; with none nothing changes."""
+def offload_kernel_bodies(sdfg: dace.SDFG) -> None:
+    """DaCe's ``OffloadToAccelerator`` inside every GPU kernel's body, each argument in the call's memory for it."""
+    for ext, state in sdfg.all_nodes_recursive():
+        if not isinstance(ext, ExternalCall) or kernel_device(ext) != "gpu" or ext.standalone_sdfg is None:
+            continue
+        body = ext.standalone_sdfg
+        bound = [(e.dst_conn, e.data.data) for e in state.in_edges(ext)]
+        bound += [(e.src_conn, e.data.data) for e in state.out_edges(ext)]
+        for conn, data in bound:
+            if conn is not None and data is not None:
+                body.arrays[conn].storage = state.sdfg.arrays[data].storage
+        OffloadToAccelerator().apply_pass(body, {})
+
+
+def place(sdfg: dace.SDFG, devices: dict[str, str]) -> Placement:
+    """Run every kernel on its device of ``devices`` (checked by :func:`check_devices`), in place: a GPU kernel's body
+    is offloaded inside its call, with its copies at its boundary; nothing outside the calls changes."""
+    for ext in external_calls(sdfg):
+        gpu = devices[ext.name] == "gpu"
+        ext.schedule = dtypes.ScheduleType.GPU_Device if gpu else dtypes.ScheduleType.Default
+    offload_kernel_bodies(sdfg)
+    return Placement({ext.name: kernel_device(ext) for ext in external_calls(sdfg)}, tuple(device_copies(sdfg)))
+
+
+def insert_copies(sdfg: dace.SDFG, devices: dict[str, str]) -> Placement:
+    """Like :func:`place` on an unplaced ``sdfg``, but DaCe's ``OffloadToAccelerator`` offloads the program first: the
+    GPU kernels' operands live in device memory and the copies sit at the kernels' boundaries in the program."""
     if "gpu" in devices.values():
         OffloadKernels(host_kernels=[name for name, device in devices.items() if device == "cpu"]).apply_pass(sdfg, {})
+        offload_kernel_bodies(sdfg)
     return Placement({ext.name: kernel_device(ext) for ext in external_calls(sdfg)}, tuple(device_copies(sdfg)))
+
+
+def has_device_memory(sdfg: dace.SDFG) -> bool:
+    """Whether :func:`insert_copies` put any container of the program in device memory."""
+    return any(desc.storage in GPU_RESIDENT_STORAGES for desc in sdfg.arrays.values())
 
 
 @dataclass(frozen=True, slots=True)
