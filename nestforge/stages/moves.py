@@ -12,18 +12,15 @@ from typing import Any, cast
 
 import dace
 import sympy
-from dace import symbolic
 from dace.data import Scalar
 from dace.libraries.standard.nodes.external_call import ExternalCall
-from dace.properties import CodeBlock
 from dace.sdfg import nodes
-from dace.sdfg.graph import MultiConnectorEdge, SubgraphView
+from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.subsets import Range
-from dace.transformation.dataflow.copy_to_map import CopyToMap
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
 from dace.transformation.dataflow.map_fission import MapFission
@@ -37,7 +34,6 @@ from dace.transformation.dataflow.trivial_map_elimination import TrivialMapElimi
 from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
-from dace.transformation.interstate.loop_peeling import LoopPeeling
 from dace.transformation.interstate.loop_tiling import LoopTiling
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes, single_map_body
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
@@ -102,11 +98,9 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
     "expand-doall": (nodes.MapEntry,),
     "doall-to-for": (nodes.MapEntry,),
-    "copy-to-doall": (ControlFlowBlock,),
     "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
-    "peel-for": (LoopRegion,),
 }
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
@@ -158,16 +152,9 @@ SUBGRAPH_FISSION_REFUSED = (
     "refuses (a half holds a conditional, or an interstate assignment reads a map parameter)."
 )
 
-#: Every copy becomes a map: by default CopyToMap takes only copies whose two arrays differ in strides.
-COPY_TO_MAP_OPTIONS = {"ignore_strides": True}
 MAP_IF_REFUSED = (
     "blocked by MoveMapInvariantIfUp: {map} holds no if that reads neither its parameters nor what its body writes, "
     "or the pass would lift {lifted} guards, not the one above this doall."
-)
-PEEL_FOLDS_NOTHING = "blocked by LoopPeeling: no if in {loop} is settled by its first iteration or by the later ones; peeling would only copy the body."
-COPY_TO_MAP_REFUSED = (
-    "blocked by CopyToMap: the state holds no copy between two arrays outside a doall that it can turn into a map "
-    "(a copy between arrays of different rank is one only if it is a single element, which becomes a tasklet)."
 )
 
 
@@ -719,89 +706,6 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
-def one_element_copy(state: SDFGState, edge: MultiConnectorEdge) -> bool:
-    """Whether ``edge`` copies exactly one element between two arrays of different rank (``s[n - 1, i] -> carry[i]``):
-    ``CopyToMap`` raises on that (W45-59), and a one-element copy has no iteration to turn into a map."""
-    src, dst = edge.src, edge.dst
-    if not (isinstance(src, nodes.AccessNode) and isinstance(dst, nodes.AccessNode)):
-        return False
-    if len(src.desc(state.sdfg).shape) == len(dst.desc(state.sdfg).shape):
-        return False
-    sizes = (*edge.data.get_src_subset(edge, state).size(), *edge.data.get_dst_subset(edge, state).size())
-    return all(size == 1 for size in sizes)
-
-
-def copy_applies_on_twin(state: SDFGState, src: nodes.AccessNode, dst: nodes.AccessNode) -> bool:
-    """Whether ``CopyToMap`` applies to the copy ``src`` -> ``dst`` of arrays of different rank, tried on a copy of the
-    SDFG: its check says yes to copies it then raises on (W45-59)."""
-    twin = detach(state.sdfg)
-    twin_state = list(twin.states())[list(state.sdfg.states()).index(state)]
-    twin_src, twin_dst = twin_state.node(state.node_id(src)), twin_state.node(state.node_id(dst))
-    try:
-        CopyToMap.apply_to(
-            twin, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=twin_src, b=twin_dst, verify=False
-        )
-    except ValueError:  # raised from memlet_to_map by a copy between arrays of different rank
-        return False
-    return True
-
-
-def plain_copies(state: SDFGState) -> list[tuple[nodes.AccessNode, nodes.AccessNode]]:
-    """The copies between two arrays at the top of ``state`` (``a[:] = b``) that ``CopyToMap`` turns into a map, or
-    that are one element between arrays of different rank (a tasklet); an edge with an empty memlet only orders the two
-    nodes and copies nothing."""
-    copies = dict.fromkeys(
-        (e.src, e.dst)
-        for e in state.edges()
-        if not e.data.is_empty()
-        and isinstance(e.src, nodes.AccessNode)
-        and isinstance(e.dst, nodes.AccessNode)
-        and state.entry_node(e.src) is None
-        and CopyToMap.can_be_applied_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, a=e.src, b=e.dst)
-    )
-    return [
-        (src, dst)
-        for src, dst in copies
-        if len(src.desc(state.sdfg).shape) == len(dst.desc(state.sdfg).shape)
-        or all(one_element_copy(state, e) for e in state.edges_between(src, dst) if not e.data.is_empty())
-        or copy_applies_on_twin(state, src, dst)
-    ]
-
-
-def copy_to_tasklet(state: SDFGState, src: nodes.AccessNode, dst: nodes.AccessNode) -> None:
-    """Each one-element copy between ``src`` and ``dst`` runs in a tasklet (``out = element``), so it is a computation
-    like the others in the state."""
-    for edge in list(state.edges_between(src, dst)):
-        if edge.data.is_empty():
-            continue
-        read, write = edge.data.get_src_subset(edge, state), edge.data.get_dst_subset(edge, state)
-        tasklet = state.add_tasklet("copy_element", {"element"}, {"out"}, "out = element")
-        state.add_edge(src, None, tasklet, "element", dace.Memlet(data=src.data, subset=read))
-        state.add_edge(tasklet, "out", dst, None, dace.Memlet(data=dst.data, subset=write, wcr=edge.data.wcr))
-        state.remove_edge(edge)
-
-
-def plan_copy_to_doall(row: Row) -> Rewrite | str:
-    """Every plain copy at the top of a state becomes a doall, so tiling and the lane interchange see it like the
-    doalls around it."""
-    state = row[0]
-    if not isinstance(state, SDFGState):
-        return f"{tree_label(state)} is not a state; copy-to-doall takes the state that holds the copy."
-    copies = plain_copies(state)
-    if not copies:
-        return COPY_TO_MAP_REFUSED
-
-    def commit() -> None:
-        for src, dst in copies:
-            edges = [e for e in state.edges_between(src, dst) if not e.data.is_empty()]
-            if all(one_element_copy(state, e) for e in edges):
-                copy_to_tasklet(state, src, dst)
-            else:
-                CopyToMap.apply_to(state.sdfg, options=COPY_TO_MAP_OPTIONS, annotate=False, save=False, a=src, b=dst)
-
-    return Rewrite("CopyToMap", commit)
-
-
 def plan_snapshot_reads(row: Row) -> Rewrite | str:
     """A doall that reads a slice of an array another doall of its state writes copies the slice first, so the two
     stop touching one array and ``doall-fusion`` can merge them."""
@@ -943,158 +847,6 @@ def plan_untile_for(row: Row) -> Rewrite | str:
     return region_rewrite("UntileLoops.untile_loop", loop.sdfg, commit)
 
 
-#: Stands for the iterations after the first one: every loop-variable value from the second on is ``1 + this``.
-LATER = sympy.Symbol("later", integer=True, nonnegative=True)
-
-
-def decided(code: str, var: str, point: Any) -> bool | None:
-    """Whether ``code`` holds at every value ``point`` stands for, or ``None`` if the loop variable does not settle it."""
-    truth = symbolic.pystr_to_symbolic(code).subs(symbolic.symbol(var), point)
-    return {sympy.true: True, sympy.false: False}.get(truth)
-
-
-def chosen_branch(cond: ConditionalBlock, var: str, point: Any) -> ControlFlowRegion | None:
-    """The one branch of ``cond`` that runs at every value ``point`` stands for, if the loop variable decides it."""
-    for code, region in cond.branches:
-        if code is None:
-            return region
-        truth = decided(code.as_string, var, point)
-        if truth is None:
-            return None
-        if truth:
-            return region
-    return None
-
-
-def splice(block: ControlFlowRegion) -> None:
-    """Replace ``block`` in its parent by the blocks it holds."""
-    parent = block.parent_graph
-    inner, edges, start = list(block.nodes()), list(block.edges()), block.start_block
-    sinks = [b for b in inner if block.out_degree(b) == 0]
-    ins, outs = list(parent.in_edges(block)), list(parent.out_edges(block))
-    was_start = parent.start_block is block
-    for b in inner:
-        block.remove_node(b)
-    parent.remove_node(block)
-    for b in inner:
-        parent.add_node(b, is_start_block=was_start and b is start)
-    for e in edges:
-        parent.add_edge(e.src, e.dst, e.data)
-    for e in ins:
-        parent.add_edge(e.src, start, e.data)
-    for e in outs:
-        parent.add_edge(sinks[0], e.dst, e.data)
-
-
-def fold(cond: ConditionalBlock, branch: ControlFlowRegion) -> None:
-    """Replace ``cond`` by the blocks of its branch ``branch``."""
-    parent = cond.parent_graph
-    ins, outs = list(parent.in_edges(cond)), list(parent.out_edges(cond))
-    was_start = parent.start_block is cond
-    parent.remove_node(cond)
-    parent.add_node(branch, is_start_block=was_start)
-    for e in ins:
-        parent.add_edge(e.src, branch, e.data)
-    for e in outs:
-        parent.add_edge(branch, e.dst, e.data)
-    splice(branch)
-
-
-def fold_guards(region: ControlFlowRegion, var: str, point: Any) -> int:
-    """Replace every conditional in ``region`` that the loop variable settles at ``point`` by the branch it takes
-    (the ones it does not settle stay); how many were replaced."""
-    count = 0
-    while True:
-        for block in region.all_control_flow_blocks():
-            if isinstance(block, ConditionalBlock) and (branch := chosen_branch(block, var, point)) is not None:
-                fold(block, branch)
-                count += 1
-                break
-        else:
-            return count
-
-
-def guard_peeled(peeled: ControlFlowBlock, loop: LoopRegion, var: str, start: Any) -> None:
-    """Run ``peeled`` and ``loop`` after it only when ``loop`` would have run its first iteration: peeling does not know
-    the loop is not empty. The loop sits in the guard too (it runs nothing then), so one if holds both and a later
-    ``interchange-for-if`` can lift it out of the loops around."""
-    parent = peeled.parent_graph
-    first_runs = symbolic.pystr_to_symbolic(loop.loop_condition.as_string).subs(symbolic.symbol(var), start)
-    ins, outs = list(parent.in_edges(peeled)), list(parent.out_edges(loop))
-    between = parent.edges_between(peeled, loop)[0].data
-    was_start = parent.start_block is peeled
-    guard = ConditionalBlock(f"{peeled.label}_guard", parent.sdfg, parent)
-    branch = ControlFlowRegion(f"{peeled.label}_first", parent.sdfg, guard)
-    parent.remove_node(peeled)
-    parent.remove_node(loop)
-    branch.add_node(peeled, is_start_block=True)
-    branch.add_node(loop)
-    branch.add_edge(peeled, loop, between)
-    guard.add_branch(CodeBlock(str(first_runs)), branch)
-    parent.add_node(guard, is_start_block=was_start)
-    for e in ins:
-        parent.add_edge(e.src, guard, e.data)
-    for e in outs:
-        parent.add_edge(guard, e.dst, e.data)
-
-
-def peel_first_and_fold(loop: LoopRegion) -> int:
-    """Peel the first iteration of ``loop``, fold the guards the loop variable decides in the peeled iteration and in
-    the loop that is left, and run the peeled iteration only if the loop would have; how many guards were folded."""
-    var, start = loop.loop_variable, loop_analysis.get_init_assignment(loop)
-    stride = loop_analysis.get_loop_stride(loop)
-    if start is None or stride is None:
-        raise ValueError(f"{loop.label} is not a counted loop; plan_peel_for does not offer it")
-    parent, sdfg = loop.parent_graph, loop.sdfg
-    before = set(parent.nodes())
-    LoopPeeling.apply_to(sdfg, options={"count": 1, "begin": True}, loop=loop, verify=False)
-    (peeled,) = [b for b in parent.nodes() if b not in before]
-    guard_peeled(peeled, loop, var, start)
-    count = 0
-    if isinstance(peeled, ControlFlowRegion):
-        count = fold_guards(peeled, var, start)
-        if not isinstance(peeled, (LoopRegion, ConditionalBlock)):
-            splice(peeled)
-    return count + fold_guards(loop, var, sympy.sympify(start) + sympy.sympify(stride) * (1 + LATER))
-
-
-def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    """The loops with a conditional in their body that reads the loop variable."""
-    for loop in every_region_block(sdfg, LoopRegion):
-        if not loop.loop_variable:
-            continue  # a while loop has no variable to peel on
-        var = symbolic.symbol(loop.loop_variable)
-        if any(
-            isinstance(block, ConditionalBlock)
-            and any(
-                code is not None and var in sympy.sympify(symbolic.pystr_to_symbolic(code.as_string)).free_symbols
-                for code, _ in block.branches
-            )
-            for block in loop.all_control_flow_blocks()
-        ):
-            yield ((loop, None),)
-
-
-def plan_peel_for(row: Row) -> Rewrite | str:
-    loop = cast(LoopRegion, row[0])
-    if any(isinstance(jump, BreakBlock) for jump in loop_analysis.loop_jumps(loop)):
-        return f"{loop.label} holds a break, which a peeled first iteration would have to keep."
-    # LoopPeeling.can_be_applied is not asked: it wants a constant trip count because it unrolls; peeling one
-    # iteration needs the bounds and a constant stride, and the guard on the peeled iteration covers an empty loop.
-    start = loop_analysis.get_init_assignment(loop)
-    end = loop_analysis.get_loop_end(loop)
-    stride = loop_analysis.get_loop_stride(loop)
-    if start is None or end is None or stride is None or symbolic.issymbolic(stride, loop.sdfg.constants):
-        return f"blocked by LoopPeeling: {loop.label} is not a counted loop with a constant stride."
-    # the folding decides whether the move does anything, so it is tried on a copy first; of the root, since a deep
-    # copy of a nested SDFG alone has an empty cfg_list and LoopPeeling cannot find the loop's region in it
-    trial = copy.deepcopy(loop.sdfg.root_sdfg)
-    twin = next(r for r in trial.all_control_flow_regions(recursive=True) if r.label == loop.label)
-    if not isinstance(twin, LoopRegion) or peel_first_and_fold(twin) == 0:
-        return PEEL_FOLDS_NOTHING.format(loop=loop.label)
-    return region_rewrite("LoopPeeling", loop.sdfg, lambda: peel_first_and_fold(loop))
-
-
 def state_of_map(sdfg: dace.SDFG, label: str) -> SDFGState:
     """The state holding the map labeled ``label``, anywhere in ``sdfg``."""
     for node, graph in sdfg.all_nodes_recursive():
@@ -1158,11 +910,9 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "collapse-doalls": plan_collapse_doalls,
     "expand-doall": plan_expand_doall,
     "doall-to-for": plan_doall_to_for,
-    "copy-to-doall": plan_copy_to_doall,
     "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
-    "peel-for": plan_peel_for,
 }
 
 
@@ -1253,12 +1003,6 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "parallel, so its body can for-fusion with a sequential loop over the same range (a physics pass into the "
         "level scan it feeds).",
     ),
-    "copy-to-doall": (
-        "CopyToMap",
-        "a plain copy between two arrays in the state (a[:] = b) becomes a doall over the copied elements, so "
-        "tile-doall and the interchanges treat it like the doalls around it; a one-element copy between arrays of "
-        "different rank (s[n - 1, i] -> carry[i]) becomes a tasklet, which doall-fission counts as a computation.",
-    ),
     "snapshot-reads": (
         "a doall of its own that copies each slice (SnapshotReads)",
         "a doall that reads a slice of an array (path[:, k], path[k, :]: one index per dimension, a map parameter or a "
@@ -1270,12 +1014,6 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
     ),
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
-    "peel-for": (
-        "LoopPeeling (first iteration), then each if the loop variable decides is replaced by the branch it takes",
-        "for i in a..b: if i == a: P else: Q becomes P; for i in a+1..b: Q. The first iteration leaves the loop and "
-        "the guard that only it satisfied is gone from both parts, so the body is plain states that fission and "
-        "interchange accept.",
-    ),
 }
 
 
@@ -1466,13 +1204,11 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "collapse-doalls": nested_map_pairs,
     "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
     "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
-    "copy-to-doall": lambda sdfg: (((st, None),) for st in every_region_block(sdfg, SDFGState) if plain_copies(st)),
     "snapshot-reads": lambda sdfg: (
         ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and reads_another_doalls_write(st, e)
     ),
     "tile-for": for_rows,
     "untile-for": tile_loops,
-    "peel-for": guarded_loops,
 }
 
 

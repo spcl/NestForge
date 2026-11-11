@@ -5,7 +5,7 @@
 
 The default scopes leave the step loop on the host: its body is the level loop, which holds the ``k == 0`` branch,
 and a loop body with a branch is not opened, so the level loop becomes the kernel and runs once per step. A
-``peel-for`` of the first level (1.20x at preset M, 72 threads, job 5305247; the scope 1.20-1.39x in job 5306973 and 1.18-1.19x on a second node in job 5311088) and a ``tile-for`` of the step loop reach
+peel of the first level (a move no longer on main; 1.20x at preset M, 72 threads, job 5305247; the scope 1.20-1.39x in job 5306973 and 1.18-1.19x on a second node in job 5311088) and a ``tile-for`` of the step loop reach
 the same layout by accident: the peel wraps the body in a guard and the tile adds a loop level, and either makes the
 default scopes take the whole step loop as one kernel. The scope is the lever; the peel and the tile are near-equals
 (see T46-79)."""
