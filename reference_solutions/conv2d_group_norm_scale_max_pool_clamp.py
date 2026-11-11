@@ -14,12 +14,6 @@ from nestforge.replay import Context, Script
 
 KERNEL = "conv2d_group_norm_scale_max_pool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)
-CI_SKIP = (
-    "on the pin c6dc4b695 (which has the DaCe fixes 845c931cf and cc9642937, spcl/NestForge#86 and #74) the baseline "
-    "fails with SilentPureLowering (canonicalize leaves library nodes on their serial 'pure' loop) at cpu:1:S; the "
-    "reference replays correctly. The bench's torch oracle is missing (T46-74), so the timings grade against the "
-    "bench's NumPy function in float64 at rtol 1e-8."
-)
 
 
 def is_tensordot(rows: list[Row]) -> bool:
