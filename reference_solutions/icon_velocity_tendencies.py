@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""velocity_tendencies: one 64-wide column tile around the edge phase.
+"""icon_velocity_tendencies: one 64-wide column tile around the edge phase.
 
 ``default_moves`` strip-mines each nest on its own, so the next sweep of ``vn`` and ``vt`` reloads them.
 The edge states become one kernel, and that kernel is rewritten as one OpenMP loop over tiles of 64
@@ -21,7 +21,7 @@ from dace.sdfg.state import ControlFlowBlock
 from nestforge.ir.names import in_order
 from nestforge.replay import Context, ReplayError, Script
 
-KERNEL = "velocity_tendencies"
+KERNEL = "icon_velocity_tendencies"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 _TILE = 64

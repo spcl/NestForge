@@ -9,7 +9,7 @@ so the parallel space is species by columns (1.83x at preset M, 72 threads, on c
 
 from nestforge.replay import Context, Script
 
-KERNEL = "aes_graupel"
+KERNEL = "icon_aes_graupel"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 
