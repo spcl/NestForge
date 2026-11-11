@@ -257,6 +257,16 @@ def guarded_map(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
+def two_guarded_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if K > 0:
+            b[i] = a[i] * 2.0 + 1.0
+    for i in dace.map[0:N]:
+        if K > 0:
+            c[i] = a[i] + 3.0
+
+
+@dace.program
 def parameter_guarded_map(a: dace.float64[N], b: dace.float64[N]):
     for i in dace.map[0:N]:
         if i > 2:
@@ -881,6 +891,25 @@ def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k)
     assert isinstance(state.parent_graph.parent_graph, ConditionalBlock)
     a, b = random_arrays(a=(SIZE,))["a"], np.zeros(SIZE)
     assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
+
+
+def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
+    sut, reference = session_and_reference(two_guarded_maps)
+
+    for applied in (1, 2):
+        moves = sut.list_moves("interchange-doall-if")
+        assert len(moves) == 3 - applied
+        result = sut.apply_move(moves[0].kind, moves[0].labels)
+
+        assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveMapInvariantIfUp"), result
+        assert sum(isinstance(block, ConditionalBlock) for block in sut.sdfg.nodes()) == applied
+        states = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+        assert sum(isinstance(st.parent_graph.parent_graph, ConditionalBlock) for st in states) == applied
+
+    assert sut.list_moves("interchange-doall-if") == []
+    for k in (0, 3):
+        arrays = random_arrays(a=(SIZE,)) | {"b": np.zeros(SIZE), "c": np.zeros(SIZE)}
+        assert_same_values(reference, sut.sdfg, arrays, N=SIZE, K=k)
 
 
 def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():

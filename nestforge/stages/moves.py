@@ -153,8 +153,7 @@ SUBGRAPH_FISSION_REFUSED = (
 )
 
 MAP_IF_REFUSED = (
-    "blocked by MoveMapInvariantIfUp: {map} holds no if that reads neither its parameters nor what its body writes, "
-    "or the pass would lift {lifted} guards, not the one above this doall."
+    "blocked by MoveMapInvariantIfUp: {map} holds no if that reads neither its parameters nor what its body writes."
 )
 
 
@@ -857,21 +856,6 @@ def state_of_map(sdfg: dace.SDFG, label: str) -> SDFGState:
     raise KeyError(label)
 
 
-def guards_above(state: SDFGState) -> int:
-    """How many conditionals ``state`` sits under, through nested SDFGs up to the root."""
-    count, block = 0, state
-    while True:
-        parent = block.parent_graph
-        if parent is None:
-            outer = block.parent if isinstance(block, dace.SDFG) else None
-            if outer is None:
-                return count
-            block = outer
-            continue
-        count += isinstance(parent, ConditionalBlock)
-        block = parent
-
-
 def guarded_doalls(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     """The doalls whose nested-SDFG body holds a conditional as one of its top-level blocks."""
     for state, entry in map_rows(sdfg):
@@ -882,15 +866,14 @@ def guarded_doalls(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 def plan_map_if(row: Row) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
-    root = state.sdfg.root_sdfg
-    # the pass works on the whole SDFG, so the move is tried on a copy: it must lift one guard, above this doall
-    trial = copy.deepcopy(root)
-    before = guards_above(state_of_map(trial, entry.map.label))
-    lifted = MoveMapInvariantIfUp().apply_pass(trial, {}) or 0
-    after = state_of_map(trial, entry.map.label)
-    if lifted != 1 or guards_above(after) <= before:
-        return MAP_IF_REFUSED.format(map=entry.map.label, lifted=lifted)
-    return region_rewrite("MoveMapInvariantIfUp", root, lambda: MoveMapInvariantIfUp().apply_pass(root, {}))
+    # tried on a copy: a refused lift may still have split the doall's state off or nested it
+    trial_state = state_of_map(copy.deepcopy(state.sdfg.root_sdfg), entry.map.label)
+    (trial_entry,) = [
+        n for n in trial_state.nodes() if isinstance(n, nodes.MapEntry) and n.map.label == entry.map.label
+    ]
+    if not MoveMapInvariantIfUp().apply_to_map(trial_state, trial_entry):
+        return MAP_IF_REFUSED.format(map=entry.map.label)
+    return region_rewrite("MoveMapInvariantIfUp", state.sdfg, lambda: MoveMapInvariantIfUp().apply_to_map(state, entry))
 
 
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
@@ -975,7 +958,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
     "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
     "interchange-doall-if": (
-        "MoveMapInvariantIfUp (tried on a copy; the move needs it to lift exactly one if, above this doall)",
+        "MoveMapInvariantIfUp.apply_to_map (tried on a copy; lifts this doall's if only)",
         "doall i: if c: B becomes if c: doall i: B, c not reading i. A doall that also holds work outside the if is "
         "unswitched: if c: doall i: {A; B} else: doall i: A.",
     ),
