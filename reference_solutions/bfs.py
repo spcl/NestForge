@@ -10,7 +10,7 @@ Caveat: taking no move and skipping the default's fusions (``stage1``) is within
 the GPU (410.1 against 390.5 ms; default 1415.5 ms, job 5191988), so the gain mostly measures what the default gets
 wrong, not what the move adds."""
 
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "bfs"
 CONFIGS = (Context("gpu", 1, "M"),)
@@ -28,4 +28,10 @@ def stage1(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-DECOYS = {"stage1": stage1}
+DECOYS = {
+    "stage1": Decoy(
+        stage1,
+        "stopped-early",
+        "skipping the default's fusions and taking no move is nearly as fast as the interchange on the GPU",
+    )
+}

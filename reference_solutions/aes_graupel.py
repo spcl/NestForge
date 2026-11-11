@@ -7,7 +7,7 @@ That map is the loop over the 6 species of each level, with the column maps insi
 iterations run in parallel. Split, each statement becomes a species map the default collapses with its column map,
 so the parallel space is species by columns (1.83x at preset M, 72 threads, on c2daa40, job 5256868)."""
 
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "aes_graupel"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -24,4 +24,10 @@ def stage1(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-DECOYS = {"stage1": stage1}
+DECOYS = {
+    "stage1": Decoy(
+        stage1,
+        "stopped-early",
+        "taking no move already beats the default, so stopping there looks like a win",
+    )
+}

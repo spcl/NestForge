@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dace.sdfg.state import LoopRegion
 
 from nestforge.ir.introspect import Row
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "column_scan_nlev_nproma"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -42,4 +42,16 @@ def level_map_sequential(s: Script, ctx: Context) -> None:
     s.defaults()
 
 
-DECOYS = {"peel-first": peel_first, "level-map-sequential": level_map_sequential}
+DECOYS = {
+    "peel-first": Decoy(
+        peel_first,
+        "wrong-order",
+        "a peel of the first level is one of three moves that reach the reference's layout, but taken before the"
+        " default it changes nothing",
+    ),
+    "level-map-sequential": Decoy(
+        level_map_sequential,
+        "looks-right-loses",
+        "a sequential level loop matches the scan's dependence, but it gives up the parallel level map",
+    ),
+}

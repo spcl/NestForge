@@ -8,7 +8,7 @@ The default keeps the transpose as one library call (HPTT). Expanded alone it is
 missing on every element (49.6 ms to 14.6 ms, 3.40x at preset M, 72 threads, 3 alternated rounds 3.19-3.54x, on
 690de2f, job 5303150)."""
 
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "permute_3d"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -41,4 +41,15 @@ def large_tile(s: Script, ctx: Context) -> None:
     expand_and_tile(s, DECOY_TILE)
 
 
-DECOYS = {"expand-only": expand_only, "large-tile": large_tile}
+DECOYS = {
+    "expand-only": Decoy(
+        expand_only,
+        "missing-enabler",
+        "the expansion alone is as fast as the library call, so it looks safe, and the tile is what pays",
+    ),
+    "large-tile": Decoy(
+        large_tile,
+        "went-past-best",
+        "a bigger tile looks like more reuse, but 256 per dimension no longer fits in cache",
+    ),
+}

@@ -11,7 +11,7 @@ loops naively (0.15x at preset M)."""
 from dace.libraries.linalg.nodes.tensordot import TensorDot
 
 from nestforge.ir.introspect import Row
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "conv2d_group_norm_scale_max_pool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -45,4 +45,13 @@ def pure_tensordot(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-DECOYS = {"stage1": stage1, "pure-tensordot": pure_tensordot}
+DECOYS = {
+    "stage1": Decoy(
+        stage1, "stopped-early", "the default is already correct and no move is offered that obviously pays"
+    ),
+    "pure-tensordot": Decoy(
+        pure_tensordot,
+        "looks-right-loses",
+        "the pure implementation is the other way to lower the contraction, but it is not the expansion into loops",
+    ),
+}

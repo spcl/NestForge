@@ -29,6 +29,7 @@ import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from dace.sdfg.state import ControlFlowBlock
@@ -225,6 +226,25 @@ class Script:
 #: A reference or decoy: stage 2 calls on a script, for one configuration.
 Steps = Callable[[Script, Context], None]
 
+#: What taking a decoy means for an agent: ``stopped-early`` (the moves that matter are not made), ``looks-right-loses``
+#: (a plausible move that is slower or no faster), ``missing-enabler`` (a right move without the one that lets it pay),
+#: ``went-past-best`` (the right move pushed too far, such as a tile that is too large), ``wrong-device-or-size`` (right
+#: where it was measured, wrong on another device or size), ``wrong-order`` (the right move taken before or after the
+#: step that decides whether it pays).
+Mistake = Literal[
+    "stopped-early", "looks-right-loses", "missing-enabler", "went-past-best", "wrong-device-or-size", "wrong-order"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Decoy:
+    """A schedule an agent could reasonably pick that is not the reference: its steps, which mistake taking it is, and
+    why it is tempting. Replay times it next to the reference, so its cost is measured, not written here."""
+
+    steps: Steps
+    mistake: Mistake
+    tempting: str
+
 
 @dataclass(frozen=True, slots=True)
 class Solution:
@@ -233,13 +253,13 @@ class Solution:
     path: Path
     kernel: str
     solve: Steps
-    decoys: dict[str, Steps]
+    decoys: dict[str, Decoy]
     configs: tuple[Context, ...]
     ci_skip: str = ""  # why CI does not replay it yet; empty when it does
 
 
 def load_solution(path: Path) -> Solution:
-    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``DECOYS`` and ``CI_SKIP``. Loaded by
+    """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``DECOYS`` (name to :class:`Decoy`) and ``CI_SKIP``. Loaded by
     file path, as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
     spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.stem}", path)
     if spec is None or spec.loader is None:
@@ -280,6 +300,9 @@ class VariantRecord(Record):
     #: Where the reference outputs came from (empty with none).
     reference: str = ""
     speedup: float | None = None  # baseline time over this time
+    #: Set for a decoy: the mistake taking it is, and why it is tempting (empty for the baseline and the reference).
+    mistake: str = ""
+    tempting: str = ""
 
 
 class ReplayReport(Record):
@@ -372,8 +395,15 @@ def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> Replay
     """The baseline, the reference and every decoy of ``solution`` on ``ctx``, in that order."""
     # the first configuration per kernel: a replay compares moves, not compiler sweeps
     session, inputs, reference = start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"), "first")
-    steps: dict[str, Steps] = {"baseline": baseline, "reference": solution.solve, **solution.decoys}
+    steps: dict[str, Steps] = {"baseline": baseline, "reference": solution.solve}
+    steps |= {name: decoy.steps for name, decoy in solution.decoys.items()}
     variants = [run_variant(session, ctx, name, fn, (inputs, reference), reps) for name, fn in steps.items()]
+    variants = [
+        v.model_copy(update={"mistake": solution.decoys[v.name].mistake, "tempting": solution.decoys[v.name].tempting})
+        if v.name in solution.decoys
+        else v
+        for v in variants
+    ]
     return ReplayReport(
         kernel=solution.kernel,
         solution=solution.path.relative_to(REPO_ROOT).as_posix()
@@ -420,8 +450,8 @@ def oracle_cell(variant: VariantRecord) -> str:
 def markdown(reports: Sequence[ReplayReport]) -> str:
     """One table over every configuration: the time of each variant, its speedup and its oracle check."""
     lines = [
-        "| Config | Variant | Moves | Time (ms) | Speedup | Oracle |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Config | Variant | Moves | Time (ms) | Speedup | Oracle | Mistake |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for rep in reports:
         config = f"{rep.device}, {rep.threads} thread(s), preset {rep.preset}"
@@ -429,7 +459,7 @@ def markdown(reports: Sequence[ReplayReport]) -> str:
             moves = ", ".join(m.kind for m in v.moves) or ("default_moves" if v.name == "baseline" else "none")
             lines.append(
                 f"| {config} | {v.name} | {moves} | {cell(v.time_ms, '.2f')} | {cell(v.speedup, '.2f')}x |"
-                f" {oracle_cell(v)} |"
+                f" {oracle_cell(v)} | {v.mistake or '-'} |"
             )
     lines.append("")
     for rep in reports:

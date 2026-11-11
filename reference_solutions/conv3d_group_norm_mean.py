@@ -10,7 +10,7 @@ product to ``acc`` in memory. The interchange puts that loop outside the five ou
 output width, a contiguous ``omp simd`` loop that adds one product per element. Decoy: no move and no default
 fusions (``stage1``, 0.74-0.75x)."""
 
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "conv3d_group_norm_mean"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -31,4 +31,4 @@ def stage1(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-DECOYS = {"stage1": stage1}
+DECOYS = {"stage1": Decoy(stage1, "stopped-early", "no move needs no reasoning about the convolution's loop order")}

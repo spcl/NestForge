@@ -5,7 +5,7 @@
 puts the physics in its own kernel again, then the stages after fusion. On the CPU the default stays the
 reference."""
 
-from nestforge.replay import Context, Script
+from nestforge.replay import Context, Decoy, Script
 
 KERNEL = "fuse_physics_into_scan"
 CONFIGS = (Context("gpu", 1, "M"),)
@@ -28,4 +28,11 @@ def physics_levels_outside(s: Script, ctx: Context) -> None:
     s.finish()
 
 
-DECOYS = {"physics-levels-outside": physics_levels_outside}
+DECOYS = {
+    "physics-levels-outside": Decoy(
+        physics_levels_outside,
+        "looks-right-loses",
+        "moving the levels outermost looks like the usual way to parallelize a column scan, but on the GPU it leaves"
+        " only the levels parallel",
+    )
+}
