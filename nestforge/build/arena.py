@@ -43,7 +43,8 @@ INPUT_HIGH = 0.25
 
 
 def make_inputs(boundary: Boundary, sizes: Mapping[str, SymbolValue], seed: int = 0) -> dict[str, np.ndarray]:
-    """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller."""
+    """Seeded random inputs, and zeroed outputs and scratch buffers, all allocated by the caller. A bool input takes
+    both truth values; an integer input is filled as the bench fills it (:func:`index_fill`)."""
     sdfg = oracle_sdfg(boundary)  # the raw nest's scratch is too small
     rng = np.random.default_rng(seed)
     arrays: dict[str, np.ndarray] = {}
@@ -53,11 +54,29 @@ def make_inputs(boundary: Boundary, sizes: Mapping[str, SymbolValue], seed: int 
         desc = sdfg.arrays[name]
         shape = resolve_shape(desc.shape, sizes)
         dt = np.dtype(desc.dtype.type)
-        arrays[name] = np.zeros(shape, dt) if name in zero_filled else (rng.random(shape) * INPUT_HIGH).astype(dt)
+        if name in zero_filled:
+            arrays[name] = np.zeros(shape, dt)
+        elif dt.kind == "b":
+            arrays[name] = rng.random(shape) < 0.5
+        elif dt.kind in "iu":
+            arrays[name] = index_fill(shape, dt, seed, stream=len(arrays))
+        else:
+            arrays[name] = (rng.random(shape) * INPUT_HIGH).astype(dt)
     for name in factored_inputs(sdfg):
         if name in boundary.inputs:
             arrays[name] = positive_definite(arrays[name])
     return arrays
+
+
+def index_fill(shape: tuple[int, ...], dt: np.dtype, seed: int, stream: int) -> np.ndarray:
+    """The bench's fill of an integer array, subscripts its manifests keep in bounds; a 0-d integer has no
+    extent to bound it, so it stays zero."""
+    if not shape:
+        return np.zeros(shape, dt)
+    from hpcagent_bench.initialize import fill_index_array  # the bench imports NestForge: no top-level import
+    from hpcagent_bench.support.counter_generator import CounterGenerator
+
+    return fill_index_array(shape, dt.name, CounterGenerator(seed, stream=stream))
 
 
 def positive_definite(array: np.ndarray) -> np.ndarray:
