@@ -38,7 +38,7 @@ default = { tool = "run_defaults", args = { stage = "moves" } }
 title = "Scopes"
 summary = "Each top-level doall, a library call included, is a kernel of its own."
 text = "prompt/phases/scopes.md"
-tools = ["set_scope", "unset_scope"]
+tools = ["set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "place", "insert_copies"]
 default = { tool = "run_defaults", args = { stage = "scopes" } }
 
 [phases.placement]

@@ -66,6 +66,7 @@ agent's catalog.
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
+| `stage-loads-shared` | GPU kernel inside a GPU scope with its copies inserted (`list_moves(scope=...)` only) | `StageLoadsThroughSharedMemory` on that kernel: it is tiled into thread blocks (`AddThreadBlockMap`) and each array it only reads and reuses, with a constant footprint per thread, gets a `GPU_Shared` tile (halo included) filled by one block-collective copy and one barrier |
 | `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |
@@ -108,6 +109,12 @@ what no stage 2 move can, by writing the fused kernel in stage 5. The labels are
 It is refused, and nothing changes, when the blocks sit at different levels, when another block or a conditional edge
 breaks the run, or when something outside the group runs between its parts.
 
+`list_moves(kind, scope=name)` and `apply_move(kind, labels, ..., scope=name)` run the same moves inside one kernel's
+body, its rows labeled as in the program; they change nothing outside it. Before placement they rewrite the body; once
+placed, a structured move rewrites the body before placement (kept in `unplaced`) and the kernel is placed again, so the
+default lowering keeps it. `stage-loads-shared` rewrites the lowered GPU body instead and needs the copies inserted;
+placing again or a later structured move inside the scope drops it, so it comes last.
+
 Scalar inputs cross the boundary by value; an array input crosses by pointer, a length-1 one included (a host one
 as a pointer to the call's copy of its element).
 
@@ -130,14 +137,22 @@ the CPU. A kernel holding a library call pinned by `set-library-implementation` 
 library (OpenBLAS, FFTW3) keeps it on the CPU, a device library (cuBLAS, hipBLAS, ...) puts it on the GPU. DaCe's `OffloadToAccelerator` schedules the GPU
 kernels and inserts the host/device copies; kernels left on the CPU keep their operands in host memory.
 
-`place(devices)` takes `{kernel: "cpu" | "gpu"}` and returns each kernel's device, the copies, and the
+A GPU kernel is lowered inside its call: DaCe's `OffloadToAccelerator` runs on the `ExternalCall`'s body with each
+argument in the memory the call passes it in, so the body's maps become `GPU_Device` kernels and its temporaries
+device memory, while CPU kernels and the program around the calls are unchanged.
+`place(devices)` takes `{kernel: "cpu" | "gpu"}` and returns each kernel's device and the
 transfers the [kernel DAG](../depends.md) implies: every argument whose producer and consumer sit on different
-devices. Calling it again starts from the program before the first placement.
+devices. It passes host memory, so a GPU kernel copies its arguments at its own boundary, inside the call.
+`insert_copies()` runs `OffloadToAccelerator` on the program first: the GPU kernels' operands move to device memory,
+the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
+bodies are lowered over device memory; it returns the copies. Both start from the program before the first placement.
+The default runs `place()` when nothing is placed, then `insert_copies()` when a GPU kernel still copies inside its
+call; stage 5 builds GPU kernels over device pointers, so the copies are in before it.
 
 | | |
 |---|---|
-| default | `place()` |
-| agent | `place(devices)` |
+| default | `place()`, then `insert_copies()` |
+| agent | `place(devices)`, `insert_copies()` |
 | code | `nestforge/stages/placement.py` |
 
 ## Stage 5: Kernels

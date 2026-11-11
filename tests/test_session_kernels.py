@@ -270,6 +270,7 @@ def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_mo
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
     session.default_scopes()
     (name,) = session.place().devices
+    session.insert_copies()
 
     result = session.sweep(name, reps=2)
 

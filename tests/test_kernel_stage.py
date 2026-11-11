@@ -35,7 +35,7 @@ from nestforge.stages.kernel import (
     use_kernel_library,
     validate_kernel,
 )
-from nestforge.stages.placement import default_devices, device_copies, place
+from nestforge.stages.placement import default_devices, device_copies, insert_copies
 from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants
 
@@ -108,7 +108,7 @@ def gpu_lowered_kernel(program, on_device=()):
     for name in on_device:
         sdfg.arrays[name].storage = dace.StorageType.GPU_Global
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
+    insert_copies(sdfg, default_devices(sdfg, Targets(gpu=True)))
     return sdfg, ext, boundary
 
 
@@ -445,7 +445,7 @@ from nestforge.build.toolchain import discover_cuda_toolchains, discover_hip_too
 from nestforge.corpus.translate import prepare
 from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
 from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.placement import default_devices, place
+from nestforge.stages.placement import default_devices, insert_copies
 from nestforge.stages.canonicalize import fuse_and_finish
 from nestforge.stages.scopes import lower_nests_to_external_call
 from nestforge.stages.variants import device_variants
@@ -471,7 +471,7 @@ if __name__ == "__main__":
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
-    place(sdfg, Targets(gpu=True), default_devices(sdfg, Targets(gpu=True)))
+    insert_copies(sdfg, default_devices(sdfg, Targets(gpu=True)))
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
     src = schedule_kernel(ext, boundary, out / "gen")
     archive = build_kernel_library(src, strict.compiler, list(strict.flags), out / "lib")

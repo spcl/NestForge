@@ -29,6 +29,7 @@ from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizont
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
 from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
+from dace.transformation.dataflow.stage_loads_shared_memory import StageLoadsThroughSharedMemory
 from dace.transformation.dataflow.tiling import MapTiling
 from dace.transformation.dataflow.trivial_map_elimination import TrivialMapElimination
 from dace.transformation.helpers import nest_state_subgraph
@@ -52,6 +53,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
 )
 from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
+from dace.transformation.passes.gpu_specialization.block_tile_kernels import is_kernel
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
 from dace.transformation.transformation import PatternTransformation
@@ -101,7 +103,11 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
+    "stage-loads-shared": (nodes.MapEntry,),
 }
+
+#: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
+DEVICE_KINDS = frozenset({"stage-loads-shared"})
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
 SIZED = frozenset({"tile-doall", "tile-for"})
@@ -705,6 +711,18 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
+def plan_stage_loads_shared(row: Row) -> Rewrite | str:
+    """A GPU kernel stages the tiles of the arrays its threads reuse through shared memory."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    move = pattern(StageLoadsThroughSharedMemory, state.sdfg, {"map_entry": entry})
+    if move is None:
+        return (
+            f"blocked by StageLoadsThroughSharedMemory: {entry.map.label} is no GPU kernel (place its scope on the GPU "
+            "and insert the copies first), or reads no array it reuses with a constant footprint per thread."
+        )
+    return move
+
+
 def plan_snapshot_reads(row: Row) -> Rewrite | str:
     """A doall that reads a slice of an array another doall of its state writes copies the slice first, so the two
     stop touching one array and ``doall-fusion`` can merge them."""
@@ -898,6 +916,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
+    "stage-loads-shared": plan_stage_loads_shared,
 }
 
 
@@ -999,6 +1018,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
     ),
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
+    "stage-loads-shared": (
+        "StageLoadsThroughSharedMemory",
+        "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
+        "included) of every array it only reads and reuses into shared memory, so global memory is read once.",
+    ),
 }
 
 
@@ -1194,6 +1218,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     ),
     "tile-for": for_rows,
     "untile-for": tile_loops,
+    "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
 }
 
 

@@ -59,6 +59,18 @@ class ApplyMove(Labeled):
     )
 
 
+class InScope(Args):
+    scope: str = pydantic.Field(description="The kernel whose body holds the rows, as list_kernels names it.")
+
+
+class ListScopeMoves(ListMoves, InScope):
+    pass
+
+
+class ApplyScopeMove(ApplyMove, InScope):
+    pass
+
+
 class RunDefaults(Args):
     stage: Literal["moves", "finish", "scopes", "placement", "round"] = pydantic.Field(
         description="moves: default fusion and the stages after it; finish: the stages after your own moves; "
@@ -70,6 +82,12 @@ class RunDefaults(Args):
 
 class UnsetScope(Args):
     name: str = pydantic.Field(description="The kernel to inline back, as list_kernels names it.")
+
+
+class Place(Args):
+    devices: dict[str, Literal["cpu", "gpu"]] = pydantic.Field(
+        default_factory=dict, description="Kernel name -> cpu or gpu; kernels left out keep the default device."
+    )
 
 
 class KernelName(Args):
@@ -151,6 +169,31 @@ TOOLS: dict[str, ToolDef] = {
         "kernel's name.",
     ),
     "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
+    "list_scope_moves": ToolDef(
+        Phase.SCOPES,
+        ListScopeMoves,
+        "list_moves inside one kernel's body; on a GPU kernel with its copies inserted also stage-loads-shared.",
+        Effect.READ,
+    ),
+    "apply_scope_move": ToolDef(
+        Phase.SCOPES,
+        ApplyScopeMove,
+        "apply_move inside one kernel's body, as list_scope_moves listed it. A placed kernel is placed again with the "
+        "change; stage-loads-shared rewrites the GPU kernel as placed, so do it last: placing again drops it.",
+    ),
+    "place": ToolDef(
+        Phase.SCOPES,
+        Place,
+        "Run each kernel on the CPU or the GPU; a GPU kernel copies its arguments to the device and back inside its "
+        "call. Answers each kernel's device and the transfers between them.",
+        Effect.REPLACE,
+    ),
+    "insert_copies": ToolDef(
+        Phase.SCOPES,
+        NoArgs,
+        "Move the GPU kernels' host/device copies out of the calls into the program, so a value that stays on the "
+        "GPU between kernels is copied once; answers the copies.",
+    ),
     "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "read_kernel": ToolDef(Phase.KERNELS, KernelName, "A kernel's current source.", Effect.READ),
     "write_kernel": ToolDef(
