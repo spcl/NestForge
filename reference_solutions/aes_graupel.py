@@ -7,7 +7,7 @@ That map is the loop over the 6 species of each level, with the column maps insi
 iterations run in parallel. Split, each statement becomes a species map the default collapses with its column map,
 so the parallel space is species by columns (1.83x at preset M, 72 threads, on c2daa40, job 5256868)."""
 
-from nestforge.replay import Context, Decoy, Script
+from nestforge.replay import Context, Script
 
 KERNEL = "aes_graupel"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -16,18 +16,3 @@ CONFIGS = (Context("cpu", 72, "M"),)
 def solve(s: Script, ctx: Context) -> None:
     s.apply(s.pick("doall-fission", writes=["__inl1_sink", "__inl1_sx2x"]))
     s.defaults()
-
-
-def stage1(s: Script, ctx: Context) -> None:
-    """No move and no default fusions: the species map stays 6 wide, yet faster than the default (1.38x at M, 72
-    threads, job 5256868); the reference beats it by 1.33x."""
-    s.finish()
-
-
-DECOYS = {
-    "stage1": Decoy(
-        stage1,
-        "stopped-early",
-        "taking no move already beats the default, so stopping there looks like a win",
-    )
-}

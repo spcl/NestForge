@@ -5,7 +5,7 @@
 puts the physics in its own kernel again, then the stages after fusion. On the CPU the default stays the
 reference."""
 
-from nestforge.replay import Context, Decoy, Script
+from nestforge.replay import Context, Script
 
 KERNEL = "fuse_physics_into_scan"
 CONFIGS = (Context("gpu", 1, "M"),)
@@ -16,23 +16,3 @@ def solve(s: Script, ctx: Context) -> None:
     if ctx.device == "gpu":
         s.apply(s.pick("doall-fission", writes=["s"]))
     s.finish()
-
-
-def physics_levels_outside(s: Script, ctx: Context) -> None:
-    """The reference, then the physics map interchanged so the levels are outermost: on the GPU only the 90
-    levels stay parallel (0.04x of the default at M)."""
-    s.session.default_moves()
-    if ctx.device == "gpu":
-        s.apply(s.pick("doall-fission", writes=["s"]))
-        s.apply(s.pick("interchange-doall-doall", reads=["x", "t"]))
-    s.finish()
-
-
-DECOYS = {
-    "physics-levels-outside": Decoy(
-        physics_levels_outside,
-        "looks-right-loses",
-        "moving the levels outermost looks like the usual way to parallelize a column scan, but on the GPU it leaves"
-        " only the levels parallel",
-    )
-}

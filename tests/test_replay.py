@@ -133,7 +133,7 @@ def test_every_solution_replays_correctly(path: Path) -> None:
         pytest.skip(solution.ci_skip)
     report = replay(solution, CI_CONTEXT, reps=QUICK_REPS)
     names = [v.name for v in report.variants]
-    assert names == ["baseline", "reference", *solution.decoys]
+    assert names == ["baseline", "reference"]
     for variant in report.variants:
         assert variant.error == "" and variant.correct is True, variant
         assert variant.time_ms is not None and variant.speedup is not None

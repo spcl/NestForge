@@ -7,7 +7,7 @@ first reads ``path`` and the second writes it, so the default cannot fuse them a
 step. Once the two slices are copied, the first doall no longer touches ``path`` and the default's own fusion removes
 ``outer``. The gain grows with N (the vectors cost more than the saved traffic at small N): see the README row."""
 
-from nestforge.replay import Context, Decoy, Script
+from nestforge.replay import Context, Script
 
 KERNEL = "floyd_warshall"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -16,17 +16,3 @@ CONFIGS = (Context("cpu", 72, "M"),)
 def solve(s: Script, ctx: Context) -> None:
     s.apply(s.pick("snapshot-reads"))
     s.defaults()
-
-
-def stage1(s: Script, ctx: Context) -> None:
-    """No move and no default fusions: the same time as the default (0.98-1.01x at M)."""
-    s.finish()
-
-
-DECOYS = {
-    "stage1": Decoy(
-        stage1,
-        "stopped-early",
-        "the menu offers only tiling and expansion, so taking no move looks like the only safe choice",
-    )
-}

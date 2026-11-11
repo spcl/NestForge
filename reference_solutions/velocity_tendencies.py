@@ -23,7 +23,6 @@ from nestforge.replay import Context, ReplayError, Script
 
 KERNEL = "velocity_tendencies"
 CONFIGS = (Context("cpu", 72, "M"),)
-DECOYS: dict = {}
 
 _TILE = 64
 _EDGE = re.compile(r"(?:^|_)(?:vt|vn_ie|z_kin_hor_e|z_vt_ie|z_w_concorr_me|z_v_grad_w)(?:_|$)")

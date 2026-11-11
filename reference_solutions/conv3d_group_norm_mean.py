@@ -7,10 +7,10 @@ bench's NumPy reference).
 The convolution is a reduction over the input channel and the kernel positions. After the default, the innermost
 kernel-position loop sits inside the output-point maps, and each output point calls it as a function that adds one
 product to ``acc`` in memory. The interchange puts that loop outside the five output maps, so the innermost loop is the
-output width, a contiguous ``omp simd`` loop that adds one product per element. Decoy: no move and no default
-fusions (``stage1``, 0.74-0.75x)."""
+output width, a contiguous ``omp simd`` loop that adds one product per element. Its decoy (no move, 0.74-0.75x)
+is on the ``decoys`` branch."""
 
-from nestforge.replay import Context, Decoy, Script
+from nestforge.replay import Context, Script
 
 KERNEL = "conv3d_group_norm_mean"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -24,11 +24,3 @@ def solve(s: Script, ctx: Context) -> None:
     s.session.default_moves()
     s.apply(s.pick("interchange-doall-for"))
     s.finish()
-
-
-def stage1(s: Script, ctx: Context) -> None:
-    """No move and no default fusions (0.74-0.75x at M)."""
-    s.finish()
-
-
-DECOYS = {"stage1": Decoy(stage1, "stopped-early", "no move needs no reasoning about the convolution's loop order")}

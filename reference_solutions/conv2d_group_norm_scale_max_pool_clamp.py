@@ -4,14 +4,13 @@
 computes each convolution tap (NestForge's own loops instead of the TTGT call), then the stages after fusion.
 
 The default keeps the nine per-tap contractions as ``TensorDot`` library calls, which DaCe lowers to a transpose, a GEMM
-and a transpose. Expanded, the tap is one parallel loop nest that reads the padded window in place. Decoys: no move and
-no default fusions (``stage1``), and the ``pure`` implementation of the same node, which keeps it a library call but
-loops naively (0.15x at preset M)."""
+and a transpose. Expanded, the tap is one parallel loop nest that reads the padded window in place. Its decoys (no move, and
+the ``pure`` implementation of the same node, 0.15x at preset M) are on the ``decoys`` branch."""
 
 from dace.libraries.linalg.nodes.tensordot import TensorDot
 
 from nestforge.ir.introspect import Row
-from nestforge.replay import Context, Decoy, Script
+from nestforge.replay import Context, Script
 
 KERNEL = "conv2d_group_norm_scale_max_pool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)
@@ -31,27 +30,3 @@ def solve(s: Script, ctx: Context) -> None:
     s.session.default_moves()
     s.apply(s.pick("expand-library", where=is_tensordot))
     s.finish()
-
-
-def stage1(s: Script, ctx: Context) -> None:
-    """No move and no default fusions (65.04 ms against the default's 63.75 ms at preset M)."""
-    s.finish()
-
-
-def pure_tensordot(s: Script, ctx: Context) -> None:
-    """The ``pure`` implementation of the contraction instead of its expansion: 437.78 ms at preset M, 0.15x."""
-    s.session.default_moves()
-    s.apply(s.pick("set-library-implementation", where=is_tensordot))
-    s.finish()
-
-
-DECOYS = {
-    "stage1": Decoy(
-        stage1, "stopped-early", "the default is already correct and no move is offered that obviously pays"
-    ),
-    "pure-tensordot": Decoy(
-        pure_tensordot,
-        "looks-right-loses",
-        "the pure implementation is the other way to lower the contraction, but it is not the expansion into loops",
-    ),
-}
