@@ -222,14 +222,18 @@ def blocks_defined_symbol_dtypes(
 ) -> dict[str, dace.dtypes.typeclass]:
     """Each symbol assigned inside ``blocks`` or on an edge between two of them, with its dtype."""
     defined: dict[str, dace.dtypes.typeclass] = {}
+    table = symbol_table(parent_sdfg)
+    graph = blocks[0].parent_graph
+    # in program order: a later block reads what an earlier block or edge defined
     for block in blocks:
         if isinstance(block, CfgNest):
-            defined |= nest_defined_symbol_dtypes(parent_sdfg, block, defined)
-    table = symbol_table(parent_sdfg) | defined
-    for edge in blocks[0].parent_graph.edges():
-        if edge.src in blocks and edge.dst in blocks:
-            for target, rhs in edge.data.assignments.items():
-                define_symbol(defined, table, target, str(rhs))
+            nested = nest_defined_symbol_dtypes(parent_sdfg, block, defined)
+            defined |= nested
+            table |= nested
+        for edge in graph.out_edges(block):
+            if edge.dst in blocks:
+                for target, rhs in edge.data.assignments.items():
+                    define_symbol(defined, table, target, str(rhs))
     return defined
 
 

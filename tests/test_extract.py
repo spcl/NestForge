@@ -6,7 +6,7 @@ from dace.sdfg.state import LoopRegion
 from dace.symbolic_facts import Predicate
 from helpers import extract_nest_to_sdfg
 
-from nestforge.ir.extract import Boundary, nest_defined_symbol_dtypes
+from nestforge.ir.extract import Boundary, blocks_defined_symbol_dtypes, extract_blocks, nest_defined_symbol_dtypes
 from nestforge.stages.scopes import lower_nests_to_external_call, parallel_top_level_maps
 
 N = dace.symbol("N")
@@ -168,3 +168,30 @@ def test_a_symbol_first_assigned_an_int_then_a_float_is_declared_double():
     loop.add_state_after(second, "third", assignments={"acc": "acc + 0.5"})
 
     assert nest_defined_symbol_dtypes(sdfg, loop) == {"acc": dace.float64}
+
+
+def loops_staging_a_float_across_their_edge() -> tuple[dace.SDFG, list[LoopRegion]]:
+    """``first``; edge ``t = 0.5 * x``; ``second`` sets ``u = t + 1`` and writes ``u`` to ``out``."""
+    sdfg = dace.SDFG("staged_float")
+    sdfg.add_symbol("x", dace.float64)
+    sdfg.add_array("out", [3], dace.float64)
+    first = LoopRegion("first", "first_i < 3", "first_i", "first_i = 0", "first_i = first_i + 1")
+    second = LoopRegion("second", "second_i < 3", "second_i", "second_i = 0", "second_i = second_i + 1")
+    sdfg.add_node(first, is_start_block=True)
+    sdfg.add_edge(first, second, dace.InterstateEdge(assignments={"t": "0.5 * x"}))
+    first.add_state("first_body", is_start_block=True)
+    entry = second.add_state("second_entry", is_start_block=True)
+    body = second.add_state_after(entry, "second_body", assignments={"u": "t + 1"})
+    tasklet = body.add_tasklet("store", {}, {"o"}, "o = u")
+    body.add_edge(tasklet, "o", body.add_write("out"), None, dace.Memlet("out[second_i]"))
+    return sdfg, [first, second]
+
+
+def test_a_symbol_assigned_between_two_blocks_types_what_the_later_block_derives_from_it():
+    sdfg, loops = loops_staging_a_float_across_their_edge()
+    assert blocks_defined_symbol_dtypes(sdfg, loops) == {"t": dace.float64, "u": dace.float64}
+
+    extract_blocks(sdfg, loops, name="staged_float_nest")
+    out = np.zeros(3)
+    sdfg(out=out, x=3.0)
+    np.testing.assert_array_equal(out, np.full(3, 2.5))
