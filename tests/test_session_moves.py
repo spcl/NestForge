@@ -1242,17 +1242,18 @@ def test_copy_to_doall_turns_a_one_element_copy_between_ranks_into_a_tasklet():
     assert_same_values(reference, sut.sdfg, random_arrays(a=(4, 5), b=(5,)))
 
 
-def test_copy_to_doall_does_not_offer_a_block_copy_between_ranks_that_dace_raises_on():
-    """``a[0:2, 0:3] -> b[0:6]``: DaCe's check accepts it and its apply raises (W45-59, T45-48)."""
+def test_copy_to_doall_turns_a_block_copy_between_ranks_into_a_doall():
+    """``a[0:2, 0:3] -> b[0:6]``: the copy becomes a map over the copied elements, in row-major order."""
     sut = Session(copy_between_ranks((4, 5), (6,), "0:2, 0:3", "0:6"))
+    reference = copy_between_ranks((4, 5), (6,), "0:2, 0:3", "0:6", name="copy_block_reference")
+
+    result = apply_listed(sut, "copy-to-doall")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "CopyToMap")
     (state,) = sut.sdfg.states()
-    before = digest(sut.sdfg)
-
-    result = sut.apply_move("copy-to-doall", [state.label])
-
-    assert sut.list_moves("copy-to-doall") == []
-    assert result.status is MoveStatus.ILLEGAL and "CopyToMap" in result.reason, result
-    assert digest(sut.sdfg) == before
+    assert plain_copies(sut.sdfg) == []
+    assert len([n for n in state.nodes() if isinstance(n, nodes.MapEntry)]) == 1
+    assert_same_values(reference, sut.sdfg, random_arrays(a=(4, 5), b=(6,)))
 
 
 def test_copy_to_doall_of_a_state_without_a_copy_is_illegal_and_changes_nothing():
