@@ -10,11 +10,12 @@ import numpy as np
 import pytest
 from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
-from helpers import corpus_kernel
+from dace.sdfg import nodes
+from dace.sdfg.graph import SubgraphView
+from dace.transformation.helpers import nest_state_subgraph
 
 from nestforge import session as session_module
 from nestforge.build import flags
-from nestforge.corpus.bench import preset_sizes
 from nestforge.records import KernelStatus
 from nestforge.session import Session, external_calls
 from nestforge.stages.canonicalize import Targets
@@ -316,14 +317,25 @@ def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(
         assert set(info.abi_order) == {*inputs, *outputs, *symbols}
 
 
+def scaled_sum_nest_mapping_unused(symbol: str) -> dace.SDFG:
+    """``scaled_sum`` whose map body is a nest that maps ``symbol`` and never reads it."""
+    sdfg = scaled_sum.to_sdfg(simplify=True)
+    sdfg.add_symbol(symbol, dace.int64)
+    state = sdfg.start_block
+    tasklet = next(n for n in state.nodes() if isinstance(n, nodes.Tasklet))
+    nest = nest_state_subgraph(sdfg, state, SubgraphView(state, [tasklet]))
+    nest.sdfg.add_symbol(symbol, dace.int64)
+    nest.symbol_mapping[symbol] = symbol
+    return sdfg
+
+
+@pytest.mark.filterwarnings("ignore:.*maps to unused symbol")  # the unused mapping is the arrangement
 def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path):
-    """graupel_substep_sedimentation's species and level loops are one kernel inside the substep loop, so ``NSUB`` is
-    among its symbols though its body never reads it. The built entry drops it, binding drops it from the node, and the
-    oracle prepared after that bind must still take every symbol validation passes from the source."""
-    kernel = corpus_kernel("graupel_substep_sedimentation")
-    session = Session(kernel.to_sdfg(), Targets(gpu=False), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
-    session.canonicalize()
-    session.default_moves()
+    """The map's body is a nest that maps ``M`` without reading it, so ``M`` is among the kernel's source symbols.
+    The built entry drops it, binding drops it from the node, and the oracle prepared after that bind must still take
+    every symbol validation passes from the source."""
+    sdfg = scaled_sum_nest_mapping_unused("M")
+    session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes={"N": 256, "M": 3})
     session.default_scopes()
     dropped = []
     for ext in external_calls(session.sdfg):
