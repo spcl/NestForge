@@ -22,7 +22,7 @@ from dace.sdfg.state import SDFGState
 from dace.subsets import Range
 from dace.transformation.interstate import InlineSDFG
 
-from nestforge.ir.extract import detach
+from nestforge.ir.extract import scope_twin
 
 #: The prefix of the transient that holds the copied slice.
 SNAPSHOT_SUFFIX = "_snapshot"
@@ -61,6 +61,13 @@ def written_by_another_doall(state: SDFGState, entry: nodes.MapEntry) -> set[str
         if owner is not None and owner is not entry and state.entry_node(owner) is None:
             written.update(e.data.data for e in state.out_edges(other) if e.data.data is not None)
     return written
+
+
+def reads_another_doalls_write(state: SDFGState, entry: nodes.MapEntry) -> bool:
+    """Whether ``entry`` reads an array another top-level doall of ``state`` writes. Inlining the body leaves these
+    outer reads alone, so without one :func:`snapshot` has nothing to copy."""
+    written = written_by_another_doall(state, entry)
+    return any(e.data.data in written for e in state.in_edges(entry) if isinstance(e.src, nodes.AccessNode))
 
 
 def body_tasklets(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.Tasklet]:
@@ -147,13 +154,15 @@ def copy_slice(state: SDFGState, entry: nodes.MapEntry, read: SliceRead) -> str:
     return name
 
 
-def snapshot(state: SDFGState, entry: nodes.MapEntry) -> bool:
-    """Copy every slice ``entry`` reads of an array another doall of ``state`` writes into a transient, in a doall of
-    its own, and make ``entry`` read the transient instead. Whether anything was copied."""
+def snapshot(state: SDFGState, entry: nodes.MapEntry, written: set[str] | None = None) -> bool:
+    """Copy every slice ``entry`` reads of an array another doall of ``state`` writes (``written``, by default read
+    from ``state``) into a transient, in a doall of its own, and make ``entry`` read the transient instead. Whether
+    anything was copied."""
     if is_snapshot_doall(state, entry):
         return False
     inline_body(state, entry)
-    reads = list(slice_reads(state, entry, written_by_another_doall(state, entry)))
+    written = written_by_another_doall(state, entry) if written is None else written
+    reads = list(slice_reads(state, entry, written))
     ranges = dict(zip(entry.map.params, entry.map.range.ranges, strict=True))
     for number, read in enumerate(reads):
         name = copy_slice(state, entry, read)
@@ -183,12 +192,12 @@ def snapshot(state: SDFGState, entry: nodes.MapEntry) -> bool:
 
 def snapshot_applies(state: SDFGState, entry: nodes.MapEntry) -> bool:
     """Whether :func:`snapshot` has something to copy; read from the doall's own memlets, with its body inlined on a
-    copy of the program."""
-    twin = detach(state.sdfg)
-    twin_state = list(twin.states())[list(state.sdfg.states()).index(state)]
-    twin_entry = twin_state.node(state.node_id(entry))
-    assert isinstance(twin_entry, nodes.MapEntry)
+    copy of the doall alone. A doall that reads no array another doall writes is refused without the copy."""
+    written = written_by_another_doall(state, entry)
+    if not any(e.data.data in written for e in state.in_edges(entry) if isinstance(e.src, nodes.AccessNode)):
+        return False
+    twin_state, twin_entry = scope_twin(state, entry)
     try:
-        return snapshot(twin_state, twin_entry)
+        return snapshot(twin_state, twin_entry, written)
     except (ValueError, KeyError, dace.sdfg.InvalidSDFGError):
         return False

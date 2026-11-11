@@ -66,7 +66,7 @@ from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
-from nestforge.stages.snapshot import snapshot, snapshot_applies, written_by_another_doall
+from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
 
 
 @dataclass(frozen=True, slots=True)
@@ -1482,7 +1482,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
     "copy-to-doall": lambda sdfg: (((st, None),) for st in every_region_block(sdfg, SDFGState) if plain_copies(st)),
     "snapshot-reads": lambda sdfg: (
-        ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and written_by_another_doall(st, e)
+        ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and reads_another_doalls_write(st, e)
     ),
     "tile-for": for_rows,
     "untile-for": tile_loops,

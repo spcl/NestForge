@@ -50,6 +50,38 @@ def detach(sdfg: dace.SDFG) -> dace.SDFG:
     return det
 
 
+def scope_twin(state: SDFGState, entry: nodes.MapEntry) -> tuple[SDFGState, nodes.MapEntry]:
+    """A copy of the scope of ``entry`` and the access nodes it reads and writes, alone in a new state of a new SDFG
+    that has the program's containers and symbols. A probe that rewrites one doall copies that doall, not the program.
+    """
+    sdfg = state.sdfg
+    twin = dace.SDFG(sdfg.name)
+    for name, desc in sdfg.arrays.items():
+        twin.add_datadesc(name, copy.deepcopy(desc))
+    for name, dtype in sdfg.symbols.items():
+        twin.add_symbol(name, dtype)
+    twin_state = twin.add_state(is_start_block=True)
+    exit_node = cast(nodes.MapExit, state.exit_node(entry))
+    outer = [e.src for e in state.in_edges(entry)] + [e.dst for e in state.out_edges(exit_node)]
+    body: list[nodes.Node] = list(state.all_nodes_between(entry, exit_node) or ())
+    keep = dict.fromkeys([*(n for n in outer if isinstance(n, nodes.AccessNode)), entry, exit_node, *body])
+    memo: dict[int, object] = {}
+    copies = {node: copy.deepcopy(node, memo) for node in keep}
+    for node in copies.values():
+        twin_state.add_node(node)
+        if isinstance(node, nodes.NestedSDFG):
+            node.sdfg.parent = twin_state
+            node.sdfg.parent_sdfg = twin
+            node.sdfg.parent_nsdfg_node = node
+    for edge in state.edges():
+        if edge.src in copies and edge.dst in copies:
+            twin_state.add_edge(
+                copies[edge.src], edge.src_conn, copies[edge.dst], edge.dst_conn, copy.deepcopy(edge.data, memo)
+            )
+    twin.reset_cfg_list()
+    return twin_state, cast(nodes.MapEntry, copies[entry])
+
+
 def detached_twin(
     sdfg: dace.SDFG, state: SDFGState, entry: nodes.MapEntry
 ) -> tuple[dace.SDFG, SDFGState, nodes.MapEntry]:
