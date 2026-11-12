@@ -25,9 +25,10 @@ BACKENDS = {"cuda": ("nvcc", ".cu", "<cuda_runtime.h>"), "hip": ("hipcc", ".hip"
 
 
 @contextmanager
-def gpu_backend(api: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """DaCe and the bench on backend ``api``, the device arch given, so nothing probes a GPU or a toolkit."""
-    monkeypatch.setenv("DACE_compiler_cuda_backend", api)  # the bench reads the variable, DaCe its config
+def gpu_backend(api: str, monkeypatch: pytest.MonkeyPatch, bench_api: str = "") -> Iterator[None]:
+    """DaCe on backend ``api`` and the bench on ``bench_api`` (default ``api``), the device arch given, so nothing
+    probes a GPU or a toolkit."""
+    monkeypatch.setenv("DACE_compiler_cuda_backend", bench_api or api)  # the bench reads the variable, DaCe its config
     monkeypatch.setenv("HPCAGENT_BENCH_SM", "sm_80")
     monkeypatch.setenv("HPCAGENT_BENCH_GFX", "gfx90a")
     monkeypatch.setattr(kernel_stage, "cudart_dir", lambda nvcc: RUNTIME_DIR)
@@ -40,7 +41,9 @@ def gpu_backend(api: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         languages.gpu_backend.cache_clear()
 
 
-def assembled(api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Final, list[list[str]], list[str]]:
+def assembled(
+    api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bench_api: str = ""
+) -> tuple[Final, list[list[str]], list[str]]:
     """``jacobi_1d`` placed on the GPU, each kernel bound to an archive with the runtime libraries its compiler would
     link, then assembled with the build commands recorded instead of run: the result, the commands, the kernels."""
     commands: list[list[str]] = []
@@ -50,7 +53,7 @@ def assembled(api: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
         (out_dir / f"lib{KERNEL}.so").touch()
         return False, ""
 
-    with gpu_backend(api, monkeypatch):
+    with gpu_backend(api, monkeypatch, bench_api):
         kernel = corpus_kernel(KERNEL)
         assert kernel is not None, f"{KERNEL} is in the corpus"
         session = Session(kernel.to_sdfg(), Targets(gpu=True), sizes=preset_sizes(kernel, "S"), work_dir=str(tmp_path))
@@ -111,6 +114,21 @@ def test_a_gpu_finalize_is_a_host_unit_and_a_device_unit_in_the_backends_dialect
     assert sorted(Path(arg).name for arg in link if arg.endswith(".a")) == [f"lib{name}.a" for name in kernels]
 
 
+@pytest.mark.parametrize("api", sorted(BACKENDS))
+def test_a_gpu_finalize_renders_and_builds_its_device_unit_in_dace_s_backend_not_the_bench_s(
+    tmp_path, monkeypatch, api
+):
+    """DaCe's backend set in its config while the bench reads the other from the environment: hipcc got a .hip of CUDA."""
+    other = next(name for name in BACKENDS if name != api)
+    final, commands, _ = assembled(api, tmp_path, monkeypatch, bench_api=other)
+
+    compiler, suffix, header = BACKENDS[api]
+    assert Path(library_link(final, commands)[0]).name == compiler
+    assert any(cmd[cmd.index("-c") + 1].endswith(f"_device{suffix}") for cmd in commands if "-c" in cmd)
+    assert f"#include {header}" in final.device_source
+    assert f"#include {BACKENDS[other][2]}" not in final.device_source
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -121,5 +139,9 @@ if __name__ == "__main__":
     for backend in sorted(BACKENDS):
         with pytest.MonkeyPatch.context() as patch:
             test_a_gpu_finalize_is_a_host_unit_and_a_device_unit_in_the_backends_dialect_linking_every_kernel(
+                Path(tempfile.mkdtemp()), patch, backend
+            )
+        with pytest.MonkeyPatch.context() as patch:
+            test_a_gpu_finalize_renders_and_builds_its_device_unit_in_dace_s_backend_not_the_bench_s(
                 Path(tempfile.mkdtemp()), patch, backend
             )

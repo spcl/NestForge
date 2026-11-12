@@ -50,8 +50,16 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
     from hpcagent_bench.spec import BenchSpec
 
     spec = BenchSpec.load(bench.kernel)
+    # a GPU form is asked for in DaCe's backend, the kernels' one; the bench would pick its own
+    dialect = Language[get_gpu_backend().upper()] if bench.gpu else Language.CPP
     form = render_canonical(
-        spec, spec.short_name, sdfg, "c++", bench.datatype, Target.GPU if bench.gpu else Target.CPU, DEFAULT_HINTS
+        spec,
+        spec.short_name,
+        sdfg,
+        dialect.text,
+        bench.datatype,
+        Target.GPU if bench.gpu else Target.CPU,
+        DEFAULT_HINTS,
     )
     if bench.gpu and not form.device_code:
         # nothing was placed on the device: the host-only program is plain C++
@@ -61,7 +69,6 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
     host.write_text(form.code)
     lib = out_dir / f"lib{spec.module_name}.so"
     if form.device_code:
-        dialect = Language[get_gpu_backend().upper()]
         device = out_dir / f"{spec.module_name}_device.{languages.LANG_EXT[dialect]}"
         device.write_text(form.device_code)
         # nvcc rejects -Wl, and takes the same comma list as -Xlinker=; hipcc is clang and takes -Wl,
