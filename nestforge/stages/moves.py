@@ -64,7 +64,7 @@ from dace.transformation.transformation import PatternTransformation
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
-from nestforge.records import Record
+from nestforge.records import CRASHES, Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
@@ -84,6 +84,8 @@ EXPAND_LIBRARY = "expand-library"
 SET_IMPLEMENTATION = "set-library-implementation"
 #: The move kind, on no row, that specializes the program for argument values; it takes ``config_values``.
 PROPAGATE_CONFIG = "propagate-config"
+#: The move kind, on no row, that takes the last change back; the session keeps the programs it returns to.
+ROLLBACK = "rollback"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -111,6 +113,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
     PROPAGATE_CONFIG: (),
+    ROLLBACK: (),
 }
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
@@ -937,18 +940,12 @@ def configurable(sdfg: dace.SDFG) -> bool:
     return valued and not external_calls(sdfg)
 
 
-def dispatcher(program: dace.SDFG, root: dace.SDFG) -> dace.SDFG:
-    """``root``, the program ConfigPropagation built, with the variants it calls loaded and ``program``'s signature,
-    constants and codegen flags."""
+def loaded(root: dace.SDFG) -> dace.SDFG:
+    """``root``, the program ConfigPropagation built, with the variants it calls loaded from their files."""
     for state in root.states():
         for node in state.nodes():
             if isinstance(node, nodes.NestedSDFG):
                 node.load_external(state)
-    root.arg_names = list(program.arg_names)
-    root.constants_prop = copy.deepcopy(program.constants_prop)
-    root.openmp_sections = program.openmp_sections
-    # canonicalization sets it: without it, an array reduction becomes atomics
-    root.openmp_array_reductions = program.openmp_array_reductions
     return root
 
 
@@ -970,7 +967,7 @@ def plan_propagate_config(
         root = ConfigPropagation(domains=domains, output_dir=str(output_dir)).apply_pass(program, {})
     except ValueError as err:
         return f"blocked by ConfigPropagation: {err}."
-    return Rewrite("ConfigPropagation", lambda: dispatcher(program, root))
+    return Rewrite("ConfigPropagation", lambda: loaded(root))
 
 
 def state_of_map(sdfg: dace.SDFG, label: str) -> SDFGState:
@@ -1136,6 +1133,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "MapUnroll (max_iterations, the largest trip count you accept)",
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
+    ),
+    ROLLBACK: (
+        "the session's history (the last 8 changes)",
+        "back to the program before the last move or default stage: its tree labels and applied_moves too; a label "
+        "handed out since is never reused. Apply it again for the change before.",
     ),
     PROPAGATE_CONFIG: (
         "ConfigPropagation (config_values: the scalar arguments and free symbols you expect at run time)",
@@ -1376,7 +1378,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
                 continue
             try:
                 probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
-            except Exception as err:  # noqa: BLE001 -- a check that raises on one candidate hides only that candidate
+            except CRASHES as err:  # a check that raises on one candidate hides only that candidate
                 print(f"nestforge: {name} {list(labels)} is not listed: {type(err).__name__}: {err}", file=sys.stderr)
                 continue
             if isinstance(probe, Rewrite):

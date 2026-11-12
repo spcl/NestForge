@@ -38,6 +38,7 @@ from nestforge.paths import REPO_ROOT
 from nestforge.records import MoveStatus, Record
 from nestforge.server import Setup, start
 from nestforge.session import Move, Session
+from nestforge.stages.moves import PROBE_UNROLL
 from nestforge.stages.performance import Reference
 
 #: The command line's one-line help.
@@ -105,6 +106,8 @@ class AppliedMove(Record):
     reason: str
     tile_sizes: tuple[int, ...] = ()
     implementation: str | None = None
+    max_iterations: int = PROBE_UNROLL
+    config_values: dict[str, int | float] = {}
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -168,7 +171,9 @@ class Script:
         """Apply ``move``; raises :class:`ReplayError` unless it applied."""
         if self.finished:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
-        result = self.session.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation)
+        result = self.session.apply_move(
+            move.kind, move.labels, move.tile_sizes, move.implementation, move.max_iterations, move.config_values
+        )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
         done = AppliedMove(
@@ -177,6 +182,8 @@ class Script:
             reason=result.reason,
             tile_sizes=move.tile_sizes,
             implementation=move.implementation,
+            max_iterations=move.max_iterations,
+            config_values=dict(move.config_values),
         )
         self.applied.append(done)
         return done

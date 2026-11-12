@@ -45,7 +45,7 @@ from nestforge.ir.introspect import (
 )
 from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
-from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
+from nestforge.records import CRASHES, KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import (
     Targets,
@@ -80,6 +80,7 @@ from nestforge.stages.moves import (
     MOVE_SHAPES,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
+    ROLLBACK,
     SET_IMPLEMENTATION,
     SIZED,
     Rewrite,
@@ -113,8 +114,6 @@ ERROR_TAIL = 1500
 
 #: How many of the last moves and default move stages :meth:`Session.undo` can take back, each a copy of the program.
 UNDO_DEPTH = 8
-#: The kind of the result :meth:`Session.undo` answers with.
-UNDO = "undo"
 
 
 #: The kernel source language each device's kernels are written in.
@@ -468,7 +467,7 @@ class Session:
         self.in_atomic, self.checkpoint = True, saved
         try:
             yield
-        except (Exception, Stopped):
+        except (*CRASHES, Stopped):
             self.restore(saved)
             del self.history[kept:]
             raise
@@ -496,15 +495,16 @@ class Session:
     @undone_on_failure
     def undo(self) -> MoveResult:
         """Back to the program before the last move or default stage :meth:`remember` kept, its row labels and
-        :attr:`applied` included; a label handed out since is never handed out again."""
+        :attr:`applied` included; a label handed out since is never handed out again. Always legal: with nothing kept, it
+        changes nothing."""
         if not self.history:
-            reason = f"no move to undo: none was applied, or the last {UNDO_DEPTH} are already undone."
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=UNDO, labels=(), reason=reason)
+            reason = f"nothing to roll back: no change was made, or the last {UNDO_DEPTH} are taken back; unchanged."
+            return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=(), reason=reason)
         saved, counters = self.history.pop(), self.namer.counters
         undone = self.applied[min(len(saved.applied), len(self.applied) - 1)]
         self.restore(saved)
         self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
-        return MoveResult(status=MoveStatus.APPLIED, kind=UNDO, labels=undone.labels, reason=f"undid {undone.kind}")
+        return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=undone.labels, reason=f"undid {undone.kind}")
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
@@ -630,7 +630,7 @@ class Session:
         """Every legal move right now, of ``kind`` or of every kind."""
         found = legal_moves(self.sdfg, kind)
         rows = self.row_index() if any(k in SIZED or k == SET_IMPLEMENTATION for k, _ in found) else {}
-        moves: list[Move] = []
+        moves: list[Move] = [Move(kind=ROLLBACK, labels=())] if kind in (None, ROLLBACK) else []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
@@ -670,6 +670,8 @@ class Session:
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
+        if kind == ROLLBACK:
+            return self.undo()
         rows = self.named_rows(kind, names)
         if isinstance(rows, MoveResult):
             return rows

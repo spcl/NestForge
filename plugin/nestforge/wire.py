@@ -148,16 +148,10 @@ TOOLS: dict[str, ToolDef] = {
     "apply_move": ToolDef(
         Phase.MOVES,
         ApplyMove,
-        "Apply one move as list_moves listed it (or with your own tile_sizes, max_iterations, config_values); answers at once with the outcome, not "
-        "with a time: call get_performance after the moves you want to compare. It retires the labels of the rows it "
-        "took: read the tree again before the next move.",
-    ),
-    "undo_move": ToolDef(
-        Phase.MOVES,
-        NoArgs,
-        "Take back the last move or default move stage: the program, its tree labels and applied_moves are as before "
-        "it. Call it again for the one before; the last 8 can be taken back.",
-        Effect.REPLACE,
+        "Apply one move as list_moves listed it (or with your own tile_sizes, max_iterations, config_values); answers "
+        "at once with the outcome, not with a time: call get_performance after the moves you want to compare. It "
+        "retires the labels of the rows it took: read the tree again before the next move. kind rollback, labels [], "
+        "takes the last change back (the last 8 can be).",
     ),
     "run_defaults": ToolDef(
         Phase.MOVES,

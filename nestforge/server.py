@@ -39,7 +39,7 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import KernelStatus, MoveStatus, Record
+from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
@@ -113,7 +113,6 @@ CALLS: dict[str, Callable[..., object]] = {
     "list_move_kinds": lambda session: move_kinds(),
     "list_moves": Session.list_moves,
     "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
-    "undo_move": until(has_kernels, MOVES_CLOSED, Session.undo),
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
@@ -135,9 +134,7 @@ MEASURING = TIMED | {"finalize"}
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 #: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
-CHANGING = frozenset(
-    {"apply_move", "undo_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"}
-)
+CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
 CHECK_RUNG = "S"
@@ -412,12 +409,12 @@ def answer(
     if tool not in CHANGING:
         try:
             return timed_call(session, tool, arguments, data, timed)
-        except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+        except CRASHES as err:  # the caller reads it as the tool's error
             return failure(err)
     try:
         with session.atomic():
             return timed_call(session, tool, arguments, data, timed)
-    except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+    except CRASHES as err:  # the caller reads it as the tool's error
         if tool == "apply_move":
             error = f"transformation {move_text(arguments)} crashed: {failure(err).error}"
             return Reply(error=f"{error}. It was rolled back; the session is intact, try another move.")
@@ -477,7 +474,7 @@ def serve(connection: Connection, setup: Setup) -> None:
             connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))
-        except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+        except CRASHES as err:  # the caller reads it as the tool's error
             connection.send(failure(err))
 
 

@@ -10,7 +10,7 @@ from test_failed_calls import first_move, program, session
 
 from nestforge import session as session_module
 from nestforge.records import MoveStatus
-from nestforge.server import CALLS, CHANGING, answer
+from nestforge.server import answer
 from nestforge.stages import moves
 
 
@@ -28,7 +28,7 @@ def test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(t
 
     assert (undone.status, undone.kind, undone.labels, undone.reason) == (
         MoveStatus.APPLIED,
-        "undo",
+        "rollback",
         labels,
         "undid tile-for",
     )
@@ -53,21 +53,21 @@ def test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(tmp
     sut.undo()
     assert program(sut) == start
 
-    refused = sut.undo()
-    assert refused.status is MoveStatus.ILLEGAL
-    assert refused.reason.startswith("no move to undo")
+    nothing = sut.undo()
+    assert nothing.status is MoveStatus.APPLIED and nothing.reason.startswith("nothing to roll back")
     assert program(sut) == start
 
 
-def test_an_undo_is_a_change_the_journal_repeats(tmp_path):
+def test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(tmp_path):
     sut = session(tmp_path)
     before = program(sut)
+    assert ("rollback", ()) in {(move.kind, move.labels) for move in sut.list_moves()}
     labels = first_move(sut, "tile-for")
     answer(sut, "apply_move", {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}, None)
+    assert ("rollback", ()) in {(move.kind, move.labels) for move in sut.list_moves()}
 
-    reply = answer(sut, "undo_move", {}, None)
+    reply = answer(sut, "apply_move", {"kind": "rollback", "labels": []}, None)
 
-    assert "undo_move" in CHANGING and "undo_move" in CALLS
     assert not reply.error and reply.result.status is MoveStatus.APPLIED
     assert program(sut) == before
 
@@ -87,7 +87,7 @@ def test_a_move_that_builds_an_invalid_program_is_refused_and_undone(tmp_path, m
 
     assert program(sut) == before
     assert sut.applied == []
-    assert sut.undo().status is MoveStatus.ILLEGAL
+    assert sut.undo().reason.startswith("nothing to roll back") and program(sut) == before
 
 
 def raising(*rows: object, **options: object) -> None:
@@ -106,12 +106,34 @@ def test_a_move_whose_check_raises_is_not_listed_and_every_other_move_is(tmp_pat
     assert "tile-for" in capsys.readouterr().err
 
 
+def exiting(sdfg: dace.SDFG, *args: object) -> None:
+    raise SystemExit("a library gave up")
+
+
+def test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_next_move(tmp_path, monkeypatch):
+    sut = session(tmp_path)
+    labels, before = first_move(sut, "tile-for"), program(sut)
+    move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}
+    monkeypatch.setattr(session_module, "structural_cleanup", exiting)
+
+    reply = answer(sut, "apply_move", move, None)
+
+    assert reply.error.startswith(f"transformation tile-for on {labels[0]} crashed: SystemExit: a library gave up")
+    assert program(sut) == before and sut.applied == []
+    monkeypatch.undo()
+    assert answer(sut, "apply_move", move, None).result.status is MoveStatus.APPLIED
+
+
 if __name__ == "__main__":
     import pathlib
     import tempfile
 
     test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(pathlib.Path(tempfile.mkdtemp()))
     test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(pathlib.Path(tempfile.mkdtemp()))
-    test_an_undo_is_a_change_the_journal_repeats(pathlib.Path(tempfile.mkdtemp()))
+    test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(pathlib.Path(tempfile.mkdtemp()))
     with pytest.MonkeyPatch.context() as patch:
         test_a_move_that_builds_an_invalid_program_is_refused_and_undone(pathlib.Path(tempfile.mkdtemp()), patch)
+    with pytest.MonkeyPatch.context() as patch:
+        test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_next_move(
+            pathlib.Path(tempfile.mkdtemp()), patch
+        )

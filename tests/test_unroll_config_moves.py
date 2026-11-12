@@ -12,7 +12,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
 from nestforge.records import MoveStatus
-from nestforge.session import Session
+from nestforge.replay import Script
+from nestforge.session import Move, Session
 
 N = dace.symbol("N", dtype=dace.int64)
 K = dace.symbol("K", dtype=dace.int64)
@@ -266,6 +267,16 @@ def test_undo_takes_propagate_config_back_to_the_program_before_it(tmp_path):
     assert conditionals(sut.sdfg) == [] and len(loops(sut.sdfg)) == 1
 
 
+def test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it(tmp_path):
+    sut = Script(session(long_scan, tmp_path))
+    (label,) = labels_of(sut.session, LoopRegion)
+
+    done = sut.apply(Move(kind="unroll-for", labels=(label,), max_iterations=19))
+
+    assert done.max_iterations == 19
+    assert not labels_of(sut.session, LoopRegion)
+
+
 if __name__ == "__main__":
     for test in (
         test_a_constant_loop_unrolls_into_one_body_copy_per_iteration,
@@ -281,5 +292,6 @@ if __name__ == "__main__":
         test_propagate_config_without_values_with_unknown_names_or_values_dace_refuses_is_illegal,
         test_propagate_config_is_closed_once_the_program_has_kernels,
         test_undo_takes_propagate_config_back_to_the_program_before_it,
+        test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it,
     ):
         test(pathlib.Path(tempfile.mkdtemp()))

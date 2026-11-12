@@ -38,3 +38,7 @@ class KernelStatus(enum.Enum):
 
 MoveOutcome = Annotated[MoveStatus, PlainSerializer(spelled, return_type=str)]
 KernelOutcomeStatus = Annotated[KernelStatus, PlainSerializer(spelled, return_type=str)]
+
+
+#: What a failing transformation, build or run may raise without ending the session: a library's ``sys.exit`` too.
+CRASHES = (Exception, SystemExit)

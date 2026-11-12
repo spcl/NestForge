@@ -40,8 +40,9 @@ applies: {explicit: true}
 was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as listed, or with
 your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not
 a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
-`undo_move` takes the last move back (program, labels and `applied_moves` as before it), and again for the one before,
-up to 8. So trying a move costs two calls and a measurement, never the program.
+The move `rollback` (`apply_move` with `labels []`, always legal; with nothing to take back it changes nothing) takes
+the last move back (program, labels and `applied_moves` as before it), and again for the one before, up to 8. So
+trying a move costs two calls and a measurement, never the program.
 
 `apply_move` and `run_defaults` answer at once, without a time. `get_performance` measures the program as it stands:
 each kernel in one fixed compiler configuration, so two measurements compare (`finalize`'s sweep, what `score` and
@@ -66,15 +67,15 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
 | a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
 
-3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `undo_move`.
+3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `rollback`.
 4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
-   `wrong result` first (`undo_move` the move that caused it), then `bytes spilled` (the body is too big:
+   `wrong result` first (`rollback` the move that caused it), then `bytes spilled` (the body is too big:
    `doall-fission`), then `loop not vectorized` with the compiler's reason.
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
 `interchange-doall-doall` with itself. Fusion, fission, unrolling, `propagate-config`, `expand-library`,
-`snapshot-reads` and `doall-to-for` have none: `undo_move` is the way back.
+`snapshot-reads` and `doall-to-for` have none: `rollback` is the way back.
 
 ### A worked example
 
@@ -99,7 +100,7 @@ SDFG 'blur_scale'
       : B[_loop_it_0] = np.float64(2) * T
 ```
 `doall2` and `doall3` are retired, `doall4` is new, and `T` is a scalar: the array's write and read are gone.
-`get_performance` then says whether it paid. If not, `undo_move` answers `undid doall-fusion` and the tree holds
+`get_performance` then says whether it paid. If not, `rollback` answers `undid doall-fusion` and the tree holds
 `doall2` and `doall3` again.
 
 Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
@@ -182,7 +183,7 @@ doall i in 0:N: B   ->   doall i0 in 0:N step 32:
 order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
 vector width. No tool reports the machine's caches: start from the size `list_moves` lists (32 per dimension), then
-try half and double, `undo_move` between tries, and keep the size `get_performance` shows fastest.
+try half and double, `rollback` between tries, and keep the size `get_performance` shows fastest.
 **`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
 
 ### Shape of a doall
