@@ -10,6 +10,8 @@ import inspect
 import re
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -325,3 +327,14 @@ def program_mismatch(session: Session, inputs: dict[str, np.ndarray], reference:
     if report.error:
         return report.error
     return "" if report.correct else f"mismatched {report.mismatched}"
+
+
+@contextmanager
+def dace_gpu_backend(api: str) -> Iterator[None]:
+    """DaCe's GPU code generation on backend ``api`` (``cuda`` or ``hip``), chosen rather than probed from the machine;
+    one chiplet, so a HIP rendering asks no ``amdsmi`` for the GPU's."""
+    with (
+        dace.config.set_temporary("compiler", "cuda", "backend", value=api),
+        dace.config.set_temporary("compiler", "cuda", "chiplet_number", value=1),
+    ):
+        yield
