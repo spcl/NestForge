@@ -166,6 +166,11 @@ TOOLS: dict[str, ToolDef] = {
     ),
     "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
     "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
+    "focus_kernel": ToolDef(
+        Phase.KERNELS,
+        KernelName,
+        "Scope your kernel work to one kernel: write_kernel and tune_kernel take only the kernel in focus.",
+    ),
     "read_kernel": ToolDef(Phase.KERNELS, KernelName, "A kernel's current source.", Effect.READ),
     "write_kernel": ToolDef(
         Phase.KERNELS,

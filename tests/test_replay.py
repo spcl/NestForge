@@ -31,6 +31,7 @@ def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
 def one_kernel_session(tmp_path: Path) -> tuple[Session, str]:
     sut = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     (kernel,) = sut.default_scopes()
+    sut.focus_kernel(kernel.name)
     return sut, kernel.name
 
 

@@ -377,6 +377,7 @@ class Session:
         "in_atomic",
         "checkpoint",
         "history",
+        "focus",
     )
 
     def __init__(
@@ -441,6 +442,8 @@ class Session:
         # the program before the change :meth:`atomic` is running, and before each of the last changes kept for undo
         self.checkpoint: Checkpoint | None = None
         self.history: list[Checkpoint] = []
+        #: The kernel the agent's kernel work is scoped to (:meth:`focus_kernel`); ``None`` before the first.
+        self.focus: str | None = None
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -763,7 +766,7 @@ class Session:
         if self.unscoped is not None:
             # a copy: a failure puts the kept program back through :meth:`atomic`
             self.sdfg, self.namer, self.applied = copy.deepcopy(self.unscoped)
-            self.unscoped, self.unplaced = None, None
+            self.unscoped, self.unplaced, self.focus = None, None, None
             self.bump()
         return self.describe()
 
@@ -970,6 +973,11 @@ class Session:
             library=archive,
             variant=variant.label,
         )
+
+    def focus_kernel(self, name: str) -> str:
+        """Scope the kernel work to the kernel ``name``; returns it."""
+        self.focus = self.kernel(name).name
+        return self.focus
 
     def kernel_source(self, name: str) -> str:
         """The source of the kernel's current library, or of its default CPF unit before one is built."""

@@ -25,6 +25,7 @@ REPLIES: dict[str, Reply] = {
     "set_scope": Reply(result={"status": "applied", "reason": "kernel_0"}),
     "unset_scope": Reply(result={"status": "applied", "reason": ""}),
     "list_kernels": Reply(result=[{"name": "kernel_0", "device": "cpu", "arguments": ["A", "B"]}]),
+    "focus_kernel": Reply(result="kernel_0"),
     "read_kernel": Reply(result="void kernel_0(double* A, double* B) {}"),
     "write_kernel": Reply(result={"status": "ok", "reason": ""}),
     "tune_kernel": Reply(result=Sweep(kernel="kernel_0", cells=4, winner="gcc-O3", config=None)),

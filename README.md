@@ -33,7 +33,7 @@ tool is listed with MCP annotations: reads are read-only, `write_kernel` and `un
 |---|---|---|
 | structured (stages 1-2) | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` | both |
 | any | `get_performance`, `finalize` | both |
-| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` (`nestforge-two-stage`), `nestforge-subagents` |
+| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `focus_kernel`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` (`nestforge-two-stage`), `nestforge-subagents` |
 
 `write_kernel`, `tune_kernel` and `get_performance` answer with `Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not

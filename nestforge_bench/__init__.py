@@ -138,6 +138,7 @@ def write_back(kernel: str, info: dict[str, str]) -> bool:
     """``write_kernel`` of the source ``read_kernel`` showed, unchanged; whether its oracle checked it, which a sweep
     needs."""
     name = info["name"]
+    tool("focus_kernel", kernel, name=name)
     source = tool("read_kernel", kernel, name=name)["result"]
     done = tool("write_kernel", kernel, name=name, source=source, language=kernel_language(info["device"]))["result"]
     if done["status"] not in (spelled(KernelStatus.OK), spelled(KernelStatus.UNCHECKED)):
@@ -176,5 +177,6 @@ class TwoStageStub(FlavorOptimizer):
         checked = [info["name"] for info in kernels if write_back(kernel, info)]
         next_phase(kernel, "codegen")
         for name in checked:
+            tool("focus_kernel", kernel, name=name)
             tool("tune_kernel", kernel, name=name)
         return finalized(task)

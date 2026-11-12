@@ -107,6 +107,7 @@ def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_pat
     sut.default_scopes()
     (kernel, *_) = sut.list_kernels()
     source = sut.kernel_source(kernel.name)
+    sut.focus_kernel(kernel.name)
     before = dict(sut.builds)
     monkeypatch.setattr(Session, "performance", fail)
 

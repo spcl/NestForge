@@ -52,7 +52,7 @@ default = { tool = "run_defaults", args = { stage = "placement" } }
 title = "Kernel code"
 summary = "Each kernel is built from the source NestForge renders for it."
 text = "prompt/phases/kernels.md"
-tools = ["list_kernels", "read_kernel", "write_kernel"]
+tools = ["list_kernels", "focus_kernel", "read_kernel", "write_kernel"]
 
 [phases.codegen]
 title = "Compiler configuration"

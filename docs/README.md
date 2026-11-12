@@ -36,18 +36,20 @@ walks the order; NestForge owns what each step does to the session.
 | structured | `moves` | agent, tools `apply_move`, `run_defaults`, ... | the program, reshaped |
 | structured | `scopes` | agent in `nestforge-full`, else default | some kernels; moves close at the first one |
 | fixed point | `placement` | always default | what no scope covers gets its default scope; kernels are fixed |
-| unstructured | `kernels` | agent in `nestforge-full`, else nothing | each kernel's source, one at a time |
+| unstructured | `kernels` | agent in `nestforge-full`, else nothing | each kernel's source, one kernel in focus at a time |
 | unstructured | `codegen` | agent in `nestforge-full`, else nothing | each kernel's compiler configuration |
 | | `round` | always default | back to the program as the moves left it |
 
-Three rules follow, and `nestforge/server.py` enforces the first two:
+Four rules follow, and `nestforge/server.py` enforces all but the last:
 
 - **Moves close at the first kernel.** A move takes rows of the program before its scopes. `apply_move` and
   `run_defaults` with `moves` or `finish` answer 400 once the program has a kernel.
 - **Scopes are fixed from placement on.** `set_scope` and `unset_scope` answer 400 once the kernels are placed, so the
   kernel work has a stable set of kernels.
+- **Kernel work is scoped.** `write_kernel` and `tune_kernel` answer 400 for any kernel but the one `focus_kernel`
+  named last; reads take any kernel. The focus is journaled like a change, so a rebuilt session keeps it.
 - **A new round reopens both.** `Session.rewind` restores the program kept before the first kernel, with its row labels.
-  Moves stay; scopes, placement and kernel code go. `next_phase` from the last agent phase reaches it, so an agent that
+  Moves stay; scopes, placement, kernel code and the focus go. `next_phase` from the last agent phase reaches it, so an agent that
   wants to keep its kernels calls `submit` instead.
 
 The packets:
@@ -59,7 +61,8 @@ The packets:
 | `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
-every caller of the route. A session serves one call at a time, so subagents running at once wait for each other.
+every caller of the route. The agent focuses each kernel before it starts that kernel's subagent; a
+session has one focus, so of two subagents at once only the one on the kernel in focus can change it.
 Every packet narrows the built-in tools to `Read`, so the agent reads skill pages and has no shell or editor on any
 harness that takes the packet: `claude`, `anthropic` and `openai`.
 

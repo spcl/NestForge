@@ -130,6 +130,40 @@ def test_placement_fixes_the_scopes_until_a_new_round_reopens_them():
     assert CALLS["set_scope"](session, labels=labels[:1]).status is MoveStatus.APPLIED
 
 
+def test_a_kernel_change_takes_only_the_kernel_in_focus():
+    session = fresh()
+    CALLS["run_defaults"](session, stage="placement")
+    first, second, *_ = [ext.name for ext in external_calls(session.sdfg)]
+
+    with pytest.raises(ValueError, match="no kernel is in focus: call focus_kernel first"):
+        CALLS["write_kernel"](session, name=first, source="x", language="cpp")
+    CALLS["focus_kernel"](session, name=first)
+    with pytest.raises(ValueError, match=rf"{second} is not the kernel in focus \({first}\)"):
+        CALLS["tune_kernel"](session, name=second)
+
+    assert CALLS["write_kernel"](session, name=first, source="x", language="cpp").kernel == first
+
+
+def test_a_focus_names_a_kernel():
+    session = fresh()
+    CALLS["run_defaults"](session, stage="placement")
+
+    with pytest.raises(KeyError, match="no kernel is named 'map_0'"):
+        CALLS["focus_kernel"](session, name="map_0")
+
+    assert session.focus is None
+
+
+def test_a_new_round_drops_the_focus_with_the_kernels():
+    session = fresh()
+    CALLS["run_defaults"](session, stage="placement")
+    CALLS["focus_kernel"](session, name=external_calls(session.sdfg)[0].name)
+
+    CALLS["run_defaults"](session, stage="round")
+
+    assert session.focus is None
+
+
 def test_default_kernels_keep_their_row_names_through_placement_and_a_new_round():
     session = fresh()
     chosen, *others = doalls(session)

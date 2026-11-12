@@ -295,6 +295,21 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
     assert len(stub.started) == 2
 
 
+def test_a_focus_is_journaled_so_a_fresh_session_works_on_the_same_kernel(stub: Stub) -> None:
+    post("focus_kernel", "episode-focus", name="kernel_0")
+    stub.dies_on = "get_performance"
+    post("get_performance", "episode-focus")
+    stub.dies_on = ""
+    before = len(stub.calls)
+
+    written = post("write_kernel", "episode-focus", **SLOT_CALLS["write_kernel"])
+
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert written.code == HTTPStatus.OK
+    assert route.journal_of("episode-focus", KERNEL)[0] == ("focus_kernel", {"name": "kernel_0"})
+    assert [tool for tool, _ in stub.calls[before:]] == ["focus_kernel", "write_kernel"]
+
+
 MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -653,23 +668,20 @@ def test_the_full_packet_goes_from_structured_to_each_kernel_and_a_new_round_reo
     scopes, kernels = step(), step()
     names = [kernel["name"] for kernel in post("list_kernels", episode=episode).answer["result"]]
     closed = post("set_scope", episode=episode, labels=["doall0"])
-    written = [
-        post(
-            "write_kernel",
-            episode=episode,
-            name=name,
-            source=post("read_kernel", episode=episode, name=name).answer["result"],
-            language="cpp",
-        ).answer["result"]["status"]
-        for name in names
-    ]
+    written = []
+    for name in names:
+        post("focus_kernel", episode=episode, name=name)
+        source = post("read_kernel", episode=episode, name=name).answer["result"]
+        written.append(post("write_kernel", episode=episode, name=name, source=source, language="cpp"))
     codegen = step()
+    post("focus_kernel", episode=episode, name=names[0])
     tuned = post("tune_kernel", episode=episode, name=names[0], compilers=["gcc"])
     again = step()
 
     assert (scopes["phase"], kernels["phase"], codegen["phase"]) == ("scopes", "kernels", "codegen")
     assert names and closed.code == HTTPStatus.BAD_REQUEST and "scopes are fixed" in closed.answer["error"]
-    assert written == ["ok"] * len(names) and tuned.code == HTTPStatus.OK
+    assert [answer.answer["result"]["status"] for answer in written] == ["ok"] * len(names)
+    assert tuned.code == HTTPStatus.OK
     assert (again["phase"], again["round"]) == ("moves", 2)
     assert post("list_moves", episode=episode).answer["result"] == moves
 
@@ -760,6 +772,7 @@ def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
     """Default scopes on ``episode``, then the first kernel's name and source."""
     assert post("run_defaults", episode=episode, kernel=kernel, stage="scopes").code == HTTPStatus.OK
     name = post("list_kernels", episode=episode, kernel=kernel).answer["result"][0]["name"]
+    assert post("focus_kernel", episode=episode, kernel=kernel, name=name).code == HTTPStatus.OK
     return name, post("read_kernel", episode=episode, kernel=kernel, name=name).answer["result"]
 
 

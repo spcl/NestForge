@@ -243,6 +243,8 @@ out of the last phase starts that round: the moves reopen and the scopes and ker
   registers or cache instead of memory. `unset_scope` undoes it while the kernels are not fixed.
 - `list_kernels` shows each kernel's device, its arguments and which kernels produce them; start with the largest
   share in `get_performance`.
+- `focus_kernel name=...` scopes your kernel work to one kernel: `write_kernel` and `tune_kernel` refuse every other
+  kernel until you focus it. Reads (`list_kernels`, `read_kernel`) take any kernel.
 - `read_kernel` gives the source NestForge rendered. `write_kernel` takes a replacement with the same entry
   (`extern "C"` name and parameters, in order) in `cpp` for a CPU kernel or the dialect `read_kernel` showed (`cuda`,
   `hip`) for a GPU one. It is built and run against the kernel's oracle, and linked only when it matches. A kernel

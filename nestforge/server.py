@@ -100,6 +100,20 @@ def until(closed: Callable[[Session], bool], why: str, call: Callable[..., objec
     return run
 
 
+def focused(call: Callable[..., object]) -> Callable[..., object]:
+    """``call`` on the kernel ``name``, refused unless :func:`Session.focus_kernel` scoped the kernel work to it."""
+
+    @functools.wraps(call)
+    def run(session: Session, name: str, **arguments: object) -> object:
+        if session.focus is None:
+            raise ValueError("no kernel is in focus: call focus_kernel first")
+        if name != session.focus:
+            raise ValueError(f"{name} is not the kernel in focus ({session.focus}): call focus_kernel {name} first")
+        return call(session, name=name, **arguments)
+
+    return run
+
+
 def run_defaults(session: Session, stage: Stage) -> object:
     if stage in ("moves", "finish") and has_kernels(session):
         raise ValueError(MOVES_CLOSED)
@@ -118,9 +132,10 @@ CALLS: dict[str, Callable[..., object]] = {
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
     "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
     "list_kernels": Session.list_kernels,
+    "focus_kernel": Session.focus_kernel,
     "read_kernel": Session.kernel_source,
-    "write_kernel": Session.set_kernel_source,
-    "tune_kernel": Session.sweep,
+    "write_kernel": focused(Session.set_kernel_source),
+    "tune_kernel": focused(Session.sweep),
     "get_performance": lambda session: None,
     "finalize": finalize,
 }
@@ -134,7 +149,9 @@ MEASURING = TIMED | {"finalize"}
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 #: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
-CHANGING = frozenset({"apply_move", "run_defaults", "set_scope", "unset_scope", "write_kernel", "tune_kernel"})
+CHANGING = frozenset(
+    {"apply_move", "run_defaults", "set_scope", "unset_scope", "focus_kernel", "write_kernel", "tune_kernel"}
+)
 
 #: The size rung a kernel falls back to when its NumPy oracle cannot finish at the graded rung.
 CHECK_RUNG = "S"
