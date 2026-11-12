@@ -135,10 +135,12 @@ def openmp_runtime_stems(so_path):
     return [stem for stem in names if stem in ("libgomp", "libomp", "libiomp5")]
 
 
-def program_build_ninja(build_folder):
-    """The lines of the ``build.ninja`` DaCe's CMake wrote for a program: the link commands it ran."""
-    (ninja,) = list(build_folder.rglob("build.ninja"))
-    return ninja.read_text().splitlines()
+def program_link_commands(build_folder):
+    """The shared-library link commands DaCe's CMake wrote for a program, under either generator: the ``LINK_FLAGS``
+    lines of ``build.ninja`` (Ninja) or each target's ``link.txt`` (Unix Makefiles)."""
+    ninja = [line for f in build_folder.rglob("build.ninja") for line in f.read_text().splitlines()]
+    make = [text for f in build_folder.rglob("link.txt") if " -shared " in (text := f.read_text())]
+    return [line for line in ninja if line.strip().startswith("LINK_FLAGS =")] + make
 
 
 @pytest.mark.e2e
@@ -172,7 +174,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     assert env.cmake_libraries == [str(result.library), *runtime] and runtime
     assert not any(str(result.library.parent) in f for f in env.cmake_libraries[1:]), "statically in, not loaded"
     assert openmp_runtime_stems(compiled._lib._library_filename) == ["libomp"]
-    link_flags = [line for line in program_build_ninja(tmp_path / "parent") if line.strip().startswith("LINK_FLAGS =")]
+    link_flags = program_link_commands(tmp_path / "parent")
     assert link_flags and all("-Wl,--as-needed" in line for line in link_flags)
 
 
