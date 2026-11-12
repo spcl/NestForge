@@ -18,13 +18,19 @@ from typing import Any
 from urllib.parse import quote
 
 import pydantic
-from hpcagent_bench.cpf.cache import Target
-from hpcagent_bench.harness import sandbox
-from hpcagent_bench.harness.judge_scheduler import DeviceSlot
-from hpcagent_bench.harness.judge_wire import JudgeAnswer, JudgeError
-from hpcagent_bench.harness.routes import EpisodeStore, Judge, RouteRequest, route
-from hpcagent_bench.harness.routes.canonical_parallel_form import canonical_parallel_form_target
-from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE
+from hpcagent_bench.plugin_api import (
+    JUDGE_FAULT_CAUSE,
+    DeviceSlot,
+    EpisodeStore,
+    Judge,
+    JudgeAnswer,
+    JudgeError,
+    RouteRequest,
+    Target,
+    agent_root,
+    canonical_parallel_form_target,
+    route,
+)
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied
@@ -62,12 +68,12 @@ EPISODES: EpisodeStore[Episode] = EpisodeStore(lambda episode: Episode(), idle_s
 def episode_of(episode_id: str) -> Episode:
     """The state of ``episode_id``'s attempt: a relaunched attempt has a new folder and starts anew. An empty id stays
     empty, for the store to refuse."""
-    return EPISODES.get(episode_id and f"{episode_id}@{sandbox.agent_root(episode_id)}")
+    return EPISODES.get(episode_id and f"{episode_id}@{agent_root(episode_id)}")
 
 
 def journal_file(episode_id: str, kernel: str) -> Path:
     """Where the journal of ``kernel`` lives: beside its library. The folder may be shared, so the name says whose."""
-    return sandbox.agent_root(episode_id) / "nestforge" / f"journal-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
+    return agent_root(episode_id) / "nestforge" / f"journal-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
 
 
 def journal_of(episode_id: str, kernel: str) -> list[Call]:
@@ -95,25 +101,6 @@ class ToolAnswer(JudgeAnswer):
     tool: str
     result: Any = None
     performance: Performance | None = None
-
-
-@contextlib.contextmanager
-def client_left(judge: Judge) -> Iterator[threading.Event]:
-    """An event set when this request's client leaves. The bench watches only its own graded routes, so this one
-    watches for itself; a default phase's call comes from ``next_phase``, not from a client of its own."""
-    from hpcagent_bench.harness.service import JudgeHandler  # service imports this module while it loads
-
-    if not isinstance(judge, JudgeHandler):
-        yield threading.Event()
-        return
-    finished = threading.Event()
-    watcher = threading.Thread(target=judge.watch_client, args=(finished,), daemon=True)
-    watcher.start()
-    try:
-        yield judge.gone
-    finally:
-        finished.set()
-        watcher.join()
 
 
 def locked(lock: threading.Lock, gone: threading.Event) -> bool:
@@ -164,7 +151,7 @@ def session_of(
     episode.sessions.pop(kernel, None)  # its finalizer ends what a dead session left running
     journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
-    setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(sandbox.agent_root(episode_id)))
+    setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(agent_root(episode_id)))
     session = SessionProcess(setup)
     for tool, arguments in journal:
         repeated = session.call(tool, arguments, gone, slot=slot, timed=False)
@@ -243,7 +230,7 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     # one; a read or a move answers while other agents measure.
     measuring = holds_device(episode, kernel, name, request.episode_id)
     terminal = bool(request.query.get("terminal"))
-    with client_left(judge) as gone, device_slot(judge, episode, gone, terminal) if measuring else NO_SLOT as slot:
+    with judge.client_left() as gone, device_slot(judge, episode, gone, terminal) if measuring else NO_SLOT as slot:
         if slot is None or not locked(episode.lock, gone):
             return None
         held = slot if isinstance(slot, DeviceSlot) else None

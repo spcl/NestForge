@@ -3,6 +3,8 @@ name = "nestforge"
 description = "Whole-program DaCe optimization: legal moves, scoped kernels, placement, with performance feedback."
 # Every kernel links LLVM libomp; the bench starts the session process in libomp's OpenMP context.
 openmp = "libomp"
+# The routes import the benchmark through hpcagent_bench.plugin_api only; `plugins check` enforces it.
+api = 1
 
 # The packages nestforge and nestforge_bench, built from the repository into the judge's interpreter; their
 # dependencies are the benchmark's own, at its pins.
