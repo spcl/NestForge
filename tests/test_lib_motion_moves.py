@@ -1,14 +1,16 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``lib-before`` / ``lib-after``: a library call whose memlets are its whole effect (a ``lib_copy`` above all, which
-every copy between two arrays becomes) moves into a state of its own before or after a block of an enclosing region,
-judged by the read and write sets of what it crosses."""
+"""``lib-before`` / ``lib-after`` / ``lib-into``: a library call whose memlets are its whole effect (a ``lib_copy``
+above all, which every copy between two arrays becomes), or a host ``Sync``, moves into a state of its own before or
+after a block of an enclosing region, or joins a state there, judged by the read and write sets of what it crosses."""
 
 import pathlib
 import re
 
 import dace
 import numpy as np
+from dace import dtypes
+from dace.libraries.standard.nodes.code import CodeLibraryNode
 from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.sync import Sync, SyncScope
 from dace.sdfg.state import LoopRegion
@@ -81,6 +83,15 @@ def copied_chain(a: dace.float64[N], u: dace.float64[N], c: dace.float64[N]):
     u[:] = t
     for i in dace.map[0:N]:
         c[i] = u[i] * 2.0 + t[i]
+
+
+@dace.program
+def copy_after_a_loop(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N], d: dace.float64[N]):
+    for i in dace.map[0:N]:
+        a[i] = c[i] * 2.0
+    for i in range(1, N):
+        b[i] = np.sin(b[i - 1]) + c[i]
+    d[:] = a
 
 
 def session(program, tmp_path: pathlib.Path) -> Session:
@@ -250,15 +261,159 @@ def test_a_call_named_with_its_own_state_is_refused(tmp_path):
 
 
 def test_a_call_with_side_effects_never_moves():
-    sdfg = dace.SDFG("barrier")
+    sdfg = dace.SDFG("opaque")
     first = sdfg.add_state("first", is_start_block=True)
     second = sdfg.add_state_after(first, "second")
-    barrier = Sync("barrier", scope=SyncScope.DEVICE)
-    second.add_node(barrier)
+    call = CodeLibraryNode([], [], name="opaque")
+    second.add_node(call)
 
-    result = plan_move("lib-before", [(barrier, second), (first, None)])
+    result = plan_move("lib-before", [(call, second), (first, None)])
 
     assert isinstance(result, str) and "side effects" in result, result
+
+
+def test_a_copy_joins_an_earlier_state_and_reads_what_that_state_writes(tmp_path):
+    sut = session(copy_after_a_loop, tmp_path)
+    expected = run(sut.sdfg, "abcd", arrays(2, 4))
+    (row,) = copy_rows(sut)
+    producer = next(s for s in sut.sdfg.nodes() if isinstance(s, dace.SDFGState) and s is not sut.row_index()[row][1])
+
+    result = sut.apply_move("lib-into", [row, producer.label])
+
+    assert result.status is MoveStatus.APPLIED, result
+    (state,) = copy_states(sut.sdfg)
+    assert state is producer
+    (copy_node,) = [n for n in state.nodes() if isinstance(n, CopyLibraryNode)]
+    (source,) = [e.src for e in state.in_edges(copy_node)]
+    assert source.data == "a" and any(not e.data.is_empty() for e in state.in_edges(source))
+    for got, want in zip(run(sut.sdfg, "abcd", arrays(2, 4)), expected):
+        np.testing.assert_allclose(got, want, rtol=1e-14)
+
+
+def test_a_call_joins_only_a_state(tmp_path):
+    sut = session(copy_after_a_loop, tmp_path)
+    (row,) = copy_rows(sut)
+    (loop,) = block_of(sut, LoopRegion)
+
+    result = sut.apply_move("lib-into", [row, loop])
+
+    assert result.status is MoveStatus.ILLEGAL and "is a LoopRegion" in result.reason, result
+
+
+def copy_then_target(target_writes: int, wcr: bool) -> tuple[dace.SDFG, CopyLibraryNode, dace.SDFGState]:
+    """``target`` writes ``x`` ``target_writes`` times (unordered, or once through a ``+`` accumulation), then a state
+    copies ``x`` to ``y``."""
+    sdfg = dace.SDFG("joined")
+    for name in "xy":
+        sdfg.add_array(name, [4], dace.float64)
+    target = sdfg.add_state("target", is_start_block=True)
+    for index in range(target_writes):
+        tasklet = target.add_tasklet(f"w{index}", {}, {"out"}, "out = 1.0")
+        target.add_edge(
+            tasklet, "out", target.add_access("x"), None, dace.Memlet("x[0]", wcr="lambda a, b: a + b" if wcr else None)
+        )
+    copier = sdfg.add_state_after(target, "copier")
+    node = CopyLibraryNode("copy")
+    copier.add_node(node)
+    copier.add_edge(copier.add_access("x"), None, node, CopyLibraryNode.INPUT_CONNECTOR_NAME, dace.Memlet("x[0:4]"))
+    copier.add_edge(node, CopyLibraryNode.OUTPUT_CONNECTOR_NAME, copier.add_access("y"), None, dace.Memlet("y[0:4]"))
+    return sdfg, node, copier
+
+
+def test_a_call_does_not_join_a_state_that_accumulates_into_what_it_touches():
+    sdfg, node, copier = copy_then_target(1, wcr=True)
+
+    result = plan_move("lib-into", [(node, copier), (sdfg.start_block, None)])
+
+    assert isinstance(result, str) and "accumulates into x" in result, result
+
+
+def test_a_call_does_not_join_a_state_with_two_unordered_writes_of_what_it_reads():
+    sdfg, node, copier = copy_then_target(2, wcr=False)
+
+    result = plan_move("lib-into", [(node, copier), (sdfg.start_block, None)])
+
+    assert isinstance(result, str) and "no order between the writes" in result, result
+
+
+def device_program(barrier_scope: SyncScope = SyncScope.DEVICE) -> tuple[dace.SDFG, Sync, list[dace.SDFGState]]:
+    """``kernel`` (a GPU doall writing device array ``g``), ``host`` (host work on ``z``), ``wait`` (a ``Sync``)."""
+    sdfg = dace.SDFG("device")
+    sdfg.add_array("g", [4], dace.float64, storage=dtypes.StorageType.GPU_Global)
+    sdfg.add_array("z", [4], dace.float64)
+    kernel = sdfg.add_state("kernel", is_start_block=True)
+    kernel.add_mapped_tasklet(
+        "fill",
+        {"i": "0:4"},
+        {},
+        "out = 1.0",
+        {"out": dace.Memlet("g[i]")},
+        dtypes.ScheduleType.GPU_Device,
+        external_edges=True,
+    )
+    host = sdfg.add_state_after(kernel, "host")
+    host.add_mapped_tasklet("bump", {"i": "0:4"}, {}, "out = 2.0", {"out": dace.Memlet("z[i]")}, external_edges=True)
+    wait = sdfg.add_state_after(host, "wait")
+    barrier = Sync("barrier", scope=barrier_scope)
+    wait.add_node(barrier)
+    return sdfg, barrier, [kernel, host, wait]
+
+
+def test_a_host_barrier_moves_ahead_of_host_work_that_touches_no_device_data():
+    sdfg, barrier, (kernel, host, wait) = device_program()
+
+    plan = plan_move("lib-before", [(barrier, wait), (host, None)])
+
+    assert not isinstance(plan, str), plan
+    plan.commit()
+    (moved,) = [s for s in sdfg.states() if barrier in s.nodes()]
+    assert sdfg.successors(kernel) == [moved] and sdfg.successors(moved) == [host]
+
+
+def test_a_host_barrier_never_crosses_device_work():
+    sdfg, barrier, (kernel, host, wait) = device_program()
+
+    result = plan_move("lib-before", [(barrier, wait), (kernel, None)])
+
+    assert isinstance(result, str) and "kernel issues device work" in result, result
+
+
+def test_a_host_barrier_joins_a_state_after_its_device_work():
+    sdfg, barrier, (kernel, host, wait) = device_program()
+
+    plan = plan_move("lib-into", [(barrier, wait), (kernel, None)])
+
+    assert not isinstance(plan, str), plan
+    plan.commit()
+    assert barrier in kernel.nodes()
+    (kernel_exit,) = [n for n in kernel.nodes() if isinstance(n, dace.nodes.MapExit)]
+    assert kernel_exit in kernel.predecessors(barrier)
+
+
+def test_a_host_barrier_never_joins_ahead_of_device_work():
+    sdfg, barrier, (kernel, host, wait) = device_program()
+    later = sdfg.add_state_after(wait, "later")
+    later.add_mapped_tasklet(
+        "use",
+        {"i": "0:4"},
+        {},
+        "out = 3.0",
+        {"out": dace.Memlet("g[i]")},
+        dtypes.ScheduleType.GPU_Device,
+        external_edges=True,
+    )
+
+    result = plan_move("lib-into", [(barrier, wait), (later, None)])
+
+    assert isinstance(result, str) and "device work the barrier would come before" in result, result
+
+
+def test_a_barrier_inside_a_kernel_never_moves():
+    sdfg, barrier, (kernel, host, wait) = device_program(SyncScope.BLOCK)
+
+    result = plan_move("lib-before", [(barrier, wait), (host, None)])
+
+    assert isinstance(result, str) and "block barrier" in result, result
 
 
 if __name__ == "__main__":
@@ -279,3 +434,12 @@ if __name__ == "__main__":
     test_a_copy_under_a_condition_does_not_leave_its_branch(scratch())
     test_a_call_named_with_its_own_state_is_refused(scratch())
     test_a_call_with_side_effects_never_moves()
+    test_a_copy_joins_an_earlier_state_and_reads_what_that_state_writes(scratch())
+    test_a_call_joins_only_a_state(scratch())
+    test_a_call_does_not_join_a_state_that_accumulates_into_what_it_touches()
+    test_a_call_does_not_join_a_state_with_two_unordered_writes_of_what_it_reads()
+    test_a_host_barrier_moves_ahead_of_host_work_that_touches_no_device_data()
+    test_a_host_barrier_never_crosses_device_work()
+    test_a_host_barrier_joins_a_state_after_its_device_work()
+    test_a_host_barrier_never_joins_ahead_of_device_work()
+    test_a_barrier_inside_a_kernel_never_moves()

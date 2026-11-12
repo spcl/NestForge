@@ -72,7 +72,8 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
 | a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
 | a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
-| a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
+| a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after`, `lib-into` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
+| a `lib_sync` waiting earlier than the host needs the device's results | `lib-after` past host work on other data | the host overlaps that work with the device |
 
 3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `rollback`.
 4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
@@ -82,7 +83,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
 `interchange-doall-doall` with itself. Fusion, fission, unrolling, `propagate-config`, `expand-library`,
-`snapshot-reads`, `doall-to-for` and `lib-before` / `lib-after` (a call never moves back into a loop) have none: `rollback` is the way back.
+`snapshot-reads`, `doall-to-for` and `lib-before` / `lib-after` / `lib-into` (a call never moves back into a loop) have none: `rollback` is the way back.
 
 ### A worked example
 
@@ -248,12 +249,21 @@ Every copy between two arrays is a `lib_copy` row (`b[:] = a`), so this is how a
 ```
 for k: { b = a; doall: c += b * k }   --lib-before [lib_copy0, for0]-->   b = a; for k: doall: c += b * k
 ```
-Only a call whose memlets are its whole effect moves: a barrier (`lib_sync`), a communication or a kernel never does.
+Only a call whose memlets are its whole effect moves; a communication or a kernel never does. A host barrier
+(`lib_sync`, a device or stream wait) moves too: it crosses no block that issues device work or touches what device
+work touches, and a barrier inside a kernel stays.
 Refused when a block it crosses writes what it reads or touches what it writes, when what it reads is computed (or
 what it writes is read) beside it in its state on the side it leaves, when it would leave a branch, and when a loop it
 leaves is not proven to run at least once (a constant trip count, or a bound the program's assumptions make positive).
 Hoist a call out of a loop that never changes its inputs; sink it after a loop that never reads its output; take it
 from between two loops so `for-fusion` can join them.
+
+**`lib-into`** `[lib_<family>, state]`: the same call joins an existing state of its region or of a loop around it
+instead of a new one, so no state is added between two others. It reads the array from the access node that state
+last writes it to, and runs after every access there that conflicts with it when it comes from a later point (before
+every one when it comes from an earlier point), ordered by empty edges. Refused for an accumulation into what it
+touches, two unordered writes of one array, a block that is not a state, and, for a `lib_sync`, a state whose device
+work it would run ahead of (a barrier joins only after a state's device work).
 
 **`expand-library`** `[lib_<family>]`, the library's own pure expansion, then canonicalization. The call becomes the
 doalls and statements that compute it (a gemm: a zero fill and a multiply doall with a `+` reduction), so the moves

@@ -1,19 +1,21 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``lib-before`` / ``lib-after``: a library call whose memlets are its whole effect (a ``lib_copy``, a reduce, a
-BLAS call) leaves its state for a state of its own before or after a block of the same or an enclosing region,
-when no block it crosses touches what it reads and writes."""
+"""``lib-before`` / ``lib-after`` / ``lib-into``: a library call whose memlets are its whole effect (a ``lib_copy``, a
+reduce, a BLAS call), or a host ``Sync`` whose effect is the device work it waits for, leaves its state for a state of
+its own before or after a block of the same or an enclosing region, or joins an existing state there, when no block it
+crosses touches what it reads and writes."""
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import dace
-from dace import data
+from dace import data, dtypes
 from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.libraries.standard.nodes.sync import Sync, SyncScope
 from dace.sdfg import nodes
 from dace.sdfg.state import (
     BreakBlock,
@@ -25,11 +27,15 @@ from dace.sdfg.state import (
     SDFGState,
 )
 from dace.transformation.passes.analysis import loop_analysis
+from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is_gpu_relevant_node
 
 from nestforge.ir.introspect import Row
 
 LIB_BEFORE = "lib-before"
 LIB_AFTER = "lib-after"
+LIB_INTO = "lib-into"
+#: The barriers that wait on the host, outside any kernel, for the device work issued before them.
+HOST_SYNCS = frozenset({SyncScope.DEVICE, SyncScope.STREAM})
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +45,8 @@ class Effect:
     reads: frozenset[str]
     writes: frozenset[str]
     symbols: frozenset[str]
+    #: A host barrier: it may not cross, nor join ahead of, a block that issues device work.
+    device: bool = False
 
     @property
     def touched(self) -> frozenset[str]:
@@ -52,6 +60,10 @@ def effect_refusal(state: SDFGState, node: nodes.LibraryNode) -> str | None:
         return f"{node.label} runs inside a doall; only a call at the top of a state moves."
     if isinstance(node, ExternalCall):
         return f"{node.label} is a kernel calling external code, whose effects its memlets do not show."
+    if isinstance(node, Sync):
+        if node.scope not in HOST_SYNCS or any(not e.data.is_empty() for e in state.all_edges(node)):
+            return f"{node.label} is a {node.scope.value} barrier tied to a kernel or a named stream; it stays."
+        return None
     if node.has_side_effects(sdfg):
         return (
             f"{node.label} ({type(node).__name__}) has side effects its memlets do not show (a barrier, a "
@@ -71,7 +83,39 @@ def effect_refusal(state: SDFGState, node: nodes.LibraryNode) -> str | None:
     return None
 
 
+def device_work(state: SDFGState) -> list[nodes.Node]:
+    """The nodes of ``state`` that issue or touch device work: kernel launches, GPU copies and fills, GPU arrays (DaCe's
+    ``is_gpu_relevant_node``), and calls scheduled on the GPU."""
+    return [
+        n
+        for n in state.nodes()
+        if is_gpu_relevant_node(n, state.sdfg, state)
+        or (isinstance(n, nodes.LibraryNode) and n.schedule in dtypes.GPU_SCHEDULES)
+        or (isinstance(n, nodes.MapEntry) and n.map.schedule in dtypes.GPU_SCHEDULES)
+    ]
+
+
+def block_device_work(block: ControlFlowBlock) -> bool:
+    states = [block] if isinstance(block, SDFGState) else list(cast(ControlFlowRegion, block).states())
+    return any(device_work(state) for state in states)
+
+
+def device_containers(sdfg: dace.SDFG) -> frozenset[str]:
+    """The containers device work reads or writes anywhere in ``sdfg``: what a host ``Sync`` makes safe to touch."""
+    names: set[str] = set()
+    for state in sdfg.states():
+        for node in device_work(state):
+            ends = [node, state.exit_node(node)] if isinstance(node, nodes.EntryNode) else [node]
+            for end in ends:
+                for edge in state.all_edges(end):
+                    names |= {n.data for n in (edge.src, edge.dst) if isinstance(n, nodes.AccessNode)}
+    return frozenset(names)
+
+
 def effect_of(state: SDFGState, node: nodes.LibraryNode) -> Effect:
+    if isinstance(node, Sync):  # it reads and writes, in effect, what the device work it waits for touches
+        touched = device_containers(state.sdfg)
+        return Effect(touched, touched, frozenset(), device=True)
     reads = frozenset(str(e.data.data) for e in state.in_edges(node) if not e.data.is_empty())
     writes = frozenset(str(e.data.data) for e in state.out_edges(node) if not e.data.is_empty())
     symbols = set(node.free_symbols)
@@ -97,10 +141,12 @@ def reaching(graph: Any, start: Any, forward: bool) -> set[Any]:
 def in_state_refusal(state: SDFGState, node: nodes.LibraryNode, effect: Effect, earlier: bool) -> str | None:
     """Whether ``node`` may leave ``state`` toward an earlier (``earlier``) or a later point: nothing it waits for, or
     nothing waiting for it, stays behind, and every other access that conflicts with it stays on the same side."""
-    if any(e.data.is_empty() for e in state.all_edges(node)):
-        return f"{node.label} is ordered against other nodes of {state.label} by empty edges."
-    inputs = [e.src for e in state.in_edges(node)]
-    outputs = [e.dst for e in state.out_edges(node)]
+    ordered = state.in_edges(node) if earlier else state.out_edges(node)
+    if any(e.data.is_empty() for e in ordered):
+        side = "after" if earlier else "before"
+        return f"{node.label} is ordered {side} other nodes of {state.label} by empty edges."
+    inputs = [e.src for e in state.in_edges(node) if not e.data.is_empty()]
+    outputs = [e.dst for e in state.out_edges(node) if not e.data.is_empty()]
     if any(state.in_degree(n) != 1 for n in outputs):
         return f"something else in {state.label} writes the access node {node.label} writes."
     if earlier and any(state.in_degree(n) for n in inputs):
@@ -163,6 +209,8 @@ def assigned_symbols(block: ControlFlowBlock) -> set[str]:
 
 
 def crossed_refusal(block: ControlFlowBlock, effect: Effect) -> str | None:
+    if effect.device and block_device_work(block):
+        return f"{block.label} issues device work, which the barrier would no longer wait for (or wait for too early)."
     reads, writes = block.read_and_write_sets()
     if writes & effect.touched:
         return f"{block.label} writes {sorted(writes & effect.touched)[0]}, which the call touches."
@@ -221,9 +269,9 @@ def exit_chain(state: SDFGState, target: ControlFlowBlock) -> tuple[list[LoopReg
     return loops, anchor
 
 
-def plan_lib_motion(row: Row, target_row: Row, after: bool) -> Callable[[], object] | str:
-    """The move of the library call ``row`` into a fresh state before (or ``after``) ``target_row``'s block, or why
-    it is illegal; nothing is mutated."""
+def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], object] | str:
+    """The move of the library call ``row`` into a fresh state before or after (``place``) ``target_row``'s block,
+    or ``into`` that state, or why it is illegal; nothing is mutated."""
     node, state = row
     target = target_row[0]
     assert isinstance(state, SDFGState) and isinstance(node, nodes.LibraryNode), "a library call row"
@@ -232,17 +280,40 @@ def plan_lib_motion(row: Row, target_row: Row, after: bool) -> Callable[[], obje
         return why
     if target is state:
         return f"{node.label} is in {state.label} already; name another block."
+    if place == "into" and not isinstance(target, SDFGState):
+        return f"{target.label} is not a state; a call joins only a state."
     chain = exit_chain(state, target)
     if isinstance(chain, str):
         return chain
     loops, anchor = chain
     region = target.parent_graph
     assert region is not None, "exit_chain found the target's region"
-    behind = reaching(region, anchor, forward=False)
-    earlier = target in behind or (target is anchor and not after)
+    earlier = target in reaching(region, anchor, forward=False) or (target is anchor and place == "before")
     if not earlier and target is not anchor and target not in reaching(region, anchor, forward=True):
         return f"{target.label} is neither before nor after the call on any path."
     effect = effect_of(state, node)
+    why = path_refusal(state, node, effect, loops, earlier)
+    first, last = (target, anchor) if earlier else (anchor, target)
+    span = (reaching(region, first, forward=True) & reaching(region, last, forward=False)) | {first, last}
+    # the target is crossed when the call lands on its far side
+    crossed = span - {anchor} - ({target} if place == "into" or earlier == (place == "after") else set())
+    for block in crossed:
+        why = why or crossed_refusal(block, effect)
+    for edge in region.edges():
+        if edge.src in span and edge.dst in span:
+            why = why or interstate_refusal(edge.data, effect, region.label)
+    if place != "into":
+        return why or (lambda: move_call(state, node, target, place == "after"))
+    joint = why or joint_of(cast(SDFGState, target), node, effect, earlier)
+    if isinstance(joint, str):
+        return joint
+    return lambda: join_call(state, node, joint)
+
+
+def path_refusal(
+    state: SDFGState, node: nodes.LibraryNode, effect: Effect, loops: list[LoopRegion], earlier: bool
+) -> str | None:
+    """Whether the call may leave its state and the ``loops`` around it toward an earlier or a later point."""
     why = in_state_refusal(state, node, effect, earlier)
     if why is None and loops:
         why = loop_state_refusal(state, node, effect, loops[0], earlier)
@@ -250,19 +321,121 @@ def plan_lib_motion(row: Row, target_row: Row, after: bool) -> Callable[[], obje
     for loop in loops:
         why = why or loop_refusal(loop, child, effect, earlier)
         child = loop
-    if why is not None:
-        return why
-    first, last = (target, anchor) if earlier else (anchor, target)
-    span = (reaching(region, first, forward=True) & reaching(region, last, forward=False)) | {first, last}
-    crossed = span - {anchor} - ({target} if earlier == after else set())
-    for block in crossed:
-        why = why or crossed_refusal(block, effect)
-    for edge in region.edges():
-        if edge.src in span and edge.dst in span:
-            why = why or interstate_refusal(edge.data, effect, region.label)
-    if why is not None:
-        return why
-    return lambda: move_call(state, node, target, after)
+    return why
+
+
+@dataclass(frozen=True, slots=True)
+class Joint:
+    """Where a call joins a state: the access nodes it reads from and writes to there, by container (new ones for the
+    rest), and the nodes ordered before and after it by empty edges."""
+
+    state: SDFGState
+    sources: dict[str, nodes.AccessNode]
+    sinks: dict[str, nodes.AccessNode]
+    before: list[nodes.Node]
+    after: list[nodes.Node]
+
+
+def written(state: SDFGState, access: nodes.AccessNode) -> bool:
+    return any(not e.data.is_empty() for e in state.in_edges(access))
+
+
+def read(state: SDFGState, access: nodes.AccessNode) -> bool:
+    return any(not e.data.is_empty() for e in state.out_edges(access))
+
+
+def last_writer(state: SDFGState, name: str) -> nodes.AccessNode | None | str:
+    """The access node of ``name`` that every other writer of it in ``state`` comes before; ``None`` when nothing
+    writes it; why not, when two writers are unordered."""
+    writers = [a for a in state.data_nodes() if a.data == name and written(state, a)]
+    last = [w for w in writers if not reaching(state, w, forward=True) & set(writers)]
+    if len(last) > 1 or any(w is not last[0] and last[0] not in reaching(state, w, True) for w in writers):
+        return f"{state.label} writes {name} twice with no order between the writes."
+    return last[0] if last else None
+
+
+def producers(state: SDFGState, access: nodes.AccessNode) -> list[nodes.Node]:
+    """The nodes that write ``access``: a map is ordered by its entry."""
+    return [
+        state.entry_node(e.src) if isinstance(e.src, nodes.ExitNode) else e.src
+        for e in state.in_edges(access)
+        if not e.data.is_empty()
+    ]
+
+
+def joint_of(target: SDFGState, node: nodes.LibraryNode, effect: Effect, earlier: bool) -> Joint | str:
+    """How the call joins ``target``: after every access there that conflicts with it, when it comes from a later
+    point (``earlier``), else before every one, so no cycle can form; refused for an accumulation or unordered
+    writers."""
+    clashing = [
+        a
+        for a in target.data_nodes()
+        if (written(target, a) and a.data in effect.touched) or (read(target, a) and a.data in effect.writes)
+    ]
+    for access in clashing:
+        if any(e.data.wcr is not None for e in target.in_edges(access)):
+            return f"{target.label} accumulates into {access.data}; the call does not join an accumulation."
+    for name in sorted({a.data for a in clashing if written(target, a)}):
+        last = last_writer(target, name)
+        if isinstance(last, str):
+            return last
+    if effect.device and not earlier and device_work(target):
+        return f"{target.label} issues device work the barrier would come before; it joins only after such work."
+    if earlier:
+        sources = {}
+        for name in () if effect.device else effect.reads:  # a barrier has no input to wire
+            last = last_writer(target, name)
+            if isinstance(last, nodes.AccessNode):
+                sources[name] = last
+        work = [target.exit_node(n) if isinstance(n, nodes.EntryNode) else n for n in device_work(target)]
+        before = [a for a in clashing if a not in sources.values()] + (work if effect.device else [])
+        return Joint(target, sources, {}, before, [])
+    sinks = {}
+    for name in effect.writes:
+        fresh = [a for a in target.data_nodes() if a.data == name and target.in_degree(a) == 0]
+        if fresh:
+            sinks[name] = fresh[0]
+    after: list[nodes.Node] = []
+    for access in clashing:
+        if access in sinks.values():
+            continue
+        after += producers(target, access) if written(target, access) else [access]
+    return Joint(target, {}, sinks, [], after)
+
+
+def join_call(state: SDFGState, node: nodes.LibraryNode, joint: Joint) -> SDFGState:
+    """Take ``node`` out of ``state`` into ``joint.state``, wired and ordered as ``joint`` says."""
+    target = joint.state
+    edges = detach(state, node)
+    target.add_node(node)
+    for edge in edges:
+        if edge.dst is node:
+            source = joint.sources.get(edge.src.data) or target.add_access(edge.src.data)
+            target.add_edge(source, edge.src_conn, node, edge.dst_conn, copy.deepcopy(edge.data))
+        else:
+            sink = joint.sinks.get(edge.dst.data) or target.add_access(edge.dst.data)
+            target.add_edge(node, edge.src_conn, sink, edge.dst_conn, copy.deepcopy(edge.data))
+    for other in dict.fromkeys(joint.before):
+        target.add_nedge(other, node, dace.Memlet())
+    for other in dict.fromkeys(joint.after):
+        target.add_nedge(node, other, dace.Memlet())
+    return target
+
+
+def detach(state: SDFGState, node: nodes.LibraryNode) -> list[Any]:
+    """Remove ``node`` from ``state`` with the access nodes only it used; returns its data edges."""
+    edges = list(state.all_edges(node))
+    state.remove_node(node)
+    for edge in edges:
+        for end in (edge.src, edge.dst):
+            if (
+                end is not node
+                and end in state.nodes()
+                and state.degree(end) == 0
+                and isinstance(end, nodes.AccessNode)
+            ):
+                state.remove_node(end)
+    return [e for e in edges if not e.data.is_empty()]
 
 
 def move_call(state: SDFGState, node: nodes.LibraryNode, target: ControlFlowBlock, after: bool) -> SDFGState:
@@ -273,27 +446,12 @@ def move_call(state: SDFGState, node: nodes.LibraryNode, target: ControlFlowBloc
         moved = region.add_state_after(target, label)
     else:
         moved = region.add_state_before(target, label, is_start_block=region.start_block is target)
-    edges = list(state.all_edges(node))
-    state.remove_node(node)
-    moved.add_node(node)
-    for edge in edges:
-        if edge.dst is node:
-            moved.add_edge(
-                moved.add_access(edge.src.data), edge.src_conn, node, edge.dst_conn, copy.deepcopy(edge.data)
-            )
-        else:
-            moved.add_edge(
-                node, edge.src_conn, moved.add_access(edge.dst.data), edge.dst_conn, copy.deepcopy(edge.data)
-            )
-    for edge in edges:
-        for end in (edge.src, edge.dst):
-            if end is not node and end in state.nodes() and state.degree(end) == 0:
-                state.remove_node(end)
-    return moved
+    return join_call(state, node, Joint(moved, {}, {}, [], []))
 
 
-def movable_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, Row]]:
-    """Every top-level library call paired with every other block of its region and of each loop around it."""
+def movable_rows(sdfg: dace.SDFG, states_only: bool = False) -> Iterator[tuple[Row, Row]]:
+    """Every top-level library call paired with every other block (or state) of its region and of each loop
+    around it."""
     for state in sdfg.states():
         calls = [n for n in state.nodes() if isinstance(n, nodes.LibraryNode) and state.entry_node(n) is None]
         if not calls:
@@ -306,4 +464,7 @@ def movable_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, Row]]:
             block = block.parent_graph
         for call in calls:
             for region in regions:
-                yield from (((call, state), (b, None)) for b in region.nodes() if b is not state)
+                blocks = [b for b in region.nodes() if b is not state]
+                if states_only:
+                    blocks = [b for b in blocks if isinstance(b, SDFGState)]
+                yield from (((call, state), (b, None)) for b in blocks)

@@ -66,7 +66,7 @@ from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import CRASHES, Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
-from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, movable_rows, plan_lib_motion
+from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
 
@@ -115,6 +115,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "unroll-doall": (nodes.MapEntry,),
     LIB_BEFORE: (nodes.LibraryNode, ControlFlowBlock),
     LIB_AFTER: (nodes.LibraryNode, ControlFlowBlock),
+    LIB_INTO: (nodes.LibraryNode, SDFGState),
     PROPAGATE_CONFIG: (),
     ROLLBACK: (),
 }
@@ -1001,11 +1002,11 @@ def plan_map_if(row: Row) -> Rewrite | str:
     return region_rewrite("MoveMapInvariantIfUp", state.sdfg, lambda: MoveMapInvariantIfUp().apply_to_map(state, entry))
 
 
-def plan_lib_move(row: Row, target: Row, after: bool) -> Rewrite | str:
-    plan = plan_lib_motion(row, target, after)
+def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
+    plan = plan_lib_motion(row, target, place)
     if isinstance(plan, str):
         return plan
-    return region_rewrite(LIB_AFTER if after else LIB_BEFORE, node_state(row).sdfg, plan)
+    return region_rewrite(f"lib-{place}", node_state(row).sdfg, plan)
 
 
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
@@ -1032,8 +1033,9 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-for": plan_untile_for,
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
-    LIB_BEFORE: lambda row, target: plan_lib_move(row, target, after=False),
-    LIB_AFTER: lambda row, target: plan_lib_move(row, target, after=True),
+    LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
+    LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
+    LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
     PROPAGATE_CONFIG: plan_propagate_config,
 }
 
@@ -1053,6 +1055,7 @@ ROW_KEYWORDS: dict[type, str] = {
     LoopRegion: "for",
     nodes.MapEntry: "doall",
     ControlFlowBlock: "state",
+    SDFGState: "state",
     ConditionalBlock: "if",
     nodes.LibraryNode: "lib_<family>",
 }
@@ -1148,8 +1151,9 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     ),
     LIB_BEFORE: (
         "a state of its own, checked against the read and write sets of every block it crosses",
-        "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a barrier, a "
-        "communication or a kernel) leaves its state for a new state just before the named block, of the call's "
+        "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a "
+        "communication or a kernel), or a host lib_sync (a device or stream barrier, which crosses no block that "
+        "issues device work or touches what device work touches), leaves its state for a new state just before the named block, of the call's "
         "region or of a loop around it. Hoist a copy or call whose inputs a loop never changes out of it (it then "
         "runs once, not every iteration), or take one from between two loops so they become adjacent for "
         "for-fusion. Refused when a crossed block writes what the call touches or reads what it writes, when a loop "
@@ -1159,6 +1163,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a state of its own, checked against the read and write sets of every block it crosses",
         "the same, into a new state just after the named block: sink a call to its consumer, or out of a loop "
         "when nothing in the loop reads what it writes.",
+    ),
+    LIB_INTO: (
+        "the named state, ordered there by its access nodes and empty edges",
+        "the same call joins an existing state of its region or of a loop around it instead of a new one: it reads "
+        "the array from the access node that state last writes it to (or writes the access node that state reads), "
+        "and runs after (when it comes from a later point) or before every other access there that conflicts with "
+        "it. Refused for an accumulation there, two unordered writes of one array, a cycle, and, for a lib_sync, a "
+        "state whose device work it would run ahead of.",
     ),
     ROLLBACK: (
         "the session's history (the last 8 changes)",
@@ -1385,6 +1397,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
+    LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
 }
 
