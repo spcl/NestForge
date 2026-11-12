@@ -167,10 +167,10 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
 
 def library_family(node: nodes.LibraryNode) -> str:
     """The DaCe library ``node`` comes from (``blas``, ``fft``, ``linalg``, ...); a standard node is named by its own
-    kind (``reduce``, ``scan``, ``fill``)."""
+    kind (``reduce``, ``scan``, ``fill``, ``copy``)."""
     parts = type(node).__module__.split(".")
     package = parts[2] if parts[:2] == ["dace", "libraries"] and len(parts) > 2 else "lib"
-    return type(node).__name__.lower() if package == "standard" else package
+    return type(node).__name__.lower().removesuffix("librarynode") if package == "standard" else package
 
 
 def relabel_cfg(cfg: AbstractControlFlowRegion, namer: Namer, taken: set[str]) -> None:

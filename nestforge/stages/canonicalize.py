@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import dace
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.propagation import propagate_memlets_nested_sdfg, propagate_memlets_state
@@ -17,6 +18,7 @@ from dace.transformation.passes.canonicalize import canonicalize as dace_canonic
 from dace.transformation.passes.canonicalize import stage_labels
 from dace.transformation.passes.canonicalize.normalize_map_body import NormalizeMapBody
 from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup, after_fusion_units, prepared
+from dace.transformation.passes.insert_explicit_copies import InsertExplicitCopies
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
@@ -48,6 +50,8 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     inline_top_level_nsdfgs(sdfg)
     structural_cleanup(sdfg)  # no stage after fusion runs, so nothing specializes
     narrow_nested_memlets(sdfg)
+    # after the cleanup, which folds the copies it can: the ones left are rows
+    explicit_copies(sdfg)
     return sdfg
 
 
@@ -57,6 +61,42 @@ def structural_cleanup(sdfg: dace.SDFG) -> None:
     canonicalization and after every move."""
     StructuralCleanup().apply_pass(sdfg, {})
     normalize_map_bodies(sdfg)
+
+
+def explicit_copies(sdfg: dace.SDFG) -> None:
+    """Every copy between two access nodes outside a map, in ``sdfg`` itself, becomes a ``CopyLibraryNode``: a
+    ``lib_copy`` row the moves take (codegen's ``InsertExplicitCopies``, run early); :func:`implicit_copies` is the
+    inverse."""
+    InsertExplicitCopies(only=lambda state, edge: state.sdfg is sdfg and state.entry_node(edge.src) is None).apply_pass(
+        sdfg, {}
+    )
+
+
+def implicit_copies(sdfg: dace.SDFG) -> int:
+    """Every ``CopyLibraryNode`` of ``sdfg`` itself outside a map, between access nodes of two arrays, becomes a copy
+    edge again, its ordering edges kept on the access nodes, so canonicalization's copy folding sees it and a scope
+    does not make it a kernel; returns how many."""
+    count = 0
+    for state in sdfg.states():
+        for node in [n for n in state.nodes() if isinstance(n, CopyLibraryNode) and state.entry_node(n) is None]:
+            ins = [e for e in state.in_edges(node) if not e.data.is_empty()]
+            outs = [e for e in state.out_edges(node) if not e.data.is_empty()]
+            if len(ins) != 1 or len(outs) != 1:
+                continue
+            src, dst = ins[0].src, outs[0].dst
+            if not isinstance(src, nodes.AccessNode) or not isinstance(dst, nodes.AccessNode) or src.data == dst.data:
+                continue
+            for edge in state.in_edges(node):
+                if edge.data.is_empty():
+                    state.add_nedge(edge.src, dst, dace.Memlet())
+            for edge in state.out_edges(node):
+                if edge.data.is_empty():
+                    state.add_nedge(src, edge.dst, dace.Memlet())
+            memlet = dace.Memlet(data=src.data, subset=ins[0].data.subset, other_subset=outs[0].data.subset)
+            state.remove_node(node)
+            state.add_edge(src, None, dst, None, memlet)
+            count += 1
+    return count
 
 
 def innermost_bodies(state: SDFGState) -> list[list[nodes.Node]]:
@@ -112,12 +152,18 @@ def fuse_and_finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     """Stage 2 default: canonicalization's own fusion stage, then the stages after it."""
     # map fusion never descends into a nested SDFG, and a re-inlined kernel arrives nested
     inline_top_level_nsdfgs(sdfg)
-    return dace_canonicalize(sdfg, target=targets.canon_target, stages=[FUSE_STAGE, *after_fusion(targets)])
+    implicit_copies(sdfg)
+    dace_canonicalize(sdfg, target=targets.canon_target, stages=[FUSE_STAGE, *after_fusion(targets)])
+    explicit_copies(sdfg)
+    return sdfg
 
 
 def finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     """The lifts and cleanup that close each fusion round, then the stages after fusion, once moves chose the
     granularity by hand."""
+    implicit_copies(sdfg)
     for unit in prepared(after_fusion_units(lift=True, lift_copy=True, target=targets.canon_target)):
         unit.apply_pass(sdfg, {})
-    return dace_canonicalize(sdfg, target=targets.canon_target, stages=after_fusion(targets))
+    dace_canonicalize(sdfg, target=targets.canon_target, stages=after_fusion(targets))
+    explicit_copies(sdfg)
+    return sdfg

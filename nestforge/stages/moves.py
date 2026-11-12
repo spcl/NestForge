@@ -66,6 +66,7 @@ from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import CRASHES, Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
+from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, movable_rows, plan_lib_motion
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
 
@@ -112,6 +113,8 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "untile-for": (LoopRegion,),
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
+    LIB_BEFORE: (nodes.LibraryNode, ControlFlowBlock),
+    LIB_AFTER: (nodes.LibraryNode, ControlFlowBlock),
     PROPAGATE_CONFIG: (),
     ROLLBACK: (),
 }
@@ -998,6 +1001,13 @@ def plan_map_if(row: Row) -> Rewrite | str:
     return region_rewrite("MoveMapInvariantIfUp", state.sdfg, lambda: MoveMapInvariantIfUp().apply_to_map(state, entry))
 
 
+def plan_lib_move(row: Row, target: Row, after: bool) -> Rewrite | str:
+    plan = plan_lib_motion(row, target, after)
+    if isinstance(plan, str):
+        return plan
+    return region_rewrite(LIB_AFTER if after else LIB_BEFORE, node_state(row).sdfg, plan)
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "for-fusion": plan_loop_fusion,
     "for-fission": plan_loop_fission,
@@ -1022,6 +1032,8 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-for": plan_untile_for,
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
+    LIB_BEFORE: lambda row, target: plan_lib_move(row, target, after=False),
+    LIB_AFTER: lambda row, target: plan_lib_move(row, target, after=True),
     PROPAGATE_CONFIG: plan_propagate_config,
 }
 
@@ -1133,6 +1145,20 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "MapUnroll (max_iterations, the largest trip count you accept)",
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
+    ),
+    LIB_BEFORE: (
+        "a state of its own, checked against the read and write sets of every block it crosses",
+        "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a barrier, a "
+        "communication or a kernel) leaves its state for a new state just before the named block, of the call's "
+        "region or of a loop around it. Hoist a copy or call whose inputs a loop never changes out of it (it then "
+        "runs once, not every iteration), or take one from between two loops so they become adjacent for "
+        "for-fusion. Refused when a crossed block writes what the call touches or reads what it writes, when a loop "
+        "it leaves is not proven to run at least once, or when it would leave a branch or enter a block.",
+    ),
+    LIB_AFTER: (
+        "a state of its own, checked against the read and write sets of every block it crosses",
+        "the same, into a new state just after the named block: sink a call to its consumer, or out of a loop "
+        "when nothing in the loop reads what it writes.",
     ),
     ROLLBACK: (
         "the session's history (the last 8 changes)",
@@ -1357,6 +1383,8 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-for": tile_loops,
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    LIB_BEFORE: movable_rows,
+    LIB_AFTER: movable_rows,
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
 }
 

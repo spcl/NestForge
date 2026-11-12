@@ -66,6 +66,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
 | a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
 | a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
+| a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
 
 3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `rollback`.
 4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
@@ -75,7 +76,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
 `interchange-doall-doall` with itself. Fusion, fission, unrolling, `propagate-config`, `expand-library`,
-`snapshot-reads` and `doall-to-for` have none: `rollback` is the way back.
+`snapshot-reads`, `doall-to-for` and `lib-before` / `lib-after` (a call never moves back into a loop) have none: `rollback` is the way back.
 
 ### A worked example
 
@@ -220,6 +221,19 @@ results stay correct. Inside the specialized branch the bounds are constants, so
 its loops, and the moves above apply there too. Offered when the program has a scalar argument or a free symbol.
 
 ### Library calls
+
+**`lib-before`** / **`lib-after`** `[lib_<family>, state|for|if]`: the call leaves its state for a new state just
+before (after) the named block, which is in the call's region or in a loop around it; never inside another block.
+Every copy between two arrays is a `lib_copy` row (`b[:] = a`), so this is how a copy moves.
+```
+for k: { b = a; doall: c += b * k }   --lib-before [lib_copy0, for0]-->   b = a; for k: doall: c += b * k
+```
+Only a call whose memlets are its whole effect moves: a barrier (`lib_sync`), a communication or a kernel never does.
+Refused when a block it crosses writes what it reads or touches what it writes, when what it reads is computed (or
+what it writes is read) beside it in its state on the side it leaves, when it would leave a branch, and when a loop it
+leaves is not proven to run at least once (a constant trip count, or a bound the program's assumptions make positive).
+Hoist a call out of a loop that never changes its inputs; sink it after a loop that never reads its output; take it
+from between two loops so `for-fusion` can join them.
 
 **`expand-library`** `[lib_<family>]`, the library's own pure expansion, then canonicalization. The call becomes the
 doalls and statements that compute it (a gemm: a zero fill and a multiply doall with a `+` reduction), so the moves

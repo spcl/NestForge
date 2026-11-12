@@ -50,8 +50,10 @@ from nestforge.stages import feedback
 from nestforge.stages.canonicalize import (
     Targets,
     canonicalize,
+    explicit_copies,
     finish,
     fuse_and_finish,
+    implicit_copies,
     narrow_nested_memlets,
     structural_cleanup,
 )
@@ -705,6 +707,8 @@ class Session:
             # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps correct
             inline_top_level_nsdfgs(self.sdfg)
             structural_cleanup(self.sdfg)
+            # a copy the move made, or one the cleanup left, is a lib_copy row
+            explicit_copies(self.sdfg)
             # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule
             # inference read them
             narrow_nested_memlets(self.sdfg)
@@ -754,6 +758,11 @@ class Session:
 
     # Stage 3: scopes
 
+    def end_moves(self) -> None:
+        """The copies the moves took as ``lib_copy`` rows become copy edges again: a scope makes no kernel of one."""
+        if implicit_copies(self.sdfg):
+            self.bump()
+
     def keep_unscoped(self) -> None:
         """Keep the program for :meth:`rewind` while it has no kernel."""
         if not external_calls(self.sdfg):
@@ -774,6 +783,7 @@ class Session:
     def default_scopes(self) -> list[KernelScope]:
         """Stage 3 default (:func:`~nestforge.stages.scopes.default_units`): parallel maps, loops and conditionals of
         the program by its rules, large maps split first; returns the new kernels."""
+        self.end_moves()
         lowered = lower_default_scopes(self.sdfg, self.targets)
         if lowered:
             self.unplaced = None
@@ -821,6 +831,7 @@ class Session:
         :returns: ``applied`` with the new kernel's name as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
+        self.end_moves()
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
@@ -909,6 +920,8 @@ class Session:
 
         :param devices: Kernel name -> ``cpu`` or ``gpu``.
         """
+        if self.unplaced is None:
+            self.end_moves()
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
