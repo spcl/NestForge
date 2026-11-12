@@ -6,6 +6,7 @@ transformations, and the symbolic work and depth of a scope."""
 from __future__ import annotations
 
 import copy
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -1208,9 +1209,14 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
         if name not in CANDIDATES:
             continue
         for rows in CANDIDATES[name](sdfg):
-            probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
+            labels = tuple(tree_label(obj) for obj, _ in rows)
+            try:
+                probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
+            except Exception as err:  # noqa: BLE001 -- a check that raises on one candidate hides only that candidate
+                print(f"nestforge: {name} {list(labels)} is not listed: {type(err).__name__}: {err}", file=sys.stderr)
+                continue
             if isinstance(probe, Rewrite):
-                found[(name, tuple(tree_label(obj) for obj, _ in rows))] = None
+                found[(name, labels)] = None
     return list(found)
 
 

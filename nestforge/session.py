@@ -109,6 +109,11 @@ from nestforge.stages.variants import Variant, VariantCell, device_variants, sel
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
 
+#: How many of the last moves and default move stages :meth:`Session.undo` can take back, each a copy of the program.
+UNDO_DEPTH = 8
+#: The kind of the result :meth:`Session.undo` answers with.
+UNDO = "undo"
+
 
 #: The kernel source language each device's kernels are written in.
 def kernel_language(device: str) -> str:
@@ -363,6 +368,8 @@ class Session:
         "bench",
         "stopper",
         "in_atomic",
+        "checkpoint",
+        "history",
     )
 
     def __init__(
@@ -424,6 +431,9 @@ class Session:
         self.stopper = Stopper()
         # inside :meth:`atomic`: its outermost call owns the checkpoint
         self.in_atomic = False
+        # the program before the change :meth:`atomic` is running, and before each of the last changes kept for undo
+        self.checkpoint: Checkpoint | None = None
+        self.history: list[Checkpoint] = []
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -446,21 +456,47 @@ class Session:
             dict(self.prepared),
             self.measured,
         )
-        self.in_atomic = True
+        kept = len(self.history)
+        self.in_atomic, self.checkpoint = True, saved
         try:
             yield
         except (Exception, Stopped):
-            self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
-            self.unscoped = saved.unscoped
-            self.applied, self.expanded = saved.applied, saved.expanded
-            self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
-            # the rows and the kernel graph hold nodes of the program just dropped
-            self.rows, self.kernel_deps = None, None
-            self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
-            self.measured = saved.measured
+            self.restore(saved)
+            del self.history[kept:]
             raise
         finally:
-            self.in_atomic = False
+            self.in_atomic, self.checkpoint = False, None
+
+    def restore(self, saved: Checkpoint) -> None:
+        """Make ``saved`` the session's program again."""
+        self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
+        self.unscoped = saved.unscoped
+        self.applied, self.expanded = saved.applied, saved.expanded
+        self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
+        # the rows and the kernel graph hold nodes of the program just dropped
+        self.rows, self.kernel_deps = None, None
+        self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
+        self.measured = saved.measured
+
+    def remember(self) -> None:
+        """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
+        :data:`UNDO_DEPTH` changes are kept."""
+        assert self.checkpoint is not None, "a change runs under atomic"
+        self.history.append(self.checkpoint)
+        del self.history[:-UNDO_DEPTH]
+
+    @undone_on_failure
+    def undo(self) -> MoveResult:
+        """Back to the program before the last move or default stage :meth:`remember` kept, its row labels and
+        :attr:`applied` included; a label handed out since is never handed out again."""
+        if not self.history:
+            reason = f"no move to undo: none was applied, or the last {UNDO_DEPTH} are already undone."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=UNDO, labels=(), reason=reason)
+        saved, counters = self.history.pop(), self.namer.counters
+        undone = self.applied[min(len(saved.applied), len(self.applied) - 1)]
+        self.restore(saved)
+        self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
+        return MoveResult(status=MoveStatus.APPLIED, kind=UNDO, labels=undone.labels, reason=f"undid {undone.kind}")
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
@@ -569,6 +605,8 @@ class Session:
                 return self.rewind()
         if changed:
             self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind=f"defaults-{stage}", labels=(), reason=""))
+            if stage in ("moves", "finish"):
+                self.remember()
         return done
 
     def collapse(self, labels: Sequence[str]) -> str:
@@ -644,8 +682,11 @@ class Session:
             self.unplaced = None
             # setting an implementation changes a property of the row, not the row: its label stays
             self.bump(() if kind == SET_IMPLEMENTATION else names)
+            # a move DaCe's own check let through may still build what its validation refuses: refused here, undone
+            self.sdfg.validate()
             done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name)
             self.applied.append(done)
+            self.remember()
         return done
 
     def metrics(self, label: str) -> str:

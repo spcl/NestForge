@@ -31,7 +31,7 @@ packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 title = "Moves"
 summary = "NestForge applies its default fusion."
 text = "prompt/phases/moves.md"
-tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
+tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "undo_move", "run_defaults"]
 default = { tool = "run_defaults", args = { stage = "moves" } }
 
 [phases.scopes]
