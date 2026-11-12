@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.util import Finalize
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dace
 import numpy as np
@@ -45,6 +45,9 @@ from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
+
+if TYPE_CHECKING:
+    from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 
 
 def finalize(session: Session) -> Final:
@@ -410,10 +413,10 @@ def answer(
         return Reply(error=f"{failure(err).error} (the program is unchanged)")
 
 
-def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str]) -> None:
+def pin(slot: DeviceSlot | None, gpu: bool, cores: set[int], environment: dict[str, str]) -> None:
     """What this call starts runs as a graded child of device slot ``slot`` does: on the slot's cores and memory, with
-    a team of their size, and on its GPU; on all of ``cores`` without a slot. Each call starts from the session's first
-    ``cores`` and ``environment``, as the bench narrows the current mask and device list."""
+    a team of their size, and on its GPU if it is a GPU slot; on all of ``cores`` without a slot. Each call starts from
+    the session's first ``cores`` and ``environment``, as the bench narrows the current mask and device list."""
     from hpcagent_bench import flags
     from hpcagent_bench.harness import native_call
 
@@ -422,14 +425,14 @@ def pin(slot: int | None, gpu: bool, cores: set[int], environment: dict[str, str
     os.environ.update(environment)
     if slot is None:
         return
-    cpus = native_call.grading_cpus(slot)
+    cpus = native_call.grading_cpus(slot.index)
     if cpus:
         restrict_cpus(cpus)
         native_call.bind_memory(native_call.numa_nodes(cpus))
         os.environ.update(flags.cpu_env(flags.Mode.MULTI_CORE, threads=native_call.slot_threads(cpus)))
         os.environ.update(native_call.CHILD_BIND_ENV)
-    if gpu:
-        native_call.restrict_visible_device(os.environ, slot)
+    if gpu and slot.kind == "gpu":  # a CPU slot's index is no GPU ordinal
+        native_call.restrict_visible_device(os.environ, slot.index)
 
 
 def serve(connection: Connection, setup: Setup) -> None:
@@ -549,7 +552,7 @@ class SessionProcess:
         arguments: dict[str, object],
         gone: threading.Event | None = None,
         timeout_s: float = TOOL_TIMEOUT_S,
-        slot: int | None = None,
+        slot: DeviceSlot | None = None,
         timed: bool = True,
     ) -> Reply:
         """Run ``tool`` (a key of :data:`CALLS`) with ``arguments`` in the session process. A measuring call is stopped

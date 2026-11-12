@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 from hpcagent_agent import plugins as agent_plugins
 from hpcagent_bench import plugins
+from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 
 from nestforge import server
 from nestforge.paths import REPO_ROOT
@@ -258,8 +259,8 @@ def test_a_slot_pins_what_the_call_starts_and_the_next_call_starts_from_the_whol
     session = SessionProcess(SETUP, target=report_pin)
 
     unpinned = session.call("view_tree", {}).result[0]
-    first = session.call("get_performance", {}, slot=0).result
-    second = session.call("get_performance", {}, slot=1).result
+    first = session.call("get_performance", {}, slot=DeviceSlot("cpu", 0)).result
+    second = session.call("get_performance", {}, slot=DeviceSlot("cpu", 1)).result
     again = session.call("view_tree", {}).result[0]
     session.close()
 

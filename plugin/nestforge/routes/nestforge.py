@@ -152,7 +152,7 @@ def device_slot(
 
 
 def session_of(
-    episode: Episode, judge: Judge, kernel: str, episode_id: str, gone: threading.Event, slot: int | None
+    episode: Episode, judge: Judge, kernel: str, episode_id: str, gone: threading.Event, slot: DeviceSlot | None
 ) -> SessionProcess:
     """The kernel's session; a new one repeats the episode's changes, so it is the program the agent left. A repeat
     measures nothing, and stops as the call that caused it does.
@@ -182,7 +182,7 @@ def run_call(
     kernel: str,
     call: Call,
     gone: threading.Event,
-    slot: int | None = None,
+    slot: DeviceSlot | None = None,
 ) -> Reply:
     """``call`` on the kernel's session; a change whose client left keeps its answer for the retry.
 
@@ -246,9 +246,9 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     with client_left(judge) as gone, device_slot(judge, episode, gone, terminal) if measuring else NO_SLOT as slot:
         if slot is None or not locked(episode.lock, gone):
             return None
-        index = slot.index if isinstance(slot, DeviceSlot) else None
+        held = slot if isinstance(slot, DeviceSlot) else None
         try:
-            reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone, index)
+            reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone, held)
         except LookupError as err:
             error = f"{name}: the session could not start: {err}"
             return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))

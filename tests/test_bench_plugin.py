@@ -61,7 +61,7 @@ KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
 #: The device slot a fake judge hands out.
-SLOT = 3
+SLOT = DeviceSlot("cpu", 3)
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
 #: Seconds one tuner episode may take; the bench's own user-plugins test allows the same.
@@ -103,7 +103,7 @@ class FakeJudge(JudgeHandler):
     def device_slot(self, terminal: bool = False) -> Iterator[DeviceSlot]:
         self.slots += 1
         self.terminal = terminal
-        yield DeviceSlot("cpu", SLOT)
+        yield SLOT
 
 
 @pytest.fixture(autouse=True)

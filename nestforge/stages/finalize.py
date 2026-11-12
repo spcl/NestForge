@@ -64,9 +64,10 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
         dialect = Language[get_gpu_backend().upper()]
         device = out_dir / f"{spec.module_name}_device.{languages.LANG_EXT[dialect]}"
         device.write_text(form.device_code)
-        commands = languages.build_shared_lib_commands(
-            dialect, device, lib, extra_link=list(form.link), extra_sources=[host]
-        )
+        # nvcc rejects -Wl, and takes the same comma list as -Xlinker=; hipcc is clang and takes -Wl,
+        nvcc = dialect is Language.CUDA
+        link = [f"-Xlinker={f.removeprefix('-Wl,')}" if nvcc and f.startswith("-Wl,") else f for f in form.link]
+        commands = languages.build_shared_lib_commands(dialect, device, lib, extra_link=link, extra_sources=[host])
     else:
         commands = languages.build_shared_lib_commands(Language.CPP, host, lib, extra_link=list(form.link))
     failed, log = languages.run_build_commands(commands, out_dir)
