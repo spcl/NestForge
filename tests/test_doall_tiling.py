@@ -47,7 +47,7 @@ def test_a_doall_offers_tiling_and_expansion(tmp_path):
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
-    kinds = {move.kind for move in sut.list_moves() if move.labels[0] == doall}
+    kinds = {move.kind for move in sut.list_moves() if move.labels[:1] == (doall,)}
 
     assert {"tile-doall", "expand-doall"} <= kinds
 

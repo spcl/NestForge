@@ -7,20 +7,21 @@ from __future__ import annotations
 
 import copy
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import dace
 import sympy
 from dace.data import Scalar
-from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
 from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
-from dace.sdfg.utils import set_nested_sdfg_parent_references
+from dace.sdfg.utils import set_nested_sdfg_parent_references, weakly_connected_component
 from dace.subsets import Range
 from dace.transformation.dataflow.map_collapse import MapCollapse
 from dace.transformation.dataflow.map_expansion import MapExpansion
@@ -29,6 +30,7 @@ from dace.transformation.dataflow.map_for_loop import MapToForLoop
 from dace.transformation.dataflow.map_fusion_horizontal import MapFusionHorizontal
 from dace.transformation.dataflow.map_fusion_vertical import MapFusionVertical
 from dace.transformation.dataflow.map_interchange import MapInterchange
+from dace.transformation.dataflow.map_unroll import MapUnroll
 from dace.transformation.dataflow.otf_map_fusion import OTFMapFusion
 from dace.transformation.dataflow.tiling import MapTiling
 from dace.transformation.dataflow.trivial_map_elimination import TrivialMapElimination
@@ -36,6 +38,7 @@ from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_tiling import LoopTiling
+from dace.transformation.interstate.loop_unroll import LoopUnroll
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes, single_map_body
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
 from dace.transformation.interstate.move_map_invariant_if_up import MoveMapInvariantIfUp
@@ -51,6 +54,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
     map_tile_pairs,
     untile_map_pair,
 )
+from dace.transformation.passes.config_propagation import ConfigPropagation
 from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
 from dace.transformation.passes.loop_fission import LoopFission
@@ -78,6 +82,8 @@ class Rewrite:
 EXPAND_LIBRARY = "expand-library"
 #: The move kind that picks a library call's implementation; it takes ``implementation``.
 SET_IMPLEMENTATION = "set-library-implementation"
+#: The move kind, on no row, that specializes the program for argument values; it takes ``config_values``.
+PROPAGATE_CONFIG = "propagate-config"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -102,12 +108,19 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
+    "unroll-for": (LoopRegion,),
+    "unroll-doall": (nodes.MapEntry,),
+    PROPAGATE_CONFIG: (),
 }
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order.
 SIZED = frozenset({"tile-doall", "tile-for"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
+#: The move kinds that take ``max_iterations``: the largest trip count the agent accepts to unroll.
+UNROLLS = frozenset({"unroll-for", "unroll-doall"})
+#: The cap an unroll is checked at when it is listed; the agent passes its own to apply it.
+PROBE_UNROLL = 16
 
 
 def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
@@ -849,6 +862,117 @@ def plan_untile_for(row: Row) -> Rewrite | str:
     return region_rewrite("UntileLoops.untile_loop", loop.sdfg, commit)
 
 
+def constant(expr: Any, sdfg: dace.SDFG) -> int | None:
+    """``expr`` evaluated with ``sdfg``'s constants, or ``None`` while it reads a symbol with no value."""
+    try:
+        return int(dace.symbolic.evaluate(expr, sdfg.constants))
+    except TypeError:
+        return None
+
+
+def loop_trips(loop: LoopRegion) -> int | None:
+    """How many iterations ``loop`` runs, counted as ``LoopUnroll`` counts them; ``None`` when not constant."""
+    start, end = loop_analysis.get_init_assignment(loop), loop_analysis.get_loop_end(loop)
+    stride = loop_analysis.get_loop_stride(loop)
+    if start is None or end is None or stride is None:
+        return None
+    diff, step = constant(cast(sympy.Expr, end) - start, loop.sdfg), constant(stride, loop.sdfg)
+    if diff is None or not step:
+        return None
+    return len(range(0, diff + (1 if step > 0 else -1), step))
+
+
+def unroll_refusal(label: str, trips: int | None, max_iterations: int) -> str | None:
+    if trips is None:
+        return (
+            f"{label} has no constant trip count: its bounds read a symbol with no value; propagate-config a value "
+            "for it first."
+        )
+    if trips > max_iterations:
+        return f"{label} runs {trips} iterations, more than max_iterations={max_iterations}; pass a larger cap."
+    return None
+
+
+def plan_unroll_for(row: Row, max_iterations: int = PROBE_UNROLL) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    reason = unroll_refusal(loop.label, loop_trips(loop), max_iterations)
+    if reason is not None:
+        return reason
+    move = pattern(LoopUnroll, loop.sdfg, {"loop": loop})
+    if move is None:
+        return f"blocked by LoopUnroll: {loop.label} holds a break or continue, or is not a counted loop."
+    return region_rewrite(move.name, loop.sdfg, move.commit)
+
+
+def plan_unroll_doall(row: Row, max_iterations: int = PROBE_UNROLL) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    if state.entry_node(entry) is not None:
+        return f"{entry.map.label} is inside another doall of its state; MapUnroll unrolls only the outer one."
+    reason = unroll_refusal(entry.map.label, constant(entry.map.range.num_elements_exact(), state.sdfg), max_iterations)
+    if reason is not None:
+        return reason
+    # MapUnroll copies the whole connected part of the state: another computation in it would run once per copy
+    scope = set(state.scope_subgraph(entry).nodes())
+    beside = [n for n in weakly_connected_component(state, entry).nodes() if n not in scope]
+    if any(not isinstance(n, nodes.AccessNode) for n in beside):
+        return (
+            f"{entry.map.label} shares arrays with other computations of its state, which MapUnroll would copy with "
+            "it; doall-fusion them first."
+        )
+    return pattern(MapUnroll, state.sdfg, {"map_entry": entry}) or (
+        f"blocked by MapUnroll: {entry.map.label} is a GPU doall."
+    )
+
+
+def config_names(sdfg: dace.SDFG) -> list[str]:
+    """What ``propagate-config`` takes values for: the program's arguments and free symbols."""
+    return [name for name, desc in sdfg.arrays.items() if not desc.transient] + sorted(map(str, sdfg.free_symbols))
+
+
+def configurable(sdfg: dace.SDFG) -> bool:
+    """Whether ``propagate-config`` is offered: ``sdfg`` has a scalar argument or a free symbol, and no kernel yet."""
+    valued = bool(sdfg.free_symbols) or any(
+        isinstance(desc, Scalar) and not desc.transient for desc in sdfg.arrays.values()
+    )
+    return valued and not external_calls(sdfg)
+
+
+def dispatcher(program: dace.SDFG, root: dace.SDFG) -> dace.SDFG:
+    """``root``, the program ConfigPropagation built, with the variants it calls loaded and ``program``'s signature,
+    constants and codegen flags."""
+    for state in root.states():
+        for node in state.nodes():
+            if isinstance(node, nodes.NestedSDFG):
+                node.load_external(state)
+    root.arg_names = list(program.arg_names)
+    root.constants_prop = copy.deepcopy(program.constants_prop)
+    root.openmp_sections = program.openmp_sections
+    # canonicalization sets it: without it, an array reduction becomes atomics
+    root.openmp_array_reductions = program.openmp_array_reductions
+    return root
+
+
+def plan_propagate_config(
+    program: dace.SDFG, config_values: Mapping[str, int | float], output_dir: Path
+) -> Rewrite | str:
+    """A new program: ``if (args == values) <program specialized for them> else <program>``; the variants are written
+    to ``output_dir``. ConfigPropagation leaves ``program`` as it is, so its refusal is read before anything changes."""
+    if external_calls(program):
+        return "the program has kernels: propagate-config specializes the program before its scopes."
+    names = config_names(program)
+    if not config_values:
+        return f"pass config_values: a value for some of {names}."
+    unknown = sorted(set(config_values) - set(names))
+    if unknown:
+        return f"{unknown} name no argument or free symbol of the program; it has {names}."
+    domains: dict[str, Sequence[int | float]] = {name: [value] for name, value in config_values.items()}
+    try:
+        root = ConfigPropagation(domains=domains, output_dir=str(output_dir)).apply_pass(program, {})
+    except ValueError as err:
+        return f"blocked by ConfigPropagation: {err}."
+    return Rewrite("ConfigPropagation", lambda: dispatcher(program, root))
+
+
 def state_of_map(sdfg: dace.SDFG, label: str) -> SDFGState:
     """The state holding the map labeled ``label``, anywhere in ``sdfg``."""
     for node, graph in sdfg.all_nodes_recursive():
@@ -899,6 +1023,9 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
+    "unroll-for": plan_unroll_for,
+    "unroll-doall": plan_unroll_doall,
+    PROPAGATE_CONFIG: plan_propagate_config,
 }
 
 
@@ -1000,6 +1127,23 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
     ),
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
+    "unroll-for": (
+        "LoopUnroll (max_iterations, the largest trip count you accept)",
+        "for i in 0:3: B becomes B(0); B(1); B(2): one copy of the body per iteration, the loop gone. Only a loop "
+        "with a constant trip count unrolls (propagate-config can give its bounds values).",
+    ),
+    "unroll-doall": (
+        "MapUnroll (max_iterations, the largest trip count you accept)",
+        "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
+        "iteration, the doall gone.",
+    ),
+    PROPAGATE_CONFIG: (
+        "ConfigPropagation (config_values: the scalar arguments and free symbols you expect at run time)",
+        "the program becomes if (arguments == values): the program specialized for them, else: the program as it "
+        "was. The specialized branch runs only when the arguments equal the values; any other draw runs the generic "
+        "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
+        "(unroll-for, unroll-doall).",
+    ),
 }
 
 
@@ -1014,10 +1158,22 @@ def move_kinds() -> list[MoveKind]:
 
 
 def plan_move(
-    kind: str, rows: Sequence[Row], tile_sizes: Sequence[int] = (), implementation: str | None = None
+    kind: str,
+    rows: Sequence[Row],
+    tile_sizes: Sequence[int] = (),
+    implementation: str | None = None,
+    max_iterations: int = PROBE_UNROLL,
+    config_values: Mapping[str, int | float] | None = None,
+    program: dace.SDFG | None = None,
+    output_dir: Path | None = None,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
-    ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`."""
+    ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`,
+    ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row, takes ``config_values`` for
+    ``program`` and writes its variants to ``output_dir``."""
+    if kind == PROPAGATE_CONFIG:
+        assert program is not None and output_dir is not None, "propagate-config is planned on a program"
+        return plan_propagate_config(program, config_values or {}, output_dir)
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
@@ -1026,6 +1182,8 @@ def plan_move(
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
         return PLANNERS[kind](*rows, implementation=implementation)
+    if kind in UNROLLS:
+        return PLANNERS[kind](*rows, max_iterations=max_iterations)
     return PLANNERS[kind](*rows)
 
 
@@ -1195,6 +1353,9 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     ),
     "tile-for": for_rows,
     "untile-for": tile_loops,
+    "unroll-for": for_rows,
+    "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
 }
 
 
@@ -1210,6 +1371,9 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
             continue
         for rows in CANDIDATES[name](sdfg):
             labels = tuple(tree_label(obj) for obj, _ in rows)
+            if name == PROPAGATE_CONFIG:  # no values to probe with: judged when applied
+                found[(name, labels)] = None
+                continue
             try:
                 probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
             except Exception as err:  # noqa: BLE001 -- a check that raises on one candidate hides only that candidate

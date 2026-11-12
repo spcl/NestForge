@@ -57,6 +57,14 @@ class ApplyMove(Labeled):
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."
     )
+    max_iterations: int = pydantic.Field(
+        16, description="unroll-for, unroll-doall: the largest trip count you accept to unroll; list_moves checks 16."
+    )
+    config_values: dict[str, int | float] = pydantic.Field(
+        default_factory=dict,
+        description="propagate-config (labels []): the values of scalar arguments and free symbols you expect at run "
+        'time, e.g. {"K": 3}.',
+    )
     # list_moves' note on a listed move, so the move is sent back as listed; never passed to the session
     current: str | None = pydantic.Field(
         None, exclude=True, description="Ignored: the implementation list_moves said the row has now."
@@ -133,13 +141,14 @@ TOOLS: dict[str, ToolDef] = {
     "list_moves": ToolDef(
         Phase.MOVES,
         ListMoves,
-        "Every legal move right now: fusion, fission, interchange, tiling, library expansion and implementation.",
+        "Every legal move right now: fusion, fission, interchange, tiling, unrolling, library expansion and "
+        "implementation, and propagate-config.",
         Effect.READ,
     ),
     "apply_move": ToolDef(
         Phase.MOVES,
         ApplyMove,
-        "Apply one move as list_moves listed it (or with your own tile_sizes); answers at once with the outcome, not "
+        "Apply one move as list_moves listed it (or with your own tile_sizes, max_iterations, config_values); answers at once with the outcome, not "
         "with a time: call get_performance after the moves you want to compare. It retires the labels of the rows it "
         "took: read the tree again before the next move.",
     ),

@@ -63,6 +63,8 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a doall mixing a parallel computation with one that blocks a move | `doall-fission`, then move the pieces | each piece takes its own order |
 | a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
+| a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
+| a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
 
 3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `undo_move`.
 4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
@@ -71,8 +73,8 @@ size is checked at a smaller one and timed at the graded size; the whole program
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
-`interchange-doall-doall` with itself. Fusion, fission, `expand-library`, `snapshot-reads` and `doall-to-for` have
-none: `undo_move` is the way back.
+`interchange-doall-doall` with itself. Fusion, fission, unrolling, `propagate-config`, `expand-library`,
+`snapshot-reads` and `doall-to-for` have none: `undo_move` is the way back.
 
 ### A worked example
 
@@ -196,6 +198,25 @@ the state writes first copies the slice into a transient, so the two doalls stop
 can merge them (Floyd-Warshall: the `outer` temporary disappears). The copy is a doall, not a plain copy, which the
 cleanup after every move would fold back into a read of the array. Offered only where a slice is read and written by
 different doalls of one state.
+
+### Unrolling and specialization
+
+**`unroll-for`** `[for]` with `max_iterations`, LoopUnroll, and **`unroll-doall`** `[doall]`, not inside another
+doall of its state, with `max_iterations`, MapUnroll: one copy of the body per iteration, the loop gone.
+```
+for k in 0:3: B(k)   ->   B(0); B(1); B(2)
+```
+Only a constant trip count unrolls, and only up to `max_iterations` (the largest you accept; `list_moves` checks 16).
+Pays on short loops whose copies the compiler then folds and schedules together; a long one only grows the code.
+
+**`propagate-config`** `[]` (no row) with `config_values`, ConfigPropagation: the values you expect the scalar
+arguments and free symbols to take at run time (`{"K": 3}`). The program becomes
+```
+if K == 3: <program with K = 3>  else: <program as it was>
+```
+The specialized branch runs only when the arguments equal the values; any other draw runs the generic program, so
+results stay correct. Inside the specialized branch the bounds are constants, so `unroll-for` and `unroll-doall` reach
+its loops, and the moves above apply there too. Offered when the program has a scalar argument or a free symbol.
 
 ### Library calls
 

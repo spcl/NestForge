@@ -78,6 +78,8 @@ from nestforge.stages.kernel import (
 from nestforge.stages.moves import (
     EXPAND_LIBRARY,
     MOVE_SHAPES,
+    PROBE_UNROLL,
+    PROPAGATE_CONFIG,
     SET_IMPLEMENTATION,
     SIZED,
     Rewrite,
@@ -181,6 +183,10 @@ class Move(Record):
     #: For ``set-library-implementation``, the implementation it sets, and the one the call has now.
     implementation: str | None = None
     current: str | None = None
+    #: For ``unroll-for`` and ``unroll-doall``, the cap it was checked at; the agent may pass its own.
+    max_iterations: int = PROBE_UNROLL
+    #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
+    config_values: dict[str, int | float] = {}
 
 
 class KernelScope(Record):
@@ -643,6 +649,8 @@ class Session:
         labels: Sequence[str],
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
+        max_iterations: int = PROBE_UNROLL,
+        config_values: Mapping[str, int | float] | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh.
@@ -652,6 +660,9 @@ class Session:
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
+        :param max_iterations: For ``unroll-for`` and ``unroll-doall``, the largest trip count to unroll.
+        :param config_values: For ``propagate-config``, the run-time values of scalar arguments and free symbols;
+            the program becomes a dispatch between the program specialized for them and the program as it was.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -662,7 +673,8 @@ class Session:
         rows = self.named_rows(kind, names)
         if isinstance(rows, MoveResult):
             return rows
-        plan = plan_move(kind, rows, tile_sizes, implementation)
+        config = (config_values, self.sdfg, self.work_dir / "config")
+        plan = plan_move(kind, rows, tile_sizes, implementation, max_iterations, *config)
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
             offered = implementations(node, self.targets.gpu)
@@ -675,6 +687,9 @@ class Session:
             if kind == EXPAND_LIBRARY:
                 # the expansion's maps join the program in canonical form, as rows the other moves take
                 settle(cast(list[nodes.NestedSDFG], made), self.targets)
+            if kind == PROPAGATE_CONFIG:
+                # a new program whose branches call nests; the inlining below makes their blocks rows
+                self.sdfg = cast(dace.SDFG, made)
             # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps correct
             inline_top_level_nsdfgs(self.sdfg)
             structural_cleanup(self.sdfg)
