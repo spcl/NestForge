@@ -13,6 +13,7 @@ import pytest
 from hpcagent_bench.harness.routes import ROUTES
 
 from nestforge.server import MEASURING, Reply, Setup
+from nestforge.session import Sweep
 
 #: Each tool's predefined answer, shaped as the session's own.
 REPLIES: dict[str, Reply] = {
@@ -26,7 +27,7 @@ REPLIES: dict[str, Reply] = {
     "list_kernels": Reply(result=[{"name": "kernel_0", "device": "cpu", "arguments": ["A", "B"]}]),
     "read_kernel": Reply(result="void kernel_0(double* A, double* B) {}"),
     "write_kernel": Reply(result={"status": "ok", "reason": ""}),
-    "tune_kernel": Reply(result={"kernel": "kernel_0", "cells": 4, "winner": "gcc-O3", "config": {}}),
+    "tune_kernel": Reply(result=Sweep(kernel="kernel_0", cells=4, winner="gcc-O3", config=None)),
     "get_performance": Reply(result=None),
     "applied_moves": Reply(result=[]),
     "finalize": Reply(result={"library": "/shared/nestforge/libfuse_diamond.so", "workspace_bytes": "0"}),

@@ -34,6 +34,7 @@ from hpcagent_bench.plugin_api import (
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied
+from nestforge.session import Sweep
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
@@ -138,6 +139,19 @@ def device_slot(
         episode.measuring.release()
 
 
+def repeat_of(call: Call, reply: Reply) -> Call | None:
+    """How a new session repeats an applied change: a written kernel passed its check and a sweep timed its winner, so
+    the repeat builds the source, or that winner, without checking or timing again; a sweep without one changed
+    nothing."""
+    name, arguments = call
+    if name == "write_kernel":
+        return name, {**arguments, "checked": False}
+    if name == "tune_kernel":
+        assert isinstance(reply.result, Sweep), "a tune_kernel answers its sweep"
+        return None if reply.result.winner is None else (name, {**arguments, "variant": reply.result.winner})
+    return call
+
+
 def session_of(
     episode: Episode, judge: Judge, kernel: str, episode_id: str, gone: threading.Event, slot: DeviceSlot | None
 ) -> SessionProcess:
@@ -186,9 +200,10 @@ def run_call(
         del episode.sessions[kernel]
         return reply.model_copy(update={"ended": True})
     if name in CHANGING and not reply.error:
-        if applied(reply):
+        repeat = repeat_of(call, reply) if applied(reply) else None
+        if repeat is not None:
             try:
-                record(request.episode_id, kernel, call)
+                record(request.episode_id, kernel, repeat)
             except OSError as err:
                 # Unrecorded, the change would vanish with this session: it goes now, and the agent is told.
                 session.close()

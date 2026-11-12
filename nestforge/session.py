@@ -273,6 +273,8 @@ class KernelBuild:
     remarks: str | None = None
 
 
+#: Why a rebuild's repeat links a kernel unchecked.
+REPEATED = "checked when the agent made it; repeated after the session restarted"
 #: How :meth:`Session.default_build` builds a kernel: stage 5's first configuration or stage 6's sweep winner.
 Codegen = Literal["first", "sweep"]
 #: What :meth:`Session.run_defaults` finishes.
@@ -950,7 +952,9 @@ class Session:
         build = self.builds.get(name)
         return kernel_text(build.source if build is not None else self.default_kernel(name))
 
-    def set_kernel_source(self, name: str, source: str, language: str, reps: int = TIMED_REPS) -> KernelOutcome:
+    def set_kernel_source(
+        self, name: str, source: str, language: str, reps: int = TIMED_REPS, checked: bool = True
+    ) -> KernelOutcome:
         """Build a kernel source with the kernel's entry, validate it against the kernel's Python oracle, and link it
         when it matches.
 
@@ -959,6 +963,8 @@ class Session:
             device, split by the line ``DEVICE_UNIT_MARKER``, as :meth:`kernel_source` returns it.
         :param language: ``cpp`` (C++ with OpenMP) for a CPU kernel; for a GPU kernel ``cuda`` or ``hip``, the
             dialect of this machine's GPU backend.
+        :param checked: False for a rebuild's repeat: the source matched its oracle when it was written, so it is
+            built and linked unchecked.
         :returns: The outcome; ``ok`` and ``unchecked`` change the kernel's library. ``unchecked`` had no oracle to match
             (:func:`~nestforge.stages.kernel.measure_kernel`), so the whole program checks the kernel.
         """
@@ -998,7 +1004,11 @@ class Session:
                 archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
             except RuntimeError as err:
                 return KernelOutcome(kernel=name, status=KernelStatus.BUILD_FAILED, reason=str(err)[-ERROR_TAIL:])
-            verdict = self.kernel_verdict(name, src, archive, reps, variant.fp_mode)
+            verdict = (
+                self.kernel_verdict(name, src, archive, reps, variant.fp_mode)
+                if checked
+                else unchecked_verdict(variant.fp_mode, REPEATED)
+            )
         if not verdict.ok and not verdict.unchecked:
             reason = verdict.error or f"max rel err {verdict.md_rel:.3g} at {verdict.fp_mode}"
             return KernelOutcome(kernel=name, status=KernelStatus.WRONG, reason=reason)
@@ -1053,15 +1063,20 @@ class Session:
 
     # Stage 6: variants
 
-    def sweep(self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None) -> Sweep:
+    def sweep(
+        self, name: str, reps: int = TIMED_REPS, compilers: list[str] | None = None, variant: str | None = None
+    ) -> Sweep:
         """Build and time the kernel's current source under every configuration of its device, link the fastest
         correct one, and summarize the sweep; ``config`` is the winner's compiler, FP mode, cost model, flags, time.
 
         :param compilers: Toolchain names to keep (``gcc``, ``clang``, ``nvcc``, ``nvcc-13.1``, ``hipcc``, ...); every one
             discovered for the kernel's device when ``None``.
+        :param variant: For a rebuild's repeat, the winner's label: it is built and linked unchecked, nothing is timed.
         """
         build = self.builds.get(name)
         src = build.source if build is not None else self.default_kernel(name)
+        if variant is not None:
+            return self.link_variant(name, src, variant, compilers)
         sizes = self.kernel_sizes(name)
         computed = computed_symbols(src, sizes)
         if computed:
@@ -1092,6 +1107,19 @@ class Session:
             time_us=winner.verdict.time_us,
         )
         return Sweep(kernel=name, cells=len(result.cells), winner=variant.label, config=config)
+
+    def link_variant(self, name: str, src: KernelSource, label: str, compilers: list[str] | None) -> Sweep:
+        """The sweep winner ``label`` of ``src``, built and linked again unchecked: it won, correct, when it was swept."""
+        found = [v for v in device_variants(src.device, compilers) if v.label == label]
+        if not found:
+            raise LookupError(f"{name}: no toolchain of this machine builds the sweep winner {label} again")
+        variant = found[0]
+        self.swept_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = Path(tempfile.mkdtemp(prefix=f"{name}_", dir=self.swept_dir))
+        with self.stopper.armed():
+            archive = build_kernel_library(src, variant.compiler, list(variant.flags), out_dir)
+        self.bind(name, KernelBuild(src, variant, archive, unchecked_verdict(variant.fp_mode, REPEATED)))
+        return Sweep(kernel=name, cells=0, winner=label, config=None)
 
     def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
         units = tuple(unit.read_text() for unit in src.units)

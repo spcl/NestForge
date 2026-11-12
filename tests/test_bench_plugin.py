@@ -485,6 +485,16 @@ def written_then_lost(episode: str) -> None:
     restart_judge()
 
 
+def test_a_written_kernel_and_a_sweep_are_journaled_as_their_unchecked_untimed_repeats(stub: Stub) -> None:
+    written_then_lost("episode-repeats")
+
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    assert route.journal_of("episode-repeats", KERNEL) == [
+        ("write_kernel", {**SLOT_CALLS["write_kernel"], "checked": False}),
+        ("tune_kernel", {"name": "kernel_0", "compilers": None, "variant": "gcc-O3"}),
+    ]
+
+
 def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:
     written_then_lost("episode-rebuild")
     before = len(stub.calls)
