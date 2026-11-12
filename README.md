@@ -64,13 +64,56 @@ It runs every default on an HPCAgent-Bench kernel at preset S and saves each sta
 DAG, each kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`
 canonicalization turns four sequential loops into one parallel map. A benchmark's reference solution is replayed
 with `python -m nestforge.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
-On `fuse_diamond`:
+## The program as a tree
+
+The agent reads the program as a tree of labeled rows and acts on it by label. For
+
+```python
+@dace.program
+def blur_steps(A: dace.float64[N], B: dace.float64[N], W: dace.float64[N, N], y: dace.float64[N]):
+    for t in range(T):
+        B[1:-1] = (A[:-2] + A[1:-1] + A[2:]) / 3.0
+        A[1:-1] = B[1:-1]
+    y[:] = W @ A
+```
+
+`get_cpf` prints, every state closed:
 
 ```
-SDFG 'hpcagent_bench_benchmarks_loop_level_reasoning_fuse_diamond_fuse_diamond_dace_fuse_diamond'
-`- state0
-   `- doall0  [_loop_it_0=0:LEN_1D]  reads=['a'] writes=['out']
+SDFG 'blur_steps'
+|- for0  _loop_it_0=0:T  num_states=4  work=3*T*(N - 2) depth=3*T
+|  `- state3  doalls=4  reads=['A', 'B'] writes=['A', 'B']  work=3*N - 6 depth=3
+`- state2  doalls=1  reads=['A', 'W'] writes=['y']  work=2*N**2 depth=Max(1, log(N)/log(2))
 ```
+
+and `view_tree expand=[state3] collapse=[doall5]` opens the time step's state with everything in it but `doall5`:
+
+```
+SDFG 'blur_steps'
+|- for0  _loop_it_0=0:T  num_states=4  work=3*T*(N - 2) depth=3*T
+|  `- state3  reads=['A', 'B'] writes=['A', 'B']  work=3*N - 6 depth=3
+|     |- doall3  [_loop_it_1=0:N - 2]  reads=['A'] writes=['A_slice_plus_A_slice']  num_states=1  work=N - 2 depth=1
+|     |  : A_slice_plus_A_slice[_loop_it_1] = A[_loop_it_1] + A[_loop_it_1 + 1]
+|     |  `- state4  reads=['A'] writes=['A_slice_plus_A_slice']  work=1 depth=1
+|     |- doall4  [_loop_it_2=0:N - 2]  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']  num_states=1  work=N - 2 depth=1
+|     |  : A_slice_A_slice_plus_A_slice[_loop_it_2] = A_slice_plus_A_slice[_loop_it_2] + A[_loop_it_2 + 2]
+|     |  `- state5  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']  work=1 depth=1
+|     |- doall5  [_loop_it_3=0:N - 2]  reads=['A_slice_A_slice_plus_A_slice'] writes=['B']  num_states=1  work=N - 2 depth=1
+|     `- lib_copy0  LIBNODE Copy [Auto]  reads=['B'] writes=['A']
+`- state2  doalls=1  reads=['A', 'W'] writes=['y']  work=2*N**2 depth=Max(1, log(N)/log(2))
+```
+
+| row | is |
+|---|---|
+| `for<n>  i=lo:hi` | a sequential loop; `if<n>` a branch, its arms `when <cond>` / `else` |
+| `state<n>` | a dataflow graph; leaving it is a barrier: everything in it finishes before the next state starts |
+| `doall<n>  [i=lo:hi]` | a parallel loop (a map); `: ` lines are its body as Python, rows under it the states of its body |
+| `lib_<family><n>  LIBNODE <Kind> [<implementation>]` | a library call (BLAS, FFT, reduce, copy, ...), a black-box doall |
+
+Rows carry what they read and write (a state leaves out its own temporaries), `work=` and `depth=` as formulas in
+the sizes, and `doalls=<k>` on a closed state. `expand` opens a state or doall with everything below it; `collapse`
+closes any open row, one inside an expanded row included. Labels stay on their rows until a move consumes them.
+The [skill page](plugin/nestforge/skills/nestforge/SKILL.md) has the full vocabulary and the moves.
 
 ## Install and test
 

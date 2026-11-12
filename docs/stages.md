@@ -27,12 +27,15 @@ one.
 Stage 2 shapes the loop nests. The agent reads the structure tree and asks for moves; it never edits the graph.
 Every move is an existing DaCe transformation, checked for legality before it applies.
 
-`describe()` prints the tree. Every loop and state is a row; loop and map rows
+`describe()` prints the tree. Every loop and state is a row; loop, state and map rows
 carry `work=` and `depth=` from one pass of DaCe's work-depth analysis, and an innermost loop, or a map holding a
-nested SDFG, carries `num_states=`. When that pass fails or takes over 60 s, the second line says why and the rows
-carry no costs for that program. A state shows only `doalls=<count>` until `expand(labels)` opens it:
-then its maps, nested maps and leaf-kernel bodies appear (an expanded map also shows its nested states). An
-expansion lasts while its row lives. `list_moves(kind)` returns the legal moves as
+nested SDFG, carries `num_states=`. State and map rows carry `reads=` and `writes=`; a state's leave out the
+transients no other state accesses (`introspect.outlives`). When that pass fails or takes over 60 s, the second line
+says why and the rows carry no costs for that program. A state shows only `doalls=<count>` until `expand(labels)`
+opens it. An opened state or map shows everything below it: maps, nested maps, leaf-kernel bodies and the states
+of nested SDFGs. `collapse(labels)` closes any open state or map, one opened by a row around it included. The view
+is `Session.expanded`, label -> open; the nearest labeled row around a row decides (`introspect.View`), and
+expanding a row drops what was closed below it. An entry lasts while its row lives. `list_moves(kind)` returns the legal moves as
 `{kind, labels}`; map fusions list data-linked pairs and each map with the next map of its scope, never every
 pair (CloudSC would list 20k), while `apply_move` still takes any pair, and `apply_move(kind, labels)` returns a `MoveResult` whose status is `applied`,
 `illegal` or `not-found`. Labels are the tree labels, `<kind><n>`, unique across the whole program; a row keeps its

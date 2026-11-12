@@ -40,6 +40,7 @@ from nestforge.ir.introspect import (
     Row,
     WorkDepth,
     describe_graph,
+    enclosing_rows,
     guarded_work_depth,
     tree_rows,
 )
@@ -335,7 +336,7 @@ class Checkpoint:
     unscoped: tuple[dace.SDFG, Namer, list[MoveResult]] | None
     namer: Namer
     applied: list[MoveResult]
-    expanded: set[str]
+    expanded: dict[str, bool]
     costs: WorkDepth | None
     costs_skipped: str | None
     sources: dict[str, KernelSource]
@@ -408,7 +409,7 @@ class Session:
         #: The folder under which finalize builds a library the judge accepts; the shared folder when ``None``.
         self.shared_root: str | None = None
         # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
-        self.expanded: set[str] = set()
+        self.expanded: dict[str, bool] = {}
         self.costs: WorkDepth | None = None
         # why describe() printed no costs for this program, or None when it printed them
         self.costs_skipped: str | None = None
@@ -460,7 +461,7 @@ class Session:
             self.unscoped,  # replaced, never changed
             copy.deepcopy(self.namer),
             list(self.applied),
-            set(self.expanded),
+            dict(self.expanded),
             self.costs,
             self.costs_skipped,
             dict(self.sources),
@@ -519,7 +520,7 @@ class Session:
         # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
         force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
-        self.expanded = {label for label in self.expanded if label in self.row_index()}
+        self.expanded = {label: is_open for label, is_open in self.expanded.items() if label in self.row_index()}
         self.costs = None
         self.costs_skipped = None
         self.kernel_deps = None
@@ -576,22 +577,36 @@ class Session:
         return f"{header}\n(no work= or depth=: {self.costs_skipped})\n{rows}"
 
     def expand(self, labels: Sequence[str]) -> str:
-        """Show the content of the states and maps ``labels`` name (kernels, nested maps and leaf bodies; a map's
-        nested states) until the program changes; returns what opened, or why nothing did."""
+        """Show everything below the states and maps ``labels`` name (kernels, nested maps and leaf bodies, a map's
+        nested states, all opened) until the program changes; returns what opened, or why nothing did."""
         rows = self.named_rows("expand", tuple(labels))
         if isinstance(rows, MoveResult):
             return f"{spelled(rows.status)}: {rows.reason}"
         closed = [name for name, (obj, _) in zip(labels, rows) if not isinstance(obj, (SDFGState, nodes.MapEntry))]
         if closed:
             return f"illegal: only states and maps expand; {', '.join(closed)} is neither."
-        self.expanded.update(labels)
+        for label in labels:
+            # opened whole: what was closed inside it opens with it
+            inner = [row for row, (obj, state) in self.row_index().items() if label in enclosing_rows(obj, state)]
+            for row in inner:
+                self.expanded.pop(row, None)
+            self.expanded[label] = True
         return f"ok: expanded {', '.join(labels)}"
 
+    def is_open(self, label: str) -> bool:
+        """Whether the row ``label`` shows its content: its own view entry, else that of the nearest row around it."""
+        obj, state = self.row_index()[label]
+        for row in (label, *enclosing_rows(obj, state)):
+            if row in self.expanded:
+                return self.expanded[row]
+        return False
+
     def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = ()) -> str:
-        """:meth:`collapse` then :meth:`expand`, and the tree after them, each note first."""
-        notes = [self.collapse(collapse)] if collapse else []
-        if expand:
-            notes.append(self.expand(expand))
+        """:meth:`expand` then :meth:`collapse`, so one call opens a row and closes some inside it; the tree after
+        them, each note first."""
+        notes = [self.expand(expand)] if expand else []
+        if collapse:
+            notes.append(self.collapse(collapse))
         return "\n".join([*notes, self.describe()])
 
     @undone_on_failure
@@ -623,13 +638,16 @@ class Session:
         return done
 
     def collapse(self, labels: Sequence[str]) -> str:
-        """Hide again what :meth:`expand` opened under ``labels``; returns what closed, and which labels were not open."""
-        closed = [label for label in labels if label in self.expanded]
-        shut = [label for label in labels if label not in self.expanded]
-        self.expanded.difference_update(closed)
+        """Hide the content of the open states and maps ``labels`` name, also one opened with a row around it; returns
+        what closed, and which labels were not open."""
+        rows = self.row_index()
+        closed = [label for label in labels if label in rows and self.is_open(label)]
+        shut = [label for label in labels if label not in closed]
+        for label in closed:
+            self.expanded[label] = False
         notes = [f"ok: collapsed {', '.join(closed)}"] if closed else []
         if shut:
-            notes.append(f"not open: {', '.join(shut)}; only an expanded state or map collapses.")
+            notes.append(f"not open: {', '.join(shut)}; only an open state or map collapses.")
         return " ".join(notes)
 
     def deps_line(self, node: nodes.LibraryNode) -> str | None:

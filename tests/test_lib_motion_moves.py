@@ -127,7 +127,7 @@ def test_a_copy_between_arrays_is_a_lib_copy_row_after_canonicalization(tmp_path
     (row,) = copy_rows(sut)
 
     assert re.fullmatch(r"lib_copy\d+", row), row
-    assert f"{row}  LIBNODE CopyLibraryNode" in sut.describe() or row in sut.row_index()
+    assert f"{row}  LIBNODE Copy [" in sut.view(expand=[sut.row_index()[row][1].label])
 
 
 def test_a_lib_copy_row_is_a_copy_edge_again_once_scopes_are_made_so_no_kernel_copies(tmp_path):

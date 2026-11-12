@@ -13,14 +13,20 @@ applies: {explicit: true}
 |---|---|
 | `for<n>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
 | `if<n>` | a branch; its arms print as `when <cond>` / `else` |
-| `state<n>` | one step of the program; collapsed it shows `doalls=<k>` (library calls counted), expanded its doalls |
+| `state<n>  reads=[..] writes=[..]` | one step of the program, a dataflow graph; collapsed it also shows `doalls=<k>` (library calls counted), expanded its doalls |
 | `doall<n>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
 | `lib_<family><n>  LIBNODE <Kind> [<implementation>]  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall. `[..]` is its current implementation: by default the fastest this host has for the target (OpenBLAS, FFTW3, or the device library), never `pure` while another exists. Loops only when you choose them |
 
 - A label is a row's name: it stays on the row while the row lives. Labels are names, not positions you compute.
 - `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
-- `view_tree expand=[labels]` opens states and doalls; `collapse=[labels]` closes them. A doall whose body is a small
-  program shows that program's states once expanded: those states are where `subgraph-fission` cuts.
+- `view_tree expand=[labels]` opens a state or doall with everything below it: its doalls, nested doalls, leaf
+  bodies, and the states of a doall whose body is a small program (those states are where `subgraph-fission`
+  cuts). `collapse=[labels]` closes any open state or doall, also one inside a row you expanded; the row stays, its
+  content goes. Expanding the outer row again opens everything below it once more. The view lasts while the row
+  lives; a move keeps it on the rows it does not retire.
+- A state row carries what a doall row carries: `reads=` and `writes=` (arguments, and arrays other states also
+  use; a temporary of the state alone is left out) and its `work=` and `depth=`. A state that touches no array is
+  its label alone.
 - A state is a dataflow graph: inside it, doalls are ordered only by the data they share and may run concurrently.
   Going from one state to the next is a barrier: everything in the first state finishes, and its writes are
   visible, before the next starts. Loops and branches only ever join states. So doalls in different states never
@@ -80,29 +86,43 @@ Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile
 
 ### A worked example
 
-`T[i] = (A[i-1] + A[i] + A[i+1]) / 3`, then `B[i] = 2 * T[i]`, with the state and its doalls expanded:
+`T[i] = (A[i-1] + A[i] + A[i+1]) / 3`, then `B[i] = 2 * T[i]`. Collapsed, the program is one state:
 ```
 SDFG 'blur_scale'
-`- state1
-   |- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1  work=3*N - 6 depth=3
+`- state2  doalls=2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
+```
+`view_tree expand=[state2]` opens it, its doalls and the one-state program each doall body is:
+```
+SDFG 'blur_scale'
+`- state2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
+   |- doall0  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1  work=3*N - 6 depth=3
    |  : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
    |  : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
    |  : T[_loop_it_0] = A_slice_A_slice_plus_A_slice / np.float64(3)
-   `- doall3  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1  work=N - 2 depth=1
+   |  `- state3  reads=['A'] writes=['T']  work=3 depth=3
+   `- doall1  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1  work=N - 2 depth=1
       : B[_loop_it_1] = np.float64(2) * T[_loop_it_1]
+      `- state4  reads=['T'] writes=['B']  work=1 depth=1
 ```
-`doall3` reads the `T` that `doall2` writes, in one state. `list_moves kind=doall-fusion` lists
-`labels=[doall2, doall3]`; `apply_move` answers `applied`, reason `MapFusionVertical`, and the tree is
+`view_tree collapse=[doall0]` would hide `doall0`'s body and keep the rest open. `doall1` reads the `T` that
+`doall0` writes, in one state. `list_moves kind=doall-fusion` lists `labels=[doall0, doall1]`; `apply_move` answers
+`applied`, reason `MapFusionVertical`, and the tree is
 ```
-`- state1
-   `- doall4  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B']  num_states=2  work=4*N - 8 depth=4
-      : ...
-      : T = A_slice_A_slice_plus_A_slice / np.float64(3)
-      : B[_loop_it_0] = np.float64(2) * T
+SDFG 'blur_scale'
+`- state2  reads=['A'] writes=['B', 'T']  work=4*N - 8 depth=4
+   `- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B', 'T']  num_states=3  work=4*N - 8 depth=4
+      : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
+      : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
+      : __map_fusion_T = A_slice_A_slice_plus_A_slice / np.float64(3)
+      : _loop_it_1 = _loop_it_0
+      : B[_loop_it_1] = np.float64(2) * __map_fusion_T
+      : T[_loop_it_0] = __map_fusion_T
+      `- state5  reads=['A'] writes=['B', 'T']  work=4 depth=4
 ```
-`doall2` and `doall3` are retired, `doall4` is new, and `T` is a scalar: the array's write and read are gone.
-`get_performance` then says whether it paid. If not, `rollback` answers `undid doall-fusion` and the tree holds
-`doall2` and `doall3` again.
+`doall0` and `doall1` are retired and `doall2` is new. `B` now takes `T`'s value from a scalar in the same
+iteration, so the state no longer reads `T` back; `T` is still written because it is an argument (a temporary
+array would be gone). `get_performance` then says whether it paid. If not, `rollback` answers
+`undid doall-fusion` and the tree holds `doall0` and `doall1` again.
 
 Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
 

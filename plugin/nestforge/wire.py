@@ -36,8 +36,13 @@ class NoArgs(Args):
 
 
 class ViewTree(Args):
-    expand: list[str] = pydantic.Field(default_factory=list, description="State or map labels to open.")
-    collapse: list[str] = pydantic.Field(default_factory=list, description="Labels to close again.")
+    expand: list[str] = pydantic.Field(
+        default_factory=list, description="State or doall labels to open, with everything below them."
+    )
+    collapse: list[str] = pydantic.Field(
+        default_factory=list,
+        description="Open state or doall labels to close, after expand: one inside an expanded row closes alone.",
+    )
 
 
 class ListMoves(Args):
@@ -129,7 +134,7 @@ TOOLS: dict[str, ToolDef] = {
     "view_tree": ToolDef(
         Phase.MOVES,
         ViewTree,
-        "Expand or collapse tree rows (loops, states, doalls, library calls), then show the tree.",
+        "Open states and doalls with everything below them, close some again, then show the tree.",
         Effect.READ,
     ),
     "list_move_kinds": ToolDef(

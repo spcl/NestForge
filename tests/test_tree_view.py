@@ -37,21 +37,21 @@ def shaped(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 
 GOLDEN = """\
 SDFG 'shaped'
-|- state0
+|- state0  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
 |  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
 `- for0  i=1:20  num_states=3  work=19 depth=19
    |- state1
    `- if0
       |- block0  when A[i] > 0.0
-      |  `- state2
+      |  `- state2  reads=['B', 's'] writes=['out']  work=1 depth=1
       `- block1  else
-         `- state3
+         `- state3  reads=['B'] writes=['out']  work=1 depth=1
 """
 
 #: The agent's view after it expands ``state0``: that state's kernels and their bodies, the rest still closed.
 OPENED = """\
 SDFG 'shaped'
-|- state0
+|- state0  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
 |  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
 |     : test_tree_view_shaped_A_index = A[i]
 |     : B_slice = test_tree_view_shaped_A_index + 1.0
@@ -60,22 +60,22 @@ SDFG 'shaped'
    |- state1
    `- if0
       |- block0  when A[i] > 0.0
-      |  `- state2
+      |  `- state2  reads=['B', 's'] writes=['out']  work=1 depth=1
       `- block1  else
-         `- state3
+         `- state3  reads=['B'] writes=['out']  work=1 depth=1
 """
 
 #: What an agent sees before it expands anything: every block, no state's kernels.
 COLLAPSED = """\
 SDFG 'shaped'
-|- state0  doalls=1
+|- state0  doalls=1  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
 `- for0  i=1:20  num_states=3  work=19 depth=19
    |- state1
    `- if0
       |- block0  when A[i] > 0.0
-      |  `- state2
+      |  `- state2  reads=['B', 's'] writes=['out']  work=1 depth=1
       `- block1  else
-         `- state3
+         `- state3  reads=['B'] writes=['out']  work=1 depth=1
 """
 
 
@@ -134,6 +134,45 @@ def test_a_collapsed_row_hides_what_its_expand_showed_and_a_row_not_open_says_so
 
     assert answer == f"ok: collapsed {state}\n{closed}"
     assert sut.view(collapse=[state]).startswith(f"not open: {state};")
+
+
+@dc.program
+def branchy(A: dc.float64[20], B: dc.float64[20]):
+    for i in dc.map[0:20]:
+        if A[i] > 0.0:
+            B[i] = A[i]
+        else:
+            B[i] = -A[i]
+
+
+def nested_state_labels(session: Session) -> list[str]:
+    """The labels of the states inside the doall bodies."""
+    return [
+        label
+        for label, (obj, _) in session.row_index().items()
+        if isinstance(obj, dc.SDFGState) and obj.sdfg is not session.sdfg
+    ]
+
+
+def shown_labels(tree: str) -> set[str]:
+    return {re.sub(r"^[|` -]*", "", line).split()[0] for line in tree.splitlines()[1:]}
+
+
+def test_an_expanded_state_opens_everything_below_it_and_a_row_inside_it_collapses_alone():
+    sut = Session(branchy.to_sdfg(simplify=True))
+    (doall,) = [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dc.nodes.MapEntry)]
+    (state,) = [label for label, (obj, _) in sut.row_index().items() if obj is sut.row_index()[doall][1]]
+    inner = nested_state_labels(sut)
+    assert inner and not shown_labels(sut.describe()) & set(inner), "a closed state hides the doall's body states"
+
+    opened = sut.view(expand=[state])
+    folded = sut.view(collapse=[doall])
+
+    assert set(inner) <= shown_labels(opened), "expanding the state opens the doall inside it, body states included"
+    assert folded.startswith(f"ok: collapsed {doall}\n")
+    assert doall in shown_labels(folded) and not shown_labels(folded) & set(inner)
+    assert sut.view(expand=[state]) == opened, "expanding the state again opens what was closed inside it"
+    assert sut.view(expand=[state], collapse=[doall]).endswith(folded.partition("\n")[2]), "one call opens, then closes"
 
 
 # conditions read as the arrays they test
@@ -453,7 +492,7 @@ def test_only_states_and_maps_expand():
     sut = session.expand([loop])
 
     assert sut == f"illegal: only states and maps expand; {loop} is neither."
-    assert session.expanded == set()
+    assert session.expanded == {}
 
 
 @dc.program
