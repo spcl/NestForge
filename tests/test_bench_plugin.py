@@ -557,7 +557,9 @@ def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stu
 
 
 def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_applying_it_twice(stub: Stub) -> None:
-    move = {"kind": "fuse", "labels": ["map_0", "map_1"], "tile_sizes": [], "implementation": None}
+    from hpcagent_bench_plugins.nestforge.wire import ApplyMove
+
+    move = ApplyMove(kind="fuse", labels=["map_0", "map_1"]).model_dump()
     judge = FakeJudge()
     judge.gone.set()
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
@@ -986,7 +988,7 @@ def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_subm
     done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", packet_judge, tmp_path)
 
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
+    assert "submitted correct=True" in done.stdout, done.stdout + done.stderr
 
 
 class ScriptedModel:
