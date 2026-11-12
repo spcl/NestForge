@@ -618,9 +618,14 @@ class Session:
         return done
 
     def collapse(self, labels: Sequence[str]) -> str:
-        """Hide again what :meth:`expand` opened under ``labels``; a label not open is ignored."""
-        self.expanded.difference_update(labels)
-        return f"ok: collapsed {', '.join(labels)}"
+        """Hide again what :meth:`expand` opened under ``labels``; returns what closed, and which labels were not open."""
+        closed = [label for label in labels if label in self.expanded]
+        shut = [label for label in labels if label not in self.expanded]
+        self.expanded.difference_update(closed)
+        notes = [f"ok: collapsed {', '.join(closed)}"] if closed else []
+        if shut:
+            notes.append(f"not open: {', '.join(shut)}; only an expanded state or map collapses.")
+        return " ".join(notes)
 
     def deps_line(self, node: nodes.LibraryNode) -> str | None:
         graph = self.kernel_graph()

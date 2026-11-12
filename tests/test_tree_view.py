@@ -122,6 +122,20 @@ def test_every_row_the_session_prints_is_a_label_its_labeled_calls_take():
     assert labels and all(label in session.row_index() for label in labels), labels
 
 
+def test_a_collapsed_row_hides_what_its_expand_showed_and_a_row_not_open_says_so():
+    sdfg = shaped.to_sdfg(simplify=True)
+    normalize_labels(sdfg)
+    sut = Session(sdfg)
+    closed = sut.describe()
+    state = next(label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dc.SDFGState))
+    assert sut.view(expand=[state]) != f"ok: expanded {state}\n{closed}", "expanding shows the state's rows"
+
+    answer = sut.view(collapse=[state])
+
+    assert answer == f"ok: collapsed {state}\n{closed}"
+    assert sut.view(collapse=[state]).startswith(f"not open: {state};")
+
+
 # conditions read as the arrays they test
 
 
