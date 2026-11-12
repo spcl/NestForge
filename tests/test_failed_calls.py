@@ -7,6 +7,7 @@ import json
 import dace
 import numpy as np
 import pytest
+from test_rounds import doalls, fresh
 
 from nestforge import server
 from nestforge import session as session_module
@@ -139,6 +140,19 @@ def test_every_timed_change_is_guarded():
     assert server.TIMED - {"get_performance"} <= server.CHANGING <= set(server.CALLS)
 
 
+def test_a_refused_scope_leaves_the_program_a_new_round_returns_to():
+    """A refused call is not journaled, so a session that repeats the others must reach the same program."""
+    refused, repeated = fresh(), fresh()
+    for sut in (refused, repeated):
+        (first, *_) = doalls(sut)
+        sut.unset_scope(sut.set_scope([first]).reason)
+    first, _, last = doalls(refused)
+    assert refused.set_scope([first, last]).status is MoveStatus.ILLEGAL
+
+    assert refused.run_defaults("round") == repeated.run_defaults("round")
+    assert refused.applied == repeated.applied
+
+
 if __name__ == "__main__":
     import pathlib
     import tempfile
@@ -156,3 +170,4 @@ if __name__ == "__main__":
         test_a_failed_read_claims_nothing_about_the_program(pathlib.Path(tempfile.mkdtemp()), patch)
     test_a_call_that_succeeds_keeps_its_change(pathlib.Path(tempfile.mkdtemp()))
     test_every_timed_change_is_guarded()
+    test_a_refused_scope_leaves_the_program_a_new_round_returns_to()

@@ -795,9 +795,11 @@ class Session:
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
             return rows
+        unscoped = self.unscoped
         self.keep_unscoped()
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
+            self.unscoped = unscoped  # a refused scope is not journaled: it keeps nothing
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
         self.unplaced = None
         self.bump(names)
