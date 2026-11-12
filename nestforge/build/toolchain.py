@@ -334,8 +334,8 @@ def nvcc_linker_flag(flag: str) -> str:
 
 
 def linked_library_dir(compiler: str, flags: list[str], source_name: str, library: str) -> str:
-    """The first ``-L`` directory holding ``lib<library>.so`` (or a versioned soname) on ``compiler``'s own verbose
-    link of a probe library against ``-l<library>``."""
+    """The first ``-L`` directory holding ``lib<library>.so`` on ``compiler``'s own verbose link of a probe library
+    against ``-l<library>``: the file ``-l<library>`` resolves, so a directory with only a versioned soname is not it."""
     with tempfile.TemporaryDirectory(prefix=f"nf_{library}_") as scratch:
         source = Path(scratch) / source_name
         source.write_text("int nf_link_probe() { return 0; }\n")
@@ -346,7 +346,7 @@ def linked_library_dir(compiler: str, flags: list[str], source_name: str, librar
         raise LookupError(f"{compiler} cannot link -l{library}:\n{output[-ERROR_TAIL:]}")
     for directory in re.findall(r"(?<=-L)\S+", output):
         candidate = Path(directory.strip('"'))
-        if any(candidate.glob(f"lib{library}.so*")):
+        if (candidate / f"lib{library}.so").exists():
             return str(candidate.resolve())
     raise LookupError(f"{compiler} names no directory holding lib{library}.so in its link line")
 

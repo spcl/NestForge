@@ -63,11 +63,13 @@ def fake_tool(directory: Path, name: str, body: str) -> str:
     return str(tool)
 
 
-def test_hip_runtime_found_off_the_link_line_with_a_versioned_soname(tmp_path: Path) -> None:
-    runtime = tmp_path / "rocm" / "lib64"  # neither <hipcc>/../lib nor an unversioned libamdhip64.so
-    runtime.mkdir(parents=True)
-    (runtime / "libamdhip64.so.7").touch()
-    hipcc = fake_tool(tmp_path / "bin", "hipcc", f'echo "ld -L{tmp_path}/elsewhere -L{runtime} -lamdhip64" >&2')
+def test_hip_runtime_found_off_the_link_line_past_a_directory_with_only_a_versioned_soname(tmp_path: Path) -> None:
+    versioned = tmp_path / "usr" / "lib"  # first on the link line, but -lamdhip64 cannot resolve libamdhip64.so.7
+    runtime = tmp_path / "rocm" / "lib64"  # not <hipcc>/../lib
+    for directory, name in ((versioned, "libamdhip64.so.7"), (runtime, "libamdhip64.so")):
+        directory.mkdir(parents=True)
+        (directory / name).touch()
+    hipcc = fake_tool(tmp_path / "bin", "hipcc", f'echo "ld -L{versioned} -L{runtime} -lamdhip64" >&2')
     assert toolchain.hip_runtime_dir(hipcc) == str(runtime.resolve())
 
 
