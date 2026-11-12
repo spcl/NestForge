@@ -44,6 +44,8 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     SymbolPropagation().apply_pass(sdfg, {})
     labels = stage_labels(targets.canon_target)
     dace_canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
+    # the moves and the tree reach no nested SDFG at the top of a state: what canonicalization left there is inlined
+    inline_top_level_nsdfgs(sdfg)
     structural_cleanup(sdfg)  # no stage after fusion runs, so nothing specializes
     narrow_nested_memlets(sdfg)
     return sdfg

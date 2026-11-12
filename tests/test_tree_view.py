@@ -17,7 +17,7 @@ from helpers import kernel_body
 
 from nestforge.ir import introspect
 from nestforge.ir.introspect import describe_graph, interstate_definitions, resolve_scalars
-from nestforge.ir.names import normalize_labels
+from nestforge.ir.names import normalize_labels, top_level_nsdfgs
 from nestforge.session import Session
 
 
@@ -440,3 +440,31 @@ def test_only_states_and_maps_expand():
 
     assert sut == f"illegal: only states and maps expand; {loop} is neither."
     assert session.expanded == set()
+
+
+@dc.program
+def scaled_or_copied(x: dc.float64[3], y: dc.float64[N]):
+    if x[0] > 0.0:
+        for i in dc.map[0:N]:
+            y[i] = 2 * x[1]
+    else:
+        for i in dc.map[0:N]:
+            y[i] = x[2]
+
+
+@dc.program
+def calls_with_a_row(rows: dc.float64[N, 3], out: dc.float64[N], k: dc.int64):
+    row = rows[k]
+    scaled_or_copied(row, out)
+
+
+def test_a_callee_given_a_row_of_an_array_shows_its_branches_and_doalls_in_the_tree(tmp_path):
+    """The row is a slice View, behind which DaCe's inlining left the callee nested at the top of its state: the tree
+    then showed one empty state and offered no move (qe_vexx_k's g2_convolution)."""
+    session = Session(calls_with_a_row.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 8})
+
+    tree = session.canonicalize()
+
+    assert top_level_nsdfgs(session.sdfg) == []
+    assert "when rows[k, 0] > 0.0" in tree and tree.count("doalls=1") == 2
+    assert {move.kind for move in session.list_moves()} >= {"tile-doall"}
