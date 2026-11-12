@@ -635,7 +635,7 @@ class Session:
         """Every legal move right now, of ``kind`` or of every kind."""
         found = legal_moves(self.sdfg, kind)
         rows = self.row_index() if any(k in SIZED or k == SET_IMPLEMENTATION for k, _ in found) else {}
-        moves: list[Move] = [Move(kind=ROLLBACK, labels=())] if kind in (None, ROLLBACK) else []
+        moves: list[Move] = []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
                 node = cast(nodes.LibraryNode, rows[labels[0]][0])
@@ -646,6 +646,8 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
                 moves.append(Move(kind=k, labels=labels, tile_sizes=sizes))
+        if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
+            moves.append(Move(kind=ROLLBACK, labels=()))
         return moves
 
     def apply_move(
