@@ -57,6 +57,10 @@ class ApplyMove(Labeled):
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."
     )
+    # list_moves' note on a listed move, so the move is sent back as listed; never passed to the session
+    current: str | None = pydantic.Field(
+        None, exclude=True, description="Ignored: the implementation list_moves said the row has now."
+    )
 
 
 class RunDefaults(Args):

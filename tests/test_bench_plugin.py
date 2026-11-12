@@ -23,7 +23,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import anthropic
+import dace
 import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the packet
+import numpy as np
 import pytest
 from anthropic.types import Message
 from dace.codegen.common import get_gpu_backend
@@ -52,7 +54,7 @@ import nestforge_bench
 from nestforge.paths import REPO_ROOT
 from nestforge.records import KernelStatus, MoveStatus
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import KernelOutcome, MoveResult
+from nestforge.session import KernelOutcome, Move, MoveResult, Session
 from nestforge_bench import ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -200,7 +202,8 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
     assert TOOLS.keys() == CALLS.keys()
     for tool in TOOLS:
         params = inspect.signature(CALLS[tool]).parameters
-        missing = TOOLS[tool].args.model_fields.keys() - params.keys()
+        passed = {name for name, field in TOOLS[tool].args.model_fields.items() if not field.exclude}
+        missing = passed - params.keys()
         assert not missing, f"{tool}: the session call takes no {sorted(missing)}"
 
 
@@ -285,6 +288,38 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
 
 
 MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+
+N = dace.symbol("N", dtype=dace.int64)
+
+
+@dace.program
+def factor_and_scale(a: dace.float64[N, N], b: dace.float64[N, N], c: dace.float64[N, N]):
+    b[:] = np.linalg.cholesky(a)
+    for i, j in dace.map[0:N, 0:N]:
+        c[i, j] = 2.0 * a[i, j]
+    for i, j in dace.map[0:N, 0:N]:
+        b[i, j] = b[i, j] + c[i, j]
+
+
+def listed_moves(tmp_path: pathlib.Path) -> list[Move]:
+    """Every move a real session lists for a program with a library call and two map nests."""
+    session = Session(factor_and_scale.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 16})
+    session.canonicalize()
+    return session.list_moves()
+
+
+def test_every_listed_move_is_taken_back_as_list_moves_answered_it(stub: Stub, tmp_path: pathlib.Path) -> None:
+    moves = listed_moves(tmp_path)
+    stub.replies["list_moves"] = Reply(result=moves)
+    listed = post("list_moves", "episode-listed").answer["result"]
+
+    answers = [post("apply_move", "episode-listed", **move) for move in listed]
+
+    assert {"set-library-implementation", "tile-doall"} <= {move["kind"] for move in listed}, listed
+    assert [answer.code for answer in answers] == [HTTPStatus.OK] * len(listed), [a.answer for a in answers]
+    sent = [arguments for tool, arguments in stub.calls if tool == "apply_move"]
+    taken = [Move(**arguments) for arguments in sent]
+    assert taken == [move.model_copy(update={"current": None}) for move in moves], "current is a note, not an argument"
 
 
 def test_a_session_that_died_between_calls_is_replaced_and_repeats_the_agents_moves(stub: Stub) -> None:
