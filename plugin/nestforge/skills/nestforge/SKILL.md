@@ -40,11 +40,65 @@ applies: {explicit: true}
 was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as listed, or with
 your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not
 a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
+`undo_move` takes the last move back (program, labels and `applied_moves` as before it), and again for the one before,
+up to 8. So trying a move costs two calls and a measurement, never the program.
 
 `apply_move` and `run_defaults` answer at once, without a time. `get_performance` measures the program as it stands:
 each kernel in one fixed compiler configuration, so two measurements compare (`finalize`'s sweep, what `score` and
 `submit` grade, is faster), and each kernel once until a move changes it. A kernel too slow for its oracle at the graded
 size is checked at a smaller one and timed at the graded size; the whole program is always checked at the graded size.
+
+### Choosing a move
+
+1. `get_performance` first. Work on the kernel with the largest share; a move on a 2% kernel cannot pay.
+2. Read that kernel's rows and pick by what you see:
+
+| you see | try | because |
+|---|---|---|
+| two doalls of one state, the second reading an array the first writes | `doall-fusion` | the array becomes a scalar: one write and one read of it gone |
+| the same, in different states or loops | `for-fusion` of the loops around them, then `doall-fusion` | doalls fuse only inside one state |
+| `for t: doall i` with a short doall body | `interchange-for-doall` | one parallel region, not one per step |
+| a doall nest whose inner parameter is not the last subscript (`A[j, i]` with `j` inner) | `interchange-doall-doall` | the last subscript is the contiguous one: it belongs innermost |
+| a doall over an array far larger than the cache, read more than once | `tile-doall` | each block is reused while cached |
+| a doall mixing a parallel computation with one that blocks a move | `doall-fission`, then move the pieces | each piece takes its own order |
+| a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
+| a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
+
+3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `undo_move`.
+4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
+   `wrong result` first (`undo_move` the move that caused it), then `bytes spilled` (the body is too big:
+   `doall-fission`), then `loop not vectorized` with the compiler's reason.
+
+Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
+`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
+`interchange-doall-doall` with itself. Fusion, fission, `expand-library`, `snapshot-reads` and `doall-to-for` have
+none: `undo_move` is the way back.
+
+### A worked example
+
+`T[i] = (A[i-1] + A[i] + A[i+1]) / 3`, then `B[i] = 2 * T[i]`, with the state and its doalls expanded:
+```
+SDFG 'blur_scale'
+`- state1
+   |- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1  work=3*N - 6 depth=3
+   |  : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
+   |  : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
+   |  : T[_loop_it_0] = A_slice_A_slice_plus_A_slice / np.float64(3)
+   `- doall3  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1  work=N - 2 depth=1
+      : B[_loop_it_1] = np.float64(2) * T[_loop_it_1]
+```
+`doall3` reads the `T` that `doall2` writes, in one state. `list_moves kind=doall-fusion` lists
+`labels=[doall2, doall3]`; `apply_move` answers `applied`, reason `MapFusionVertical`, and the tree is
+```
+`- state1
+   `- doall4  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B']  num_states=2  work=4*N - 8 depth=4
+      : ...
+      : T = A_slice_A_slice_plus_A_slice / np.float64(3)
+      : B[_loop_it_0] = np.float64(2) * T
+```
+`doall2` and `doall3` are retired, `doall4` is new, and `T` is a scalar: the array's write and read are gone.
+`get_performance` then says whether it paid. If not, `undo_move` answers `undid doall-fusion` and the tree holds
+`doall2` and `doall3` again.
 
 Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
 
@@ -125,7 +179,8 @@ doall i in 0:N: B   ->   doall i0 in 0:N step 32:
 **`tile-for`** `[for]` with one size (`[64]`), LoopTiling: the same for a sequential loop, same iterations in the same
 order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
-vector width. Read those sizes from the machine you run on; `get_performance` after the move tells whether it paid.
+vector width. No tool reports the machine's caches: start from the size `list_moves` lists (32 per dimension), then
+try half and double, `undo_move` between tries, and keep the size `get_performance` shows fastest.
 **`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
 
 ### Shape of a doall
@@ -152,8 +207,8 @@ saves memory traffic; keep it when the vendor call is faster. Offered only on ca
 **`set-library-implementation`** `[lib_<family>]` with `implementation`. The row and its label stay; the call is
 built through loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one
 (`cuBLAS`, `hipBLAS`, ...). The tree prints each call's implementation; `list_moves` lists one move per other
-implementation the row may take whose library this machine has, with `current` the one it has. The default is already the fastest, so this move is for
-trying another. A host library keeps its kernel on the CPU, a device library puts it on the GPU.
+implementation the row may take whose library this machine has, with `current` the one it has. The default is already
+the fastest, so this move is for trying another. A host library keeps its kernel on the CPU, a device library puts it on the GPU.
 
 ## Scopes and kernels (when your tool list has them)
 
