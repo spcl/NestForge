@@ -72,6 +72,23 @@ def smooth_steps(A: dace.float64[N], B: dace.float64[N]):
         A[1 : N - 1] = B[1 : N - 1] + 1.0
 
 
+@dace.program
+def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]):
+    for t in range(3):
+        for i in dace.map[1 : N - 1]:
+            B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
+        for i in dace.map[1 : N - 1]:
+            A[i] = B[i] + 1.0
+
+
+@dace.program
+def map_then_matmul(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+    T = np.empty_like(A)
+    for i, j in dace.map[0:N, 0:N]:
+        T[i, j] = A[i, j] * 2.0
+    C[:] = T @ B
+
+
 def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
@@ -357,3 +374,47 @@ def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
     assert not session.list_kernels()[0].parallel, "a loop kernel is sequential, so placement keeps it on the CPU"
     session.sdfg(x=x, out=out, N=SIZE)
     np.testing.assert_array_equal(out, [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0])
+
+
+# a loop that holds parallel maps, and a map next to a library call
+
+
+def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once():
+    """The default makes a kernel of each map inside the loop, so the loop calls two kernels per step; naming the loop
+    makes the whole loop one kernel, called once."""
+    default, _ = session_and_reference(time_loop_of_maps)
+    assert len(default.default_scopes()) == 2, (
+        "the fixture must have a kernel per map by default, else it tests nothing"
+    )
+    session, reference = session_and_reference(time_loop_of_maps)
+    session.describe()
+
+    result = session.set_scope(["for0"])
+
+    assert result.status is MoveStatus.APPLIED, result
+    (kernel,) = top_level_kernels(session)
+    assert session.kernel(result.reason) is kernel
+    assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop left the program"
+    assert not session.list_kernels()[0].parallel, "a kernel holding a time loop is sequential"
+    assert_same_values(reference, session.sdfg, ("A", "B"))
+
+
+def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the_product():
+    session, reference = session_and_reference(map_then_matmul)
+    session.describe()
+    rows = session.row_index()
+    labels = [label for label, (obj, _) in rows.items() if isinstance(obj, (nodes.MapEntry, nodes.LibraryNode))]
+    assert len(labels) == 2, labels
+    rng = np.random.default_rng(0)
+    A, B = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
+
+    result = session.set_scope(labels)
+
+    assert result.status is MoveStatus.APPLIED, result
+    (kernel,) = top_level_kernels(session)
+    assert session.kernel(result.reason) is kernel
+    expected, actual = np.zeros((SIZE, SIZE)), np.zeros((SIZE, SIZE))
+    reference(A=A.copy(), B=B.copy(), C=expected, N=SIZE)
+    session.sdfg(A=A.copy(), B=B.copy(), C=actual, N=SIZE)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+    np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
