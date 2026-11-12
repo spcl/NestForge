@@ -53,11 +53,8 @@ class OffloadKernels(OffloadToAccelerator):
         """DaCe's host maps, and every map outside the kernels pinned to the host: only a scope placed on the GPU
         runs there, so the program's own maps stay host code, as in its CPU form."""
         super().find_taskloops(sdfg)
-        # nested SDFGs too: a kernel's body is no nested SDFG of the program, so only the program's own maps are held
-        for nested in sdfg.all_sdfgs_recursive():
-            for state in nested.states():
-                top = state.scope_children()[None]
-                self._host_pinned |= OrderedSet(n for n in top if isinstance(n, nodes.MapEntry))
+        for state in sdfg.states():
+            self._host_pinned |= OrderedSet(n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry))
 
     def assign_schedules(self, sdfg: dace.SDFG, host_level: bool = True) -> None:
         super().assign_schedules(sdfg, host_level)
