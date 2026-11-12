@@ -111,7 +111,9 @@ def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_pat
 
     reply = answer(sut, "write_kernel", {"name": kernel.name, "source": source, "language": "cpp"}, NO_DATA)
 
-    assert reply.error == "KeyError: 'injected' (the program is unchanged)"
+    assert (
+        reply.error == "KeyError: 'injected' (the program is unchanged; the session is intact, other calls still work)"
+    )
     assert sut.builds == before
 
 

@@ -413,7 +413,9 @@ def answer(
         with session.atomic():
             return timed_call(session, tool, arguments, data, timed)
     except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
-        return Reply(error=f"{failure(err).error} (the program is unchanged)")
+        return Reply(
+            error=f"{failure(err).error} (the program is unchanged; the session is intact, other calls still work)"
+        )
 
 
 def pin(slot: DeviceSlot | None, gpu: bool, cores: set[int], environment: dict[str, str]) -> None:
