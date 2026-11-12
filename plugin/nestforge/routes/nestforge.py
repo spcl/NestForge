@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``POST /nestforge/<tool>``: the judge half of every NestForge tool. Each episode's kernel is served by its own
 session process (:mod:`nestforge.server`), so the judge's threads never fork and a crash ends that process only.
-A tool in the wire table that the session does not serve answers 501. A session that cannot start, crashes or stops
-answering is the judge's fault (500, :data:`JUDGE_FAULT_CAUSE`); 400 is only for the agent's own call; 503 is a call
+A tool in the wire table that the session does not serve answers 501. A session that cannot start is the judge's fault
+(500, :data:`JUDGE_FAULT_CAUSE`); 400 is the agent's own call, one that crashed its session included; 503 is a call
 that ran out of its budget and goes on when repeated. Moves are journaled on disk before they are answered, so none
 of these loses one, nor does a judge restart; a journal that cannot be read or repeated is a judge fault, never a
 program without the agent's moves."""
@@ -33,7 +33,7 @@ from hpcagent_bench.plugin_api import (
 )
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
-from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied
+from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
 from nestforge.session import Sweep
 from nestforge.stages.performance import Performance
 
@@ -176,6 +176,18 @@ def session_of(
     return session
 
 
+def crashed(call: Call, reply: Reply) -> Reply:
+    """The answer to ``call``, whose session process died answering ``reply``: the agent's error, not the judge's."""
+    name, arguments = call
+    during = f"{name} ({move_text(arguments)})" if name == "apply_move" else name
+    then = (
+        "that change was undone and the session restarts from the last good program; try another move"
+        if name in CHANGING
+        else "the program is unchanged and the session restarts from it"
+    )
+    return Reply(error=f"{reply.error} during {during}; {then}")
+
+
 def run_call(
     episode: Episode,
     judge: Judge,
@@ -198,7 +210,7 @@ def run_call(
     if not session.alive:
         # The call's change is not journaled, so the next session is the program before it.
         del episode.sessions[kernel]
-        return reply.model_copy(update={"ended": True})
+        return crashed(call, reply)
     if name in CHANGING and not reply.error:
         repeat = repeat_of(call, reply) if applied(reply) else None
         if repeat is not None:

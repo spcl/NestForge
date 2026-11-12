@@ -118,6 +118,23 @@ def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_pat
     assert sut.builds == before
 
 
+def test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(tmp_path, monkeypatch):
+    sut = session(tmp_path)
+    labels, before = first_move(sut, "tile-for"), program(sut)
+    move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_module, "structural_cleanup", half_then_fail)
+        reply = answer(sut, "apply_move", move, None)
+
+    assert reply.error == (
+        f"transformation tile-for on {', '.join(labels)} crashed: KeyError: 'injected'. It was rolled back; "
+        "the session is intact, try another move."
+    )
+    assert program(sut) == before
+    assert answer(sut, "apply_move", move, None).result.status is MoveStatus.APPLIED
+
+
 def test_a_failed_read_claims_nothing_about_the_program(tmp_path, monkeypatch):
     sut = session(tmp_path)
     monkeypatch.setitem(server.CALLS, "get_cpf", fail)
@@ -166,6 +183,8 @@ if __name__ == "__main__":
             test_a_default_stage_that_fails_is_undone(pathlib.Path(tempfile.mkdtemp()), patch, stage)
     with pytest.MonkeyPatch.context() as patch:
         test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(pathlib.Path(tempfile.mkdtemp()), patch)
+    with pytest.MonkeyPatch.context() as patch:
+        test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(pathlib.Path(tempfile.mkdtemp()), patch)
     with pytest.MonkeyPatch.context() as patch:
         test_a_failed_read_claims_nothing_about_the_program(pathlib.Path(tempfile.mkdtemp()), patch)
     test_a_call_that_succeeds_keeps_its_change(pathlib.Path(tempfile.mkdtemp()))

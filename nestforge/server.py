@@ -366,6 +366,11 @@ def failure(err: BaseException) -> Reply:
     return Reply(error=f"{type(err).__name__}: {err}")
 
 
+def move_text(arguments: dict[str, Any]) -> str:
+    """How an answer names the move ``apply_move`` was called with: its kind and labels."""
+    return f"{arguments['kind']} on {', '.join(arguments['labels'])}"
+
+
 def applied(reply: Reply) -> bool:
     """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
     result = reply.result
@@ -413,6 +418,9 @@ def answer(
         with session.atomic():
             return timed_call(session, tool, arguments, data, timed)
     except Exception as err:  # noqa: BLE001 -- the caller reads it as the tool's error
+        if tool == "apply_move":
+            error = f"transformation {move_text(arguments)} crashed: {failure(err).error}"
+            return Reply(error=f"{error}. It was rolled back; the session is intact, try another move.")
         return Reply(
             error=f"{failure(err).error} (the program is unchanged; the session is intact, other calls still work)"
         )

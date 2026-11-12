@@ -258,15 +258,23 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 
 
-def test_a_session_that_dies_is_the_judges_fault_and_the_next_call_starts_a_fresh_one(stub: Stub) -> None:
+def test_a_move_that_kills_its_session_is_undone_and_the_next_call_runs_on_a_session_without_it(stub: Stub) -> None:
+    post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"])
     stub.dies_on = "apply_move"
 
-    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_0", "map_1"])
+    died = post("apply_move", "episode-crash", kind="fuse", labels=["map_2", "map_3"])
+    stub.dies_on = ""
+    before = len(stub.calls)
     again = post("get_cpf", "episode-crash")
 
-    assert (died.code, died.answer["cause"]) == (HTTPStatus.INTERNAL_SERVER_ERROR, JUDGE_FAULT_CAUSE), died.answer
-    assert "fresh session" in died.answer["error"]
+    assert died.code == HTTPStatus.BAD_REQUEST and "cause" not in died.answer, died.answer
+    assert died.answer["error"] == (
+        "apply_move: the session process died (exit code -9) during apply_move (fuse on map_2, map_3); that change was"
+        " undone and the session restarts from the last good program; try another move"
+    )
     assert again.code == HTTPStatus.OK and len(stub.started) == 2
+    rebuilt = [(tool, arguments.get("labels")) for tool, arguments in stub.calls[before:]]
+    assert rebuilt == [("apply_move", ["map_0", "map_1"]), ("get_cpf", None)], "rebuilt without the crashed move"
 
 
 def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_is_lost(stub: Stub) -> None:
@@ -281,7 +289,7 @@ def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_i
     before = len(stub.calls)
     answered = post("list_moves", "episode-replay")
 
-    assert died.code == HTTPStatus.INTERNAL_SERVER_ERROR and answered.code == HTTPStatus.OK
+    assert died.code == HTTPStatus.BAD_REQUEST and answered.code == HTTPStatus.OK
     repeated = [tool for tool, _ in stub.calls[before:]]
     assert repeated == ["apply_move", "set_scope", "list_moves"], "the changes in order, then the call; no read"
     assert len(stub.started) == 2
