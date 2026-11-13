@@ -192,7 +192,7 @@ def test_a_tiled_loop_over_a_map_is_not_offered_the_interchange_that_would_raise
     assert sut.list_moves("interchange-for-doall") == []
 
 
-@pytest.mark.parametrize(("name", "calls"), [("fission_dep_const_offset", 1), ("durbin", 3)])
+@pytest.mark.parametrize(("name", "calls"), [("fission_dep_const_offset", 1)])
 def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls, tmp_path):
     kernel = corpus_kernel(name)
     assert kernel is not None
@@ -204,6 +204,22 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
         assert sut.apply_move("expand-library", expand.labels).status is MoveStatus.APPLIED
 
     assert "no work= or depth=" in sut.describe()
+
+
+def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
+    """A removed copy's WCR no longer lands on an ordering edge, which work-depth analysis failed on (DaCe
+    5f57d89143): the whole tree carries costs."""
+    kernel = corpus_kernel("durbin")
+    assert kernel is not None
+    sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
+    sut.canonicalize()
+
+    while expands := sut.list_moves("expand-library"):
+        assert sut.apply_move("expand-library", expands[0].labels).status is MoveStatus.APPLIED
+
+    tree = sut.describe()
+    assert "no work= or depth=" not in tree
+    assert "work=" in tree and "depth=" in tree
 
 
 def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_path):
