@@ -24,7 +24,7 @@ from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
 from nestforge.stages.layout import logical_outputs
-from nestforge.stages.placement import Transfer
+from nestforge.stages.placement import Transfer, device_copy_edges
 
 
 class ProgramReport(Record):
@@ -59,12 +59,27 @@ class TransferReport(Record):
     bytes: int | None
 
 
+class CopyReport(Record):
+    """One host/device copy in the program, outside the kernels' calls."""
+
+    source: str
+    destination: str
+    #: Moved by one execution of the copy; ``None`` when its size depends on a symbol the session does not fix.
+    bytes: int | None
+
+
 class OffloadReport(Record):
     #: Kernel -> ``cpu`` or ``gpu``.
     devices: dict[str, str]
     #: ``None`` when the dependency analysis refuses the program.
     transfers: list[TransferReport] | None
     transfer_bytes: int
+    #: The copies of the timed program, in state order, and their bytes per execution.
+    copies: list[CopyReport] = []
+    copy_bytes: int = 0
+    #: GPU kernels that copy inside their own call in the session's program (placed, ``insert_copies`` not run); the
+    #: timed program had the default placement insert their copies.
+    copies_in_call: list[str] = []
 
 
 class KernelReport(Record):
@@ -218,9 +233,14 @@ def timed_report(timed: ProgramTime, reference: Reference | None) -> ProgramRepo
 
 
 def offload_report(
-    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: Mapping[str, SymbolValue]
+    sdfg: dace.SDFG,
+    devices: dict[str, str],
+    moves: tuple[Transfer, ...] | None,
+    sizes: Mapping[str, SymbolValue],
+    in_call: list[str],
 ) -> OffloadReport:
-    """Where each kernel runs and what crosses memory spaces, with bytes at ``sizes``."""
+    """Where each kernel runs, what crosses memory spaces and the copies that move it, with bytes at ``sizes``;
+    ``in_call`` the GPU kernels that copy inside their call in the session's own program."""
     transfers = None
     if moves is not None:
         transfers = [
@@ -234,7 +254,32 @@ def offload_report(
             for move in moves
         ]
     total = sum(move.bytes or 0 for move in transfers or ())
-    return OffloadReport(devices=devices, transfers=transfers, transfer_bytes=total)
+    copies = copy_reports(sdfg, sizes)
+    return OffloadReport(
+        devices=devices,
+        transfers=transfers,
+        transfer_bytes=total,
+        copies=copies,
+        copy_bytes=sum(copy.bytes or 0 for copy in copies),
+        copies_in_call=in_call,
+    )
+
+
+def copy_reports(sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue]) -> list[CopyReport]:
+    """Every host/device copy of ``sdfg``, with the bytes its memlet moves at ``sizes``."""
+    return [
+        CopyReport(source=edge.src.data, destination=edge.dst.data, bytes=memlet_bytes(state.sdfg, edge.data, sizes))
+        for state, edge in device_copy_edges(sdfg)
+    ]
+
+
+def memlet_bytes(sdfg: dace.SDFG, memlet: dace.Memlet, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The bytes ``memlet`` moves at ``sizes``; ``None`` when its volume has a symbol ``sizes`` does not bind."""
+    volume = dace.symbolic.pystr_to_symbolic(memlet.volume)
+    if any(str(sym) not in sizes for sym in volume.free_symbols):
+        return None
+    bindings: dict[dace.symbol | str, int | float] = {str(sym): sizes[str(sym)] for sym in volume.free_symbols}
+    return int(dace.symbolic.evaluate(volume, bindings)) * sdfg.arrays[memlet.data].dtype.bytes
 
 
 def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:

@@ -18,6 +18,7 @@ from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall, call_site, external_calls
 from dace.ordered import OrderedSet
 from dace.sdfg import nodes
+from dace.sdfg.graph import MultiConnectorEdge
 from dace.transformation.passes.offloading.host_maps import HostMapSpec
 from dace.transformation.passes.offloading.offload_to_accelerator import OffloadToAccelerator
 
@@ -61,6 +62,10 @@ class OffloadKernels(OffloadToAccelerator):
         for ext in external_calls(sdfg):
             if ext.name in self.host_kernels:
                 ext.schedule = dtypes.ScheduleType.Default
+
+
+#: A copy between two access nodes.
+CopyEdge = MultiConnectorEdge[dace.Memlet]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,16 +123,42 @@ def on_device(state: dace.SDFGState, node: nodes.AccessNode) -> bool:
     return node.desc(state.sdfg).storage in GPU_RESIDENT_STORAGES
 
 
-def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
-    """Access-to-access edges whose two ends live in different memory spaces, in state order."""
+def device_copy_edges(sdfg: dace.SDFG) -> list[tuple[dace.SDFGState, CopyEdge]]:
+    """Access-to-access edges whose two ends live in different memory spaces, in state order, with their state."""
     return [
-        (edge.src.data, edge.dst.data)
+        (state, edge)
         for state in sdfg.states()
         for edge in state.edges()
         if isinstance(edge.src, nodes.AccessNode)
         and isinstance(edge.dst, nodes.AccessNode)
         and on_device(state, edge.src) != on_device(state, edge.dst)
     ]
+
+
+def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
+    """``(source, destination)`` containers of every :func:`device_copy_edges` edge."""
+    return [(edge.src.data, edge.dst.data) for _, edge in device_copy_edges(sdfg)]
+
+
+def copies_in_call(sdfg: dace.SDFG) -> list[str]:
+    """The GPU kernels that copy at their own boundary: placed, with an operand still in host memory, which
+    :func:`insert_copies` moves to device memory."""
+    return [
+        ext.name
+        for ext, state in sdfg.all_nodes_recursive()
+        if isinstance(ext, ExternalCall)
+        and isinstance(state, dace.SDFGState)
+        and kernel_device(ext) == "gpu"
+        and has_host_operand(ext, state)
+    ]
+
+
+def has_host_operand(ext: ExternalCall, state: dace.SDFGState) -> bool:
+    edges = [*state.in_edges(ext), *state.out_edges(ext)]
+    return any(
+        edge.data.data is not None and state.sdfg.arrays[edge.data.data].storage not in GPU_RESIDENT_STORAGES
+        for edge in edges
+    )
 
 
 def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> str | None:

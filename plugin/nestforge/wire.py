@@ -284,10 +284,10 @@ TOOLS: dict[str, ToolDef] = {
     "get_performance": ToolDef(
         Phase.ANY,
         NoArgs,
-        "Measure the program as it stands: whole-program time, offloading (devices, transfers) and per-kernel times, "
-        "with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's compiler "
-        "sweep makes the graded library faster than this. It waits for a device slot and takes minutes on the first "
-        "call; kernels a move left unchanged are not measured again, and an unchanged program answers at once.",
+        "Measure the program as it stands: whole-program time, offloading (devices, transfers, copies) and per-kernel "
+        "times, with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's "
+        "compiler sweep makes the graded library faster than this. It waits for a device slot and takes minutes on the "
+        "first call; kernels a move left unchanged are not measured again, and an unchanged program answers at once.",
         Effect.READ,
     ),
     "applied_moves": ToolDef(

@@ -229,7 +229,10 @@ keeps its build and verdict; `finalize` keeps the sweep:
 
 - `structured`: the whole program's time, and whether its outputs match `reference` (the bench's own reference and
   grading tolerance, when the plugin has one);
-- `offloading`: each kernel's device and every transfer between memories, with bytes;
+- `offloading`: each kernel's device and every transfer between memories, with bytes; the host/device copies of the
+  timed program with their bytes per execution (`copies`, `copy_bytes`), and the GPU kernels that still copy inside
+  their own call in the session's program (`copies_in_call`: placed, `insert_copies` not run; the timed program had
+  the default insert their copies);
 - `kernels`: each kernel's correctness, time and share, and the hints above.
 
 It is cached until the program or a kernel library changes.
