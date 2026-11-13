@@ -114,25 +114,32 @@ def test_a_child_that_exits_without_writing_is_an_error_not_an_empty_success():
     assert run_isolated(vanish, Done, timeout=60) == Failure(error="child produced no result")
 
 
-def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep():
+def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep(monkeypatch: pytest.MonkeyPatch):
     """The timeout guards an infinite loop in generated code. It must also reap: a sweep that leaks a
     zombie per runaway kernel exhausts the process table long before it finishes."""
+    forked: list[int] = []
+    fork = os.fork
+
+    def recorded_fork() -> int:
+        pid = fork()
+        if pid:
+            forked.append(pid)
+        return pid
 
     def runaway():
         time.sleep(120)
         return Done(ok=False)
 
+    monkeypatch.setattr(os, "fork", recorded_fork)
     start = time.perf_counter()
     result = run_isolated(runaway, Done, timeout=1.0)
     elapsed = time.perf_counter() - start
     assert isinstance(result, Failure) and "timeout after" in result.error
     assert elapsed < 30, "the deadline did not fire; it waited for the child instead"
-    # nothing left unreaped; a live child of another test (a spawn's resource tracker) is no zombie
-    try:
-        reaped, _ = os.waitpid(-1, os.WNOHANG)
-    except ChildProcessError:
-        reaped = 0
-    assert reaped == 0, f"child {reaped} was left as a zombie"
+    # the runaway itself is reaped; a child another test left behind is not this contract's
+    (child,) = forked
+    with pytest.raises(ChildProcessError):
+        os.waitpid(child, os.WNOHANG)
 
 
 def test_a_child_returning_something_unserialisable_reports_the_reason():
