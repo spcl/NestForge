@@ -1001,7 +1001,7 @@ def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_subm
     done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", packet_judge, tmp_path)
 
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "submitted correct=True" in done.stdout, done.stdout + done.stderr
+    assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
 
 
 class ScriptedModel:
