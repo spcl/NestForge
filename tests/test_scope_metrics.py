@@ -83,6 +83,11 @@ def kernel_state(session: Session) -> str:
     )
 
 
+def kernel_rows(tree: str) -> list[str]:
+    """The rows of ``tree`` naming what a kernel reads: a state row carries its reads too, so it is left out."""
+    return [line for line in tree.splitlines() if "reads=" in line and not line.lstrip("|`- ").startswith("state")]
+
+
 def test_an_expanded_kernel_row_carries_its_work_and_depth():
     session = Session(vector_add.to_sdfg(simplify=True))
     state = session.row_index()[kernel_state(session)][1]
@@ -90,7 +95,7 @@ def test_an_expanded_kernel_row_carries_its_work_and_depth():
 
     assert session.expand([state.label]) == f"ok: expanded {state.label}"
 
-    (kernel,) = [line for line in session.describe().splitlines() if "reads=" in line]
+    (kernel,) = kernel_rows(session.describe())
     assert kernel.endswith("  work=N depth=1"), kernel
 
 
@@ -101,8 +106,8 @@ def test_an_expansion_stays_open_while_its_row_lives_and_closes_when_a_change_re
     session.expand([state.label])
 
     session.bump()
-    kept = [line for line in session.describe().splitlines() if "reads=" in line]
+    kept = kernel_rows(session.describe())
     session.bump([state.label])
 
     assert kept, "a change that left the state alone closed it"
-    assert not [line for line in session.describe().splitlines() if "reads=" in line]
+    assert not kernel_rows(session.describe())
