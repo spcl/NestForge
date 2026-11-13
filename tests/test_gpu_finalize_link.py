@@ -60,6 +60,7 @@ def assembled(
         session.canonicalize()
         session.default_scopes()
         devices = session.place().devices
+        session.insert_copies()  # as finalize assembles a GPU program: placed, its copies in the program
         assert devices and set(devices.values()) == {"gpu"}, devices
         compiler = BACKENDS[api][0]
         for ext in external_calls(session.sdfg):

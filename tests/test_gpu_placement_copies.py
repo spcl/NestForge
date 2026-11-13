@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The host/device copies placement inserts between two kernels, read off the SDFG without a GPU: a value passed
+"""The host/device copies inserted after placement between two kernels, read off the SDFG without a GPU: a value passed
 between two GPU kernels stays on the device, and a value crossing devices is copied once, in its direction."""
 
 from pathlib import Path
@@ -46,7 +46,8 @@ def test_placing_two_chained_kernels_copies_each_crossing_value_once_and_nothing
     session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
     producer, consumer = (kernel.name for kernel in session.default_scopes())
 
-    result = session.place(dict(zip((producer, consumer), devices)))
+    session.place(dict(zip((producer, consumer), devices)))
+    result = session.insert_copies()
 
     arrays = session.sdfg.arrays
     assert result.devices == {producer: devices[0], consumer: devices[1]}
