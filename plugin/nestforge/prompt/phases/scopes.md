@@ -3,4 +3,5 @@ closed once the program has a kernel, so settle them first. What no scope covers
 and from there the kernels are fixed.
 `list_scope_moves` and `apply_scope_move` run the moves inside one kernel's body. `place devices={...}` runs each
 kernel on the CPU or the GPU and fixes the scopes; `insert_copies` moves a GPU kernel's host/device copies out of its
-call into the program, and `next_phase` inserts them when you did not.
+call into the program, and `next_phase` inserts them when you did not. `unplace` drops the placement and its copies and
+keeps the kernels, so `set_scope` and `unset_scope` apply again.

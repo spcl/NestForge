@@ -259,6 +259,13 @@ TOOLS: dict[str, ToolDef] = {
         "Move the GPU kernels' host/device copies out of the calls into the program, so a value that stays on the "
         "GPU between kernels is copied once; answers the copies.",
     ),
+    "unplace": ToolDef(
+        Phase.SCOPES,
+        NoArgs,
+        "Undo place and insert_copies, keeping the kernels, so set_scope and unset_scope apply again; the moves inside "
+        "a kernel stay, stage-loads-shared and the kernels' code go. Refused once focus_kernel started the kernel work.",
+        Effect.REPLACE,
+    ),
     "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "focus_kernel": ToolDef(
         Phase.KERNELS,

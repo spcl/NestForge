@@ -86,7 +86,17 @@ def is_placed(session: Session) -> bool:
 #: Why a move is refused: moves take the rows of the program before its scopes.
 MOVES_CLOSED = "the program has kernels: moves are closed; next_phase reaches a new round, which reopens them"
 #: Why a scope is refused: the agent's kernel work builds on the kernels placement fixed.
-SCOPES_FIXED = "the kernels are placed: scopes are fixed; next_phase reaches a new round, which reopens them"
+SCOPES_FIXED = (
+    "the kernels are placed: scopes are fixed; unplace drops the placement and reopens them, as a new round does"
+)
+#: Why unplace is refused: the kernel work builds on the kernels placement fixed.
+KERNEL_WORK_STARTED = (
+    "kernel work has started (focus_kernel): the placement stays; next_phase reaches a new round, which reopens it"
+)
+
+
+def in_kernel_work(session: Session) -> bool:
+    return session.focus is not None
 
 
 def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
@@ -138,6 +148,7 @@ CALLS: dict[str, Callable[..., object]] = {
     "apply_scope_move": Session.apply_move,
     "place": Session.place,
     "insert_copies": Session.insert_copies,
+    "unplace": until(in_kernel_work, KERNEL_WORK_STARTED, Session.unplace),
     "list_kernels": Session.list_kernels,
     "focus_kernel": Session.focus_kernel,
     "read_kernel": Session.kernel_source,
@@ -165,6 +176,7 @@ CHANGING = frozenset(
         "apply_scope_move",
         "place",
         "insert_copies",
+        "unplace",
         "focus_kernel",
         "write_kernel",
         "tune_kernel",

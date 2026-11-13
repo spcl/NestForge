@@ -47,7 +47,8 @@ Four rules follow, and `nestforge/server.py` enforces all but the last:
 - **Moves close at the first kernel.** A move takes rows of the program before its scopes. `apply_move` and
   `run_defaults` with `moves` or `finish` answer 400 once the program has a kernel.
 - **Scopes are fixed from placement on.** `set_scope` and `unset_scope` answer 400 once the kernels are placed, so the
-  kernel work has a stable set of kernels.
+  kernel work has a stable set of kernels. `unplace` drops the placement and reopens them until `focus_kernel` starts
+  the kernel work; from then on only a new round does.
 - **Kernel work is scoped.** `write_kernel` and `tune_kernel` answer 400 for any kernel but the one `focus_kernel`
   named last; reads take any kernel. The focus is journaled like a change, so a rebuilt session keeps it.
 - **A new round reopens both.** `Session.rewind` restores the program kept before the first kernel, with its row labels.

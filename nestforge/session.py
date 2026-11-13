@@ -1243,6 +1243,10 @@ class Session:
         :returns: ``applied`` with the new kernel's name as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
+        if self.unplaced is not None:
+            # scoping the lowered program would drop the program placement starts from
+            reason = "the kernels are placed: call unplace first, which keeps the scopes and drops the placement."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=reason)
         self.end_moves()
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
@@ -1363,6 +1367,25 @@ class Session:
         interfaces, builds = kernel_interfaces(self.sdfg), self.builds
         self.sdfg = copy.deepcopy(self.unplaced)
         return self.placed(insert_copies(self.sdfg, devices), moves, interfaces, builds)
+
+    @undone_on_failure
+    def unplace(self) -> MoveResult:
+        """Back to the program before placement, its kernels kept: the inverse of :meth:`place` and
+        :meth:`insert_copies`, so :meth:`set_scope` and :meth:`unset_scope` apply again. Structured moves inside a
+        kernel stay, as they rewrote its body before placement; a device move (``stage-loads-shared``) and the
+        kernels' code go with the placement.
+
+        :returns: ``applied``, or why nothing changed.
+        """
+        if self.unplaced is None:
+            reason = "no kernel is placed; there is no placement to undo."
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="unplace", labels=(), reason=reason)
+        # a copy: a failure puts the kept program back through :meth:`atomic`
+        self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+        self.bump()
+        done = MoveResult(status=MoveStatus.APPLIED, kind="unplace", labels=(), reason=", ".join(self.devices()))
+        self.applied.append(done)
+        return done
 
     def placed(
         self,

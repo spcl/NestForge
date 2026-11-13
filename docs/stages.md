@@ -92,7 +92,7 @@ flag. `unset_scope(name)` inlines a kernel back (its standalone SDFG, kernel-loc
 dropping any placement first. `run_defaults("placement")` first gives what no scope covers its default scope; a block
 holding a kernel is never taken whole, since no kernel nests another. The session keeps the program from before its first
 kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
-kernel, scopes are fixed from placement on, and a new round reopens both ([phases](README.md#the-phases)).
+kernel, scopes are fixed from placement on until `unplace` or a new round reopens them ([phases](README.md#the-phases)).
 
 `persist_temporaries(min_bytes)` is an option, not a scope: the program's heap transients of at least `min_bytes`
 (1 MiB by default, at `sizes`) are allocated once at init instead of on every call, which saves the page faults of fresh
@@ -155,13 +155,15 @@ devices. It passes host memory, so a GPU kernel copies its arguments at its own 
 `insert_copies()` runs `OffloadToAccelerator` on the program first: the GPU kernels' operands move to device memory,
 the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
 bodies are lowered over device memory; it returns the copies. Both start from the program before the first placement.
+`unplace()` goes back to that program, the kernels and the moves inside them kept, so `set_scope` and `unset_scope`
+apply again; `set_scope` on a placed program is refused instead of scoping the lowered one.
 The default runs `place()` when nothing is placed, then `insert_copies()` when a GPU kernel still copies inside its
 call; stage 5 builds GPU kernels over device pointers, so the copies are in before it.
 
 | | |
 |---|---|
 | default | `place()`, then `insert_copies()` |
-| agent | `place(devices)`, `insert_copies()` |
+| agent | `place(devices)`, `insert_copies()`, `unplace()` |
 | code | `nestforge/stages/placement.py` |
 
 ## Stage 5: Kernels
