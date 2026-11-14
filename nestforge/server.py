@@ -39,7 +39,7 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
+from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record, Refusal, Refused
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
@@ -89,9 +89,16 @@ MOVES_CLOSED = "the program has kernels: moves are closed; next_phase reaches a 
 SCOPES_FIXED = (
     "the kernels are placed: scopes are fixed; unplace drops the placement and reopens them, as a new round does"
 )
+#: Why a scope is refused on a CPU-only session, where placement has no tool to undo it.
+SCOPES_FIXED_ON_CPU = "the kernels are placed: scopes are fixed; next_phase reaches a new round, which reopens them"
 #: Why unplace is refused: the kernel work builds on the kernels placement fixed.
 KERNEL_WORK_STARTED = (
     "kernel work has started (focus_kernel): the placement stays; next_phase reaches a new round, which reopens it"
+)
+#: What a placement tool answers on a session without a GPU target: there is no device to choose (design D21 (c)).
+NO_DEVICE_CHOICE = (
+    "this setup has no GPU: every kernel runs on the CPU, so there is nothing to place, copy or unplace, and nothing "
+    "changed; set_scope and unset_scope decide the kernels, and next_phase fixes them"
 )
 
 
@@ -99,13 +106,48 @@ def in_kernel_work(session: Session) -> bool:
     return session.focus is not None
 
 
-def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
-    """``call``, refused with ``why`` while ``closed`` holds of the session."""
+def has_device_choice(session: Session) -> bool:
+    """Whether placement chooses anything on ``session``: only a GPU target offers a second device."""
+    return session.targets.gpu
+
+
+def scopes_fixed(session: Session) -> str:
+    """Why a scope call is refused on a placed ``session``: on a GPU target unplace reopens the scopes."""
+    return SCOPES_FIXED if has_device_choice(session) else SCOPES_FIXED_ON_CPU
+
+
+def until(
+    closed: Callable[[Session], bool], why: str | Callable[[Session], str], call: Callable[..., object]
+) -> Callable[..., object]:
+    """``call``, refused with ``why`` (or what it says of the session) while ``closed`` holds of the session."""
 
     @functools.wraps(call)
     def run(session: Session, **arguments: object) -> object:
         if closed(session):
-            raise ValueError(why)
+            raise ValueError(why if isinstance(why, str) else why(session))
+        return call(session, **arguments)
+
+    return run
+
+
+def nothing_to_place() -> PlaceResult:
+    return PlaceResult(status=MoveStatus.ILLEGAL, reason=NO_DEVICE_CHOICE)
+
+
+def nothing_to_unplace() -> MoveResult:
+    reason = Refused(NO_DEVICE_CHOICE, Refusal.ARGUMENT)
+    return MoveResult(status=MoveStatus.ILLEGAL, kind="unplace", labels=(), reason=reason)
+
+
+def with_device_choice(call: Callable[..., object], refused: Callable[[], object]) -> Callable[..., object]:
+    """``call`` on a session with a GPU target; on a CPU-only one, ``refused()``, and the program is left as it was.
+    The session's own placement (``next_phase``'s default, a measurement's trial) still runs there: only the agent's
+    tool has nothing to choose."""
+
+    @functools.wraps(call)
+    def run(session: Session, **arguments: object) -> object:
+        if not has_device_choice(session):
+            return refused()
         return call(session, **arguments)
 
     return run
@@ -142,13 +184,13 @@ CALLS: dict[str, Callable[..., object]] = {
     "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
-    "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
-    "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
+    "set_scope": until(is_placed, scopes_fixed, Session.set_scope),
+    "unset_scope": until(is_placed, scopes_fixed, Session.unset_scope),
     "list_scope_moves": Session.list_moves,
     "apply_scope_move": Session.apply_move,
-    "place": Session.place,
-    "insert_copies": Session.insert_copies,
-    "unplace": until(in_kernel_work, KERNEL_WORK_STARTED, Session.unplace),
+    "place": with_device_choice(Session.place, nothing_to_place),
+    "insert_copies": with_device_choice(Session.insert_copies, nothing_to_place),
+    "unplace": until(in_kernel_work, KERNEL_WORK_STARTED, with_device_choice(Session.unplace, nothing_to_unplace)),
     "list_kernels": Session.list_kernels,
     "focus_kernel": Session.focus_kernel,
     "read_kernel": Session.kernel_source,

@@ -245,8 +245,8 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
     packet = PACKETS["nestforge-full"].tools
 
     assert sorted(packet) == sorted((*TOOLS, *OVERRIDDEN, plugins.NEXT_PHASE))
-    specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
-    hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(packet)})
+    hints = {name: registry.REGISTRY[name].spec_for(setup).hints for name in TOOLS}
     assert hints.keys() == TOOLS.keys()
     assert {name for name, hint in hints.items() if hint.read_only} == {
         "get_cpf",
@@ -260,6 +260,50 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "applied_moves",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
+
+
+#: The tools that choose a device: on a CPU-only setup there is none to choose (design D21).
+PLACEMENT_TOOLS = ("place", "insert_copies", "unplace")
+
+
+def served_on(language: str | None) -> dict[str, registry.Served]:
+    """What the full packet serves a setup in ``language`` (``None``: the setup names none)."""
+    environ = {registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge-full"].tools)}
+    return registry.served(registry.Setup.read(environ if language is None else {**environ, "LANGUAGE": language}))
+
+
+def test_a_cpu_setup_keeps_the_tool_list_and_reads_that_placement_changes_nothing(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import NOTHING_TO_PLACE, TOOLS
+
+    cpu, gpu = served_on("cpp"), served_on("cuda")  # the text only: no GPU is needed to serve it
+
+    # one packet for both targets: the phases fix the tools, so only the text differs
+    assert cpu.keys() == gpu.keys() and set(PLACEMENT_TOOLS) <= cpu.keys()
+    for name in PLACEMENT_TOOLS:
+        assert cpu[name].description == f"[scopes] {NOTHING_TO_PLACE}", name
+        assert cpu[name].prompt == f"- `{name}` -- {NOTHING_TO_PLACE}", name
+        assert gpu[name].description == f"[scopes] {TOOLS[name].description}", name
+        assert cpu[name].input_schema == gpu[name].input_schema, name
+    for name in cpu.keys() - set(PLACEMENT_TOOLS):
+        assert cpu[name].description == gpu[name].description, name
+
+
+def test_a_setup_that_names_no_language_reads_both_what_placement_does_and_that_it_needs_a_gpu(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS, WITHOUT_A_GPU
+
+    unnamed = served_on(None)
+
+    for name in PLACEMENT_TOOLS:
+        assert unnamed[name].description == f"[scopes] {TOOLS[name].description} {WITHOUT_A_GPU}", name
+
+
+def test_only_the_placement_tools_have_a_cpu_text(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
+
+    with_text = {name for name, entry in TOOLS.items() if entry.cpu_description}
+
+    assert with_text == set(PLACEMENT_TOOLS)
+    assert {TOOLS[name].phase for name in with_text} == {Phase.SCOPES}
 
 
 def test_a_move_that_kills_its_session_is_undone_and_the_next_call_runs_on_a_session_without_it(stub: Stub) -> None:

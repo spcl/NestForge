@@ -20,8 +20,11 @@ from nestforge.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
 
-#: The two targets every test runs on: placement is a choice on the GPU and a no-op on the CPU.
+#: The two targets the session's own calls run on: placement is a choice on the GPU and a no-op on the CPU.
 TARGETS = [pytest.param(False, id="cpu"), pytest.param(True, id="gpu")]
+#: The target the tools choose a device on; on a CPU session they change nothing (tests/test_tools_by_target.py), so
+#: a journal never holds them there.
+TOOL_TARGET = [pytest.param(True, id="gpu")]
 
 
 @dace.program
@@ -73,7 +76,7 @@ def test_unplace_reopens_the_scopes_and_keeps_the_kernels(tmp_path, gpu):
     kernel = session.set_scope([first]).reason
     session.place()
 
-    result = CALLS["unplace"](session)
+    result = session.unplace()
 
     assert result.status is MoveStatus.APPLIED and session.unplaced is None
     assert [ext.name for ext in external_calls(session.sdfg)] == [kernel]
@@ -94,7 +97,7 @@ def test_unplace_drops_the_device_memory_and_schedules_of_inserted_copies(tmp_pa
     assert all(ext.schedule != dace.ScheduleType.GPU_Device for ext in external_calls(session.sdfg))
 
 
-@pytest.mark.parametrize("gpu", TARGETS)
+@pytest.mark.parametrize("gpu", TOOL_TARGET)
 def test_unplace_then_scope_then_place_is_the_program_of_scoping_first(tmp_path, gpu):
     first, second = doalls(fresh(gpu, tmp_path))
     detour = replay(
@@ -121,7 +124,7 @@ def test_unplace_then_scope_then_place_is_the_program_of_scoping_first(tmp_path,
     assert structure(detour) == structure(direct)
 
 
-@pytest.mark.parametrize("gpu", TARGETS)
+@pytest.mark.parametrize("gpu", TOOL_TARGET)
 def test_a_journal_with_unplace_rebuilds_the_same_program(tmp_path, gpu):
     first, second = doalls(fresh(gpu, tmp_path))
     calls = [("set_scope", {"labels": [first]}), ("place", {}), ("unplace", {}), ("set_scope", {"labels": [second]})]
@@ -158,7 +161,7 @@ def test_set_scope_on_a_placed_program_is_refused_and_keeps_the_placement(tmp_pa
 
 
 def test_the_scopes_gate_names_unplace(tmp_path):
-    session = fresh(False, tmp_path)
+    session = fresh(True, tmp_path)
     first, _ = doalls(session)
     CALLS["run_defaults"](session, stage="placement")
 

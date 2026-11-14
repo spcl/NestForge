@@ -9,7 +9,7 @@ from typing import Any
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.wire import ROUTE, TOOLS, Effect, NoArgs
+from hpcagent_bench_plugins.nestforge.wire import ROUTE, TOOLS, Effect, NoArgs, ToolDef, described, target_of
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
 HINTS = {
@@ -38,10 +38,22 @@ def poster(name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return run
 
 
+def spec_for(name: str, entry: ToolDef, description: str) -> Spec:
+    return Spec(f"[{entry.phase}] {description}", entry.args, f"- `{name}` -- {description}", HINTS[entry.effect])
+
+
+def target_spec(name: str, entry: ToolDef) -> Callable[[Setup], Spec]:
+    """The spec of a tool whose text depends on the setup's device: a CPU-only setup reads that it changes nothing.
+    The tool stays served there, since a packet's phases fix its tools for every target (design D21)."""
+
+    def spec(setup: Setup) -> Spec:
+        return spec_for(name, entry, described(entry, target_of(setup.environ.get("LANGUAGE", ""))))
+
+    return spec
+
+
 for name, entry in TOOLS.items():
-    spec = Spec(
-        f"[{entry.phase}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
-    )
+    spec = target_spec(name, entry) if entry.cpu_description else spec_for(name, entry, entry.description)
     # in blind mode no tool answers how the program does
     tool(spec=spec, core=False, name=name, preview=name == "get_performance")(poster(name))
 

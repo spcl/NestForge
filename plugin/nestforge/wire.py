@@ -8,7 +8,22 @@ from typing import Any, Literal, NamedTuple
 
 import pydantic
 
-__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "ToolDef"]
+__all__ = [
+    "GPU_LANGUAGES",
+    "IDENTITY",
+    "NOTHING_TO_PLACE",
+    "ROUTE",
+    "TOOLS",
+    "WITHOUT_A_GPU",
+    "Args",
+    "Effect",
+    "NoArgs",
+    "Phase",
+    "Target",
+    "ToolDef",
+    "described",
+    "target_of",
+]
 
 #: The judge route every tool posts to, as ``/nestforge/<tool>``.
 ROUTE = "nestforge"
@@ -185,6 +200,40 @@ class ToolDef(NamedTuple):
     args: type[Args]
     description: str
     effect: Effect = Effect.ADD
+    #: What a setup without a GPU reads instead of ``description``, for a tool that has nothing to choose there (the
+    #: judge answers it with nothing changed); empty for a tool that works on every target.
+    cpu_description: str = ""
+
+
+#: The device a setup's kernels can run on, as its ``LANGUAGE`` says: unset says nothing, so neither is assumed.
+Target = Literal["cpu", "gpu", "unknown"]
+
+#: The languages whose setups target a GPU (the bench's ``GPU_LANGUAGES``); any other set language is a CPU setup.
+GPU_LANGUAGES = frozenset({"cuda", "hip"})
+
+#: The placement tools' text on a CPU-only setup: every kernel runs on the CPU, so a call changes nothing.
+NOTHING_TO_PLACE = (
+    "Not for this setup: it has no GPU, so every kernel runs on the CPU and there is nothing to place; the call "
+    "changes nothing. next_phase fixes the kernels set_scope and unset_scope left."
+)
+
+#: Added to a placement tool's description when the setup does not say its target.
+WITHOUT_A_GPU = "On a setup without a GPU it changes nothing."
+
+
+def target_of(language: str) -> Target:
+    """The target a setup's ``LANGUAGE`` names: a GPU dialect, another language (the CPU), or unset."""
+    language = language.strip()
+    if not language:
+        return "unknown"
+    return "gpu" if language in GPU_LANGUAGES else "cpu"
+
+
+def described(entry: ToolDef, target: Target) -> str:
+    """What a setup on ``target`` reads for the tool ``entry``."""
+    if not entry.cpu_description or target == "gpu":
+        return entry.description
+    return entry.cpu_description if target == "cpu" else f"{entry.description} {WITHOUT_A_GPU}"
 
 
 TOOLS: dict[str, ToolDef] = {
@@ -252,12 +301,15 @@ TOOLS: dict[str, ToolDef] = {
         "Run each kernel on the CPU or the GPU; a GPU kernel copies its arguments to the device and back inside its "
         "call. Answers each kernel's device and the transfers between them.",
         Effect.REPLACE,
+        NOTHING_TO_PLACE,
     ),
     "insert_copies": ToolDef(
         Phase.SCOPES,
         NoArgs,
         "Move the GPU kernels' host/device copies out of the calls into the program, so a value that stays on the "
         "GPU between kernels is copied once; answers the copies.",
+        Effect.ADD,
+        NOTHING_TO_PLACE,
     ),
     "unplace": ToolDef(
         Phase.SCOPES,
@@ -265,6 +317,7 @@ TOOLS: dict[str, ToolDef] = {
         "Undo place and insert_copies, keeping the kernels, so set_scope and unset_scope apply again; the moves inside "
         "a kernel stay, stage-loads-shared and the kernels' code go. Refused once focus_kernel started the kernel work.",
         Effect.REPLACE,
+        NOTHING_TO_PLACE,
     ),
     "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "focus_kernel": ToolDef(

@@ -159,6 +159,9 @@ bodies are lowered over device memory; it returns the copies. Both start from th
 apply again; `set_scope` on a placed program is refused instead of scoping the lowered one.
 The default runs `place()` when nothing is placed, then `insert_copies()` when a GPU kernel still copies inside its
 call; stage 5 builds GPU kernels over device pointers, so the copies are in before it.
+Without a GPU target there is no device to choose: the `place`, `insert_copies` and `unplace` tools answer `illegal`
+with that reason and change nothing, a CPU setup's agent reads as much in their descriptions, and the default still
+places every kernel on the CPU (design D21: one packet for both targets, since a packet's phases fix its tools).
 
 | | |
 |---|---|
