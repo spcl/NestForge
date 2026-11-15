@@ -17,7 +17,7 @@ from helpers import program_mismatch
 from nestforge.ir.names import in_order
 from nestforge.records import KernelStatus, MoveStatus
 from nestforge.session import Move, Session
-from nestforge.stages.moves import MOVE_SHAPES
+from nestforge.stages.moves import MOVE_SHAPES, PROPAGATE_CONFIG, config_names
 from nestforge.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
@@ -36,9 +36,16 @@ def straight_pair(session: Session) -> tuple[str, str]:
 
 
 def applied_and_valid(base: Session, move: Move) -> MoveStatus:
-    """``move`` applied on a copy of ``base``, whose program must still validate."""
+    """``move`` applied on a copy of ``base``, whose program must still validate. ``propagate-config`` is listed
+    without values, so it gets one preset size, as an agent passes it."""
     sut = base.trial()
-    status = sut.apply_move(move.kind, move.labels, move.tile_sizes, move.implementation).status
+    values = move.config_values
+    if move.kind == PROPAGATE_CONFIG and not values:
+        name = next(name for name in config_names(sut.sdfg) if name in sut.sizes)
+        values = {name: sut.sizes[name]}
+    status = sut.apply_move(
+        move.kind, move.labels, move.tile_sizes, move.implementation, move.max_iterations, values
+    ).status
     sut.sdfg.validate()
     return status
 

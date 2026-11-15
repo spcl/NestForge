@@ -12,7 +12,7 @@ from dace.libraries.linalg.nodes.tensordot import TensorDot
 from nestforge.ir.introspect import Row
 from nestforge.replay import Context, Script
 
-KERNEL = "conv2d_group_norm_scale_max_pool_clamp"
+KERNEL = "conv2d_gn_scale_maxpool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 

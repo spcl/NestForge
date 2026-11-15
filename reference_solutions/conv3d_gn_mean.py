@@ -12,7 +12,7 @@ is on the ``decoys`` branch."""
 
 from nestforge.replay import Context, Script
 
-KERNEL = "conv3d_group_norm_mean"
+KERNEL = "conv3d_gn_mean"
 CONFIGS = (Context("cpu", 72, "M"),)
 CI_SKIP = (
     "the bench grades this kernel against KernelBench's torch model, which the pip install of HPCAgent-Bench lacks "
