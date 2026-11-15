@@ -35,6 +35,8 @@ dependencies = [
     # The bench plugin (plugin/nestforge) runs on the agent side too.
     "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@5e07b54730ae276ef9d346cf84eba7003ee16267#subdirectory=agent",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@2718b2fee48a0a60b0ed1b65f281d9636e75f0f8",
+    # relayout's SDFG cast (the relayout move's cast), its `fparena` extra, at the commit relayout pins.
+    "fp-arena @ git+https://github.com/spcl/FP-Arena.git@08465359af8666927ab6b53bcfdce1865a6c34e1",
 ]
 
 [project.optional-dependencies]

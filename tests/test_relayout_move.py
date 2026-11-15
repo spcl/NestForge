@@ -8,7 +8,7 @@ import numpy as np
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
-from nestforge.stages.layout import RELAYOUT, requests_of
+from nestforge.stages.layout import RELAYOUT, layout_refusal, requests_of
 from nestforge.stages.performance import Reference
 
 N = dace.symbol("N", dace.int64, positive=True)
@@ -75,6 +75,20 @@ def test_a_block_after_the_permute_names_the_digits_the_permute_left(tmp_path):
     assert extents(sut, "A") == [5, 2, 4]
     assert requests_of(sut.layout) == {"operations": [PERMUTE_A, block]}
     assert correct(sut)
+
+
+def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(tmp_path):
+    sut = session(tmp_path)
+    cast = {"action": "cast", "array": "A", "to": "fp32"}
+
+    result = sut.apply_move(RELAYOUT, [], operation=cast)
+
+    assert result.status is MoveStatus.APPLIED, result
+    assert sut.sdfg.arrays["A"].dtype == dace.float32
+    a = np.arange(30.0).reshape(6, 5)
+    report = sut.performance({"A": a, "B": np.zeros((5, 6))}, Reference({"B": 2.0 * a.T}, 1e-6, 0.0), codegen="first")
+    assert report.structured.error == "" and report.structured.correct is True, report.structured
+    assert layout_refusal(sut.layout) is not None and "cast" in layout_refusal(sut.layout)
 
 
 def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path):
