@@ -10,7 +10,9 @@ vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` de
 
 `FP_LEVELS` lists three modes, strictest first. Each mode has a relative tolerance against the NumPy
 float64 oracle (`FP_RTOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
-below applies to it.
+below applies to it. The one exception is a reduction: CPF emits it as an OpenMP `simd reduction`, which may
+reassociate the sum, so a reduction kernel matches its sequential oracle within the dtype floor, not bit for bit
+(floating-point reordering is allowed on reductions).
 
 | Mode | tolerance | GNU | LLVM | oneAPI |
 |---|---|---|---|---|

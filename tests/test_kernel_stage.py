@@ -26,6 +26,7 @@ from nestforge.paths import REPO_ROOT
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     GPU_FORMS,
+    KernelVerdict,
     build_kernel_library,
     gpu_schedule,
     kernel_runtime_libraries,
@@ -80,6 +81,8 @@ KERNELS = [vadd, stencil_row_sum, axpy_in_place, scaled, scaled_by_cell]
 KERNEL_IDS = ["vadd", "stencil_row_sum", "axpy_in_place", "scaled", "scaled_by_cell"]
 #: Extents off any vector width, so a compiler's remainder loop runs too.
 KERNEL_SIZES = [{"N": 1037}, {"M": 13, "N": 67}, {"N": 1037}, {"N": 1037}, {"N": 1037}]
+#: The ULPs of its dtype a reassociated reduction may miss the sequential sum by, relative to its largest value.
+REDUCTION_ULPS = 4
 #: DT_NEEDED soname stems of the OpenMP runtimes a library can name.
 OPENMP_RUNTIME_STEMS = ("libgomp", "libomp", "libiomp5")
 ENTRY_DEFINITION = re.compile(r'^extern "C" void (\w+)\s*\([^)]*\)\s*\{', re.MULTILINE)
@@ -285,20 +288,39 @@ def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path):
     assert "__dace_" not in defined and "__program_" not in defined
 
 
-@pytest.mark.e2e
-@pytest.mark.parametrize("program, sizes", list(zip(KERNELS, KERNEL_SIZES)), ids=KERNEL_IDS)
-def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program, sizes):
-    """The shipped entry on seeded inputs, forked, against the kernel's NumPy reference at the strict rung;
-    the in-place kernel is restored before every timed rep."""
+def strict_verdict(tmp_path, program, sizes) -> KernelVerdict:
+    """The shipped entry on seeded inputs, forked, against the kernel's NumPy reference at the strict rung."""
     _, ext, boundary = lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     archive = build_kernel_library(src, "g++", None, tmp_path / "lib")
-    prep = prepare(boundary, ext.name)
+    return validate_kernel(archive, src, prepare(boundary, ext.name), sizes, reps=3)
 
-    verdict = validate_kernel(archive, src, prep, sizes, reps=3)
+
+#: The kernels without a reduction: the strict rung evaluates them in the oracle's order.
+ORDERED = [(p, s, k) for p, s, k in zip(KERNELS, KERNEL_SIZES, KERNEL_IDS, strict=True) if p is not stencil_row_sum]
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("program, sizes", [(p, s) for p, s, _ in ORDERED], ids=[k for _, _, k in ORDERED])
+def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program, sizes):
+    """At the strict rung a kernel without a reduction matches its oracle exactly; the in-place kernel is restored
+    before every timed rep."""
+    verdict = strict_verdict(tmp_path, program, sizes)
 
     assert verdict.error == "", verdict.error
     assert verdict.ok and verdict.maxdiff == 0.0, verdict
+    assert verdict.time_us > 0.0
+
+
+@pytest.mark.e2e
+def test_a_reduction_kernel_matches_its_oracle_within_the_dtype_floor(tmp_path):
+    """A row sum is an OpenMP simd reduction, which may reassociate the sum even at the strict rung (floating-point
+    reordering is allowed on reductions): it matches the sequential oracle within one ULP of its dtype, not bit for
+    bit."""
+    verdict = strict_verdict(tmp_path, stencil_row_sum, {"M": 13, "N": 67})
+
+    assert verdict.error == "", verdict.error
+    assert verdict.ok and verdict.md_rel <= verdict.dtype_floor * REDUCTION_ULPS, verdict
     assert verdict.time_us > 0.0
 
 
