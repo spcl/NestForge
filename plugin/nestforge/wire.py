@@ -4,7 +4,7 @@
 (no DaCe, no NestForge) and the judge route read the same table."""
 
 import enum
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import pydantic
 
@@ -43,6 +43,14 @@ class ViewTree(Args):
         default_factory=list,
         description="Open state or doall labels to close, after expand: one inside an expanded row closes alone.",
     )
+    c: list[str] = pydantic.Field(
+        default_factory=list,
+        description="Row labels whose leaf bodies print as C instead of Python (rows inside them too, unless set "
+        "themselves): C shows C++ tasklets (vector intrinsics, inline assembly) as written. Read-only.",
+    )
+    python: list[str] = pydantic.Field(
+        default_factory=list, description="Row labels whose leaf bodies print as Python again (the default)."
+    )
 
 
 class ListMoves(Args):
@@ -72,6 +80,18 @@ class ApplyMove(Labeled):
         default_factory=dict,
         description="propagate-config (labels []): the values of scalar arguments and free symbols you expect at run "
         'time, e.g. {"K": 3}.',
+    )
+    isa: str = pydantic.Field(
+        "auto",
+        description="auto-vectorize-scope: the ISA of the tiles, one of auto, avx512, avx2, sve, neon, scalar; "
+        "tile_sizes are the lanes per vectorized dimension, innermost last (sve ignores them).",
+    )
+    operation: dict[str, Any] = pydantic.Field(
+        default_factory=dict,
+        description="relayout (labels []): one operation of the bench's requests on an array argument, as relayout "
+        'reads it, e.g. {"action": "permute", "array": "A", "order": ["i1", "i0"]} or {"action": "block", '
+        '"array": "A", "digit": "i1", "factor": "8", "into": ["ib", "ii"]}; digits are named i0, i1, ... before any '
+        "operation renames them.",
     )
     # list_moves' note on a listed move, so the move is sent back as listed; never passed to the session
     current: str | None = pydantic.Field(
@@ -155,7 +175,8 @@ TOOLS: dict[str, ToolDef] = {
     "view_tree": ToolDef(
         Phase.MOVES,
         ViewTree,
-        "Open states and doalls with everything below them, close some again, then show the tree.",
+        "Open states and doalls with everything below them, close some again, print bodies as C or Python, then show "
+        "the tree. Changes only what is shown, never the program.",
         Effect.READ,
     ),
     "list_move_kinds": ToolDef(

@@ -1,7 +1,8 @@
 # How NestForge is built and how to extend it
 
-[Overview](../README.md). What each stage decides is in [stages.md](stages.md). This page is the map of the code: the
-layers, the phases an agent walks through, and where to add a move, a tool, a phase or a packet.
+[Overview](../README.md). What each stage decides is in [stages.md](stages.md); the tree the agent reads is in
+[ir.md](ir.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
+move, a tool, a phase or a packet.
 
 ## The layers
 
@@ -15,8 +16,8 @@ judge route do.
 | Judge route | `plugin/nestforge/routes/nestforge.py` | One session process per episode and kernel, one call at a time. |
 | Session process | `nestforge/server.py` | A `Session` in its own process; `CALLS` maps each tool to a session call and closes tools by state. |
 | Session | `nestforge/session.py` | The one API over the stages, used by agents, humans and the reference driver. Owns the SDFG. |
-| Stages | `nestforge/stages/` | One module per stage: `canonicalize`, `moves`, `expand`, `scopes`, `placement`, `kernel`, `variants`, `feedback`, `performance`, `finalize`. |
-| IR helpers | `nestforge/ir/` | Tree rows and labels (`names`, `introspect`), outlining (`extract`), kernel dependencies (`depends`). |
+| Stages | `nestforge/stages/` | One module per stage: `canonicalize`, `moves`, `expand`, `scopes`, `placement`, `kernel`, `variants`, `feedback`, `performance`, `finalize`; `layout` (argument layouts) and `vectorize` (one doall's vectorization) serve two move kinds. |
+| IR helpers | `nestforge/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
 | Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all three in the bench's CI, the second on `nestforge-two-stage`. |

@@ -14,7 +14,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import dace
 import sympy
@@ -30,6 +30,7 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegio
 from dace.transformation.passes.analysis import loop_analysis
 
 from nestforge.ir.dace_types import strings
+from nestforge.ir.emit_c import body_c
 from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
 from nestforge.ir.names import in_order, ordered_scope_children
 
@@ -38,6 +39,12 @@ TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
 
 #: Marks a Python body line, so a statement is never mistaken for a tree row.
 BODY = ": "
+#: The languages a leaf body is printed in: Python (the default) or C, which shows C++ tasklets (intrinsics, inline
+#: assembly) as written.
+Language = Literal["python", "c"]
+PYTHON: Language = "python"
+C: Language = "c"
+LANGUAGES: tuple[Language, ...] = (PYTHON, C)
 
 #: Entries of each cache of parsed index and bound texts; a program repeats a few hundred.
 CACHE_SIZE = 4096
@@ -310,6 +317,7 @@ def describe_graph(
     notes: Notes | None = None,
     expanded: View | Collection[str] | None = None,
     costs: WorkDepth | None = None,
+    languages: Mapping[str, Language] | None = None,
 ) -> str:
     """The program as a text tree, one line per block or kernel; loop and map rows carry their work and depth.
 
@@ -321,6 +329,8 @@ def describe_graph(
         holds, a closed map one row naming its nested states. Bare labels are opened ones; ``None`` shows every
         content.
     :param costs: :func:`program_work_depth` of ``sdfg``, when the caller holds it already.
+    :param languages: The language leaf bodies under a state or map row are printed in (:data:`LANGUAGES`): its own
+        entry, else that of the nearest row around it, else Python.
     """
     header = f"SDFG '{sdfg.label}'"
     opened = (
@@ -328,7 +338,18 @@ def describe_graph(
     )
     twin = lowered_twin(sdfg) if bodies or any(opened.values() if opened else ()) else None
     known = program_work_depth(sdfg) if costs is None else costs
-    tree = Tree([header], handle, interstate_definitions(sdfg), twin, notes, opened, bodies, known, state_counts(sdfg))
+    tree = Tree(
+        [header],
+        handle,
+        interstate_definitions(sdfg),
+        twin,
+        notes,
+        opened,
+        bodies,
+        known,
+        state_counts(sdfg),
+        dict(languages or {}),
+    )
     walk_regions(tree, sdfg, "")
     return "\n".join(tree.lines)
 
@@ -347,6 +368,8 @@ class Tree:
     costs: WorkDepth
     #: How many states access each container, keyed by its SDFG's id and name.
     states_using: Counter[tuple[int, str]]
+    #: Row label -> the language leaf bodies below it are printed in.
+    languages: dict[str, Language]
 
     def stamp(self, text: str, kind: str, obj: object) -> str:
         """Prefix a line's body with its session id, when there is one to prefix."""
@@ -365,10 +388,14 @@ class Tree:
         return "" if found is None else f"  work={found[0]} depth={found[1]}"
 
 
-def walk_regions(tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str, inside: bool = False) -> None:
-    """Render one CFG's blocks under ``prefix``, recursing; ``inside``: an open row holds them."""
+def walk_regions(
+    tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str, inside: bool = False, language: Language = PYTHON
+) -> None:
+    """Render one CFG's blocks under ``prefix``, recursing; ``inside``: an open row holds them; ``language``: the one
+    the row around them prints bodies in."""
     blocks = in_order(cfg)
     for index, block in enumerate(blocks):
+        spoken = tree.languages.get(block.label, language)
         last = index == len(blocks) - 1
         shown = isinstance(block, SDFGState) and tree.opens(block.label, inside)
         tree.lines.append(
@@ -377,52 +404,55 @@ def walk_regions(tree: Tree, cfg: dace.SDFG | ControlFlowRegion, prefix: str, in
         below = prefix + (BLANK if last else PIPE)
         if isinstance(block, SDFGState):
             if shown:
-                walk_state(tree, block, below)
+                walk_state(tree, block, below, spoken)
         elif isinstance(block, ConditionalBlock):
-            walk_branches(tree, block, below, inside)
+            walk_branches(tree, block, below, inside, spoken)
         elif isinstance(block, ControlFlowRegion):
-            walk_regions(tree, block, below, inside)
+            walk_regions(tree, block, below, inside, spoken)
 
 
-def walk_branches(tree: Tree, block: ConditionalBlock, prefix: str, inside: bool) -> None:
+def walk_branches(tree: Tree, block: ConditionalBlock, prefix: str, inside: bool, language: Language) -> None:
     """A conditional's branches, in stored order (the first matching one wins, so that is execution order)."""
     for index, (condition, branch) in enumerate(block.branches):
         last = index == len(block.branches) - 1
         tag = "else" if condition is None else f"when {resolve_scalars(condition.as_string, tree.defs)}"
         tree.lines.append(prefix + (ELBOW if last else TEE) + tree.stamp(f"{branch.label}  {tag}", "region", branch))
-        walk_regions(tree, branch, prefix + (BLANK if last else PIPE), inside)
+        walk_regions(tree, branch, prefix + (BLANK if last else PIPE), inside, language)
 
 
-def walk_state(tree: Tree, state: SDFGState, prefix: str) -> None:
+def walk_state(tree: Tree, state: SDFGState, prefix: str, language: Language) -> None:
     """A state's kernels: every map nest plus any library node, nested scopes recursed into."""
     children = ordered_scope_children(state)
     if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
         return
 
-    def descend(scope: nodes.MapEntry | None, pad: str, inside: bool) -> None:
+    def descend(scope: nodes.MapEntry | None, pad: str, inside: bool, spoken: Language) -> None:
         kernels = [n for n in children[scope] if isinstance(n, (nodes.MapEntry, nodes.LibraryNode))]
         for index, node in enumerate(kernels):
             last = index == len(kernels) - 1
             below = pad + (BLANK if last else PIPE)
             text = kernel_line(state, node)
             if isinstance(node, nodes.MapEntry):
-                nested = nested_sdfgs(state, node)
+                # the nests directly in this map: one inside a map in it is printed under that map
+                nested = [child for child in children[node] if isinstance(child, nodes.NestedSDFG)]
                 text += f"  num_states={sum(state_count(n.sdfg) for n in nested)}" if nested else ""
                 text += tree.cost(get_uuid(node, state))
             tree.lines.append(pad + (ELBOW if last else TEE) + tree.stamp(text, "nest", node))
             tree.lines.extend(note_lines(node, below, tree.notes))
             if isinstance(node, nodes.MapEntry):
                 opened = tree.opens(node.map.label, inside)
+                own = tree.languages.get(node.map.label, spoken)
                 leaf = not any(isinstance(child, nodes.MapEntry) for child in children[node])
                 if leaf and tree.with_bodies(opened):
                     assert tree.twin is not None, "with_bodies holds only with a lowered twin"
-                    tree.lines.extend(below + BODY + line for line in body_lines(tree.twin, state, node))
-                descend(node, below, opened)
+                    body = body_c(state, node) if own == C else body_lines(tree.twin, state, node)
+                    tree.lines.extend(below + BODY + line for line in body)
+                descend(node, below, opened, own)
                 if nested and tree.expanded is not None and opened:
                     for inner in nested:
-                        walk_regions(tree, inner.sdfg, below, inside=True)
+                        walk_regions(tree, inner.sdfg, below, inside=True, language=own)
 
-    descend(None, prefix, True)  # an open state opens what it holds
+    descend(None, prefix, True, language)  # an open state opens what it holds
 
 
 def note_lines(node: nodes.Node, below: str, notes: Notes | None) -> list[str]:
@@ -431,11 +461,6 @@ def note_lines(node: nodes.Node, below: str, notes: Notes | None) -> list[str]:
         return []
     note = notes(node)
     return [] if note is None else [below + note]
-
-
-def nested_sdfgs(state: SDFGState, entry: nodes.MapEntry) -> list[nodes.NestedSDFG]:
-    """The nested SDFGs anywhere in ``entry``'s scope."""
-    return [n for n in state.scope_subgraph(entry).nodes() if isinstance(n, nodes.NestedSDFG)]
 
 
 def state_count(region: ControlFlowRegion) -> int:

@@ -38,7 +38,7 @@ from nestforge.paths import REPO_ROOT
 from nestforge.records import MoveStatus, Record
 from nestforge.server import Setup, start
 from nestforge.session import Move, Session
-from nestforge.stages.moves import PROBE_UNROLL
+from nestforge.stages.moves import DEFAULT_ISA, PROBE_UNROLL
 from nestforge.stages.performance import Reference
 
 #: The command line's one-line help.
@@ -108,6 +108,8 @@ class AppliedMove(Record):
     implementation: str | None = None
     max_iterations: int = PROBE_UNROLL
     config_values: dict[str, int | float] = {}
+    operation: dict[str, object] = {}
+    isa: str = DEFAULT_ISA
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -172,7 +174,14 @@ class Script:
         if self.finished:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
         result = self.session.apply_move(
-            move.kind, move.labels, move.tile_sizes, move.implementation, move.max_iterations, move.config_values
+            move.kind,
+            move.labels,
+            move.tile_sizes,
+            move.implementation,
+            move.max_iterations,
+            move.config_values,
+            operation=move.operation,
+            isa=move.isa,
         )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -184,6 +193,8 @@ class Script:
             implementation=move.implementation,
             max_iterations=move.max_iterations,
             config_values=dict(move.config_values),
+            operation=dict(move.operation),
+            isa=move.isa,
         )
         self.applied.append(done)
         return done

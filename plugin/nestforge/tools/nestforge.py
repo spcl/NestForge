@@ -44,7 +44,9 @@ def delivering(
         if "error" in built:
             return {"ok": False, "error": built["error"]}
         final = built["result"]
-        return deliver({**payload, "library": final["library"], "workspace_bytes": final["workspace_bytes"]})
+        # the argument layouts the program works on; the harness lays the arguments out by them
+        laid = {"requests": final["requests"]} if final.get("requests") else {}
+        return deliver({**payload, "library": final["library"], "workspace_bytes": final["workspace_bytes"], **laid})
 
     return run
 

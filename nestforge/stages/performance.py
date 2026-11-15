@@ -10,11 +10,12 @@ import copy
 import ctypes
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import dace
 import numpy as np
+from relayout.layout import IndexMap
 
 from nestforge.build.arena import US_PER_S, reps_within_budget, rewind
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
@@ -22,6 +23,7 @@ from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
 from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
+from nestforge.stages.layout import logical_outputs
 from nestforge.stages.placement import Transfer
 
 
@@ -99,9 +101,14 @@ class Reference:
     atol: float
     #: Where the outputs come from: :data:`BENCH_REFERENCE` or :data:`NUMPY_REFERENCE`.
     source: str = "bench"
+    #: The arguments the program takes laid out (:func:`~nestforge.stages.layout.argument_layouts`), read back into
+    #: their logical shape at ``sizes`` before the comparison, as the harness reads them.
+    layouts: Mapping[str, tuple[IndexMap, np.dtype]] = field(default_factory=dict)
+    sizes: Mapping[str, int] = field(default_factory=dict)
 
     def mismatched(self, buffers: dict[str, np.ndarray]) -> list[str]:
         """The outputs ``buffers`` gets wrong: exactly compared when both sides are integer, else ``allclose``."""
+        buffers = logical_outputs(buffers, self.layouts, self.sizes)
         wrong: list[str] = []
         for name, expected in self.outputs.items():
             got = buffers[name].reshape(np.shape(expected))

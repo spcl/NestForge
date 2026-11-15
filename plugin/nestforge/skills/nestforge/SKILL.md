@@ -24,6 +24,10 @@ applies: {explicit: true}
   cuts). `collapse=[labels]` closes any open state or doall, also one inside a row you expanded; the row stays, its
   content goes. Expanding the outer row again opens everything below it once more. The view lasts while the row
   lives; a move keeps it on the rows it does not retire.
+- Bodies print as Python. `view_tree c=[labels]` prints the bodies under those rows as C instead (`python=[labels]`
+  goes back; a row inside keeps its own choice): C shows what Python cannot, the C++ of a vectorized body (its tile
+  loads, operations and stores) or of inline assembly, as written, with each operand the element it reads or writes.
+  `expand`, `collapse`, `c` and `python` only change what is shown, never the program.
 - A state row carries what a doall row carries: `reads=` and `writes=` (arguments, and arrays other states also
   use; a temporary of the state alone is left out) and its `work=` and `depth=`. A state that touches no array is
   its label alone.
@@ -71,9 +75,12 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
 | a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
+| a statement in a loop or doall body that uses nothing the iterations change (`scale = a * b`, a load of `w[0]`) | `hoist-invariant-for`, `hoist-invariant-doall` | it runs once, not every iteration |
 | a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
 | a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after`, `lib-into` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
 | a `lib_sync` waiting earlier than the host needs the device's results | `lib-after` past host work on other data | the host overlaps that work with the device |
+| a hot leaf doall over contiguous data whose hint says `loop not vectorized`, after the moves above | `auto-vectorize-scope` | its body runs as SIMD tiles; the compiler did not vectorize it |
+| a doall reading an argument with a stride (`A[j, i]` with `i` inner) whose order no move can change, or one swept in blocks | `relayout` (`permute`, `block`), before any other move | the harness passes the argument in the order the loops read it |
 
 3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `rollback`.
 4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
@@ -82,8 +89,9 @@ size is checked at a smaller one and timed at the graded size; the whole program
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
-`interchange-doall-doall` with itself. Fusion, fission, unrolling, `propagate-config`, `expand-library`,
-`snapshot-reads`, `doall-to-for` and `lib-before` / `lib-after` / `lib-into` (a call never moves back into a loop) have none: `rollback` is the way back.
+`interchange-doall-doall` with itself. Fusion, fission, unrolling, hoisting, `propagate-config`, `expand-library`,
+`snapshot-reads`, `doall-to-for`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
+never moves back into a loop) have none: `rollback` is the way back.
 
 ### A worked example
 
@@ -221,6 +229,44 @@ the state writes first copies the slice into a transient, so the two doalls stop
 can merge them (Floyd-Warshall: the `outer` temporary disappears). The copy is a doall, not a plain copy, which the
 cleanup after every move would fold back into a read of the array. Offered only where a slice is read and written by
 different doalls of one state.
+
+### Loop-invariant code
+
+**`hoist-invariant-for`** `[for]` and **`hoist-invariant-doall`** `[doall]`, LoopInvariantCodeMotion on that one loop
+or doall: you name the loop, the pass picks what moves. A statement whose inputs no iteration changes (an expression of
+arguments, a load of an element the loop never writes), and for a loop a whole sub-block that uses neither the loop
+variable nor anything the loop writes, runs once, before the loop.
+```
+for i: t = a * b; C[i] = t * X[i]   ->   t = a * b; for i: C[i] = t * X[i]
+```
+A statement invariant only in an inner doall of a perfect doall nest stays, so the nest stays one parallel space.
+Offered only where the pass finds something to hoist.
+
+### Vectorization
+
+**`auto-vectorize-scope`** `[doall]` with `tile_sizes` and `isa`, VectorizeMap: the doall, not inside another, runs
+as tiles of `tile_sizes` lanes per vectorized dimension (innermost last, at most three; `list_moves` lists `[8]`),
+with a masked tile for the remainder; every other doall stays scalar. `isa` is `auto` (the best this machine runs),
+`avx512`, `avx2`, `sve`, `neon` or `scalar`; `sve` picks its own vector length and ignores `tile_sizes`.
+```
+doall i in 0:N: y[i] = 2*x[i] + y[i]   ->   doall i in 0:N:8: tile_load x, y; tile_binop; tile_store y
+                                            doall i in N/8*8:N:8: the same, masked to the lanes below N
+```
+Read the result with `view_tree c=[state]`. Vectorize last: the body is C++ afterwards, which no structured move
+takes apart and no NumPy oracle spells, so the kernel holding it is checked by the whole program, not on its own.
+Refused, with the vectorizer's reason, where it cannot tile (a loop left in the body, a dependence between lanes).
+
+### Argument layouts
+
+**`relayout`** `[]` (no row) with `operation`, one operation of the bench's `requests` on an array argument, as
+relayout reads it: `{"action": "permute", "array": "A", "order": ["i1", "i0"]}` stores `A` transposed,
+`{"action": "block", "array": "A", "digit": "i1", "factor": 8, "into": ["ib", "ii"]}` cuts dimension `i1` into
+blocks of 8, and `split`, `pad`, `shuffle`, `linear_shuffle` and their inverses work the same way. Digits are named
+`i0`, `i1`, ... and keep their names through a permute, so each operation names the digits the ones before it left.
+The program then works on the argument laid out, and the operations become your submission's `requests`: the
+harness lays the inputs out before the call and reads the outputs back after it, outside the timing. Lay arguments
+out first: `relayout` is refused after any other change. A `cast` (`{"action": "cast", "array": "A", "to": "fp32"}`)
+applies and times, but `finalize` refuses it for now; roll it back before you submit.
 
 ### Unrolling and specialization
 

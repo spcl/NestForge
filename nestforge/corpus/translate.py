@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nestforge.ir.emit_python import kernel_args, kernel_arrays, oracle_sdfg, render
+from nestforge.ir.emit_python import UnsupportedNest, kernel_args, kernel_arrays, oracle_sdfg, render
 from nestforge.ir.extract import Boundary
 
 
@@ -17,10 +17,16 @@ class Prepared:
     name: str
     numpy_source: str
     args: tuple[str, ...]
+    #: Why the body has no NumPy spelling (a C++ tasklet: a vectorized body), so builds of the kernel go unchecked
+    #: and the whole program checks them; empty when ``numpy_source`` is the oracle.
+    unspelled: str = ""
 
 
 def prepare(boundary: Boundary, name: str) -> Prepared:
-    """The NumPy oracle of one extracted kernel."""
+    """The NumPy oracle of one extracted kernel; one whose body NumPy cannot spell keeps its arguments, no source."""
     sdfg = oracle_sdfg(boundary)
     args = kernel_args(boundary, kernel_arrays(boundary, sdfg))
-    return Prepared(name, render(name, args, sdfg), tuple(args))
+    try:
+        return Prepared(name, render(name, args, sdfg), tuple(args))
+    except UnsupportedNest as err:
+        return Prepared(name, "", tuple(args), unspelled=f"the kernel has no NumPy oracle: {err}")

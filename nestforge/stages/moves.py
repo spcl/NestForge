@@ -60,7 +60,15 @@ from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_m
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
 from dace.transformation.passes.gpu_specialization.block_tile_kernels import is_kernel
 from dace.transformation.passes.loop_fission import LoopFission
+from dace.transformation.passes.loop_invariant_code_motion import (
+    LoopInvariantCodeMotion,
+    hoist_loop_region,
+    hoist_map_scope,
+    loop_has_invariant_code,
+    map_has_invariant_code,
+)
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
+from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 from dace.transformation.transformation import PatternTransformation
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
@@ -68,9 +76,11 @@ from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
 from nestforge.records import CRASHES, Record
 from nestforge.stages.expand import expand_library, expansion, set_implementation
+from nestforge.stages.layout import RELAYOUT
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
+from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, vectorize_config, vectorize_refusal
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,16 +125,23 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "untile-for": (LoopRegion,),
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
+    "hoist-invariant-for": (LoopRegion,),
+    "hoist-invariant-doall": (nodes.MapEntry,),
+    AUTO_VECTORIZE: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.LibraryNode, ControlFlowBlock),
     LIB_AFTER: (nodes.LibraryNode, ControlFlowBlock),
     LIB_INTO: (nodes.LibraryNode, SDFGState),
     PROPAGATE_CONFIG: (),
+    RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
 DEVICE_KINDS = frozenset({"stage-loads-shared"})
+
+#: The ISA ``auto-vectorize-scope`` vectorizes for when none is given: the best one the host runs.
+DEFAULT_ISA = "auto"
 
 #: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order (for
 #: ``stage-loads-shared``, the thread block: one size per dimension, at most three).
@@ -138,7 +155,10 @@ PROBE_UNROLL = 16
 
 
 def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
-    """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension."""
+    """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension; the lanes
+    ``auto-vectorize-scope`` is listed with."""
+    if kind == AUTO_VECTORIZE:
+        return (DEFAULT_LANES,)
     if kind not in SIZED:
         return ()
     head = rows[0][0]
@@ -734,6 +754,21 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     return Rewrite(move.name, commit)
 
 
+def plan_auto_vectorize(row: Row, tile_sizes: Sequence[int], isa: str) -> Rewrite | str:
+    """Vectorize the top-level doall ``row`` for ``isa`` with ``tile_sizes`` lanes (:class:`VectorizeMap`), tried on a
+    copy of the program first, so a refusal is an answer and changes nothing."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    config = vectorize_config(isa, tile_sizes)
+    if isinstance(config, str):
+        return config
+    refused = vectorize_refusal(state, entry, config)
+    if refused is not None:
+        return refused
+    return region_rewrite(
+        "VectorizeMap", state.sdfg, lambda: VectorizeMap(config, state, entry).apply_pass(state.sdfg, {})
+    )
+
+
 def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     """A GPU kernel stages the tiles of the arrays its threads reuse through shared memory, one thread block of
     ``tile_sizes`` threads per tile."""
@@ -1037,6 +1072,22 @@ def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
     return region_rewrite(f"lib-{place}", node_state(row).sdfg, plan)
 
 
+def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
+    loop = cast(LoopRegion, row[0])
+    if not loop_has_invariant_code(loop):
+        return f"nothing in {loop.label} is loop-invariant: every statement reads what an iteration changes."
+    return region_rewrite("LoopInvariantCodeMotion", loop.sdfg, lambda: hoist_loop_region(loop))
+
+
+def plan_hoist_invariant_doall(row: Row) -> Rewrite | str:
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    # the map whose scope decides invariance: a hoist leaves the whole perfect nest or stays, as in canonical form
+    root = LoopInvariantCodeMotion().variant_root(state, entry)
+    if not map_has_invariant_code(state, entry, root):
+        return f"nothing in {entry.map.label} is invariant: every statement reads what an iteration changes."
+    return Rewrite("LoopInvariantCodeMotion", lambda: hoist_map_scope(state, entry, root))
+
+
 PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "for-fusion": plan_loop_fusion,
     "for-fission": plan_loop_fission,
@@ -1061,6 +1112,8 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-for": plan_untile_for,
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
+    "hoist-invariant-for": plan_hoist_invariant_for,
+    "hoist-invariant-doall": plan_hoist_invariant_doall,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
@@ -1178,6 +1231,17 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
     ),
+    "hoist-invariant-for": (
+        "LoopInvariantCodeMotion on this loop",
+        "the loop's loop-invariant statements (an expression or load whose inputs no iteration changes) and whole "
+        "sub-blocks that use neither the loop variable nor what the loop writes run once, before the loop. The "
+        "pass picks them; the loop stays.",
+    ),
+    "hoist-invariant-doall": (
+        "LoopInvariantCodeMotion on this doall",
+        "the same for a doall: a statement no parameter of the doall nest changes runs once, before the nest. A "
+        "statement invariant only in an inner doall of a perfect nest stays, so the nest stays whole.",
+    ),
     LIB_BEFORE: (
         "a state of its own, checked against the read and write sets of every block it crosses",
         "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a "
@@ -1213,6 +1277,21 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
         "(unroll-for, unroll-doall).",
     ),
+    AUTO_VECTORIZE: (
+        "VectorizeMap (tile_sizes: lanes per vectorized dimension, innermost last; isa)",
+        "the doall's innermost maps run as tiles of tile_sizes lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
+        "sve takes its own vector length, so its tile_sizes is ignored), with a masked tile for the remainder; the "
+        "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
+        "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
+    ),
+    RELAYOUT: (
+        "relayout's apply_requests (operation: one operation of the bench's requests on an array argument)",
+        "the program works on the argument as the operation lays it out (permute, block / unblock, split / unsplit, "
+        "pad / unpad, shuffle, linear_shuffle, cast), and the operation goes to the bench as the submission's "
+        "requests: the harness lays the argument out before the call and reads it back after it, outside the "
+        "timing. Every operation so far is laid out again from the program before the first, so a later one names "
+        "the digits the earlier ones left. Lay arguments out first: refused after any other change.",
+    ),
     "stage-loads-shared": (
         "StageLoadsThroughSharedMemory (tile_sizes, the thread block)",
         "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
@@ -1240,6 +1319,7 @@ def plan_move(
     config_values: Mapping[str, int | float] | None = None,
     program: dace.SDFG | None = None,
     output_dir: Path | None = None,
+    isa: str = DEFAULT_ISA,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`,
@@ -1252,6 +1332,8 @@ def plan_move(
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
             return f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}."
+    if kind == AUTO_VECTORIZE:
+        return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
@@ -1429,6 +1511,9 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-for": tile_loops,
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    "hoist-invariant-for": for_rows,
+    "hoist-invariant-doall": doall_rows,
+    AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
@@ -1449,7 +1534,10 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
             continue
         for rows in CANDIDATES[name](sdfg):
             labels = tuple(tree_label(obj) for obj, _ in rows)
-            if name == PROPAGATE_CONFIG:  # no values to probe with: judged when applied
+            if name in (
+                PROPAGATE_CONFIG,
+                AUTO_VECTORIZE,
+            ):  # no values to probe with, or too costly: judged when applied
                 found[(name, labels)] = None
                 continue
             try:

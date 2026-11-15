@@ -152,7 +152,7 @@ plugin/nestforge/  the HPCAgent-Bench plugin: tools, judge route, method prompt
 reference_solutions/  one reference-solution script per benchmark, replayed by nestforge/replay.py
 ```
 
-More: [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md), [build and runtime linking](docs/build.md),
+More: [the structure tree, NestForge's IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md), [build and runtime linking](docs/build.md),
 [FP modes and cost models](docs/fp-and-vectorization.md). Contributors follow [AGENTS.md](AGENTS.md).
 
 ## References

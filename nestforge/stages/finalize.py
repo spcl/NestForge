@@ -36,13 +36,21 @@ class Final(Record):
     device_source: str = ""
     link: tuple[str, ...]
     kernels: dict[str, str]
+    #: The submission's ``requests``: the argument layouts the program works on (``{}``: none).
+    requests: dict[str, object] = {}
 
 
-def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_dir: Path) -> Final:
+def assemble(
+    sdfg: dace.SDFG,
+    bench: BenchTarget,
+    kernels: dict[str, str],
+    out_dir: Path,
+    requests: dict[str, object] | None = None,
+) -> Final:
     """Render ``sdfg`` (every kernel already bound to its archive) by CPF in the bench C ABI and build it into
     ``out_dir``. On a GPU target with device code the form is a C++ host unit and a device unit in the GPU backend's
     language (CUDA or HIP), built into one library as the judge builds a two-unit GPU submission; without device code it is the CPU form. ``kernels`` maps each kernel to the variant that built it,
-    for the answer only."""
+    for the answer only; ``requests`` lays out the arguments the program works on laid out."""
     from hpcagent_bench import languages
     from hpcagent_bench.categories import Language
     from hpcagent_bench.cpf.bridge import render_canonical
@@ -87,4 +95,5 @@ def assemble(sdfg: dace.SDFG, bench: BenchTarget, kernels: dict[str, str], out_d
         device_source=form.device_code,
         link=tuple(form.link),
         kernels=kernels,
+        requests=requests or {},
     )

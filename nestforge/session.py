@@ -27,6 +27,7 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
+from relayout.ops import Operation
 
 from nestforge.build.arena import TIMED_REPS
 from nestforge.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
@@ -36,7 +37,10 @@ from nestforge.ir.dace_types import strings
 from nestforge.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
 from nestforge.ir.extract import find_state_of_node
 from nestforge.ir.introspect import (
+    PYTHON,
     WORK_DEPTH_FAILURES,
+    C,
+    Language,
     Row,
     WorkDepth,
     describe_graph,
@@ -78,7 +82,17 @@ from nestforge.stages.kernel import (
     unchecked_verdict,
     use_kernel_library,
 )
+from nestforge.stages.layout import (
+    RELAYOUT,
+    argument_layouts,
+    laid_out,
+    layout_operation,
+    layout_refusal,
+    physical_inputs,
+    requests_of,
+)
 from nestforge.stages.moves import (
+    DEFAULT_ISA,
     DEVICE_KINDS,
     EXPAND_LIBRARY,
     MOVE_SHAPES,
@@ -115,6 +129,7 @@ from nestforge.stages.scopes import (
     node_boundary,
 )
 from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
+from nestforge.stages.vectorize import AUTO_VECTORIZE
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
@@ -195,6 +210,10 @@ class Move(Record):
     max_iterations: int = PROBE_UNROLL
     #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
     config_values: dict[str, int | float] = {}
+    #: For ``relayout``, the operation it applies; listed without one, the agent passes it.
+    operation: dict[str, object] = {}
+    #: For ``auto-vectorize-scope``, the ISA its tiles are for; ``tile_sizes`` holds their lanes.
+    isa: str = DEFAULT_ISA
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -346,9 +365,12 @@ class Checkpoint:
     sdfg: dace.SDFG
     unplaced: dace.SDFG | None
     unscoped: tuple[dace.SDFG, Namer, list[MoveResult]] | None
+    unlaid: dace.SDFG | None
+    layout: tuple[Operation, ...]
     namer: Namer
     applied: list[MoveResult]
     expanded: dict[str, bool]
+    languages: dict[str, Language]
     costs: WorkDepth | None
     costs_skipped: str | None
     sources: dict[str, KernelSource]
@@ -370,12 +392,15 @@ class Session:
         "namer",
         "rows",
         "expanded",
+        "languages",
         "costs",
         "costs_skipped",
         "work_dir",
         "kernel_deps",
         "unplaced",
         "unscoped",
+        "unlaid",
+        "layout",
         "sources",
         "builds",
         "prepared",
@@ -422,6 +447,8 @@ class Session:
         self.shared_root: str | None = None
         # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: dict[str, bool] = {}
+        # labels whose leaf bodies describe() prints in another language than the row around them, kept while they live
+        self.languages: dict[str, Language] = {}
         self.costs: WorkDepth | None = None
         # why describe() printed no costs for this program, or None when it printed them
         self.costs_skipped: str | None = None
@@ -431,6 +458,10 @@ class Session:
         self.unplaced: dace.SDFG | None = None
         # the program before its first kernel, its row names and what it holds, so a new round starts from it
         self.unscoped: tuple[dace.SDFG, Namer, list[MoveResult]] | None = None
+        # the program before its first relayout, which every relayout lays out again with all the operations so far
+        self.unlaid: dace.SDFG | None = None
+        #: The relayout operations the program works on its arguments by, in order; the bench's ``requests``.
+        self.layout: tuple[Operation, ...] = ()
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
@@ -471,9 +502,12 @@ class Session:
             copy.deepcopy(self.sdfg),
             copy.deepcopy(self.unplaced),
             self.unscoped,  # replaced, never changed
+            self.unlaid,  # replaced, never changed
+            self.layout,
             copy.deepcopy(self.namer),
             list(self.applied),
             dict(self.expanded),
+            dict(self.languages),
             self.costs,
             self.costs_skipped,
             dict(self.sources),
@@ -496,7 +530,8 @@ class Session:
         """Make ``saved`` the session's program again."""
         self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
         self.unscoped = saved.unscoped
-        self.applied, self.expanded = saved.applied, saved.expanded
+        self.unlaid, self.layout = saved.unlaid, saved.layout
+        self.applied, self.expanded, self.languages = saved.applied, saved.expanded, saved.languages
         self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
         # the rows and the kernel graph hold nodes of the program just dropped
         self.rows, self.kernel_deps = None, None
@@ -533,6 +568,7 @@ class Session:
         force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
         self.expanded = {label: is_open for label, is_open in self.expanded.items() if label in self.row_index()}
+        self.languages = {label: lang for label, lang in self.languages.items() if label in self.row_index()}
         self.costs = None
         self.costs_skipped = None
         self.kernel_deps = None
@@ -596,6 +632,7 @@ class Session:
             notes=self.deps_line if deps else None,
             expanded=self.expanded,
             costs=self.costs,
+            languages=self.languages,
         )
         if self.costs_skipped is None:
             return tree
@@ -627,13 +664,33 @@ class Session:
                 return self.expanded[row]
         return False
 
-    def view(self, expand: Sequence[str] = (), collapse: Sequence[str] = ()) -> str:
-        """:meth:`expand` then :meth:`collapse`, so one call opens a row and closes some inside it; the tree after
-        them, each note first."""
+    def view(
+        self,
+        expand: Sequence[str] = (),
+        collapse: Sequence[str] = (),
+        c: Sequence[str] = (),
+        python: Sequence[str] = (),
+    ) -> str:
+        """:meth:`expand`, :meth:`collapse`, then :meth:`set_language` for ``c`` and ``python``, so one call opens a
+        row, closes some inside it and picks how bodies print; the tree after them, each note first. Only what is
+        shown changes, never the program."""
         notes = [self.expand(expand)] if expand else []
         if collapse:
             notes.append(self.collapse(collapse))
+        notes += [self.set_language(labels, lang) for labels, lang in ((c, C), (python, PYTHON)) if labels]
         return "\n".join([*notes, self.describe()])
+
+    def set_language(self, labels: Sequence[str], language: Language) -> str:
+        """Print the leaf bodies below the rows ``labels`` name in ``language`` (Python by default; C shows C++
+        tasklets, intrinsics and inline assembly, as written), until they retire; a row inside one keeps its own
+        choice. Returns what changed, or why nothing did."""
+        rows = self.row_index()
+        unknown = [label for label in labels if label not in rows]
+        if unknown:
+            return f"illegal: no tree row is labeled {', '.join(unknown)}; nothing changed."
+        for label in labels:
+            self.languages[label] = language
+        return f"ok: {', '.join(labels)} print bodies in {language}"
 
     @undone_on_failure
     def run_defaults(self, stage: Stage) -> object:
@@ -698,11 +755,47 @@ class Session:
                     for name in implementations(node, self.targets.gpu)
                 ]
             else:
-                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED else ()
+                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == AUTO_VECTORIZE else ()
                 moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
+        if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
+            moves.append(Move(kind=RELAYOUT, labels=()))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
         return moves
+
+    def relayout_refusal(self) -> str | None:
+        """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
+        others = sorted({move.kind for move in self.applied if move.kind != RELAYOUT})
+        if others:
+            return (
+                f"lay the arguments out before any other change; {others} came first (roll them back, or keep the "
+                "layout as it is)."
+            )
+        return None
+
+    def relayout(self, operation: Mapping[str, object]) -> MoveResult:
+        """Lay one argument out by ``operation`` (one relayout operation, as the bench's ``requests`` take it): the
+        program before its first relayout is laid out again with every operation so far and this one, so each names
+        the digits the ones before it left, as the harness reads the list."""
+        refused = self.relayout_refusal()
+        if refused is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=refused)
+        unlaid = self.unlaid if self.unlaid is not None else self.sdfg
+        try:
+            op = layout_operation(operation, unlaid)
+            laid = laid_out(unlaid, (*self.layout, op))
+        except ValueError as err:  # relayout's refusal, naming what it cannot lay out
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=str(err))
+        with self.atomic():
+            self.unlaid, self.layout, self.sdfg = unlaid, (*self.layout, op), laid
+            self.unplaced = None
+            self.bump()
+            self.sdfg.validate()
+            reason = f"relayout {op.action.value}"
+            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=reason)
+            self.applied.append(done)
+            self.remember()
+        return done
 
     def apply_move(
         self,
@@ -713,6 +806,8 @@ class Session:
         max_iterations: int = PROBE_UNROLL,
         config_values: Mapping[str, int | float] | None = None,
         scope: str | None = None,
+        operation: Mapping[str, object] | None = None,
+        isa: str = DEFAULT_ISA,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -729,6 +824,8 @@ class Session:
         :param config_values: For ``propagate-config``, the run-time values of scalar arguments and free symbols;
             the program becomes a dispatch between the program specialized for them and the program as it was.
         :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
+        :param operation: For ``relayout``, one relayout operation on an argument (:meth:`relayout`).
+        :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -738,6 +835,11 @@ class Session:
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
         if kind == ROLLBACK:
             return self.undo()
+        if kind == RELAYOUT:
+            if scope is not None:
+                reason = "relayout lays out the program's arguments, not a kernel's body: name no scope."
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+            return self.relayout(operation or {})
         if scope is not None and kind == PROPAGATE_CONFIG:
             reason = "propagate-config specializes the whole program, not a kernel's body: name no scope."
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
@@ -747,7 +849,7 @@ class Session:
         if isinstance(rows, MoveResult):
             return rows
         config = (config_values, target, self.work_dir / "config")
-        plan = plan_move(kind, rows, tile_sizes, implementation, max_iterations, *config)
+        plan = plan_move(kind, rows, tile_sizes, implementation, max_iterations, *config, isa=isa)
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
             offered = implementations(node, self.targets.gpu)
@@ -1184,6 +1286,9 @@ class Session:
         computed = computed_symbols(src, self.kernel_sizes(name))
         if computed:
             return unchecked_verdict(fp_mode, computed_symbols_reason(computed))
+        unspelled = self.prepare_kernel(name).unspelled
+        if unspelled:
+            return unchecked_verdict(fp_mode, f"{unspelled}; the whole program checks it")
         return measure_kernel(archive, src, self.kernel_probe(name, src), reps, fp_mode)
 
     def prepare_kernel(self, name: str) -> Prepared:
@@ -1245,6 +1350,9 @@ class Session:
                 f"{name} takes {computed}, which only the running program computes; its oracle has no value for "
                 "them, so it cannot be swept. finalize builds its first configuration."
             )
+        unspelled = self.prepare_kernel(name).unspelled
+        if unspelled:
+            raise ValueError(f"{name}: {unspelled}, so it cannot be swept. finalize builds its first configuration.")
         variants = device_variants(src.device, compilers)
         key = self.sweep_key(name, src)
         cells = self.sweep_cells.setdefault(key, {})
@@ -1355,6 +1463,9 @@ class Session:
         """
         if self.bench is None:
             raise ValueError("this session was not started from a bench kernel; set Session.bench to finalize")
+        refused = layout_refusal(self.layout)
+        if refused is not None:
+            raise ValueError(refused)
         # all of it on a trial, so a stop anywhere changes nothing and keeps the session and its sweeps
         with self.stopper.armed():
             trial = self.trial()
@@ -1367,7 +1478,8 @@ class Session:
                     if ext.name not in trial.builds:
                         trial.default_build(ext.name)
                 variants = {name: build.variant.label for name, build in trial.builds.items()}
-                return assemble(trial.sdfg, self.bench, variants, out_dir or self.work_dir / "final")
+                final_dir = out_dir or self.work_dir / "final"
+                return assemble(trial.sdfg, self.bench, variants, final_dir, requests_of(self.layout))
             finally:
                 # the library holds the kernels' archives; a long session would otherwise keep every trial until it exits
                 shutil.rmtree(trial.work_dir, ignore_errors=True)
@@ -1389,6 +1501,7 @@ class Session:
         copied.check_sizes, copied.oracles_out_of_time = self.check_sizes, self.oracles_out_of_time
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
+        copied.unlaid, copied.layout = self.unlaid, self.layout
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
@@ -1432,6 +1545,14 @@ class Session:
         devices = self.devices()
         moves = self.transfers(devices)
         evidence = self.kernel_evidence(reps)
+        if self.layout:
+            # the program works on its arguments laid out: they go in laid out and its outputs come back read
+            assert self.unlaid is not None, "a laid-out program keeps the program before its layout"
+            layouts = argument_layouts(self.unlaid, self.layout)
+            sizes = {name: int(value) for name, value in self.sizes.items()}
+            inputs = physical_inputs(inputs, layouts, sizes)
+            if reference is not None:
+                reference = dataclasses.replace(reference, layouts=layouts, sizes=sizes)
         program = time_program(
             self.sdfg, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
