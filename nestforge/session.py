@@ -220,6 +220,10 @@ FORCED_WARNING = (
 )
 #: The kind a default stage records in ``Session.applied``, before the stage's name.
 DEFAULTS_PREFIX = "defaults-"
+#: Why a scope is refused on a placed program: scoping the lowered program would drop the one placement starts from.
+PLACED = Refused(
+    "the kernels are placed: call unplace first, which keeps the scopes and drops the placement.", Refusal.ARGUMENT
+)
 
 
 class MoveResult(Record):
@@ -1250,12 +1254,7 @@ class Session:
         """
         names = tuple(labels)
         if self.unplaced is not None:
-            # scoping the lowered program would drop the program placement starts from
-            reason = Refused(
-                "the kernels are placed: call unplace first, which keeps the scopes and drops the placement.",
-                Refusal.ARGUMENT,
-            )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=reason)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=PLACED)
         self.end_moves()
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
@@ -1275,8 +1274,8 @@ class Session:
 
     @undone_on_failure
     def unset_scope(self, name: str) -> MoveResult:
-        """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
-        dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
+        """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`; its kernel source and
+        tuning are dropped with the kernel. Refused on a placed program, as :meth:`set_scope` is: :meth:`unplace` first.
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
         """
@@ -1290,7 +1289,7 @@ class Session:
             reason = Refused(f"{name} keeps no SDFG of its nest to inline.", Refusal.WRONG_ROW_KIND)
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
         if self.unplaced is not None:
-            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=PLACED)
         ext = self.kernel(name)
         assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
         # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only

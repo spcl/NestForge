@@ -220,6 +220,23 @@ def test_a_refused_first_place_keeps_the_scopes_already_set(tmp_path):
     assert [ext.name for ext in external_calls(session.sdfg)] == [kernel] and structure(session) == before
 
 
+@pytest.mark.parametrize("gpu", TARGETS)
+def test_unset_scope_on_a_placed_program_is_refused_and_keeps_the_placement(tmp_path, gpu):
+    session = fresh(gpu, tmp_path)
+    first, _ = doalls(session)
+    kernel = session.set_scope([first]).reason
+    session.place()
+    before, unplaced, devices = session.sdfg.to_json(), session.unplaced, session.devices()
+
+    result = session.unset_scope(kernel)
+
+    assert result.status is MoveStatus.ILLEGAL and "call unplace first" in result.reason
+    assert session.sdfg.to_json() == before and session.unplaced is unplaced and session.devices() == devices
+    assert session.unset_scope("no_such_kernel").status is MoveStatus.NOT_FOUND
+    session.unplace()
+    assert session.unset_scope(kernel).status is MoveStatus.APPLIED
+
+
 def test_the_scopes_gate_names_unplace(tmp_path):
     session = fresh(True, tmp_path)
     first, _ = doalls(session)
