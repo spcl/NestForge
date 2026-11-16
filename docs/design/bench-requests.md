@@ -147,7 +147,7 @@ records the episode as unsupported with the reason, in the same outcome class as
 ## B9: a route request names the episode's packet
 
 **Status.** Not needed for NestForge's design: the agent-side tool wrapper forwards the packet's setting with each
-call ([move-families.md](move-families.md)). The request remains as hardening.
+call ([move-families.md](../move-families.md)). The request remains as hardening.
 
 **Missing.** A plugin's session lives in the judge's process. A packet's `env` reaches the agent's tools, and
 `RouteRequest` has no packet field, so a route learns a packet's setting only from what the tool wrapper sends.

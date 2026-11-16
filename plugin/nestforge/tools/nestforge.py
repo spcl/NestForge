@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The NestForge tools on the agent side: each a thin ``POST /nestforge/<tool>`` (DaCe lives in the judge)."""
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -18,9 +19,21 @@ HINTS = {
 }
 
 
+#: The packet setting naming the move families a run switches off, comma-separated (``all``: every family). A
+#: packet's ``env`` reaches only this side, so every call carries it to the judge, which fixes it at the first.
+DISABLED_FAMILIES_ENV = "NESTFORGE_DISABLED_FAMILIES"
+
+
+def disabled_families() -> list[str]:
+    return [name.strip() for name in os.environ.get(DISABLED_FAMILIES_ENV, "").split(",") if name.strip()]
+
+
 def poster(name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def run(payload: dict[str, Any]) -> dict[str, Any]:
-        return http_json.post_judge(f"/{ROUTE}/{name}", {**payload, "kernel": http_json.assigned_kernel(payload)})
+        kernel = http_json.assigned_kernel(payload)
+        return http_json.post_judge(
+            f"/{ROUTE}/{name}", {**payload, "kernel": kernel, "disabled_families": disabled_families()}
+        )
 
     return run
 

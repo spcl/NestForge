@@ -80,7 +80,7 @@ A second request makes the move's refusals readable:
 | Refused | with DaCe's sentence as the reason, under the refusal class `dependence` of [the plugin record](../plugin-record.md) |
 | Rows after | the loop `u` and the loops of its chain are retired. The new sequential diagonal loop is a fresh `for<n>`, and each statement at a fixed diagonal is a fresh `doall<n>`, or the tile loops when it tiles (`Session.bump`) |
 | Listed | `list_moves` lists the move on every `for` row whose plan exists. The plan runs isl, so the listing is computed once per program version and cached, like every listing that analyzes |
-| Family | a new family `wavefront` in [move-families.md](move-families.md), so the all-or-none switch covers it |
+| Family | a new family `wavefront` in [move-families.md](../move-families.md), so the all-or-none switch covers it |
 
 The tree shows the result as it shows any loop and doall today. One field is added on the diagonal loop:
 `wavefront=(skew a=<a> b=<b>)` or `wavefront=(tiles <ti>x<tj>)`, so the agent sees what the move made.

@@ -42,6 +42,7 @@ from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.families import switched_off
 from nestforge.stages.finalize import BenchTarget, Final
 from nestforge.stages.moves import move_kinds
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
@@ -124,7 +125,9 @@ def run_defaults(session: Session, stage: Stage) -> object:
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
-    "list_move_kinds": lambda session: move_kinds(),
+    "list_move_kinds": lambda session: [
+        kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None
+    ],
     "list_moves": Session.list_moves,
     "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
     "applied_moves": lambda session: session.applied,
@@ -207,6 +210,8 @@ class Setup:
     gpu: bool
     #: The episode\'s folder, where finalize builds; the shared folder when empty.
     shared_root: str = ""
+    #: The move families the run switches off (:mod:`nestforge.stages.families`), sorted.
+    disabled_families: tuple[str, ...] = ()
 
 
 class Reply(Record):
@@ -318,7 +323,11 @@ def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
     if kernel is None:
         raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
     session = Session(
-        kernel.to_sdfg(), Targets(gpu=setup.gpu), sizes=preset_sizes(kernel, size_rung(setup.preset)), codegen=codegen
+        kernel.to_sdfg(),
+        Targets(gpu=setup.gpu),
+        sizes=preset_sizes(kernel, size_rung(setup.preset)),
+        codegen=codegen,
+        disabled_families=setup.disabled_families,
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.shared_root = setup.shared_root

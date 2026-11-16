@@ -16,7 +16,7 @@ import dataclasses
 import shutil
 import tempfile
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -78,6 +78,7 @@ from nestforge.stages.canonicalize import (
     structural_cleanup,
 )
 from nestforge.stages.expand import implementations, set_default_implementations, settle
+from nestforge.stages.families import DEFAULT_MOVES_FAMILY, checked_families, switched_off
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -451,6 +452,7 @@ class Session:
         "checkpoint",
         "history",
         "focus",
+        "disabled_families",
     )
 
     def __init__(
@@ -462,11 +464,17 @@ class Session:
         sizes: Mapping[str, SymbolValue] | None = None,
         codegen: Codegen = "first",
         namer: Namer | None = None,
+        disabled_families: Iterable[str] = (),
     ) -> None:
         """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
         :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
             ``first``, stage 5's first configuration; ``sweep``, the fastest correct one of stage 6's sweep.
-        :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default."""
+        :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default.
+        :param disabled_families: Move families (:data:`~nestforge.stages.families.FAMILIES`, or ``all``) this run
+            switches off: no listing offers their kinds, no call applies one, and no default runs one.
+        :raises ValueError: A name in ``disabled_families`` is no family."""
+        #: The move families switched off for the whole run.
+        self.disabled_families = checked_families(disabled_families)
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
@@ -733,6 +741,9 @@ class Session:
         done: object
         changed: object
         match stage:
+            case "moves" if DEFAULT_MOVES_FAMILY in self.disabled_families:
+                # the fusion stage is a move family; what follows it is canonical form, which every program needs
+                done = changed = self.finish_moves()
             case "moves":
                 done = changed = self.default_moves()
             case "finish":
@@ -798,7 +809,7 @@ class Session:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
-        return moves
+        return [move for move in moves if switched_off(move.kind, self.disabled_families) is None]
 
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
@@ -872,6 +883,12 @@ class Session:
         shape = MOVE_SHAPES[check_kind(kind)]
         if len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
+        family = switched_off(kind, self.disabled_families)
+        if family is not None:
+            reason = Refused(
+                f"{kind} belongs to the family {family}, which this run has switched off.", Refusal.FAMILY_OFF
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         if kind == ROLLBACK:
             return self.undo()
         if kind == RELAYOUT:
@@ -1547,6 +1564,7 @@ class Session:
             sizes=self.sizes,
             codegen=self.codegen,
             namer=copy.deepcopy(self.namer),
+            disabled_families=self.disabled_families,
         )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
         copied.swept, copied.swept_dir = self.swept, self.swept_dir

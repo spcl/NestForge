@@ -38,6 +38,7 @@ from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 from nestforge.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
 from nestforge.session import Sweep
+from nestforge.stages.families import checked_families, family_of
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
@@ -54,9 +55,11 @@ class Episode:
     measuring calls queue for a device slot. ``orphans`` keeps, per kernel, a finished change whose client had left, so
     that the client's retry reads the answer instead of repeating the change."""
 
-    __slots__ = ("lock", "measuring", "orphans", "sessions")
+    __slots__ = ("families", "lock", "measuring", "orphans", "sessions")
 
     def __init__(self) -> None:
+        #: The move families the episode switches off, fixed by its first call; ``None`` before it.
+        self.families: tuple[str, ...] | None = None
         self.lock = threading.Lock()
         self.measuring = threading.Lock()
         self.sessions: dict[str, SessionProcess] = {}
@@ -109,7 +112,7 @@ def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: objec
     return {
         "tool": name,
         "kind": arguments.get("kind"),
-        "family": None,
+        "family": family_of(str(arguments["kind"])) if arguments.get("kind") else None,
         "status": status,
         "refusal": outcome.get("refusal") or "",
         "phase": TOOLS[name].phase.value,
@@ -130,7 +133,7 @@ def log_call(episode_id: str, kernel: str, entry: dict[str, Any]) -> None:
         print(f"nestforge: call {entry['tool']} not logged: {err}", file=sys.stderr)
 
 
-def keep_episode_record(episode_id: str, kernel: str, final: object) -> None:
+def keep_episode_record(episode_id: str, kernel: str, final: object, families: tuple[str, ...]) -> None:
     """The plugin record of the episode so far (``docs/plugin-record.md``), written at every finalize, since a graded
     submission always follows one; a later write replaces it."""
     file = journal_file(episode_id, kernel, "calls")
@@ -139,10 +142,27 @@ def keep_episode_record(episode_id: str, kernel: str, final: object) -> None:
         dumped = final.model_dump(mode="json") if isinstance(final, pydantic.BaseModel) else final
         kernels = dumped.get("kernels") if isinstance(dumped, dict) else None
         journal = [journal_entry(*call) for call in journal_of(episode_id, kernel)]
-        data = episode_record(kernel, calls, journal, len(kernels) if isinstance(kernels, dict) else 0)
+        data = episode_record(
+            kernel, calls, journal, len(kernels) if isinstance(kernels, dict) else 0, families=families
+        )
         keep_capped(lambda record: keep_record(agent_root(episode_id), PLUGIN, SCHEMA, record), data)
     except (LookupError, OSError, ValueError) as err:
         print(f"nestforge: the plugin record of {episode_id} was not written: {err}", file=sys.stderr)
+
+
+def fix_families(episode: Episode, sent: object) -> str | None:
+    """Fix the episode's switched-off move families at its first call; why a call is refused, or ``None``. A call
+    that names other families than the first did is refused: a run switches families off for its whole length."""
+    names = sent if isinstance(sent, list) else []
+    try:
+        families = tuple(sorted(checked_families(str(name) for name in names)))
+    except ValueError as err:
+        return str(err)
+    if episode.families is None:
+        episode.families = families
+    if episode.families != families:
+        return f"this episode switched off {list(episode.families)} at its first call; a call cannot change that"
+    return None
 
 
 def record(episode_id: str, kernel: str, call: Call) -> None:
@@ -220,7 +240,8 @@ def session_of(
     episode.sessions.pop(kernel, None)  # its finalizer ends what a dead session left running
     journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
-    setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, str(agent_root(episode_id)))
+    root, families = str(agent_root(episode_id)), episode.families or ()
+    setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, root, disabled_families=families)
     session = SessionProcess(setup)
     for tool, arguments in journal:
         repeated = session.call(tool, arguments, gone, slot=slot, timed=False)
@@ -310,6 +331,10 @@ def serve(judge: Judge, request: RouteRequest) -> None:
         log_call(request.episode_id, kernel, call_entry(name, dict(request.body), Reply(error=str(err)), tokens))
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
     episode = episode_of(request.episode_id)
+    refused = fix_families(episode, request.body.get("disabled_families"))
+    if refused is not None:
+        log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), Reply(error=refused), tokens))
+        return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {refused}"))
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
     measuring = holds_device(episode, kernel, name, request.episode_id)
@@ -323,7 +348,7 @@ def serve(judge: Judge, request: RouteRequest) -> None:
             # under the episode's lock, so the log's indices follow the order the calls ran in
             log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), reply, tokens))
             if name == "finalize" and not reply.error:
-                keep_episode_record(request.episode_id, kernel, reply.result)
+                keep_episode_record(request.episode_id, kernel, reply.result, episode.families or ())
         except LookupError as err:
             error = f"{name}: the session could not start: {err}"
             return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))

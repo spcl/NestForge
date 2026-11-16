@@ -329,7 +329,7 @@ The change is confined to crossings where one side is a communication row, and t
 #### 12.2 Moving and splitting statements
 
 Two moves on compute rows. Both are general moves, in the families `fission` and `motion`
-([move-families.md](move-families.md)).
+([move-families.md](../move-families.md)).
 
 **`split-doall`** cuts a doall's range in two. Labels: one doall. Argument: `at = {"<param>": "<expr>"}`.
 

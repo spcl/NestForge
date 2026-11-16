@@ -37,8 +37,8 @@ Schema version 1:
 | `status` | the call's outcome: `applied`, `illegal` or `not-found` for a labeled call, a kernel outcome (`ok`, `unchecked`, `refused`, `build-failed`, `wrong`) for `write_kernel`, `ok` for a call that changes nothing, and `failed` for an error or arguments that do not validate |
 | `refusal` | the class of a refusal, empty otherwise (next section) |
 | `tokens` | the agent's cumulative tokens when it made the call; the bench sends them with every judge call |
-| `family` | the move's family, `null` until [move families](design/move-families.md) are built |
-| `disabled_families` | the families the packet switched off, empty until then |
+| `family` | the move's [family](move-families.md), `null` for a call that is not a move |
+| `disabled_families` | the families the run switched off ([move-families.md](move-families.md)) |
 | `reference` | whether the `nestforge_reference` column replayed a reference solution (`false`: the kernel has none, so it ran the default moves); `null` for every other column |
 | `journal` | the changes that made the program, with their arguments; a written kernel's source as `sha256:<digest>` |
 | `first_write_kernel` | the `index` of the first `write_kernel` call, or `null` |

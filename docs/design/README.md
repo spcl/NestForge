@@ -13,7 +13,6 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 
 | Page | Feature | Needs from the bench | Can start |
 |---|---|---|---|
-| [move-families.md](move-families.md) | switching move families off, and attributing a run's speedup to its moves | nothing | now |
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
 | [skew-wavefront.md](skew-wavefront.md) | the `skew-wavefront` move, and a canonical form without wavefronts for both agents of the study | B13 starts from it | after DaCe's D3 |
 | [bench-requests.md](bench-requests.md) | the fourteen requests to HPCAgent-Bench, B1 to B14 | | |
@@ -24,8 +23,7 @@ Build in this order. Each step is one pull request with its tests, and each page
 
 1. **The plugin record.** Built: [plugin-record.md](../plugin-record.md).
 2. **The `nestforge_default` column.** Built: `nestforge_bench.DefaultOptimizer`.
-3. **`move-families`.** The family table and the switch first. The replay script follows once a run with a record
-   exists.
+3. **Move families.** Built: [move-families.md](../move-families.md).
 4. **`comm-nodes`, package 1.** The fixtures and the canonicalization test. Its result decides whether DaCe needs a
    fix before anything else in that page is built.
 5. **`comm-nodes`, packages 2 to 7,** in the page's order. Package 12 (`split-doall`) is independent and fits anywhere.
@@ -41,8 +39,10 @@ not run and are the first to check:
 
 1. Whether DaCe's canonicalization keeps the order and the loop of every communication node (`comm-nodes.md`,
    section 9). `LoopToMap` has no check for side effects.
-2. Whether a packet's `env` reaches the process that runs the agent-side tool wrapper (`move-families.md`, the
-   switch). The packet `nestforge` already sets `JUDGE_INPUT_MODE` this way.
+2. Whether a packet's `env` reaches the process that runs the agent-side tool wrapper
+   ([move-families.md](../move-families.md), the switch). The wrapper's test sets the variable itself; a stub episode
+   under `nestforge-full-no-moves` is the check that remains. The packet `nestforge` already sets `JUDGE_INPUT_MODE`
+   this way.
 3. Whether DaCe's timer instrumentation writes one report per MPI rank (`comm-nodes.md`, section 12.4).
 4. Whether a DaCe program that takes a communicator argument puts it on the `_comm` connector of every node
    (`comm-nodes.md`, section 7).

@@ -85,6 +85,14 @@ aliases = ["nestforge-two-stage"]
 agent = ["moves", "scopes", "kernels", "codegen"]
 overlays = ["nestforge:prompt/overlay.yaml"]
 
+# The study's ablation: nestforge-full with every move family off. The agent sets scopes, writes kernel code and tunes
+# builds on the canonical form's kernels; no listing offers a move, and the moves phase runs no default fusion.
+[packets.nestforge-full-no-moves]
+extends = "nestforge-full"
+name = "NestForge (all phases, no moves)"
+agent = ["scopes", "kernels", "codegen"]
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
+
 # The kernels phase goes to one kernel-optimizer subagent per kernel, each with a context of its own.
 [packets.nestforge-subagents]
 extends = "nestforge-full"

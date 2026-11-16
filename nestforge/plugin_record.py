@@ -26,12 +26,13 @@ def episode_record(
     journal: Sequence[list[object]],
     kernels: int,
     reference: bool | None = None,
+    families: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The record of an episode so far. ``reference`` says whether the reference column replayed reference moves;
-    ``None`` for every other column."""
+    ``None`` for every other column. ``families`` are the move families the run switched off."""
     return {
         "kernel": kernel,
-        "disabled_families": [],
+        "disabled_families": sorted(families),
         "reference": reference,
         "calls": list(calls),
         "journal": list(journal),

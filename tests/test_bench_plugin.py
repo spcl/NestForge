@@ -57,6 +57,7 @@ from nestforge.paths import REPO_ROOT
 from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
 from nestforge.session import KernelOutcome, Move, MoveResult, Session
+from nestforge.stages.families import FAMILIES
 from nestforge_bench import DefaultOptimizer, ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
@@ -450,6 +451,46 @@ def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_an
     assert data["first_write_kernel"] == 4
     assert [tool for tool, _ in data["journal"]] == ["apply_move", "write_kernel"], "the changes, refusals left out"
     assert data["journal"][1][1]["source"] == f"sha256:{hashlib.sha256(b'x').hexdigest()}", "the source is hashed"
+
+
+def test_an_episode_switches_families_off_at_its_first_call_for_its_whole_length(stub: Stub) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    episode = "episode-ablation"
+
+    first = post("apply_move", episode, disabled_families=["all"], **MOVE)
+    changed = post("view_tree", episode, disabled_families=[])
+    post("finalize", episode, disabled_families=["all"])
+
+    assert first.code == HTTPStatus.OK and stub.started[-1].disabled_families == tuple(sorted(FAMILIES))
+    assert changed.code == HTTPStatus.BAD_REQUEST and "at its first call" in changed.answer["error"]
+    data = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+    assert data["disabled_families"] == sorted(FAMILIES)
+    assert [(c["tool"], c["family"], c["status"]) for c in data["calls"]] == [
+        ("apply_move", None, "applied"),  # MOVE's kind "fuse" is the stub's, in no family
+        ("view_tree", None, "failed"),
+        ("finalize", None, "ok"),
+    ]
+
+
+def test_an_unknown_family_is_refused_at_the_first_call(stub: Stub) -> None:
+    judge = post("view_tree", "episode-unknown-family", disabled_families=["fusions"])
+
+    assert judge.code == HTTPStatus.BAD_REQUEST and "no move family" in judge.answer["error"]
+    assert not stub.started, "no session starts for a run that names no family"
+
+
+def test_the_agent_side_tool_sends_the_packets_switched_off_families_with_every_call(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(http_json, "post_judge", lambda route, body: sent.append(body) or {"result": None})
+    monkeypatch.setattr(http_json, "assigned_kernel", lambda payload: KERNEL)
+    monkeypatch.setenv("NESTFORGE_DISABLED_FAMILIES", "fusion, tiling")
+
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: "view_tree"})
+    registry.served(setup)["view_tree"].run({})
+
+    assert sent[-1]["disabled_families"] == ["fusion", "tiling"]
 
 
 def test_a_kernel_written_without_a_check_is_journaled_as_the_change_it_is(stub: Stub) -> None:
@@ -1049,12 +1090,18 @@ def test_the_reference_column_says_when_a_kernel_had_no_solution_and_it_ran_the_
     assert (record["reference"], record["journal"]) == (False, [["run_defaults", {"stage": "moves"}]])
 
 
-def test_the_plugin_declares_the_reference_and_the_default_column(loaded: None) -> None:
+def test_the_plugin_declares_the_reference_and_the_default_column(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
 
     assert manifest["flavors"]["nestforge_default"]["optimizer"] == "nestforge_bench:DefaultOptimizer"
     assert "dace_cpu_canon_nestforge_default" in manifest["ci"]["optimizers"]
-    assert {"dace_cpu_canon_nestforge_reference", "dace_cpu_canon_nestforge_default"} <= set(FRAMEWORKS)
+    plugins.register_flavors.cache_clear()
+    plugins.register_flavors()
+    assert FRAMEWORKS.entries["dace_cpu_canon_nestforge_default"].pipelines == ("canon_cpu",)
+    assert FRAMEWORKS.entries["dace_gpu_canon_nestforge_default"].pipelines == ("canon_gpu",)
 
 
 def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(

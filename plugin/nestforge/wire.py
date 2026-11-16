@@ -14,7 +14,7 @@ __all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "T
 ROUTE = "nestforge"
 
 #: Body fields the transport adds to every request; never a tool argument.
-IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens"})
+IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens", "disabled_families"})
 
 
 class Phase(enum.StrEnum):
