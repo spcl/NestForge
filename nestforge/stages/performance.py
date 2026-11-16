@@ -283,10 +283,15 @@ def memlet_bytes(sdfg: dace.SDFG, memlet: dace.Memlet, sizes: Mapping[str, Symbo
 
 
 def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The bytes of container ``name`` at ``sizes``; ``None`` when it is no container of ``sdfg`` or its size has a
+    symbol ``sizes`` does not bind (one the running program computes)."""
     desc = sdfg.arrays.get(name)
     if desc is None:
         return None
-    return int(dace.symbolic.evaluate(desc.total_size, sizes)) * desc.dtype.bytes
+    total = dace.symbolic.pystr_to_symbolic(desc.total_size)
+    if any(str(sym) not in sizes for sym in total.free_symbols):
+        return None
+    return int(dace.symbolic.evaluate(total, sizes)) * desc.dtype.bytes
 
 
 def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[KernelReport]:

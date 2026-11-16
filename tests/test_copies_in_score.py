@@ -14,7 +14,14 @@ from test_placement import chain, kernel_session
 import nestforge.session as session_mod
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.performance import CopyReport, OffloadReport, ProgramReport, copy_reports, offload_report
+from nestforge.stages.performance import (
+    CopyReport,
+    OffloadReport,
+    ProgramReport,
+    array_bytes,
+    copy_reports,
+    offload_report,
+)
 from nestforge.stages.placement import copies_in_call, has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -70,6 +77,19 @@ def test_a_scalar_passed_by_value_is_no_copy_in_the_call(tmp_path: Path) -> None
     # s stays a host scalar the call passes by value; the arrays are device memory, so nothing is copied in the call
     assert program(session).arrays["s"].storage not in GPU_RESIDENT_STORAGES
     assert copies_in_call(program(session)) == []
+
+
+def test_a_transfer_of_an_array_the_program_sizes_at_run_time_has_no_bytes() -> None:
+    """``gmres`` moves an array of ``m*(m + 1)`` elements, ``m`` computed by the program: the report must not raise."""
+    sdfg = dace.SDFG("sized_at_run_time")
+    sdfg.add_symbol("m", dace.int64)
+    sdfg.add_array("h", [dace.symbol("m") * (dace.symbol("m") + 1)], dace.float64)
+    sdfg.add_array("a", [N], dace.float64)
+
+    assert array_bytes(sdfg, "h", {"N": SIZE}) is None
+    assert array_bytes(sdfg, "a", {"N": SIZE}) == VECTOR_BYTES
+    assert array_bytes(sdfg, "h", {"N": SIZE, "m": 3}) == 12 * 8
+    assert array_bytes(sdfg, "no_such_array", {"N": SIZE}) is None
 
 
 def test_inserting_the_copies_moves_them_into_the_program_with_their_bytes(tmp_path: Path) -> None:
