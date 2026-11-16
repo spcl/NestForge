@@ -112,9 +112,12 @@ spread of the two measurements is reported as 1.
 A packet with a switched-off family passes the plugin check and a stub episode. The script reproduces the final time
 of a stub episode from its plugin record and reports the share per family.
 
-## Decisions for the owner
+## Decisions
 
-1. Which ablation the NestForge study runs, if any: the same agent with all moves off (the packet above), or none
-   beyond the comparison with code-writing agents that the study already has.
-2. The grouping of the table, above all whether `tiling` and `unroll` are one family and where `doall-to-for` goes. It
+Taken by the owner on 2026-11-16: the study runs one ablation, the same agent with every move family off (the
+all-or-none packet above), on the frontier model with three repetitions.
+
+Open for the owner:
+
+1. The grouping of the table, above all whether `tiling` and `unroll` are one family and where `doall-to-for` goes. It
    decides only how the replay's rows are summed per family, and it can change after the runs.

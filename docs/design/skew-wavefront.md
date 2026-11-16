@@ -142,10 +142,6 @@ Taken by the owner on 2026-11-16:
 2. `skew-wavefront` is a move.
 3. CPF's own gain is measured by columns without an LLM.
 
-Open, with a recommendation:
-
-1. Whether the move also takes the skew factors `a` and `b`. Recommended: no. `WavefrontSkew` derives them from the
-   dependences, and a factor the agent picks would need its own legality proof.
-2. Whether the LLVM-pass agent's program is rendered with OpenMP pragmas on its doalls (the parallel form) or as
-   sequential C++. Recommended: with them, since that is what the canonical form says, and Polly then has less to
-   find.
+4. The move takes no skew factors. `WavefrontSkew` derives `a` and `b` from the dependences; the agent picks the
+   loop and, optionally, the tile sizes.
+5. The LLVM-pass agent's program keeps the OpenMP pragmas of the canonical form's doalls.

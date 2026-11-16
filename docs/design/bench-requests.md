@@ -241,5 +241,4 @@ best library unchanged.
 **Decided by the owner, 2026-11-16.** Polly counts as a pass. The starting program is the canonical form without
 wavefronts, the NestForge agent's own starting point, so the two agents differ only in their catalogue.
 
-**Open.** Whether the rendering keeps the OpenMP pragmas of the canonical form's doalls (recommended, since that is
-what the canonical form says), or renders them as sequential loops and leaves parallelization to Polly.
+The rendering keeps the OpenMP pragmas of the canonical form's doalls (owner, 2026-11-16).

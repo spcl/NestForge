@@ -60,8 +60,8 @@ Taken by the owner on 2026-11-16, each recorded in its page:
 - the application targets are the ICON dynamical core and OMEN, with independent agents;
 - `nestforge_reference` keeps its fallback to the default moves, and its record says which it was;
 - the budget covers no ablation run per family.
-- `skew-wavefront` is a move; the NestForge agent and the LLVM-pass agent (B13) both start from the canonical form
-  without wavefronts; Polly counts as a pass; the canonical form's own gain is measured by columns without an LLM.
+- the study runs the all-or-none move ablation; `skew-wavefront` is a move and takes no skew factors; the NestForge agent and the LLVM-pass agent (B13) both start from the canonical form
+  without wavefronts, rendered with its OpenMP pragmas; Polly counts as a pass; the canonical form's own gain is measured by columns without an LLM.
 
 Open, each listed at the end of its page: which ablation the study runs, the grouping of the families, GPU targets
 for communicating programs, and how ICON and OMEN become bench tasks.
