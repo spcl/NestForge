@@ -303,6 +303,13 @@ communication nodes, or tasklets and library nodes with side effects, across one
 and it still optimizes everything around them as far as it can. Every pass that changes gets a unit test. The fix
 comes after `skew-wavefront`.
 
+**Fixed on DaCe extended `6ed7dc19e6` (2026-11-16).** Every communication node reports a side effect, the queries of
+a communicator (`CommRank`, `CommSize`, `CommF2c`) excepted. `loop_analysis.ordered_side_effects` finds such nodes in
+a block, and `LoopToMap` (refusal `ORDERED_SIDE_EFFECT`), `LoopFusion`, `LoopFission`, the loop distribution, and
+`WavefrontSkew` refuse to parallelize, interleave, separate, or skew them. Both probes keep their loop, and the
+computation beside a collective still parallelizes (`tests/canonicalize/canonicalize_keeps_ordered_side_effects_test.py`).
+NestForge's package 1 test follows once the bench pins this commit.
+
 ### 10. Agent-facing text
 
 No new packet and no new phase. When the session is distributed:
