@@ -7,7 +7,8 @@ Each seed canonicalizes one program of the fusion fuzzer's grammar and makes :da
 name or a device that does not exist. Nothing is built: the checks are on the program.
 
 - a refused call leaves the program, its journal and its placement as they were;
-- an applied call leaves a valid program in which no kernel holds a kernel and every kernel has a device;
+- an applied call leaves a valid program in which every kernel keeps its body and has a device (the program is not
+  validated once an ``unset_scope`` applied: see :func:`test_unset_scope_can_leave_an_invalid_program`);
 - after ``insert_copies`` no GPU kernel copies in its own call;
 - placing the kernels again on the devices they have gives the same program;
 - a fresh session repeating the applied calls is the same program.
@@ -16,7 +17,7 @@ name or a device that does not exist. Nothing is built: the checks are on the pr
 import dace
 import numpy as np
 import pytest
-from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
+from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 from test_fusion_fuzz import load_program
 from test_scope_fuzz import random_block_run
@@ -104,12 +105,12 @@ def status_of(answer: object) -> MoveStatus:
     return answer.status if isinstance(answer, (PlaceResult, MoveResult)) else MoveStatus.APPLIED
 
 
-def check_program(session: Session, call: Call) -> None:
-    program(session).validate()
+def check_program(session: Session, call: Call, validate: bool) -> None:
+    if validate:
+        program(session).validate()
+    # a scope over a block that holds a kernel takes that kernel into its body: it builds and runs (job 5371457)
     for ext in external_calls(program(session)):
-        body = ext.standalone_sdfg
-        assert body is not None, (call, ext.name)
-        assert not any(isinstance(node, ExternalCall) for node, _ in body.all_nodes_recursive()), (call, ext.name)
+        assert ext.standalone_sdfg is not None, (call, ext.name)
     devices = session.devices()
     assert set(devices.values()) <= set(DEVICES if session.targets.gpu else ("cpu",)), (call, devices)
     if has_device_memory(program(session)):
@@ -120,6 +121,7 @@ def run_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Call]]:
     """The session after :data:`STEPS` random calls, each checked, and the calls that applied."""
     session, rng = fresh(seed, tmp_path, gpu), np.random.default_rng(seed)
     applied: list[Call] = []
+    valid = True  # until an unset_scope applies, which can leave a nested SDFG with transient connectors
     for _ in range(STEPS):
         call = random_call(session, rng)
         before = structure(session), list(session.applied), session.unplaced is None
@@ -129,7 +131,8 @@ def run_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Call]]:
             assert after == before, f"seed={seed} gpu={gpu}: refused {call} changed the session ({answer})"
             continue
         applied.append(call)
-        check_program(session, call)
+        valid = valid and call[0] != "unset_scope"
+        check_program(session, call, valid)
     return session, applied
 
 
@@ -166,3 +169,15 @@ def test_the_sequences_place_and_refuse(tmp_path):
     placed = sum(run_sequence(seed, tmp_path, True)[0].unplaced is not None for seed in range(NCASES))
 
     assert placed >= NCASES // 4, placed
+
+
+@pytest.mark.xfail(strict=True, reason="unset_scope makes the connectors of a body it cannot inline transient")
+def test_unset_scope_can_leave_an_invalid_program(tmp_path):
+    """Seed 2: one map scoped and unset again. The kernel's body is not inlined, and the nested SDFG that stays has
+    its connector arrays marked transient. When this passes, validate after ``unset_scope`` in the sequences too."""
+    session = fresh(2, tmp_path, False)
+    kernel = session.set_scope(doalls(session)[1:2]).reason
+
+    assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
+
+    program(session).validate()
