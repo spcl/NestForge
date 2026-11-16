@@ -12,7 +12,7 @@ from dace.sdfg.nodes import MapEntry
 from nestforge.records import MoveStatus, Refusal
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import has_device_memory
+from nestforge.stages.placement import has_device_memory, insert_copies
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -125,18 +125,28 @@ def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_pat
 def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_path):
     session, first, second = two_kernels(tmp_path, gpu=True)
     assert session.unset_scope(first).status is MoveStatus.APPLIED
-    session.place({second: "gpu"})
-
-    session.insert_copies()
+    # the stage itself: Session.place scopes the unscoped doall first, so only a direct caller meets one
+    sdfg = session.sdfg
+    assert sdfg is not None
+    insert_copies(sdfg, {second: "gpu"})
 
     top = [
         n.map.schedule
-        for n, st in session.sdfg.all_nodes_recursive()
-        if isinstance(n, MapEntry) and st.sdfg is session.sdfg and st.entry_node(n) is None
+        for n, st in sdfg.all_nodes_recursive()
+        if isinstance(n, MapEntry) and st.sdfg is sdfg and st.entry_node(n) is None
     ]
     assert len(top) == 1 and top[0] != dace.ScheduleType.GPU_Device  # the unscoped doall
     assert session.devices() == {second: "gpu"}
-    session.sdfg.validate()
+    sdfg.validate()
+
+
+def test_placing_through_the_session_scopes_the_unscoped_doall_first(tmp_path):
+    session, first, second = two_kernels(tmp_path, gpu=True)
+    assert session.unset_scope(first).status is MoveStatus.APPLIED
+
+    session.place({second: "gpu"})
+
+    assert len(session.devices()) == 2 and session.devices()[second] == "gpu"
 
 
 def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):

@@ -47,7 +47,7 @@ default = { tool = "run_defaults", args = { stage = "scopes" } }
 
 [phases.placement]
 title = "Placement"
-summary = "On a program not placed, what no scope covers gets its default scope and every kernel its default device; a placed program keeps its devices. The copies a GPU kernel still makes inside its call are inserted, and the kernels are fixed."
+summary = "On a program not placed, what no scope covers gets its default scope and every kernel its default device; a placed program, every unit of it in a kernel since its first placement, keeps its devices. The copies a GPU kernel still makes inside its call are inserted, and the kernels are fixed."
 default = { tool = "run_defaults", args = { stage = "placement" } }
 
 [phases.kernels]

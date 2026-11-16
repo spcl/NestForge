@@ -352,8 +352,8 @@ the fastest, so this move is for trying another. A host library keeps its kernel
 ## Scopes and kernels (when your tool list has them)
 
 Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase fixes the kernels, so the
-source you write for a kernel stays until a new round; on a program you did not place it first gives what no scope
-covers its default scope, while on one you placed that code stays outside the kernels. `next_phase`
+source you write for a kernel stays until a new round. What no scope covers gets its default scope there, or at your
+first `place`, which keeps your devices from then on. `next_phase`
 out of the last phase starts that round: the moves reopen and the scopes and kernel code are dropped, so `score` first.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of

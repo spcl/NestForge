@@ -89,10 +89,10 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 A scope is the atomic unit later stages optimize. Each scope is outlined into a standalone SDFG and replaced by an
 `ExternalCall` library node (`extcall_<row>`) that carries the kernel's Python oracle and boundary, and a `parallel`
 flag. `unset_scope(name)` inlines a kernel back (its standalone SDFG, kernel-local containers transient again),
-dropping any placement first. On a program not yet placed, `run_defaults("placement")` first gives what no scope covers
-its default scope (a block holding a kernel is never taken whole, since no kernel nests another); on a placed program it
-keeps the devices and only inserts the copies a GPU kernel still makes inside its call, so uncovered code stays outside
-the kernels. The session keeps the program from before its first
+dropping any placement first. The first placement, `place` or `run_defaults("placement")`, gives what no scope covers
+its default scope (a block holding a kernel is never taken whole, since no kernel nests another), so a placed program
+always has every unit in a kernel; on a placed program `run_defaults("placement")` keeps the devices and only inserts
+the copies a GPU kernel still makes inside its call. The session keeps the program from before its first
 kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
 kernel, scopes are fixed from placement on until `unplace` or a new round reopens them ([phases](README.md#the-phases)).
 

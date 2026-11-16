@@ -15,7 +15,7 @@ from test_failed_calls import program, without_guids
 
 from nestforge.records import MoveStatus
 from nestforge.server import CALLS
-from nestforge.session import Session
+from nestforge.session import PlaceResult, Session
 from nestforge.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -74,14 +74,33 @@ def test_unplace_reopens_the_scopes_and_keeps_the_kernels(tmp_path, gpu):
     session = fresh(gpu, tmp_path)
     first, second = doalls(session)
     kernel = session.set_scope([first]).reason
-    session.place()
+    session.place()  # gives second its default scope first
+    kernels = [ext.name for ext in external_calls(session.sdfg)]
 
     result = session.unplace()
 
     assert result.status is MoveStatus.APPLIED and session.unplaced is None
-    assert [ext.name for ext in external_calls(session.sdfg)] == [kernel]
+    assert [ext.name for ext in external_calls(session.sdfg)] == kernels and kernel in kernels and len(kernels) == 2
+    (default,) = set(kernels) - {kernel}
+    assert session.unset_scope(default).status is MoveStatus.APPLIED
     assert CALLS["set_scope"](session, labels=[second]).status is MoveStatus.APPLIED
     assert len(external_calls(session.sdfg)) == 2
+
+
+@pytest.mark.parametrize("gpu", TARGETS)
+def test_the_first_place_scopes_what_no_scope_covers_and_keeps_the_devices_it_was_given(tmp_path, gpu):
+    session = fresh(gpu, tmp_path)
+    first, _ = doalls(session)
+    kernel = session.set_scope([first]).reason
+    default = fresh(gpu, tmp_path / "default")
+    default.run_defaults("placement")
+
+    assert session.place({kernel: "cpu"}).status is MoveStatus.APPLIED
+    assert doalls(session) == [] and len(session.devices()) == len(default.devices())
+    assert session.devices()[kernel] == "cpu"
+    again = session.run_defaults("placement")  # on a GPU it inserts the copies; on a CPU nothing is left to do
+    assert isinstance(again, PlaceResult) and again.status is (MoveStatus.APPLIED if gpu else MoveStatus.ILLEGAL)
+    assert session.devices()[kernel] == "cpu"
 
 
 def test_unplace_drops_the_device_memory_and_schedules_of_inserted_copies(tmp_path):
@@ -98,7 +117,19 @@ def test_unplace_drops_the_device_memory_and_schedules_of_inserted_copies(tmp_pa
 
 
 @pytest.mark.parametrize("gpu", TOOL_TARGET)
-def test_unplace_then_scope_then_place_is_the_program_of_scoping_first(tmp_path, gpu):
+def test_unplace_then_place_again_is_the_program_of_placing_once(tmp_path, gpu):
+    first, _ = doalls(fresh(gpu, tmp_path))
+    once = [("set_scope", {"labels": [first]}), ("place", {}), ("insert_copies", {})]
+    detour = replay(gpu, tmp_path / "detour", [*once, ("unplace", {}), ("place", {}), ("insert_copies", {})])
+    direct = replay(gpu, tmp_path / "direct", once)
+
+    assert detour.devices() == direct.devices()
+    assert sorted(device_storages(detour)) == sorted(device_storages(direct))
+    assert structure(detour) == structure(direct)
+
+
+@pytest.mark.parametrize("gpu", TOOL_TARGET)
+def test_unplace_then_scope_then_place_puts_the_kernels_where_scoping_first_does(tmp_path, gpu):
     first, second = doalls(fresh(gpu, tmp_path))
     detour = replay(
         gpu,
@@ -108,6 +139,7 @@ def test_unplace_then_scope_then_place_is_the_program_of_scoping_first(tmp_path,
             ("place", {}),
             ("insert_copies", {}),
             ("unplace", {}),
+            ("unset_scope", {"name": "extcall_doall1"}),  # the default scope the first place gave second
             ("set_scope", {"labels": [second]}),
             ("place", {}),
             ("insert_copies", {}),
@@ -119,9 +151,9 @@ def test_unplace_then_scope_then_place_is_the_program_of_scoping_first(tmp_path,
         [("set_scope", {"labels": [first]}), ("set_scope", {"labels": [second]}), ("place", {}), ("insert_copies", {})],
     )
 
+    # unset_scope leaves the kernel's boundary containers in the program (as on origin/main), so the SDFGs differ there
     assert detour.devices() == direct.devices()
     assert sorted(device_storages(detour)) == sorted(device_storages(direct))
-    assert structure(detour) == structure(direct)
 
 
 @pytest.mark.parametrize("gpu", TOOL_TARGET)

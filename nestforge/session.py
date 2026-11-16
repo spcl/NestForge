@@ -1339,15 +1339,19 @@ class Session:
 
     @undone_on_failure
     def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
-        """Run each kernel on a device. Kernels ``devices`` leaves out keep the default: parallel kernels on the GPU
-        when it is a target, the rest on the CPU. A GPU kernel is offloaded inside its call, copying its arguments at
-        its own boundary; :meth:`insert_copies` moves those copies into the program. A later call starts again from
-        the program before the first placement.
+        """Run each kernel on a device. The first placement gives what no scope covers its default scope first, as
+        :meth:`run_defaults` with ``placement`` does, so a placed program has the kernel set the default would give.
+        Kernels ``devices`` leaves out keep the default: parallel kernels on the GPU when it is a target, the rest on
+        the CPU. A GPU kernel is offloaded inside its call, copying its arguments at its own boundary;
+        :meth:`insert_copies` moves those copies into the program. A later call starts again from the program before
+        the first placement.
 
-        :param devices: Kernel name -> ``cpu`` or ``gpu``.
+        :param devices: Kernel name -> ``cpu`` or ``gpu``; a kernel the default scopes make has its name only after
+            them, so it keeps its default device unless a later call names it.
         """
         if self.unplaced is None:
-            self.end_moves()
+            self.keep_unscoped()
+            self.default_scopes()
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
