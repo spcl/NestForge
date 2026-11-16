@@ -93,7 +93,7 @@ def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(t
 
 def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path):
     sut = session(tmp_path)
-    assert [m.labels for m in sut.list_moves(RELAYOUT)] == [()]
+    assert [(m.labels, m.operation) for m in sut.list_moves(RELAYOUT)] == [((), PERMUTE_A)]
     (other, *_) = sut.list_moves("expand-doall")
     sut.apply_move(other.kind, other.labels)
 
@@ -122,3 +122,21 @@ def test_rollback_takes_the_layout_back_with_the_program(tmp_path):
     assert sut.layout == ()
     assert extents(sut, "A") == [6, 5]
     assert correct(sut)
+
+
+@dace.program
+def scale(x: dace.float64[N], y: dace.float64[N]):
+    for i in dace.map[0:N]:
+        y[i] = 2.0 * x[i]
+
+
+def test_the_listed_relayout_applies_as_listed_and_none_is_listed_without_a_two_dimensional_argument(tmp_path):
+    sut = session(tmp_path)
+    flat = Session(scale.to_sdfg(simplify=True), work_dir=str(tmp_path / "flat"), sizes=SIZES)
+    flat.canonicalize()
+    (listed,) = sut.list_moves(RELAYOUT)
+
+    result = sut.apply_move(RELAYOUT, list(listed.labels), operation=listed.operation)
+
+    assert result.status is MoveStatus.APPLIED, result
+    assert flat.list_moves(RELAYOUT) == []

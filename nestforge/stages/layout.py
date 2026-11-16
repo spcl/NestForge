@@ -26,6 +26,7 @@ __all__ = [
     "laid_out",
     "layout_operation",
     "layout_refusal",
+    "listed_operation",
     "logical_outputs",
     "physical_inputs",
     "requests_of",
@@ -34,8 +35,8 @@ __all__ = [
 #: The move kind, on no row, that lays an argument out; it takes ``operation``.
 RELAYOUT = "relayout"
 
-#: The operations the move takes: the single-node ones relayout rewrites a program for (``format``, ``distribute``,
-#: ``replicate`` and ``place`` are the caller's), but ``zip`` and ``unzip``, which change the argument list.
+#: The operations the move takes: every single-node operation relayout rewrites a program for, except ``zip`` and
+#: ``unzip``, which change the argument list (``format``, ``distribute``, ``replicate`` and ``place`` are the caller's).
 LAYOUT_ACTIONS: tuple[Action, ...] = (
     Action.CAST,
     Action.BLOCK,
@@ -73,6 +74,19 @@ def layout_operation(raw: Mapping[str, object], program: dace.SDFG) -> Operation
             f"relayout lays out the program's array arguments {sorted(names)}; not {sorted(named - names)}."
         )
     return op
+
+
+def listed_operation(program: dace.SDFG) -> dict[str, object] | None:
+    """The operation ``relayout`` is listed with, on ``program`` before its first layout: the first array argument of
+    two or more dimensions with its two innermost digits swapped (a transpose, what a strided read wants), or None
+    when no argument has two. Any other operation is the agent's to pass."""
+    for name, desc in arguments(program).items():
+        rank = len(desc.shape)
+        if rank >= 2:
+            order = [f"i{digit}" for digit in range(rank)]
+            order[-2], order[-1] = order[-1], order[-2]
+            return {"action": Action.PERMUTE.value, "array": name, "order": order}
+    return None
 
 
 def laid_out(program: dace.SDFG, operations: Sequence[Operation]) -> dace.SDFG:

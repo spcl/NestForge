@@ -44,7 +44,14 @@ def applied_and_valid(base: Session, move: Move) -> MoveStatus:
         name = next(name for name in config_names(sut.sdfg) if name in sut.sizes)
         values = {name: sut.sizes[name]}
     status = sut.apply_move(
-        move.kind, move.labels, move.tile_sizes, move.implementation, move.max_iterations, values
+        move.kind,
+        move.labels,
+        move.tile_sizes,
+        move.implementation,
+        move.max_iterations,
+        values,
+        operation=move.operation,
+        isa=move.isa,
     ).status
     sut.sdfg.validate()
     return status

@@ -88,6 +88,7 @@ from nestforge.stages.layout import (
     laid_out,
     layout_operation,
     layout_refusal,
+    listed_operation,
     physical_inputs,
     requests_of,
 )
@@ -210,7 +211,7 @@ class Move(Record):
     max_iterations: int = PROBE_UNROLL
     #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
     config_values: dict[str, int | float] = {}
-    #: For ``relayout``, the operation it applies; listed without one, the agent passes it.
+    #: For ``relayout``, the operation it applies; listed with :func:`~nestforge.stages.layout.listed_operation`.
     operation: dict[str, object] = {}
     #: For ``auto-vectorize-scope``, the ISA its tiles are for; ``tile_sizes`` holds their lanes.
     isa: str = DEFAULT_ISA
@@ -758,7 +759,9 @@ class Session:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == AUTO_VECTORIZE else ()
                 moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
         if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
-            moves.append(Move(kind=RELAYOUT, labels=()))
+            listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
+            if listed is not None:
+                moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
         return moves
