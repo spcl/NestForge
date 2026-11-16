@@ -63,6 +63,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `collapse-doalls` | doall, doall inside it | `MapCollapse` |
 | `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
 | `doall-to-for` | one-dimensional outermost doall that holds a doall | `MapToForLoop`: the outer doall becomes a loop, the doalls inside stay parallel; empty states it leaves are dropped |
+| `for-to-doall` | for loop (+ `force`) | `LoopToMap`; with `force`, its permissive check, which waives conflicting writes but not a read of what an earlier iteration wrote, a range the body changes, or a symbol one iteration hands the next; a loop holding a call with an ordered side effect (communication) is refused; the answer of a forced move carries `forced` and a warning |
 | `snapshot-reads` | doall that reads a slice (one index per dimension: a map parameter or a value the doall does not change) of an array another doall of its state writes | a doall per slice copies it into a transient and the doall reads the transient, so `doall-fusion` can merge the two doalls; the copy is a doall because a plain copy is folded back by the cleanup |
 | `hoist-invariant-for` | for loop holding a loop-invariant statement or sub-block | `hoist_loop_region` of `LoopInvariantCodeMotion` on that loop |
 | `hoist-invariant-doall` | doall holding a statement no parameter of its nest changes | `hoist_map_scope` of `LoopInvariantCodeMotion`, judged against the outermost doall of a perfect nest |

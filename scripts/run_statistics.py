@@ -56,6 +56,7 @@ def row_of(data: dict[str, Any]) -> dict[str, Any]:
     first = data["first_write_kernel"]
     before = next((call["tokens"] for call in calls if call["index"] == first), None) if first is not None else None
     last = tokens[-1] if tokens else None
+    forced = [call["index"] for call in calls if call.get("forced", False)]  # records before the field have none
     return {
         "calls": len(calls),
         "applied": applied,
@@ -64,6 +65,10 @@ def row_of(data: dict[str, Any]) -> dict[str, Any]:
         "refusal_rate": refused / (applied + refused) if applied + refused else 0.0,
         "build_failures": statuses[BUILD_FAILED],
         "wrong_results": statuses[WRONG],
+        "forced": len(forced),
+        "wrong_after_forced": sum(
+            1 for call in calls if forced and call["index"] > forced[0] and call["status"] == WRONG
+        ),
         "tokens_at_last_call": last,
         "tokens_before_write": before,
         "tokens_after_write": last - before if last is not None and isinstance(before, int) else None,

@@ -16,7 +16,7 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | `library` | `lib-before`, `lib-after`, `lib-into`, `expand-library`, `set-library-implementation` |
 | `layout` | `relayout` |
 | `vectorize` | `auto-vectorize-scope` |
-| `schedule` | `doall-to-for` |
+| `schedule` | `doall-to-for`, `for-to-doall` |
 | `wavefront` | `skew-wavefront` |
 
 `rollback` belongs to no family and is never switched off. A new move kind joins a family in the same change, or

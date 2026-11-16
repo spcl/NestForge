@@ -23,9 +23,9 @@ KERNEL = "tsvc_2_s212"  # any real, fast-loading kernel
 SETUP = "nestforge-llr"
 
 
-def call(index: int, tool: str, status: str, tokens: int, refusal: str = "") -> JsonValue:
+def call(index: int, tool: str, status: str, tokens: int, refusal: str = "", forced: bool = False) -> JsonValue:
     return {"index": index, "tool": tool, "kind": None, "family": None, "status": status, "refusal": refusal,
-            "phase": "moves", "tokens": tokens}  # fmt: skip
+            "forced": forced, "phase": "moves", "tokens": tokens}  # fmt: skip
 
 
 def record(calls: list[JsonValue], first_write: int | None) -> dict[str, JsonValue]:
@@ -65,3 +65,18 @@ def test_two_episodes_give_two_rows_whose_token_split_adds_up(tmp_path: pathlib.
     assert (a["tokens_before_write"], a["tokens_after_write"]) == ("", ""), "no kernel written: no split"
     assert (b["refused_unknown_label"], b["build_failures"], b["wrong_results"]) == ("1", "1", "1")
     assert (b["tokens_before_write"], b["tokens_after_write"], b["tokens_at_last_call"]) == ("400", "600", "1000")
+
+
+def test_wrong_kernels_after_the_first_forced_move_are_counted_apart(tmp_path: pathlib.Path) -> None:
+    db, out = tmp_path / "results.db", tmp_path / "stats.csv"
+    calls = [call(0, "write_kernel", "wrong", 10), call(1, "apply_move", "applied", 20, forced=True),
+             call(2, "write_kernel", "wrong", 30), call(3, "apply_move", "applied", 40, forced=True),
+             call(4, "finalize", "ok", 50)]  # fmt: skip
+    folder = tmp_path / "w1"
+    plugin_records.keep(folder, "nestforge", 1, record(calls, 0))
+    graded(db, folder, f"{SETUP}.n0.p1.w1")
+
+    subprocess.run([sys.executable, str(SCRIPT), str(db), "--setup", SETUP, "--out", str(out)], check=True)
+
+    (row,) = csv.DictReader(out.open())
+    assert (row["forced"], row["wrong_results"], row["wrong_after_forced"]) == ("2", "2", "1")

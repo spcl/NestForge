@@ -14,6 +14,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | Page | Feature | Needs from the bench | Can start |
 |---|---|---|---|
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
+| [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | steps 1 and 2 now; `guided` on the GPU needs DaCe |
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
 
 ## Where to start

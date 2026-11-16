@@ -113,6 +113,7 @@ from nestforge.stages.moves import (
     DEFAULT_ISA,
     DEVICE_KINDS,
     EXPAND_LIBRARY,
+    FORCED_LOOP_TO_MAP,
     MOVE_SHAPES,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
@@ -203,6 +204,11 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
     return [s for s in src.boundary.symbols if s not in sizes]
 
 
+#: What a forced move tells the agent.
+FORCED_WARNING = (
+    "forced: the compiler did not prove this move legal. If the iterations depend on each other, the program is "
+    "wrong, and only a run on data shows it; rollback takes the move back."
+)
 #: The kind a default stage records in ``Session.applied``, before the stage's name.
 DEFAULTS_PREFIX = "defaults-"
 
@@ -218,6 +224,10 @@ class MoveResult(Record):
     scope: str | None = None
     #: Why nothing changed, as a class (:class:`~nestforge.records.Refusal`); ``None`` once ``applied``.
     refusal: RefusalOutcome | None = None
+    #: Whether the move was applied with ``force``, past a check that refused it.
+    forced: bool = False
+    #: What the agent should know about an applied move; ``None`` without anything to say.
+    warning: str | None = None
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -249,6 +259,8 @@ class Move(Record):
     operation: dict[str, object] = {}
     #: For ``auto-vectorize-scope``, the ISA its tiles are for; ``tile_sizes`` holds their lanes.
     isa: str = DEFAULT_ISA
+    #: For ``for-to-doall``, whether it applies past a refused dependence check; a listed move never does.
+    force: bool = False
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -857,6 +869,7 @@ class Session:
         scope: str | None = None,
         operation: Mapping[str, object] | None = None,
         isa: str = DEFAULT_ISA,
+        force: bool = False,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -875,6 +888,7 @@ class Session:
         :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
         :param operation: For ``relayout``, one relayout operation on an argument (:meth:`relayout`).
         :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
+        :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -909,7 +923,15 @@ class Session:
             return rows
         config = (config_values, target, self.work_dir / "config")
         plan = plan_move(
-            kind, rows, tile_sizes, implementation, max_iterations, *config, isa=isa, target=self.targets.canon_target
+            kind,
+            rows,
+            tile_sizes,
+            implementation,
+            max_iterations,
+            *config,
+            isa=isa,
+            target=self.targets.canon_target,
+            force=force,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
@@ -952,7 +974,16 @@ class Session:
             self.bump(consumed)
             # a move DaCe's own check let through may still build what its validation refuses: refused here, undone
             target.validate()
-            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=plan.name, scope=scope)
+            forced = plan.name == FORCED_LOOP_TO_MAP
+            done = MoveResult(
+                status=MoveStatus.APPLIED,
+                kind=kind,
+                labels=names,
+                reason=plan.name,
+                scope=scope,
+                forced=forced,
+                warning=FORCED_WARNING if forced else None,
+            )
             self.applied.append(done)
             self.remember()
         return done

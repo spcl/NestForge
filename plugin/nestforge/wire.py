@@ -86,6 +86,13 @@ class ApplyMove(Labeled):
         description="auto-vectorize-scope: the ISA of the tiles, one of auto, avx512, avx2, sve, neon, scalar; "
         "tile_sizes are the lanes per vectorized dimension, innermost last (sve ignores them).",
     )
+    force: bool = pydantic.Field(
+        False,
+        description="for-to-doall: apply although the dependence check refused, because you know that no two "
+        "iterations write one element (e.g. an index array is a permutation). Only that check is waived: a read of "
+        "what another iteration writes, and a communication call, are still refused. The answer carries a warning, "
+        "and a wrong program is yours to find.",
+    )
     operation: dict[str, Any] = pydantic.Field(
         default_factory=dict,
         description="relayout (labels []): one operation of the bench's requests on an array argument, as relayout "

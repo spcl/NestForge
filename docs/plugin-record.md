@@ -23,7 +23,7 @@ Schema version 1:
   "reference": null,
   "calls": [
     {"index": 0, "tool": "apply_move", "kind": "doall-fusion", "family": null, "status": "illegal",
-     "refusal": "dependence", "phase": "moves", "tokens": 41210}
+     "refusal": "dependence", "forced": false, "phase": "moves", "tokens": 41210}
   ],
   "journal": [["apply_move", {"kind": "doall-fusion", "labels": ["doall2", "doall4"]}]],
   "first_write_kernel": null,
@@ -36,6 +36,7 @@ Schema version 1:
 | `calls` | every call in the order it ran, without its arguments |
 | `status` | the call's outcome: `applied`, `illegal` or `not-found` for a labeled call, a kernel outcome (`ok`, `unchecked`, `refused`, `build-failed`, `wrong`) for `write_kernel`, `ok` for a call that changes nothing, and `failed` for an error or arguments that do not validate |
 | `refusal` | the class of a refusal, empty otherwise (next section) |
+| `forced` | `true` for a move the agent forced past DaCe's legality check (`for-to-doall` with `force`) |
 | `tokens` | the agent's cumulative tokens when it made the call; the bench sends them with every judge call |
 | `family` | the move's [family](move-families.md), `null` for a call that is not a move |
 | `disabled_families` | the families the run switched off ([move-families.md](move-families.md)) |
@@ -83,6 +84,7 @@ move kind on four corpus programs and requires a class for each refusal.
 | `calls`, `applied`, `refused`, `refused_<class>` | the calls' statuses and refusal classes |
 | `refusal_rate` | `refused / (applied + refused)` |
 | `build_failures`, `wrong_results` | `write_kernel` calls whose kernel did not build or was wrong |
+| `forced`, `wrong_after_forced` | the forced moves, and the wrong kernels after the first of them |
 | `tokens_before_write`, `tokens_after_write` | the tokens at the first `write_kernel`, and those spent after it up to the last call |
 | `fresh_input_tokens`, `cached_input_tokens`, `output_tokens` | the bench's token columns of the episode |
 

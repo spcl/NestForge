@@ -98,8 +98,8 @@ def journal_of(episode_id: str, kernel: str) -> list[Call]:
 
 
 def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: object) -> dict[str, Any]:
-    """One call as the plugin record counts it, without its arguments: its outcome, the refusal's class, and the
-    agent's cumulative tokens when it made the call (the bench sends them with every call)."""
+    """One call as the plugin record counts it, without its arguments: its outcome, the refusal's class, whether
+    the agent forced a move past the compiler's check, and the agent's cumulative tokens when it made the call (the bench sends them with every call)."""
     result = reply.result
     dumped = result.model_dump(mode="json") if isinstance(result, pydantic.BaseModel) else result
     outcome = dumped if isinstance(dumped, dict) and "status" in dumped else {}
@@ -115,6 +115,7 @@ def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: objec
         "family": family_of(str(arguments["kind"])) if arguments.get("kind") else None,
         "status": status,
         "refusal": outcome.get("refusal") or "",
+        "forced": bool(outcome.get("forced", False)),
         "phase": TOOLS[name].phase.value,
         "tokens": tokens if isinstance(tokens, int) else None,
     }

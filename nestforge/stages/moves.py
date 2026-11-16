@@ -39,6 +39,7 @@ from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.interstate import InlineSDFG, MapLoopInterchange, SubgraphFission
 from dace.transformation.interstate.loop_fusion import LoopFusion
 from dace.transformation.interstate.loop_tiling import LoopTiling
+from dace.transformation.interstate.loop_to_map import LoopToMap
 from dace.transformation.interstate.loop_unroll import LoopUnroll
 from dace.transformation.interstate.move_loop_into_map import MoveLoopIntoMap, analyze_lanes, single_map_body
 from dace.transformation.interstate.move_loop_invariant_if_up import MoveLoopInvariantIfUp, match_loop
@@ -101,6 +102,10 @@ SET_IMPLEMENTATION = "set-library-implementation"
 PROPAGATE_CONFIG = "propagate-config"
 #: The move kind, on no row, that takes the last change back; the session keeps the programs it returns to.
 ROLLBACK = "rollback"
+#: The move kind that turns a sequential loop into a doall; it takes ``force``.
+FOR_TO_DOALL = "for-to-doall"
+#: What a forced ``for-to-doall`` answers as the transformation that ran.
+FORCED_LOOP_TO_MAP = "LoopToMap, forced: the compiler did not prove the iterations independent"
 #: The move kind that skews a loop nest into a wavefront: a sequential diagonal loop over a doall per diagonal.
 SKEW_WAVEFRONT = "skew-wavefront"
 
@@ -140,6 +145,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
     SKEW_WAVEFRONT: (LoopRegion,),
+    FOR_TO_DOALL: (LoopRegion,),
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
@@ -1191,6 +1197,47 @@ def plan_skew_wavefront(row: Row, tile_sizes: Sequence[int] = (), target: str = 
     return region_rewrite("WavefrontSkew", sdfg, lambda: skew.commit(plan, sdfg))
 
 
+def ordered_side_effect_in(region: ControlFlowRegion) -> str | None:
+    """The label of a node in ``region`` whose side effect must keep its order (a communication call), or ``None``."""
+    for node, parent in region.all_nodes_recursive():
+        if isinstance(node, nodes.CodeNode) and isinstance(parent, SDFGState):
+            if node.has_ordered_side_effects(parent.sdfg):
+                return node.label
+    return None
+
+
+def plan_for_to_doall(row: Row, force: bool = False) -> Rewrite | str:
+    """The sequential loop ``row`` becomes a doall where DaCe's :class:`LoopToMap` proves its iterations independent.
+    With ``force`` the agent vouches for the containers: conflicts between iterations on them are waived, and every
+    other condition still holds (bounds, ordered side effects, symbols one iteration hands to the next)."""
+    loop = cast(LoopRegion, row[0])
+    lift = LoopToMap()
+    lift.loop = loop
+    lift.keep_small_loops_sequential = False  # the agent asked for this loop
+    name = "LoopToMap"
+    if not lift.probe():
+        refusal = lift.last_refusal
+        why = "it gave no reason" if refusal is None else refusal.message
+        if not force:
+            return Refused(f"blocked by LoopToMap: {loop.label}: {why}.", Refusal.DEPENDENCE)
+        ordered = ordered_side_effect_in(loop)
+        if ordered is not None:
+            # canonicalization orders such calls through data, a conflict that permissive mode would waive
+            return Refused(
+                f"{loop.label} holds {ordered}, whose side effect is ordered across iterations; force does not "
+                "waive that.",
+                Refusal.COMMUNICATION,
+            )
+        if not lift.probe(permissive=True):
+            refusal = lift.last_refusal
+            why = "it gave no reason" if refusal is None else refusal.message
+            return Refused(
+                f"blocked by LoopToMap, which force does not waive: {loop.label}: {why}.", Refusal.DEPENDENCE
+            )
+        name = FORCED_LOOP_TO_MAP
+    return region_rewrite(name, loop.sdfg, lift.rewrite)
+
+
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
@@ -1337,6 +1384,13 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "parallel, so its body can for-fusion with a sequential loop over the same range (a physics pass into the "
         "level scan it feeds).",
     ),
+    FOR_TO_DOALL: (
+        "LoopToMap (force, optional)",
+        "for i: B becomes doall i: B where DaCe proves that no iteration reads or writes what another writes. With "
+        "force, you vouch for the arrays: conflicts between iterations are not checked, and a wrong program is yours "
+        "to find. Force only what you can argue (an index array that is a permutation); bounds, calls with ordered "
+        "side effects and scalars carried between iterations are checked either way.",
+    ),
     "snapshot-reads": (
         "a doall of its own that copies each slice (SnapshotReads)",
         "a doall that reads a slice of an array (path[:, k], path[k, :]: one index per dimension, a map parameter or a "
@@ -1454,12 +1508,13 @@ def plan_move(
     output_dir: Path | None = None,
     isa: str = DEFAULT_ISA,
     target: str = "cpu",
+    force: bool = False,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
-    is the device the wavefront's tiles are for."""
+    is the device the wavefront's tiles are for, and ``force`` goes to :data:`FOR_TO_DOALL`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
@@ -1473,6 +1528,8 @@ def plan_move(
         return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
     if kind == SKEW_WAVEFRONT:
         return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
+    if kind == FOR_TO_DOALL:
+        return plan_for_to_doall(*rows, force=force)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
@@ -1659,6 +1716,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
     SKEW_WAVEFRONT: for_rows,
+    FOR_TO_DOALL: for_rows,
 }
 
 

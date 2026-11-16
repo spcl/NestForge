@@ -110,6 +110,7 @@ class AppliedMove(Record):
     config_values: dict[str, int | float] = {}
     operation: dict[str, object] = {}
     isa: str = DEFAULT_ISA
+    force: bool = False
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -182,6 +183,7 @@ class Script:
             move.config_values,
             operation=move.operation,
             isa=move.isa,
+            force=move.force,
         )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -195,6 +197,7 @@ class Script:
             config_values=dict(move.config_values),
             operation=dict(move.operation),
             isa=move.isa,
+            force=move.force,
         )
         self.applied.append(done)
         return done

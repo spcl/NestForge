@@ -19,7 +19,7 @@ from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.helpers import nest_state_subgraph
 
 from nestforge.ir.names import normalize_labels
-from nestforge.records import MoveStatus
+from nestforge.records import MoveStatus, Refusal
 from nestforge.session import MoveResult, Session
 from nestforge.stages.scopes import top_level_map_entries
 
@@ -1143,6 +1143,92 @@ def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside():
 
     assert sut.list_moves("doall-to-for") == []
     assert result.status is MoveStatus.ILLEGAL and "no parallelism" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+
+def strip_labels(tree: str) -> str:
+    """``tree`` with the numbers of its row labels dropped: a move relabels the rows it rebuilds."""
+    return re.sub(r"\b([a-z]+)\d+\b", r"\1", tree)
+
+
+def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_the_doall_nest():
+    sut, reference = session_and_reference(level_pass)
+    apply_listed(sut, "expand-doall")
+    nest = sut.describe()
+    apply_listed(sut, "doall-to-for")
+
+    result = apply_listed(sut, "for-to-doall")
+
+    assert (result.status, result.reason, result.forced, result.warning) == (
+        MoveStatus.APPLIED, "LoopToMap", False, None
+    )  # fmt: skip
+    assert loops(sut.sdfg) == []
+    assert len(top_level_maps(sut.sdfg)) == 1, "one outer doall, its inner doall under it"
+    assert strip_labels(sut.describe()) == strip_labels(nest)
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason():
+    sut = Session(recur.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("for-to-doall", [loop.label])
+
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.DEPENDENCE), result
+    assert result.reason.startswith(f"blocked by LoopToMap: {loop.label}: ")
+    assert digest(sut.sdfg) == before
+
+
+@dace.program
+def scatter(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]):
+    for i in range(N):
+        out[perm[i]] = x[i] * 2.0
+
+
+def test_forced_for_to_doall_makes_a_scatter_through_a_permutation_a_doall_and_warns():
+    """The compiler cannot prove ``perm`` a permutation; the agent may know it is one."""
+    sut, reference = session_and_reference(scatter)
+    (loop,) = loops(sut.sdfg)
+    assert sut.apply_move("for-to-doall", [loop.label]).status is MoveStatus.ILLEGAL
+
+    result = sut.apply_move("for-to-doall", [loop.label], force=True)
+
+    assert (result.status, result.forced) == (MoveStatus.APPLIED, True), result
+    assert result.warning is not None and "did not prove" in result.warning
+    assert loops(sut.sdfg) == [] and len(top_level_maps(sut.sdfg)) == 1
+    arrays = {
+        "perm": np.random.default_rng(0).permutation(SIZE).astype(np.int64),
+        **random_arrays(x=(SIZE,), out=(SIZE,)),
+    }
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
+
+
+def test_force_does_not_waive_a_read_of_what_an_earlier_iteration_wrote():
+    sut = Session(recur.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("for-to-doall", [loop.label], force=True)
+
+    assert (result.status, result.refusal, result.forced) == (MoveStatus.ILLEGAL, Refusal.DEPENDENCE, False), result
+    assert "which force does not waive" in result.reason
+    assert digest(sut.sdfg) == before
+
+
+def test_forced_for_to_doall_keeps_a_loop_whose_call_has_an_ordered_side_effect():
+    sdfg = scatter.to_sdfg(simplify=True)  # force lifts it without the side effect
+    tasklets = [node for node, _ in sdfg.all_nodes_recursive() if isinstance(node, nodes.Tasklet)]
+    for tasklet in tasklets:
+        tasklet.ordered_side_effects = True  # as a communication call is
+    sut = Session(sdfg)
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("for-to-doall", [loop.label], force=True)
+
+    assert (result.status, result.refusal, result.forced) == (MoveStatus.ILLEGAL, Refusal.COMMUNICATION, False), result
+    assert any(tasklet.label in result.reason for tasklet in tasklets)
     assert digest(sut.sdfg) == before
 
 

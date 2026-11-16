@@ -90,8 +90,8 @@ size is checked at a smaller one and timed at the graded size; the whole program
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
-`interchange-doall-doall` with itself. Fusion, fission, unrolling, hoisting, `propagate-config`, `expand-library`,
-`snapshot-reads`, `doall-to-for`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
+`interchange-doall-doall` with itself, and `doall-to-for` / `for-to-doall`. Fusion, fission, unrolling, hoisting,
+`propagate-config`, `expand-library`, `snapshot-reads`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
 never moves back into a loop) have none: `rollback` is the way back.
 
 ### A worked example
@@ -230,6 +230,11 @@ one parallel space, so short ranges still give every thread work. **`expand-doal
 inverse. **`doall-to-for`** `[doall]`, MapToForLoop: `doall k: doall j: B` becomes `for k: doall j: B`, the doalls
 inside staying parallel, so a pass over levels (`expand-doall` it first) can `for-fusion` with the level scan it
 feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls of the merged body.
+**`for-to-doall`** `[for]`, LoopToMap: a for loop whose iterations DaCe proves independent becomes a doall, the way
+back from `doall-to-for`, or after a move removed the dependence. `force=true` waives DaCe's check on conflicting
+writes, never on a read of what an earlier iteration wrote or on a communication call. Force only when you know what
+DaCe cannot, such as an index array that is a permutation (`out[perm[i]] = ...`): the answer then says `forced` and
+warns, and a wrong program after it is yours. The judge's hidden inputs still grade it.
 **`snapshot-reads`** `[doall]`, a doall of its own per slice: a doall that reads a slice of an array (`path[:, k]`,
 `path[k, :]`: one index per dimension, either a map parameter or a value the doall does not change) which another doall of
 the state writes first copies the slice into a transient, so the two doalls stop touching one array and `doall-fusion`
