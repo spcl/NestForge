@@ -846,6 +846,12 @@ class Session:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
+        if scope is not None:  # what staging_refusal would refuse is not offered
+            moves = [
+                move
+                for move in moves
+                if move.kind not in DEVICE_KINDS or self.staging_refusal(move.kind, scope) is None
+            ]
         return [move for move in moves if switched_off(move.kind, self.disabled_families) is None]
 
     def scope_refusal(self, kind: str, scope: str | None) -> str | None:
