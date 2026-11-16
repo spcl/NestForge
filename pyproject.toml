@@ -86,6 +86,8 @@ typeCheckingMode = "basic"
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
+# a refusal without a class fails the test that met it
+filterwarnings = ["error::nestforge.records.UnclassedRefusal"]
 markers = [
     "integration: compiles and runs kernels; slow, its own CI job",
     "judge: a finalized library graded by an in-process bench judge; its own CI job",

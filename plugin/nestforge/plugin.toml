@@ -12,12 +12,13 @@ api = 1
 root = "../.."
 command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
 
-# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, the reference column, and the
-# two-stage stub through every phase of the packet it walks.
+# What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, the reference and default
+# columns, and the two-stage stub through every phase of the packet it walks.
 [ci]
 optimizers = [
     "dace_cpu_canon_nestforge_stub",
     "dace_cpu_canon_nestforge_reference",
+    "dace_cpu_canon_nestforge_default",
     "dace_cpu_canon_nestforge_two_stage",
 ]
 kernels = ["jacobi_1d", "tsvc_2_s231"]
@@ -97,6 +98,14 @@ overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/subagents.yaml"]
 name = "NestForge reference"
 full_name = "NestForge (reference moves)"
 optimizer = "nestforge_bench:ReferenceOptimizer"
+extends = ["dace_cpu_canon", "dace_gpu_canon"]
+
+# The floor of every comparison: NestForge's default moves on every kernel, then the same automatic scopes, placement
+# and code generation; no LLM and no reference solution.
+[flavors.nestforge_default]
+name = "NestForge default"
+full_name = "NestForge (default moves)"
+optimizer = "nestforge_bench:DefaultOptimizer"
 extends = ["dace_cpu_canon", "dace_gpu_canon"]
 
 # A stand-in for an LLM agent on the packet, for CI: seeded legal moves through the tools, then finalize.

@@ -14,7 +14,7 @@ from dace.transformation.passes.vectorization.config import VectorizeConfig
 from dace.transformation.passes.vectorization.enums import ISA
 from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 
-from nestforge.records import CRASHES
+from nestforge.records import CRASHES, Refusal, Refused
 
 __all__ = [
     "AUTO_VECTORIZE",
@@ -51,9 +51,10 @@ def tile_lanes(isa: str, tile_sizes: Sequence[int]) -> tuple[int, ...] | str:
     if isa in SCALABLE:
         return (DEFAULT_LANES,) * max(1, min(len(tile_sizes), MAX_TILE_DIMS))
     if not 1 <= len(tile_sizes) <= MAX_TILE_DIMS or any(size < 1 for size in tile_sizes):
-        return (
+        return Refused(
             f"pass tile_sizes: the lanes of each vectorized dimension, innermost last, 1 to {MAX_TILE_DIMS} sizes "
-            f"(e.g. [{DEFAULT_LANES}]); a scalable ISA ({sorted(SCALABLE)}) takes its own vector length instead."
+            f"(e.g. [{DEFAULT_LANES}]); a scalable ISA ({sorted(SCALABLE)}) takes its own vector length instead.",
+            Refusal.ARGUMENT,
         )
     return tuple(tile_sizes)
 
@@ -61,7 +62,7 @@ def tile_lanes(isa: str, tile_sizes: Sequence[int]) -> tuple[int, ...] | str:
 def vectorize_config(isa: str, tile_sizes: Sequence[int]) -> VectorizeConfig | str:
     """The vectorizer configuration for ``isa`` and ``tile_sizes``, or why there is none."""
     if isa not in ISAS:
-        return f"isa takes one of {list(ISAS)}; not {isa!r}."
+        return Refused(f"isa takes one of {list(ISAS)}; not {isa!r}.", Refusal.ARGUMENT)
     lanes = tile_lanes(isa, tile_sizes)
     # the tiles are expanded: the body is the ISA's tile functions over its intrinsics, as the C view prints it
     return (
@@ -72,7 +73,9 @@ def vectorize_config(isa: str, tile_sizes: Sequence[int]) -> VectorizeConfig | s
 def vectorize_refusal(state: SDFGState, entry: nodes.MapEntry, config: VectorizeConfig) -> str | None:
     """Why :class:`VectorizeMap` cannot vectorize ``entry``, found on a copy of the whole program; None when it can."""
     if state.entry_node(entry) is not None:
-        return f"{entry.map.label} is inside another doall; vectorize the outermost one around it."
+        return Refused(
+            f"{entry.map.label} is inside another doall; vectorize the outermost one around it.", Refusal.WRONG_ROW_KIND
+        )
     trial = copy.deepcopy(state.sdfg.root_sdfg)
     trial_state = cast(SDFGState, trial.cfg_list[state.parent_graph.cfg_id].node(state.block_id))
     trial_entry = cast(nodes.MapEntry, trial_state.node(state.node_id(entry)))
@@ -80,5 +83,5 @@ def vectorize_refusal(state: SDFGState, entry: nodes.MapEntry, config: Vectorize
         VectorizeMap(config, trial_state, trial_entry).apply_pass(trial_state.sdfg, {})
         trial.validate()
     except CRASHES as err:  # the vectorizer's refusal, naming what it cannot tile
-        return f"blocked by VectorizeMap: {type(err).__name__}: {err}"
+        return Refused(f"blocked by VectorizeMap: {type(err).__name__}: {err}", Refusal.DEPENDENCE)
     return None

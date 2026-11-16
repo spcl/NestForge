@@ -90,8 +90,8 @@ source, so the calls after that entry are attributed together as "kernel code".
 Cost: n builds for a journal of n calls. The script takes `--stride s` to measure every s-th prefix, and it reuses
 NestForge's build cache, which keys on the program.
 
-The journal lives in the episode's folder, which does not outlast the run. The plugin record of
-[run-extractions.md](run-extractions.md) carries it under the key `journal`, so the results database holds it, and
+The journal lives in the episode's folder, which does not outlast the run. The
+[plugin record](../plugin-record.md) carries it under the key `journal`, so the results database holds it, and
 the script reads it from there (`hpcagent_bench.stats.plugin_records.latest`).
 
 Each measurement is one `get_performance` call, which repeats the program within its time budget. A ratio inside the

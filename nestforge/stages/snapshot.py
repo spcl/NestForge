@@ -24,6 +24,7 @@ from dace.subsets import Range
 from dace.transformation.interstate import InlineSDFG
 
 from nestforge.ir.extract import scope_twin
+from nestforge.records import Refusal, Refused
 
 #: The prefix of the transient that holds the copied slice.
 SNAPSHOT_SUFFIX = "_snapshot"
@@ -32,9 +33,10 @@ COPY_CODE = "snap_out = snap_in"
 #: The prefix of the parameters of the copy doall.
 COPY_PARAM = "__snap"
 
-REFUSED = (
+REFUSED = Refused(
     "blocked by snapshot-reads: the doall reads no slice of an array that another doall of its state writes, or the "
-    "slice is not one index per dimension of a map parameter or a value the doall does not change."
+    "slice is not one index per dimension of a map parameter or a value the doall does not change.",
+    Refusal.DEPENDENCE,
 )
 
 

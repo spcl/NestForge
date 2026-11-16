@@ -10,6 +10,7 @@ program without the agent's moves."""
 
 import contextlib
 import json
+import sys
 import threading
 from collections.abc import Iterator
 from http import HTTPMethod, HTTPStatus
@@ -29,10 +30,12 @@ from hpcagent_bench.plugin_api import (
     Target,
     agent_root,
     canonical_parallel_form_target,
+    keep_record,
     route,
 )
 from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
+from nestforge.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
 from nestforge.session import Sweep
 from nestforge.stages.performance import Performance
@@ -72,9 +75,10 @@ def episode_of(episode_id: str) -> Episode:
     return EPISODES.get(episode_id and f"{episode_id}@{agent_root(episode_id)}")
 
 
-def journal_file(episode_id: str, kernel: str) -> Path:
-    """Where the journal of ``kernel`` lives: beside its library. The folder may be shared, so the name says whose."""
-    return agent_root(episode_id) / "nestforge" / f"journal-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
+def journal_file(episode_id: str, kernel: str, log: str = "journal") -> Path:
+    """Where the journal of ``kernel`` lives (or its ``log``, ``calls``): beside its library. The folder may be shared,
+    so the name says whose."""
+    return agent_root(episode_id) / "nestforge" / f"{log}-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
 
 
 def journal_of(episode_id: str, kernel: str) -> list[Call]:
@@ -88,6 +92,57 @@ def journal_of(episode_id: str, kernel: str) -> list[Call]:
         return []
     except (OSError, TypeError, ValueError) as err:
         raise LookupError(f"the journal {file} cannot be read: {err}") from err
+
+
+def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: object) -> dict[str, Any]:
+    """One call as the plugin record counts it, without its arguments: its outcome, the refusal's class, and the
+    agent's cumulative tokens when it made the call (the bench sends them with every call)."""
+    result = reply.result
+    dumped = result.model_dump(mode="json") if isinstance(result, pydantic.BaseModel) else result
+    outcome = dumped if isinstance(dumped, dict) and "status" in dumped else {}
+    if reply.error:
+        status = "failed"
+    elif outcome:
+        status = str(outcome["status"])
+    else:
+        status = "applied" if name in CHANGING else "ok"
+    return {
+        "tool": name,
+        "kind": arguments.get("kind"),
+        "family": None,
+        "status": status,
+        "refusal": outcome.get("refusal") or "",
+        "phase": TOOLS[name].phase.value,
+        "tokens": tokens if isinstance(tokens, int) else None,
+    }
+
+
+def log_call(episode_id: str, kernel: str, entry: dict[str, Any]) -> None:
+    """Append ``entry`` to the episode's call log with its index. A log that cannot be written costs the record a
+    line, never the agent its call."""
+    file = journal_file(episode_id, kernel, "calls")
+    try:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        index = len(file.read_text("utf-8").splitlines()) if file.exists() else 0
+        with file.open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"index": index, **entry}) + "\n")
+    except OSError as err:
+        print(f"nestforge: call {entry['tool']} not logged: {err}", file=sys.stderr)
+
+
+def keep_episode_record(episode_id: str, kernel: str, final: object) -> None:
+    """The plugin record of the episode so far (``docs/plugin-record.md``), written at every finalize, since a graded
+    submission always follows one; a later write replaces it."""
+    file = journal_file(episode_id, kernel, "calls")
+    try:
+        calls = [json.loads(line) for line in file.read_text("utf-8").splitlines()] if file.exists() else []
+        dumped = final.model_dump(mode="json") if isinstance(final, pydantic.BaseModel) else final
+        kernels = dumped.get("kernels") if isinstance(dumped, dict) else None
+        journal = [journal_entry(*call) for call in journal_of(episode_id, kernel)]
+        data = episode_record(kernel, calls, journal, len(kernels) if isinstance(kernels, dict) else 0)
+        keep_capped(lambda record: keep_record(agent_root(episode_id), PLUGIN, SCHEMA, record), data)
+    except (LookupError, OSError, ValueError) as err:
+        print(f"nestforge: the plugin record of {episode_id} was not written: {err}", file=sys.stderr)
 
 
 def record(episode_id: str, kernel: str, call: Call) -> None:
@@ -247,11 +302,13 @@ def serve(judge: Judge, request: RouteRequest) -> None:
     if name not in CALLS:
         error = f"{name} ({entry.phase} phase) is not implemented yet; this run serves {sorted(CALLS)}"
         return judge.reply(HTTPStatus.NOT_IMPLEMENTED, JudgeError(error=error, cause="not-implemented"))
+    kernel = str(request.body.get("kernel") or "")
+    tokens = request.body.get("tokens")
     try:
         args = entry.args.model_validate({k: v for k, v in request.body.items() if k not in IDENTITY})
     except pydantic.ValidationError as err:
+        log_call(request.episode_id, kernel, call_entry(name, dict(request.body), Reply(error=str(err)), tokens))
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
-    kernel = str(request.body.get("kernel") or "")
     episode = episode_of(request.episode_id)
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
@@ -263,6 +320,10 @@ def serve(judge: Judge, request: RouteRequest) -> None:
         held = slot if isinstance(slot, DeviceSlot) else None
         try:
             reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone, held)
+            # under the episode's lock, so the log's indices follow the order the calls ran in
+            log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), reply, tokens))
+            if name == "finalize" and not reply.error:
+                keep_episode_record(request.episode_id, kernel, reply.result)
         except LookupError as err:
             error = f"{name}: the session could not start: {err}"
             return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))

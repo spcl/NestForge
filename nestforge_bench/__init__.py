@@ -15,6 +15,8 @@ import shutil
 import sys
 import tempfile
 import weakref
+from collections.abc import Sequence
+from typing import ClassVar
 
 from hpcagent_agent.tools import http_json
 from hpcagent_bench import config
@@ -26,12 +28,13 @@ from hpcagent_bench.harness.task import Task
 from hpcagent_bench.spec import resolve_preset
 
 from nestforge.paths import REPO_ROOT
+from nestforge.plugin_record import SCHEMA, episode_record, keep_capped
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
 from nestforge.records import KernelStatus, MoveStatus, spelled
 from nestforge.server import Setup, start
-from nestforge.session import kernel_language
+from nestforge.session import DEFAULTS_PREFIX, MoveResult, kernel_language
 
-__all__ = ["ReferenceOptimizer", "StubAgent", "TwoStageStub", "reference_solution"]
+__all__ = ["DefaultOptimizer", "ReferenceOptimizer", "StubAgent", "TwoStageStub", "reference_solution"]
 
 #: Where the reference solutions live, one ``<kernel>.py`` each.
 SOLUTIONS = REPO_ROOT / "reference_solutions"
@@ -43,10 +46,23 @@ def reference_solution(kernel: str) -> Solution | None:
     return load_solution(path) if path.is_file() else None
 
 
+def applied_journal(applied: Sequence[MoveResult]) -> list[list[object]]:
+    """The changes a column made, as the plugin record's journal holds an agent's tool calls."""
+    return [
+        ["run_defaults", {"stage": move.kind.removeprefix(DEFAULTS_PREFIX)}]
+        if move.kind.startswith(DEFAULTS_PREFIX)
+        else ["apply_move", {"kind": move.kind, "labels": list(move.labels)}]
+        for move in applied
+    ]
+
+
 class ReferenceOptimizer(FlavorOptimizer):
-    """Replays the kernel's reference moves (default moves without one), then finalizes on NestForge's defaults."""
+    """Replays the kernel's reference moves (default moves without one), then finalizes on NestForge's defaults. Its
+    plugin record says which it was."""
 
     __slots__ = ()
+    #: Whether the column reads the kernel's reference solution; the default column does not.
+    references: ClassVar[bool] = True
 
     def tune(self, task: Task, pipeline: str) -> Submission:
         gpu = task.image != "cpu"
@@ -55,8 +71,8 @@ class ReferenceOptimizer(FlavorOptimizer):
         preset = resolve_preset(service.preset).text
         session, _, _ = start(Setup(task.kernel, preset, service.datatype, gpu))
         script = Script(session)
-        solution = reference_solution(task.kernel)
-        if solution is None:
+        solution = reference_solution(task.kernel) if self.references else None
+        if solution is None and self.references:
             print(f"nestforge_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
         solve = solution.solve if solution is not None else baseline
         solve(script, Context("gpu" if gpu else "cpu", ncores(), preset))
@@ -65,6 +81,9 @@ class ReferenceOptimizer(FlavorOptimizer):
         root.mkdir(parents=True, exist_ok=True)
         out = pathlib.Path(tempfile.mkdtemp(prefix=f"reference-{pathlib.PurePath(task.kernel).name}-", dir=root))
         final = session.finalize(out)
+        self.keep_episode_record(
+            task.kernel, applied_journal(session.applied), len(final.kernels), solution is not None
+        )
         submission = Submission(
             language=task.language, library=str(final.library), workspace_bytes=final.workspace_bytes
         )
@@ -72,6 +91,24 @@ class ReferenceOptimizer(FlavorOptimizer):
         if self._workdir is None:
             weakref.finalize(submission, shutil.rmtree, str(out), ignore_errors=True)
         return submission
+
+    def keep_episode_record(self, kernel: str, journal: list[list[object]], kernels: int, replayed: bool) -> None:
+        """The column's plugin record, beside the library in the episode's folder; none without one."""
+        if self._workdir is None:
+            return
+        data = episode_record(kernel, [], journal, kernels, replayed if self.references else None)
+        try:
+            keep_capped(lambda record: self.keep_record(SCHEMA, record), data)
+        except ValueError as err:
+            print(f"{self.fname}: the plugin record was not written: {err}", file=sys.stderr)
+
+
+class DefaultOptimizer(ReferenceOptimizer):
+    """NestForge's default moves on every kernel, with no model and no reference solution: the floor every
+    comparison starts from."""
+
+    __slots__ = ()
+    references: ClassVar[bool] = False
 
 
 #: Moves the stub agent applies at most.

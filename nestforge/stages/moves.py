@@ -74,7 +74,7 @@ from dace.transformation.transformation import PatternTransformation
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, top_level_map_entries
-from nestforge.records import CRASHES, Record
+from nestforge.records import CRASHES, Record, Refusal, Refused
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.layout import RELAYOUT
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
@@ -174,31 +174,41 @@ def probe_implementation(kind: str, rows: Sequence[Row]) -> str | None:
     return next(iter(cast(nodes.LibraryNode, rows[0][0]).implementations), None)
 
 
-STATE_BARRIER = (
+STATE_BARRIER = Refused(
     "nests are in different states, a control-flow dependency map fusion never crosses; fuse the loops around "
-    "them, or define one scope over their blocks."
+    "them, or define one scope over their blocks.",
+    Refusal.WRONG_ROW_KIND,
 )
-LOOP_FISSION_REFUSED = "blocked by LoopFission: the loop body has no two independent statement groups."
-MAP_FISSION_REFUSED = "blocked by MapFission: the map body is not one nested SDFG with independent output groups."
-MAP_INTERCHANGE_REFUSED = (
+LOOP_FISSION_REFUSED = Refused(
+    "blocked by LoopFission: the loop body has no two independent statement groups.", Refusal.DEPENDENCE
+)
+MAP_FISSION_REFUSED = Refused(
+    "blocked by MapFission: the map body is not one nested SDFG with independent output groups.", Refusal.DEPENDENCE
+)
+MAP_INTERCHANGE_REFUSED = Refused(
     "blocked by MapInterchange: the inner range reads the outer parameter, or the outer map holds more than the "
-    "inner map."
+    "inner map.",
+    Refusal.DEPENDENCE,
 )
-LOOP_INTO_MAP_REFUSED = (
+LOOP_INTO_MAP_REFUSED = Refused(
     "blocked by MoveLoopIntoMap: the loop bounds are not analyzable, the body is more than one state around the map, "
-    "or a dependence would cross map iterations once the map is outer."
+    "or a dependence would cross map iterations once the map is outer.",
+    Refusal.DEPENDENCE,
 )
-IF_INTO_LOOP_REFUSED = (
+IF_INTO_LOOP_REFUSED = Refused(
     "blocked by MoveIfIntoLoop: the branch is not a single no-else guard whose body ends in this loop, or the "
-    "condition or its prep reads what the loop writes."
+    "condition or its prep reads what the loop writes.",
+    Refusal.DEPENDENCE,
 )
-IF_OUT_OF_LOOP_REFUSED = (
+IF_OUT_OF_LOOP_REFUSED = Refused(
     "blocked by MoveLoopInvariantIfUp: the guard is not the loop's only statement, or its condition reads the loop "
-    "variable or data the loop writes."
+    "variable or data the loop writes.",
+    Refusal.DEPENDENCE,
 )
-SUBGRAPH_FISSION_REFUSED = (
+SUBGRAPH_FISSION_REFUSED = Refused(
     "blocked by SubgraphFission: the body branches, the edge after the cut assigns or branches, or MapFission "
-    "refuses (a half holds a conditional, or an interstate assignment reads a map parameter)."
+    "refuses (a half holds a conditional, or an interstate assignment reads a map parameter).",
+    Refusal.DEPENDENCE,
 )
 
 MAP_IF_REFUSED = (
@@ -309,16 +319,24 @@ def plan_loop_fusion(first: Row, second: Row) -> Rewrite | str:
     the maps' parallelism (``doall-to-for`` makes such loops on purpose)."""
     loop_a, loop_b = first[0], second[0]
     if loop_a.parent_graph is not loop_b.parent_graph:
-        return "loops are in different control-flow regions; fuse the enclosing loops first."
+        return Refused(
+            "loops are in different control-flow regions; fuse the enclosing loops first.", Refusal.WRONG_ROW_KIND
+        )
     out = loop_a.parent_graph.out_edges(loop_a)
     if len(out) != 1 or out[0].dst is not loop_b:
-        return "loops are not adjacent: exactly one sequencing edge must lead from the first to the second."
+        return Refused(
+            "loops are not adjacent: exactly one sequencing edge must lead from the first to the second.",
+            Refusal.WRONG_ROW_KIND,
+        )
     sdfg, where = loop_a.sdfg, {"first": loop_a, "second": loop_b}
     move = pattern(LoopFusion, sdfg, where)
     if move is None and keeps_a_doall(loop_a) and keeps_a_doall(loop_b):
         move = pattern(LoopFusion, sdfg, where, options=UNGUARDED_LOOP_FUSION)
     if move is None:
-        return "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two."
+        return Refused(
+            "blocked by LoopFusion: different iteration ranges, or a loop-carried dependency between the two.",
+            Refusal.DEPENDENCE,
+        )
     fused = move
     return region_rewrite(fused.name, sdfg, lambda: (fused.commit(), fuse_body_states(loop_a)))
 
@@ -379,15 +397,21 @@ def plan_map_fusion(first: Row, second: Row) -> Rewrite | str:
                 f"blocked by MapFusionVertical and OTFMapFusion on '{arr.data}': {vertical_refusal(state, producer, arr)}"
             )
     if reasons:
-        return "; ".join(reasons) + "."
+        return Refused("; ".join(reasons) + ".", Refusal.DEPENDENCE)
     if state.entry_node(a) is not state.entry_node(b):
-        return "maps are in different scopes with no shared data; not a fusion pair."
+        return Refused("maps are in different scopes with no shared data; not a fusion pair.", Refusal.WRONG_ROW_KIND)
     move = pattern(MapFusionHorizontal, sdfg, {"first_parallel_map_entry": a, "second_parallel_map_entry": b})
     if move is not None:
         return move
     if a.map.range != b.map.range:
-        return f"different map ranges {a.map.range} and {b.map.range}; horizontal fusion needs one range."
-    return "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them."
+        return Refused(
+            f"different map ranges {a.map.range} and {b.map.range}; horizontal fusion needs one range.",
+            Refusal.DEPENDENCE,
+        )
+    return Refused(
+        "blocked by MapFusionHorizontal: not both parallel-compatible, or a data dependency links them.",
+        Refusal.DEPENDENCE,
+    )
 
 
 def statement_groups(state: SDFGState) -> list[list[nodes.Node]]:
@@ -460,7 +484,7 @@ def plan_map_fission(row: Row) -> Rewrite | str:
     state, entry = node_state(row), row[0]
     body = map_body(state, entry)
     if body is not None and computations(body.sdfg) < 2:
-        return "the map body is one computation; there is nothing to split."
+        return Refused("the map body is one computation; there is nothing to split.", Refusal.WRONG_ROW_KIND)
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
         move = pattern(MapFission, state.sdfg, where, expr_index=1)
@@ -484,9 +508,14 @@ def plan_subgraph_fission(entry_row: Row, cut_row: Row) -> Rewrite | str:
     state, entry, cut = node_state(entry_row), entry_row[0], cut_row[0]
     body = map_body(state, entry)
     if body is None or cut.parent_graph is not body.sdfg:
-        return f"{cut.label} is not a top-level block of the body of {entry.map.label}."
+        return Refused(
+            f"{cut.label} is not a top-level block of the body of {entry.map.label}.", Refusal.WRONG_ROW_KIND
+        )
     if not body.sdfg.out_edges(cut):
-        return f"{cut.label} is the last block of the body of {entry.map.label}; name a block before the last."
+        return Refused(
+            f"{cut.label} is the last block of the body of {entry.map.label}; name a block before the last.",
+            Refusal.WRONG_ROW_KIND,
+        )
     where = {"map_entry": entry, "nested_sdfg": body}
     return pattern(SubgraphFission, state.sdfg, where, options={"cut": cut.label}) or SUBGRAPH_FISSION_REFUSED
 
@@ -523,14 +552,15 @@ def body_swap_blocker(state: SDFGState, entry: nodes.MapEntry) -> str | None:
     in ``state``, so it runs on a detached twin."""
     body = map_body(state, entry)
     if body is None or not InlineSDFG.can_be_applied_to(state.sdfg, nested_sdfg=body):
-        return f"blocked by InlineSDFG: the body of {entry.map.label} cannot be inlined."
+        return Refused(f"blocked by InlineSDFG: the body of {entry.map.label} cannot be inlined.", Refusal.DEPENDENCE)
     inner = flatten_map_body(state, entry)
     beside = (nodes.MapEntry, nodes.MapExit, nodes.AccessNode)
     holds = [n for n in state.scope_children()[entry] if not isinstance(n, beside)]
     if len(inner) != 1 or holds or scope_copies(state, entry):
-        return (
+        return Refused(
             f"the body of {entry.map.label} holds more than one map or a computation or copy beside it; "
-            "doall-fission or subgraph-fission it first."
+            "doall-fission or subgraph-fission it first.",
+            Refusal.WRONG_ROW_KIND,
         )
     where = {"outer_map_entry": entry, "inner_map_entry": inner[0]}
     return None if pattern(MapInterchange, state.sdfg, where) else MAP_INTERCHANGE_REFUSED
@@ -542,9 +572,10 @@ def plan_body_map_map(state: SDFGState, outer: nodes.MapEntry, inner_row: Row) -
     inner, inner_state = inner_row[0], node_state(inner_row)
     body = map_body(state, outer)
     if body is None or inner_state.sdfg is not body.sdfg or len(body.sdfg.nodes()) != 1:
-        return (
+        return Refused(
             f"{inner.map.label} is not directly inside {outer.map.label}, nor the one map in its body; name a map, "
-            "then the map directly inside it."
+            "then the map directly inside it.",
+            Refusal.WRONG_ROW_KIND,
         )
     _, twin_state, twin_entry = detached_twin(state.sdfg, state, outer)
     reason = body_swap_blocker(twin_state, twin_entry)
@@ -566,8 +597,9 @@ def plan_map_map(outer_row: Row, inner_row: Row) -> Rewrite | str:
     if node_state(inner_row) is not state:
         return plan_body_map_map(state, outer, inner_row)
     if state.entry_node(inner) is not outer:
-        return (
-            f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it."
+        return Refused(
+            f"{inner.map.label} is not directly inside {outer.map.label}; name a map, then the map directly inside it.",
+            Refusal.WRONG_ROW_KIND,
         )
     if any(begin == end for begin, end, _ in inner.map.range):
         return plan_trimmed_map_map(state, outer, inner)
@@ -584,7 +616,10 @@ def plan_trimmed_map_map(state: SDFGState, outer: nodes.MapEntry, inner: nodes.M
     assert isinstance(twin_inner, nodes.MapEntry), "a deep copy keeps node ids"
     TrivialMapElimination.apply_to(twin, map_entry=twin_inner, verify=False)
     if twin_inner not in twin_state.nodes():
-        return f"{inner.map.label} has one iteration only; there is nothing to swap with {outer.map.label}."
+        return Refused(
+            f"{inner.map.label} has one iteration only; there is nothing to swap with {outer.map.label}.",
+            Refusal.WRONG_ROW_KIND,
+        )
     where = {"outer_map_entry": twin_outer, "inner_map_entry": twin_inner}
     if pattern(MapInterchange, twin, where) is None:
         return MAP_INTERCHANGE_REFUSED
@@ -602,13 +637,19 @@ LANE_BODY = {"cfg_body": True, "lane_axis": True}
 
 def loop_map_refusal(loop: LoopRegion, inside: list[nodes.MapEntry]) -> str:
     if inside_a_map(loop):
-        return f"{loop.label} is inside a doall; move the loop of the outermost doall's body instead."
+        return Refused(
+            f"{loop.label} is inside a doall; move the loop of the outermost doall's body instead.",
+            Refusal.WRONG_ROW_KIND,
+        )
     if len(inside) > 1:
         if lane_axis_of(loop) is None:
-            return f"the doalls inside {loop.label} share no axis; doall-fusion or doall-fission them first."
+            return Refused(
+                f"the doalls inside {loop.label} share no axis; doall-fusion or doall-fission them first.",
+                Refusal.WRONG_ROW_KIND,
+            )
         lanes = analyze_lanes(loop, loop.sdfg, True)
         if lanes.refusal is not None:
-            return f"blocked by MoveLoopIntoMap: {lanes.refusal}"
+            return Refused(f"blocked by MoveLoopIntoMap: {lanes.refusal}", Refusal.DEPENDENCE)
     return LOOP_INTO_MAP_REFUSED
 
 
@@ -619,11 +660,14 @@ def plan_loop_map(loop_row: Row, map_row: Row) -> Rewrite | str:
     loop, entry = loop_row[0], map_row[0]
     inside = loop_maps(loop)
     if entry not in inside:
-        return f"{entry.map.label} is not a doall directly inside {loop.label}."
+        return Refused(f"{entry.map.label} is not a doall directly inside {loop.label}.", Refusal.WRONG_ROW_KIND)
     # MoveLoopIntoMap passes a nest only the SDFG's symbols and data, and raises on an outer loop's iterator
     read = {str(s) for s in loop.free_symbols} - set(loop.sdfg.symbols)
     if read & enclosing_loop_variables(loop):
-        return f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first."
+        return Refused(
+            f"blocked by MoveLoopIntoMap: {loop.label} reads the iterator of a loop around it; untile-for it first.",
+            Refusal.DEPENDENCE,
+        )
     sdfg = loop.sdfg
     move = pattern(MoveLoopIntoMap, sdfg, {"loop": loop}, options=LANE_BODY)
     if move is None:
@@ -638,16 +682,17 @@ def plan_map_loop(entry_row: Row, loop_row: Row) -> Rewrite | str:
     state, entry, loop = node_state(entry_row), entry_row[0], loop_row[0]
     body = map_body(state, entry)
     if body is None or body.sdfg.nodes() != [loop]:
-        return (
+        return Refused(
             f"the body of {entry.map.label} is not exactly the loop {loop.label}; subgraph-fission the map around the "
-            "loop first, so the loop is the whole body of a map of its own."
+            "loop first, so the loop is the whole body of a map of its own.",
+            Refusal.WRONG_ROW_KIND,
         )
     if state.entry_node(entry) is not None:
         return plan_nested_map_loop(state, entry)
     xform = map_loop_interchange(state, entry, body)
     reason = xform.refusal(state)
     if reason is not None:
-        return f"blocked by MapLoopInterchange: {reason}."
+        return Refused(f"blocked by MapLoopInterchange: {reason}.", Refusal.DEPENDENCE)
     return Rewrite("MapLoopInterchange", lambda: xform.apply(state, state.sdfg))
 
 
@@ -680,7 +725,7 @@ def plan_nested_map_loop(state: SDFGState, entry: nodes.MapEntry) -> Rewrite | s
     twin_inner, twin_inner_entry, twin_body = nest_map(twin_state, twin_entry)
     reason = map_loop_interchange(twin_inner, twin_inner_entry, twin_body).refusal(twin_inner)
     if reason is not None:
-        return f"blocked by MapLoopInterchange: {reason}."
+        return Refused(f"blocked by MapLoopInterchange: {reason}.", Refusal.DEPENDENCE)
 
     def commit() -> None:
         inner, inner_entry, body = nest_map(state, entry)
@@ -710,12 +755,15 @@ def plan_loop_if(loop_row: Row, cond_row: Row) -> Rewrite | str:
 def plan_expand_library(row: Row) -> Rewrite | str:
     node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
     if isinstance(node, ExternalCall):
-        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+        return Refused(
+            f"{node.label} is a kernel NestForge built (a scope), not a library call.", Refusal.WRONG_ROW_KIND
+        )
     implementation = expansion(node)
     if implementation is None:
-        return (
+        return Refused(
             f"{node.label} ({type(node).__name__}) has no vendor-free expansion (only {sorted(node.implementations)}); "
-            "it stays a library call."
+            "it stays a library call.",
+            Refusal.WRONG_ROW_KIND,
         )
     return Rewrite(f"{type(node).__name__} expansion ({implementation})", lambda: expand_library(state, node))
 
@@ -723,11 +771,16 @@ def plan_expand_library(row: Row) -> Rewrite | str:
 def plan_set_implementation(row: Row, implementation: str | None = None) -> Rewrite | str:
     node = cast(nodes.LibraryNode, row[0])
     if isinstance(node, ExternalCall):
-        return f"{node.label} is a kernel NestForge built (a scope), not a library call."
+        return Refused(
+            f"{node.label} is a kernel NestForge built (a scope), not a library call.", Refusal.WRONG_ROW_KIND
+        )
     if implementation is None:
-        return f"pass implementation, one of {sorted(node.implementations)}."
+        return Refused(f"pass implementation, one of {sorted(node.implementations)}.", Refusal.ARGUMENT)
     if implementation not in node.implementations:
-        return f"{node.label} ({type(node).__name__}) has no implementation {implementation!r}; it has {sorted(node.implementations)}."
+        return Refused(
+            f"{node.label} ({type(node).__name__}) has no implementation {implementation!r}; it has {sorted(node.implementations)}.",
+            Refusal.ARGUMENT,
+        )
     return Rewrite(
         f"{type(node).__name__} implementation {implementation}", lambda: set_implementation(node, implementation)
     )
@@ -737,14 +790,15 @@ def plan_tile_doall(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     dims = len(entry.map.params)
     if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes) or max(tile_sizes) < 2:
-        return (
+        return Refused(
             f"{entry.map.label} has {dims} dimension(s) {entry.map.params}: pass tile_sizes, one positive size each "
-            "(1 leaves a dimension untiled), at least one of 2 or more."
+            "(1 leaves a dimension untiled), at least one of 2 or more.",
+            Refusal.ARGUMENT,
         )
     options = {"tile_sizes": tuple(tile_sizes), "divides_evenly": False}
     move = pattern(MapTiling, state.sdfg, {"map_entry": entry}, options=options)
     if move is None:
-        return f"blocked by MapTiling: {entry.map.label} cannot be tiled."
+        return Refused(f"blocked by MapTiling: {entry.map.label} cannot be tiled.", Refusal.DEPENDENCE)
 
     def commit() -> None:
         move.commit()
@@ -775,16 +829,18 @@ def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     dims = min(len(entry.map.params), 3)
     if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
-        return (
+        return Refused(
             f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass tile_sizes, the "
-            f"thread block, {dims} positive size(s)."
+            f"thread block, {dims} positive size(s).",
+            Refusal.ARGUMENT,
         )
     options = {"block_size": list(tile_sizes)}
     move = pattern(StageLoadsThroughSharedMemory, state.sdfg, {"map_entry": entry}, options=options)
     if move is None:
-        return (
+        return Refused(
             f"blocked by StageLoadsThroughSharedMemory: {entry.map.label} is no GPU kernel (place its scope on the GPU "
-            "and insert the copies first), or reads no array it reuses with a constant footprint per thread."
+            "and insert the copies first), or reads no array it reuses with a constant footprint per thread.",
+            Refusal.DEPENDENCE,
         )
     return move
 
@@ -794,7 +850,10 @@ def plan_snapshot_reads(row: Row) -> Rewrite | str:
     stop touching one array and ``doall-fusion`` can merge them."""
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if state.entry_node(entry) is not None:
-        return f"{entry.map.label} is inside another doall; only an outermost doall snapshots its reads."
+        return Refused(
+            f"{entry.map.label} is inside another doall; only an outermost doall snapshots its reads.",
+            Refusal.WRONG_ROW_KIND,
+        )
     if not snapshot_applies(state, entry):
         return SNAPSHOT_REFUSED
     return Rewrite("SnapshotReads", lambda: snapshot(state, entry))
@@ -808,9 +867,10 @@ def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = cast(nodes.MapEntry, outer_row[0]), cast(nodes.MapEntry, inner_row[0]), node_state(outer_row)
     pair = tile_pair(outer, inner, state) if node_state(inner_row) is state else None
     if pair is None:
-        return (
+        return Refused(
             f"{outer.map.label} is not a tile doall whose points are {inner.map.label}: name the doall stepping over "
-            "tiles, then the doall over one tile's points."
+            "tiles, then the doall over one tile's points.",
+            Refusal.WRONG_ROW_KIND,
         )
 
     def commit() -> None:
@@ -828,7 +888,10 @@ def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
 def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
     if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
-        return f"{inner.map.label} is not directly inside {outer.map.label}; name a doall, then the one inside it."
+        return Refused(
+            f"{inner.map.label} is not directly inside {outer.map.label}; name a doall, then the one inside it.",
+            Refusal.WRONG_ROW_KIND,
+        )
     where = {"outer_map_entry": outer, "inner_map_entry": inner}
     return pattern(MapCollapse, state.sdfg, where) or (
         "blocked by MapCollapse: the outer doall holds more than the inner one, or the inner range reads the outer "
@@ -839,7 +902,7 @@ def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
 def plan_expand_doall(row: Row) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if len(entry.map.params) < 2:
-        return f"{entry.map.label} has one dimension; there is nothing to expand."
+        return Refused(f"{entry.map.label} has one dimension; there is nothing to expand.", Refusal.WRONG_ROW_KIND)
     # every nested kernel keeps the kernel's own schedule: MapExpansion's default runs the inner ones sequentially
     options = {"inner_schedule": entry.map.schedule}
     return pattern(MapExpansion, state.sdfg, {"map_entry": entry}, options=options) or (
@@ -884,15 +947,22 @@ def plan_doall_to_for(row: Row) -> Rewrite | str:
     parallel, so its body can fuse with a sequential loop over the same range (``for-fusion``)."""
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if state.entry_node(entry) is not None:
-        return f"{entry.map.label} is inside another doall; only an outermost doall becomes a loop."
+        return Refused(
+            f"{entry.map.label} is inside another doall; only an outermost doall becomes a loop.",
+            Refusal.WRONG_ROW_KIND,
+        )
     if len(entry.map.params) != 1:
-        return f"{entry.map.label} has {len(entry.map.params)} dimensions; expand-doall it first."
+        return Refused(
+            f"{entry.map.label} has {len(entry.map.params)} dimensions; expand-doall it first.", Refusal.WRONG_ROW_KIND
+        )
     if not holds_a_doall(state, entry):
-        return f"{entry.map.label} holds no doall inside: as a loop it would keep no parallelism."
+        return Refused(
+            f"{entry.map.label} holds no doall inside: as a loop it would keep no parallelism.", Refusal.WRONG_ROW_KIND
+        )
     sdfg, region = state.sdfg, state.parent_graph
     move = pattern(MapToForLoop, sdfg, {"map_entry": entry})
     if move is None:
-        return f"blocked by MapToForLoop: {entry.map.label} cannot become a loop."
+        return Refused(f"blocked by MapToForLoop: {entry.map.label} cannot become a loop.", Refusal.DEPENDENCE)
     sequential = move
 
     def commit() -> None:
@@ -906,12 +976,14 @@ def plan_doall_to_for(row: Row) -> Rewrite | str:
 def plan_tile_for(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if len(tile_sizes) != 1 or tile_sizes[0] < 2:
-        return f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2."
+        return Refused(f"{loop.label} is one for loop: pass tile_sizes with one size of at least 2.", Refusal.ARGUMENT)
     if any(isinstance(jump, BreakBlock) for jump in loop_analysis.loop_jumps(loop)):
-        return f"{loop.label} holds a break, which would leave one tile and not the loop."
+        return Refused(
+            f"{loop.label} holds a break, which would leave one tile and not the loop.", Refusal.WRONG_ROW_KIND
+        )
     where, options = {"loop": loop}, {"tile_size": tile_sizes[0]}
     if not LoopTiling.can_be_applied_to(loop.sdfg, options=options, **where):
-        return f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1."
+        return Refused(f"blocked by LoopTiling: {loop.label} is not a counted loop of stride 1.", Refusal.DEPENDENCE)
     return region_rewrite("LoopTiling", loop.sdfg, lambda: LoopTiling.apply_to(loop.sdfg, options=options, **where))
 
 
@@ -921,7 +993,9 @@ def plan_untile_for(row: Row) -> Rewrite | str:
     trial = copy.deepcopy(loop.sdfg)
     twin = next(r for r in trial.all_control_flow_regions(recursive=True) if r.label == loop.label)
     if not isinstance(twin, LoopRegion) or not UntileLoops().untile_loop(twin, trial):
-        return f"{loop.label} is not a loop over tiles holding the loop over one tile's points."
+        return Refused(
+            f"{loop.label} is not a loop over tiles holding the loop over one tile's points.", Refusal.WRONG_ROW_KIND
+        )
 
     def commit() -> None:
         # the copy has no parent, so it can untile what the program, with its parent's symbols, refuses
@@ -954,12 +1028,16 @@ def loop_trips(loop: LoopRegion) -> int | None:
 
 def unroll_refusal(label: str, trips: int | None, max_iterations: int) -> str | None:
     if trips is None:
-        return (
+        return Refused(
             f"{label} has no constant trip count: its bounds read a symbol with no value; propagate-config a value "
-            "for it first."
+            "for it first.",
+            Refusal.WRONG_ROW_KIND,
         )
     if trips > max_iterations:
-        return f"{label} runs {trips} iterations, more than max_iterations={max_iterations}; pass a larger cap."
+        return Refused(
+            f"{label} runs {trips} iterations, more than max_iterations={max_iterations}; pass a larger cap.",
+            Refusal.ARGUMENT,
+        )
     return None
 
 
@@ -970,14 +1048,20 @@ def plan_unroll_for(row: Row, max_iterations: int = PROBE_UNROLL) -> Rewrite | s
         return reason
     move = pattern(LoopUnroll, loop.sdfg, {"loop": loop})
     if move is None:
-        return f"blocked by LoopUnroll: {loop.label} holds a break or continue, or is not a counted loop."
+        return Refused(
+            f"blocked by LoopUnroll: {loop.label} holds a break or continue, or is not a counted loop.",
+            Refusal.DEPENDENCE,
+        )
     return region_rewrite(move.name, loop.sdfg, move.commit)
 
 
 def plan_unroll_doall(row: Row, max_iterations: int = PROBE_UNROLL) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if state.entry_node(entry) is not None:
-        return f"{entry.map.label} is inside another doall of its state; MapUnroll unrolls only the outer one."
+        return Refused(
+            f"{entry.map.label} is inside another doall of its state; MapUnroll unrolls only the outer one.",
+            Refusal.WRONG_ROW_KIND,
+        )
     reason = unroll_refusal(entry.map.label, constant(entry.map.range.num_elements_exact(), state.sdfg), max_iterations)
     if reason is not None:
         return reason
@@ -985,9 +1069,10 @@ def plan_unroll_doall(row: Row, max_iterations: int = PROBE_UNROLL) -> Rewrite |
     scope = set(state.scope_subgraph(entry).nodes())
     beside = [n for n in weakly_connected_component(state, entry).nodes() if n not in scope]
     if any(not isinstance(n, nodes.AccessNode) for n in beside):
-        return (
+        return Refused(
             f"{entry.map.label} shares arrays with other computations of its state, which MapUnroll would copy with "
-            "it; doall-fusion them first."
+            "it; doall-fusion them first.",
+            Refusal.WRONG_ROW_KIND,
         )
     return pattern(MapUnroll, state.sdfg, {"map_entry": entry}) or (
         f"blocked by MapUnroll: {entry.map.label} is a GPU doall."
@@ -1022,18 +1107,21 @@ def plan_propagate_config(
     """A new program: ``if (args == values) <program specialized for them> else <program>``; the variants are written
     to ``output_dir``. ConfigPropagation leaves ``program`` as it is, so its refusal is read before anything changes."""
     if external_calls(program):
-        return "the program has kernels: propagate-config specializes the program before its scopes."
+        return Refused(
+            "the program has kernels: propagate-config specializes the program before its scopes.",
+            Refusal.WRONG_ROW_KIND,
+        )
     names = config_names(program)
     if not config_values:
-        return f"pass config_values: a value for some of {names}."
+        return Refused(f"pass config_values: a value for some of {names}.", Refusal.ARGUMENT)
     unknown = sorted(set(config_values) - set(names))
     if unknown:
-        return f"{unknown} name no argument or free symbol of the program; it has {names}."
+        return Refused(f"{unknown} name no argument or free symbol of the program; it has {names}.", Refusal.ARGUMENT)
     domains: dict[str, Sequence[int | float]] = {name: [value] for name, value in config_values.items()}
     try:
         root = ConfigPropagation(domains=domains, output_dir=str(output_dir)).apply_pass(program, {})
     except ValueError as err:
-        return f"blocked by ConfigPropagation: {err}."
+        return Refused(f"blocked by ConfigPropagation: {err}.", Refusal.DEPENDENCE)
     return Rewrite("ConfigPropagation", lambda: loaded(root))
 
 
@@ -1061,7 +1149,7 @@ def plan_map_if(row: Row) -> Rewrite | str:
         n for n in trial_state.nodes() if isinstance(n, nodes.MapEntry) and n.map.label == entry.map.label
     ]
     if not MoveMapInvariantIfUp().apply_to_map(trial_state, trial_entry):
-        return MAP_IF_REFUSED.format(map=entry.map.label)
+        return Refused(MAP_IF_REFUSED.format(map=entry.map.label), Refusal.DEPENDENCE)
     return region_rewrite("MoveMapInvariantIfUp", state.sdfg, lambda: MoveMapInvariantIfUp().apply_to_map(state, entry))
 
 
@@ -1075,7 +1163,10 @@ def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
-        return f"nothing in {loop.label} is loop-invariant: every statement reads what an iteration changes."
+        return Refused(
+            f"nothing in {loop.label} is loop-invariant: every statement reads what an iteration changes.",
+            Refusal.DEPENDENCE,
+        )
     return region_rewrite("LoopInvariantCodeMotion", loop.sdfg, lambda: hoist_loop_region(loop))
 
 
@@ -1084,7 +1175,10 @@ def plan_hoist_invariant_doall(row: Row) -> Rewrite | str:
     # the map whose scope decides invariance: a hoist leaves the whole perfect nest or stays, as in canonical form
     root = LoopInvariantCodeMotion().variant_root(state, entry)
     if not map_has_invariant_code(state, entry, root):
-        return f"nothing in {entry.map.label} is invariant: every statement reads what an iteration changes."
+        return Refused(
+            f"nothing in {entry.map.label} is invariant: every statement reads what an iteration changes.",
+            Refusal.DEPENDENCE,
+        )
     return Rewrite("LoopInvariantCodeMotion", lambda: hoist_map_scope(state, entry, root))
 
 
@@ -1333,7 +1427,9 @@ def plan_move(
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
             expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
-            return f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}."
+            return Refused(
+                f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
+            )
     if kind == AUTO_VECTORIZE:
         return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
     if kind in SIZED:

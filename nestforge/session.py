@@ -15,15 +15,17 @@ import copy
 import dataclasses
 import shutil
 import tempfile
+import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import Concatenate, Literal, cast
+from typing import Any, Concatenate, Literal, cast
 
 import dace
 import numpy as np
+import pydantic
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
@@ -50,7 +52,20 @@ from nestforge.ir.introspect import (
 )
 from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
-from nestforge.records import CRASHES, KernelOutcomeStatus, KernelStatus, MoveOutcome, MoveStatus, Record, spelled
+from nestforge.records import (
+    CRASHES,
+    KernelOutcomeStatus,
+    KernelStatus,
+    MoveOutcome,
+    MoveStatus,
+    Record,
+    Refusal,
+    RefusalOutcome,
+    Refused,
+    UnclassedRefusal,
+    refusal_of,
+    spelled,
+)
 from nestforge.stages import feedback
 from nestforge.stages.canonicalize import (
     Targets,
@@ -186,6 +201,10 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
     return [s for s in src.boundary.symbols if s not in sizes]
 
 
+#: The kind a default stage records in ``Session.applied``, before the stage's name.
+DEFAULTS_PREFIX = "defaults-"
+
+
 class MoveResult(Record):
     """What a labeled call did; ``reason`` names what ran once ``applied``, else why nothing changed."""
 
@@ -195,6 +214,19 @@ class MoveResult(Record):
     reason: str
     #: The kernel whose body the move rewrote; ``None`` for the program.
     scope: str | None = None
+    #: Why nothing changed, as a class (:class:`~nestforge.records.Refusal`); ``None`` once ``applied``.
+    refusal: RefusalOutcome | None = None
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def classed(cls, data: Any) -> Any:
+        """A refused result takes the class its reason carries, unless one is given."""
+        if not isinstance(data, dict) or data.get("status") is MoveStatus.APPLIED or data.get("refusal") is not None:
+            return data
+        refusal = refusal_of(data.get("reason", ""))
+        if refusal is Refusal.OTHER:
+            warnings.warn(UnclassedRefusal(f"{data.get('kind')}: {data.get('reason')}"), stacklevel=2)
+        return {**data, "refusal": refusal}
 
 
 class Move(Record):
@@ -596,7 +628,7 @@ class Session:
                 status=MoveStatus.NOT_FOUND,
                 kind=kind,
                 labels=names,
-                reason=f"no tree row is labeled {', '.join(missing)}{why}.",
+                reason=Refused(f"no tree row is labeled {', '.join(missing)}{why}.", Refusal.UNKNOWN_LABEL),
             )
         return [rows[name] for name in names]
 
@@ -717,7 +749,9 @@ class Session:
             case "round":
                 return self.rewind()
         if changed:
-            self.applied.append(MoveResult(status=MoveStatus.APPLIED, kind=f"defaults-{stage}", labels=(), reason=""))
+            self.applied.append(
+                MoveResult(status=MoveStatus.APPLIED, kind=f"{DEFAULTS_PREFIX}{stage}", labels=(), reason="")
+            )
             if stage in ("moves", "finish"):
                 self.remember()
         return done
@@ -770,9 +804,10 @@ class Session:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
         others = sorted({move.kind for move in self.applied if move.kind != RELAYOUT})
         if others:
-            return (
+            return Refused(
                 f"lay the arguments out before any other change; {others} came first (roll them back, or keep the "
-                "layout as it is)."
+                "layout as it is).",
+                Refusal.ARGUMENT,
             )
         return None
 
@@ -788,7 +823,8 @@ class Session:
             op = layout_operation(operation, unlaid)
             laid = laid_out(unlaid, (*self.layout, op))
         except ValueError as err:  # relayout's refusal, naming what it cannot lay out
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=str(err))
+            reason = Refused(str(err), Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=reason)
         with self.atomic():
             self.unlaid, self.layout, self.sdfg = unlaid, (*self.layout, op), laid
             self.unplaced = None
@@ -840,11 +876,15 @@ class Session:
             return self.undo()
         if kind == RELAYOUT:
             if scope is not None:
-                reason = "relayout lays out the program's arguments, not a kernel's body: name no scope."
+                reason = Refused(
+                    "relayout lays out the program's arguments, not a kernel's body: name no scope.", Refusal.ARGUMENT
+                )
                 return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
             return self.relayout(operation or {})
         if scope is not None and kind == PROPAGATE_CONFIG:
-            reason = "propagate-config specializes the whole program, not a kernel's body: name no scope."
+            reason = Refused(
+                "propagate-config specializes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
+            )
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         structured, device = self.move_programs(scope)
         target = device if kind in DEVICE_KINDS else structured
@@ -857,7 +897,9 @@ class Session:
             node = cast(nodes.LibraryNode, rows[0][0])
             offered = implementations(node, self.targets.gpu)
             if implementation not in offered:
-                plan = f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}."
+                plan = Refused(
+                    f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}.", Refusal.ARGUMENT
+                )
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
         with self.atomic():
@@ -984,11 +1026,16 @@ class Session:
         :returns: ``applied`` with the names as ``reason``, or why nothing changed.
         """
         if not self.sizes:
-            reason = "the sizes are not set, so no temporary's size is known; set Session.sizes first."
+            reason = Refused(
+                "the sizes are not set, so no temporary's size is known; set Session.sizes first.", Refusal.ARGUMENT
+            )
             return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
         names = make_persistent(self.sdfg, self.sizes, min_bytes)
         if not names:
-            reason = f"no temporary of the program is a heap array of {min_bytes} bytes or more at these sizes."
+            reason = Refused(
+                f"no temporary of the program is a heap array of {min_bytes} bytes or more at these sizes.",
+                Refusal.WRONG_ROW_KIND,
+            )
             return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
         if self.unplaced is not None:
             make_persistent(self.unplaced, self.sizes, min_bytes)
@@ -1015,7 +1062,8 @@ class Session:
         lowered = lower_group_to_external_call(self.sdfg, rows)
         if isinstance(lowered, str):
             self.unscoped = unscoped  # a refused scope is not journaled: it keeps nothing
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=lowered)
+            reason = lowered if isinstance(lowered, Refused) else Refused(lowered, Refusal.WRONG_ROW_KIND)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=reason)
         self.unplaced = None
         self.bump(names)
         done = MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
@@ -1031,10 +1079,12 @@ class Session:
         """
         calls = {ext.name: ext for ext in external_calls(self.sdfg)}
         if name not in calls:
-            reason = f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}."
+            reason = Refused(
+                f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}.", Refusal.UNKNOWN_LABEL
+            )
             return MoveResult(status=MoveStatus.NOT_FOUND, kind="unset-scope", labels=(name,), reason=reason)
         if calls[name].standalone_sdfg is None:
-            reason = f"{name} keeps no SDFG of its nest to inline."
+            reason = Refused(f"{name} keeps no SDFG of its nest to inline.", Refusal.WRONG_ROW_KIND)
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
         if self.unplaced is not None:
             self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None

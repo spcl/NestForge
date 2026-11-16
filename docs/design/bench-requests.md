@@ -125,6 +125,9 @@ today.
 
 ## B7: a tool call's route request names the assistant message
 
+**Status.** Not needed: the bench already sends the agent's cumulative tokens with every judge call, and the plugin
+record keeps them per call ([plugin-record.md](../plugin-record.md)). The request remains for a split by message.
+
 **Missing.** `RouteRequest` carries `method`, `parts`, `query`, `body`, and `episode_id`. A route cannot say which
 assistant message made the call, so a plugin record cannot be joined to the usage table per message.
 

@@ -1,7 +1,7 @@
 # How NestForge is built and how to extend it
 
 [Overview](../README.md). What each stage decides is in [stages.md](stages.md); the tree the agent reads is in
-[ir.md](ir.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
+[ir.md](ir.md), and what an episode's record holds in [plugin-record.md](plugin-record.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
 move, a tool, a phase or a packet. Features that are designed and not yet built have one page each in
 [design/](design/README.md).
 
@@ -21,7 +21,7 @@ judge route do.
 | IR helpers | `nestforge/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `nestforge_bench/` | `nestforge_reference` (no LLM), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all three in the bench's CI, the second on `nestforge-two-stage`. |
+| Bench columns | `nestforge_bench/` | `nestforge_reference` and `nestforge_default` (no LLM: reference moves, or the default moves on every kernel), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all four in the bench's CI, the second on `nestforge-two-stage`. |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,

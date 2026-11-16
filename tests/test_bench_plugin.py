@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import copy
 import gc
+import hashlib
 import inspect
 import json
 import multiprocessing
@@ -43,6 +44,7 @@ from hpcagent_bench.harness import sandbox, tools
 from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
+from hpcagent_bench.harness.plugin_records import FOLDER as RECORDS_FOLDER
 from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, JudgeHandler, ServiceConfig, make_server
 from hpcagent_bench.harness.task import Task
@@ -52,10 +54,10 @@ from stub_session import Stub, install
 
 import nestforge_bench
 from nestforge.paths import REPO_ROOT
-from nestforge.records import KernelStatus, MoveStatus
+from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
 from nestforge.session import KernelOutcome, Move, MoveResult, Session
-from nestforge_bench import ReferenceOptimizer
+from nestforge_bench import DefaultOptimizer, ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
@@ -396,7 +398,8 @@ def test_a_journal_that_cannot_be_read_fails_loudly_and_starts_no_session(stub: 
 def test_a_change_a_rebuild_refuses_fails_loudly_instead_of_grading_a_program_without_it(stub: Stub) -> None:
     post("apply_move", "episode-diverged", **MOVE)
     restart_judge()
-    refused = MoveResult(status=MoveStatus.NOT_FOUND, kind="fuse", labels=("map_0",), reason="no such row")
+    reason = Refused("no such row", Refusal.UNKNOWN_LABEL)
+    refused = MoveResult(status=MoveStatus.NOT_FOUND, kind="fuse", labels=("map_0",), reason=reason)
     stub.replies["apply_move"] = Reply(result=refused)
 
     judge = post("finalize", "episode-diverged")
@@ -406,13 +409,47 @@ def test_a_change_a_rebuild_refuses_fails_loudly_instead_of_grading_a_program_wi
 
 
 def test_a_refused_change_is_not_journaled(stub: Stub) -> None:
-    refused = MoveResult(status=MoveStatus.ILLEGAL, kind="fuse", labels=("map_0",), reason="cannot fuse")
+    refused = MoveResult(
+        status=MoveStatus.ILLEGAL, kind="fuse", labels=("map_0",), reason=Refused("cannot fuse", Refusal.DEPENDENCE)
+    )
     stub.replies["apply_move"] = Reply(result=refused)
 
     answered = post("apply_move", "episode-refused", **MOVE)
 
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
     assert answered.code == HTTPStatus.OK and route.journal_of("episode-refused", KERNEL) == []
+
+
+def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_and_tokens(stub: Stub) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    episode = "episode-record"
+    post("view_tree", episode, tokens=100)
+    post("apply_move", episode, tokens=200, **MOVE)
+    refused = MoveResult(
+        status=MoveStatus.ILLEGAL, kind="fuse", labels=("map_2",), reason=Refused("cannot fuse", Refusal.DEPENDENCE)
+    )
+    stub.replies["apply_move"] = Reply(result=refused)
+    post("apply_move", episode, tokens=300, kind="fuse", labels=["map_2", "map_3"])
+    post("apply_move", episode, tokens=350, kind="fuse")  # no labels: refused before any session
+    post("write_kernel", episode, tokens=400, **SLOT_CALLS["write_kernel"])
+
+    post("finalize", episode, tokens=500)
+
+    record = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "nestforge.json").read_text())
+    data = record["data"]
+    assert record["schema_version"] == route.SCHEMA and data["kernel"] == KERNEL
+    seen = [(c["index"], c["tool"], c["status"], c["refusal"], c["tokens"]) for c in data["calls"]]
+    assert seen == [
+        (0, "view_tree", "ok", "", 100),
+        (1, "apply_move", "applied", "", 200),
+        (2, "apply_move", "illegal", "dependence", 300),
+        (3, "apply_move", "failed", "", 350),
+        (4, "write_kernel", "ok", "", 400),
+        (5, "finalize", "ok", "", 500),
+    ]
+    assert data["first_write_kernel"] == 4
+    assert [tool for tool, _ in data["journal"]] == ["apply_move", "write_kernel"], "the changes, refusals left out"
+    assert data["journal"][1][1]["source"] == f"sha256:{hashlib.sha256(b'x').hexdigest()}", "the source is hashed"
 
 
 def test_a_kernel_written_without_a_check_is_journaled_as_the_change_it_is(stub: Stub) -> None:
@@ -946,16 +983,85 @@ def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeyp
     assert presets == ["fuzzed"]
 
 
+class FinalizedSession:
+    """What a tuner column reads of a session: the moves applied, and the library finalize builds."""
+
+    def __init__(self) -> None:
+        self.applied: list[MoveResult] = []
+
+    def finalize(self, out: pathlib.Path) -> SimpleNamespace:
+        library = out / "libkernel.so"
+        library.touch()
+        return SimpleNamespace(library=library, workspace_bytes="0", kernels={"kernel_0": "gcc-O3"})
+
+
+def applied(kind: str, *labels: str) -> MoveResult:
+    return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=labels, reason="")
+
+
+def column_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, sut: ReferenceOptimizer, solution: object
+) -> dict[str, Any]:
+    """The plugin record ``sut`` leaves for one episode; a reference solution fuses, the defaults run their stage."""
+    session = FinalizedSession()
+    monkeypatch.setattr(nestforge_bench, "start", lambda setup: (session, None, None))
+    monkeypatch.setattr(nestforge_bench, "Script", lambda live: live)
+    monkeypatch.setattr(nestforge_bench, "baseline", lambda live, ctx: live.applied.append(applied("defaults-moves")))
+    monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: solution)
+    sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
+    return json.loads((tmp_path / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+
+
+FUSING = SimpleNamespace(solve=lambda live, ctx: live.applied.append(applied("doall-fusion", "doall2", "doall4")))
+
+
+def test_the_reference_column_records_the_solutions_moves_and_the_default_column_the_default_stage_alone(
+    loaded: None, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    reference = column_record(
+        monkeypatch,
+        tmp_path / "ref",
+        ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path / "ref"),
+        FUSING,
+    )
+    default = column_record(
+        monkeypatch,
+        tmp_path / "def",
+        DefaultOptimizer("dace_cpu_canon_nestforge_default", workdir=tmp_path / "def"),
+        FUSING,
+    )
+
+    assert (reference["reference"], reference["journal"]) == (
+        True,
+        [["apply_move", {"kind": "doall-fusion", "labels": ["doall2", "doall4"]}]],
+    )
+    assert (default["reference"], default["journal"]) == (None, [["run_defaults", {"stage": "moves"}]])
+    assert reference["final"] == default["final"] == {"kernels": 1} and reference["calls"] == []
+
+
+def test_the_reference_column_says_when_a_kernel_had_no_solution_and_it_ran_the_defaults(
+    loaded: None, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
+
+    record = column_record(monkeypatch, tmp_path, sut, None)
+
+    assert (record["reference"], record["journal"]) == (False, [["run_defaults", {"stage": "moves"}]])
+
+
+def test_the_plugin_declares_the_reference_and_the_default_column(loaded: None) -> None:
+    manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
+
+    assert manifest["flavors"]["nestforge_default"]["optimizer"] == "nestforge_bench:DefaultOptimizer"
+    assert "dace_cpu_canon_nestforge_default" in manifest["ci"]["optimizers"]
+    assert {"dace_cpu_canon_nestforge_reference", "dace_cpu_canon_nestforge_default"} <= set(FRAMEWORKS)
+
+
 def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class FinalizedSession:
-        def finalize(self, out: pathlib.Path) -> SimpleNamespace:
-            library = out / "libkernel.so"
-            library.touch()
-            return SimpleNamespace(library=library, workspace_bytes="0")
-
     monkeypatch.setattr(nestforge_bench, "start", lambda setup: (FinalizedSession(), None, None))
+    monkeypatch.setattr(nestforge_bench, "Script", lambda live: live)
     monkeypatch.setattr(nestforge_bench, "baseline", lambda script, ctx: None)
     monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: None)
     sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
