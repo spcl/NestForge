@@ -2,7 +2,7 @@
 # nest-forge apt setup for an Ubuntu machine (system toolchain only).
 #
 # Installs what nest-forge's owned build + arena need from apt: compilers (gcc/clang/gfortran, +flang),
-# the OpenMP runtimes (libomp/libgomp), BLAS/LAPACK, and the python/build tooling. Intel oneAPI is
+# the OpenMP runtimes (libomp/libgomp), BLAS/LAPACK, Open MPI, and the python/build tooling. Intel oneAPI is
 # behind a flag (its own apt repo + gpg key):
 #   --oneapi  Intel oneAPI  -- icx/icpx/ifx + libiomp5 + SVML + MKL
 #   --no-flang  skip flang (CI: no test runs it, and its 45 MB download stalls on slow mirrors)
@@ -110,6 +110,9 @@ apt_install libomp-dev libgomp1
 
 log "BLAS/LAPACK (LAPACKE: the C interface CPF renders vendor LAPACK calls against)"
 apt_install libopenblas-dev liblapack-dev liblapacke-dev libblis-dev libfftw3-dev
+
+log "MPI (mpi4py loads libmpi when a program that communicates is parsed)"
+apt_install libopenmpi-dev openmpi-bin
 
 [ "$DO_ONEAPI" -eq 1 ] && { phase_oneapi || warn "oneAPI setup incomplete"; }
 
