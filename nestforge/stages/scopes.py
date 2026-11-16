@@ -37,7 +37,7 @@ from nestforge.ir.extract import (
     inherit_symbol_predicates,
 )
 from nestforge.ir.introspect import Row
-from nestforge.ir.names import in_order, top_level_doalls, top_level_map_entries
+from nestforge.ir.names import in_order, is_call, top_level_doalls, top_level_map_entries
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import map_body, plan_subgraph_fission
 
@@ -223,7 +223,7 @@ def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     """How to outline the regions ``rows`` name into one kernel, or why they cannot form one; changes nothing."""
     if not rows:
         return "name at least one map or block."
-    if all(isinstance(obj, (nodes.MapEntry, nodes.LibraryNode)) for obj, _ in rows):
+    if all(isinstance(obj, nodes.MapEntry) or (state is not None and is_call(state, obj)) for obj, state in rows):
         extract = map_group(sdfg, rows)
     elif all(isinstance(obj, ControlFlowBlock) for obj, _ in rows):
         extract = block_group(sdfg, [obj for obj, _ in rows])

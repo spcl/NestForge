@@ -30,6 +30,7 @@ from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is_gpu_relevant_node
 
 from nestforge.ir.introspect import Row
+from nestforge.ir.names import is_call
 
 LIB_BEFORE = "lib-before"
 LIB_AFTER = "lib-after"
@@ -53,7 +54,7 @@ class Effect:
         return self.reads | self.writes
 
 
-def effect_refusal(state: SDFGState, node: nodes.LibraryNode) -> str | None:
+def effect_refusal(state: SDFGState, node: nodes.CodeNode) -> str | None:
     """Why ``node``'s memlets are not its whole effect, or ``None`` when they are."""
     sdfg = state.sdfg
     if state.entry_node(node) is not None:
@@ -112,7 +113,7 @@ def device_containers(sdfg: dace.SDFG) -> frozenset[str]:
     return frozenset(names)
 
 
-def effect_of(state: SDFGState, node: nodes.LibraryNode) -> Effect:
+def effect_of(state: SDFGState, node: nodes.CodeNode) -> Effect:
     if isinstance(node, Sync):  # it reads and writes, in effect, what the device work it waits for touches
         touched = device_containers(state.sdfg)
         return Effect(touched, touched, frozenset(), device=True)
@@ -138,7 +139,7 @@ def reaching(graph: Any, start: Any, forward: bool) -> set[Any]:
     return seen
 
 
-def in_state_refusal(state: SDFGState, node: nodes.LibraryNode, effect: Effect, earlier: bool) -> str | None:
+def in_state_refusal(state: SDFGState, node: nodes.CodeNode, effect: Effect, earlier: bool) -> str | None:
     """Whether ``node`` may leave ``state`` toward an earlier (``earlier``) or a later point: nothing it waits for, or
     nothing waiting for it, stays behind, and every other access that conflicts with it stays on the same side."""
     ordered = state.in_edges(node) if earlier else state.out_edges(node)
@@ -165,7 +166,7 @@ def in_state_refusal(state: SDFGState, node: nodes.LibraryNode, effect: Effect, 
     return None
 
 
-def accessed_beside(state: SDFGState, node: nodes.LibraryNode, names: frozenset[str], writes: bool) -> str | None:
+def accessed_beside(state: SDFGState, node: nodes.CodeNode, names: frozenset[str], writes: bool) -> str | None:
     """A container of ``names`` that a node of ``state`` other than ``node``'s outputs writes (``writes``) or reads."""
     outputs = {e.dst for e in state.out_edges(node)}
     for other in state.data_nodes():
@@ -176,7 +177,7 @@ def accessed_beside(state: SDFGState, node: nodes.LibraryNode, names: frozenset[
 
 
 def loop_state_refusal(
-    state: SDFGState, node: nodes.LibraryNode, effect: Effect, loop: LoopRegion, earlier: bool
+    state: SDFGState, node: nodes.CodeNode, effect: Effect, loop: LoopRegion, earlier: bool
 ) -> str | None:
     """What the call's own state does every iteration of ``loop``: it may not change what the call touches, nor, when
     the call sinks after ``loop``, read what it writes."""
@@ -274,7 +275,7 @@ def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], objec
     or ``into`` that state, or why it is illegal; nothing is mutated."""
     node, state = row
     target = target_row[0]
-    assert isinstance(state, SDFGState) and isinstance(node, nodes.LibraryNode), "a library call row"
+    assert isinstance(state, SDFGState) and is_call(state, node), "a library call row"
     why = effect_refusal(state, node)
     if why is not None:
         return why
@@ -311,7 +312,7 @@ def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], objec
 
 
 def path_refusal(
-    state: SDFGState, node: nodes.LibraryNode, effect: Effect, loops: list[LoopRegion], earlier: bool
+    state: SDFGState, node: nodes.CodeNode, effect: Effect, loops: list[LoopRegion], earlier: bool
 ) -> str | None:
     """Whether the call may leave its state and the ``loops`` around it toward an earlier or a later point."""
     why = in_state_refusal(state, node, effect, earlier)
@@ -363,7 +364,7 @@ def producers(state: SDFGState, access: nodes.AccessNode) -> list[nodes.Node]:
     ]
 
 
-def joint_of(target: SDFGState, node: nodes.LibraryNode, effect: Effect, earlier: bool) -> Joint | str:
+def joint_of(target: SDFGState, node: nodes.CodeNode, effect: Effect, earlier: bool) -> Joint | str:
     """How the call joins ``target``: after every access there that conflicts with it, when it comes from a later
     point (``earlier``), else before every one, so no cycle can form; refused for an accumulation or unordered
     writers."""
@@ -403,7 +404,7 @@ def joint_of(target: SDFGState, node: nodes.LibraryNode, effect: Effect, earlier
     return Joint(target, {}, sinks, [], after)
 
 
-def join_call(state: SDFGState, node: nodes.LibraryNode, joint: Joint) -> SDFGState:
+def join_call(state: SDFGState, node: nodes.CodeNode, joint: Joint) -> SDFGState:
     """Take ``node`` out of ``state`` into ``joint.state``, wired and ordered as ``joint`` says."""
     target = joint.state
     edges = detach(state, node)
@@ -422,7 +423,7 @@ def join_call(state: SDFGState, node: nodes.LibraryNode, joint: Joint) -> SDFGSt
     return target
 
 
-def detach(state: SDFGState, node: nodes.LibraryNode) -> list[Any]:
+def detach(state: SDFGState, node: nodes.CodeNode) -> list[Any]:
     """Remove ``node`` from ``state`` with the access nodes only it used; returns its data edges."""
     edges = list(state.all_edges(node))
     state.remove_node(node)
@@ -438,7 +439,7 @@ def detach(state: SDFGState, node: nodes.LibraryNode) -> list[Any]:
     return [e for e in edges if not e.data.is_empty()]
 
 
-def move_call(state: SDFGState, node: nodes.LibraryNode, target: ControlFlowBlock, after: bool) -> SDFGState:
+def move_call(state: SDFGState, node: nodes.CodeNode, target: ControlFlowBlock, after: bool) -> SDFGState:
     """Take ``node`` and its access nodes out of ``state`` into a new state next to ``target``."""
     region = target.parent_graph
     label = f"{node.label}_moved"
@@ -453,7 +454,7 @@ def movable_rows(sdfg: dace.SDFG, states_only: bool = False) -> Iterator[tuple[R
     """Every top-level library call paired with every other block (or state) of its region and of each loop
     around it."""
     for state in sdfg.states():
-        calls = [n for n in state.nodes() if isinstance(n, nodes.LibraryNode) and state.entry_node(n) is None]
+        calls = [n for n in state.nodes() if is_call(state, n) and state.entry_node(n) is None]
         if not calls:
             continue
         regions, block = [], state

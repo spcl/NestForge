@@ -32,7 +32,7 @@ from dace.transformation.passes.analysis import loop_analysis
 from nestforge.ir.dace_types import strings
 from nestforge.ir.emit_c import body_c
 from nestforge.ir.emit_python import UnsupportedNest, lower, map_python, module
-from nestforge.ir.names import in_order, ordered_scope_children
+from nestforge.ir.names import in_order, is_call, is_copy_tasklet, ordered_scope_children
 
 #: Tree drawing: the guide under a node that has siblings below it, and the one under the last child.
 TEE, ELBOW, PIPE, BLANK = "|- ", "`- ", "|  ", "   "
@@ -166,8 +166,8 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
 
 def nest_reads_writes(container: SDFGState | dace.SDFG, node: object) -> tuple[list[str], list[str]]:
     """Arrays a nest or library node reads and writes, without outlining it; ``container`` is the state of a
-    ``MapEntry`` or ``LibraryNode``."""
-    if isinstance(node, (nodes.MapEntry, nodes.LibraryNode)):
+    ``MapEntry``, ``LibraryNode`` or one-element copy's tasklet."""
+    if isinstance(node, (nodes.MapEntry, nodes.LibraryNode)) or is_copy_tasklet(node):
         assert isinstance(container, SDFGState), "a map or library node lives in a state"
         last = container.exit_node(node) if isinstance(node, nodes.MapEntry) else node
         reads = sorted({e.data.data for e in container.in_edges(node) if e.data.data})
@@ -241,7 +241,7 @@ def tree_rows(sdfg: dace.SDFG) -> dict[str, Row]:
         for block in cfg.nodes():
             rows[block.label] = (block, None)
             if isinstance(block, SDFGState):
-                kernels = (n for n in block.nodes() if isinstance(n, (nodes.MapEntry, nodes.LibraryNode)))
+                kernels = (n for n in block.nodes() if isinstance(n, nodes.MapEntry) or is_call(block, n))
                 rows.update((n.map.label if isinstance(n, nodes.MapEntry) else n.label, (n, block)) for n in kernels)
     return rows
 
@@ -423,11 +423,11 @@ def walk_branches(tree: Tree, block: ConditionalBlock, prefix: str, inside: bool
 def walk_state(tree: Tree, state: SDFGState, prefix: str, language: Language) -> None:
     """A state's kernels: every map nest plus any library node, nested scopes recursed into."""
     children = ordered_scope_children(state)
-    if not any(isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) for n in children[None]):
+    if not any(isinstance(n, nodes.MapEntry) or is_call(state, n) for n in children[None]):
         return
 
     def descend(scope: nodes.MapEntry | None, pad: str, inside: bool, spoken: Language) -> None:
-        kernels = [n for n in children[scope] if isinstance(n, (nodes.MapEntry, nodes.LibraryNode))]
+        kernels = [n for n in children[scope] if isinstance(n, nodes.MapEntry) or is_call(state, n)]
         for index, node in enumerate(kernels):
             last = index == len(kernels) - 1
             below = pad + (BLANK if last else PIPE)
@@ -476,7 +476,7 @@ def innermost(loop: LoopRegion) -> bool:
 def doall_count(state: SDFGState) -> int:
     """The top-level doalls of ``state``: maps, and library calls, each a black-box doall."""
     return sum(
-        isinstance(n, (nodes.MapEntry, nodes.LibraryNode)) and state.entry_node(n) is None for n in state.nodes()
+        (isinstance(n, nodes.MapEntry) or is_call(state, n)) and state.entry_node(n) is None for n in state.nodes()
     )
 
 
@@ -525,9 +525,11 @@ def block_line(block: ControlFlowBlock, defs: dict[str, str]) -> str:
     return block.label
 
 
-def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.LibraryNode) -> str:
+def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.CodeNode) -> str:
     """One kernel's line: label, iteration domain, and the arrays it reads and writes."""
     reads, writes = nest_reads_writes(state, node)
+    if is_copy_tasklet(node):  # a one-element copy: the Copy node as its automatic expansion makes it
+        return f"{node.label}  LIBNODE Copy [tasklet]  reads={reads} writes={writes}"
     if isinstance(node, nodes.LibraryNode):
         kind = type(node).__name__.removesuffix("LibraryNode")  # CopyLibraryNode reads as Copy, like its label
         chosen = "" if isinstance(node, ExternalCall) else f" [{node.implementation or 'auto'}]"

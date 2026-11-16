@@ -15,6 +15,7 @@ from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.sync import Sync, SyncScope
 from dace.sdfg.state import LoopRegion
 
+from nestforge.ir.names import is_copy, is_copy_tasklet
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.moves import plan_move
@@ -49,6 +50,14 @@ def snapshot_of_a_changing_array(a: dace.float64[N], b: dace.float64[N], c: dace
             c[i] = c[i] + b[i] * k
         for i in dace.map[0:N]:
             a[i] = c[i] * 0.5
+
+
+@dace.program
+def element_snapshot_loop(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+    for k in range(TRIPS):
+        b[0] = a[0]
+        for i in dace.map[0:N]:
+            c[i] = c[i] + b[0] * k
 
 
 @dace.program
@@ -101,7 +110,7 @@ def session(program, tmp_path: pathlib.Path) -> Session:
 
 
 def copy_rows(sut: Session) -> list[str]:
-    return [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, CopyLibraryNode)]
+    return [label for label, (obj, _) in sut.row_index().items() if is_copy(obj)]
 
 
 def block_of(sut: Session, kind: type) -> list[str]:
@@ -109,7 +118,7 @@ def block_of(sut: Session, kind: type) -> list[str]:
 
 
 def copy_states(sdfg: dace.SDFG) -> list[dace.SDFGState]:
-    return [state for state in sdfg.states() for n in state.nodes() if isinstance(n, CopyLibraryNode)]
+    return [state for state in sdfg.states() for n in state.nodes() if is_copy(n)]
 
 
 def in_a_loop(block: dace.SDFGState) -> bool:
@@ -155,14 +164,13 @@ def test_a_lib_copy_row_is_a_copy_edge_again_once_scopes_are_made_so_no_kernel_c
 def test_a_loop_invariant_copy_hoists_out_of_its_loop_and_runs_once(tmp_path):
     sut = session(snapshot_loop, tmp_path)
     expected = run(sut.sdfg, "abc", arrays(0, 3))
-    (row,) = copy_rows(sut)
+    copy, _ = copy_reading(sut.sdfg, "a")
     (loop,) = block_of(sut, LoopRegion)
 
-    result = sut.apply_move("lib-before", [row, loop])
+    result = sut.apply_move("lib-before", [copy.label, loop])
 
     assert result.status is MoveStatus.APPLIED, result
-    (state,) = copy_states(sut.sdfg)
-    assert not in_a_loop(state)
+    assert not in_a_loop(copy_reading(sut.sdfg, "a")[1])
     for got, want in zip(run(sut.sdfg, "abc", arrays(0, 3)), expected):
         np.testing.assert_allclose(got, want, rtol=1e-14)
 
@@ -283,7 +291,7 @@ def test_a_copy_joins_an_earlier_state_and_reads_what_that_state_writes(tmp_path
     assert result.status is MoveStatus.APPLIED, result
     (state,) = copy_states(sut.sdfg)
     assert state is producer
-    (copy_node,) = [n for n in state.nodes() if isinstance(n, CopyLibraryNode)]
+    (copy_node,) = [n for n in state.nodes() if is_copy(n)]
     (source,) = [e.src for e in state.in_edges(copy_node)]
     assert source.data == "a" and any(not e.data.is_empty() for e in state.in_edges(source))
     for got, want in zip(run(sut.sdfg, "abcd", arrays(2, 4)), expected):
@@ -416,6 +424,51 @@ def test_a_barrier_inside_a_kernel_never_moves():
     assert isinstance(result, str) and "block barrier" in result, result
 
 
+def copy_reading(sdfg: dace.SDFG, name: str) -> tuple[dace.nodes.Node, dace.SDFGState]:
+    """The one copy outside every map that reads ``name``, with its state."""
+    (found,) = [
+        (n, s)
+        for s in sdfg.states()
+        for n in s.nodes()
+        if is_copy(n) and s.entry_node(n) is None and {e.data.data for e in s.in_edges(n)} == {name}
+    ]
+    return found
+
+
+def test_a_one_element_copy_is_a_lib_copy_row_as_its_tasklet(tmp_path):
+    sut = session(element_snapshot_loop, tmp_path)
+
+    rows = copy_rows(sut)
+
+    assert len(rows) == 2 and all(re.fullmatch(r"lib_copy\d+", row) for row in rows), rows
+    assert all(is_copy_tasklet(sut.row_index()[row][0]) for row in rows), rows
+    tree = sut.view(expand=[sut.row_index()[rows[0]][1].label])
+    assert all(f"{row}  LIBNODE Copy [tasklet]" in tree for row in rows), tree
+
+
+def test_a_loop_invariant_one_element_copy_hoists_out_of_its_loop_and_runs_once(tmp_path):
+    sut = session(element_snapshot_loop, tmp_path)
+    expected = run(sut.sdfg, "abc", arrays(0, 3))
+    copy, _ = copy_reading(sut.sdfg, "a")
+    (loop,) = block_of(sut, LoopRegion)
+
+    result = sut.apply_move("lib-before", [copy.label, loop])
+
+    assert result.status is MoveStatus.APPLIED, result
+    assert not in_a_loop(copy_reading(sut.sdfg, "a")[1])
+    for got, want in zip(run(sut.sdfg, "abc", arrays(0, 3)), expected):
+        np.testing.assert_array_equal(got, want)
+
+
+def test_a_one_element_copy_is_a_copy_edge_again_once_scopes_are_made(tmp_path):
+    sut = session(element_snapshot_loop, tmp_path)
+
+    sut.default_scopes()
+
+    assert copy_rows(sut) == []
+    assert all("copy" not in kernel.name for kernel in sut.list_kernels())
+
+
 if __name__ == "__main__":
     import tempfile
 
@@ -424,6 +477,9 @@ if __name__ == "__main__":
 
     test_a_copy_between_arrays_is_a_lib_copy_row_after_canonicalization(scratch())
     test_a_lib_copy_row_is_a_copy_edge_again_once_scopes_are_made_so_no_kernel_copies(scratch())
+    test_a_one_element_copy_is_a_lib_copy_row_as_its_tasklet(scratch())
+    test_a_loop_invariant_one_element_copy_hoists_out_of_its_loop_and_runs_once(scratch())
+    test_a_one_element_copy_is_a_copy_edge_again_once_scopes_are_made(scratch())
     test_a_loop_invariant_copy_hoists_out_of_its_loop_and_runs_once(scratch())
     test_a_loop_whose_trip_count_is_not_proven_positive_keeps_its_copy(scratch())
     test_a_copy_of_an_array_the_loop_writes_is_not_hoisted(scratch())

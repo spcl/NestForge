@@ -128,9 +128,9 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "hoist-invariant-for": (LoopRegion,),
     "hoist-invariant-doall": (nodes.MapEntry,),
     AUTO_VECTORIZE: (nodes.MapEntry,),
-    LIB_BEFORE: (nodes.LibraryNode, ControlFlowBlock),
-    LIB_AFTER: (nodes.LibraryNode, ControlFlowBlock),
-    LIB_INTO: (nodes.LibraryNode, SDFGState),
+    LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
+    LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
+    LIB_INTO: (nodes.CodeNode, SDFGState),
     PROPAGATE_CONFIG: (),
     RELAYOUT: (),
     ROLLBACK: (),
@@ -1140,6 +1140,8 @@ ROW_KEYWORDS: dict[type, str] = {
     SDFGState: "state",
     ConditionalBlock: "if",
     nodes.LibraryNode: "lib_<family>",
+    # a library call, or a one-element copy as the tasklet DaCe makes it (``names.is_call``)
+    nodes.CodeNode: "lib_<family>",
 }
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.

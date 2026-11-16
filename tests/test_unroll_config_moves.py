@@ -11,6 +11,7 @@ import numpy as np
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
+from nestforge.ir.names import is_copy
 from nestforge.records import MoveStatus
 from nestforge.replay import Script
 from nestforge.session import Move, Session
@@ -84,6 +85,11 @@ def count(sdfg: dace.SDFG, kind: type) -> int:
     return sum(isinstance(n, kind) for n, _ in sdfg.all_nodes_recursive())
 
 
+def statements(sdfg: dace.SDFG) -> int:
+    """The tasklets that compute: a copy is one whether a ``CopyLibraryNode`` or its one-element tasklet."""
+    return sum(isinstance(n, nodes.Tasklet) and not is_copy(n) for n, _ in sdfg.all_nodes_recursive())
+
+
 def loops(sdfg: dace.SDFG) -> list[LoopRegion]:
     return [b for b in sdfg.all_control_flow_blocks(recursive=True) if isinstance(b, LoopRegion)]
 
@@ -103,14 +109,14 @@ def repeated(a: np.ndarray, steps: int) -> np.ndarray:
 
 def test_a_constant_loop_unrolls_into_one_body_copy_per_iteration(tmp_path):
     sut = session(short_scan, tmp_path)
-    tasklets = count(sut.sdfg, nodes.Tasklet)
+    body = statements(sut.sdfg)
     (loop,) = labels_of(sut, LoopRegion)
 
     result = sut.apply_move("unroll-for", [loop])
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopUnroll"), result
     assert loops(sut.sdfg) == []
-    assert count(sut.sdfg, nodes.Tasklet) == 3 * tasklets
+    assert body > 0 and statements(sut.sdfg) == 3 * body
     a = np.random.default_rng(0).random(8)
     expected = a.copy()
     expected[:4] = np.cumsum(a[:4])

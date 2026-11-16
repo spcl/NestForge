@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import dace
-from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.propagation import propagate_memlets_nested_sdfg, propagate_memlets_state
@@ -22,7 +21,7 @@ from dace.transformation.passes.insert_explicit_copies import InsertExplicitCopi
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
-from nestforge.ir.names import inline_top_level_nsdfgs
+from nestforge.ir.names import inline_top_level_nsdfgs, is_copy
 
 FUSE_STAGE = "fuse"
 
@@ -73,18 +72,20 @@ def explicit_copies(sdfg: dace.SDFG) -> None:
 
 
 def implicit_copies(sdfg: dace.SDFG) -> int:
-    """Every ``CopyLibraryNode`` of ``sdfg`` itself outside a map, between access nodes of two arrays, becomes a copy
-    edge again, its ordering edges kept on the access nodes, so canonicalization's copy folding sees it and a scope
-    does not make it a kernel; returns how many."""
+    """Every copy of ``sdfg`` itself outside a map (a ``CopyLibraryNode`` or a one-element copy's tasklet, ``is_copy``)
+    between access nodes of two arrays of one element type becomes a copy edge again, its ordering edges kept on the
+    access nodes, so canonicalization's copy folding sees it and a scope does not make it a kernel; returns how many."""
     count = 0
     for state in sdfg.states():
-        for node in [n for n in state.nodes() if isinstance(n, CopyLibraryNode) and state.entry_node(n) is None]:
+        for node in [n for n in state.nodes() if is_copy(n) and state.entry_node(n) is None]:
             ins = [e for e in state.in_edges(node) if not e.data.is_empty()]
             outs = [e for e in state.out_edges(node) if not e.data.is_empty()]
             if len(ins) != 1 or len(outs) != 1:
                 continue
             src, dst = ins[0].src, outs[0].dst
             if not isinstance(src, nodes.AccessNode) or not isinstance(dst, nodes.AccessNode) or src.data == dst.data:
+                continue
+            if src.desc(sdfg).dtype != dst.desc(sdfg).dtype:  # a casting copy is no copy edge
                 continue
             for edge in state.in_edges(node):
                 if edge.data.is_empty():

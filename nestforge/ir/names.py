@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import dace
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
+from dace.libraries.standard.nodes.copy.common import INPUT_CONNECTOR_NAME, OUTPUT_CONNECTOR_NAME
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import (
@@ -58,13 +60,34 @@ def top_level_map_entries(state: SDFGState) -> list[nodes.MapEntry]:
     return [n for n in state.scope_children()[None] if isinstance(n, nodes.MapEntry)]
 
 
-def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.LibraryNode]:
+def is_copy_tasklet(node: nodes.Node) -> bool:
+    """Whether ``node`` is the tasklet DaCe's ``copy_node`` makes of a one-element copy (``_cpy_out = _cpy_in``, a cast
+    when the types differ): the same copy as a ``CopyLibraryNode``, which its automatic expansion would become."""
+    return (
+        isinstance(node, nodes.Tasklet)
+        and set(node.in_connectors) == {INPUT_CONNECTOR_NAME}
+        and set(node.out_connectors) == {OUTPUT_CONNECTOR_NAME}
+    )
+
+
+def is_copy(node: nodes.Node) -> bool:
+    """Whether ``node`` is a copy, as a ``CopyLibraryNode`` or as its one-element tasklet."""
+    return isinstance(node, CopyLibraryNode) or is_copy_tasklet(node)
+
+
+def is_call(state: SDFGState, node: nodes.Node) -> bool:
+    """Whether ``node`` is a library call row of ``state``: a library node (a kernel NestForge built included), or a
+    one-element copy's tasklet outside every map (inside one it is a statement of the body)."""
+    return isinstance(node, nodes.LibraryNode) or (is_copy_tasklet(node) and state.entry_node(node) is None)
+
+
+def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.CodeNode]:
     """The doalls of ``state`` not nested in a map: its maps, and its library calls (each a black-box doall; a
     kernel NestForge built is not one), in ``scope_children`` order."""
     return [
         n
         for n in state.scope_children()[None]
-        if isinstance(n, nodes.MapEntry) or (isinstance(n, nodes.LibraryNode) and not isinstance(n, ExternalCall))
+        if isinstance(n, nodes.MapEntry) or (is_call(state, n) and not isinstance(n, ExternalCall))
     ]
 
 
@@ -165,9 +188,11 @@ def unique_library_labels(sdfg: dace.SDFG) -> None:
         taken[node.label] = None
 
 
-def library_family(node: nodes.LibraryNode) -> str:
+def library_family(node: nodes.CodeNode) -> str:
     """The DaCe library ``node`` comes from (``blas``, ``fft``, ``linalg``, ...); a standard node is named by its own
-    kind (``reduce``, ``scan``, ``fill``, ``copy``)."""
+    kind (``reduce``, ``scan``, ``fill``, ``copy``), a one-element copy's tasklet ``copy`` too."""
+    if is_copy_tasklet(node):
+        return "copy"
     parts = type(node).__module__.split(".")
     package = parts[2] if parts[:2] == ["dace", "libraries"] and len(parts) > 2 else "lib"
     return type(node).__name__.lower().removesuffix("librarynode") if package == "standard" else package
@@ -207,5 +232,7 @@ def relabel_state(state: SDFGState, namer: Namer, taken: set[str]) -> None:
             elif isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall):
                 # LibraryNode sets name and label alike; keep them equal (see unique_library_labels)
                 node.name = node.label = namer.name(f"lib_{library_family(node)}", node.label, taken)  # pyright: ignore[reportAttributeAccessIssue]
+            elif scope is None and is_copy_tasklet(node):
+                node.label = namer.name("lib_copy", node.label, taken)
 
     descend(None)
