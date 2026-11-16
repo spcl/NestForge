@@ -351,18 +351,19 @@ the fastest, so this move is for trying another. A host library keeps its kernel
 
 ## Scopes and kernels (when your tool list has them)
 
-Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase gives what no scope covers
-its default scope and fixes the kernels, so the source you write for a kernel stays until a new round. `next_phase`
+Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase fixes the kernels, so the
+source you write for a kernel stays until a new round; on a program you did not place it first gives what no scope
+covers its default scope, while on one you placed that code stays outside the kernels. `next_phase`
 out of the last phase starts that round: the moves reopen and the scopes and kernel code are dropped, so `score` first.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
-  a straight run of blocks. Group doalls that pass an array between them: inside one kernel you can keep that array in
-  registers or cache instead of memory. `unset_scope` undoes it while the kernels are not fixed.
+  a straight run of blocks. An array that doalls of one kernel pass between them stays inside the kernel's call.
+  `unset_scope` undoes it while the kernels are not placed.
 - `list_scope_moves scope=<kernel>` and `apply_scope_move scope=<kernel> kind=... labels=[...]` are `list_moves` and
   `apply_move` inside one kernel's body (tile, fuse, interchange it alone). With a GPU target, `place devices={...}`
-  runs each kernel on `cpu` or `gpu` and fixes the scopes; a GPU kernel copies its arguments inside its call until
-  `insert_copies` moves the copies into the program, where adjacent GPU kernels share them (`next_phase` inserts them
-  otherwise). On a GPU kernel with its copies in, `stage-loads-shared` stages the tiles of the arrays its threads
+  runs each kernel on `cpu` or `gpu`, and the scopes stay closed until `unplace`; a GPU kernel copies its arguments
+  inside its call until `insert_copies` moves the copies into the program, where adjacent GPU kernels share them
+  (`next_phase` inserts them otherwise). On a GPU kernel with its copies in, `stage-loads-shared` stages the tiles of the arrays its threads
   reread (a stencil's input) in shared memory, one thread block of `tile_sizes` threads per tile; do it last, since
   placing again drops it. `unplace` drops the placement and its copies and keeps the kernels, so the scopes open again
   (the moves inside a kernel stay); after `focus_kernel` the placement stays until a new round. Without a GPU target

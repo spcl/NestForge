@@ -39,15 +39,15 @@ tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", 
 default = { tool = "run_defaults", args = { stage = "moves" } }
 
 [phases.scopes]
-title = "Scopes"
-summary = "Each top-level doall, a library call included, is a kernel of its own."
+title = "Scopes and placement"
+summary = "Each top-level doall, a library call included, is a kernel of its own; parallel kernels run on the GPU when the setup targets one, the rest on the CPU with threads."
 text = "prompt/phases/scopes.md"
 tools = ["set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "place", "insert_copies", "unplace"]
 default = { tool = "run_defaults", args = { stage = "scopes" } }
 
 [phases.placement]
 title = "Placement"
-summary = "What no scope covers gets its default scope, which fixes the kernels; each runs on the CPU with threads, or on the GPU when the setup targets one."
+summary = "On a program not placed, what no scope covers gets its default scope and every kernel its default device; a placed program keeps its devices. The copies a GPU kernel still makes inside its call are inserted, and the kernels are fixed."
 default = { tool = "run_defaults", args = { stage = "placement" } }
 
 [phases.kernels]

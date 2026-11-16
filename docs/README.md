@@ -36,8 +36,8 @@ walks the order; NestForge owns what each step does to the session.
 | Half | Phase | Runs | Session state afterwards |
 |---|---|---|---|
 | structured | `moves` | agent, tools `apply_move`, `run_defaults`, ... | the program, reshaped |
-| structured | `scopes` | agent in `nestforge-full`, else default | some kernels; moves close at the first one |
-| fixed point | `placement` | always default | what no scope covers gets its default scope; kernels are fixed |
+| structured | `scopes` ("Scopes and placement") | agent in `nestforge-full`, else default | some kernels, maybe placed; moves close at the first one |
+| fixed point | `placement` | always default | on an unplaced program, what no scope covers gets its default scope and every kernel its default device; a placed one keeps its devices; copies inserted; kernels are fixed |
 | unstructured | `kernels` | agent in `nestforge-full`, else nothing | each kernel's source, one kernel in focus at a time |
 | unstructured | `codegen` | agent in `nestforge-full`, else nothing | each kernel's compiler configuration |
 | | `round` | always default | back to the program as the moves left it |

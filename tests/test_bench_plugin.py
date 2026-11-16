@@ -180,6 +180,14 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     )
 
 
+def test_the_scopes_and_placement_text_names_every_tool_of_its_phase() -> None:
+    phase = tomllib.loads((PLUGIN / "plugin.toml").read_text())["phases"]["scopes"]
+    text = (PLUGIN / phase["text"]).read_text()
+
+    assert phase["title"] == "Scopes and placement"
+    assert [tool for tool in phase["tools"] if f"`{tool}" not in text] == []
+
+
 def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(loaded: None) -> None:
     body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
 
