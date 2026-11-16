@@ -1246,7 +1246,10 @@ class Session:
         names = tuple(labels)
         if self.unplaced is not None:
             # scoping the lowered program would drop the program placement starts from
-            reason = "the kernels are placed: call unplace first, which keeps the scopes and drops the placement."
+            reason = Refused(
+                "the kernels are placed: call unplace first, which keeps the scopes and drops the placement.",
+                Refusal.ARGUMENT,
+            )
             return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=reason)
         self.end_moves()
         rows = self.named_rows("define-scope", names)
@@ -1379,7 +1382,7 @@ class Session:
         :returns: ``applied``, or why nothing changed.
         """
         if self.unplaced is None:
-            reason = "no kernel is placed; there is no placement to undo."
+            reason = Refused("no kernel is placed; there is no placement to undo.", Refusal.ARGUMENT)
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unplace", labels=(), reason=reason)
         # a copy: a failure puts the kept program back through :meth:`atomic`
         self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
