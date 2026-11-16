@@ -32,13 +32,14 @@ same run under two names, and on a kernel with one, no column shows the defaults
    ```
 3. `ReferenceOptimizer` keeps its fallback to the default moves on a kernel without a reference solution (owner's
    decision, 2026-11-16). The plugin record of every run says which it was, `reference: true` or `reference: false`,
-   so an analysis can report the reference column on the covered kernels alone.
+   so an analysis can report the reference column on the covered kernels alone. The record is the one of
+   [run-extractions.md](run-extractions.md), with the field `reference`.
 4. `[ci].optimizers` gains `dace_cpu_canon_nestforge_default`.
 
 ## Tests
 
-1. On a kernel with a reference solution, the default column applies the default moves and the reference column the
-   solution's: their `applied_moves` differ.
+1. On a kernel with a reference solution, the reference column's record lists the solution's moves, and the
+   default column's record lists the default stage alone.
 2. On a kernel without one, both columns finalize, and the reference column's record says `reference: false`.
 3. The plugin check lists both flavors.
 

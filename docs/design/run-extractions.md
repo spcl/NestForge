@@ -12,35 +12,49 @@ script, with no reading of transcripts by hand.
 
 ## The plugin record
 
-The bench archives one record per plugin with every graded submission (`plugin_api.keep_record`,
-`hpcagent_bench.stats.plugin_records`). NestForge writes none today. The plugin writes one at `finalize`, schema
-version 1:
+The bench archives every file `plugin_records/<plugin>.json` of an episode's folder with each graded submission
+(`hpcagent_bench.harness.plugin_records.archive`), and a plugin writes the file with `plugin_api.keep_record`.
+NestForge writes none today.
+
+The route writes the record at every `finalize`, since a `/submit` grade always follows one:
+`keep_record(agent_root(episode_id), "nestforge", 1, data)`. A tuner flavor writes the same record through
+`FlavorOptimizer.keep_record`. A later write replaces the earlier one, so the record is always the whole episode so
+far. Schema version 1:
 
 ```json
 {
   "kernel": "jacobi_2d",
   "packet_phases": ["moves"],
   "disabled_families": [],
+  "reference": null,
   "calls": [
     {"index": 0, "tool": "apply_move", "kind": "doall-fusion", "family": "fusion",
-     "status": "applied", "refusal": "", "phase": "moves", "message": 12}
+     "status": "applied", "refusal": "", "phase": "moves", "message": null}
   ],
+  "journal": [["apply_move", {"kind": "doall-fusion", "labels": ["doall2", "doall4"]}]],
   "first_write_kernel": null,
   "final": {"time_us": 1830.0, "correct": true, "kernels": 3}
 }
 ```
 
 - `calls` holds every tool call of the episode that reached the plugin, view calls included, without arguments.
-- `status` is the tool's outcome (`applied`, `illegal`, `not-found`, `failed`, `view`).
-- `refusal` is a class, never the full text: the text up to the first colon after `illegal:`, mapped through a table
-  in `plugin/nestforge/refusals.py` (`blocked-by-dependence`, `unknown-label`, `family-off`, `not-a-doall`, ...). A
-  text without a class maps to `other`, and a test fails when a refusal of the test suite maps to `other`.
-- `message` is the index of the assistant message that made the call, which joins the record to the bench's token
-  usage per message.
+- `status` is the call's outcome: `applied`, `illegal`, or `not-found` for a labeled call (`MoveStatus` in
+  `nestforge/records.py`), `ok` for a call that changes nothing, and `failed` for an error.
+- `refusal` is a class, never the full text. `MoveResult` (`nestforge/session.py`) gains a field
+  `refusal: Refusal | None`, an enum set where the refusal is made: `UNKNOWN_LABEL`, `WRONG_ROW_KIND`, `FAMILY_OFF`,
+  `DEPENDENCE` (DaCe's legality check said no), `EFFECTS` (a crossed block touches what the row reads or writes),
+  `COMMUNICATION` (a rule or an invariant of [comm-nodes.md](comm-nodes.md)), `ARGUMENT` (a bad tile size, split
+  point, or operation), and `OTHER`. A test fails when a refusal of the test suite carries `OTHER`.
+- `journal` is the list the plugin already keeps (`routes/nestforge.py:record`): the calls that changed the program,
+  in order, with their arguments. A `write_kernel` entry holds the SHA-256 of its source in place of the source.
+- `message` is the index of the assistant message that made the call, `null` until the bench sends it
+  ([bench request B7](bench-requests.md)).
 - `first_write_kernel` is the `index` of the first `write_kernel` call, or `null`.
+- `reference` is `true` or `false` for the reference flavor ([default-flavor.md](default-flavor.md)) and `null`
+  otherwise.
 
-The journal of [move-families.md](move-families.md) is the subset of `calls` that changed the program, with
-arguments. Both live in the same record under two keys.
+The bench caps a record at 256 KB. When the record is larger, the plugin drops the `ok` entries of `calls` first and
+sets `truncated: true`. The journal is never shortened.
 
 ## The script
 
@@ -58,9 +72,10 @@ Figures are drawn through `hpcagent_bench.stats` from this file. The script draw
 
 ## What the bench must provide
 
-The join needs the index of the assistant message that made a tool call. If the plugin route does not receive it,
-that is [bench request B7](bench-requests.md). Until then, the script joins on the order of the tool calls in the
-transcript, which the record's `index` preserves.
+The token split needs to know which assistant message made a tool call ([bench request B7](bench-requests.md)).
+Until the bench sends it, the script joins on order: the k-th tool call to a NestForge tool in the transcript is the
+entry with `index` k. This join is exact as long as every tool call reaches the route, which the tool wrapper
+guarantees.
 
 ## Tests
 

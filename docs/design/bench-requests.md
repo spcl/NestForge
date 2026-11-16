@@ -17,10 +17,10 @@ to B10 are independent of it, and B13 is a baseline for the study.
 | B6 | Precision per argument in the entry | `relayout` casts | medium |
 | B7 | A tool call's route request names the assistant message | token split per phase | small |
 | B8 | A tuner flavor can decline a kernel as unsupported | flavors that cannot take a residency (B4) | small |
-| B9 | A route request names the episode's packet | ablation packets | small |
+| B9 | A route request names the episode's packet | nothing; hardening | small |
 | B10 | mypy error in `config.py` | clean hooks | open as bench PR #190 |
 | B11 | A NestForge submission adds no communication | the claim that the agent never writes MPI | medium |
-| B12 | Distributions for an unstructured partition | an ICON task with MPI ranks | large |
+| B12 | Two application tasks: the ICON dynamical core and OMEN | the application experiment | large |
 | B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
 
 ## B1: the canonical form renders the distributed entry
@@ -142,8 +142,11 @@ records the episode as unsupported with the reason, in the same outcome class as
 
 ## B9: a route request names the episode's packet
 
-**Missing.** A plugin's session lives in the judge's process. A packet's `env` reaches the agent, and `RouteRequest`
-has no packet field, so a route cannot read a setting of the episode's packet.
+**Status.** Not needed for NestForge's design: the agent-side tool wrapper forwards the packet's setting with each
+call ([move-families.md](move-families.md)). The request remains as hardening.
+
+**Missing.** A plugin's session lives in the judge's process. A packet's `env` reaches the agent's tools, and
+`RouteRequest` has no packet field, so a route learns a packet's setting only from what the tool wrapper sends.
 
 **Proposed design.** `RouteRequest` gains `packet: str`, the resolved packet name of the episode ("" for a tuner). A
 plugin reads its own packet table for anything further.
@@ -166,23 +169,38 @@ agent writes kernel code, and nothing stops a kernel from calling MPI.
    of the submitted library must be a subset of those of the canonical program's library for the same kernel, which
    the judge builds once per kernel. A submission that adds a call fails the rule and is graded as a violation.
 
-## B12: distributions for an unstructured partition
+## B12: two application tasks, the ICON dynamical core and OMEN
 
-**Missing.** `harness/mpi_descriptor.py` describes block, block-cyclic, and cyclic ownership of array axes over a
-Cartesian grid. ICON's grid is unstructured: each rank owns an index set from a graph partition, with a halo list
-per neighbor. The bench cannot scatter or gather such arrays, which decides how large an ICON task can be.
+**Goal.** The application experiment runs on two programs (owner's decision, 2026-11-16): the ICON dynamical core
+and OMEN, the quantum-transport code whose kernel the layout study uses. Several agents optimize each program
+independently, as on every other task, so each program is one bench task with a manifest, a reference, and a
+distributed grade.
 
-**Options.**
+**What each task needs.** The same six items for both programs.
 
-1. An ICON component on one rank's patch, timed on one node with the halo exchange stubbed. No bench change, and no
-   scaling numbers.
-2. A new scheme `indexed`: the manifest ships, per rank count, the owned index list of each array axis and the
-   neighbor lists, produced offline by ICON's own partitioner. The driver scatters and gathers by index list. The
-   kernel receives its halo lists as arguments. This is the smallest change that gives scaling numbers.
-3. The task runs ICON's own driver for setup and hands the kernel a communicator and the patch. The bench then
-   cannot check ownership, and the gathered output needs ICON's own gather.
+| Item | ICON dynamical core | OMEN |
+|---|---|---|
+| Program text | Fortran through dace-fortran into one SDFG | to be named by the owner: the DaCe Python form of the SC19 work, or the original source |
+| Communication | halo exchanges as communication nodes | to be read from the program |
+| Reference | the unmodified program's output on the task's input | the same |
+| Input | one grid and one time step count per size preset | one device structure per size preset |
+| Distribution | unstructured: see below | to be read from the program |
+| Rank counts | from the setup's `mpi.rank_counts`, capped by the node count | the same |
 
-Recommended: option 1 for the paper's first ICON numbers, option 2 as the feature request. The owner decides.
+**The distribution gap.** `harness/mpi_descriptor.py` describes block, block-cyclic, and cyclic ownership of array
+axes over a Cartesian grid. ICON's grid is unstructured: each rank owns an index set from a graph partition, with a
+halo list per neighbor. The bench cannot scatter or gather such arrays today. Three ways to close the gap:
+
+1. A new scheme `indexed`. The manifest ships, per rank count, the owned index list of each array axis and the
+   neighbor lists, produced offline by the application's own partitioner. The driver scatters and gathers by index
+   list, and the kernel receives its halo lists as arguments.
+2. The task runs the application's own setup and hands the kernel a communicator and the rank's patch. The bench then
+   checks the output through the application's own gather.
+3. One rank's patch on one node with the exchange stubbed. No bench change, and no scaling numbers.
+
+Recommended: option 1 as the feature, with option 3 as the first milestone that exercises the whole pipeline.
+
+**Open for the owner.** The source form of OMEN, the inputs and sizes of both tasks, and the option above.
 
 ## B13: an LLVM-pass agent packet
 
