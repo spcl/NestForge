@@ -33,7 +33,7 @@ packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 # its wire.py phase.
 [phases.moves]
 title = "Moves"
-summary = "NestForge applies its default fusion."
+summary = "NestForge applies its default moves: the wavefront skew, then fusion, each unless the run switches its family off."
 text = "prompt/phases/moves.md"
 tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
 default = { tool = "run_defaults", args = { stage = "moves" } }
