@@ -28,7 +28,7 @@ FAMILIES: dict[str, frozenset[str]] = {
     "library": frozenset({"lib-before", "lib-after", "lib-into", "expand-library", "set-library-implementation"}),
     "layout": frozenset({"relayout"}),
     "vectorize": frozenset({"auto-vectorize-scope"}),
-    "schedule": frozenset({"doall-to-for", "for-to-doall"}),
+    "schedule": frozenset({"doall-to-for", "for-to-doall", "set-schedule-cpu", "set-schedule-gpu"}),
     "wavefront": frozenset({"skew-wavefront"}),
 }
 

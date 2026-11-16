@@ -1216,6 +1216,27 @@ def test_force_does_not_waive_a_read_of_what_an_earlier_iteration_wrote():
     assert digest(sut.sdfg) == before
 
 
+@dace.program
+def scatter_until_negative(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]):
+    for i in range(N):
+        if x[i] < 0.0:
+            break
+        out[perm[i]] = x[i]
+
+
+def test_forced_for_to_doall_keeps_a_loop_that_breaks_early():
+    """DaCe's permissive mode would map it; a map has no break."""
+    sut = Session(scatter_until_negative.to_sdfg(simplify=True))
+    (loop,) = loops(sut.sdfg)
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("for-to-doall", [loop.label], force=True)
+
+    assert (result.status, result.refusal, result.forced) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND, False), result
+    assert "BreakBlock" in result.reason
+    assert digest(sut.sdfg) == before
+
+
 def test_forced_for_to_doall_keeps_a_loop_whose_call_has_an_ordered_side_effect():
     sdfg = scatter.to_sdfg(simplify=True)  # force lifts it without the side effect
     tasklets = [node for node, _ in sdfg.all_nodes_recursive() if isinstance(node, nodes.Tasklet)]

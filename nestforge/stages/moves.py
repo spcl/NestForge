@@ -9,18 +9,29 @@ import copy
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from math import prod
 from pathlib import Path
 from typing import Any, cast
 
 import dace
 import sympy
+from dace import dtypes
 from dace.data import Scalar
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
-from dace.sdfg.state import BreakBlock, ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
+from dace.sdfg.state import (
+    BreakBlock,
+    ConditionalBlock,
+    ContinueBlock,
+    ControlFlowBlock,
+    ControlFlowRegion,
+    LoopRegion,
+    ReturnBlock,
+    SDFGState,
+)
 from dace.sdfg.utils import set_nested_sdfg_parent_references, weakly_connected_component
 from dace.subsets import Range
 from dace.transformation.dataflow.map_collapse import MapCollapse
@@ -106,6 +117,27 @@ ROLLBACK = "rollback"
 FOR_TO_DOALL = "for-to-doall"
 #: What a forced ``for-to-doall`` answers as the transformation that ran.
 FORCED_LOOP_TO_MAP = "LoopToMap, forced: the compiler did not prove the iterations independent"
+#: The move kind that sets the OpenMP schedule of a doall inside a kernel placed on the CPU.
+SET_SCHEDULE_CPU = "set-schedule-cpu"
+#: The schedules ``set-schedule-cpu`` takes, by the name the agent sends.
+CPU_SCHEDULES = {
+    "default": dtypes.OMPScheduleType.Default,
+    "static": dtypes.OMPScheduleType.Static,
+    "dynamic": dtypes.OMPScheduleType.Dynamic,
+    "guided": dtypes.OMPScheduleType.Guided,
+}
+#: The move kind that sets the thread block of a GPU kernel, or how the block's threads share a doall inside it.
+SET_SCHEDULE_GPU = "set-schedule-gpu"
+#: The schedules ``set-schedule-gpu`` takes on a doall inside a kernel, as DaCe schedules; ``guided`` waits for DaCe.
+GPU_INNER_SCHEDULES = {
+    "sequential": dtypes.ScheduleType.Sequential,
+    "static": dtypes.ScheduleType.GPU_ThreadBlock,
+    "dynamic": dtypes.ScheduleType.GPU_ThreadBlock_Dynamic,
+}
+#: The most threads a block has on every GPU NestForge targets.
+MAX_BLOCK_THREADS = 1024
+#: The move kinds that work only inside a kernel (a scope): a schedule belongs to the device it is placed on.
+SCOPE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU})
 #: The move kind that skews a loop nest into a wavefront: a sequential diagonal loop over a doall per diagonal.
 SKEW_WAVEFRONT = "skew-wavefront"
 
@@ -146,6 +178,8 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "stage-loads-shared": (nodes.MapEntry,),
     SKEW_WAVEFRONT: (LoopRegion,),
     FOR_TO_DOALL: (LoopRegion,),
+    SET_SCHEDULE_CPU: (nodes.MapEntry,),
+    SET_SCHEDULE_GPU: (nodes.MapEntry,),
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
@@ -1197,6 +1231,29 @@ def plan_skew_wavefront(row: Row, tile_sizes: Sequence[int] = (), target: str = 
     return region_rewrite("WavefrontSkew", sdfg, lambda: skew.commit(plan, sdfg))
 
 
+def early_exits(loop: LoopRegion) -> list[str]:
+    """The blocks that end an iteration of ``loop`` early: its own break and continue (not those of a loop inside
+    it), and a return anywhere in it."""
+    found: list[str] = []
+    pending: list[ControlFlowRegion] = [loop]
+    while pending:
+        region = pending.pop()
+        for block in region.nodes():
+            if isinstance(block, (BreakBlock, ContinueBlock, ReturnBlock)):
+                found.append(type(block).__name__)
+            elif isinstance(block, ConditionalBlock):
+                pending.extend(branch for _, branch in block.branches)
+            elif isinstance(block, LoopRegion):
+                found += [
+                    type(inner).__name__
+                    for inner in block.all_control_flow_blocks(recursive=True)
+                    if isinstance(inner, ReturnBlock)
+                ]
+            elif isinstance(block, ControlFlowRegion):
+                pending.append(block)
+    return found
+
+
 def ordered_side_effect_in(region: ControlFlowRegion) -> str | None:
     """The label of a node in ``region`` whose side effect must keep its order (a communication call), or ``None``."""
     for node, parent in region.all_nodes_recursive():
@@ -1220,6 +1277,13 @@ def plan_for_to_doall(row: Row, force: bool = False) -> Rewrite | str:
         why = "it gave no reason" if refusal is None else refusal.message
         if not force:
             return Refused(f"blocked by LoopToMap: {loop.label}: {why}.", Refusal.DEPENDENCE)
+        exits = early_exits(loop)
+        if exits:
+            # permissive mode would map a body that leaves the loop early, which a map cannot
+            return Refused(
+                f"{loop.label} holds a {exits[0]}, which leaves the loop early; force does not waive that.",
+                Refusal.WRONG_ROW_KIND,
+            )
         ordered = ordered_side_effect_in(loop)
         if ordered is not None:
             # canonicalization orders such calls through data, a conflict that permissive mode would waive
@@ -1236,6 +1300,190 @@ def plan_for_to_doall(row: Row, force: bool = False) -> Rewrite | str:
             )
         name = FORCED_LOOP_TO_MAP
     return region_rewrite(name, loop.sdfg, lift.rewrite)
+
+
+def in_parallel_doall(state: SDFGState, entry: nodes.MapEntry) -> bool:
+    """Whether ``entry`` runs inside another doall, of its state or around the nested SDFG that holds it."""
+    if state.entry_node(entry) is not None:
+        return True
+    sdfg = state.sdfg
+    while sdfg.parent_nsdfg_node is not None:
+        parent = cast(SDFGState, sdfg.parent)
+        if parent.entry_node(sdfg.parent_nsdfg_node) is not None:
+            return True
+        sdfg = parent.sdfg
+    return False
+
+
+def schedule_text(entry: nodes.MapEntry) -> str:
+    """The OpenMP schedule of ``entry`` as ``set-schedule-cpu`` takes it: ``dynamic,16 threads=8``."""
+    found = entry.map.omp_schedule
+    text = next(name for name, value in CPU_SCHEDULES.items() if value == found)
+    if str(entry.map.omp_chunk_size) != "0":
+        text += f",{entry.map.omp_chunk_size}"
+    if entry.map.omp_num_threads > 0:
+        text += f" threads={entry.map.omp_num_threads}"
+    return text
+
+
+def plan_set_schedule_cpu(row: Row, schedule: str | None, chunk: int | None, threads: int | None) -> Rewrite | str:
+    """The OpenMP schedule of the outermost doall ``row``, its chunk and its team size (``None``: no clause)."""
+    entry, state = cast(tuple[nodes.MapEntry, SDFGState], row)
+    label = entry.map.label
+    if in_parallel_doall(state, entry):
+        return Refused(
+            f"{label} runs inside another doall, whose threads each run it in order, so a schedule changes nothing; "
+            "set the schedule of the outermost doall.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    if schedule is None or schedule not in CPU_SCHEDULES:
+        return Refused(
+            f"set-schedule-cpu takes schedule, one of {list(CPU_SCHEDULES)}; not {schedule!r}.", Refusal.ARGUMENT
+        )
+    if chunk is not None and (chunk < 1 or schedule == "default"):
+        return Refused(
+            f"a chunk is a positive count of iterations, with static, dynamic or guided; not {chunk} with {schedule}.",
+            Refusal.ARGUMENT,
+        )
+    if threads is not None and threads < 1:
+        return Refused(f"threads is a positive team size; not {threads}.", Refusal.ARGUMENT)
+
+    def commit() -> None:
+        entry.map.omp_schedule = CPU_SCHEDULES[schedule]
+        entry.map.omp_chunk_size = 0 if chunk is None else chunk
+        entry.map.omp_num_threads = 0 if threads is None else threads
+
+    return Rewrite("OpenMP schedule", commit)
+
+
+@dataclass(frozen=True, slots=True)
+class GpuChoice:
+    """What ``set-schedule-gpu`` chose for one doall: the thread block of a kernel doall, or the schedule of a doall
+    inside one. The session keeps it per kernel and sets it after every placement, which resets both."""
+
+    block: tuple[int, ...] = ()
+    schedule: str = "sequential"
+
+    def text(self) -> str:
+        return f"block={list(self.block)}" if self.block else self.schedule
+
+
+def gpu_role(state: SDFGState, entry: nodes.MapEntry) -> str | None:
+    """``kernel`` for an outermost doall of a GPU kernel's body, ``inner`` for a doall directly inside one, else
+    ``None``: deeper doalls run in order on each thread."""
+    if in_parallel_doall(state, entry):
+        outer = state.entry_node(entry)
+        if isinstance(outer, nodes.MapEntry) and not in_parallel_doall(state, outer):
+            return "inner"
+        return None
+    return "kernel"
+
+
+def plan_set_schedule_gpu(
+    row: Row, block: Sequence[int], schedule: str | None, chosen: Mapping[str, GpuChoice]
+) -> GpuChoice | str:
+    """The choice ``set-schedule-gpu`` makes for the doall ``row`` of a GPU kernel's body, given what the kernel's
+    other doalls hold (``chosen``, by label), or why it is refused. DaCe's GPU code generator takes a kernel's thread
+    block either from the kernel doall or from the doalls its threads share, never both; a dynamic doall's block size
+    comes from DaCe's configuration (``compiler.cuda.dynamic_map_block_size``), and static and dynamic doalls cannot
+    share a kernel."""
+    entry, state = cast(tuple[nodes.MapEntry, SDFGState], row)
+    label, role = entry.map.label, gpu_role(state, entry)
+    if role is None:
+        return Refused(
+            f"{label} runs inside a doall inside the kernel, in order on each thread; set-schedule-gpu takes the kernel "
+            "doall or a doall directly inside it.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    if role == "kernel":
+        inner = [
+            other.map.label
+            for other in state.scope_children()[entry]
+            if isinstance(other, nodes.MapEntry) and chosen.get(other.map.label, GpuChoice()).schedule != "sequential"
+        ]
+        if schedule is not None:
+            return Refused(
+                f"{label} is the kernel doall: it takes block (tile_sizes), the threads of one block; schedule goes "
+                "on a doall inside it.",
+                Refusal.ARGUMENT,
+            )
+        last = int(dace.Config.get("compiler", "cuda", "block_size_lastdim_limit"))
+        if (
+            not 1 <= len(block) <= 3
+            or any(size < 1 for size in block)
+            or prod(block) > MAX_BLOCK_THREADS
+            or (len(block) == 3 and block[2] > last)
+        ):
+            return Refused(
+                f"block takes one to three positive sizes of at most {MAX_BLOCK_THREADS} threads in all, the third of "
+                f"at most {last}; not {list(block)}.",
+                Refusal.ARGUMENT,
+            )
+        if inner:
+            return Refused(
+                f"{', '.join(inner)} in {label} share the block's threads, so their schedule fixes the block; set them "
+                "to sequential first.",
+                Refusal.ARGUMENT,
+            )
+        return GpuChoice(block=tuple(block))
+    kernel = cast(nodes.MapEntry, state.entry_node(entry))
+    if block:
+        return Refused(f"{label} is inside the kernel doall {kernel.map.label}; block goes on that.", Refusal.ARGUMENT)
+    if schedule == "guided":
+        return Refused("guided is not in DaCe's GPU code generator yet; take dynamic.", Refusal.ARGUMENT)
+    if schedule not in GPU_INNER_SCHEDULES:
+        return Refused(
+            f"set-schedule-gpu takes schedule, one of {list(GPU_INNER_SCHEDULES)}, on {label}; not {schedule!r}.",
+            Refusal.ARGUMENT,
+        )
+    if schedule == "sequential":
+        return GpuChoice()
+    if chosen.get(kernel.map.label, GpuChoice()).block:
+        return Refused(
+            f"the kernel doall {kernel.map.label} has a block of its own; set-schedule-gpu takes the block from one "
+            "place only. Roll that move back first.",
+            Refusal.ARGUMENT,
+        )
+    siblings = {
+        other.map.label: chosen.get(other.map.label, GpuChoice()).schedule
+        for other in state.scope_children()[kernel]
+        if isinstance(other, nodes.MapEntry) and other is not entry
+    }
+    clash = [name for name, held in siblings.items() if held not in ("sequential", schedule)]
+    if clash:
+        return Refused(
+            f"{', '.join(clash)} in the same kernel is shared another way; static and dynamic doalls cannot share a "
+            "kernel.",
+            Refusal.ARGUMENT,
+        )
+    if schedule == "dynamic" and len(entry.map.params) != 1:
+        return Refused(f"a dynamic doall has one dimension; {label} has {len(entry.map.params)}.", Refusal.ARGUMENT)
+    if schedule == "static":
+        # bounded the way DaCe sizes a thread block: min(N, (i + 1) * 32) - i * 32 is 32, its last block guarded
+        extent = prod(dace.symbolic.overapproximate(size) for size in entry.map.range.size())
+        if dace.symbolic.issymbolic(extent) or int(extent) > MAX_BLOCK_THREADS:
+            return Refused(
+                f"a static doall gives each thread of the block one iteration, so its extent ({extent}) must be "
+                f"bounded by a constant of at most {MAX_BLOCK_THREADS}; tile it first, or take dynamic.",
+                Refusal.ARGUMENT,
+            )
+    return GpuChoice(schedule=schedule)
+
+
+def set_gpu_choices(sdfg: dace.SDFG, choices: Mapping[str, Mapping[str, GpuChoice]]) -> None:
+    """Set the choices of ``set-schedule-gpu`` on the placed GPU kernels of ``sdfg``, by kernel name and doall label;
+    a label a later move retired is skipped."""
+    for ext in external_calls(sdfg):
+        held = choices.get(ext.name)
+        if not held or ext.schedule not in dtypes.GPU_SCHEDULES or ext.standalone_sdfg is None:
+            continue
+        for node, _ in ext.standalone_sdfg.all_nodes_recursive():
+            if isinstance(node, nodes.MapEntry) and node.map.label in held:
+                choice = held[node.map.label]
+                if choice.block:
+                    node.map.gpu_block_size = list(choice.block)
+                elif choice.schedule != "sequential":
+                    node.map.schedule = GPU_INNER_SCHEDULES[choice.schedule]
 
 
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
@@ -1387,9 +1635,24 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     FOR_TO_DOALL: (
         "LoopToMap (force, optional)",
         "for i: B becomes doall i: B where DaCe proves that no iteration reads or writes what another writes. With "
-        "force, you vouch for the arrays: conflicts between iterations are not checked, and a wrong program is yours "
-        "to find. Force only what you can argue (an index array that is a permutation); bounds, calls with ordered "
-        "side effects and scalars carried between iterations are checked either way.",
+        "force, you vouch for the arrays: DaCe's checks of conflicting writes are waived, and some of its checks of "
+        "carried reads, so a wrong program is yours to find. Force only what you can argue (an index array that is a "
+        "permutation); bounds, a break, continue or return in the body, calls with ordered side effects and scalars "
+        "carried between iterations are refused either way, and DaCe still refuses a read its memlet test ties to "
+        "another iteration's write.",
+    ),
+    SET_SCHEDULE_CPU: (
+        "the map's OpenMP schedule (schedule, chunk and threads; in a CPU kernel only)",
+        "doall i: B keeps what it computes and runs under schedule(static|dynamic|guided[, chunk]) num_threads(t). "
+        "Dynamic or guided pays when iterations differ in cost (triangular nests, sparse rows). Only an outermost "
+        "doall of a kernel takes one.",
+    ),
+    SET_SCHEDULE_GPU: (
+        "the kernel's thread block (gpu_block_size), or the schedule of a doall inside it (in a GPU kernel only)",
+        "on the kernel doall, block=[bx, by] sets the threads of one block. On a doall directly inside it: sequential "
+        "(each thread runs it whole), static (one iteration per thread of the block, GPU_ThreadBlock) or dynamic "
+        "(the block's threads take iterations from a shared queue, GPU_ThreadBlock_Dynamic). The block comes from "
+        "one place only: the kernel doall, or the doalls inside it.",
     ),
     "snapshot-reads": (
         "a doall of its own that copies each slice (SnapshotReads)",
@@ -1509,12 +1772,16 @@ def plan_move(
     isa: str = DEFAULT_ISA,
     target: str = "cpu",
     force: bool = False,
+    schedule: str | None = None,
+    chunk: int | None = None,
+    threads: int | None = None,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
-    is the device the wavefront's tiles are for, and ``force`` goes to :data:`FOR_TO_DOALL`."""
+    is the device the wavefront's tiles are for, ``force`` goes to :data:`FOR_TO_DOALL`, and ``schedule``, ``chunk``
+    and ``threads`` go to :data:`SET_SCHEDULE_CPU`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
@@ -1530,6 +1797,8 @@ def plan_move(
         return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
     if kind == FOR_TO_DOALL:
         return plan_for_to_doall(*rows, force=force)
+    if kind == SET_SCHEDULE_CPU:
+        return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
@@ -1717,6 +1986,8 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
     SKEW_WAVEFRONT: for_rows,
     FOR_TO_DOALL: for_rows,
+    SET_SCHEDULE_CPU: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if not in_parallel_doall(st, e)),
+    SET_SCHEDULE_GPU: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if gpu_role(st, e) is not None),
 }
 
 
@@ -1735,6 +2006,8 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
             if name in (
                 PROPAGATE_CONFIG,
                 AUTO_VECTORIZE,
+                SET_SCHEDULE_CPU,
+                SET_SCHEDULE_GPU,
             ):  # no values to probe with, or too costly: judged when applied
                 found[(name, labels)] = None
                 continue

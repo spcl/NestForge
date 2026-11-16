@@ -231,10 +231,23 @@ inverse. **`doall-to-for`** `[doall]`, MapToForLoop: `doall k: doall j: B` becom
 inside staying parallel, so a pass over levels (`expand-doall` it first) can `for-fusion` with the level scan it
 feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls of the merged body.
 **`for-to-doall`** `[for]`, LoopToMap: a for loop whose iterations DaCe proves independent becomes a doall, the way
-back from `doall-to-for`, or after a move removed the dependence. `force=true` waives DaCe's check on conflicting
-writes, never on a read of what an earlier iteration wrote or on a communication call. Force only when you know what
+back from `doall-to-for`, or after a move removed the dependence. `force=true` waives DaCe's checks of conflicting
+writes and some of its checks of carried reads; a break, continue or return in the body, a communication call, and
+a read DaCe's memlet test ties to another iteration's write are refused either way. Force only when you know what
 DaCe cannot, such as an index array that is a permutation (`out[perm[i]] = ...`): the answer then says `forced` and
 warns, and a wrong program after it is yours. The judge's hidden inputs still grade it.
+**`set-schedule-cpu`** `[doall]` with `schedule` (`static`, `dynamic`, `guided`, or `default`: DaCe chooses, `guided`
+for uneven bodies) and optionally `chunk`
+and `threads`, only through `apply_scope_move` in a kernel on the CPU: the OpenMP schedule of an outermost doall.
+`list_scope_moves` shows each doall's schedule now as `current`. `dynamic` or `guided` pays when iterations differ in
+cost (a triangular nest, rows of a sparse matrix), `static` when they cost the same; a doall inside another runs in
+order on each thread, so it takes no schedule.
+**`set-schedule-gpu`**, only in a kernel on the GPU, follows OpenMP's model: the kernel doall is the parallel
+region and one thread block is its team. On the kernel doall, `tile_sizes` is the block (`[256]`, `[32, 8]`). On a
+doall directly inside it, `schedule` says how the block's threads share it: `sequential` (each thread runs it whole,
+the default), `static` (one iteration per thread: a constant extent of at most 1024, so tile first) or `dynamic`
+(the threads take iterations from a queue: uneven rows, as in CSR). The block comes from the kernel doall or from
+the doalls inside it, never both, and static and dynamic doalls do not share a kernel.
 **`snapshot-reads`** `[doall]`, a doall of its own per slice: a doall that reads a slice of an array (`path[:, k]`,
 `path[k, :]`: one index per dimension, either a map parameter or a value the doall does not change) which another doall of
 the state writes first copies the slice into a transient, so the two doalls stop touching one array and `doall-fusion`

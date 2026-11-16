@@ -67,7 +67,8 @@ class ApplyMove(Labeled):
         default_factory=list,
         description=(
             "tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64]; "
-            "stage-loads-shared: the thread block, one size per dimension (at most 3), e.g. [256]."
+            "stage-loads-shared: the thread block, one size per dimension (at most 3), e.g. [256]; set-schedule-gpu on "
+            "a kernel doall: its thread block, e.g. [32, 8]."
         ),
     )
     implementation: str | None = pydantic.Field(
@@ -89,9 +90,23 @@ class ApplyMove(Labeled):
     force: bool = pydantic.Field(
         False,
         description="for-to-doall: apply although the dependence check refused, because you know that no two "
-        "iterations write one element (e.g. an index array is a permutation). Only that check is waived: a read of "
-        "what another iteration writes, and a communication call, are still refused. The answer carries a warning, "
+        "iterations write one element (e.g. an index array is a permutation). DaCe's checks of conflicting writes and "
+        "some of carried reads are waived; a break, continue or return in the body, a communication call, and a read "
+        "DaCe ties to another iteration's write are still refused. The answer carries a warning, "
         "and a wrong program is yours to find.",
+    )
+    schedule: Literal["static", "dynamic", "guided", "default", "sequential"] | None = pydantic.Field(
+        None,
+        description="set-schedule-cpu (inside a CPU kernel): the OpenMP schedule of the doall (static, dynamic, "
+        "guided, or default: DaCe chooses). set-schedule-gpu, on a doall directly inside a GPU kernel's doall: how the block's threads "
+        "share it (sequential: each thread runs it whole; static: one iteration per thread; dynamic: a shared queue). "
+        "dynamic or guided pays when iterations differ in cost (a triangular nest, sparse rows).",
+    )
+    chunk: int | None = pydantic.Field(
+        None, description="set-schedule-cpu: the iterations a thread takes at a time, e.g. 16; none: OpenMP's default."
+    )
+    threads: int | None = pydantic.Field(
+        None, description="set-schedule-cpu: the threads that run the doall; none: all of them."
     )
     operation: dict[str, Any] = pydantic.Field(
         default_factory=dict,
@@ -102,7 +117,7 @@ class ApplyMove(Labeled):
     )
     # list_moves' note on a listed move, so the move is sent back as listed; never passed to the session
     current: str | None = pydantic.Field(
-        None, exclude=True, description="Ignored: the implementation list_moves said the row has now."
+        None, exclude=True, description="Ignored: the implementation or schedule list_moves said the row has now."
     )
 
 

@@ -111,6 +111,10 @@ class AppliedMove(Record):
     operation: dict[str, object] = {}
     isa: str = DEFAULT_ISA
     force: bool = False
+    # TODO(owner): Script.apply passes no scope, so the set-schedule moves (scope only) cannot replay yet
+    schedule: str | None = None
+    chunk: int | None = None
+    threads: int | None = None
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -184,6 +188,9 @@ class Script:
             operation=move.operation,
             isa=move.isa,
             force=move.force,
+            schedule=move.schedule,
+            chunk=move.chunk,
+            threads=move.threads,
         )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -198,6 +205,9 @@ class Script:
             operation=dict(move.operation),
             isa=move.isa,
             force=move.force,
+            schedule=move.schedule,
+            chunk=move.chunk,
+            threads=move.threads,
         )
         self.applied.append(done)
         return done

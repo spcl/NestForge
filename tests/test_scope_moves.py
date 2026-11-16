@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from dace.sdfg.nodes import MapEntry
 
-from nestforge.records import MoveStatus
+from nestforge.records import MoveStatus, Refusal
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.placement import has_device_memory
@@ -160,3 +160,147 @@ def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy
     session.sdfg(a=a, b=b, c=c, N=1000)
 
     np.testing.assert_allclose(c[2:-2], chain_reference(a, b), rtol=1e-15, atol=0)
+
+
+def placed_on_cpu(tmp_path) -> tuple[Session, str, str]:
+    session, first, second = two_kernels(tmp_path, gpu=False)
+    session.place({first: "cpu", second: "cpu"})
+    return session, first, second
+
+
+def generated_cpu_code(session: Session, name: str) -> str:
+    body = session.kernel(name).standalone_sdfg
+    return "\n".join(code.clean_code for code in body.generate_code() if code.language == "cpp")
+
+
+def test_a_cpu_schedule_reaches_the_pragma_of_that_doall_and_of_no_other(tmp_path):
+    session, first, second = placed_on_cpu(tmp_path)
+    (listed,) = session.list_moves("set-schedule-cpu", scope=first)
+    assert listed.current == "default"
+
+    done = session.apply_move("set-schedule-cpu", listed.labels, scope=first, schedule="dynamic", chunk=16, threads=4)
+
+    assert (done.status, done.reason) == (MoveStatus.APPLIED, "OpenMP schedule"), done
+    (again,) = session.list_moves("set-schedule-cpu", scope=first)
+    assert again.current == "dynamic,16 threads=4", "placed again, the doall keeps its schedule"
+    # the generated pragma is the product of the move
+    assert generated_cpu_code(session, first).count("schedule(dynamic, 16) num_threads(4)") == 1
+    assert "schedule(" not in generated_cpu_code(session, second)
+
+
+def test_a_cpu_schedule_needs_a_scope_and_a_cpu_kernel(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    (label,) = only_move(session, "tile-doall", first)
+
+    on_gpu = session.apply_move("set-schedule-cpu", [label], scope=first, schedule="static")
+    no_scope = session.apply_move("set-schedule-cpu", [label], schedule="static")
+
+    assert (on_gpu.status, on_gpu.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+    assert "runs on the GPU" in on_gpu.reason
+    assert (no_scope.status, no_scope.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+    assert session.list_moves("set-schedule-cpu", scope=first) == []
+    assert session.list_moves("set-schedule-cpu") == []
+
+
+def test_a_cpu_schedule_on_a_doall_inside_another_is_refused(tmp_path):
+    session, first, _ = placed_on_cpu(tmp_path)
+    session.apply_move("tile-doall", only_move(session, "tile-doall", first), tile_sizes=[32], scope=first)
+    body, _ = session.move_programs(first)
+    (inner,) = [
+        node for node, state in body.all_nodes_recursive() if isinstance(node, MapEntry) and state.entry_node(node)
+    ]
+    (outer,) = session.list_moves("set-schedule-cpu", scope=first)
+
+    result = session.apply_move("set-schedule-cpu", [inner.map.label], scope=first, schedule="dynamic")
+
+    assert outer.labels != (inner.map.label,), "only the outer doall is listed"
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND), result
+
+
+def test_a_chunk_without_a_schedule_that_takes_one_is_refused(tmp_path):
+    session, first, _ = placed_on_cpu(tmp_path)
+    (listed,) = session.list_moves("set-schedule-cpu", scope=first)
+
+    result = session.apply_move("set-schedule-cpu", listed.labels, scope=first, schedule="default", chunk=8)
+
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
+
+
+def placed_maps(session: Session, name: str) -> dict[str, dace.nodes.Map]:
+    body = session.kernel(name).standalone_sdfg
+    return {node.map.label: node.map for node, _ in body.all_nodes_recursive() if isinstance(node, MapEntry)}
+
+
+def tiled_on_gpu(tmp_path) -> tuple[Session, str, str, str, str]:
+    """``first`` tiled by 32 on the GPU: its kernel doall over tiles, and the doall over one tile inside it."""
+    session, first, second = placed_on_gpu(tmp_path)
+    session.apply_move("tile-doall", only_move(session, "tile-doall", first), tile_sizes=[32], scope=first)
+    rows = [move.labels[0] for move in session.list_moves("set-schedule-gpu", scope=first)]
+    kernel, inner = sorted(
+        rows, key=lambda label: placed_maps(session, first)[label].schedule != dace.ScheduleType.GPU_Device
+    )
+    assert placed_maps(session, first)[kernel].schedule == dace.ScheduleType.GPU_Device
+    return session, first, second, kernel, inner
+
+
+def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_again(tmp_path):
+    session, first, second = placed_on_gpu(tmp_path)
+    (listed,) = session.list_moves("set-schedule-gpu", scope=first)
+    assert listed.current == "sequential"
+
+    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[128])
+    session.apply_move("tile-doall", only_move(session, "tile-doall", second), tile_sizes=[32], scope=second)
+
+    assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule block=[128]"), done
+    assert placed_maps(session, first)[listed.labels[0]].gpu_block_size == [128]
+    (again,) = session.list_moves("set-schedule-gpu", scope=first)
+    assert again.current == "block=[128]"
+
+
+def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_path):
+    session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
+
+    done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="dynamic")
+    blocked = session.apply_move("set-schedule-gpu", [kernel], scope=first, tile_sizes=[64])
+
+    assert done.status is MoveStatus.APPLIED, done
+    maps = placed_maps(session, first)
+    assert (maps[kernel].schedule, maps[inner].schedule) == (
+        dace.ScheduleType.GPU_Device, dace.ScheduleType.GPU_ThreadBlock_Dynamic
+    )  # fmt: skip
+    assert (blocked.status, blocked.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), "the block comes from one place"
+
+
+def test_a_static_doall_over_one_tile_shares_it_among_the_blocks_threads(tmp_path):
+    """The doall over a tile of 32 has extent min(N, (t + 1) * 32) - t * 32, which DaCe bounds by 32."""
+    session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
+
+    done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="static")
+    guided = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="guided")
+
+    assert done.status is MoveStatus.APPLIED, done
+    maps = placed_maps(session, first)
+    assert (maps[kernel].schedule, maps[inner].schedule) == (
+        dace.ScheduleType.GPU_Device, dace.ScheduleType.GPU_ThreadBlock
+    )  # fmt: skip
+    assert (guided.status, guided.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), guided
+
+
+def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    (listed,) = session.list_moves("set-schedule-gpu", scope=first)
+
+    result = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[1, 1, 128])
+
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
+    assert placed_maps(session, first)[listed.labels[0]].gpu_block_size != [1, 1, 128]
+
+
+def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
+    session, first, _ = placed_on_cpu(tmp_path)
+    (label,) = only_move(session, "set-schedule-cpu", first)
+
+    result = session.apply_move("set-schedule-gpu", [label], scope=first, tile_sizes=[128])
+
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
+    assert session.list_moves("set-schedule-gpu", scope=first) == []

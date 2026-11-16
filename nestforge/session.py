@@ -118,15 +118,22 @@ from nestforge.stages.moves import (
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
     ROLLBACK,
+    SCOPE_KINDS,
     SET_IMPLEMENTATION,
+    SET_SCHEDULE_CPU,
+    SET_SCHEDULE_GPU,
     SIZED,
+    GpuChoice,
     Rewrite,
     check_kind,
     legal_moves,
     plan_move,
+    plan_set_schedule_gpu,
     probe_sizes,
+    schedule_text,
     scope_metrics,
     sdfg_metrics,
+    set_gpu_choices,
 )
 from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
 from nestforge.stages.placement import (
@@ -248,7 +255,8 @@ class Move(Record):
     labels: tuple[str, ...]
     #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
     tile_sizes: tuple[int, ...] = ()
-    #: For ``set-library-implementation``, the implementation it sets, and the one the call has now.
+    #: For ``set-library-implementation``, the implementation it sets, and the one the call has now; for
+    #: ``set-schedule-cpu``, ``current`` is the doall's schedule now (``dynamic,16 threads=8``).
     implementation: str | None = None
     current: str | None = None
     #: For ``unroll-for`` and ``unroll-doall``, the cap it was checked at; the agent may pass its own.
@@ -261,6 +269,11 @@ class Move(Record):
     isa: str = DEFAULT_ISA
     #: For ``for-to-doall``, whether it applies past a refused dependence check; a listed move never does.
     force: bool = False
+    #: For ``set-schedule-cpu``, the OpenMP schedule (``static``, ``dynamic``, ``guided``, ``default``), its chunk,
+    #: and the team size; ``None``: no clause.
+    schedule: str | None = None
+    chunk: int | None = None
+    threads: int | None = None
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -424,6 +437,7 @@ class Checkpoint:
     builds: dict[str, KernelBuild]
     prepared: dict[str, Prepared]
     measured: Measured | None
+    gpu_choices: dict[str, dict[str, GpuChoice]]
 
 
 class Session:
@@ -459,6 +473,7 @@ class Session:
         "check_sizes",
         "oracles_out_of_time",
         "measured",
+        "gpu_choices",
         "bench",
         "stopper",
         "in_atomic",
@@ -534,6 +549,8 @@ class Session:
         self.oracles_out_of_time: set[str] = set()
         # :meth:`performance` of the current program, dropped by every change to it
         self.measured: Measured | None = None
+        #: Per GPU kernel, what set-schedule-gpu chose for its doalls, by label; set again after every placement.
+        self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -568,6 +585,7 @@ class Session:
             dict(self.builds),
             dict(self.prepared),
             self.measured,
+            {name: dict(held) for name, held in self.gpu_choices.items()},
         )
         kept = len(self.history)
         self.in_atomic, self.checkpoint = True, saved
@@ -591,6 +609,7 @@ class Session:
         self.rows, self.kernel_deps = None, None
         self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
         self.measured = saved.measured
+        self.gpu_choices = saved.gpu_choices
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -811,6 +830,13 @@ class Session:
                     Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
                     for name in implementations(node, self.targets.gpu)
                 ]
+            elif k in SCOPE_KINDS:
+                if self.scope_refusal(k, scope) is None:
+                    assert scope is not None, "scope_refusal requires one"
+                    entry = cast(nodes.MapEntry, rows[labels[0]][0])
+                    held = self.gpu_choices.get(scope, {}).get(labels[0], GpuChoice())
+                    current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
+                    moves.append(Move(kind=k, labels=labels, current=current, **scoped))
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == AUTO_VECTORIZE else ()
                 moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
@@ -821,6 +847,90 @@ class Session:
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
         return [move for move in moves if switched_off(move.kind, self.disabled_families) is None]
+
+    def scope_refusal(self, kind: str, scope: str | None) -> str | None:
+        """Why ``kind`` takes no row of ``scope`` (the program when ``None``), or ``None``: a schedule belongs to the
+        device of the kernel it runs in."""
+        if kind not in SCOPE_KINDS:
+            return None
+        if scope is None:
+            return Refused(
+                f"{kind} sets the schedule of a doall inside a kernel: name its scope (list_kernels).", Refusal.ARGUMENT
+            )
+        device = kernel_device(self.kernel(scope))
+        if kind == SET_SCHEDULE_CPU and device != "cpu":
+            return Refused(f"{scope} runs on the GPU; set-schedule-cpu sets OpenMP schedules.", Refusal.ARGUMENT)
+        if kind == SET_SCHEDULE_GPU and device != "gpu":
+            return Refused(
+                f"{scope} runs on the CPU; set-schedule-gpu takes a kernel placed on the GPU (place).", Refusal.ARGUMENT
+            )
+        return None
+
+    def keep_valid_gpu_choices(self, scope: str) -> None:
+        """Drop the GPU choices of ``scope`` that its body, after a move, no longer takes: a doall that moved out of or
+        into the kernel doall, or one whose extent changed. A dropped choice runs as DaCe's default."""
+        held = self.gpu_choices.get(scope)
+        if not held:
+            return
+        rows = tree_rows(self.move_programs(scope)[0])
+        kept: dict[str, GpuChoice] = {}
+        for label, choice in held.items():  # in the order they were made, each checked against those kept before it
+            if label not in rows:
+                continue
+            again = plan_set_schedule_gpu(rows[label], choice.block, None if choice.block else choice.schedule, kept)
+            if again == choice:
+                kept[label] = choice
+        self.gpu_choices = {**self.gpu_choices, scope: kept}
+
+    def staging_refusal(self, kind: str, scope: str) -> str | None:
+        """Why ``kind`` would undo or clash with what the GPU kernel ``scope`` holds, or ``None``. A placement drops
+        ``stage-loads-shared``, and staging adds a thread-block map and a block of its own."""
+        # TODO(owner): a device move that survives a new placement would lift both refusals (schedule-moves.md).
+        staged = [
+            ext.name
+            for ext in external_calls(self.sdfg)
+            if ext.standalone_sdfg is not None
+            and any(desc.storage == dace.StorageType.GPU_Shared for desc in ext.standalone_sdfg.arrays.values())
+        ]
+        if kind == SET_SCHEDULE_GPU and staged:
+            return Refused(
+                f"{', '.join(staged)} staged loads through shared memory, which placing {scope} again drops; set the GPU "
+                "schedules first and stage after, or roll the staging back.",
+                Refusal.ARGUMENT,
+            )
+        if kind in DEVICE_KINDS and any(
+            choice.block or choice.schedule != "sequential" for choice in self.gpu_choices.get(scope, {}).values()
+        ):
+            return Refused(
+                f"{scope} has a GPU schedule, and staging sets a thread block of its own; take one or the other.",
+                Refusal.ARGUMENT,
+            )
+        return None
+
+    def set_gpu_schedule(
+        self, names: tuple[str, ...], scope: str, block: Sequence[int], schedule: str | None
+    ) -> MoveResult:
+        """``set-schedule-gpu`` on the doall ``names`` of the GPU kernel ``scope``: the choice is kept per kernel and
+        set on its placed body, now and after every later placement, which resets thread blocks and schedules."""
+        kind = SET_SCHEDULE_GPU
+        structured, _ = self.move_programs(scope)
+        rows = self.named_rows(kind, names, tree_rows(structured))
+        if isinstance(rows, MoveResult):
+            return rows
+        held = self.gpu_choices.get(scope, {})
+        choice = plan_set_schedule_gpu(rows[0], block, schedule, held)
+        if not isinstance(choice, GpuChoice):
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=choice)
+        with self.atomic():
+            self.gpu_choices = {**self.gpu_choices, scope: {**held, names[0]: choice}}
+            self.lower_again()
+            self.bump()
+            done = MoveResult(
+                status=MoveStatus.APPLIED, kind=kind, labels=names, reason=f"GPU schedule {choice.text()}", scope=scope
+            )
+            self.applied.append(done)
+            self.remember()
+        return done
 
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
@@ -870,6 +980,9 @@ class Session:
         operation: Mapping[str, object] | None = None,
         isa: str = DEFAULT_ISA,
         force: bool = False,
+        schedule: str | None = None,
+        chunk: int | None = None,
+        threads: int | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -889,6 +1002,7 @@ class Session:
         :param operation: For ``relayout``, one relayout operation on an argument (:meth:`relayout`).
         :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
         :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
+        :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -916,6 +1030,16 @@ class Session:
                 "propagate-config specializes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
             )
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+        refusal = self.scope_refusal(kind, scope)
+        if refusal is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=refusal)
+        if scope is not None and (kind == SET_SCHEDULE_GPU or kind in DEVICE_KINDS):
+            staging = self.staging_refusal(kind, scope)
+            if staging is not None:
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=staging)
+        if kind == SET_SCHEDULE_GPU:
+            assert scope is not None, "scope_refusal requires one"
+            return self.set_gpu_schedule(tuple(names), scope, tile_sizes, schedule)
         structured, device = self.move_programs(scope)
         target = device if kind in DEVICE_KINDS else structured
         rows = self.named_rows(kind, names, None if scope is None else tree_rows(target))
@@ -932,6 +1056,9 @@ class Session:
             isa=isa,
             target=self.targets.canon_target,
             force=force,
+            schedule=schedule,
+            chunk=chunk,
+            threads=threads,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
@@ -970,6 +1097,7 @@ class Session:
                 normalize_labels(target, self.namer)
                 consumed = ()
                 if self.unplaced is not None and kind not in DEVICE_KINDS:
+                    self.keep_valid_gpu_choices(scope)
                     self.lower_again()
             self.bump(consumed)
             # a move DaCe's own check let through may still build what its validation refuses: refused here, undone
@@ -1047,6 +1175,8 @@ class Session:
             # a copy: a failure puts the kept program back through :meth:`atomic`
             self.sdfg, self.namer, self.applied = copy.deepcopy(self.unscoped)
             self.unscoped, self.unplaced, self.focus = None, None, None
+            # the kernels are gone, and their names and labels are handed out again
+            self.gpu_choices = {}
             self.bump()
         return self.describe()
 
@@ -1151,6 +1281,8 @@ class Session:
                 desc.transient = True
         ext.expand(find_state_of_node(self.sdfg, ext), "DaceReference")
         inline_top_level_nsdfgs(self.sdfg)
+        # its tuning goes with the kernel: a later kernel may take its name
+        self.gpu_choices = {kernel: held for kernel, held in self.gpu_choices.items() if kernel != name}
         self.bump()
         done = MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
         self.applied.append(done)
@@ -1234,6 +1366,7 @@ class Session:
         builds: dict[str, KernelBuild],
     ) -> PlaceResult:
         """Bump the program after a placement; a build stays linked while its kernel's ``interfaces`` entry holds."""
+        set_gpu_choices(self.sdfg, self.gpu_choices)
         self.bump()
         # a build stays linked while placement leaves its kernel's device and argument storage as they were
         placed = kernel_interfaces(self.sdfg)
@@ -1249,6 +1382,7 @@ class Session:
         devices, lower = self.devices(), insert_copies if has_device_memory(self.sdfg) else place
         self.sdfg = copy.deepcopy(self.unplaced)
         lower(self.sdfg, devices)
+        set_gpu_choices(self.sdfg, self.gpu_choices)
 
     def devices(self) -> dict[str, str]:
         """Every kernel's device."""

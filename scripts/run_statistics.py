@@ -56,7 +56,8 @@ def row_of(data: dict[str, Any]) -> dict[str, Any]:
     first = data["first_write_kernel"]
     before = next((call["tokens"] for call in calls if call["index"] == first), None) if first is not None else None
     last = tokens[-1] if tokens else None
-    forced = [call["index"] for call in calls if call.get("forced", False)]  # records before the field have none
+    # records before the field have none; TODO(owner): a forced move later rolled back still counts here
+    forced = [call["index"] for call in calls if call.get("forced", False)]
     return {
         "calls": len(calls),
         "applied": applied,

@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: step 1 (`for-to-doall` with `force`) built; steps 2 to 4 are design. Written 2026-11-16 against NestForge `7a016a5` and DaCe extended `6ed7dc19e6`. The
+Status: steps 1 to 3 built (`for-to-doall` with `force`, `set-schedule-cpu`, `set-schedule-gpu` without `guided`); step 4 (DaCe) is design. Written 2026-11-16 against NestForge `7a016a5` and DaCe extended `6ed7dc19e6`. The
 owner's decisions of 2026-11-16 are marked; everything marked "to verify" was not read in the code or run.
 
 ## Goal
@@ -30,10 +30,11 @@ the dependence.
    the class `DEPENDENCE`.
 2. With `force`, the agent overrides a check it judges too cautious (owner). The move runs `LoopToMap` in its
    permissive mode, which waives conflicting writes (`out[perm[i]] = ...` with a permutation the compiler cannot
-   see). It still refuses a read of what an earlier iteration wrote, bounds the body changes, and a symbol one
-   iteration hands to the next. NestForge refuses, before DaCe, a loop that holds a call with an ordered side
-   effect (class `communication`): canonicalization orders such calls through data, a conflict the permissive mode
-   would waive.
+   see) and its first carried-read test; its memlet test of a read against another iteration's write still
+   refuses, as do bounds the body changes and a symbol one iteration hands to the next. Permissive mode also lets a
+   body with a break, continue or return through, so NestForge refuses those first, and a loop that holds a call
+   with an ordered side effect (class `communication`): canonicalization orders such calls through data, a
+   conflict the permissive mode would waive.
 3. A forced move answers with a warning: the compiler did not prove the iterations independent, and a wrong
    program is the agent's responsibility. The page of the move says when forcing is reasonable (an indirection the
    agent knows to be a permutation) and that the judge's hidden inputs still grade the program.
@@ -55,8 +56,15 @@ code generator emits the clause. The move sets them on one doall of a scope plac
 - The move changes no value the program computes, except the order in which a floating-point reduction adds, which
   the benchmark permits or forbids per task. Where it forbids reassociation, a doall with a reduction takes only
   `static`.
-- Refused where the clause has no effect: a doall inside another parallel doall (it runs sequentially per thread),
-  and a doall in a persistent parallel region or with a private range, for which code generation drops the clause.
+- Refused where the clause has no effect: a doall inside another parallel doall (it runs sequentially per thread).
+  Not yet refused: a doall in a persistent parallel region or with a private range, for which code generation
+  drops the clause, and `dynamic` on a reduction where the task forbids reassociation.
+- `default` leaves the schedule to DaCe, whose `ChooseOmpSchedule` makes it `guided` for uneven bodies.
+- TODO(owner): the kernel build runs `DecideCpuParallelAxes` and `SplitInvariantMapNests`, which can hand the team
+  to an inner map and drop the clause from the doall the agent named. The pragma test reads the placed body's
+  code, not the built kernel's; a test through the build (`schedule_kernel`) needs a local or CI run.
+- Built as listed: the schedule shows as each listed move's `current` in `list_scope_moves` (`dynamic,16
+  threads=4`), since a scope's body has no tree of its own; the program tree shows none.
 
 ## `set-schedule-gpu`
 
@@ -74,14 +82,24 @@ team. A doall inside the kernel is a work-sharing loop over that team.
 - `dynamic` exists on extended: `LowerDynamicThreadBlockMaps` lowers it to a thread-block map over a work queue,
   for HIP and CUDA (DaCe PR #2732 brings the same to `main`). `guided` and a `chunk` for the queue's batch are new
   work on DaCe extended, built there with their tests, and then offered here.
-- With `static` or `dynamic` on an inner doall, the kernel doall iterates over blocks, not over threads. The move
-  restructures the kernel accordingly (DaCe's `AddThreadBlockMap`), and the tree shows it.
-- Refused: a row of a scope not placed on the GPU, a `block` whose product exceeds the device's limit, and an inner
-  schedule on a doall that the kernel's threads do not all reach (to verify: the conditions of the lowering).
+- With `static` on an inner doall, the kernel doall iterates over blocks and the inner doall over the block's
+  threads, DaCe's own model; so `static` takes a constant extent of at most 1024 (tile first). `dynamic` keeps the
+  kernel over threads: DaCe's lowering adds the thread-block map, of `compiler.cuda.dynamic_map_block_size` threads,
+  and takes one-dimensional doalls only.
+- DaCe's GPU code generator takes the block from one place: the kernel's `gpu_block_size`, or its thread-block
+  maps. The move refuses a `block` on a kernel whose inner doalls are shared, and the reverse; static and dynamic
+  doalls do not share a kernel.
+- Refused: a row of a scope not placed on the GPU, a `block` of more than three sizes or 1024 threads, a doall
+  deeper than directly inside the kernel doall, and `guided`.
 
-The move rewrites the body before placement and records the choice there, so a later placement keeps it. Today a
-device move (`stage-loads-shared`) rewrites the placed body, and the next placement drops it; this move must not
-inherit that.
+Built: `OffloadToAccelerator` resets every map under a kernel to `Sequential` (and raises on a GPU schedule it
+finds there), so the choice cannot live in the body before placement. The session keeps it per kernel and label
+(`Session.gpu_choices`, part of the rollback checkpoint) and sets it on the placed body after every placement.
+`list_scope_moves` shows each row's choice as `current`. A structured move in the kernel checks every choice
+again and drops one its body no longer takes. `rewind` drops every choice, `unset_scope` those of its kernel.
+TODO(owner): a placement drops `stage-loads-shared` (any scope move re-places every kernel), so
+`set-schedule-gpu` is refused while a kernel holds staged loads, and staging is refused on a kernel with a GPU
+schedule; a device move that survives placement would lift both.
 
 ## Later transformations
 
@@ -115,12 +133,15 @@ kernel_1 (gpu)
    carries the warning (built). The statistics count forced moves and the wrong kernels after them (built).
 4. A forced move on a loop with a call of ordered side effect is refused (built).
 5. `set-schedule-cpu` sets schedule and chunk, and the generated code holds `schedule(dynamic, 16)` on that loop
-   and on no other. The generated text is the product here, so the test reads it.
+   and on no other, after the kernel is placed again (built). The generated text is the product here, so the test
+   reads it.
 6. A triangular nest computes the reference under every CPU schedule, on several threads.
-7. `set-schedule-cpu` is refused on a nested doall and in a scope placed on the GPU.
-8. `set-schedule-gpu` sets `gpu_block_size`, and an inner `dynamic` gives a `GPU_ThreadBlock_Dynamic` map under a
-   kernel over blocks (structure only; numerics on beverin).
-9. The tree shows each schedule after the move and after a new placement.
+7. `set-schedule-cpu` is refused on a nested doall, in a scope placed on the GPU, without a scope, and with a
+   chunk under `default` (built). Test 6 (numerics on several threads) is not built: it needs a finalized build.
+8. `set-schedule-gpu` sets `gpu_block_size`, and an inner `dynamic` gives a `GPU_ThreadBlock_Dynamic` map under
+   the kernel, after which a `block` is refused; `static` on a symbolic extent and `guided` are refused; a CPU
+   kernel takes no GPU schedule (built; structure only, numerics on beverin).
+9. `list_scope_moves` shows each schedule after the move and after a new placement (built for the block).
 
 ## Done
 
