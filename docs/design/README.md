@@ -17,6 +17,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [run-extractions.md](run-extractions.md) | the plugin record of an episode, refusal rates, and the token split | B7 for the exact token split | now |
 | [move-families.md](move-families.md) | switching move families off, and attributing a run's speedup to its moves | nothing | now |
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
+| [skew-wavefront.md](skew-wavefront.md) | the `skew-wavefront` move, and a canonical form without wavefronts for both agents of the study | B13 starts from it | after DaCe's D3 |
 | [bench-requests.md](bench-requests.md) | the thirteen requests to HPCAgent-Bench, B1 to B13 | | |
 
 ## Where to start
@@ -33,6 +34,8 @@ Build in this order. Each step is one pull request with its tests, and each page
 5. **`comm-nodes`, packages 2 to 7,** in the page's order. Package 12 (`split-doall`) is independent and fits anywhere.
 6. **`comm-nodes`, packages 8 to 10,** once the bench has B1 to B4.
 7. **`comm-nodes`, packages 11 to 16,** the overlap.
+8. **`skew-wavefront`,** package 1 on DaCe extended first. It changes the starting point of every run, so it lands
+   before the first study run, together with `default-flavor`.
 
 ## What is verified and what is not
 
@@ -57,6 +60,8 @@ Taken by the owner on 2026-11-16, each recorded in its page:
 - the application targets are the ICON dynamical core and OMEN, with independent agents;
 - `nestforge_reference` keeps its fallback to the default moves, and its record says which it was;
 - the budget covers no ablation run per family.
+- `skew-wavefront` is a move; the NestForge agent and the LLVM-pass agent (B13) both start from the canonical form
+  without wavefronts; Polly counts as a pass; the canonical form's own gain is measured by columns without an LLM.
 
 Open, each listed at the end of its page: which ablation the study runs, the grouping of the families, GPU targets
 for communicating programs, and how ICON and OMEN become bench tasks.

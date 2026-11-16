@@ -34,6 +34,7 @@ A family is a fixed set of move kinds. The table is the single source: `nestforg
 | `layout` | `relayout` |
 | `vectorize` | `auto-vectorize-scope` |
 | `schedule` | `doall-to-for` |
+| `wavefront` | `skew-wavefront`, once built ([skew-wavefront.md](skew-wavefront.md)) |
 
 `rollback` belongs to no family and is never switched off. The table holds every move kind the code had on
 2026-11-16, and the test keeps the two in step.

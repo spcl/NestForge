@@ -217,26 +217,29 @@ baseline, and its agent chooses LLVM passes, their parameters, and `clang` flags
 2. Tools, served judge-side:
    - `list_passes`: the new pass manager's pass names (`opt -passes=help` of the image's LLVM), their parameters, and
      the allowed flags;
-   - `apply_pipeline(passes: str, flags: list[str])`: builds the task's reference C++ as `clang -O0 -Xclang
-     -disable-O0-optnone -emit-llvm`, then `opt -passes=<passes>`, then `clang <flags>` to the library. It returns the
+   - `apply_pipeline(passes: str, flags: list[str])`: builds the task's starting program (below) as `clang -O0
+     -Xclang -disable-O0-optnone -emit-llvm`, then `opt -passes=<passes>`, then `clang <flags>` to the library. It returns the
      time and the verdict of the bench's timed run, the optimization remarks (`-Rpass`, `-Rpass-missed`, and
      `-Rpass-analysis`, summarized per loop), and the build error if there is one;
    - `score` and `submit`, as for every packet. `submit` submits the library of the best correct pipeline, or the
      pipeline that the agent names.
-3. Flags come from a list in the packet: `-march`, `-mtune`, the `-ffast-math` family, `-fopenmp` (only where the
-   reference has OpenMP), and `-mllvm` options for the unroller, the vectorizer, and Polly (`-polly`,
-   `-polly-parallel`) when the image's LLVM has Polly. Any other flag is refused with the list.
-4. Legality: every pass preserves semantics. A flag that changes floating-point semantics is judged by the bench's
+3. Flags come from a list in the packet: `-march`, `-mtune`, the `-ffast-math` family, `-fopenmp`, and `-mllvm`
+   options for the unroller, the vectorizer, and Polly (`-polly`, `-polly-parallel`). Polly counts as a pass, so the
+   judge image's LLVM must be built with Polly. Any other flag is refused with the list.
+4. The starting program is the task's canonical form without wavefronts, rendered as one C++ translation unit
+   (DaCe's CPF rendering, `dace.codegen.cpf.cpf`), the same program the NestForge agent starts from
+   ([skew-wavefront.md](skew-wavefront.md)). It needs DaCe's D3 switch, and the bench renders it as it renders the
+   `cpf-cpu-src` packet's drop-in source today (`CPF_DROPIN_DIR`).
+5. Legality: every pass preserves semantics. A flag that changes floating-point semantics is judged by the bench's
    oracle tolerance, as for every submission.
-5. Cost and limits are those of every packet: the same turn cap, budget, and `usage.jsonl` accounting.
+6. Cost and limits are those of every packet: the same turn cap, budget, and `usage.jsonl` accounting.
 
 **Tests.** A stub agent runs `list_passes`, one pipeline (`-passes=default<O3>`), and `submit` on `jacobi_1d`, and
 is graded correct. A refused flag returns the list. A pipeline that fails to build returns the error and leaves the
 best library unchanged.
 
-**Open for the owner.**
+**Decided by the owner, 2026-11-16.** Polly counts as a pass. The starting program is the canonical form without
+wavefronts, the NestForge agent's own starting point, so the two agents differ only in their catalogue.
 
-1. Whether Polly counts as a pass (recommended: yes, if the image has it, since it is LLVM's only automatic
-   parallelizer and NestForge parallelizes).
-2. The source the pipeline starts from: the reference C++ (recommended), or the CPF rendering. The CPF rendering
-   would give the agent NestForge's parallel form for free.
+**Open.** Whether the rendering keeps the OpenMP pragmas of the canonical form's doalls (recommended, since that is
+what the canonical form says), or renders them as sequential loops and leaves parallelization to Polly.
