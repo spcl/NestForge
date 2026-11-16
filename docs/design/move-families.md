@@ -8,8 +8,12 @@ Status: design, not implemented. Written 2026-11-16 against NestForge `bf068ae`.
 
 Two questions of the ablation experiment need support in the code.
 
-1. What does an agent reach without one family of moves? This needs a switch that removes a family for a whole run.
-2. Which moves of a finished run produced its speedup? This needs a replay of the run's journal, one prefix at a time.
+1. What does an agent reach without NestForge's moves? The paper runs one ablation, all moves against none (owner's
+   decision, 2026-11-16: the budget does not cover one set of agent runs per family).
+2. Which moves of a finished run produced its speedup, and which family do they belong to? This needs no agent run:
+   a replay of the run's journal, one prefix at a time, costs builds only.
+
+The switch below works per family, since that costs nothing more to build. The study uses its value `all`.
 
 ## Families
 
@@ -20,11 +24,12 @@ A family is a fixed set of move kinds. The table is the single source: `nestforg
 | Family | Move kinds |
 |---|---|
 | `fusion` | `for-fusion`, `doall-fusion`, `collapse-doalls` |
-| `fission` | `for-fission`, `doall-fission`, `subgraph-fission` |
+| `fission` | `for-fission`, `doall-fission`, `subgraph-fission`, and `split-doall` once built |
 | `interchange` | `interchange-doall-doall`, `interchange-doall-for`, `interchange-for-doall`, `interchange-doall-if`, `interchange-for-if`, `interchange-if-for` |
 | `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for`, `unroll-doall`, `unroll-for`, `expand-doall` |
 | `hoisting` | `hoist-invariant-doall`, `hoist-invariant-for`, `snapshot-reads`, `stage-loads-shared`, `propagate-config` |
 | `library` | `lib-before`, `lib-after`, `lib-into`, `expand-library`, `set-library-implementation` |
+| `motion` | `block-before`, `block-after`, `overlap-communication`, once built ([comm-nodes.md](comm-nodes.md), section 11) |
 | `layout` | `relayout` |
 | `vectorize` | `auto-vectorize-scope` |
 | `schedule` | `doall-to-for` |
@@ -35,19 +40,21 @@ the test freezes them. The owner decides the grouping (below).
 ## The switch
 
 1. `Setup` gains `disabled_families: frozenset[str] = frozenset()`. An unknown name is refused when the session
-   starts, with the list of known families.
+   starts, with the list of known families. The name `all` stands for every family.
 2. `Session.list_moves` and `list_move_kinds` leave out the kinds of a disabled family. `apply_move` on such a kind
    answers `illegal: <kind> belongs to the family <family>, which this run has switched off.`
 3. `run_defaults` skips the moves of a disabled family, so the default pipeline and the reference replay obey the
    same switch. A reference solution that needs a disabled move stops at that move and reports it.
-4. An ablation is a packet, so it is a name in the launch line and a column in the results. One packet per ablation
-   extends `nestforge` and names the families it switches off:
+4. An ablation is a packet, so it is a name in the launch line and a column in the results. The study's one
+   ablation extends `nestforge-full`: the agent sets scopes, writes kernels, and tunes builds on the canonical
+   program, and neither the agent nor the default pipeline applies a move.
 
    ```toml
-   [packets.nestforge-no-fusion]
-   extends = "nestforge"
-   name = "NestForge without fusion"
-   env = { NESTFORGE_DISABLED_FAMILIES = "fusion" }
+   [packets.nestforge-full-no-moves]
+   extends = "nestforge-full"
+   name = "NestForge (all phases, no moves)"
+   agent = ["scopes", "kernels", "codegen"]
+   env = { NESTFORGE_DISABLED_FAMILIES = "all" }
    ```
 
    The session lives in the judge's process, and a packet's `env` is set for the agent. The implementer confirms how
@@ -68,7 +75,8 @@ attribute_moves.py <journal> --kernel K --preset P --datatype D [--gpu] --out at
 2. For every prefix of the journal (calls 1..k, k = 1..n), it replays the prefix on a fresh session, runs the
    remaining phases on their defaults, as `finalize` does, and measures the program.
 3. It writes one row per call: the tool, the move kind, the family, the time after the prefix, and the ratio to the
-   previous prefix.
+   previous prefix. A second table sums the logarithms of the ratios per family, which is the family's share of the
+   run's speedup in the order the agent worked.
 
 The ratio of prefix k to prefix k-1 is the move's contribution in the order the agent applied it. The script reports
 this order-dependent number and nothing else. It makes no claim about a move alone.
@@ -93,10 +101,10 @@ without the arguments of its view calls. Program-changing calls are never droppe
 
 ## Done means
 
-One ablation packet per family passes the plugin check, and the script reproduces the final time of a stub episode
-from its plugin record.
+The packet `nestforge-full-no-moves` passes the plugin check and a stub episode, and the script reproduces the final
+time of a stub episode from its plugin record and reports the time per family.
 
-## Decisions for the owner
+## Decision for the owner
 
-1. The grouping of the table, above all whether `tiling` and `unroll` are one family and where `doall-to-for` goes.
-2. Which families the paper ablates. Each one costs a full set of agent runs.
+The grouping of the table, above all whether `tiling` and `unroll` are one family and where `doall-to-for` goes. It
+decides only how the replay's rows are summed per family, and it can change after the runs.

@@ -14,11 +14,16 @@ only if the program stays correct at every rank count.
 The target experiment is a whole application (ICON through dace-fortran) on the bench's distributed tasks, measured
 from 1 to 64 ranks. The first milestone is smaller: `jacobi_2d` and `heat_3d` with their halo exchanges.
 
-Out of scope for the first version:
+Out of scope:
 
-1. new communication patterns (turning a blocking exchange into a nonblocking one, neighborhood collectives, RMA);
+1. communication optimizations: no move rewrites a communication operation (a blocking exchange stays blocking, no
+   neighborhood collectives, no RMA, no change of a datatype or a tag). Owner's decision, 2026-11-16;
 2. GPU targets for a program that communicates (NCCL, RCCL, GPU-aware MPI);
 3. a choice of the distribution by the agent. The bench's manifest sets the distribution.
+
+The design has two parts. Sections 1 to 10 are the first version: communication rows are visible, they stay correct
+under every move, and a program with them is timed and finalized. Section 11 is the overlap of communication with
+compute by moving rows and statements. It is designed in detail here and built after the first version.
 
 ## What exists today
 
@@ -108,9 +113,21 @@ rule NestForge already uses for a host `Sync`, whose effect is the device work i
 A block that writes a buffer in flight would have to cross the `START` (which reads the buffer) or the `WAIT` (which
 now reads it too), and both crossings are refused.
 
-R1 is stricter than MPI requires. Every rank runs the same program, so two independent blocking collectives could
-exchange places on all ranks at once. DaCe's own pass keeps the order of every operation that starts communication,
-and NestForge follows it. Relaxing R1 is a later decision that needs its own tests.
+R1 keeps the order of every operation that starts communication. It is needed in two cases and stricter than MPI
+in a third.
+
+1. **Blocking point-to-point, needed.** Every rank runs `Send(up)` then `Recv(down)`. With the two exchanged, every
+   rank waits in `Recv` for a message no rank has sent, and the program deadlocks.
+2. **Two operations with the same peer, tag, and communicator, needed.** MPI matches them in the order they start. With
+   two `Isend` rows exchanged, the receiver gets the two buffers swapped.
+3. **Collectives, and point-to-point rows with provably different peers or tags, not needed.** Every rank runs the same
+   program, so two independent collectives change places on all ranks at once, and messages with different tags
+   never match each other.
+
+The rule costs little. The gain of an overlap comes from moving a `WAIT` later and compute earlier, which R1 never
+restricts. Exchanging two starts changes no time. The first version therefore keeps R1 for every class, as DaCe's own
+pass does (`dace.libraries.comm.schedule`). A relaxed R1 would have to prove case 3 from the peer and tag
+expressions, which is a proof with no measured benefit behind it.
 
 A `WAIT` row may cross `START` and `BLOCKING` rows, since completing an operation later is always legal while its
 buffers are untouched. This is the move that lets compute overlap with communication, and R3 guards it.
@@ -133,9 +150,9 @@ is one function, `comm.region_communicates(block)`, called from the precondition
 The moves on a region without a communication row are unchanged. A halo exchange therefore splits a time loop into
 the exchange and the compute, and the compute is optimized as before.
 
-Fission is the move that matters for overlap. The interior of a stencil does not read the ghost cells, and the
-boundary does. `doall-fission` or `subgraph-fission` on the compute splits it into an interior part and a boundary
-part, and `lib-after` then moves the `WAIT` behind the interior part. No new move kind is needed for this pattern.
+In the first version a `WAIT` moves behind compute only when that compute touches none of the containers in flight.
+A stencil keeps its ghost cells and its interior in one padded array, so the first version cannot overlap its exchange.
+Section 11 designs what that needs.
 
 ### 5. Scopes, kernels, and placement
 
@@ -182,6 +199,13 @@ time of the slowest rank, the verdict with the mismatched outputs, and the slowe
 `ProgramReport` gains `ranks: int` and `comm_share: float | None` (the time inside MPI calls over the whole time).
 `Performance` gains `scaling: list[RankPoint]`, filled when the tool is called with more than one rank count.
 
+**Time per communication row.** `comm_share` says how much of the step is communication, and the agent also needs to
+know which row waits. `Performance` gains `comm_rows: list[CommRowReport]` with, per row, its label, its class, and
+its time on the slowest rank. The time of a `WAIT` row is the time the program stood waiting, which is the number an
+overlap reduces. The times come from DaCe's timer instrumentation on the communication rows of the trial copy, one
+report per rank, reduced by the bench's driver with the maximum. If the bench's driver cannot collect per-rank
+reports, the request is part of B2.
+
 **Rank counts.** The `get_performance` tool takes `ranks: list[int] | None`. The default is the largest rank count of
 the setup (`mpi.rank_counts`) that fits the node, so one call costs one run. A count outside the setup's list is
 refused. Kernel reports (each kernel's own time) come from one rank of the run, the slowest.
@@ -205,7 +229,15 @@ Two frontends produce programs with communication nodes.
 
 Canonicalization must keep every communication row, its order against the other communication rows, and its loop.
 This is a property of DaCe's canonicalization passes, several of which rely on `has_side_effects`, and a blocking
-collective reports none. The first work package therefore includes a test that canonicalizes each fixture program and
+collective reports none. Two gaps in DaCe are known on 2026-11-16 and belong to the first work package.
+
+- `LoopToMap` (`dace/transformation/interstate/loop_to_map.py`) has no check for side effects, and a blocking
+  collective reports none. A loop around an `Allreduce` may therefore become a map. This is untested. The fixture
+  with the residual `Allreduce` in the time loop settles it, and a wrong answer is a DaCe fix.
+- DaCe has no `Sendrecv` node, and its `mpi4py` replacements cover neither `comm.Sendrecv` nor `comm.Shift`. The
+  bench's `jacobi_2d_mpi.py` uses both. A DaCe form of that reference ([bench request B3](bench-requests.md)) either
+  writes the exchange as `Isend`, `Irecv`, and `Waitall` and takes the neighbors as arguments, or waits for the two
+  replacements in DaCe. Recommended: the first, since the nonblocking form is also the one the overlap needs. The first work package therefore includes a test that canonicalizes each fixture program and
 compares the sequence of communication rows before and after. A pass that reorders or hoists a collective is a DaCe
 fix on extended with a regression test, never a workaround in NestForge.
 
@@ -217,6 +249,126 @@ No new packet and no new phase. When the session is distributed:
   pattern of section 4;
 - the skill page gains a section "Programs that communicate" with the tree excerpt of section 2;
 - `list_moves` on a communication row lists `lib-before`, `lib-after`, and `lib-into` only.
+
+### 11. Overlap of communication and compute (designed, built later)
+
+An exchange overlaps with compute when independent work runs between its `START` rows and its `WAIT`. No operation
+is rewritten: rows and statements change places, and the exchange stays the one the program had. Three pieces are
+needed, and each is useful without the others.
+
+#### 11.1 Effects by subset
+
+`lib_motion.crossed_refusal` compares container names. The halo fixture holds ghost rows and interior rows in one
+array `Ap`, so by name the interior update conflicts with the receive into the ghost row.
+
+- `Effect.reads` and `Effect.writes` become `dict[str, subsets.Subset]`: per container, the union of the subsets of
+  the memlets (a bounding box when the union is not a range).
+- A block's effect is computed the same way from its states' read and write memlets after propagation
+  (`SDFGState.read_and_write_sets` gives the names today; the subsets come from the memlets on the access nodes).
+- Two effects conflict on a container only when their subsets are not provably disjoint. The proof is DaCe's
+  `dace.libraries.comm.nodes.node.disjoint(subset_a, subset_b, facts)`, under the symbol facts of the SDFG
+  (`N >= 3`, loop bounds). Anything unproven is a conflict, so the default stays the answer by name.
+- A refusal names the overlap: "state5 reads Ap[0, 1:N-1], which lib_comm1 receives into Ap[0, 0:N]".
+- A view, an aliasing array, or a memlet without a subset falls back to the whole container.
+
+The change is confined to crossings where one side is a communication row. Every other use of `lib-*` keeps the
+check by name, so no existing move gets a new answer.
+
+#### 11.2 Moving and splitting statements
+
+Two moves on compute rows. Both are general moves and belong to the `fission` and a new `motion` family
+([move-families.md](move-families.md)).
+
+**`split-doall`** cuts a doall's range in two. Labels: one doall. Argument: `at = {"<param>": "<expr>"}`.
+
+- The result is two doalls of the same body over `[lo, at)` and `[at, hi)`, in two states in that order. `at` is
+  clamped as `Max(lo, Min(at, hi))`, so an empty part is legal.
+- It is always legal on a doall: the iterations are independent, so any partition of the range is the same
+  computation. A doall with a `reduce=` field is split into two accumulations into the same target, which is legal for
+  the same reason a doall may run in any order.
+- A step other than 1 is refused in the first build.
+- For a stencil over rows `1:rows+1`, two splits (`at = {"i": 2}`, then `at = {"i": "rows"}` on the second part) give
+  the first row, the interior, and the last row. Only the first and the last row read ghost rows.
+- `list_moves` on a doall next to an exchange offers the split points that separate what the buffers in flight
+  touch: the bounds of the received subsets along each parameter, computed from 11.1. The agent can pass any other
+  expression.
+
+**`block-before` and `block-after`** move a state across its sibling blocks. Labels: the state and the anchor block.
+
+- It is `lib-before` and `lib-after` for a whole state: the state's effect (11.1 when it crosses a communication row,
+  by name otherwise) must not conflict with any block it crosses, the symbols it reads must not be assigned on an
+  edge it crosses, and it stays in its region.
+- A state that holds a communication row moves under that row's rules R1 to R5.
+- A state never crosses a `FIXED` row.
+- The move rewires the region's edges and keeps every condition and assignment on the edges it does not cross. A
+  region whose blocks are not a chain (a branch in the edges) is refused.
+
+With these two moves the agent, or the reference solution, writes the overlap as a sequence: split the stencil into
+boundary and interior, move the interior between the starts and the wait, and leave the boundary after the wait.
+
+#### 11.3 `overlap-communication`
+
+One move that does the row motion of an exchange in one call. Labels: a `for` or the program's top region. It moves
+rows only and never splits a statement.
+
+1. In every chain of sibling blocks inside the labeled region, take the `START` rows in order. Move each one as far
+   toward the start of the chain as `lib-before` allows, together with the pack copies that only it reads (the
+   `lib_copy` rows that write its send buffer when that buffer is a transient no other block reads).
+2. Take the `WAIT` rows in reverse order. Move each one as far toward the end of the chain as `lib-after` allows,
+   together with the unpack copies that read only what it receives.
+3. Stop at the region's boundary (R2), at a `FIXED` row (R4), and at another `START` or `BLOCKING` row for a start
+   (R1).
+
+The move is the fixed point of single `lib-before` and `lib-after` steps, so it adds no legality code: every step is
+checked by the rules of section 3 with the effects of 11.1. The whole sequence is one atomic change and one journal
+entry, and one `rollback` undoes it.
+
+The answer lists what moved and what stopped each row:
+
+```
+applied: overlap-communication on for0
+  lib_comm0 (Isend)   before state3     was after state3
+  lib_comm2 (Waitall) after state4      was before state4; stopped by state5: reads Ap[0, 1:N-1], received by lib_comm1
+```
+
+The stopping reason tells the agent which statement to split (11.2) before calling the move again.
+
+DaCe has a pass with the same goal on the schedule tree (`dace.libraries.comm.schedule.overlap_communication`).
+NestForge does not call it: the conversion from a schedule tree back to an SDFG would rename and regroup rows, and the
+tree's labels must survive a move. A test compares the order of communication rows NestForge reaches with the order
+DaCe's pass reaches on each fixture.
+
+#### 11.4 What the default pipeline does
+
+`run_defaults` for the moves stage calls `overlap-communication` on the whole program after the default fusion. It
+does not split statements. `nestforge_default` therefore shows the overlap that needs no insight, the reference
+solutions show the overlap with the splits, and the agent is measured between the two.
+
+#### 11.5 Tests
+
+1. Effects by subset: the interior update and the ghost-row receive do not conflict, the boundary update and the
+   receive do, and an unproven pair conflicts.
+2. A crossing without a communication row gives the same answer as before the change, on every existing test.
+3. `split-doall` at 2 and at `rows` yields three doalls whose ranges partition the original, and the program's output
+   is bit-identical. A split of a doall with `reduce=` stays within the oracle's tolerance.
+4. `split-doall` with `at` outside the range yields one empty part and the same output.
+5. `block-before` is refused across a block that writes what the state reads, with the container and subset named.
+6. `overlap-communication` on the halo fixture moves the waits behind the interior after the splits, and moves
+   nothing before them, with the stopping reason asserted.
+7. The order of communication rows equals the order DaCe's pass reaches.
+8. At 1, 2, and 4 ranks the overlapped program is correct, and one `rollback` restores the program's hash.
+
+#### 11.6 Work packages
+
+| # | Package | Files | Depends on |
+|---|---|---|---|
+| 10 | Effects by subset, for crossings with a communication row | `stages/lib_motion.py`, `tests/test_comm_subsets.py` | 4 |
+| 11 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
+| 12 | `block-before`, `block-after` | `stages/lib_motion.py` or a new `stages/block_motion.py`, `tests/test_block_motion.py` | 10 |
+| 13 | `overlap-communication`, and its call in the default moves | `stages/moves.py`, `tests/test_comm_overlap.py` | 10 |
+| 14 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 11, 12, 13, 9 |
+
+Package 11 has no dependency on communication and can be built at any time.
 
 ## Work packages
 
@@ -244,7 +396,8 @@ Tests assert structure before values, and each refusal test asserts the reason t
 2. Each of the 26 node classes has a class, and a new DaCe node without one fails the test by name.
 3. The tree prints `request=`, `completes=`, `to=`, `from=`, and `tag=` for the halo fixture.
 4. One refusal test per rule R1 to R5.
-5. A `WAIT` moves behind an interior doall and is refused behind the boundary doall.
+5. A `WAIT` moves behind a doall that touches no container in flight, and is refused behind one that reads a received
+   container.
 6. A block that writes a sent buffer is refused between the `START` and the `WAIT`, from either side.
 7. Every move kind of the table in section 4 is refused, or applies, as the table says.
 8. `set_scope` refuses a communication row, and the default scopes cut at it.
@@ -264,12 +417,16 @@ A new marker `mpi` joins `pyproject.toml`: "launches MPI ranks; its own CI job".
 3. A stub agent episode on `jacobi_2d` runs in the bench's user-plugin CI.
 4. `docs/ir.md`, `docs/stages.md`, the README, and the skill page describe the communication rows.
 
-## Decisions for the owner
+## Decisions
 
-1. Keep R1 strict (recommended), or let independent blocking collectives exchange places.
-2. Add a move `overlap-communication` that runs DaCe's schedule-tree pass on the whole program. It would do the
-   overlap of section 4 in one step, and it depends on the schedule tree converting back to an SDFG without loss.
-   Recommended: after the first version, as an ablation of what the agent finds by itself.
-3. Add a move `set-nonblocking` on a blocking collective (DaCe's `nonblocking` property plus a new `Wait` row).
-   Recommended: after the first version.
-4. GPU targets for programs that communicate. Recommended: after the paper's CPU results.
+Taken by the owner on 2026-11-16:
+
+1. No communication optimizations. A move never rewrites a communication operation, so there is no `set-nonblocking`.
+2. The overlap is done by moving communication rows and statements (section 11). It is designed here and built after
+   the first version.
+
+3. R1 is strict for every class (section 3).
+
+Open:
+
+1. GPU targets for programs that communicate. Recommended: after the CPU results.

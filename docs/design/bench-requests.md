@@ -4,8 +4,8 @@
 
 Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and NestForge
 `bf068ae`. Each request says what is missing, why NestForge needs it, and a proposed design. NestForge patches none
-of them on its side. B1 to B5 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), and B6 to B10 are
-independent of it.
+of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), and B6
+to B10 are independent of it.
 
 | # | Request | Blocks | Size |
 |---|---|---|---|
@@ -16,9 +16,11 @@ independent of it.
 | B5 | Layout requests on a distributed array | `relayout` on distributed arguments | design question |
 | B6 | Precision per argument in the entry | `relayout` casts | medium |
 | B7 | A tool call's route request names the assistant message | token split per phase | small |
-| B8 | A tuner flavor can decline a kernel as unsupported | `nestforge_reference` | small |
+| B8 | A tuner flavor can decline a kernel as unsupported | flavors that cannot take a residency (B4) | small |
 | B9 | A route request names the episode's packet | ablation packets | small |
-| B10 | mypy error in `config.py` | clean hooks | small |
+| B10 | mypy error in `config.py` | clean hooks | open as bench PR #190 |
+| B11 | A NestForge submission adds no communication | the claim that the agent never writes MPI | medium |
+| B12 | Distributions for an unstructured partition | an ICON task with MPI ranks | large |
 
 ## B1: the canonical form renders the distributed entry
 
@@ -75,6 +77,11 @@ tiles that takes `comm` and uses `mpi4py` calls DaCe's frontend turns into commu
 `comm.Irecv`, `MPI.Request.Waitall`, `comm.Allreduce`). The halo fixtures use nonblocking exchanges, so a move can
 overlap them with compute. `DaceFramework.build_sdfgs` loads this file for a distributed task. NestForge can
 contribute the two stencil files with its fixtures.
+
+Two things the plain references use have no DaCe counterpart today: DaCe has no `Sendrecv` node, and its `mpi4py`
+replacements cover neither `comm.Sendrecv` nor `comm.Shift`. The DaCe form therefore takes the two neighbor ranks as
+scalar arguments (the bench's driver calls `MPI_Cart_shift` and passes them, or the entry computes them in a
+tasklet), and writes each exchange as `Isend`, `Irecv`, and `Waitall`.
 
 ## B4: tuner episodes on a distributed task
 
@@ -143,5 +150,35 @@ plugin reads its own packet table for anything further.
 ## B10: mypy error in `config.py`
 
 `pre-commit run --all-files` on main reports an argument-type error at `hpcagent_bench/config.py:1094` (the
-`TypeAdapter(Annotated[(...)])` call in `adapter`). The cause is in main, and every pull request sees it. A typed
-helper that builds the `Annotated` form, or a narrow `cast`, removes it.
+`TypeAdapter(Annotated[(...)])` call in `adapter`). Bench PR #190 fixes it.
+
+## B11: a NestForge submission adds no communication
+
+**Missing.** The paper claims that the agent never writes communication code. With the packet `nestforge-full` the
+agent writes kernel code, and nothing stops a kernel from calling MPI.
+
+**Proposed design.** Two checks, one on each side.
+
+1. NestForge refuses a `write_kernel` source that references an MPI, NCCL, or RCCL symbol or header (a token check on
+   the preprocessed unit, then the undefined symbols of the built object: no `MPI_*`, `PMPI_*`, `ncclXxx`).
+2. The bench's anti-cheat gets a rule a packet can switch on, `communication = "canonical"`: the undefined MPI symbols
+   of the submitted library must be a subset of those of the canonical program's library for the same kernel, which
+   the judge builds once per kernel. A submission that adds a call fails the rule and is graded as a violation.
+
+## B12: distributions for an unstructured partition
+
+**Missing.** `harness/mpi_descriptor.py` describes block, block-cyclic, and cyclic ownership of array axes over a
+Cartesian grid. ICON's grid is unstructured: each rank owns an index set from a graph partition, with a halo list
+per neighbor. The bench cannot scatter or gather such arrays, which decides how large an ICON task can be.
+
+**Options.**
+
+1. An ICON component on one rank's patch, timed on one node with the halo exchange stubbed. No bench change, and no
+   scaling numbers.
+2. A new scheme `indexed`: the manifest ships, per rank count, the owned index list of each array axis and the
+   neighbor lists, produced offline by ICON's own partitioner. The driver scatters and gathers by index list. The
+   kernel receives its halo lists as arguments. This is the smallest change that gives scaling numbers.
+3. The task runs ICON's own driver for setup and hands the kernel a communicator and the patch. The bench then
+   cannot check ownership, and the gathered output needs ICON's own gather.
+
+Recommended: option 1 for the paper's first ICON numbers, option 2 as the feature request. The owner decides.

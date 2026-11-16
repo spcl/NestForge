@@ -8,7 +8,7 @@ when its feature merges, and leaves this folder.
 
 | Page | Feature | Needs from the bench | Can start |
 |---|---|---|---|
-| [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks | B1 to B5 | packages 1 to 6 now |
+| [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute by moving rows and statements | B1 to B5 | packages 1 to 6 and 11 now |
 | [default-flavor.md](default-flavor.md) | the `nestforge_default` column | B8 for one point | now |
 | [move-families.md](move-families.md) | switching a move family off, and attributing a run's speedup to its moves | B9 | now |
 | [run-extractions.md](run-extractions.md) | refusal rates and the token split of finished runs | B7 | now |
