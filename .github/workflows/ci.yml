@@ -51,6 +51,20 @@ jobs:
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - run: pre-commit run --all-files --show-diff-on-failure
       - name: pytest (a skip fails the run)
         env:
@@ -91,6 +105,20 @@ jobs:
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: pytest
         # The bench's references run only under the OpenMP launch environment its judge uses
         # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
@@ -131,6 +159,20 @@ jobs:
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: replay
         # One reference solution per worker: each replay builds the baseline and the reference (#42).
         run: |
@@ -169,6 +211,20 @@ jobs:
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: pytest
         # The bench's references run only under the OpenMP launch environment its judge uses
         # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
@@ -207,6 +263,20 @@ jobs:
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: pytest (every phase and random moves on canonicalized cloudsc_monolith)
         # The bench's references run only under the OpenMP launch environment its judge uses
         # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
@@ -244,6 +314,20 @@ jobs:
       - name: Pin the tip of the tracked bench branch and the DaCe and relayout it pins
         run: python scripts/bump_deps.py && git diff pyproject.toml
       - run: uv pip install -e ".[dev]"
+      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
+      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      - uses: actions/cache/restore@v4
+        id: emit-cache
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Emit the bench corpus
+        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+      - if: steps.emit-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: "pytest (the tests that call the bench: plugin, corpus, manifests, session process)"
         run: |
           launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')

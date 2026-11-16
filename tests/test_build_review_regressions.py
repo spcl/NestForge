@@ -163,9 +163,17 @@ def test_compile_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     assert time.perf_counter() - start < 25, "run waited for the grandchild holding its pipe"
     grandchild = Path(f"/proc/{pidfile.read_text().strip()}/stat")
     deadline = time.perf_counter() + 10
-    while grandchild.exists() and grandchild.read_text().split(")")[-1].split()[0] != "Z":
+    while process_state(grandchild) not in ("Z", "gone"):
         assert time.perf_counter() < deadline, "the compiler's child outlived the timeout"
         time.sleep(0.05)
+
+
+def process_state(stat: Path) -> str:
+    # the process may be reaped between any two reads of /proc
+    try:
+        return stat.read_text().split(")")[-1].split()[0]
+    except FileNotFoundError:
+        return "gone"
 
 
 CHILD_SETUP_FAILS = """

@@ -163,5 +163,3 @@ follow [AGENTS.md](AGENTS.md).
 - Stage 1 builds on *The Canonical Parallel Form as a Substrate for Parallelizing Compilers and Agentic
   Optimizers*, which defines CPF.
 - The benchmark kernels and references come from *HPCAgent-Bench*.
-- Stage 6 is the variant search of *The Data Must Flow (To Vector Processors): Searching Program Variants to
-  Improve Compiler Auto-Vectorization Capabilities* (ICS'26).

@@ -7,8 +7,11 @@ hpcagent_bench is imported inside functions, so importing nestforge never loads 
 from __future__ import annotations
 
 import importlib.util
+import multiprocessing
+import os
 import sys
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -131,10 +134,22 @@ def iter_dace_kernels(track: str | None = None) -> Iterator[CorpusKernel]:
             yield kernel
 
 
+#: Kernels one pool task generates: a fresh kernel takes about a second to emit, a fresh check under a millisecond.
+EMIT_CHUNK = 8
+#: Most emitting processes: each spawned child imports DaCe (about 2 s), so past four a warm corpus, which only
+#: checks fingerprints, gets slower (measured 6.0 s at four, 11 s at sixteen, 5.4 s serial).
+EMIT_WORKERS = 4
+
+
 def materialize_dace_corpus() -> None:
-    """Generate every missing ``_dace.py``; run it once before parallel workers, which would race the write."""
-    for short_name in track_names(None):
-        generate_dace_file(short_name)
+    """Generate every missing or stale ``_dace.py`` in a pool of up to :data:`EMIT_WORKERS` processes. The bench locks each
+    kernel's generation, so the pool never races a write; spawned children start without this process's OpenMP
+    threads."""
+    names = track_names(None)
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=min(EMIT_WORKERS, len(os.sched_getaffinity(0))), mp_context=context) as pool:
+        for _ in pool.map(generate_dace_file, names, chunksize=EMIT_CHUNK):
+            pass
 
 
 def is_size(value: object) -> bool:
