@@ -23,8 +23,8 @@ Build in this order. Each step is one pull request with its tests, and each page
 1. **The plugin record.** Built: [plugin-record.md](../plugin-record.md).
 2. **The `nestforge_default` column.** Built: `nestforge_bench.DefaultOptimizer`.
 3. **Move families.** Built: [move-families.md](../move-families.md).
-4. **`comm-nodes`, package 1.** Probed on 2026-11-16: canonicalization breaks the skeleton, and DaCe is fixed first
-   ([comm-nodes.md](comm-nodes.md), section 9).
+4. **`comm-nodes`, package 1.** Built: `tests/comm_programs.py` and `tests/test_comm_canonical.py`, green on DaCe
+   extended `6ed7dc19e6`, which fixes the skeleton ([comm-nodes.md](comm-nodes.md), section 9).
 5. **`comm-nodes`, packages 2 to 7,** in the page's order. Package 12 (`split-doall`) is independent and fits anywhere.
 6. **`comm-nodes`, packages 8 to 10,** once the bench has B1 to B4.
 7. **`comm-nodes`, packages 11 to 16,** the overlap.
