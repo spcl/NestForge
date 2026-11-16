@@ -145,7 +145,8 @@ def scope_c(state: SDFGState, scope: nodes.MapEntry | None) -> list[str]:
 
 
 def region_c(region: ControlFlowRegion) -> list[str]:
-    """A control-flow region's blocks as C, in execution order, each followed by its interstate assignments."""
+    """A control-flow region's blocks as C, in execution order, each followed by its interstate assignments (under
+    the edge's condition when it has one)."""
     lines: list[str] = []
     for block in in_order(region):
         if isinstance(block, SDFGState):
@@ -167,9 +168,14 @@ def region_c(region: ControlFlowRegion) -> list[str]:
         elif isinstance(block, ControlFlowRegion):
             lines += region_c(block)
         for edge in region.out_edges(block):
-            lines += [
+            assigned = [
                 f"{name} = {py2cpp(value, expr_semicolon=False)};" for name, value in edge.data.assignments.items()
             ]
+            if assigned and not edge.data.is_unconditional():
+                # an edge taken only when its condition holds assigns only then
+                test = py2cpp(edge.data.condition.as_string, expr_semicolon=False)
+                assigned = [f"if ({test}) {{", *indent(assigned), "}"]
+            lines += assigned
     return lines
 
 

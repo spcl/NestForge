@@ -16,7 +16,16 @@ from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 
 from nestforge.records import CRASHES
 
-__all__ = ["AUTO_VECTORIZE", "DEFAULT_LANES", "ISAS", "vectorize_config", "vectorize_refusal"]
+__all__ = [
+    "AUTO_VECTORIZE",
+    "DEFAULT_LANES",
+    "ISAS",
+    "MAX_TILE_DIMS",
+    "SCALABLE",
+    "tile_lanes",
+    "vectorize_config",
+    "vectorize_refusal",
+]
 
 #: The move kind; it takes ``tile_sizes`` (lanes per vectorized dimension) and ``isa``.
 AUTO_VECTORIZE = "auto-vectorize-scope"

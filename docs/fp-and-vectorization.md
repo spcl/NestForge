@@ -1,18 +1,20 @@
 # FP modes and vectorization
 
-[Overview](../README.md) · related: [5 Kernels](stages.md#stage-5-kernels),
+[Overview](../README.md) · related: [2 Moves](stages.md#stage-2-moves), [5 Kernels](stages.md#stage-5-kernels),
 [6 Variants](stages.md#stage-6-variants)
 
-Stage 5 leaves vectorization to the compiler. Stage 6 sweeps compiler, FP mode and the compiler's
-vectorizer cost model over each kernel's CPF unit; `nestforge/build/flags.py` defines both axes.
+By default the compiler vectorizes: stage 5 emits the CPF loops, and stage 6 sweeps compiler, FP mode and the
+compiler's vectorizer cost model over each kernel's CPF unit (`nestforge/build/flags.py` defines both axes). The
+`auto-vectorize-scope` move ([stage 2](stages.md#stage-2-moves)) vectorizes one doall on request instead: DaCe
+rewrites its body into SIMD tiles for one ISA, and the kernel holding it is checked by the whole program, since its
+C++ body has no NumPy oracle.
 
 ## FP modes
 
 `FP_LEVELS` lists three modes, strictest first. Each mode has a relative tolerance against the NumPy
 float64 oracle (`FP_RTOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
-below applies to it. The one exception is a reduction: CPF emits it as an OpenMP `simd reduction`, which may
-reassociate the sum, so a reduction kernel matches its sequential oracle within the dtype floor, not bit for bit
-(floating-point reordering is allowed on reductions).
+below applies to it. A reduction is the one exception: CPF emits it as an OpenMP `simd reduction`, which may
+reassociate the sum, so a reduction kernel matches its sequential oracle within the dtype floor, not bit for bit.
 
 | Mode | tolerance | GNU | LLVM | oneAPI |
 |---|---|---|---|---|

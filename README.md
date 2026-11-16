@@ -11,7 +11,7 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 | Stage | Decides | Default | Call |
 |---|---|---|---|
 | [1 Canonicalize](docs/stages.md#stage-1-canonicalize) | canonical parallel form (CPF) | DaCe canonicalization up to fusion | |
-| [2 Moves](docs/stages.md#stage-2-moves) | fusion, fission, interchange | canonicalization's fusion stage | `apply_move` |
+| [2 Moves](docs/stages.md#stage-2-moves) | fusion, fission, interchange, tiling, hoisting, layout, vectorization | canonicalization's fusion stage | `apply_move` |
 | [3 Scopes](docs/stages.md#stage-3-scopes) | which regions become kernels | parallel maps; sequential and mixed loops whole; large maps split | `set_scope`, `unset_scope` |
 | [4 Placement](docs/stages.md#stage-4-placement) | device per kernel | parallel on GPU, sequential on CPU | `place` |
 | [5 Kernels](docs/stages.md#stage-5-kernels) | each kernel's code | CPF C++ (CPU) or CUDA (GPU) | `set_kernel_source` |
@@ -21,10 +21,11 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 ## Agents: the HPCAgent-Bench plugin
 
 [plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
-run the `nestforge` packet; it sets the library input mode itself (`finalize` hands the judge a library). The `nestforge` packet
-exposes the moves phase; scopes, placement and kernel builds run their defaults in `get_performance` and
-`finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet, also named `nestforge-two-stage`, is structured, then unstructured:
-the agent settles moves and scopes, placement fixes the kernels, and it then writes and tunes them one at a time.
+run the `nestforge` packet; it sets the library input mode itself (`finalize` hands the judge a library). The
+`nestforge` packet exposes the moves phase; scopes, placement and kernel builds run their defaults in
+`get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet (alias
+`nestforge-two-stage`) is structured, then unstructured: the agent settles moves and scopes, placement fixes the
+kernels, and the agent then writes and tunes them one at a time.
 `nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent.
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
@@ -60,10 +61,11 @@ python examples/quickstart.py --device cpu --out quickstart_out
 python examples/quickstart.py --device gpu --kernel jacobi_1d --out quickstart_jacobi
 ```
 
-It runs every default on an HPCAgent-Bench kernel at preset S and saves each stage's SDFG and tree, the kernel
-DAG, each kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`
-canonicalization turns four sequential loops into one parallel map. A benchmark's reference solution is replayed
-with `python -m nestforge.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
+It runs every default on an HPCAgent-Bench kernel at preset S and saves each stage's SDFG and tree, the kernel DAG, each
+kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`, canonicalization
+turns four sequential loops into one parallel map. A benchmark's reference solution is replayed with `python -m
+nestforge.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
+
 ## The program as a tree
 
 The agent reads the program as a tree of labeled rows and acts on it by label. For
@@ -107,7 +109,7 @@ SDFG 'blur_steps'
 |---|---|
 | `for<n>  i=lo:hi` | a sequential loop; `if<n>` a branch, its arms `when <cond>` / `else` |
 | `state<n>` | a dataflow graph; leaving it is a barrier: everything in it finishes before the next state starts |
-| `doall<n>  [i=lo:hi]` | a parallel loop (a map); `: ` lines are its body as Python, rows under it the states of its body |
+| `doall<n>  [i=lo:hi]` | a parallel loop (a map); `: ` lines are its body as Python, or as C after `view_tree c=[label]`; rows under it are the states of its body |
 | `lib_<family><n>  LIBNODE <Kind> [<implementation>]` | a library call (BLAS, FFT, reduce, copy, ...), a black-box doall |
 
 Rows carry what they read and write (a state leaves out its own temporaries), `work=` and `depth=` as formulas in
@@ -152,8 +154,9 @@ plugin/nestforge/  the HPCAgent-Bench plugin: tools, judge route, method prompt
 reference_solutions/  one reference-solution script per benchmark, replayed by nestforge/replay.py
 ```
 
-More: [the structure tree, NestForge's IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md), [build and runtime linking](docs/build.md),
-[FP modes and cost models](docs/fp-and-vectorization.md). Contributors follow [AGENTS.md](AGENTS.md).
+More: [the structure tree, NestForge's IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md),
+[build and runtime linking](docs/build.md), [FP modes and cost models](docs/fp-and-vectorization.md). Contributors
+follow [AGENTS.md](AGENTS.md).
 
 ## References
 

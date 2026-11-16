@@ -58,7 +58,7 @@ Every row is one SDFG object. Children print below their parent in execution ord
 | `if<n>`, then `<branch>  when <cond>` / `else` | `ConditionalBlock` and its branch regions | the first branch whose condition holds runs, so stored order is execution order |
 | `state<n>` | `SDFGState` | one dataflow step; collapsed it adds `doalls=<k>` (top-level maps and library calls) |
 | `doall<n>  [<p>=<lo>:<hi>[:<step>], ...]` | `MapEntry` | a map: iterations proven independent, run in any order or at once |
-| `lib_<family><n>  LIBNODE <Kind> [<impl>]` | `LibraryNode` | a library call, a black-box doall; `[<impl>]` is its implementation (`auto` until chosen), none on an `ExternalCall` |
+| `lib_<family><n>  LIBNODE <Kind> [<impl>]` | `LibraryNode`, or a one-element copy's tasklet | a library call, a black-box doall; `[<impl>]` is its implementation (`auto` until chosen), none on an `ExternalCall`. DaCe makes a one-element copy outside every map the tasklet `_cpy_out = _cpy_in`, what a `Copy` node's automatic expansion becomes, so it prints `lib_copy<n>  LIBNODE Copy [tasklet]` and the `lib-*` moves take it like any copy |
 | `: <statement>` | the body of a leaf doall | what one iteration computes, in the row's body language |
 
 A doall whose body is a nested SDFG (canonical form puts most bodies there) shows that SDFG's blocks as rows below
@@ -102,8 +102,8 @@ A leaf doall's body prints under it as `: ` lines, in the body language of its r
   replaced by the element its memlet names (`x[_loop_it_1]`), or the address of the first element when the memlet
   spans more than one (`&x[_loop_it_0]`, a tile's lanes). An accumulation is a compound assignment (`+=`, `*=`, `&=`,
   `|=`, `^=`), `min`/`max`, or a call of its lambda. A nested map becomes C `for` loops, a nested SDFG its control
-  flow (`for`, `if`/`else`, interstate assignments as statements), a library call a comment naming its kind and
-  implementation.
+  flow (`for`, `if`/`else`, interstate assignments as statements, under the edge's condition when it has one), a
+  library call a comment naming its kind and implementation.
 
 The language is set per row and inherited: a row prints in its own setting, else that of the nearest row around it,
 else Python. So `c=[state2]` prints every body in `state2` as C, and `python=[doall4]` then takes `doall4` back to

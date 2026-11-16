@@ -6,6 +6,7 @@ shows a vectorized body's tile functions. Printing never changes the program."""
 import dace
 import numpy as np
 
+from nestforge.ir.emit_c import body_c
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.performance import Reference
@@ -31,6 +32,26 @@ def accumulate_steps(x: dace.float64[N], y: dace.float64[N]):
     for _ in range(T):
         for i in dace.map[0:N]:
             y[i] = 2.0 * x[i] + y[i]
+
+
+M = dace.symbol("M", dace.int64, positive=True)
+
+
+@dace.program
+def scale_rows(x: dace.float64[N], A: dace.float64[N, M]):
+    for i in dace.map[0:N]:
+        s = x[i] * 2.0
+        for j in dace.map[0:M]:
+            A[i, j] = s + A[i, j]
+
+
+@dace.program
+def absolute(x: dace.float64[N], y: dace.float64[N]):
+    for i in dace.map[0:N]:
+        if x[i] > 0:
+            y[i] = x[i]
+        else:
+            y[i] = -x[i]
 
 
 def session(tmp_path) -> Session:
@@ -179,3 +200,62 @@ def test_rollback_restores_the_body_language_the_program_had(tmp_path):
 
     assert sut.languages == {state: "c"}
     assert tile_calls(sut.sdfg) == 0
+
+
+def doall_with_a_branching_body() -> tuple[dace.SDFGState, dace.nodes.MapEntry]:
+    """A doall whose nested body leaves its first state by one of two edges, each assigning ``k`` its own value."""
+    inner = dace.SDFG("branching_body")
+    inner.add_symbol("i", dace.int64)
+    inner.add_symbol("k", dace.int64)
+    first = inner.add_state("first", is_start_block=True)
+    above, below = inner.add_state("above"), inner.add_state("below")
+    inner.add_edge(first, above, dace.InterstateEdge(condition="i > 2", assignments={"k": "1"}))
+    inner.add_edge(first, below, dace.InterstateEdge(condition="i <= 2", assignments={"k": "2"}))
+    outer = dace.SDFG("branching")
+    state = outer.add_state()
+    entry, exit_ = state.add_map("branch", {"i": "0:4"})
+    nest = state.add_nested_sdfg(inner, set(), set(), symbol_mapping={"i": "i"})
+    state.add_nedge(entry, nest, dace.Memlet())
+    state.add_nedge(nest, exit_, dace.Memlet())
+    return state, entry
+
+
+def test_the_c_view_assigns_on_a_conditional_edge_only_under_its_condition():
+    state, entry = doall_with_a_branching_body()
+
+    lines = [line.strip() for line in body_c(state, entry)]
+
+    assert lines.count("k = 1;") == 1 and lines.count("k = 2;") == 1, lines
+    assert lines[lines.index("k = 1;") - 1] == "if ((i > 2)) {", lines
+    assert lines[lines.index("k = 2;") - 1] == "if ((i <= 2)) {", lines
+
+
+def test_a_doall_inside_another_is_refused_and_the_program_is_unchanged(tmp_path):
+    sut = Session(scale_rows.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 7, "M": 5})
+    sut.canonicalize()
+    (inner,) = [
+        label
+        for label, (obj, state) in sut.row_index().items()
+        if isinstance(obj, dace.nodes.MapEntry) and state is not None and state.entry_node(obj) is not None
+    ]
+    before = sut.sdfg.hash_sdfg()
+
+    result = sut.apply_move(AUTO_VECTORIZE, [inner], tile_sizes=[4], isa="scalar")
+
+    assert result.status is MoveStatus.ILLEGAL and "inside another doall" in result.reason, result
+    assert inner not in {m.labels[0] for m in sut.list_moves(AUTO_VECTORIZE)}
+    assert sut.sdfg.hash_sdfg() == before and tile_calls(sut.sdfg) == 0
+
+
+def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path):
+    sut = Session(absolute.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
+    sut.canonicalize()
+    doall = doall_writing(sut, "y")
+
+    result = sut.apply_move(AUTO_VECTORIZE, [doall], tile_sizes=[4], isa="scalar")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "VectorizeMap"), result
+    assert tile_calls(sut.sdfg) > 0
+    x = np.linspace(-1.0, 1.0, SIZE)
+    report = sut.performance({"x": x, "y": np.zeros(SIZE)}, Reference({"y": np.abs(x)}, 0.0, 0.0), codegen="first")
+    assert report.structured.error == "" and report.structured.correct is True, report.structured

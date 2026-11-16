@@ -27,28 +27,18 @@ one.
 Stage 2 shapes the loop nests. The agent reads the structure tree and asks for moves; it never edits the graph.
 Every move is an existing DaCe transformation, checked for legality before it applies.
 
-`describe()` prints the tree, the IR the agent reads; [ir.md](ir.md) is its full contract (rows, fields, labels,
-body languages, view calls). Every loop and state is a row; loop, state and map rows
-carry `work=` and `depth=` from one pass of DaCe's work-depth analysis, and an innermost loop, or a map holding a
-nested SDFG, carries `num_states=`. State and map rows carry `reads=` and `writes=`; a state's leave out the
-transients no other state accesses (`introspect.outlives`). When that pass fails or takes over 60 s, the second line
-says why and the rows carry no costs for that program. A state shows only `doalls=<count>` until `expand(labels)`
-opens it. An opened state or map shows everything below it: maps, nested maps, leaf-kernel bodies and the states
-of nested SDFGs. `collapse(labels)` closes any open state or map, one opened by a row around it included. The view
-is `Session.expanded`, label -> open; the nearest labeled row around a row decides (`introspect.View`), and
-expanding a row drops what was closed below it. Leaf bodies print as Python, or as C under a row
-`set_language(labels, "c")` named (`Session.languages`, inherited the same way), which shows C++ tasklets such as a
-vectorized body's tile calls. None of these view calls changes the program. An entry lasts while its row lives. `list_moves(kind)` returns the legal moves as
-`{kind, labels}`; map fusions list data-linked pairs and each map with the next map of its scope, never every
-pair (CloudSC would list 20k), while `apply_move` still takes any pair, and `apply_move(kind, labels)` returns a `MoveResult` whose status is `applied`,
-`illegal` or `not-found`. Labels are the tree labels, `<kind><n>`, unique across the whole program; a row keeps its
-label while it lives (`nestforge.ir.names.Namer`).
-Every applied move is followed by `structural_cleanup`, the same as after canonicalization, so the states a move
-leaves fusible are fused and every map body is canonical again (the bodies a fusion leaves side by side merge into
-one nested SDFG); the agent never calls it. A move retires the labels of the rows it took and names
-what it made afresh, so a label read before it either still names the same row or returns `not-found`. `metrics(label)` gives the
-symbolic work and depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as records, the
-agent's catalog.
+`describe()` prints the structure tree, the IR the agent reads. [ir.md](ir.md) is its contract: the rows, their fields
+(`reads=`, `writes=`, `work=`, `depth=`), the labels, the body languages and the view calls (`expand`, `collapse`,
+`set_language`), none of which changes the program. `list_moves(kind)` returns the legal moves as `{kind, labels}`. Map
+fusions list data-linked pairs and each map with the next map of its scope, never every pair (CloudSC would list 20k),
+while `apply_move` still takes any pair. `apply_move(kind, labels)` returns a `MoveResult` whose status is `applied`,
+`illegal` or `not-found`.
+
+Every applied move is followed by `structural_cleanup`, the same as after canonicalization, so the states a move leaves
+fusible are fused and every map body is canonical again (the bodies a fusion leaves side by side merge into one nested
+SDFG); the agent never calls it. A move retires the labels of the rows it took and names what it made afresh, so a label
+read before it either still names the same row or returns `not-found`. `metrics(label)` gives the symbolic work and
+depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as records, the agent's catalog.
 
 | kind | labels | DaCe |
 |---|---|---|
@@ -72,7 +62,7 @@ agent's catalog.
 | `hoist-invariant-for` | for loop holding a loop-invariant statement or sub-block | `hoist_loop_region` of `LoopInvariantCodeMotion` on that loop |
 | `hoist-invariant-doall` | doall holding a statement no parameter of its nest changes | `hoist_map_scope` of `LoopInvariantCodeMotion`, judged against the outermost doall of a perfect nest |
 | `auto-vectorize-scope` | top-level doall (+ `tile_sizes`, lanes per vectorized dimension, innermost last; + `isa`: `auto`, `avx512`, `avx2`, `sve`, `neon`, `scalar`) | `VectorizeMap`: the doall alone is nested and `VectorizeCPUMultiDim` tiles its innermost maps, a masked tile for the remainder, tile nodes expanded into the ISA's tile functions; every other doall stays scalar. `sve` takes its own vector length, so its `tile_sizes` is ignored. Judged when applied, on a copy first. A kernel holding the result has no NumPy oracle (its body is C++), so its builds are `unchecked` and the whole program checks them |
-| `relayout` | none (+ `operation`, one operation of the bench's `requests` on an array argument) | relayout's `apply_requests` without conversion: the program works on the argument as `permute`, `block` / `unblock`, `split` / `unsplit`, `pad` / `unpad`, `shuffle`, `linear_shuffle` or `cast` lays it out; every operation so far is laid out again from the program before the first. Only before any other change. The operations are the submission's `requests` (`Final.requests`): the harness lays the arguments out before the call and back after it, and NestForge times the program the same way (`stages/layout.py`). `finalize` refuses a `cast` until the bench's entry takes per-argument precisions |
+| `relayout` | none (+ `operation`, one operation of the bench's `requests` on an array argument; listed as a transpose of the two innermost dimensions of the first argument that has two) | relayout's `apply_requests` without conversion: the program works on the argument as `permute`, `block` / `unblock`, `split` / `unsplit`, `pad` / `unpad`, `shuffle`, `linear_shuffle` or `cast` lays it out; every operation so far is laid out again from the program before the first. Only before any other change. The operations are the submission's `requests` (`Final.requests`): the harness lays the arguments out before the call and back after it, and NestForge times the program the same way (`stages/layout.py`). `finalize` refuses a `cast` until the bench's entry takes per-argument precisions |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |

@@ -254,7 +254,8 @@ doall i in 0:N: y[i] = 2*x[i] + y[i]   ->   doall i in 0:N:8: tile_load x, y; ti
 ```
 Read the result with `view_tree c=[state]`. Vectorize last: the body is C++ afterwards, which no structured move
 takes apart and no NumPy oracle spells, so the kernel holding it is checked by the whole program, not on its own.
-Refused, with the vectorizer's reason, where it cannot tile (a loop left in the body, a dependence between lanes).
+Refused, with the reason, on a doall inside another doall (name the outermost one) and wherever DaCe's vectorizer
+raises on the doall; nothing changes then.
 
 ### Argument layouts
 
@@ -265,7 +266,8 @@ blocks of 8, and `split`, `pad`, `shuffle`, `linear_shuffle` and their inverses 
 `i0`, `i1`, ... and keep their names through a permute, so each operation names the digits the ones before it left.
 The program then works on the argument laid out, and the operations become your submission's `requests`: the
 harness lays the inputs out before the call and reads the outputs back after it, outside the timing. Lay arguments
-out first: `relayout` is refused after any other change. A `cast` (`{"action": "cast", "array": "A", "to": "fp32"}`)
+out first: `relayout` is refused after any other change. `list_moves` offers one operation, the transpose of the
+first argument with two or more dimensions; any other you pass yourself. A `cast` (`{"action": "cast", "array": "A", "to": "fp32"}`)
 applies and times, but `finalize` refuses it for now; roll it back before you submit.
 
 ### Unrolling and specialization
@@ -291,7 +293,7 @@ its loops, and the moves above apply there too. Offered when the program has a s
 
 **`lib-before`** / **`lib-after`** `[lib_<family>, state|for|if]`: the call leaves its state for a new state just
 before (after) the named block, which is in the call's region or in a loop around it; never inside another block.
-Every copy between two arrays is a `lib_copy` row (`b[:] = a`), so this is how a copy moves.
+Every copy between two arrays is a `lib_copy` row (`b[:] = a`; a one-element copy `b[0] = a[0]` prints `[tasklet]`), so this is how a copy moves.
 ```
 for k: { b = a; doall: c += b * k }   --lib-before [lib_copy0, for0]-->   b = a; for k: doall: c += b * k
 ```
