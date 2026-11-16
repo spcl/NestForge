@@ -58,7 +58,7 @@ from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
 from nestforge.session import KernelOutcome, Move, MoveResult, Session
 from nestforge.stages.families import FAMILIES
-from nestforge_bench import DefaultOptimizer, ReferenceOptimizer
+from nestforge_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "nestforge"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
@@ -1080,6 +1080,21 @@ def test_the_reference_column_records_the_solutions_moves_and_the_default_column
     assert reference["final"] == default["final"] == {"kernels": 1} and reference["calls"] == []
 
 
+def test_the_column_without_wavefronts_starts_its_session_with_every_move_family_off(
+    loaded: None, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    started: list[Setup] = []
+    real_start = FinalizedSession()
+    sut = NoWaveOptimizer("dace_cpu_canon_nestforge_cpf_nowave", workdir=tmp_path)
+
+    record = column_record(monkeypatch, tmp_path, sut, FUSING)
+    monkeypatch.setattr(nestforge_bench, "start", lambda setup: started.append(setup) or (real_start, None, None))
+    sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
+
+    assert started[-1].disabled_families == ("all",)
+    assert (record["reference"], record["disabled_families"]) == (None, sorted(FAMILIES))
+
+
 def test_the_reference_column_says_when_a_kernel_had_no_solution_and_it_ran_the_defaults(
     loaded: None, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
@@ -1097,6 +1112,7 @@ def test_the_plugin_declares_the_reference_and_the_default_column(
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
 
     assert manifest["flavors"]["nestforge_default"]["optimizer"] == "nestforge_bench:DefaultOptimizer"
+    assert manifest["flavors"]["nestforge_cpf_nowave"]["optimizer"] == "nestforge_bench:NoWaveOptimizer"
     assert "dace_cpu_canon_nestforge_default" in manifest["ci"]["optimizers"]
     plugins.register_flavors.cache_clear()
     plugins.register_flavors()

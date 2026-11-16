@@ -287,6 +287,22 @@ The first work package settles this before anything else is built: it canonicali
 skeleton before and after. A pass that changes the skeleton is fixed in DaCe on extended, with a regression test
 there, and never worked around in NestForge.
 
+**Settled on 2026-11-16 (DaCe extended `561defb2a6`): canonicalization breaks the skeleton.** Two probes show it.
+
+- A loop of blocking `Allreduce` calls, one per row of an array, becomes a doall around the `Allreduce`.
+- A loop holding a blocking `Send` and a blocking `Recv` is split into a doall of all sends, then a doall of all
+  receives: the order changes, and blocking sends can deadlock.
+
+A halo exchange (`Isend`, `Irecv`, `Waitall`) and a residual `Allreduce` in a time loop that carries a dependence
+keep their skeleton. The cause has two parts: a blocking communication node reports no side effects
+(`CommNode.side_effects` is false by design), and `LoopToMap` and the passes that split statements and distribute
+loops do not consult side effects at all.
+
+The owner's decision (2026-11-16): canonicalization is fixed on DaCe extended so that it does not move
+communication nodes, or tasklets and library nodes with side effects, across one another or out of their loops,
+and it still optimizes everything around them as far as it can. Every pass that changes gets a unit test. The fix
+comes after `skew-wavefront`.
+
 ### 10. Agent-facing text
 
 No new packet and no new phase. When the session is distributed:

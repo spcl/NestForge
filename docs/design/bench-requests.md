@@ -232,7 +232,7 @@ baseline, and its agent chooses LLVM passes, their parameters, and `clang` flags
    judge image's LLVM must be built with Polly. Any other flag is refused with the list.
 4. The starting program is the task's canonical form without wavefronts, rendered as one C++ translation unit
    (DaCe's CPF rendering, `dace.codegen.cpf.cpf`), the same program the NestForge agent starts from
-   ([skew-wavefront.md](skew-wavefront.md)). It needs DaCe's D3 switch, and the bench renders it as it renders the
+   ([stages.md](../stages.md), stage 1; DaCe's `canonicalize(wavefront=False)`, on extended since `ef08de68e9`), and the bench renders it as it renders the
    `cpf-cpu-src` packet's drop-in source today (`CPF_DROPIN_DIR`).
 5. Legality: every pass preserves semantics. A flag that changes floating-point semantics is judged by the bench's
    oracle tolerance, as for every submission.

@@ -71,6 +71,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | `for t: doall i` with a short doall body | `interchange-for-doall` | one parallel region, not one per step |
 | a doall nest whose inner parameter is not the last subscript (`A[j, i]` with `j` inner) | `interchange-doall-doall` | the last subscript is the contiguous one: it belongs innermost |
 | a doall over an array far larger than the cache, read more than once | `tile-doall` | each block is reused while cached |
+| a sequential `for` whose iterations each read the one before along two axes (Gauss-Seidel, LU, dynamic programming: `a[i, j]` from `a[i - 1, j]` and `a[i, j - 1]`) | `skew-wavefront` | each diagonal runs in parallel; the program starts with these loops sequential |
 | a doall mixing a parallel computation with one that blocks a move | `doall-fission`, then move the pieces | each piece takes its own order |
 | a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
@@ -209,6 +210,12 @@ doalls stay where they are.
 doall i in 0:N: B   ->   doall i0 in 0:N step 32:
                              doall i in i0:min(i0+32, N): B
 ```
+**`skew-wavefront`** `[for]`, WavefrontSkew: the nest under a sequential loop whose iterations depend on each other along
+a diagonal becomes a sequential loop over diagonals (iterator `_skew_t_<n>`), each diagonal one doall, or a diagonal of
+tiles where the dependences allow. DaCe derives the skew; you pick the loop, and optionally `tile_sizes` (two
+extents, along the loop and along the diagonal; 64 each by default). It applies only where DaCe proves the diagonals
+independent, and the refusal says why a loop is no wavefront. The default moves apply it everywhere it applies.
+
 **`tile-for`** `[for]` with one size (`[64]`), LoopTiling: the same for a sequential loop, same iterations in the same
 order. A size need not divide the range. Pays when a tile's data fits
 the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's

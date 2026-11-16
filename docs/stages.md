@@ -11,6 +11,11 @@ excluding the `fuse` stage, so stage 2 owns every fusion decision, then `structu
 body made one nested SDFG and every reduction moved out of it: `map { nested SDFG } -> access node -wcr->`). No stage
 after `fuse` runs, so nothing specializes. It is never searched.
 
+A session's canonicalization leaves wavefronts to the moves (`Targets.wavefront`, off by default: DaCe's
+`canonicalize(wavefront=False)`). A loop that carries a dependence along both axes of its nest stays a sequential
+loop, and the `skew-wavefront` move, or the default moves, skew it. The NestForge agent and the LLVM-pass agent of the
+study start from this program, so canonicalization does neither agent's work.
+
 Right after it, and whenever a move makes a call without one, `set_default_implementations` gives each library call
 left to automatic selection the implementation finalization would pick for it: the fastest this host has for the target,
 never `pure` while another exists. The tree prints it, and it stays automatic until `set-library-implementation` pins
@@ -63,6 +68,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `hoist-invariant-doall` | doall holding a statement no parameter of its nest changes | `hoist_map_scope` of `LoopInvariantCodeMotion`, judged against the outermost doall of a perfect nest |
 | `auto-vectorize-scope` | top-level doall (+ `tile_sizes`, lanes per vectorized dimension, innermost last; + `isa`: `auto`, `avx512`, `avx2`, `sve`, `neon`, `scalar`) | `VectorizeMap`: the doall alone is nested and `VectorizeCPUMultiDim` tiles its innermost maps, a masked tile for the remainder, tile nodes expanded into the ISA's tile functions; every other doall stays scalar. `sve` takes its own vector length, so its `tile_sizes` is ignored. Judged when applied, on a copy first. A kernel holding the result has no NumPy oracle (its body is C++), so its builds are `unchecked` and the whole program checks them |
 | `relayout` | none (+ `operation`, one operation of the bench's `requests` on an array argument; listed as a transpose of the two innermost dimensions of the first argument that has two) | relayout's `apply_requests` without conversion: the program works on the argument as `permute`, `block` / `unblock`, `split` / `unsplit`, `pad` / `unpad`, `shuffle`, `linear_shuffle` or `cast` lays it out; every operation so far is laid out again from the program before the first. Only before any other change. The operations are the submission's `requests` (`Final.requests`): the harness lays the arguments out before the call and back after it, and NestForge times the program the same way (`stages/layout.py`). `finalize` refuses a `cast` until the bench's entry takes per-argument precisions |
+| `skew-wavefront` | for loop whose nest is a wavefront (+ `tile_sizes`, optional: two extents, along the loop and along the diagonal) | `WavefrontSkew`: DaCe derives the skew from the dependences and rewrites the nest into a sequential loop over diagonals (iterator `_skew_t_<n>`) holding a doall per diagonal, or a diagonal of tiles where the dependences allow (64 by 64 by default). A loop that is no wavefront is refused with `WavefrontSkew.plan_or_reason`'s sentence, class `dependence` |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
@@ -71,7 +77,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 
 | | |
 |---|---|
-| default | `default_moves()`: canonicalization's `fuse` stage and the stages after it |
+| default | `default_moves()`: the wavefront skew on every nest it applies to (so the program has the canonical form's wavefronts), then canonicalization's `fuse` stage and the stages after it; a switched-off family ([move-families.md](move-families.md)) skips its part |
 | agent | moves, then `finish_moves()` runs the stages after `fuse` but `fuse_final`, keeping the chosen maps |
 | code | `nestforge/stages/moves.py` |
 

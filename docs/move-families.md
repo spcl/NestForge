@@ -17,6 +17,7 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | `layout` | `relayout` |
 | `vectorize` | `auto-vectorize-scope` |
 | `schedule` | `doall-to-for` |
+| `wavefront` | `skew-wavefront` |
 
 `rollback` belongs to no family and is never switched off. A new move kind joins a family in the same change, or
 the test fails. The grouping decides only how the replay sums its rows, so it can change after the runs.
@@ -29,8 +30,9 @@ An unknown name refuses the session.
 - `list_moves` and `list_move_kinds` leave out the kinds of a disabled family.
 - `apply_move` of such a kind answers `illegal: <kind> belongs to the family <family>, which this run has switched
   off.`, with the refusal class `family-off`.
-- `run_defaults("moves")` runs canonicalization's fusion stage, which belongs to `fusion`. With `fusion` off it runs
-  only the stages after fusion, which every program needs.
+- `run_defaults("moves")` skews the wavefronts (family `wavefront`), then runs canonicalization's fusion stage
+  (family `fusion`). A family switched off skips its part; the stages after fusion, which every program needs, always
+  run.
 
 A packet switches families off through its `env`, as the study's ablation does:
 

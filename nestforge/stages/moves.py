@@ -68,6 +68,8 @@ from dace.transformation.passes.loop_invariant_code_motion import (
     map_has_invariant_code,
 )
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
+from dace.transformation.passes.parallelization.wavefront.skew import WavefrontSkew
+from dace.transformation.passes.parallelization.wavefront.statements import occurrence_index
 from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 from dace.transformation.transformation import PatternTransformation
 
@@ -99,6 +101,8 @@ SET_IMPLEMENTATION = "set-library-implementation"
 PROPAGATE_CONFIG = "propagate-config"
 #: The move kind, on no row, that takes the last change back; the session keeps the programs it returns to.
 ROLLBACK = "rollback"
+#: The move kind that skews a loop nest into a wavefront: a sequential diagonal loop over a doall per diagonal.
+SKEW_WAVEFRONT = "skew-wavefront"
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type, ...]] = {
@@ -135,6 +139,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
+    SKEW_WAVEFRONT: (LoopRegion,),
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
@@ -148,6 +153,8 @@ DEFAULT_ISA = "auto"
 SIZED = frozenset({"tile-doall", "tile-for", "stage-loads-shared"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
+#: How many tile extents ``skew-wavefront`` takes: along the skewed loop, and along the diagonal.
+SKEW_TILE_DIMS = 2
 #: The move kinds that take ``max_iterations``: the largest trip count the agent accepts to unroll.
 UNROLLS = frozenset({"unroll-for", "unroll-doall"})
 #: The cap an unroll is checked at when it is listed; the agent passes its own to apply it.
@@ -1160,6 +1167,30 @@ def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
     return region_rewrite(f"lib-{place}", node_state(row).sdfg, plan)
 
 
+def plan_skew_wavefront(row: Row, tile_sizes: Sequence[int] = (), target: str = "cpu") -> Rewrite | str:
+    """Skew the nest of loop ``row`` so each diagonal runs as a doall (DaCe's :class:`WavefrontSkew`, which derives
+    the skew from the dependences), tiled along the diagonal where it can; ``tile_sizes``, two extents, replace the
+    tiling's defaults."""
+    loop = cast(LoopRegion, row[0])
+    if tile_sizes and (len(tile_sizes) != SKEW_TILE_DIMS or min(tile_sizes) < 1):
+        return Refused(
+            f"{SKEW_WAVEFRONT} takes tile_sizes as {SKEW_TILE_DIMS} positive extents (along {loop.label}, then along "
+            "the diagonal), or none for DaCe's defaults.",
+            Refusal.ARGUMENT,
+        )
+    skew = WavefrontSkew(target=target)
+    if tile_sizes:
+        if target == "gpu":
+            skew.gpu_tile_i, skew.gpu_tile_j = tile_sizes
+        else:
+            skew.tile_i, skew.tile_j = tile_sizes
+    sdfg = loop.sdfg
+    plan = skew.plan_or_reason(loop, sdfg, occurrence_index(sdfg))
+    if isinstance(plan, str):
+        return Refused(f"blocked by WavefrontSkew: {loop.label}: {plan}.", Refusal.DEPENDENCE)
+    return region_rewrite("WavefrontSkew", sdfg, lambda: skew.commit(plan, sdfg))
+
+
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
@@ -1312,6 +1343,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "value the doall does not change) which another doall of the state writes copies the slice into a transient "
         "first, so the two doalls no longer touch one array and doall-fusion can merge them.",
     ),
+    SKEW_WAVEFRONT: (
+        "WavefrontSkew (tile_sizes, optional: the extents along the loop and along the diagonal)",
+        "a sequential loop whose iterations depend on each other along a diagonal (Gauss-Seidel, LU, dynamic "
+        "programming) becomes a sequential loop over diagonals, each run as a parallel doall, or a diagonal of tiles "
+        "where the dependences allow. It applies only where DaCe proves the diagonals independent; DaCe picks the skew.",
+    ),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
         "for i: B becomes for i0 (step = tile size): for i (one tile): B, the same iterations in the same order.",
@@ -1416,11 +1453,13 @@ def plan_move(
     program: dace.SDFG | None = None,
     output_dir: Path | None = None,
     isa: str = DEFAULT_ISA,
+    target: str = "cpu",
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
-    ``tile_sizes`` goes to the :data:`SIZED` kinds, ``implementation`` to :data:`SET_IMPLEMENTATION`,
-    ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row, takes ``config_values`` for
-    ``program`` and writes its variants to ``output_dir``."""
+    ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
+    :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
+    takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
+    is the device the wavefront's tiles are for."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
@@ -1432,6 +1471,8 @@ def plan_move(
             )
     if kind == AUTO_VECTORIZE:
         return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
+    if kind == SKEW_WAVEFRONT:
+        return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
@@ -1617,10 +1658,11 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
+    SKEW_WAVEFRONT: for_rows,
 }
 
 
-def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tuple[str, ...]]]:
+def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -> list[tuple[str, tuple[str, ...]]]:
     """``(kind, labels)`` of every legal move right now, of ``kind`` or of every kind.
 
     :raises ValueError: ``kind`` is not a move kind.
@@ -1639,7 +1681,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None) -> list[tuple[str, tup
                 found[(name, labels)] = None
                 continue
             try:
-                probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows))
+                probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows), target=target)
             except CRASHES as err:  # a check that raises on one candidate hides only that candidate
                 print(f"nestforge: {name} {list(labels)} is not listed: {type(err).__name__}: {err}", file=sys.stderr)
                 continue

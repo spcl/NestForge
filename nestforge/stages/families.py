@@ -29,13 +29,16 @@ FAMILIES: dict[str, frozenset[str]] = {
     "layout": frozenset({"relayout"}),
     "vectorize": frozenset({"auto-vectorize-scope"}),
     "schedule": frozenset({"doall-to-for"}),
+    "wavefront": frozenset({"skew-wavefront"}),
 }
 
 #: The name that stands for every family.
 ALL = "all"
 
-#: The family the default moves stage belongs to: canonicalization's fusion stage.
+#: The family of canonicalization's fusion stage, which the default moves run.
 DEFAULT_MOVES_FAMILY = "fusion"
+#: The family of the wavefront skew, which the default moves run before the fusion stage.
+WAVEFRONT_FAMILY = "wavefront"
 
 
 def family_of(kind: str) -> str | None:

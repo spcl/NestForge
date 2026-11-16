@@ -75,10 +75,11 @@ from nestforge.stages.canonicalize import (
     fuse_and_finish,
     implicit_copies,
     narrow_nested_memlets,
+    skew_wavefronts,
     structural_cleanup,
 )
 from nestforge.stages.expand import implementations, set_default_implementations, settle
-from nestforge.stages.families import DEFAULT_MOVES_FAMILY, checked_families, switched_off
+from nestforge.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -741,9 +742,6 @@ class Session:
         done: object
         changed: object
         match stage:
-            case "moves" if DEFAULT_MOVES_FAMILY in self.disabled_families:
-                # the fusion stage is a move family; what follows it is canonical form, which every program needs
-                done = changed = self.finish_moves()
             case "moves":
                 done = changed = self.default_moves()
             case "finish":
@@ -787,8 +785,9 @@ class Session:
     def list_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
         """Every legal move right now, of ``kind`` or of every kind, in the program or inside the kernel ``scope``."""
         structured, device = self.move_programs(scope)
-        found = [move for move in legal_moves(structured, kind) if move[0] not in DEVICE_KINDS]
-        found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k)]
+        target = self.targets.canon_target
+        found = [move for move in legal_moves(structured, kind, target) if move[0] not in DEVICE_KINDS]
+        found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k, target)]
         rows = self.row_index() if scope is None else tree_rows(structured)
         # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
         scoped: dict[str, str] = {} if scope is None else {"scope": scope}
@@ -909,7 +908,9 @@ class Session:
         if isinstance(rows, MoveResult):
             return rows
         config = (config_values, target, self.work_dir / "config")
-        plan = plan_move(kind, rows, tile_sizes, implementation, max_iterations, *config, isa=isa)
+        plan = plan_move(
+            kind, rows, tile_sizes, implementation, max_iterations, *config, isa=isa, target=self.targets.canon_target
+        )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])
             offered = implementations(node, self.targets.gpu)
@@ -975,7 +976,12 @@ class Session:
 
     @undone_on_failure
     def default_moves(self) -> str:
-        """Stage 2 default: canonicalization's fusion stage and the stages after it."""
+        """Stage 2 default: the wavefronts canonicalization left to the moves, then canonicalization's fusion stage and
+        the stages after it, each unless its family is switched off."""
+        if not self.targets.wavefront and WAVEFRONT_FAMILY not in self.disabled_families:
+            skew_wavefronts(self.sdfg, self.targets)
+        if DEFAULT_MOVES_FAMILY in self.disabled_families:
+            return self.finish_moves()
         fuse_and_finish(self.sdfg, self.targets)
         self.unplaced = None
         self.bump()

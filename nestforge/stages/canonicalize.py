@@ -19,6 +19,7 @@ from dace.transformation.passes.canonicalize.normalize_map_body import Normalize
 from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup, after_fusion_units, prepared
 from dace.transformation.passes.insert_explicit_copies import InsertExplicitCopies
 from dace.transformation.passes.normalize_wcr import NormalizeWCR
+from dace.transformation.passes.parallelization.wavefront.skew import WavefrontSkew
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
 from nestforge.ir.names import inline_top_level_nsdfgs, is_copy
@@ -33,6 +34,9 @@ class Targets:
 
     gpu: bool = False
     max_statements: int = 200
+    #: Whether canonicalization skews wavefronts itself. Off for a session: the ``skew-wavefront`` move does it, and
+    #: the default moves apply it everywhere it applies, so the defaults keep the canonical form's wavefronts.
+    wavefront: bool = False
 
     @property
     def canon_target(self) -> str:
@@ -44,7 +48,9 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     # the frontend binds derived loop bounds to fresh interstate symbols that extraction cannot pass in
     SymbolPropagation().apply_pass(sdfg, {})
     labels = stage_labels(targets.canon_target)
-    dace_canonicalize(sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)])
+    dace_canonicalize(
+        sdfg, target=targets.canon_target, stages=labels[: labels.index(FUSE_STAGE)], wavefront=targets.wavefront
+    )
     # the moves and the tree reach no nested SDFG at the top of a state: what canonicalization left there is inlined
     inline_top_level_nsdfgs(sdfg)
     structural_cleanup(sdfg)  # no stage after fusion runs, so nothing specializes
@@ -52,6 +58,12 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     # after the cleanup, which folds the copies it can: the ones left are rows
     explicit_copies(sdfg)
     return sdfg
+
+
+def skew_wavefronts(sdfg: dace.SDFG, targets: Targets) -> int:
+    """Skew every loop nest that is a wavefront, innermost first, as canonicalization does with ``wavefront`` on;
+    the number skewed."""
+    return WavefrontSkew(target=targets.canon_target).apply_pass(sdfg, {}) or 0
 
 
 def structural_cleanup(sdfg: dace.SDFG) -> None:

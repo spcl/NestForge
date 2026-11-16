@@ -19,6 +19,7 @@ optimizers = [
     "dace_cpu_canon_nestforge_stub",
     "dace_cpu_canon_nestforge_reference",
     "dace_cpu_canon_nestforge_default",
+    "dace_cpu_canon_nestforge_cpf_nowave",
     "dace_cpu_canon_nestforge_two_stage",
 ]
 kernels = ["jacobi_1d", "tsvc_2_s231"]
@@ -114,6 +115,14 @@ extends = ["dace_cpu_canon", "dace_gpu_canon"]
 name = "NestForge default"
 full_name = "NestForge (default moves)"
 optimizer = "nestforge_bench:DefaultOptimizer"
+extends = ["dace_cpu_canon", "dace_gpu_canon"]
+
+# The canonical form without wavefronts, with the default scopes, placement and code generation and no moves: what
+# the study's agents start from, measured without an agent.
+[flavors.nestforge_cpf_nowave]
+name = "NestForge CPF, no wavefronts"
+full_name = "NestForge (canonical form without wavefronts, no moves)"
+optimizer = "nestforge_bench:NoWaveOptimizer"
 extends = ["dace_cpu_canon", "dace_gpu_canon"]
 
 # A stand-in for an LLM agent on the packet, for CI: seeded legal moves through the tools, then finalize.

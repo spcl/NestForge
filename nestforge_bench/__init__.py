@@ -32,9 +32,17 @@ from nestforge.plugin_record import SCHEMA, episode_record, keep_capped
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
 from nestforge.records import KernelStatus, MoveStatus, spelled
 from nestforge.server import Setup, start
+from nestforge.stages.families import ALL, checked_families
 from nestforge.session import DEFAULTS_PREFIX, MoveResult, kernel_language
 
-__all__ = ["DefaultOptimizer", "ReferenceOptimizer", "StubAgent", "TwoStageStub", "reference_solution"]
+__all__ = [
+    "DefaultOptimizer",
+    "NoWaveOptimizer",
+    "ReferenceOptimizer",
+    "StubAgent",
+    "TwoStageStub",
+    "reference_solution",
+]
 
 #: Where the reference solutions live, one ``<kernel>.py`` each.
 SOLUTIONS = REPO_ROOT / "reference_solutions"
@@ -63,13 +71,15 @@ class ReferenceOptimizer(FlavorOptimizer):
     __slots__ = ()
     #: Whether the column reads the kernel's reference solution; the default column does not.
     references: ClassVar[bool] = True
+    #: The move families the column switches off (``nestforge.stages.families``); none by default.
+    families: ClassVar[tuple[str, ...]] = ()
 
     def tune(self, task: Task, pipeline: str) -> Submission:
         gpu = task.image != "cpu"
         service = config.current().service
         # the service's preset is a token ("XL+fuzz"); the judge grades on the preset it resolves to
         preset = resolve_preset(service.preset).text
-        session, _, _ = start(Setup(task.kernel, preset, service.datatype, gpu))
+        session, _, _ = start(Setup(task.kernel, preset, service.datatype, gpu, disabled_families=self.families))
         script = Script(session)
         solution = reference_solution(task.kernel) if self.references else None
         if solution is None and self.references:
@@ -96,7 +106,8 @@ class ReferenceOptimizer(FlavorOptimizer):
         """The column's plugin record, beside the library in the episode's folder; none without one."""
         if self._workdir is None:
             return
-        data = episode_record(kernel, [], journal, kernels, replayed if self.references else None)
+        reference = replayed if self.references else None
+        data = episode_record(kernel, [], journal, kernels, reference, families=sorted(checked_families(self.families)))
         try:
             keep_capped(lambda record: self.keep_record(SCHEMA, record), data)
         except ValueError as err:
@@ -109,6 +120,15 @@ class DefaultOptimizer(ReferenceOptimizer):
 
     __slots__ = ()
     references: ClassVar[bool] = False
+
+
+class NoWaveOptimizer(DefaultOptimizer):
+    """The canonical form without wavefronts, finished by NestForge's default scopes, placement and code generation:
+    every move family is off, so the default moves stage skews and fuses nothing. Against ``nestforge_default`` it
+    gives the default moves' gain, the wavefronts included."""
+
+    __slots__ = ()
+    families: ClassVar[tuple[str, ...]] = (ALL,)
 
 
 #: Moves the stub agent applies at most.

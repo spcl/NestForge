@@ -21,7 +21,7 @@ judge route do.
 | IR helpers | `nestforge/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `nestforge_bench/` | `nestforge_reference` and `nestforge_default` (no LLM: reference moves, or the default moves on every kernel), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all four in the bench's CI, the second on `nestforge-two-stage`. |
+| Bench columns | `nestforge_bench/` | `nestforge_reference`, `nestforge_default` and `nestforge_cpf_nowave` (no LLM: reference moves, the default moves on every kernel, or no moves on the canonical form without wavefronts), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all five in the bench's CI, the second on `nestforge-two-stage`. |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,
