@@ -139,6 +139,7 @@ from nestforge.stages.performance import Performance, Reference, kernel_reports,
 from nestforge.stages.placement import (
     Placement,
     Transfer,
+    check_device_names,
     check_devices,
     copies_in_call,
     default_devices,
@@ -570,7 +571,21 @@ class Session:
         if self.in_atomic:
             yield
             return
-        saved = Checkpoint(
+        saved = self.snapshot()
+        kept = len(self.history)
+        self.in_atomic, self.checkpoint = True, saved
+        try:
+            yield
+        except (*CRASHES, Stopped):
+            self.restore(saved)
+            del self.history[kept:]
+            raise
+        finally:
+            self.in_atomic, self.checkpoint = False, None
+
+    def snapshot(self) -> Checkpoint:
+        """The session's program as it is now, for :meth:`restore`."""
+        return Checkpoint(
             copy.deepcopy(self.sdfg),
             copy.deepcopy(self.unplaced),
             self.unscoped,  # replaced, never changed
@@ -588,16 +603,6 @@ class Session:
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
         )
-        kept = len(self.history)
-        self.in_atomic, self.checkpoint = True, saved
-        try:
-            yield
-        except (*CRASHES, Stopped):
-            self.restore(saved)
-            del self.history[kept:]
-            raise
-        finally:
-            self.in_atomic, self.checkpoint = False, None
 
     def restore(self, saved: Checkpoint) -> None:
         """Make ``saved`` the session's program again."""
@@ -1349,12 +1354,20 @@ class Session:
         :param devices: Kernel name -> ``cpu`` or ``gpu``; a kernel the default scopes make has its name only after
             them, so it keeps its default device unless a later call names it.
         """
+        refusal = check_device_names(self.targets, devices or {})
+        if refusal is not None:
+            return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
+        # a kernel's name is known only once it is scoped, so a refused name takes the default scopes back
+        before = self.snapshot() if devices and self.unplaced is None else None
+        scoped: list[KernelScope] = []
         if self.unplaced is None:
             self.keep_unscoped()
-            self.default_scopes()
+            scoped = self.default_scopes()
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
+            if before is not None and scoped:
+                self.restore(before)
             return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
         interfaces, builds = kernel_interfaces(self.sdfg), self.builds
         if self.unplaced is not None:

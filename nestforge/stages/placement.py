@@ -161,18 +161,23 @@ def has_host_operand(ext: ExternalCall, state: dace.SDFGState) -> bool:
     )
 
 
-def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> str | None:
-    """Why ``devices`` is not a placement of every kernel of ``sdfg``, or ``None``."""
-    names = [ext.name for ext in external_calls(sdfg)]
-    unknown = [name for name in devices if name not in names]
-    if unknown:
-        return f"no kernel is named {', '.join(unknown)}; kernels are {', '.join(names)}."
+def check_device_names(targets: Targets, devices: dict[str, str]) -> str | None:
+    """Why ``devices`` names something that is no device of this session, or ``None``; it reads no program."""
     bad = [f"{name}={device}" for name, device in devices.items() if device not in DEVICES]
     if bad:
         return f"{', '.join(bad)}: a device is 'cpu' or 'gpu'."
     if not targets.gpu and "gpu" in devices.values():
         return "the GPU is not a target of this session; every kernel runs on the CPU."
     return None
+
+
+def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> str | None:
+    """Why ``devices`` is not a placement of every kernel of ``sdfg``, or ``None``."""
+    names = [ext.name for ext in external_calls(sdfg)]
+    unknown = [name for name in devices if name not in names]
+    if unknown:
+        return f"no kernel is named {', '.join(unknown)}; kernels are {', '.join(names)}."
+    return check_device_names(targets, devices)
 
 
 def offload_kernel_bodies(sdfg: dace.SDFG) -> None:

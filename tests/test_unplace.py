@@ -192,6 +192,34 @@ def test_set_scope_on_a_placed_program_is_refused_and_keeps_the_placement(tmp_pa
     assert session.sdfg.to_json() == before and session.unplaced is unplaced
 
 
+@pytest.mark.parametrize("gpu", TARGETS)
+def test_a_refused_first_place_changes_nothing(tmp_path, gpu):
+    session = fresh(gpu, tmp_path)
+    doalls(session)
+    before, applied, unscoped = structure(session), list(session.applied), session.unscoped
+
+    result = session.place({"no_such_kernel": "cpu"})
+
+    assert isinstance(result, PlaceResult) and result.status is MoveStatus.ILLEGAL
+    assert "no kernel is named no_such_kernel" in result.reason
+    # the default scopes the first place gives are taken back with the refusal
+    assert external_calls(session.sdfg) == [] and structure(session) == before
+    assert session.applied == applied and session.unscoped is unscoped and session.unplaced is None
+    assert len(doalls(session)) == 2 and session.place().status is MoveStatus.APPLIED
+
+
+def test_a_refused_first_place_keeps_the_scopes_already_set(tmp_path):
+    session = fresh(True, tmp_path)
+    first, _ = doalls(session)
+    kernel = session.set_scope([first]).reason
+    before = structure(session)
+
+    result = session.place({kernel: "fpga"})
+
+    assert result.status is MoveStatus.ILLEGAL and "a device is 'cpu' or 'gpu'" in result.reason
+    assert [ext.name for ext in external_calls(session.sdfg)] == [kernel] and structure(session) == before
+
+
 def test_the_scopes_gate_names_unplace(tmp_path):
     session = fresh(True, tmp_path)
     first, _ = doalls(session)
