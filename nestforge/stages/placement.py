@@ -154,10 +154,13 @@ def copies_in_call(sdfg: dace.SDFG) -> list[str]:
 
 
 def has_host_operand(ext: ExternalCall, state: dace.SDFGState) -> bool:
-    edges = [*state.in_edges(ext), *state.out_edges(ext)]
+    """Whether the call passes ``ext`` host memory; a scalar passed by value is no memory, on either device."""
+    by_value = call_site(ext, state).by_value
+    edges = [(e.dst_conn, e.data.data) for e in state.in_edges(ext)]
+    edges += [(e.src_conn, e.data.data) for e in state.out_edges(ext)]
     return any(
-        edge.data.data is not None and state.sdfg.arrays[edge.data.data].storage not in GPU_RESIDENT_STORAGES
-        for edge in edges
+        data is not None and conn not in by_value and state.sdfg.arrays[data].storage not in GPU_RESIDENT_STORAGES
+        for conn, data in edges
     )
 
 

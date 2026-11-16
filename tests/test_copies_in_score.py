@@ -8,6 +8,7 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
+from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from test_placement import chain, kernel_session
 
 import nestforge.session as session_mod
@@ -15,6 +16,8 @@ from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.performance import CopyReport, OffloadReport, ProgramReport, copy_reports, offload_report
 from nestforge.stages.placement import copies_in_call, has_device_memory
+
+N = dace.symbol("N", dtype=dace.int64)
 
 #: The size the reports are evaluated at.
 SIZE = 100
@@ -48,6 +51,25 @@ def test_a_placed_gpu_program_copies_inside_its_calls_and_none_in_the_program(tm
     assert report.copies_in_call == ["extcall_doall0", "extcall_doall1"]
     assert report.copies == [] and report.copy_bytes == 0
     assert report.transfer_bytes == 3 * VECTOR_BYTES, "the transfers the kernel DAG implies do not depend on it"
+
+
+@dace.program
+def scaled(a: dace.float64[N], c: dace.float64[N], s: dace.float64):
+    for i in dace.map[0:N]:
+        c[i] = a[i] * s
+
+
+def test_a_scalar_passed_by_value_is_no_copy_in_the_call(tmp_path: Path) -> None:
+    session = kernel_session(True, tmp_path, scaled)
+    session.place()
+    (kernel,) = session.devices()
+    assert copies_in_call(program(session)) == [kernel]
+
+    session.insert_copies()
+
+    # s stays a host scalar the call passes by value; the arrays are device memory, so nothing is copied in the call
+    assert program(session).arrays["s"].storage not in GPU_RESIDENT_STORAGES
+    assert copies_in_call(program(session)) == []
 
 
 def test_inserting_the_copies_moves_them_into_the_program_with_their_bytes(tmp_path: Path) -> None:
