@@ -2,7 +2,8 @@
 
 [Overview](../README.md). What each stage decides is in [stages.md](stages.md); the tree the agent reads is in
 [ir.md](ir.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
-move, a tool, a phase or a packet.
+move, a tool, a phase or a packet. Features that are designed and not yet built have one page each in
+[design/](design/README.md).
 
 ## The layers
 
