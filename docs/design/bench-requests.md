@@ -4,8 +4,8 @@
 
 Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and NestForge
 `bf068ae`. Each request says what is missing, why NestForge needs it, and a proposed design. NestForge patches none
-of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), and B6
-to B10 are independent of it.
+of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), B6
+to B10 are independent of it, and B13 is a baseline for the study.
 
 | # | Request | Blocks | Size |
 |---|---|---|---|
@@ -21,6 +21,7 @@ to B10 are independent of it.
 | B10 | mypy error in `config.py` | clean hooks | open as bench PR #190 |
 | B11 | A NestForge submission adds no communication | the claim that the agent never writes MPI | medium |
 | B12 | Distributions for an unstructured partition | an ICON task with MPI ranks | large |
+| B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
 
 ## B1: the canonical form renders the distributed entry
 
@@ -182,3 +183,42 @@ per neighbor. The bench cannot scatter or gather such arrays, which decides how 
    cannot check ownership, and the gathered output needs ICON's own gather.
 
 Recommended: option 1 for the paper's first ICON numbers, option 2 as the feature request. The owner decides.
+
+## B13: an LLVM-pass agent packet
+
+**Missing.** The NestForge study compares the agent working through NestForge's moves with agents that write code
+(the default agent and AutoKernel). A reviewer will ask whether any catalogue of verified transformations does as
+well, and Klepl et al. (arXiv 2608.08085) found that abstractions helped less than prompting. The bench has no
+packet in which the agent may only choose compiler transformations. User decision, 2026-11-16: the study adds such a
+baseline, and its agent chooses LLVM passes, their parameters, and `clang` flags.
+
+**Proposed design.** A packet `llvm-passes` (CPU), modeled on AutoPass (arXiv 2606.20373):
+
+1. The agent cannot edit source. As for the `nestforge` packet, the judge takes only a library
+   (`JUDGE_INPUT_MODE=library`), and the native tools are `Read` only.
+2. Tools, served judge-side:
+   - `list_passes`: the new pass manager's pass names (`opt -passes=help` of the image's LLVM), their parameters, and
+     the allowed flags;
+   - `apply_pipeline(passes: str, flags: list[str])`: builds the task's reference C++ as `clang -O0 -Xclang
+     -disable-O0-optnone -emit-llvm`, then `opt -passes=<passes>`, then `clang <flags>` to the library. It returns the
+     time and the verdict of the bench's timed run, the optimization remarks (`-Rpass`, `-Rpass-missed`, and
+     `-Rpass-analysis`, summarized per loop), and the build error if there is one;
+   - `score` and `submit`, as for every packet. `submit` submits the library of the best correct pipeline, or the
+     pipeline that the agent names.
+3. Flags come from a list in the packet: `-march`, `-mtune`, the `-ffast-math` family, `-fopenmp` (only where the
+   reference has OpenMP), and `-mllvm` options for the unroller, the vectorizer, and Polly (`-polly`,
+   `-polly-parallel`) when the image's LLVM has Polly. Any other flag is refused with the list.
+4. Legality: every pass preserves semantics. A flag that changes floating-point semantics is judged by the bench's
+   oracle tolerance, as for every submission.
+5. Cost and limits are those of every packet: the same turn cap, budget, and `usage.jsonl` accounting.
+
+**Tests.** A stub agent runs `list_passes`, one pipeline (`-passes=default<O3>`), and `submit` on `jacobi_1d`, and
+is graded correct. A refused flag returns the list. A pipeline that fails to build returns the error and leaves the
+best library unchanged.
+
+**Open for the owner.**
+
+1. Whether Polly counts as a pass (recommended: yes, if the image has it, since it is LLVM's only automatic
+   parallelizer and NestForge parallelizes).
+2. The source the pipeline starts from: the reference C++ (recommended), or the CPF rendering. The CPF rendering
+   would give the agent NestForge's parallel form for free.
