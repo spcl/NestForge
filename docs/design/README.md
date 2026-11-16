@@ -18,7 +18,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [move-families.md](move-families.md) | switching move families off, and attributing a run's speedup to its moves | nothing | now |
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
 | [skew-wavefront.md](skew-wavefront.md) | the `skew-wavefront` move, and a canonical form without wavefronts for both agents of the study | B13 starts from it | after DaCe's D3 |
-| [bench-requests.md](bench-requests.md) | the thirteen requests to HPCAgent-Bench, B1 to B13 | | |
+| [bench-requests.md](bench-requests.md) | the fourteen requests to HPCAgent-Bench, B1 to B14 | | |
 
 ## Where to start
 
@@ -49,6 +49,14 @@ not run and are the first to check:
 3. Whether DaCe's timer instrumentation writes one report per MPI rank (`comm-nodes.md`, section 12.4).
 4. Whether a DaCe program that takes a communicator argument puts it on the `_comm` connector of every node
    (`comm-nodes.md`, section 7).
+
+## The study these designs serve
+
+The experiment design is `~/Work/Plans/nestforge-paper-plan-2026-11-15.md` (revised 2026-11-16), until a workspace
+repository holds it. In short: 120 kernels (`llr80` and `scicomp40`), one episode per kernel, the bench's protocol
+with its three verdicts, six agent configurations on the CPU, one second model on `scicomp40`, three configurations
+on the GPU, and an A/A study first. The MPI experiment, with GPUs over NCCL, RCCL, or MPI, is not designed yet; the
+owner wants it, and [comm-nodes.md](comm-nodes.md) so far excludes GPU targets for programs that communicate.
 
 ## Decisions
 

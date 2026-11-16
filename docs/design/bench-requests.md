@@ -5,7 +5,7 @@
 Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and NestForge
 `bf068ae`. Each request says what is missing, why NestForge needs it, and a proposed design. NestForge patches none
 of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), B6
-to B10 are independent of it, and B13 is a baseline for the study.
+to B10 are independent of it, and B13 and B14 are baselines for the study.
 
 | # | Request | Blocks | Size |
 |---|---|---|---|
@@ -22,6 +22,7 @@ to B10 are independent of it, and B13 is a baseline for the study.
 | B11 | A NestForge submission adds no communication | the claim that the agent never writes MPI | medium |
 | B12 | Two application tasks: the ICON dynamical core and OMEN | the application experiment | large |
 | B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
+| B14 | A GEAK harness plugin | a GPU baseline from the literature | open, decide first |
 
 ## B1: the canonical form renders the distributed entry
 
@@ -242,3 +243,12 @@ best library unchanged.
 wavefronts, the NestForge agent's own starting point, so the two agents differ only in their catalogue.
 
 The rendering keeps the OpenMP pragmas of the canonical form's doalls (owner, 2026-11-16).
+
+## B14: a GEAK harness plugin
+
+**Missing.** The study's GPU experiment has no baseline from the literature. GEAK (AMD, arXiv 2507.23194, open source,
+v4 in 2026) optimizes HIP and Triton kernels on AMD Instinct GPUs, the study's hardware.
+
+**First step, before any design.** Check whether GEAK can take a bench task: its input is a kernel repository, and a
+bench task is a NumPy specification with a C ABI. If it can, the plugin is a harness like `plugins/optimas`, and it
+runs one episode against the same judge under the same limits. The owner decides after that check (2026-11-16).
