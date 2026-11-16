@@ -5,7 +5,7 @@
 Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and NestForge
 `bf068ae`. Each request says what is missing, why NestForge needs it, and a proposed design. NestForge patches none
 of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), B6
-to B10 are independent of it, and B13 and B14 are baselines for the study.
+to B10 are independent of it, and B13 and B14 are baselines for the study, and B15 makes its builds equal.
 
 | # | Request | Blocks | Size |
 |---|---|---|---|
@@ -23,6 +23,7 @@ to B10 are independent of it, and B13 and B14 are baselines for the study.
 | B12 | Two application tasks: the ICON dynamical core and OMEN | the application experiment | large |
 | B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
 | B14 | A GEAK harness plugin | a GPU baseline from the literature | open, decide first |
+| B15 | A code agent names its build or requests the sweep | equal builds between agents that write and agents that decide | medium |
 
 ## B1: the canonical form renders the distributed entry
 
@@ -255,3 +256,39 @@ v4 in 2026) optimizes HIP and Triton kernels on AMD Instinct GPUs, the study's h
 **First step, before any design.** Check whether GEAK can take a bench task: its input is a kernel repository, and a
 bench task is a NumPy specification with a C ABI. If it can, the plugin is a harness like `plugins/optimas`, and it
 runs one episode against the same judge under the same limits. The owner decides after that check (2026-11-16).
+
+## B15: a code agent names its build or requests the sweep
+
+**Missing.** Every NestForge configuration ends with the speculative sweep: each kernel is built once per compiler,
+floating-point mode, and cost model, and the fastest build that passes the oracle is kept
+([stages.md](../stages.md), code generation). The agents that write code are built at the benchmark's flags. A
+compiler or a relaxed floating-point mode alone can change a loop's speed severalfold, so a comparison of the two
+kinds of agent credits NestForge with the sweep (the study's review, 2026-11-16, first objection).
+
+**Request.** The packets of the agents that write code (`code agent`, `code agent + canonical`, AutoKernel) take two
+ways to set the build of a submission. The owner decided on 2026-11-16 that both are supported.
+
+1. **Named build.** `score` and `submit` take an optional compiler and a list of flags. The compilers are those the
+   judge image holds, and the flags come from one list in the packet, the list of B13 (`-march`, `-mtune`, the
+   `-ffast-math` family, `-fopenmp`, the vectorizer's and the unroller's options). Any other flag is refused with
+   the list.
+2. **Requested sweep.** `score` and `submit` take `sweep=true`. The judge then builds the submission once per
+   compiler, floating-point mode, and cost model of NestForge's sweep, checks each build against the task's oracle at
+   the tolerance of its floating-point mode, and grades the fastest build that passes. The answer names the build it
+   kept and the time of each build.
+
+Without either, a submission is built at the benchmark's flags, as today.
+
+**Rules.** The sweep's configurations are one list that NestForge and the bench share, so the two sweeps cannot
+drift. A build under a relaxed floating-point mode is judged at that mode's tolerance, as a NestForge build is. The
+sweep's builds and timed runs count toward the episode's wall time and its number of builds, and they cost no
+tokens beyond the call.
+
+**Tests.** A stub agent submits one source with a named compiler and one flag, and the record names both. A refused
+flag returns the list. A stub agent submits with `sweep=true` on `jacobi_1d`: the record lists every build of the
+sweep and the one kept, and the kept build is the fastest that passed. A source that is wrong under fast math and
+right under strict mode is graded on the strict build.
+
+**Open.** Whether NestForge's own configurations may also name a build in place of the sweep, so that both kinds of
+agent hold the same two choices.
+

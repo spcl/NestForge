@@ -4,6 +4,8 @@
 whose diagonals DaCe proves independent, refuses one that is no wavefront with DaCe's sentence, and is undone by
 ``rollback``. The default moves skew every wavefront first, so ``nestforge_default`` keeps today's program."""
 
+import ctypes
+
 import dace
 import numpy as np
 import pytest
@@ -20,6 +22,12 @@ N = dace.symbol("N")
 T = dace.symbol("T")
 #: The extent the numeric checks run at.
 SIZE = 40
+#: A tile extent that puts several tiles on a diagonal at :data:`SIZE`.
+TILE = 8
+#: The threads the tiled numeric check runs on.
+THREADS = 4
+#: A GPU tile extent that differs from DaCe's default and from the CPU's.
+GPU_TILE = 48
 
 
 @dace.program
@@ -46,8 +54,8 @@ def time_steps(aa: dace.float64[N]):
             aa[i] = aa[i] + aa[i - 1]
 
 
-def canonical(prog: dace.frontend.python.parser.DaceProgram, wavefront: bool = False) -> Session:
-    sut = Session(prog.to_sdfg(simplify=True), Targets(wavefront=wavefront))
+def canonical(prog: dace.frontend.python.parser.DaceProgram, wavefront: bool = False, gpu: bool = False) -> Session:
+    sut = Session(prog.to_sdfg(simplify=True), Targets(gpu=gpu, wavefront=wavefront))
     sut.canonicalize()
     return sut
 
@@ -96,6 +104,37 @@ def test_the_skewed_program_computes_the_reference():
     sut.sdfg(aa=got, N=SIZE)
 
     assert np.allclose(got, reference(aa))
+
+
+@pytest.mark.e2e
+def test_a_diagonal_of_many_tiles_run_by_several_threads_computes_the_reference():
+    sut = canonical(wavefront_2d)
+    (labels,) = skew_labels(sut)
+    # tiles of 8 at an extent of 40 put up to five tiles on a diagonal, where the default tile holds the whole array
+    sut.apply_move(SKEW_WAVEFRONT, list(labels), tile_sizes=[TILE, TILE])
+    aa = np.random.default_rng(2111).standard_normal((SIZE, SIZE))
+    got = aa.copy()
+    compiled = sut.sdfg.compile()
+    openmp = ctypes.CDLL("libgomp.so.1")
+    openmp.omp_set_num_threads(THREADS)
+    assert openmp.omp_get_max_threads() == THREADS, "the tiles of a diagonal run on several threads"
+
+    compiled(aa=got, N=SIZE)
+
+    assert np.allclose(got, reference(aa))
+
+
+def test_on_the_gpu_target_tile_sizes_set_the_extents_of_the_gpu_tiles():
+    sut = canonical(wavefront_2d, gpu=True)
+    (labels,) = skew_labels(sut)
+
+    done = sut.apply_move(SKEW_WAVEFRONT, list(labels), tile_sizes=[GPU_TILE, GPU_TILE])
+
+    assert (done.status, done.reason) == (MoveStatus.APPLIED, "WavefrontSkew")
+    assert sut.sdfg is not None
+    steps = {str(loop.loop_condition.as_string) for loop in sut.sdfg.all_control_flow_regions(recursive=True)
+             if isinstance(loop, LoopRegion)}  # fmt: skip
+    assert any(str(GPU_TILE) in step for step in steps), steps
 
 
 def test_tile_sizes_set_the_extents_of_the_tiles():
@@ -159,6 +198,7 @@ def test_the_default_moves_skew_as_canonicalization_with_wavefronts_does():
     today.run_defaults("moves")
 
     assert loops_and_maps(sut) == loops_and_maps(today) == (3, 1)
+    assert program(sut) == program(today), "the defaults reach the program canonicalization with wavefronts reaches"
 
 
 def test_with_the_wavefront_family_off_the_defaults_leave_the_nest_sequential():

@@ -6,7 +6,7 @@ One page per feature that is designed and not yet built. A page states the goal,
 and what "done" means, so that someone who did not write it can build it. A page moves into the stage documentation
 when its feature merges, and leaves this folder.
 
-Nothing in this folder is implemented. The pages were written and reviewed on 2026-11-16 against NestForge `bf068ae`,
+The steps marked "Built" below are implemented; nothing else in this folder is. The pages were written and reviewed on 2026-11-16 against NestForge `bf068ae`,
 DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 
 ## Pages
@@ -14,7 +14,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | Page | Feature | Needs from the bench | Can start |
 |---|---|---|---|
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
-| [bench-requests.md](bench-requests.md) | the fourteen requests to HPCAgent-Bench, B1 to B14 | | |
+| [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
 
 ## Where to start
 
