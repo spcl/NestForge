@@ -9,7 +9,7 @@ from typing import Any
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.answers import RENDERED
+from hpcagent_bench_plugins.nestforge.answers import RENDERED, profile_answer, score_answer
 from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS, ROUTE, TOOLS, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
@@ -69,13 +69,24 @@ def delivering(
     return run
 
 
+def rendered(
+    run: Callable[[dict[str, Any]], dict[str, Any]], render: Callable[[dict[str, Any]], dict[str, Any]]
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """``run``, its answer as the agent reads it (:mod:`answers`)."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        return render(run(payload))
+
+    return answer
+
+
 SUBMIT = "Finalize the program as your moves left it and submit that library for the recorded grade. Takes no code."
 SCORE = "Finalize the program as your moves left it and preview that library's grade. Takes no code; never recorded."
 tool(spec=Spec(SUBMIT, NoArgs, submit.PROMPT, HINTS[Effect.ADD]), name="submit", overrides=True)(
     delivering(submit.run, "finalize?terminal=1")  # the build queues as the /submit it delivers to does
 )
 tool(spec=Spec(SCORE, NoArgs, f"- `score` -- {SCORE}", HINTS[Effect.READ]), name="score", preview=True, overrides=True)(
-    delivering(score.run)
+    rendered(delivering(score.run), score_answer)
 )
 
 PROFILE = (
@@ -92,4 +103,6 @@ def profile_spec(setup: Setup) -> Spec:
     return Spec(PROFILE, args, f"- `profile` -- {PROFILE}", HINTS[Effect.READ])
 
 
-tool(spec=profile_spec, name="profile", preview=True, overrides=True)(delivering(profile_tool.run))
+tool(spec=profile_spec, name="profile", preview=True, overrides=True)(
+    rendered(delivering(profile_tool.run), profile_answer)
+)

@@ -94,7 +94,8 @@ def test_an_applied_list_keeps_status_reason_and_warning(answers: ModuleType) ->
     expected = [
         "applied defaults-moves",
         "applied doall-fission doall1000: MapFission",
-        "applied for-to-doall for3 forced=true: LoopToMap (warning: forced: the compiler did not prove this move legal.)",
+        "applied for-to-doall for3 forced=true: LoopToMap (warning: forced: the compiler did not prove this move "
+        "legal.)",
         "refused fuse doall1 doall2 refusal=data: kmin is read",
     ]
     assert answers.results_answer({"tool": "applied_moves", "result": applied}) == {
@@ -117,3 +118,86 @@ def test_the_lines_are_shorter_than_the_json_the_bench_prints(answers: ModuleTyp
     printed = json.dumps(answer, indent=2, sort_keys=True)
     rendered = json.dumps(answers.moves_answer(answer, defaults), indent=2, sort_keys=True)
     assert len(rendered) < len(printed) / 3
+
+
+def test_a_score_reads_speedup_and_correctness_first_and_keeps_every_measured_field(answers: ModuleType) -> None:
+    grade = {
+        "baseline": "numba",
+        "baseline_ns": 8720228534,
+        "build_ok": True,
+        "cells": [
+            {
+                "baseline": "numba",
+                "correct": False,
+                "label": "fuzzed:submit",
+                "ratio": 0.5071802933643264,
+                "shape": '{"dt": 60.0, "ke": 90}',
+                "timing_reduction": "mwd-v3",
+            },
+        ],
+        "correct": False,
+        "detail": "vs numba: pre_gsp: numeric mismatch: 2 of 1415224 elements",
+        "grading_protocol": "sealed-nonce-v1+host-monotonic",
+        "harness_fault": False,
+        "max_rel_error": 4.5781492697358144e-07,
+        "seed_nonce": 1,
+        "speedup": 0.5071802933643264,
+        "speedups": {"numba": 0.14784201711876474},
+        "timed_out": False,
+        "timing_reduction": "mwd-v3",
+        "weak_efficiency": None,
+    }
+    expected = [
+        "speedup=0.507 correct=false build_ok=true timed_out=false",
+        "detail: vs numba: pre_gsp: numeric mismatch: 2 of 1415224 elements",
+        'baseline=numba baseline_ns=8720228534 harness_fault=false max_rel_error=4.58e-07 speedups={"numba":0.148}',
+        'cell label=fuzzed:submit ratio=0.507 shape={"dt":60.0,"ke":90}',
+    ]
+    assert answers.score_answer(grade) == {"text": "\n".join(expected)}
+
+
+def test_a_performance_report_is_hints_kernels_and_program_and_says_where_data_moves_only_off_the_cpu(
+    answers: ModuleType,
+) -> None:
+    kernel = {"name": "k0", "device": "cpu", "correct": True, "time_us": 81323.94, "share": 0.77, "error": ""}
+    report = {
+        "hints": "kernel times: k0 81323.9 us",
+        "kernels": [kernel],
+        "offloading": {"devices": {"k0": "cpu"}, "transfers": [], "transfer_bytes": 0},
+        "structured": {"time_us": 105612.3, "correct": True, "mismatched": [], "error": ""},
+    }
+    answer = {"tool": "get_performance", "result": None, "performance": report}
+    expected = [
+        "kernel times: k0 81323.9 us",
+        "kernel k0 cpu correct=true share=0.77 time_us=8.13e+04",
+        "program correct=true time_us=1.06e+05",
+    ]
+    assert answers.performance_answer(answer) == {"tool": "get_performance", "text": "\n".join(expected)}
+
+    moved = {"direction": "h2d", "arg": "A", "producer": "host", "consumer": "k0", "bytes": 4096}
+    report["offloading"] = {"devices": {"k0": "gpu"}, "transfers": [moved], "transfer_bytes": 4096}
+    lines = answers.performance_answer(answer)["text"].splitlines()
+    assert lines[-2:] == [
+        'offloading devices={"k0":"gpu"} transfer_bytes=4096',
+        "transfer arg=A bytes=4096 consumer=k0 direction=h2d producer=host",
+    ]
+
+
+def test_a_profile_keeps_its_report_text_and_drops_the_structured_copy(answers: ModuleType) -> None:
+    report = {
+        "build_ok": True,
+        "threads": 24,
+        "text": "hardware counters ...",
+        "counters": {"cycles": 9},
+        "hotspots": [],
+    }
+    assert answers.profile_answer(report) == {"build_ok": True, "threads": 24, "text": "hardware counters ..."}
+    without_text = {"result": {"library": "/shared/lib.so"}, "profiled": True}
+    assert answers.profile_answer(without_text) is without_text
+
+
+def test_a_failed_measurement_reaches_the_agent_as_it_came(answers: ModuleType) -> None:
+    timed_out = {"ok": False, "timed_out": True, "error": "The judge did not answer within 1800s"}
+    assert answers.score_answer(timed_out) is timed_out
+    assert answers.profile_answer(timed_out) is timed_out
+    assert answers.performance_answer(timed_out) is timed_out
