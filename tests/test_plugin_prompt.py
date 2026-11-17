@@ -55,6 +55,6 @@ def test_the_full_packet_gives_the_agent_every_phase_but_placement(registered: N
     with config.overridden("record.packet", "nestforge-full"):
         sut = build_prompt(TASK)
 
-    assert "### 2. Scopes (you)" in sut and "### 3. Placement (default)" in sut
+    assert "### 2. Scopes and placement (you)" in sut and "### 3. Placement (default)" in sut
     assert "### 4. Kernel code (you)" in sut and "### 5. Compiler configuration (you)" in sut
     assert "## Delivery: the library NestForge assembles" in sut
