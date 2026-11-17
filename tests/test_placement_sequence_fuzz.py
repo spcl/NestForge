@@ -12,7 +12,13 @@ name or a device that does not exist. Nothing is built: the checks are on the pr
 - after ``insert_copies`` no GPU kernel copies in its own call;
 - placing the kernels again on the devices they have gives the same program;
 - a fresh session repeating the applied calls is the same program.
+
+A second sequence makes the calls through :func:`nestforge.server.answer`, as the judge serves them: the tools' gates
+and argument checks too, and ``apply_scope_move`` with a move ``list_moves`` offers inside a random kernel. There a
+call answered with an error is refused as well, and must leave the program as it was.
 """
+
+from typing import Any
 
 import dace
 import numpy as np
@@ -24,6 +30,7 @@ from test_scope_fuzz import random_block_run
 from test_unplace import structure
 
 from nestforge.records import MoveStatus
+from nestforge.server import answer
 from nestforge.session import MoveResult, PlaceResult, Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.placement import DEVICES, copies_in_call, has_device_memory
@@ -181,3 +188,87 @@ def test_unset_scope_can_leave_an_invalid_program(tmp_path):
     assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
 
     program(session).validate()
+
+
+# the same sequences through the tools, as the judge answers them
+
+#: A tool call: the tool's name and its keyword arguments, as the judge receives them.
+ToolCall = tuple[str, dict[str, Any]]
+#: The statuses of a tool's answer that changed nothing.
+REFUSED_ANSWERS = frozenset({"illegal", "not-found"})
+
+
+def scope_move_call(session: Session, rng: np.random.Generator) -> ToolCall | None:
+    """``apply_scope_move`` with a move ``list_moves`` offers inside a random kernel; ``None`` when none is offered."""
+    names = kernels(session)
+    if not names:
+        return None
+    kernel = names[int(rng.integers(len(names)))]
+    offered = session.list_moves(scope=kernel)
+    if not offered:
+        return None
+    move = offered[int(rng.integers(len(offered)))]
+    arguments = {"scope": kernel, "kind": move.kind, "labels": list(move.labels), "tile_sizes": list(move.tile_sizes)}
+    return "apply_scope_move", arguments
+
+
+def random_tool_call(session: Session, rng: np.random.Generator) -> ToolCall:
+    if int(rng.integers(4)) == 0 and (move := scope_move_call(session, rng)) is not None:
+        return move
+    name, arguments = random_call(session, rng)
+    keywords = {"set_scope": ("labels",), "unset_scope": ("name",), "run_defaults": ("stage",), "place": ("devices",)}
+    return name, dict(zip(keywords.get(name, ()), arguments, strict=True))
+
+
+def told(session: Session, call: ToolCall) -> tuple[bool, str]:
+    """``call`` through the judge's answer: whether it applied, and what it said."""
+    reply = answer(session, call[0], dict(call[1]), None, timed=False)
+    if reply.error:
+        return False, reply.error
+    result = reply.model_dump(mode="json")["result"]
+    status = result.get("status") if isinstance(result, dict) else None
+    return status not in REFUSED_ANSWERS, str(result)[:300]
+
+
+def run_tool_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[ToolCall]]:
+    """The session after :data:`STEPS` random tool calls, each checked, and the calls that applied."""
+    session, rng = fresh(seed, tmp_path, gpu), np.random.default_rng(seed)
+    applied: list[ToolCall] = []
+    valid = True  # until an unset_scope applies (test_unset_scope_can_leave_an_invalid_program)
+    for _ in range(STEPS):
+        call = random_tool_call(session, rng)
+        before = structure(session), list(session.applied), session.unplaced is None
+        done, said = told(session, call)
+        if not done:
+            after = structure(session), list(session.applied), session.unplaced is None
+            assert after == before, f"seed={seed} gpu={gpu}: refused {call} changed the session ({said})"
+            continue
+        applied.append(call)
+        valid = valid and call[0] != "unset_scope"
+        check_program(session, (call[0], tuple(call[1].values())), valid)
+    return session, applied
+
+
+@pytest.mark.parametrize("gpu", TARGETS)
+@pytest.mark.parametrize("seed", range(NCASES))
+def test_a_random_sequence_through_the_tools_keeps_the_invariants_and_replays(seed, tmp_path, gpu):
+    session, applied = run_tool_sequence(seed, tmp_path, gpu)
+
+    again = fresh(seed, tmp_path, gpu, "again")
+    for call in applied:
+        done, said = told(again, call)
+        assert done, (call, said)
+    assert structure(again) == structure(session)
+
+
+def test_the_tool_sequences_move_inside_kernels_and_meet_the_gates(tmp_path):
+    """The seeds must apply a scope move and be refused by a gate on some runs, else they probe one corner only."""
+    moved = refused = 0
+    for seed in range(NCASES):
+        session, rng = fresh(seed, tmp_path, True, f"w{seed}"), np.random.default_rng(seed)
+        for _ in range(STEPS):
+            call = random_tool_call(session, rng)
+            done, said = told(session, call)
+            moved += done and call[0] == "apply_scope_move"
+            refused += not done and ("placed" in said or "fixed" in said)
+    assert moved >= 1 and refused >= 1, (moved, refused)
