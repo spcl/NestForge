@@ -26,7 +26,7 @@ import os
 import resource
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -239,6 +239,42 @@ class Script:
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"set_scope {hits}: {result.status.name.lower()}: {result.reason}")
         done = AppliedMove(kind=result.kind, labels=result.labels, reason=result.reason)
+        self.applied.append(done)
+        return done
+
+    def place(self, devices: Mapping[str, str] | None = None) -> AppliedMove:
+        """Stage 4: run each kernel on its device of ``devices``, the rest on the default (:meth:`Session.place`). The
+        first placement gives what no scope covers its default scope, so a later call can name those kernels too.
+
+        :param devices: Kernel name -> ``cpu`` or ``gpu``, as :meth:`Session.list_kernels` names them.
+        :raises ReplayError: The placement was refused.
+        """
+        result = self.session.place(dict(devices or {}))
+        return self.placed("place", result.status, result.reason, dict(result.devices))
+
+    def insert_copies(self) -> AppliedMove:
+        """Stage 4: move the GPU kernels' host/device copies from their calls into the program
+        (:meth:`Session.insert_copies`).
+
+        :raises ReplayError: Nothing is placed yet.
+        """
+        result = self.session.insert_copies()
+        return self.placed("insert-copies", result.status, result.reason, dict(result.devices))
+
+    def unplace(self) -> AppliedMove:
+        """Back to the program before placement, kernels and the moves inside them kept (:meth:`Session.unplace`).
+
+        :raises ReplayError: Nothing is placed.
+        """
+        result = self.session.unplace()
+        return self.placed("unplace", result.status, result.reason, {})
+
+    def placed(self, kind: str, status: MoveStatus, reason: str, devices: Mapping[str, str]) -> AppliedMove:
+        """A placement call's record, its devices as ``kernel=device`` in ``reason``; raises unless it applied."""
+        if status is not MoveStatus.APPLIED:
+            raise ReplayError(f"{kind}: {status.name.lower()}: {reason}")
+        spelled_devices = ", ".join(f"{name}={device}" for name, device in sorted(devices.items()))
+        done = AppliedMove(kind=kind, labels=(), reason=spelled_devices or reason)
         self.applied.append(done)
         return done
 
