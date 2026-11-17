@@ -47,6 +47,9 @@ dev = [
     "pytest-cov",
     "pytest-timeout",
     "pytest-xdist",
+    # scripts/answer_tokens.py counts answer tokens: OpenAI's encodings, and a model's own tokenizer.json.
+    "tiktoken",
+    "tokenizers",
     # Pinned to the pre-commit hook's rev: a new release widens the default rules.
     "ruff==0.15.10",
 ]

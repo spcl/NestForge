@@ -77,6 +77,7 @@ def test_counting_skips_timed_tools_unless_measured_and_counts_each_format():
 
     assert ran == ["view_tree", "apply_move"]
     assert [(row.tool, row.tokens) for row in counted] == [("view_tree", {"chars": 9}), ("apply_move", {"chars": 10})]
+    assert counted[1].call_tokens == len('{"name": "apply_move", "input": {"kind": "rollback", "labels": []}}')
 
 
 def test_the_scripts_answer_record_has_the_routes_fields(nestforge_plugin):
