@@ -184,7 +184,7 @@ The skeleton decides every case with one comparison.
 | `for-fusion` of the exchange's loop with a compute loop of the same range | same | applies, if I2 holds |
 | `for-fission` that leaves all communication rows in one of the two loops | same | applies, if I2 holds |
 | `for-fission` that separates communication rows of one loop | two loops where one was | refused |
-| `interchange-*`, `tile-for`, `untile-for`, `unroll-for` on a loop that holds a row | nesting, range, or count differs | refused |
+| `interchange-*`, `hoist-invariant-guard`, `sink-invariant-guard`, `tile-for`, `untile-for`, `unroll-for` on a loop that holds a row | nesting, range, or count differs | refused |
 | a move that turns such a `for` into a doall, `collapse-doalls`, vectorization of it | kind differs | refused (also I3) |
 | `hoist-invariant-code` of a row other than `QUERY` | the row's region differs | refused |
 | two `START` or `BLOCKING` rows change places | order differs | refused (R1) |
