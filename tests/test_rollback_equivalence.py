@@ -164,7 +164,7 @@ def test_every_move_kind_is_applied_and_rolled_back_by_some_fixture(outcomes):
     missing = set(MOVE_SHAPES) - covered - OWN_CASES.keys()
 
     assert not missing, f"no fixture program here applies {sorted(missing)}; add one"
-    assert {name for name in OWN_CASES.values()} <= set(globals()), "a kind's own case is missing"
+    assert set(OWN_CASES.values()) <= set(globals()), "a kind's own case is missing"
 
 
 def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str:
