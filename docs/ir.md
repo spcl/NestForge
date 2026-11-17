@@ -130,7 +130,9 @@ Python alone.
 
 ## Read calls change nothing
 
-Read calls show the program; program calls (moves, defaults, scopes, kernel writes) rewrite it. A read call never
+Read calls show the program; program calls (moves, defaults, scopes, kernel writes) rewrite it.
+`tune_move` is a program call: it keeps the fastest size it timed if that size beats the program, and otherwise
+changes nothing. A read call never
 touches the SDFG: the tests check that the program's hash is the same before and after printing.
 
 | Call | Session | Answers |
@@ -139,7 +141,6 @@ touches the SDFG: the tests check that the program's hash is the same before and
 | `get_work_depth labels=[..]` | `Session.work_depth` | per row, work and depth at the session's sizes, or as formulas with `formula=true` (DaCe's work-depth analysis, at most 60 s, simplified under the program's facts) |
 | `list_move_kinds` | `move_kinds` | every kind, the rows it takes in order, the transformation it runs |
 | `list_moves` | `Session.list_moves` | the moves legal now, with the arguments they were checked with |
-| `tune_move` | `Session.tune_move` | a tiling move timed at 1 to 4 sizes, each rolled back |
 
 The view arguments of `view_tree`:
 

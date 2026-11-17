@@ -260,8 +260,26 @@ class TunedValue(Record):
     reason: str = ""
 
 
+def fastest_beating(tried: Sequence[TunedValue]) -> int | None:
+    """The index of the fastest correct measured value that is faster than the program as it stands (``tried[0]``),
+    or ``None``: an incorrect or failed program never wins, and neither does a tie."""
+    now = tried[0]
+    if now.time_us is None or now.correct is not True:
+        return None
+    timed = [
+        (value.time_us, index)
+        for index, value in enumerate(tried)
+        if value.status == "measured" and value.correct is True and value.time_us is not None
+    ]
+    if not timed:
+        return None
+    time_us, index = min(timed)
+    return index if time_us < now.time_us else None
+
+
 class TuneResult(Record):
-    """What :meth:`Session.tune_move` measured; the program is as it was before the call."""
+    """What :meth:`Session.tune_move` measured. The value marked ``kept`` is applied; with none, the program is as it
+    was before the call."""
 
     kind: str
     labels: tuple[str, ...]
@@ -1238,8 +1256,9 @@ class Session:
         codegen: Codegen = "first",
     ) -> TuneResult:
         """Measure the program with the move ``kind`` on ``labels`` at each of ``values`` (tile sizes), and as it
-        stands: each value is applied, measured as :meth:`performance` measures, and rolled back, so the program and
-        its labels end as they were. The agent then applies the value it picks."""
+        stands: each value is applied, measured as :meth:`performance` measures, and rolled back. The fastest correct
+        value that beats the program as it stands is then applied again and marked ``kept``; with none, the program
+        and its labels end as they were. One rule, no argument: the agent reads what was kept."""
         names = tuple(labels)
         if kind not in TUNABLE or not 1 <= len(values) <= MAX_TUNED_VALUES:
             reason = f"tune_move takes one of {sorted(TUNABLE)} and 1 to {MAX_TUNED_VALUES} values of tile_sizes"
@@ -1266,6 +1285,11 @@ class Session:
                     reason=report.error,
                 )
             )
+        best = fastest_beating(tried)
+        if best is not None:
+            result = self.apply_move(kind, names, tile_sizes=tried[best].tile_sizes)
+            assert result.status is MoveStatus.APPLIED, "a size that applied and was rolled back applies again"
+            tried[best] = tried[best].model_copy(update={"status": "kept"})
         return TuneResult(kind=kind, labels=names, values=tried)
 
     def labels_in(self, scope: str | None, target: dace.SDFG) -> set[str]:

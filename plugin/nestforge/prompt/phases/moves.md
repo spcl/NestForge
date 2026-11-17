@@ -2,6 +2,7 @@
 `inline-library`, `set-library-implementation`, `lib-before` / `lib-after` / `lib-into`, `relayout`, `vectorize-doall`. `apply_move` answers at once, without a time and without the
 tree: open only the rows you need next. Call `get_performance` after a move, or after a few that belong together (it
 waits for a device slot). Keep a move when the time drops, else `apply_move rollback []`, never the inverse move:
-`rollback` restores the program and its labels exactly. To pick a tile size, `tune_move` times up to four in one call.
+`rollback` restores the program and its labels exactly. To pick a tile size, `tune_move` times up to four in one call and
+keeps the fastest only if it beats the program.
 `run_defaults stage=moves` applies the default moves, `stage=finish` the stages after your own. The `nestforge` skill
 page says which move pays when.

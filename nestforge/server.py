@@ -160,7 +160,8 @@ MEASURING = TIMED | {"finalize", "tune_move"}
 TAKES_DATA = frozenset({"tune_move"})
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
-#: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
+#: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel, and a
+#: tune_move as the move it kept.
 CHANGING = frozenset(
     {
         "apply_move",
@@ -173,6 +174,7 @@ CHANGING = frozenset(
         "focus_kernel",
         "write_kernel",
         "tune_kernel",
+        "tune_move",
     }
 )
 

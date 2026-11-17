@@ -37,7 +37,7 @@ from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
 from nestforge.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
-from nestforge.session import Sweep
+from nestforge.session import Sweep, TuneResult
 from nestforge.stages.families import checked_families, family_of
 from nestforge.stages.performance import Performance
 
@@ -219,13 +219,19 @@ def device_slot(
 def repeat_of(call: Call, reply: Reply) -> Call | None:
     """How a new session repeats an applied change: a written kernel passed its check and a sweep timed its winner, so
     the repeat builds the source, or that winner, without checking or timing again; a sweep without one changed
-    nothing."""
+    nothing. A tune_move repeats as the move at the size it kept, or not at all."""
     name, arguments = call
     if name == "write_kernel":
         return name, {**arguments, "checked": False}
     if name == "tune_kernel":
         assert isinstance(reply.result, Sweep), "a tune_kernel answers its sweep"
         return None if reply.result.winner is None else (name, {**arguments, "variant": reply.result.winner})
+    if name == "tune_move":
+        assert isinstance(reply.result, TuneResult), "a tune_move answers what it measured"
+        kept = [value.tile_sizes for value in reply.result.values if value.status == "kept"]
+        if not kept:
+            return None
+        return "apply_move", {"kind": arguments["kind"], "labels": arguments["labels"], "tile_sizes": list(kept[0])}
     return call
 
 

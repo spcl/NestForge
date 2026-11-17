@@ -264,10 +264,9 @@ TOOLS: dict[str, ToolDef] = {
     "tune_move": ToolDef(
         Phase.MOVES,
         TuneMove,
-        "Try a tiling move at several sizes in one call: each size is applied, measured as get_performance measures, "
-        "and rolled back, so the program is unchanged afterwards. Answers the time now and per size; then apply_move "
-        "the size you pick. Use it instead of tiling, untiling and tiling again.",
-        Effect.READ,
+        "Try a tiling move at several sizes in one call, each measured as get_performance measures. The fastest "
+        "size that beats the program now is kept (status kept); if none does, the program stays as it was. Use it "
+        "instead of tiling, untiling and tiling again.",
     ),
     "run_defaults": ToolDef(
         Phase.MOVES,

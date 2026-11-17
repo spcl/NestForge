@@ -56,7 +56,7 @@ import nestforge_bench
 from nestforge.paths import REPO_ROOT
 from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import KernelOutcome, Move, MoveResult, Session
+from nestforge.session import KernelOutcome, Move, MoveResult, Session, TunedValue, TuneResult
 from nestforge.stages.families import FAMILIES
 from nestforge_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
@@ -595,6 +595,30 @@ def test_a_written_kernel_and_a_sweep_are_journaled_as_their_unchecked_untimed_r
         ("write_kernel", {**SLOT_CALLS["write_kernel"], "checked": False}),
         ("tune_kernel", {"name": "kernel_0", "compilers": None, "variant": "gcc-O3"}),
     ]
+
+
+def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(loaded: None) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    call = ("tune_move", {"kind": "tile-doall", "labels": ["doall8"], "values": [[32, 32], [64, 64]]})
+    now = TunedValue(status="now", time_us=30.0, correct=True)
+    kept = TuneResult(
+        kind="tile-doall",
+        labels=("doall8",),
+        values=[
+            now,
+            TunedValue(tile_sizes=(32, 32), status="measured"),
+            TunedValue(tile_sizes=(64, 64), status="kept"),
+        ],
+    )
+    none = TuneResult(
+        kind="tile-doall", labels=("doall8",), values=[now, TunedValue(tile_sizes=(32, 32), status="measured")]
+    )
+
+    assert route.repeat_of(call, Reply(result=kept)) == (
+        "apply_move",
+        {"kind": "tile-doall", "labels": ["doall8"], "tile_sizes": [64, 64]},
+    )
+    assert route.repeat_of(call, Reply(result=none)) is None
 
 
 def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:
