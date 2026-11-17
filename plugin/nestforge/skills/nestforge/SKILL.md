@@ -89,7 +89,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
    `doall-fission`), then `loop not vectorized` with the compiler's reason.
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
-`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
+`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `hoist-invariant-guard`, and
 `interchange-doall-doall` with itself, and `doall-to-for` / `for-to-doall`. Fusion, fission, unrolling, hoisting,
 `propagate-config`, `expand-library`, `snapshot-reads`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
 never moves back into a loop) have none: `rollback` is the way back.
@@ -196,12 +196,7 @@ time loop whose iterator indexes nothing only grows each column's working set, s
 loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.
 
 **`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
-fuse with its neighbors. **`interchange-for-if`** `[for, if]`, MoveLoopInvariantIfUp: the inverse, for a condition
-that does not change inside the loop; the test then runs once instead of once per iteration.
-**`interchange-doall-if`** `[doall]`, MoveMapInvariantIfUp: `doall i: if c: B` becomes `if c: doall i: B` for a condition
-that does not read `i`; the test runs once, and the doall can then be reordered with the loops inside the branch. A doall
-with other work around the `if` is split into one doall per branch. Only this doall's `if` moves; the guards of other
-doalls stay where they are.
+fuse with its neighbors. Its inverse is `hoist-invariant-guard` (Loop-invariant code).
 
 ### Tiling: work in cache-sized blocks
 
@@ -265,6 +260,13 @@ for i: t = a * b; C[i] = t * X[i]   ->   t = a * b; for i: C[i] = t * X[i]
 ```
 A statement invariant only in an inner doall of a perfect doall nest stays, so the nest stays one parallel space.
 Offered only where the pass finds something to hoist.
+
+**`hoist-invariant-guard`** `[for|doall]`: the loop's `if` moves above it, for a condition that reads neither the loop
+variable nor anything the loop writes; the test runs once instead of once per iteration. On a for loop
+(MoveLoopInvariantIfUp), `for i: if c: B` becomes `if c: for i: B`, and the `if` must be the loop's only statement. On
+a doall (MoveMapInvariantIfUp), `doall i: if c: B` becomes `if c: doall i: B`, and the doall can then be reordered with
+the loops inside the branch. A doall with other work around the `if` is split into one doall per branch. Only this
+doall's `if` moves; the guards of other doalls stay where they are.
 
 ### Vectorization
 

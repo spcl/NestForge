@@ -143,6 +143,8 @@ SCOPE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU})
 SKEW_WAVEFRONT = "skew-wavefront"
 #: The move kind that runs the loop-invariant statements of a for loop or a doall once, before it.
 HOIST_INVARIANT_CODE = "hoist-invariant-code"
+#: The move kind that moves a for loop's or a doall's invariant guard above it: ``if c`` then runs once.
+HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
 #: A row a move takes as either a for loop or a doall.
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
 
@@ -157,8 +159,6 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
     "interchange-if-for": (ConditionalBlock, LoopRegion),
-    "interchange-doall-if": (nodes.MapEntry,),
-    "interchange-for-if": (LoopRegion, ConditionalBlock),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
     SET_IMPLEMENTATION: (nodes.LibraryNode,),
     "tile-doall": (nodes.MapEntry,),
@@ -172,6 +172,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
     HOIST_INVARIANT_CODE: (LOOP_ROW,),
+    HOIST_INVARIANT_GUARD: (LOOP_ROW,),
     AUTO_VECTORIZE: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
@@ -794,11 +795,17 @@ def plan_if_loop(cond_row: Row, loop_row: Row) -> Rewrite | str:
     return region_rewrite("MoveIfIntoLoop", loop.sdfg, lambda: MoveIfIntoLoop.push(cond))
 
 
-def plan_loop_if(loop_row: Row, cond_row: Row) -> Rewrite | str:
+def plan_hoist_invariant_guard(row: Row) -> Rewrite | str:
+    """The invariant guard of the for loop or doall ``row`` names moves above it."""
+    if isinstance(row[0], LoopRegion):
+        return plan_loop_if(row)
+    return plan_map_if(row)
+
+
+def plan_loop_if(loop_row: Row) -> Rewrite | str:
     """``for i: if c: B`` -> ``if c: for i: B``, for a loop-invariant guard."""
-    loop, cond = loop_row[0], cond_row[0]
-    match = match_loop(loop.sdfg, loop)
-    if match is None or match[1] is not cond:
+    loop = loop_row[0]
+    if match_loop(loop.sdfg, loop) is None:
         return IF_OUT_OF_LOOP_REFUSED
     return region_rewrite("MoveLoopInvariantIfUp", loop.sdfg, lambda: MoveLoopInvariantIfUp.hoist(loop))
 
@@ -1529,8 +1536,6 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
     "interchange-if-for": plan_if_loop,
-    "interchange-doall-if": plan_map_if,
-    "interchange-for-if": plan_loop_if,
     EXPAND_LIBRARY: plan_expand_library,
     SET_IMPLEMENTATION: plan_set_implementation,
     "tile-doall": plan_tile_doall,
@@ -1544,6 +1549,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
     HOIST_INVARIANT_CODE: plan_hoist_invariant_code,
+    HOIST_INVARIANT_GUARD: plan_hoist_invariant_guard,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
@@ -1611,12 +1617,6 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "inlined and its one-iteration maps dropped first).",
     ),
     "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
-    "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
-    "interchange-doall-if": (
-        "MoveMapInvariantIfUp.apply_to_map (tried on a copy; lifts this doall's if only)",
-        "doall i: if c: B becomes if c: doall i: B, c not reading i. A doall that also holds work outside the if is "
-        "unswitched: if c: doall i: {A; B} else: doall i: A.",
-    ),
     EXPAND_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
@@ -1691,6 +1691,13 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "MapUnroll (max_iterations, the largest trip count you accept)",
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
+    ),
+    HOIST_INVARIANT_GUARD: (
+        "MoveLoopInvariantIfUp on a for loop; MoveMapInvariantIfUp.apply_to_map on a doall (tried on a copy; lifts "
+        "this doall's if only)",
+        "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
+        "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
+        "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A.",
     ),
     HOIST_INVARIANT_CODE: (
         "LoopInvariantCodeMotion on this for loop or doall",
@@ -1952,9 +1959,11 @@ def guard_loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
             yield (cond, None), (sinks[0], None)
 
 
-def loop_guard_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The for loops that hold a conditional as one of their top-level blocks."""
     for loop in every_region_block(sdfg, LoopRegion):
-        yield from (((loop, None), (cond, None)) for cond in loop.nodes() if isinstance(cond, ConditionalBlock))
+        if any(isinstance(block, ConditionalBlock) for block in loop.nodes()):
+            yield ((loop, None),)
 
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
@@ -1967,8 +1976,6 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
     "interchange-if-for": guard_loop_pairs,
-    "interchange-doall-if": guarded_doalls,
-    "interchange-for-if": loop_guard_pairs,
     EXPAND_LIBRARY: library_rows,
     SET_IMPLEMENTATION: library_rows,
     "tile-doall": doall_rows,
@@ -1984,6 +1991,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     HOIST_INVARIANT_CODE: lambda sdfg: chain(for_rows(sdfg), doall_rows(sdfg)),
+    HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
     AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,

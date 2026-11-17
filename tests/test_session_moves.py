@@ -855,7 +855,7 @@ def test_a_guard_moves_into_the_loop_it_guards():
 def test_a_loop_invariant_guard_moves_out_of_its_loop():
     sut, reference = session_and_reference(loop_guard)
 
-    result = apply_listed(sut, "interchange-for-if")
+    result = apply_listed(sut, "hoist-invariant-guard")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopInvariantIfUp")
     assert [type(block) for block in sut.sdfg.nodes()] == [ConditionalBlock]
@@ -865,23 +865,23 @@ def test_a_loop_invariant_guard_moves_out_of_its_loop():
 
 def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
     sut = Session(loop_variant_guard.to_sdfg(simplify=True))
-    (loop,), (cond,) = loops(sut.sdfg), conditionals(sut.sdfg)
+    (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("interchange-for-if", [loop.label, cond.label])
+    result = sut.apply_move("hoist-invariant-guard", [loop.label])
 
     assert result.status is MoveStatus.ILLEGAL and "MoveLoopInvariantIfUp" in result.reason, result
     assert digest(sut.sdfg) == before
-    assert sut.list_moves("interchange-for-if") == []
+    assert sut.list_moves("hoist-invariant-guard") == []
 
 
-# interchange-doall-if
+# hoist-invariant-guard on a doall
 
 
 @pytest.mark.parametrize("k", [0, 3])
 def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k):
     sut, reference = session_and_reference(guarded_map)
-    (move,) = sut.list_moves("interchange-doall-if")
+    (move,) = sut.list_moves("hoist-invariant-guard")
 
     result = sut.apply_move(move.kind, move.labels)
 
@@ -897,7 +897,7 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
     sut, reference = session_and_reference(two_guarded_maps)
 
     for applied in (1, 2):
-        moves = sut.list_moves("interchange-doall-if")
+        moves = sut.list_moves("hoist-invariant-guard")
         assert len(moves) == 3 - applied
         result = sut.apply_move(moves[0].kind, moves[0].labels)
 
@@ -906,7 +906,7 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
         states = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
         assert sum(isinstance(st.parent_graph.parent_graph, ConditionalBlock) for st in states) == applied
 
-    assert sut.list_moves("interchange-doall-if") == []
+    assert sut.list_moves("hoist-invariant-guard") == []
     for k in (0, 3):
         arrays = random_arrays(a=(SIZE,)) | {"b": np.zeros(SIZE), "c": np.zeros(SIZE)}
         assert_same_values(reference, sut.sdfg, arrays, N=SIZE, K=k)
@@ -914,11 +914,11 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
 
 def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
     sut = Session(parameter_guarded_map.to_sdfg(simplify=True))
-    labels = [m.labels for m in sut.list_moves("interchange-doall-if")]
+    labels = [m.labels for m in sut.list_moves("hoist-invariant-guard")]
     (entry,) = [n for n, _ in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("interchange-doall-if", [entry.map.label])
+    result = sut.apply_move("hoist-invariant-guard", [entry.map.label])
 
     assert labels == []
     assert result.status is MoveStatus.ILLEGAL and "MoveMapInvariantIfUp" in result.reason, result

@@ -56,8 +56,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; also a loop whose body is several doalls over one shared axis, in several states or behind ifs (the row names one of them): the loop goes inside one doall over that axis, `cfg_body` + `lane_axis` (DaCe's lane analysis). `doall-fusion` the ones that fuse first |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
 | `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
-| `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |
-| `interchange-doall-if` | doall whose body holds an if | `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
+| `hoist-invariant-guard` | for loop whose only statement is an invariant if, or doall whose body holds an if | for loop: `MoveLoopInvariantIfUp`; doall: `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
 | `tile-doall` | doall (+ `tile_sizes`, one per dimension) | `MapTiling` (`divides_evenly=False`) |
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
 | `collapse-doalls` | doall, doall inside it | `MapCollapse` |
