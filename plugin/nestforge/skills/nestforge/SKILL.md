@@ -18,19 +18,20 @@ applies: {explicit: true}
 | `lib_<family><n>  LIBNODE <Kind> [<implementation>]  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall. `[..]` is its current implementation: by default the fastest this host has for the target (OpenBLAS, FFTW3, or the device library), never `pure` while another exists. Loops only when you choose them |
 
 - A label is a row's name: it stays on the row while the row lives. Labels are names, not positions you compute.
-- `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
-- `view_tree expand=[labels]` opens a state or doall with everything below it: its doalls, nested doalls, leaf
-  bodies, and the states of a doall whose body is a small program (those states are where `subgraph-fission`
-  cuts). `collapse=[labels]` closes any open state or doall, also one inside a row you expanded; the row stays, its
-  content goes. Expanding the outer row again opens everything below it once more. The view lasts while the row
-  lives; a move keeps it on the rows it does not retire.
+- The tree prints no costs. `get_work_depth labels=[...]` gives each row's work (operations) and depth (the longest
+  dependent chain) at this session's sizes, `formula=true` as formulas in the sizes. Rank the loops by them before
+  you choose which to move.
+- `view_tree expand=[labels]` opens a state or a doall. An open state shows its doalls as rows; a doall stays closed
+  until you open it too. An open doall shows its statements (`: <stmt>` lines), the doalls nested in it, and the
+  states of its body when it is a small program (those states are where `subgraph-fission` cuts): open a doall
+  before you split it. `collapse=[labels]` closes any open state or doall; the row stays, its content goes. The
+  view lasts while the row lives; a move keeps it on the rows it does not retire.
 - Bodies print as Python. `view_tree c=[labels]` prints the bodies under those rows as C instead (`python=[labels]`
   goes back; a row inside keeps its own choice): C shows what Python cannot, the C++ of a vectorized body (its tile
   loads, operations and stores) or of inline assembly, as written, with each operand the element it reads or writes.
   `expand`, `collapse`, `c` and `python` only change what is shown, never the program.
 - A state row carries what a doall row carries: `reads=` and `writes=` (arguments, and arrays other states also
-  use; a temporary of the state alone is left out) and its `work=` and `depth=`. A state that touches no array is
-  its label alone.
+  use; a temporary of the state alone is left out). A state that touches no array is its label alone.
 - A state is a dataflow graph: inside it, doalls are ordered only by the data they share and may run concurrently.
   Going from one state to the next is a barrier: everything in the first state finishes, and its writes are
   visible, before the next starts. Loops and branches only ever join states. So doalls in different states never
@@ -99,35 +100,36 @@ never moves back into a loop) have none: `rollback` is the way back.
 `T[i] = (A[i-1] + A[i] + A[i+1]) / 3`, then `B[i] = 2 * T[i]`. Collapsed, the program is one state:
 ```
 SDFG 'blur_scale'
-`- state2  doalls=2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
+`- state2  doalls=2  reads=['A', 'T'] writes=['B', 'T']
 ```
-`view_tree expand=[state2]` opens it, its doalls and the one-state program each doall body is:
+`view_tree expand=[state2, doall0, doall1]` opens the state and both doalls, their statements and the one-state
+program each doall body is:
 ```
 SDFG 'blur_scale'
-`- state2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
-   |- doall0  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1  work=3*N - 6 depth=3
+`- state2  reads=['A', 'T'] writes=['B', 'T']
+   |- doall0  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1
    |  : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
    |  : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
    |  : T[_loop_it_0] = A_slice_A_slice_plus_A_slice / np.float64(3)
-   |  `- state3  reads=['A'] writes=['T']  work=3 depth=3
-   `- doall1  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1  work=N - 2 depth=1
+   |  `- state3  reads=['A'] writes=['T']
+   `- doall1  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1
       : B[_loop_it_1] = np.float64(2) * T[_loop_it_1]
-      `- state4  reads=['T'] writes=['B']  work=1 depth=1
+      `- state4  reads=['T'] writes=['B']
 ```
 `view_tree collapse=[doall0]` would hide `doall0`'s body and keep the rest open. `doall1` reads the `T` that
 `doall0` writes, in one state. `list_moves kind=doall-fusion` lists `labels=[doall0, doall1]`; `apply_move` answers
-`applied`, reason `MapFusionVertical`, and the tree is
+`applied`, reason `MapFusionVertical`, and after `view_tree expand=[doall2]` (a new doall starts closed) the tree is
 ```
 SDFG 'blur_scale'
-`- state2  reads=['A'] writes=['B', 'T']  work=4*N - 8 depth=4
-   `- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B', 'T']  num_states=3  work=4*N - 8 depth=4
+`- state2  reads=['A'] writes=['B', 'T']
+   `- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B', 'T']  num_states=3
       : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
       : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
       : __map_fusion_T = A_slice_A_slice_plus_A_slice / np.float64(3)
       : _loop_it_1 = _loop_it_0
       : B[_loop_it_1] = np.float64(2) * __map_fusion_T
       : T[_loop_it_0] = __map_fusion_T
-      `- state5  reads=['A'] writes=['B', 'T']  work=4 depth=4
+      `- state5  reads=['A'] writes=['B', 'T']
 ```
 `doall0` and `doall1` are retired and `doall2` is new. `B` now takes `T`'s value from a scalar in the same
 iteration, so the state no longer reads `T` back; `T` is still written because it is an argument (a temporary

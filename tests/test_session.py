@@ -156,14 +156,14 @@ def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatc
 
     monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", fail)
     s = make_session()
-    tree = s.describe()
+    tree = s.describe(costs=True)
     assert tree.splitlines()[1] == (
         "(no work= or depth=: work-depth analysis failed: RecursionError: maximum recursion depth exceeded)"
     )
     assert "work=" not in "\n".join(tree.splitlines()[2:])
     (move,) = s.list_moves("doall-fusion")
     assert s.apply_move(move.kind, move.labels).status is MoveStatus.APPLIED
-    assert "no work= or depth=" in s.describe().splitlines()[1]
+    assert "no work= or depth=" in s.describe(costs=True).splitlines()[1]
     assert s.costs == {} and s.costs_skipped is not None
 
 
@@ -171,7 +171,7 @@ def test_describe_skips_costs_when_work_depth_outlasts_its_budget(monkeypatch):
     monkeypatch.setattr(introspect, "WORK_DEPTH_BUDGET_S", 1)
     monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", lambda *args, **kwargs: time.sleep(5))
     s = make_session()
-    assert "work-depth analysis took over 1 s" in s.describe().splitlines()[1]
+    assert "work-depth analysis took over 1 s" in s.describe(costs=True).splitlines()[1]
 
 
 def test_costs_come_back_after_the_next_change_once_work_depth_works(monkeypatch):
@@ -181,8 +181,8 @@ def test_costs_come_back_after_the_next_change_once_work_depth_works(monkeypatch
     s = make_session()
     with monkeypatch.context() as patch:
         patch.setattr(introspect.work_depth, "analyze_sdfg", fail)
-        assert s.describe().splitlines()[1].startswith("(no work= or depth=")
+        assert s.describe(costs=True).splitlines()[1].startswith("(no work= or depth=")
     (move,) = s.list_moves("doall-fusion")
     result = s.apply_move(move.kind, move.labels)
     assert result.status is MoveStatus.APPLIED
-    assert s.costs_skipped is None and "no work= or depth=" not in s.describe()
+    assert s.costs_skipped is None and "no work= or depth=" not in s.describe(costs=True)

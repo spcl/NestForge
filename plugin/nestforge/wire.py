@@ -35,6 +35,15 @@ class NoArgs(Args):
     pass
 
 
+class GetWorkDepth(Args):
+    labels: list[str] = pydantic.Field(
+        default_factory=list, description="Rows to give work and depth for (loops, doalls, states); none: every row."
+    )
+    formula: bool = pydantic.Field(
+        False, description="Give the formulas in the sizes instead of their values at this session's sizes."
+    )
+
+
 class ViewTree(Args):
     expand: list[str] = pydantic.Field(
         default_factory=list, description="State or doall labels to open, with everything below them."
@@ -199,6 +208,13 @@ TOOLS: dict[str, ToolDef] = {
         ViewTree,
         "Open states and doalls with everything below them, close some again, print bodies as C or Python, then show "
         "the tree. Changes only what is shown, never the program.",
+        Effect.READ,
+    ),
+    "get_work_depth": ToolDef(
+        Phase.MOVES,
+        GetWorkDepth,
+        "Work (operations) and depth (the longest dependent chain) of tree rows, at this session's sizes or as "
+        "formulas: rank loops by them before choosing what to move. The tree does not print them.",
         Effect.READ,
     ),
     "list_move_kinds": ToolDef(

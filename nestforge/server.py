@@ -125,6 +125,7 @@ def run_defaults(session: Session, stage: Stage) -> object:
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
+    "get_work_depth": Session.work_depth,
     "list_move_kinds": lambda session: [
         kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None
     ],

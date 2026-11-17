@@ -28,6 +28,7 @@ import numpy as np
 import pydantic
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
+from dace.sdfg.performance_evaluation.helpers import get_uuid
 from dace.sdfg.state import LoopRegion, SDFGState
 from relayout.ops import Operation
 
@@ -45,6 +46,7 @@ from nestforge.ir.introspect import (
     Language,
     Row,
     WorkDepth,
+    cost_text,
     describe_graph,
     enclosing_rows,
     guarded_work_depth,
@@ -693,24 +695,50 @@ class Session:
 
     # Stage 2: moves
 
-    def describe(self, bodies: bool = False, deps: bool = False) -> str:
+    def describe(self, bodies: bool = False, deps: bool = False, costs: bool = False) -> str:
         """The program as a text tree; rows are named by the labels the labeled calls take.
-        Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
-        once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
-        if self.costs is None:
+        Every loop and state is a row with what it reads and writes, and a state shows its kernels only once
+        :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row. ``costs`` adds
+        each loop and map row's work and depth; without it they are :meth:`work_depth`'s, on request."""
+        if costs and self.costs is None:
             self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
         tree = describe_graph(
             self.sdfg,
             bodies=bodies,
             notes=self.deps_line if deps else None,
             expanded=self.expanded,
-            costs=self.costs,
+            costs=(self.costs or {}) if costs else {},
             languages=self.languages,
         )
-        if self.costs_skipped is None:
+        if not costs or self.costs_skipped is None:
             return tree
         header, _, rows = tree.partition("\n")
         return f"{header}\n(no work= or depth=: {self.costs_skipped})\n{rows}"
+
+    def work_depth(self, labels: Sequence[str] = (), formula: bool = False) -> str:
+        """The work and depth of the rows ``labels`` name (every row with a cost when empty), one line each: under the
+        program's facts, and at the session's sizes unless ``formula``; DaCe's work-depth analysis, run once per
+        program and kept until it changes."""
+        rows = self.row_index()
+        named = self.named_rows("get_work_depth", tuple(labels)) if labels else list(rows.values())
+        if isinstance(named, MoveResult):
+            return f"{spelled(named.status)}: {named.reason}"
+        if self.costs is None:
+            self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
+        if self.costs_skipped is not None:
+            return f"no work or depth: {self.costs_skipped}"
+        facts = self.sdfg.facts()
+        lines = []
+        for label, (obj, state) in zip(labels or rows, named):
+            found = self.costs.get(get_uuid(obj, state) if state is not None else get_uuid(obj))
+            if found is not None:
+                work, depth = (cost_text(expr, facts, {} if formula else self.sizes) for expr in found)
+                lines.append(f"{label}  work={work} depth={depth}")
+            elif labels:
+                lines.append(f"{label}  no work or depth (DaCe's analysis gives none for this row)")
+        sizes = ", ".join(f"{name}={value}" for name, value in sorted(self.sizes.items()))
+        note = "formulas in the sizes" if formula or not sizes else f"at {sizes}; formula=true for the formulas"
+        return "\n".join([f"work and depth ({note})", *lines])
 
     def expand(self, labels: Sequence[str]) -> str:
         """Show everything below the states and maps ``labels`` name (kernels, nested maps and leaf bodies, a map's

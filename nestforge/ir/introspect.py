@@ -289,6 +289,28 @@ def time_budget(seconds: int) -> Iterator[None]:
         signal.signal(signal.SIGALRM, previous)
 
 
+#: What sympy raises on an expression it cannot simplify or evaluate; the cost then prints as it is.
+SYMPY_FAILURES = (TypeError, ValueError, AttributeError, NotImplementedError, RecursionError, ZeroDivisionError)
+
+#: Significant digits of a cost evaluated at the session's sizes.
+COST_DIGITS = 3
+
+
+def cost_text(expr: object, facts: dace.symbolic.Facts, sizes: Mapping[str, object]) -> str:
+    """``expr`` (a work or depth) simplified under ``facts``, then evaluated at ``sizes`` for the symbols it has
+    values for, to :data:`COST_DIGITS` digits; symbols without a value (an argument such as an iteration count) stay."""
+    cost = sympy.sympify(expr)
+    with contextlib.suppress(*SYMPY_FAILURES):
+        cost = dace.symbolic.simplify(cost, facts)
+    values = {sym: sizes[sym.name] for sym in cost.free_symbols if isinstance(sym, sympy.Symbol) and sym.name in sizes}
+    if not values:
+        return str(cost)
+    try:
+        return str(sympy.N(cost.subs(values).doit(), COST_DIGITS))
+    except SYMPY_FAILURES:
+        return str(cost)
+
+
 def guarded_work_depth(sdfg: dace.SDFG) -> tuple[WorkDepth, str | None]:
     """:func:`program_work_depth`, or no costs and why, when the pass raises or outlasts :data:`WORK_DEPTH_BUDGET_S`.
     Costs only annotate the tree, so a program DaCe cannot cost still gets one."""
@@ -324,10 +346,10 @@ def describe_graph(
     :param handle: Returns the id to print on a row.
     :param bodies: Also print what each leaf kernel of a shown state computes, as Python.
     :param notes: Returns a line to print under a library node's row.
-    :param expanded: The :data:`View`: an opened state or map shows everything below it (kernels, nested maps and
-        states, leaf-kernel bodies) but what is closed in it; a closed state is one row naming how many kernels it
-        holds, a closed map one row naming its nested states. Bare labels are opened ones; ``None`` shows every
-        content.
+    :param expanded: The :data:`View`: an opened state shows its kernels and maps as rows; an opened map shows
+        everything below it (nested maps and states, leaf-kernel bodies) but what is closed in it, and the maps of an
+        open state stay closed until opened themselves. A closed state is one row naming how many kernels it holds, a
+        closed map one row naming its nested states. Bare labels are opened ones; ``None`` shows every content.
     :param costs: :func:`program_work_depth` of ``sdfg``, when the caller holds it already.
     :param languages: The language leaf bodies under a state or map row are printed in (:data:`LANGUAGES`): its own
         entry, else that of the nearest row around it, else Python.
@@ -452,7 +474,9 @@ def walk_state(tree: Tree, state: SDFGState, prefix: str, language: Language) ->
                     for inner in nested:
                         walk_regions(tree, inner.sdfg, below, inside=True, language=own)
 
-    descend(None, prefix, True, language)  # an open state opens what it holds
+    # an open state shows its doall rows, not their bodies: a doall shows its statements and nested states only once
+    # it is opened itself (a doall nested in it opens with it)
+    descend(None, prefix, False, language)
 
 
 def note_lines(node: nodes.Node, below: str, notes: Notes | None) -> list[str]:
