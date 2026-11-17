@@ -265,9 +265,10 @@ a doall (MoveMapInvariantIfUp), `doall i: if c: B` becomes `if c: doall i: B`, a
 the loops inside the branch. A doall with other work around the `if` is split into one doall per branch. Only this
 doall's `if` moves; the guards of other doalls stay where they are.
 
-**`sink-invariant-guard`** `[if]`, MoveIfIntoLoop, the inverse on a for loop: `if c: for i: B` becomes
-`for i: if c: B`. The test then runs every iteration, and the loop can fuse with its neighbors. The branch must end in
-one for loop; a doall takes no `if` yet.
+**`sink-invariant-guard`** `[if]`, the inverse: `if c: for i: B` becomes `for i: if c: B` (MoveIfIntoLoop), and
+`if c: doall i: B` becomes `doall i: if c: B` (each doall of the branch takes the test). The test then runs every
+iteration, and the loop or doall can fuse with its neighbors. The branch must end in one for loop, or be one state of
+doalls, and must not write what the condition reads.
 
 ### Vectorization
 

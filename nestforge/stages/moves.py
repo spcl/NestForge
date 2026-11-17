@@ -93,6 +93,7 @@ from nestforge.records import CRASHES, Record, Refusal, Refused
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.layout import RELAYOUT
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
+from nestforge.stages.sinking import match_if_over_maps, push_if_into_maps
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
 from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, vectorize_config, vectorize_refusal
@@ -145,7 +146,7 @@ SKEW_WAVEFRONT = "skew-wavefront"
 HOIST_INVARIANT_CODE = "hoist-invariant-code"
 #: The move kind that moves a for loop's or a doall's invariant guard above it: ``if c`` then runs once.
 HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
-#: The move kind that moves an if into the for loop it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
+#: The move kind that moves an if into the for loop or doalls it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
 SINK_INVARIANT_GUARD = "sink-invariant-guard"
 #: A row a move takes as either a for loop or a doall.
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
@@ -250,8 +251,8 @@ LOOP_INTO_MAP_REFUSED = Refused(
     Refusal.DEPENDENCE,
 )
 IF_INTO_LOOP_REFUSED = Refused(
-    "blocked by MoveIfIntoLoop: the branch is not a single no-else guard whose body ends in one for loop (a doall "
-    "does not take an if yet), or the condition or its prep reads what the loop writes.",
+    "blocked: the branch is not a single no-else guard whose body ends in one for loop (MoveIfIntoLoop) or is one "
+    "state of doalls (push_if_into_maps), or the condition or its prep reads what the loop or doalls write.",
     Refusal.DEPENDENCE,
 )
 IF_OUT_OF_LOOP_REFUSED = Refused(
@@ -789,13 +790,21 @@ def plan_nested_map_loop(state: SDFGState, entry: nodes.MapEntry) -> Rewrite | s
 
 
 def plan_sink_invariant_guard(cond_row: Row) -> Rewrite | str:
-    """``if c: for i: B`` -> ``for i: if c: B``, for the one loop the branch ends in."""
-    cond = cond_row[0]
+    """``if c: for i: B`` -> ``for i: if c: B``, for the one loop the branch ends in; ``if c: doall i: B`` ->
+    ``doall i: if c: B``, for every doall of the branch's one state."""
+    cond = cast(ConditionalBlock, cond_row[0])
+    if ends_in_one_loop(cond):
+        return region_rewrite("MoveIfIntoLoop", cond.sdfg, lambda: MoveIfIntoLoop.push(cond))
+    if match_if_over_maps(cond) is not None:
+        return region_rewrite("push_if_into_maps", cond.sdfg, lambda: push_if_into_maps(cond))
+    return IF_INTO_LOOP_REFUSED
+
+
+def ends_in_one_loop(cond: ConditionalBlock) -> bool:
+    """Whether ``cond`` is a guard MoveIfIntoLoop takes: one branch that ends in one for loop."""
     match = match_guard(cond)
     sinks = match[2].sink_nodes() if match is not None else []
-    if len(sinks) != 1 or not isinstance(sinks[0], LoopRegion):
-        return IF_INTO_LOOP_REFUSED
-    return region_rewrite("MoveIfIntoLoop", cond.sdfg, lambda: MoveIfIntoLoop.push(cond))
+    return len(sinks) == 1 and isinstance(sinks[0], LoopRegion)
 
 
 def plan_hoist_invariant_guard(row: Row) -> Rewrite | str:
@@ -1702,9 +1711,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A.",
     ),
     SINK_INVARIANT_GUARD: (
-        "MoveIfIntoLoop",
-        "if c: for i: B becomes for i: if c: B, the inverse of hoist-invariant-guard: the test runs every iteration, "
-        "and the loop can fuse with its neighbors. The branch must end in one for loop; a doall takes no if yet.",
+        "MoveIfIntoLoop on a branch that ends in one for loop; push_if_into_maps on a branch that is one state of "
+        "doalls",
+        "if c: for i: B becomes for i: if c: B, and if c: doall i: B becomes doall i: if c: B (each doall of the "
+        "branch takes a copy of the test), the inverse of hoist-invariant-guard: the test runs every iteration, and "
+        "the loop or doall can fuse with its neighbors.",
     ),
     HOIST_INVARIANT_CODE: (
         "LoopInvariantCodeMotion on this for loop or doall",
@@ -1960,10 +1971,10 @@ def interchange_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 def loop_guards(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
-    """The ifs whose first branch ends in one for loop."""
+    """The ifs whose first branch ends in one for loop, or is one state of doalls."""
     for cond in every_region_block(sdfg, ConditionalBlock):
         sinks = cond.branches[0][1].sink_nodes() if cond.branches else []
-        if len(sinks) == 1 and isinstance(sinks[0], LoopRegion):
+        if len(sinks) == 1 and isinstance(sinks[0], LoopRegion) or match_if_over_maps(cond) is not None:
             yield ((cond, None),)
 
 

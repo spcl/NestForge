@@ -859,16 +859,18 @@ def test_a_guard_moves_into_the_loop_it_guards():
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
 
 
-def test_a_guard_over_a_doall_stays_outside_it_until_dace_can_move_it_in():
-    sut = Session(doall_under_guard.to_sdfg(simplify=True))
-    (cond,) = [b for b, _ in sut.sdfg.all_nodes_recursive() if isinstance(b, ConditionalBlock)]
-    before = digest(sut.sdfg)
+@pytest.mark.parametrize("k", [0, 3])
+def test_a_guard_over_a_doall_moves_into_its_body(k):
+    sut, reference = session_and_reference(doall_under_guard)
 
-    result = sut.apply_move("sink-invariant-guard", [cond.label])
+    result = apply_listed(sut, "sink-invariant-guard")
 
-    assert sut.list_moves("sink-invariant-guard") == []
-    assert result.status is MoveStatus.ILLEGAL and "a doall does not take an if yet" in result.reason, result
-    assert digest(sut.sdfg) == before
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "push_if_into_maps"), result
+    assert not any(isinstance(block, ConditionalBlock) for block in sut.sdfg.nodes())
+    (state,) = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    assert state.sdfg is sut.sdfg, "the doall stays at the top"
+    a, b = random_arrays(a=(SIZE,))["a"], np.full(SIZE, -1.0)
+    assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
 
 
 def test_a_loop_invariant_guard_moves_out_of_its_loop():
