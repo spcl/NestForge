@@ -9,7 +9,8 @@ from typing import Any
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.wire import ROUTE, TOOLS, Effect, NoArgs
+from hpcagent_bench_plugins.nestforge.answers import RENDERED
+from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS, ROUTE, TOOLS, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
 HINTS = {
@@ -29,11 +30,15 @@ def disabled_families() -> list[str]:
 
 
 def poster(name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """The tool ``name``: its call posted to the judge, and the answer as the agent reads it (:mod:`answers`)."""
+    render = RENDERED.get(name)
+
     def run(payload: dict[str, Any]) -> dict[str, Any]:
         kernel = http_json.assigned_kernel(payload)
-        return http_json.post_judge(
+        answer = http_json.post_judge(
             f"/{ROUTE}/{name}", {**payload, "kernel": kernel, "disabled_families": disabled_families()}
         )
+        return answer if render is None else render(answer, MOVE_DEFAULTS)
 
     return run
 

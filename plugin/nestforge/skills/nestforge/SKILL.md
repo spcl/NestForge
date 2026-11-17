@@ -45,11 +45,13 @@ applies: {explicit: true}
 
 ## Moves
 
-`list_move_kinds` lists every kind with the rows it takes, in order, and the DaCe transformation it runs.
-`list_moves` lists the moves legal right now as `kind` + `labels`, with `tile_sizes` on a tiling move (the sizes it
-was checked at) and `implementation` on a library-implementation move. `apply_move` takes one back as listed, or with
-your own `tile_sizes`. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not
-a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
+`list_move_kinds` lists every kind, one per line, with the rows it takes in order (`[doall doall]`) and the DaCe
+transformation it runs. `list_moves` lists the moves legal right now, one per line: the kind, its labels, then each
+argument it was checked with as `name=value`, such as `tile_sizes=[32,32]` on a tiling move (the sizes it was checked
+at) or `implementation=MKL` on a library-implementation move. `apply_move` takes one back as listed (`kind`, `labels`
+and those arguments), or with your own `tile_sizes`. `applied_moves` lists the moves the program holds, one per
+line. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not a broken
+program. Every move keeps the program's results: it changes how the loops run, never what they compute.
 The move `rollback` (`apply_move` with `labels []`, always legal; with nothing to take back it changes nothing) takes
 the last move back (program, labels and `applied_moves` as before it), and again for the one before, up to 8. So
 trying a move costs two calls and a measurement, never the program.
@@ -115,7 +117,7 @@ SDFG 'blur_scale'
       `- state4  reads=['T'] writes=['B']  work=1 depth=1
 ```
 `view_tree collapse=[doall0]` would hide `doall0`'s body and keep the rest open. `doall1` reads the `T` that
-`doall0` writes, in one state. `list_moves kind=doall-fusion` lists `labels=[doall0, doall1]`; `apply_move` answers
+`doall0` writes, in one state. `list_moves kind=doall-fusion` lists `doall-fusion doall0 doall1`; `apply_move` answers
 `applied`, reason `MapFusionVertical`, and the tree is
 ```
 SDFG 'blur_scale'

@@ -8,7 +8,7 @@ from typing import Any, Literal, NamedTuple
 
 import pydantic
 
-__all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "ToolDef"]
+__all__ = ["IDENTITY", "MOVE_DEFAULTS", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "ToolDef"]
 
 #: The judge route every tool posts to, as ``/nestforge/<tool>``.
 ROUTE = "nestforge"
@@ -127,6 +127,14 @@ class InScope(Args):
 
 class ListScopeMoves(ListMoves, InScope):
     pass
+
+
+#: The value each optional ``apply_move`` argument takes when not given; a listed move prints only the others.
+MOVE_DEFAULTS: dict[str, object] = {
+    name: field.get_default(call_default_factory=True)
+    for name, field in ApplyMove.model_fields.items()
+    if not field.is_required()
+}
 
 
 class ApplyScopeMove(ApplyMove, InScope):
