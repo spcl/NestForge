@@ -25,7 +25,6 @@ from nestforge.stages.performance import (
 from nestforge.stages.placement import copies_in_call, device_copy_edges, has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
-TSTEPS = dace.symbol("TSTEPS", dtype=dace.int64)
 
 #: The size the reports are evaluated at.
 SIZE = 100
@@ -97,7 +96,7 @@ def test_a_transfer_of_an_array_the_program_sizes_at_run_time_has_no_bytes() -> 
 def map_feeds_recurrence(A: dace.float64[N], C: dace.float64[N]):
     """A parallel map feeds a sequential recurrence every step: the GPU default splits them across devices."""
     T = dace.define_local([N], dace.float64)
-    for t in range(TSTEPS):
+    for _ in range(4):
         for i in dace.map[0:N]:
             T[i] = A[i] * A[i] + 1.0
         C[0] = T[0]
@@ -113,7 +112,7 @@ def test_an_empty_memlet_between_memory_spaces_is_no_copy(tmp_path: Path) -> Non
     session = Session(
         map_feeds_recurrence.to_sdfg(simplify=True),
         Targets(gpu=True),
-        sizes={"N": SIZE, "TSTEPS": 4},
+        sizes={"N": SIZE},
         work_dir=str(tmp_path),
     )
     session.canonicalize()

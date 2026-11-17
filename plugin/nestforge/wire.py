@@ -315,7 +315,8 @@ TOOLS: dict[str, ToolDef] = {
         Phase.SCOPES,
         NoArgs,
         "Undo place and insert_copies, keeping the kernels, so set_scope and unset_scope apply again; the moves inside "
-        "a kernel stay, stage-loads-shared and the kernels' code go. Refused once focus_kernel started the kernel work.",
+        "a kernel stay, stage-loads-shared and the kernels' code go. Refused once focus_kernel started the kernel "
+        "work.",
         Effect.REPLACE,
         NOTHING_TO_PLACE,
     ),

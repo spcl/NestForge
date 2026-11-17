@@ -1830,7 +1830,9 @@ class Session:
         """The feedback of :meth:`performance` on this session, a self."""
         if not external_calls(self.sdfg):
             self.default_scopes()
-        in_call = copies_in_call(self.sdfg)  # before the default placement inserts their copies
+        unplaced_program = self.sdfg
+        assert unplaced_program is not None, "a session holds its program"
+        in_call = copies_in_call(unplaced_program)  # before the default placement inserts their copies
         # as finalize: placing a CPU program changes nothing but drops its kernels' builds
         if self.targets.gpu:
             self.default_placement()
@@ -1845,12 +1847,14 @@ class Session:
             inputs = physical_inputs(inputs, layouts, sizes)
             if reference is not None:
                 reference = dataclasses.replace(reference, layouts=layouts, sizes=sizes)
+        timed = self.sdfg
+        assert timed is not None, "a session holds its program"
         program = time_program(
-            self.sdfg, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
+            timed, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
         return Performance(
             structured=program,
-            offloading=offload_report(self.sdfg, devices, moves, self.sizes, in_call),
+            offloading=offload_report(timed, devices, moves, self.sizes, in_call),
             kernels=kernel_reports(evidence, devices),
             hints=feedback.report(evidence),
         )

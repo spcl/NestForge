@@ -15,7 +15,7 @@ from test_failed_calls import program, without_guids
 
 from nestforge.records import MoveStatus
 from nestforge.server import CALLS
-from nestforge.session import PlaceResult, Session
+from nestforge.session import MoveResult, PlaceResult, Session
 from nestforge.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -36,6 +36,12 @@ def chain(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
         c[i] = t[i] * 2.0
 
 
+def sdfg_of(session: Session) -> dace.SDFG:
+    """The session's program; a session always holds one."""
+    assert session.sdfg is not None, "a session holds its program"
+    return session.sdfg
+
+
 def fresh(gpu: bool, tmp_path) -> Session:
     return Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=gpu), work_dir=str(tmp_path))
 
@@ -46,7 +52,7 @@ def doalls(session: Session) -> list[str]:
 
 
 def device_storages(session: Session) -> list[str]:
-    return [name for name, desc in session.sdfg.arrays.items() if desc.storage in GPU_RESIDENT_STORAGES]
+    return [name for name, desc in sdfg_of(session).arrays.items() if desc.storage in GPU_RESIDENT_STORAGES]
 
 
 def unnamed_states(value: object) -> object:
@@ -58,7 +64,7 @@ def unnamed_states(value: object) -> object:
 
 
 def structure(session: Session) -> str:
-    return json.dumps(unnamed_states(without_guids(session.sdfg.to_json())), sort_keys=True, default=str)
+    return json.dumps(unnamed_states(without_guids(sdfg_of(session).to_json())), sort_keys=True, default=str)
 
 
 def replay(gpu: bool, tmp_path, calls: list[tuple[str, dict]]) -> Session:
@@ -75,16 +81,17 @@ def test_unplace_reopens_the_scopes_and_keeps_the_kernels(tmp_path, gpu):
     first, second = doalls(session)
     kernel = session.set_scope([first]).reason
     session.place()  # gives second its default scope first
-    kernels = [ext.name for ext in external_calls(session.sdfg)]
+    kernels = [ext.name for ext in external_calls(sdfg_of(session))]
 
     result = session.unplace()
 
     assert result.status is MoveStatus.APPLIED and session.unplaced is None
-    assert [ext.name for ext in external_calls(session.sdfg)] == kernels and kernel in kernels and len(kernels) == 2
+    assert [ext.name for ext in external_calls(sdfg_of(session))] == kernels and kernel in kernels and len(kernels) == 2
     (default,) = set(kernels) - {kernel}
     assert session.unset_scope(default).status is MoveStatus.APPLIED
-    assert CALLS["set_scope"](session, labels=[second]).status is MoveStatus.APPLIED
-    assert len(external_calls(session.sdfg)) == 2
+    scoped = CALLS["set_scope"](session, labels=[second])
+    assert isinstance(scoped, MoveResult) and scoped.status is MoveStatus.APPLIED
+    assert len(external_calls(sdfg_of(session))) == 2
 
 
 @pytest.mark.parametrize("gpu", TARGETS)
@@ -113,7 +120,7 @@ def test_unplace_drops_the_device_memory_and_schedules_of_inserted_copies(tmp_pa
     session.unplace()
 
     assert device_storages(session) == []
-    assert all(ext.schedule != dace.ScheduleType.GPU_Device for ext in external_calls(session.sdfg))
+    assert all(ext.schedule != dace.ScheduleType.GPU_Device for ext in external_calls(sdfg_of(session)))
 
 
 @pytest.mark.parametrize("gpu", TOOL_TARGET)
@@ -170,12 +177,12 @@ def test_a_journal_with_unplace_rebuilds_the_same_program(tmp_path, gpu):
 def test_unplace_before_any_placement_is_refused_and_changes_nothing(tmp_path, gpu):
     session = fresh(gpu, tmp_path)
     session.run_defaults("scopes")
-    before = session.sdfg.to_json()
+    before = sdfg_of(session).to_json()
 
     result = session.unplace()
 
     assert result.status is MoveStatus.ILLEGAL and "no kernel is placed" in result.reason
-    assert session.sdfg.to_json() == before
+    assert sdfg_of(session).to_json() == before
 
 
 @pytest.mark.parametrize("gpu", TARGETS)
@@ -184,12 +191,12 @@ def test_set_scope_on_a_placed_program_is_refused_and_keeps_the_placement(tmp_pa
     first, second = doalls(session)
     session.set_scope([first])
     session.place()
-    before, unplaced = session.sdfg.to_json(), session.unplaced
+    before, unplaced = sdfg_of(session).to_json(), session.unplaced
 
     result = session.set_scope([second])
 
     assert result.status is MoveStatus.ILLEGAL and "call unplace first" in result.reason
-    assert session.sdfg.to_json() == before and session.unplaced is unplaced
+    assert sdfg_of(session).to_json() == before and session.unplaced is unplaced
 
 
 @pytest.mark.parametrize("gpu", TARGETS)
@@ -203,7 +210,7 @@ def test_a_refused_first_place_changes_nothing(tmp_path, gpu):
     assert isinstance(result, PlaceResult) and result.status is MoveStatus.ILLEGAL
     assert "no kernel is named no_such_kernel" in result.reason
     # the default scopes the first place gives are taken back with the refusal
-    assert external_calls(session.sdfg) == [] and structure(session) == before
+    assert external_calls(sdfg_of(session)) == [] and structure(session) == before
     assert session.applied == applied and session.unscoped is unscoped and session.unplaced is None
     assert len(doalls(session)) == 2 and session.place().status is MoveStatus.APPLIED
 
@@ -217,7 +224,7 @@ def test_a_refused_first_place_keeps_the_scopes_already_set(tmp_path):
     result = session.place({kernel: "fpga"})
 
     assert result.status is MoveStatus.ILLEGAL and "a device is 'cpu' or 'gpu'" in result.reason
-    assert [ext.name for ext in external_calls(session.sdfg)] == [kernel] and structure(session) == before
+    assert [ext.name for ext in external_calls(sdfg_of(session))] == [kernel] and structure(session) == before
 
 
 @pytest.mark.parametrize("gpu", TARGETS)
@@ -226,12 +233,12 @@ def test_unset_scope_on_a_placed_program_is_refused_and_keeps_the_placement(tmp_
     first, _ = doalls(session)
     kernel = session.set_scope([first]).reason
     session.place()
-    before, unplaced, devices = session.sdfg.to_json(), session.unplaced, session.devices()
+    before, unplaced, devices = sdfg_of(session).to_json(), session.unplaced, session.devices()
 
     result = session.unset_scope(kernel)
 
     assert result.status is MoveStatus.ILLEGAL and "call unplace first" in result.reason
-    assert session.sdfg.to_json() == before and session.unplaced is unplaced and session.devices() == devices
+    assert sdfg_of(session).to_json() == before and session.unplaced is unplaced and session.devices() == devices
     assert session.unset_scope("no_such_kernel").status is MoveStatus.NOT_FOUND
     session.unplace()
     assert session.unset_scope(kernel).status is MoveStatus.APPLIED
@@ -249,7 +256,7 @@ def test_the_scopes_gate_names_unplace(tmp_path):
 def test_unplace_is_refused_once_the_kernel_work_started(tmp_path):
     session = fresh(False, tmp_path)
     CALLS["run_defaults"](session, stage="placement")
-    CALLS["focus_kernel"](session, name=external_calls(session.sdfg)[0].name)
+    CALLS["focus_kernel"](session, name=external_calls(sdfg_of(session))[0].name)
 
     with pytest.raises(ValueError, match="kernel work has started"):
         CALLS["unplace"](session)

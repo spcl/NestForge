@@ -74,7 +74,7 @@ def smooth_steps(A: dace.float64[N], B: dace.float64[N]):
 
 @dace.program
 def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]):
-    for t in range(3):
+    for _ in range(3):
         for i in dace.map[1 : N - 1]:
             B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
         for i in dace.map[1 : N - 1]:
@@ -394,9 +394,11 @@ def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once():
     assert result.status is MoveStatus.APPLIED, result
     (kernel,) = top_level_kernels(session)
     assert session.kernel(result.reason) is kernel
-    assert not any(isinstance(block, LoopRegion) for block in session.sdfg.nodes()), "the loop left the program"
+    scoped = session.sdfg
+    assert scoped is not None
+    assert not any(isinstance(block, LoopRegion) for block in scoped.nodes()), "the loop left the program"
     assert not session.list_kernels()[0].parallel, "a kernel holding a time loop is sequential"
-    assert_same_values(reference, session.sdfg, ("A", "B"))
+    assert_same_values(reference, scoped, ("A", "B"))
 
 
 def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the_product():
@@ -414,7 +416,9 @@ def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the
     (kernel,) = top_level_kernels(session)
     assert session.kernel(result.reason) is kernel
     expected, actual = np.zeros((SIZE, SIZE)), np.zeros((SIZE, SIZE))
+    scoped = session.sdfg
+    assert scoped is not None
     reference(A=A.copy(), B=B.copy(), C=expected, N=SIZE)
-    session.sdfg(A=A.copy(), B=B.copy(), C=actual, N=SIZE)
+    scoped(A=A.copy(), B=B.copy(), C=actual, N=SIZE)
     np.testing.assert_allclose(actual, expected, rtol=1e-12)
     np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
