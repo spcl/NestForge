@@ -11,10 +11,9 @@ from collections.abc import Callable
 
 import dace
 import pytest
-import test_auto_vectorize_and_c_view as vectorize_fixtures
 import test_doall_tiling
-import test_expand_library
 import test_hoist_invariant_moves as hoist_fixtures
+import test_inline_library
 import test_lib_motion_moves
 import test_move_soundness
 import test_scope_moves as scope_fixtures
@@ -22,11 +21,12 @@ import test_session_moves
 import test_sink_invariant_code
 import test_skew_wavefront
 import test_unroll_config_moves
+import test_vectorize_doall_and_c_view as vectorize_fixtures
 from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
 from nestforge.session import UNDONE_BY, Move, Session
-from nestforge.stages.moves import AUTO_VECTORIZE, MOVE_SHAPES, ROLLBACK, config_names
+from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, VECTORIZE_DOALL, config_names
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
 #: below, so every kind is applied and rolled back somewhere in this file.
@@ -36,7 +36,7 @@ OWN_CASES = {
     "set-schedule-cpu": "test_rollback_after_a_scope_move",
     "set-schedule-gpu": "test_rollback_after_a_scope_move",
     "stage-loads-shared": "test_rollback_after_a_scope_move",
-    "auto-vectorize-scope": "test_rollback_after_vectorizing_a_doall",
+    "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
     "untile-doall": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
     "untile-for": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
 }
@@ -51,7 +51,7 @@ FIXTURE_MODULES = (
     test_lib_motion_moves,
     test_skew_wavefront,
     test_unroll_config_moves,
-    test_expand_library,
+    test_inline_library,
     test_doall_tiling,
     test_move_soundness,
     test_sink_invariant_code,
@@ -209,8 +209,8 @@ def test_rollback_after_propagate_config(tmp_path):
     ("kind", "device", "arguments"),
     [
         ("set-schedule-cpu", "cpu", {"schedule": "dynamic", "chunk": 16, "threads": 4}),
-        ("set-schedule-gpu", "gpu", {"tile_sizes": [128]}),
-        ("stage-loads-shared", "gpu", {"tile_sizes": [64]}),
+        ("set-schedule-gpu", "gpu", {"block": [128]}),
+        ("stage-loads-shared", "gpu", {"block": [64]}),
     ],
 )
 def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments: dict):
@@ -227,10 +227,10 @@ def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments
 
 def test_rollback_after_vectorizing_a_doall(tmp_path):
     session = vectorize_fixtures.session(tmp_path)
-    move = session.list_moves(AUTO_VECTORIZE)[0]
+    move = session.list_moves(VECTORIZE_DOALL)[0]
 
     differs = differs_after_rollback(
-        session, lambda: session.apply_move(AUTO_VECTORIZE, move.labels, tile_sizes=[4], isa="scalar")
+        session, lambda: session.apply_move(VECTORIZE_DOALL, move.labels, lanes=[4], isa="scalar")
     )
 
     assert not differs, differs

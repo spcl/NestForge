@@ -7,33 +7,19 @@ from collections.abc import Iterable
 
 #: Every family and its move kinds. ``rollback`` belongs to none and is never switched off.
 FAMILIES: dict[str, frozenset[str]] = {
-    "fusion": frozenset({"for-fusion", "doall-fusion", "collapse-doalls"}),
+    "fusion": frozenset({"for-fusion", "doall-fusion", "snapshot-reads"}),
     "fission": frozenset({"for-fission", "doall-fission", "subgraph-fission"}),
-    "interchange": frozenset(
-        {
-            "interchange-doall-doall",
-            "interchange-doall-for",
-            "interchange-for-doall",
-        }
-    ),
-    "tiling": frozenset(
-        {"tile-doall", "tile-for", "untile-doall", "untile-for", "unroll-doall", "unroll-for", "expand-doall"}
-    ),
+    "interchange": frozenset({"interchange-doall-doall", "interchange-doall-for", "interchange-for-doall"}),
+    "shape": frozenset({"flatten-doalls", "unflatten-doall", "doall-to-for", "for-to-doall"}),
+    "tiling": frozenset({"tile-doall", "tile-for", "untile-doall", "untile-for"}),
     "hoisting": frozenset(
-        {
-            "hoist-invariant-code",
-            "sink-invariant-code",
-            "hoist-invariant-guard",
-            "sink-invariant-guard",
-            "snapshot-reads",
-            "stage-loads-shared",
-            "propagate-config",
-        }
+        {"hoist-invariant-code", "sink-invariant-code", "hoist-invariant-guard", "sink-invariant-guard"}
     ),
-    "library": frozenset({"lib-before", "lib-after", "lib-into", "expand-library", "set-library-implementation"}),
+    "specialize": frozenset({"propagate-config", "unroll-for", "unroll-doall"}),
+    "library": frozenset({"lib-before", "lib-after", "lib-into", "inline-library", "set-library-implementation"}),
     "layout": frozenset({"relayout"}),
-    "vectorize": frozenset({"auto-vectorize-scope"}),
-    "schedule": frozenset({"doall-to-for", "for-to-doall", "set-schedule-cpu", "set-schedule-gpu"}),
+    "vectorize": frozenset({"vectorize-doall"}),
+    "schedule": frozenset({"set-schedule-cpu", "set-schedule-gpu", "stage-loads-shared"}),
     "wavefront": frozenset({"skew-wavefront"}),
 }
 

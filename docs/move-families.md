@@ -8,15 +8,17 @@ speedup is attributed to its moves and their families by replaying its journal. 
 
 | Family | Move kinds |
 |---|---|
-| `fusion` | `for-fusion`, `doall-fusion`, `collapse-doalls` |
+| `fusion` | `for-fusion`, `doall-fusion`, `snapshot-reads` |
 | `fission` | `for-fission`, `doall-fission`, `subgraph-fission` |
 | `interchange` | `interchange-doall-doall`, `interchange-doall-for`, `interchange-for-doall` |
-| `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for`, `unroll-doall`, `unroll-for`, `expand-doall` |
-| `hoisting` | `hoist-invariant-code`, `sink-invariant-code`, `hoist-invariant-guard`, `sink-invariant-guard`, `snapshot-reads`, `stage-loads-shared`, `propagate-config` |
-| `library` | `lib-before`, `lib-after`, `lib-into`, `expand-library`, `set-library-implementation` |
+| `shape` | `flatten-doalls`, `unflatten-doall`, `doall-to-for`, `for-to-doall` |
+| `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for` |
+| `hoisting` | `hoist-invariant-code`, `sink-invariant-code`, `hoist-invariant-guard`, `sink-invariant-guard` |
+| `specialize` | `propagate-config`, `unroll-for`, `unroll-doall` |
+| `library` | `lib-before`, `lib-after`, `lib-into`, `inline-library`, `set-library-implementation` |
 | `layout` | `relayout` |
-| `vectorize` | `auto-vectorize-scope` |
-| `schedule` | `doall-to-for`, `for-to-doall`, `set-schedule-cpu`, `set-schedule-gpu` |
+| `vectorize` | `vectorize-doall` |
+| `schedule` | `set-schedule-cpu`, `set-schedule-gpu`, `stage-loads-shared` |
 | `wavefront` | `skew-wavefront` |
 
 `rollback` belongs to no family and is never switched off. A new move kind joins a family in the same change, or
@@ -63,6 +65,11 @@ worked. The script reports this order-dependent number and makes no claim about 
 
 Each prefix is measured `--repeats` times (2 by default). A ratio inside the larger spread of the two prefixes counts
 as 1.
+
+A journal from before a rename replays under today's names (`moves.RENAMED_KINDS`, `moves.journaled_arguments`):
+`collapse-doalls` is `flatten-doalls`, `expand-doall` `unflatten-doall`, `expand-library` `inline-library`,
+`auto-vectorize-scope` `vectorize-doall` (its `tile_sizes` become `lanes`), and the sizes of `stage-loads-shared` and
+`set-schedule-gpu` become `block`.
 
 The replay stops at the first `write_kernel`. The plugin record keeps a kernel's source as its hash, so the calls
 from there on are counted together as `kernel code`, unattributed. The journal comes from the route's journal file

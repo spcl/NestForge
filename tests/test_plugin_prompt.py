@@ -33,7 +33,7 @@ def test_the_overlay_switches_the_coding_blocks_off_and_inserts_what_nestforge_d
     edits = dict(sut.set)
     assert {"build", "syntax_check", "index_buffers"} <= {k for k, e in edits.items() if e.enabled is False}
     assert [(i.after, i.block.text) for i in sut.insert] == [("intro", ABOUT)]
-    assert "expand-library" in dict(dict(workflow.set)["workflow"].vars)["WORKFLOW"]
+    assert "inline-library" in dict(dict(workflow.set)["workflow"].vars)["WORKFLOW"]
 
 
 def test_the_task_prompt_delivers_finalizes_library_and_drops_the_coding_guides(registered: None) -> None:

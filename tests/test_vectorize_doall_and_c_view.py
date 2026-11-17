@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``auto-vectorize-scope`` vectorizes the one doall it names; ``view_tree`` prints bodies as Python or as C, which
+"""``vectorize-doall`` vectorizes the one doall it names; ``view_tree`` prints bodies as Python or as C, which
 shows a vectorized body's tile functions. Printing never changes the program."""
 
 import dace
@@ -10,7 +10,7 @@ from nestforge.ir.emit_c import body_c
 from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.performance import Reference
-from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, tile_lanes
+from nestforge.stages.vectorize import DEFAULT_LANES, VECTORIZE_DOALL, tile_lanes
 
 N = dace.symbol("N", dace.int64, positive=True)
 SIZE = 37  # not a multiple of the lanes: the masked remainder tile runs too
@@ -110,10 +110,10 @@ def correct(sut: Session) -> bool:
 def test_vectorizing_one_doall_tiles_it_and_leaves_the_other_scalar(tmp_path):
     sut = session(tmp_path)
     axpy, reverse = doall_writing(sut, "y"), doall_writing(sut, "z")
-    listed = {m.labels[0]: m.tile_sizes for m in sut.list_moves(AUTO_VECTORIZE)}
+    listed = {m.labels[0]: m.lanes for m in sut.list_moves(VECTORIZE_DOALL)}
     assert listed == {axpy: (DEFAULT_LANES,), reverse: (DEFAULT_LANES,)}
 
-    result = sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[4], isa="scalar")
+    result = sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[4], isa="scalar")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "VectorizeMap"), result
     assert tile_calls(sut.sdfg) > 0
@@ -127,11 +127,22 @@ def test_an_unknown_isa_or_lane_count_is_refused_and_changes_nothing(tmp_path):
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
 
-    wrong_isa = sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[4], isa="mmx")
-    no_lanes = sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[], isa="avx2")
+    wrong_isa = sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[4], isa="mmx")
+    no_lanes = sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[], isa="avx2")
 
     assert wrong_isa.status is MoveStatus.ILLEGAL and "avx512" in wrong_isa.reason, wrong_isa
-    assert no_lanes.status is MoveStatus.ILLEGAL and "tile_sizes" in no_lanes.reason, no_lanes
+    assert no_lanes.status is MoveStatus.ILLEGAL and "lanes" in no_lanes.reason, no_lanes
+    assert tile_calls(sut.sdfg) == 0
+
+
+def test_lanes_passed_as_tile_sizes_are_refused_naming_the_argument_the_move_takes(tmp_path):
+    sut = session(tmp_path)
+    axpy = doall_writing(sut, "y")
+
+    result = sut.apply_move(VECTORIZE_DOALL, [axpy], tile_sizes=[4], isa="scalar")
+
+    assert result.status is MoveStatus.ILLEGAL, result
+    assert "takes its sizes as lanes, not tile_sizes" in result.reason
     assert tile_calls(sut.sdfg) == 0
 
 
@@ -149,16 +160,16 @@ def test_the_c_view_prints_a_scalar_body_with_its_accesses(tmp_path):
 
     tree = sut.view(expand=[state_of(sut, axpy), axpy], c=[state_of(sut, axpy)])
 
-    assert f"y[{i}] = (__tmp0[0] + y[{i}]);" in tree, tree
+    assert f"y[{i}] = (tmp0[0] + y[{i}]);" in tree, tree
     assert "auto " not in tree, tree
     assert sut.sdfg.hash_sdfg() == before, "printing changed the program"
-    assert f"y[{i}] = (__tmp0[0] + y[{i}]);" not in sut.view(python=[state_of(sut, axpy)])
+    assert f"y[{i}] = (tmp0[0] + y[{i}]);" not in sut.view(python=[state_of(sut, axpy)])
 
 
 def test_the_c_view_shows_a_vectorized_body_as_tile_functions(tmp_path):
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
-    sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[4], isa="scalar")
+    sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[4], isa="scalar")
     state = state_of(sut, doall_writing(sut, "z"))
 
     c_tree, python_tree = sut.view(expand=[state, *doall_labels(sut)], c=[state]), sut.view(python=[state])
@@ -175,7 +186,7 @@ def test_a_row_inside_a_c_row_keeps_its_own_language(tmp_path):
 
     tree = sut.view(expand=[state, axpy, reverse], c=[state], python=[reverse])
 
-    assert f"y[{i}] = (__tmp0[0] + y[{i}]);" in tree, tree
+    assert f"y[{i}] = (tmp0[0] + y[{i}]);" in tree, tree
     assert f"z[{j}] = (y[" not in tree and f"z[{j}] = y[N - {j} - 1] * 3.0" in tree, tree
     refused = sut.set_language(["nowhere"], "c")
     assert refused.startswith("illegal") and "nowhere" in refused
@@ -190,7 +201,7 @@ def test_a_doall_nested_in_another_prints_its_state_once_and_its_accumulation_in
 
     rows = [line.split("- ", 1)[1].split()[0] for line in tree.splitlines() if "- " in line and ": " not in line]
     assert len(rows) == len(set(rows)), tree
-    assert any("+= _wcr_priv" in line for line in tree.splitlines()), tree
+    assert any("+= tmp" in line for line in tree.splitlines()), tree
 
 
 def test_rollback_restores_the_body_language_the_program_had(tmp_path):
@@ -198,7 +209,7 @@ def test_rollback_restores_the_body_language_the_program_had(tmp_path):
     axpy = doall_writing(sut, "y")
     state = state_of(sut, axpy)
     sut.set_language([state], "c")
-    sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[4], isa="scalar")
+    sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[4], isa="scalar")
     sut.set_language([state], "python")
 
     sut.apply_move("rollback", [])
@@ -245,10 +256,10 @@ def test_a_doall_inside_another_is_refused_and_the_program_is_unchanged(tmp_path
     ]
     before = sut.sdfg.hash_sdfg()
 
-    result = sut.apply_move(AUTO_VECTORIZE, [inner], tile_sizes=[4], isa="scalar")
+    result = sut.apply_move(VECTORIZE_DOALL, [inner], lanes=[4], isa="scalar")
 
     assert result.status is MoveStatus.ILLEGAL and "inside another doall" in result.reason, result
-    assert inner not in {m.labels[0] for m in sut.list_moves(AUTO_VECTORIZE)}
+    assert inner not in {m.labels[0] for m in sut.list_moves(VECTORIZE_DOALL)}
     assert sut.sdfg.hash_sdfg() == before and tile_calls(sut.sdfg) == 0
 
 
@@ -257,7 +268,7 @@ def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path):
     sut.canonicalize()
     doall = doall_writing(sut, "y")
 
-    result = sut.apply_move(AUTO_VECTORIZE, [doall], tile_sizes=[4], isa="scalar")
+    result = sut.apply_move(VECTORIZE_DOALL, [doall], lanes=[4], isa="scalar")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "VectorizeMap"), result
     assert tile_calls(sut.sdfg) > 0

@@ -114,8 +114,8 @@ from nestforge.stages.layout import (
 from nestforge.stages.moves import (
     DEFAULT_ISA,
     DEVICE_KINDS,
-    EXPAND_LIBRARY,
     FORCED_LOOP_TO_MAP,
+    INLINE_LIBRARY,
     MOVE_SHAPES,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
@@ -129,6 +129,7 @@ from nestforge.stages.moves import (
     GpuChoice,
     Rewrite,
     check_kind,
+    chosen_sizes,
     legal_moves,
     plan_move,
     plan_set_schedule_gpu,
@@ -138,6 +139,7 @@ from nestforge.stages.moves import (
     sdfg_metrics,
     set_gpu_choices,
     sinkable_containers,
+    size_argument,
 )
 from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
 from nestforge.stages.placement import (
@@ -159,7 +161,7 @@ from nestforge.stages.scopes import (
     node_boundary,
 )
 from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
-from nestforge.stages.vectorize import AUTO_VECTORIZE
+from nestforge.stages.vectorize import VECTORIZE_DOALL
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
@@ -174,8 +176,8 @@ UNDO_DEPTH = 8
 UNDONE_BY = {
     "tile-doall": "untile-doall",
     "tile-for": "untile-for",
-    "collapse-doalls": "expand-doall",
-    "expand-doall": "collapse-doalls",
+    "flatten-doalls": "unflatten-doall",
+    "unflatten-doall": "flatten-doalls",
     "interchange-for-doall": "interchange-doall-for",
     "interchange-doall-for": "interchange-for-doall",
     "interchange-doall-doall": "interchange-doall-doall",
@@ -299,8 +301,12 @@ class Move(Record):
 
     kind: str
     labels: tuple[str, ...]
-    #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
+    #: For a tiling kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
     tile_sizes: tuple[int, ...] = ()
+    #: For ``vectorize-doall``, the lanes per vectorized dimension it was checked at.
+    lanes: tuple[int, ...] = ()
+    #: For ``stage-loads-shared`` and ``set-schedule-gpu``, the thread block.
+    block: tuple[int, ...] = ()
     #: For ``set-library-implementation``, the implementation it sets, and the one the call has now; for
     #: ``set-schedule-cpu``, ``current`` is the doall's schedule now (``dynamic,16 threads=8``).
     implementation: str | None = None
@@ -311,7 +317,7 @@ class Move(Record):
     config_values: dict[str, int | float] = {}
     #: For ``relayout``, the operation it applies; listed with :func:`~nestforge.stages.layout.listed_operation`.
     operation: dict[str, object] = {}
-    #: For ``auto-vectorize-scope``, the ISA its tiles are for; ``tile_sizes`` holds their lanes.
+    #: For ``vectorize-doall``, the ISA its tiles are for.
     isa: str = DEFAULT_ISA
     #: For ``for-to-doall``, whether it applies past a refused dependence check; a listed move never does.
     force: bool = False
@@ -921,8 +927,8 @@ class Session:
                     current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
                     moves.append(Move(kind=k, labels=labels, current=current, **scoped))
             else:
-                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == AUTO_VECTORIZE else ()
-                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
+                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
+                moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
         if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
             listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
             if listed is not None:
@@ -1064,6 +1070,8 @@ class Session:
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
         max_iterations: int = PROBE_UNROLL,
+        lanes: Sequence[int] = (),
+        block: Sequence[int] = (),
         config_values: Mapping[str, int | float] | None = None,
         scope: str | None = None,
         operation: Mapping[str, object] | None = None,
@@ -1083,14 +1091,17 @@ class Session:
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one; for
-            ``stage-loads-shared``, the thread block, one per dimension of the kernel (at most three).
+            ``skew-wavefront``, two extents.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :param max_iterations: For ``unroll-for`` and ``unroll-doall``, the largest trip count to unroll.
         :param config_values: For ``propagate-config``, the run-time values of scalar arguments and free symbols;
             the program becomes a dispatch between the program specialized for them and the program as it was.
         :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
         :param operation: For ``relayout``, one relayout operation on an argument (:meth:`relayout`).
-        :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
+        :param lanes: For ``vectorize-doall``, the lanes per vectorized dimension, innermost last.
+        :param block: For ``stage-loads-shared`` and ``set-schedule-gpu`` on a kernel doall, the thread block, one size
+            per dimension (at most three).
+        :param isa: For ``vectorize-doall``, the ISA the tiles are for.
         :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
         :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
         :param container: For ``sink-invariant-code``, the temporary whose statements sink into the row.
@@ -1109,6 +1120,10 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         if kind == ROLLBACK:
             return self.undo()
+        sizes = chosen_sizes(kind, tile_sizes, lanes, block)
+        if isinstance(sizes, Refused):
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=sizes)
+        tile_sizes = sizes
         undone = self.inverse_of_last(kind, names, scope, force)
         if undone is not None:
             return undone
@@ -1167,7 +1182,7 @@ class Session:
         labels_now = self.labels_in(scope, target)
         with self.atomic():
             made = plan.commit()
-            if kind == EXPAND_LIBRARY:
+            if kind == INLINE_LIBRARY:
                 # the expansion's maps join the program in canonical form, as rows the other moves take
                 settle(cast(list[nodes.NestedSDFG], made), self.targets)
             if kind == PROPAGATE_CONFIG:

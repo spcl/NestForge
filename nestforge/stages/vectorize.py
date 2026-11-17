@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``auto-vectorize-scope``: DaCe's vectorizer on one top-level doall (``VectorizeMap``), every other doall left
+"""``vectorize-doall``: DaCe's vectorizer on one top-level doall (``VectorizeMap``), every other doall left
 scalar. Its innermost maps become tiles of ``tile_sizes`` lanes for ``isa``; the body becomes tile loads, tile
 operations and tile stores, which the C view of the tree shows as the ISA's tile functions over its intrinsics."""
 
@@ -17,7 +17,7 @@ from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 from nestforge.records import CRASHES, Refusal, Refused
 
 __all__ = [
-    "AUTO_VECTORIZE",
+    "VECTORIZE_DOALL",
     "DEFAULT_LANES",
     "ISAS",
     "MAX_TILE_DIMS",
@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 #: The move kind; it takes ``tile_sizes`` (lanes per vectorized dimension) and ``isa``.
-AUTO_VECTORIZE = "auto-vectorize-scope"
+VECTORIZE_DOALL = "vectorize-doall"
 #: The ISA names the move takes, by DaCe's tile-op ISA.
 ISAS: dict[str, ISA] = {
     "auto": ISA.AUTO,
@@ -52,7 +52,7 @@ def tile_lanes(isa: str, tile_sizes: Sequence[int]) -> tuple[int, ...] | str:
         return (DEFAULT_LANES,) * max(1, min(len(tile_sizes), MAX_TILE_DIMS))
     if not 1 <= len(tile_sizes) <= MAX_TILE_DIMS or any(size < 1 for size in tile_sizes):
         return Refused(
-            f"pass tile_sizes: the lanes of each vectorized dimension, innermost last, 1 to {MAX_TILE_DIMS} sizes "
+            f"pass lanes: the lanes of each vectorized dimension, innermost last, 1 to {MAX_TILE_DIMS} sizes "
             f"(e.g. [{DEFAULT_LANES}]); a scalable ISA ({sorted(SCALABLE)}) takes its own vector length instead.",
             Refusal.ARGUMENT,
         )

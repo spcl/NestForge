@@ -1142,7 +1142,7 @@ def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float
 
 def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one():
     sut, reference = session_and_reference(level_pass)
-    assert apply_listed(sut, "expand-doall").status is MoveStatus.APPLIED
+    assert apply_listed(sut, "unflatten-doall").status is MoveStatus.APPLIED
 
     result = apply_listed(sut, "doall-to-for")
 
@@ -1174,7 +1174,7 @@ def strip_labels(tree: str) -> str:
 
 def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
     sut, reference = session_and_reference(level_pass)
-    apply_listed(sut, "expand-doall")
+    apply_listed(sut, "unflatten-doall")
     nest = sut.describe()
     apply_listed(sut, "doall-to-for")
 
@@ -1188,8 +1188,8 @@ def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
 
 def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_a_later_move():
     sut, reference = session_and_reference(two_level_passes)
-    apply_listed_first(sut, "expand-doall")
-    apply_listed_first(sut, "expand-doall")
+    apply_listed_first(sut, "unflatten-doall")
+    apply_listed_first(sut, "unflatten-doall")
     first, second = (move.labels for move in sut.list_moves("doall-to-for")[:2])
     sut.apply_move("doall-to-for", first)
     (loop,) = loops(sut.sdfg)
@@ -1295,7 +1295,7 @@ def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states
     the parallelism, and the merged body is one state holding both doalls."""
     sut, reference = session_and_reference(two_level_passes)
     for _ in range(2):
-        apply_listed_first(sut, "expand-doall")
+        apply_listed_first(sut, "unflatten-doall")
         apply_listed_first(sut, "doall-to-for")
 
     result = apply_listed(sut, "for-fusion")

@@ -67,9 +67,9 @@ OPENED_DOALL = """\
 SDFG 'shaped'
 |- state0  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
 |  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
-|     : test_tree_view_shaped_A_index = A[i]
-|     : B_slice = test_tree_view_shaped_A_index + 1.0
-|     : B[i] = B_slice
+|     : tmp3 = A[i]
+|     : tmp0 = tmp3 + 1.0
+|     : B[i] = tmp0
 `- for0  i=1:20  num_states=3  work=19 depth=19
    |- state1
    `- if0
@@ -360,14 +360,14 @@ def test_a_reduction_is_named_on_the_kernel_line():
     order is unspecified and a backend may use a register accumulator or an OpenMP clause. That is
     structural, and the agent should not have to read the body to find it."""
     tree = tree_of(matvec)
-    assert "reduce=(+ over j -> C)" in tree, tree
+    assert "accum=(C += over j)" in tree, tree
 
 
 def test_only_the_collapsed_axis_is_reported():
     """The reduced axes are the map parameters the output subset does not mention -- a map over
     (i, j) writing C[i] has collapsed j and only j."""
     tree = tree_of(matvec)
-    assert "over j ->" in tree and "over i " not in tree, tree
+    assert "C += over j)" in tree and "over i" not in tree, tree
 
 
 def test_a_kernel_without_a_reduction_says_nothing():
@@ -378,12 +378,12 @@ def test_the_reduction_op_is_read_off_the_wcr():
     sdfg = matvec.to_sdfg(simplify=True)
     normalize_labels(sdfg)
     state, entry = next((st, n) for st in sdfg.states() for n in st.nodes() if isinstance(n, dc.sdfg.nodes.MapEntry))
-    assert introspect.kernel_reductions(state, entry) == ["+ over j -> C"]
+    assert introspect.kernel_reductions(state, entry) == ["C += over j"]
     # A different op reads as itself, not as "+".
     exit_node = state.exit_node(entry)
     edge = next(e for e in state.in_edges(exit_node) if e.data.wcr is not None)
     edge.data.wcr = "lambda x, y: max(x, y)"
-    assert introspect.kernel_reductions(state, entry) == ["max over j -> C"]
+    assert introspect.kernel_reductions(state, entry) == ["C max= over j"]
 
 
 def test_a_body_is_not_recovered_by_slicing_the_emitted_block():
@@ -538,3 +538,72 @@ def test_a_callee_given_a_row_of_an_array_shows_its_branches_and_doalls_in_the_t
     assert top_level_nsdfgs(session.sdfg) == []
     assert "when rows[k, 0] > 0.0" in tree and tree.count("doalls=1") == 2
     assert {move.kind for move in session.list_moves()} >= {"tile-doall"}
+
+
+@dc.program
+def until_small(x: dc.float64[1], y: dc.float64[20]):
+    while x[0] > 1.0:
+        x[0] = x[0] / 2.0
+    for i in dc.map[0:20]:
+        y[i] = y[i] * x[0]
+
+
+@dc.program
+def blur_scale(A: dc.float64[20], T: dc.float64[20], B: dc.float64[20]):
+    for i in dc.map[1:19]:
+        T[i] = (A[i - 1] + A[i] + A[i + 1]) / 3
+    for i in dc.map[1:19]:
+        B[i] = 2 * T[i]
+
+
+def test_a_loop_that_runs_until_its_condition_fails_is_a_while_row_and_a_counted_one_a_for_row():
+    sdfg = until_small.to_sdfg(simplify=True)
+    normalize_labels(sdfg)
+
+    tree = describe_graph(sdfg, expanded=())
+
+    assert re.search(r"while\d+  x_index > 1\.0", tree), tree
+    assert not re.search(r"\bfor\d+", tree), tree
+
+
+def test_generated_temporaries_print_as_tmp_and_arguments_keep_their_names(tmp_path):
+    sut = Session(blur_scale.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    sut.canonicalize()
+
+    tree = sut.view(expand=[label for label in sut.row_index() if label.startswith(("state", "doall"))])
+    names = {name for sd in sut.sdfg.all_sdfgs_recursive() for name in sd.arrays}
+
+    assert {"A", "T", "B"} <= names
+    assert not [name for name in names if "_slice" in name or name.startswith("_")], names
+    assert re.search(r": tmp\d+ = A\[_loop_it_0 - 1\] \+ A\[_loop_it_0\]", tree), tree
+
+
+def test_after_a_fusion_no_rename_line_is_printed_and_no_name_means_two_containers(tmp_path):
+    sut = Session(blur_scale.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    sut.canonicalize()
+    (fusion,) = sut.list_moves("doall-fusion")
+    sut.apply_move(fusion.kind, fusion.labels)
+    opened = [label for label in sut.row_index() if label.startswith(("state", "doall"))]
+
+    python = sut.view(expand=opened)
+    c = sut.view(c=[label for label in opened if label.startswith("state")])
+
+    assert "_loop_it_1 = _loop_it_0" not in python, python
+    stores = [line for line in c.splitlines() if re.search(r": T\[", line)]
+    assert len(stores) == 1 and re.search(r"T\[_loop_it_0\] = tmp\d+\[0\];", stores[0]), c
+
+
+def test_a_generated_local_shortens_to_v_and_an_index_read_to_its_array():
+    lines = ["prog_A_index = A[i]", "B_slice = prog_A_index + 1.0", "B[i] = B_slice"]
+
+    shortened = introspect.shortened_locals(lines, frozenset({"A", "B", "i"}))
+
+    assert shortened == ["A_index = A[i]", "v0 = A_index + 1.0", "B[i] = v0"]
+
+
+def test_a_symbol_renamed_once_is_folded_and_a_container_copy_stays():
+    lines = ["t = a[k]", "j = k", "b[j] = t", "c = t"]
+
+    folded = introspect.folded_renames(lines, frozenset({"a", "b", "c", "t"}))
+
+    assert folded == ["t = a[k]", "b[k] = t", "c = t"]

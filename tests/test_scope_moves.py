@@ -94,7 +94,7 @@ def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path)
     program, other = session.sdfg.to_json(), session.kernel(second).standalone_sdfg.hash_sdfg()
 
     done = session.apply_move(
-        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
+        "stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first
     )
 
     body = session.kernel(first).standalone_sdfg
@@ -118,7 +118,7 @@ def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_pat
 
     done = session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), scope=first)
 
-    assert done.status is not MoveStatus.APPLIED and "pass tile_sizes, the thread block" in done.reason
+    assert done.status is not MoveStatus.APPLIED and "pass block, the thread block" in done.reason
     assert session.kernel(first).standalone_sdfg.hash_sdfg() == before
 
 
@@ -151,9 +151,7 @@ def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
 @pytest.mark.gpu
 def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy_computes(tmp_path):
     session, first, _ = placed_on_gpu(tmp_path)
-    session.apply_move(
-        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
-    )
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
     rng = np.random.default_rng(0)
     a, b, c = rng.random(1000), rng.random(1000), np.zeros(1000)
 
@@ -248,7 +246,7 @@ def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
     assert listed.current == "sequential"
 
-    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[128])
+    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, block=[128])
     session.apply_move("tile-doall", only_move(session, "tile-doall", second), tile_sizes=[32], scope=second)
 
     assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule block=[128]"), done
@@ -261,7 +259,7 @@ def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_
     session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
 
     done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="dynamic")
-    blocked = session.apply_move("set-schedule-gpu", [kernel], scope=first, tile_sizes=[64])
+    blocked = session.apply_move("set-schedule-gpu", [kernel], scope=first, block=[64])
 
     assert done.status is MoveStatus.APPLIED, done
     maps = placed_maps(session, first)
@@ -290,7 +288,7 @@ def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path):
     session, first, _ = placed_on_gpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
 
-    result = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[1, 1, 128])
+    result = session.apply_move("set-schedule-gpu", listed.labels, scope=first, block=[1, 1, 128])
 
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
     assert placed_maps(session, first)[listed.labels[0]].gpu_block_size != [1, 1, 128]
@@ -300,7 +298,7 @@ def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
     session, first, _ = placed_on_cpu(tmp_path)
     (label,) = only_move(session, "set-schedule-cpu", first)
 
-    result = session.apply_move("set-schedule-gpu", [label], scope=first, tile_sizes=[128])
+    result = session.apply_move("set-schedule-gpu", [label], scope=first, block=[128])
 
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
     assert session.list_moves("set-schedule-gpu", scope=first) == []

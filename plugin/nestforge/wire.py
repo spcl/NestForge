@@ -84,9 +84,19 @@ class ApplyMove(Labeled):
     tile_sizes: list[int] = pydantic.Field(
         default_factory=list,
         description=(
-            "tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64]; "
-            "stage-loads-shared: the thread block, one size per dimension (at most 3), e.g. [256]; set-schedule-gpu on "
-            "a kernel doall: its thread block, e.g. [32, 8]."
+            "tile-doall: one tile size per dimension, e.g. [32, 32]; tile-for: one size, e.g. [64]; skew-wavefront: "
+            "two extents, along the loop and along the diagonal."
+        ),
+    )
+    lanes: list[int] = pydantic.Field(
+        default_factory=list,
+        description="vectorize-doall: the lanes per vectorized dimension, innermost last, e.g. [8] (sve ignores them).",
+    )
+    block: list[int] = pydantic.Field(
+        default_factory=list,
+        description=(
+            "stage-loads-shared, and set-schedule-gpu on a kernel doall: the thread block, one size per dimension "
+            "(at most 3), e.g. [256] or [32, 8]."
         ),
     )
     implementation: str | None = pydantic.Field(
@@ -102,8 +112,7 @@ class ApplyMove(Labeled):
     )
     isa: str = pydantic.Field(
         "auto",
-        description="auto-vectorize-scope: the ISA of the tiles, one of auto, avx512, avx2, sve, neon, scalar; "
-        "tile_sizes are the lanes per vectorized dimension, innermost last (sve ignores them).",
+        description="vectorize-doall: the ISA of the tiles, one of auto, avx512, avx2, sve, neon, scalar.",
     )
     force: bool = pydantic.Field(
         False,
@@ -247,7 +256,7 @@ TOOLS: dict[str, ToolDef] = {
     "apply_move": ToolDef(
         Phase.MOVES,
         ApplyMove,
-        "Apply one move as list_moves listed it (or with your own tile_sizes, max_iterations, config_values); answers "
+        "Apply one move as list_moves listed it (or with your own tile_sizes, lanes, block, max_iterations, config_values); answers "
         "at once with the outcome, not with a time: call get_performance after the moves you want to compare. It "
         "retires the labels of the rows it took: read the tree again before the next move. kind rollback, labels [], "
         "takes the last change back (the last 8 can be).",

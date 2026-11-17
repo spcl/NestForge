@@ -202,8 +202,8 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
     sut.canonicalize()
 
     for _ in range(calls):
-        expand = sut.list_moves("expand-library")[0]
-        assert sut.apply_move("expand-library", expand.labels).status is MoveStatus.APPLIED
+        expand = sut.list_moves("inline-library")[0]
+        assert sut.apply_move("inline-library", expand.labels).status is MoveStatus.APPLIED
 
     assert "no work= or depth=" in sut.describe(costs=True)
 
@@ -216,8 +216,8 @@ def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
     sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
     sut.canonicalize()
 
-    while expands := sut.list_moves("expand-library"):
-        assert sut.apply_move("expand-library", expands[0].labels).status is MoveStatus.APPLIED
+    while expands := sut.list_moves("inline-library"):
+        assert sut.apply_move("inline-library", expands[0].labels).status is MoveStatus.APPLIED
 
     tree = sut.describe(costs=True)
     assert "no work= or depth=" not in tree

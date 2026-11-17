@@ -12,7 +12,7 @@ copy of the kernel first:
    `FFT` and `IFFT` are spelled as the NumPy call that runs the BLAS, LAPACK or FFT the reference runs (`LIBRARY_CALLS`),
    so the oracle of a call costs what the call costs. A node with no such spelling (`Scan`, `FindFirst`, `ArgReduce`,
    `ScatterConflictCheck`: linear, without a vendor library) expands in the oracle's copy only, to `pure` loops. An
-   `expand-library` move on a Fourier transform leaves DaCe's C++ `dft` tasklet, which has no oracle: such a kernel is
+   `inline-library` move on a Fourier transform leaves DaCe's C++ `dft` tasklet, which has no oracle: such a kernel is
    refused with that reason, and `set-library-implementation` is the way to choose its implementation.
 2. Nested SDFGs are inlined.
 3. DaCe's `InlineTaskletConnectors` rewrites connectors into direct array accesses, as the CPF code generator does.

@@ -109,7 +109,7 @@ from nestforge.stages.sinking import (
 )
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
-from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, vectorize_config, vectorize_refusal
+from nestforge.stages.vectorize import DEFAULT_LANES, VECTORIZE_DOALL, vectorize_config, vectorize_refusal
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +121,7 @@ class Rewrite:
 
 
 #: The move kind that turns a library call into maps, which the session then canonicalizes.
-EXPAND_LIBRARY = "expand-library"
+INLINE_LIBRARY = "inline-library"
 #: The move kind that picks a library call's implementation; it takes ``implementation``.
 SET_IMPLEMENTATION = "set-library-implementation"
 #: The move kind, on no row, that specializes the program for argument values; it takes ``config_values``.
@@ -177,12 +177,12 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "interchange-for-doall": (LoopRegion, nodes.MapEntry),
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
-    EXPAND_LIBRARY: (nodes.LibraryNode,),
+    INLINE_LIBRARY: (nodes.LibraryNode,),
     SET_IMPLEMENTATION: (nodes.LibraryNode,),
     "tile-doall": (nodes.MapEntry,),
     "untile-doall": (nodes.MapEntry, nodes.MapEntry),
-    "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
-    "expand-doall": (nodes.MapEntry,),
+    "flatten-doalls": (nodes.MapEntry, nodes.MapEntry),
+    "unflatten-doall": (nodes.MapEntry,),
     "doall-to-for": (nodes.MapEntry,),
     "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
@@ -193,7 +193,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     SINK_INVARIANT_CODE: (LOOP_ROW,),
     HOIST_INVARIANT_GUARD: (LOOP_ROW,),
     SINK_INVARIANT_GUARD: (ConditionalBlock,),
-    AUTO_VECTORIZE: (nodes.MapEntry,),
+    VECTORIZE_DOALL: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
     LIB_INTO: (nodes.CodeNode, SDFGState),
@@ -210,16 +210,63 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
 DEVICE_KINDS = frozenset({"stage-loads-shared"})
 
-#: The ISA ``auto-vectorize-scope`` vectorizes for when none is given: the best one the host runs.
+#: The ISA ``vectorize-doall`` vectorizes for when none is given: the best one the host runs.
 DEFAULT_ISA = "auto"
 
-#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order (for
+#: The move kinds listed with probe sizes: one positive size per dimension of the kernel, in its order (for
 #: ``stage-loads-shared``, the thread block: one size per dimension, at most three).
 SIZED = frozenset({"tile-doall", "tile-for", "stage-loads-shared"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
 #: How many tile extents ``skew-wavefront`` takes: along the skewed loop, and along the diagonal.
 SKEW_TILE_DIMS = 2
+#: The move kinds whose sizes are vector lanes (``lanes``), and those whose sizes are a GPU thread block (``block``);
+#: every other sized kind takes ``tile_sizes``. One argument name, one meaning.
+LANED = frozenset({VECTORIZE_DOALL})
+BLOCKED = frozenset({"stage-loads-shared", SET_SCHEDULE_GPU})
+
+
+def size_argument(kind: str) -> str:
+    """The name of the sizes argument ``kind`` takes: ``lanes``, ``block`` or ``tile_sizes``."""
+    return "lanes" if kind in LANED else "block" if kind in BLOCKED else "tile_sizes"
+
+
+def chosen_sizes(
+    kind: str, tile_sizes: Sequence[int], lanes: Sequence[int], block: Sequence[int]
+) -> tuple[int, ...] | Refused:
+    """The sizes ``kind`` was given, from the one argument it takes; refused when another one carries sizes."""
+    given = {"tile_sizes": tuple(tile_sizes), "lanes": tuple(lanes), "block": tuple(block)}
+    wanted = size_argument(kind)
+    wrong = [name for name, sizes in given.items() if sizes and name != wanted]
+    if wrong:
+        return Refused(f"{kind} takes its sizes as {wanted}, not {', '.join(wrong)}.", Refusal.ARGUMENT)
+    return given[wanted]
+
+
+#: Move kinds renamed since runs were journaled: old name -> current one.
+RENAMED_KINDS = {
+    "collapse-doalls": "flatten-doalls",
+    "expand-doall": "unflatten-doall",
+    "expand-library": "inline-library",
+    "auto-vectorize-scope": "vectorize-doall",
+    "hoist-invariant-for": "hoist-invariant-code",
+    "hoist-invariant-doall": "hoist-invariant-code",
+}
+
+
+def journaled_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """A journaled move's arguments in today's names: a renamed kind, and sizes under the argument the kind takes."""
+    kind = arguments.get("kind")
+    if not isinstance(kind, str):
+        return arguments
+    current = RENAMED_KINDS.get(kind, kind)
+    upgraded = {**arguments, "kind": current}
+    wanted = size_argument(current)
+    if wanted != "tile_sizes" and upgraded.get("tile_sizes"):
+        upgraded[wanted] = upgraded.pop("tile_sizes")
+    return upgraded
+
+
 #: The move kinds that take ``max_iterations``: the largest trip count the agent accepts to unroll.
 UNROLLS = frozenset({"unroll-for", "unroll-doall"})
 #: The cap an unroll is checked at when it is listed; the agent passes its own to apply it.
@@ -228,8 +275,8 @@ PROBE_UNROLL = 16
 
 def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
     """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension; the lanes
-    ``auto-vectorize-scope`` is listed with."""
-    if kind == AUTO_VECTORIZE:
+    ``vectorize-doall`` is listed with."""
+    if kind == VECTORIZE_DOALL:
         return (DEFAULT_LANES,)
     if kind not in SIZED:
         return ()
@@ -839,7 +886,7 @@ def plan_loop_if(loop_row: Row) -> Rewrite | str:
     return region_rewrite("MoveLoopInvariantIfUp", loop.sdfg, lambda: MoveLoopInvariantIfUp.hoist(loop))
 
 
-def plan_expand_library(row: Row) -> Rewrite | str:
+def plan_inline_library(row: Row) -> Rewrite | str:
     node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
     if isinstance(node, ExternalCall):
         return Refused(
@@ -917,7 +964,7 @@ def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite
     dims = min(len(entry.map.params), 3)
     if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
         return Refused(
-            f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass tile_sizes, the "
+            f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass block, the "
             f"thread block, {dims} positive size(s).",
             Refusal.ARGUMENT,
         )
@@ -972,7 +1019,7 @@ def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
     return Rewrite("untile_map_pair", commit)
 
 
-def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
+def plan_flatten_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
     if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
         return Refused(
@@ -986,7 +1033,7 @@ def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     )
 
 
-def plan_expand_doall(row: Row) -> Rewrite | str:
+def plan_unflatten_doall(row: Row) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if len(entry.map.params) < 2:
         return Refused(f"{entry.map.label} has one dimension; there is nothing to expand.", Refusal.WRONG_ROW_KIND)
@@ -1040,7 +1087,8 @@ def plan_doall_to_for(row: Row) -> Rewrite | str:
         )
     if len(entry.map.params) != 1:
         return Refused(
-            f"{entry.map.label} has {len(entry.map.params)} dimensions; expand-doall it first.", Refusal.WRONG_ROW_KIND
+            f"{entry.map.label} has {len(entry.map.params)} dimensions; unflatten-doall it first.",
+            Refusal.WRONG_ROW_KIND,
         )
     if not holds_a_doall(state, entry):
         return Refused(
@@ -1443,7 +1491,7 @@ def plan_set_schedule_gpu(
         ]
         if schedule is not None:
             return Refused(
-                f"{label} is the kernel doall: it takes block (tile_sizes), the threads of one block; schedule goes "
+                f"{label} is the kernel doall: it takes block, the threads of one block; schedule goes "
                 "on a doall inside it.",
                 Refusal.ARGUMENT,
             )
@@ -1604,12 +1652,12 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-for-doall": plan_loop_map,
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
-    EXPAND_LIBRARY: plan_expand_library,
+    INLINE_LIBRARY: plan_inline_library,
     SET_IMPLEMENTATION: plan_set_implementation,
     "tile-doall": plan_tile_doall,
     "untile-doall": plan_untile_doall,
-    "collapse-doalls": plan_collapse_doalls,
-    "expand-doall": plan_expand_doall,
+    "flatten-doalls": plan_flatten_doalls,
+    "unflatten-doall": plan_unflatten_doall,
     "doall-to-for": plan_doall_to_for,
     "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
@@ -1685,7 +1733,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
         "inlined and its one-iteration maps dropped first).",
     ),
-    EXPAND_LIBRARY: (
+    INLINE_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
         "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
@@ -1703,8 +1751,8 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "cache or a thread block. A size need not divide the range.",
     ),
     "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
-    "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
-    "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "flatten-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
+    "unflatten-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
     "doall-to-for": (
         "MapToForLoop",
         "doall k: doall j: B becomes for k: doall j: B: the outer doall runs in order and the doalls inside stay "
@@ -1824,10 +1872,10 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
         "(unroll-for, unroll-doall).",
     ),
-    AUTO_VECTORIZE: (
-        "VectorizeMap (tile_sizes: lanes per vectorized dimension, innermost last; isa)",
-        "the doall's innermost maps run as tiles of tile_sizes lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
-        "sve takes its own vector length, so its tile_sizes is ignored), with a masked tile for the remainder; the "
+    VECTORIZE_DOALL: (
+        "VectorizeMap (lanes: per vectorized dimension, innermost last; isa)",
+        "the doall's innermost maps run as tiles of lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
+        "sve takes its own vector length, so its lanes are ignored), with a masked tile for the remainder; the "
         "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
         "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
     ),
@@ -1840,7 +1888,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "the digits the earlier ones left. Lay arguments out first: refused after any other change.",
     ),
     "stage-loads-shared": (
-        "StageLoadsThroughSharedMemory (tile_sizes, the thread block)",
+        "StageLoadsThroughSharedMemory (block: the thread block)",
         "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
         "included) of every array it only reads and reuses into shared memory, so global memory is read once.",
     ),
@@ -1889,7 +1937,7 @@ def plan_move(
             return Refused(
                 f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
             )
-    if kind == AUTO_VECTORIZE:
+    if kind == VECTORIZE_DOALL:
         return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
     if kind == SKEW_WAVEFRONT:
         return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
@@ -2062,12 +2110,12 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-for-doall": loop_map_pairs,
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
-    EXPAND_LIBRARY: library_rows,
+    INLINE_LIBRARY: library_rows,
     SET_IMPLEMENTATION: library_rows,
     "tile-doall": doall_rows,
     "untile-doall": tile_pair_rows,
-    "collapse-doalls": nested_map_pairs,
-    "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "flatten-doalls": nested_map_pairs,
+    "unflatten-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
     "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
     "snapshot-reads": lambda sdfg: (
         ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and reads_another_doalls_write(st, e)
@@ -2082,7 +2130,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     ),
     HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
     SINK_INVARIANT_GUARD: loop_guards,
-    AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    VECTORIZE_DOALL: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
@@ -2109,7 +2157,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
             labels = tuple(tree_label(obj) for obj, _ in rows)
             if name in (
                 PROPAGATE_CONFIG,
-                AUTO_VECTORIZE,
+                VECTORIZE_DOALL,
                 SET_SCHEDULE_CPU,
                 SET_SCHEDULE_GPU,
                 SINK_INVARIANT_CODE,

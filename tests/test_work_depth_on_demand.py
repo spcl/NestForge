@@ -5,6 +5,7 @@ sizes or as formulas."""
 
 import dace
 
+from nestforge.ir import introspect
 from nestforge.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -55,3 +56,14 @@ def test_an_unknown_label_is_named_and_nothing_is_computed_for_it(tmp_path):
     answer = sut.work_depth(["doall99"])
 
     assert answer.startswith("not-found") or "doall99" in answer, answer
+
+
+def test_a_small_whole_cost_prints_as_an_integer_and_a_large_one_to_three_digits():
+    n, t = dace.symbol("N"), dace.symbol("T")
+    facts = dace.symbolic.Facts((), frozenset())
+
+    small = introspect.cost_text(t + 1, facts, {"T": 10})
+    large = introspect.cost_text(n * t, facts, {"N": 1000, "T": 10})
+    open_count = introspect.cost_text(n * t, facts, {"N": 1000})
+
+    assert (small, large, open_count) == ("11", "1.00e+4", "1.0e+3*T")

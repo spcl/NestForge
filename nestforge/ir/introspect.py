@@ -9,6 +9,7 @@ import ast
 import contextlib
 import copy
 import functools
+import re
 import signal
 import threading
 from collections import Counter
@@ -123,6 +124,93 @@ def lowered_twin(sdfg: dace.SDFG) -> Twin:
     return pairs
 
 
+#: A body line that only renames a symbol (``_loop_it_1 = _loop_it_0``, what a fusion leaves), in Python or C.
+RENAME = re.compile(r"^(?P<name>[A-Za-z_]\w*) = (?P<value>[A-Za-z_]\w*);?$")
+
+
+def container_names(sdfg: dace.SDFG) -> frozenset[str]:
+    """Every container declared in ``sdfg``'s whole program, nested ones included."""
+    return frozenset(name for sd in sdfg.root_sdfg.all_sdfgs_recursive() for name in sd.arrays)
+
+
+def program_names(sdfg: dace.SDFG) -> frozenset[str]:
+    """Every name the whole program declares: containers, symbols, map parameters and loop variables."""
+    root = sdfg.root_sdfg
+    names = set(container_names(sdfg))
+    for sd in root.all_sdfgs_recursive():
+        names |= sd.symbols.keys()
+    for node, _ in root.all_nodes_recursive():
+        if isinstance(node, nodes.MapEntry):
+            names.update(strings(node.map.params))
+    for block in root.all_control_flow_regions(recursive=True):
+        if isinstance(block, LoopRegion) and block.loop_variable:
+            names.add(block.loop_variable)
+    return frozenset(names)
+
+
+def folded_renames(lines: list[str], containers: frozenset[str]) -> list[str]:
+    """``lines`` without the top-level lines that only give a symbol a second name: each later use reads the first
+    name instead. A container copy (``a = b`` of data) stays, and so does a name assigned more than once."""
+    assigned = Counter(
+        match["name"]
+        for line in lines
+        for match in re.finditer(r"(?:^|\bfor )\s*(?P<name>[A-Za-z_]\w*)\s*(?:=[^=]| in )", line.strip())
+    )
+    renames: dict[str, str] = {}
+    kept: list[str] = []
+    for line in lines:
+        for name, value in renames.items():
+            line = re.sub(rf"\b{name}\b", value, line)
+        match = RENAME.match(line)
+        if (
+            match is not None
+            and assigned[match["name"]] == 1
+            and not {match["name"], match["value"]} & containers
+            and match["name"] != match["value"]
+        ):
+            renames[match["name"]] = match["value"]
+            continue
+        kept.append(line)
+    return kept
+
+
+#: An identifier in a printed body.
+IDENTIFIER = re.compile(r"\b[A-Za-z_]\w*\b")
+#: A statement's own local name that DaCe made up: a tasklet connector such as ``B_slice`` or ``__in1``.
+GENERATED_LOCAL = re.compile(r"^_|__|_slice")
+#: The frontend's local for a read of an index array: ``<program>_<array>_index``.
+INDEX_LOCAL = re.compile(r"^\w+?_(?P<array>[A-Za-z][A-Za-z0-9]*)_index$")
+#: The name a body's generated locals take, numbered per body: ``v<n>``.
+LOCAL = "v"
+
+
+def shortened_locals(lines: list[str], declared: frozenset[str]) -> list[str]:
+    """``lines`` with each local name DaCe made up (never a name the program declares) shortened: an index read to
+    ``<array>_index`` unless another name holds that, any other to ``v<n>``, numbered in order of first use within the
+    body."""
+    used = {name for line in lines for name in IDENTIFIER.findall(line)}
+    renames: dict[str, str] = {}
+    count = 0
+    for line in lines:
+        for name in IDENTIFIER.findall(line):
+            if name in renames or name in declared:
+                continue
+            index = INDEX_LOCAL.match(name)
+            if index is not None and f"{index['array']}_index" not in used | declared:
+                renames[name] = f"{index['array']}_index"
+            elif index is not None or GENERATED_LOCAL.search(name):
+                while f"{LOCAL}{count}" in used | declared:
+                    count += 1
+                renames[name] = f"{LOCAL}{count}"
+                count += 1
+            else:
+                continue
+            used.add(renames[name])
+    if not renames:
+        return lines
+    return [IDENTIFIER.sub(lambda m: renames.get(m.group(0), m.group(0)), line) for line in lines]
+
+
 def body_lines(twin: Twin, state: SDFGState, entry: nodes.MapEntry) -> list[str]:
     """What one iteration of ``entry`` computes, as Python; an emitter refusal becomes the line's text."""
     try:
@@ -146,8 +234,9 @@ REDUCTION_SPELLING = {dtypes.ReductionType.Sum: "+", dtypes.ReductionType.Produc
 
 
 def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
-    """Every reduction leaving this map, as ``<op> over <axes> -> <target>``; the reduced axes are the parameters
-    the written subset does not mention."""
+    """Every accumulation leaving this map, as ``<target> <op>= over <axes>``: the reduced axes are the parameters
+    the written subset does not mention. With none (each iteration updates its own element) it is ``<target> <op>=``
+    alone."""
     exit_node = state.exit_node(entry)
     out: list[str] = []
     # normalization puts every WCR on an AccessNode -> MapExit edge
@@ -159,8 +248,8 @@ def kernel_reductions(state: SDFGState, entry: nodes.MapEntry) -> list[str]:
         subset = edge.data.subset
         written = subset.free_symbols if isinstance(subset, dace.subsets.Subset) else set()
         collapsed = [p for p in strings(entry.map.params) if p not in written]
-        over = ", ".join(collapsed) if collapsed else "-"
-        out.append(f"{op} over {over} -> {edge.data.data}")
+        over = f" over {', '.join(collapsed)}" if collapsed else ""
+        out.append(f"{edge.data.data} {op}={over}")
     return out
 
 
@@ -306,9 +395,12 @@ def cost_text(expr: object, facts: dace.symbolic.Facts, sizes: Mapping[str, obje
     if not values:
         return str(cost)
     try:
-        return str(sympy.N(cost.subs(values).doit(), COST_DIGITS))
+        value = sympy.N(cost.subs(values).doit(), COST_DIGITS)
     except SYMPY_FAILURES:
         return str(cost)
+    if value.is_number and value.is_finite and abs(float(value)) < 10**COST_DIGITS and float(value).is_integer():
+        return str(int(value))  # a small whole count prints as one, never as 11.0 beside 2
+    return str(value)
 
 
 def guarded_work_depth(sdfg: dace.SDFG) -> tuple[WorkDepth, str | None]:
@@ -468,6 +560,8 @@ def walk_state(tree: Tree, state: SDFGState, prefix: str, language: Language) ->
                 if leaf and tree.with_bodies(opened):
                     assert tree.twin is not None, "with_bodies holds only with a lowered twin"
                     body = body_c(state, node) if own == C else body_lines(tree.twin, state, node)
+                    containers = container_names(state.sdfg)
+                    body = shortened_locals(folded_renames(body, containers), program_names(state.sdfg))
                     tree.lines.extend(below + BODY + line for line in body)
                 descend(node, below, opened, own)
                 if nested and tree.expanded is not None and opened:
@@ -559,5 +653,5 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.CodeNode) -> str:
         chosen = "" if isinstance(node, ExternalCall) else f" [{node.implementation or 'auto'}]"
         return f"{node.label}  LIBNODE {kind}{chosen}  reads={reads} writes={writes}"
     reductions = kernel_reductions(state, node)
-    folds = f"  reduce=({'; '.join(reductions)})" if reductions else ""
+    folds = f"  accum=({'; '.join(reductions)})" if reductions else ""
     return f"{node.map.label}  [{map_domain(node)}]{folds}  reads={reads} writes={writes}"

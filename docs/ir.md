@@ -4,8 +4,8 @@
 
 NestForge owns one DaCe SDFG per session. Neither the agent nor a person reads the SDFG itself: they read the
 **structure tree**, a text summary with one row per control-flow block, doall and library call. The tree is the IR
-the agent reasons in. It names every row with a stable label, the label is how a move names what it rewrites, and the
-tree prints again after every move. This page is the contract of that text: what a row is, which SDFG object it
+the agent reasons in. It names every row with a stable label, and the label is how a move names what it rewrites. A
+move answers without the tree; the agent reprints only the rows it reads next. This page is the contract of that text: what a row is, which SDFG object it
 stands for, what each field means, how bodies print in Python or C, and which calls change the program and which only
 change the view.
 
@@ -15,35 +15,45 @@ Code: `nestforge/ir/introspect.py` renders the tree (`describe_graph`), `nestfor
 
 ## An example
 
-`axpy` repeated `T` times, then a reversed copy and a sum, after canonicalization. Collapsed, the program is one row:
+`axpy` repeated `T` times, then a reversed copy and a sum, after canonicalization. Closed, the program is one row:
 
 ```
 SDFG 'axpy_then_reverse'
-`- state2  doalls=3  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
+`- state2  doalls=4  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
 ```
 
-`view_tree expand=[state2, state3, state4]` opens it; leaf bodies print as Python by default:
+`view_tree expand=[state2, doall2, doall3, doall4]` opens the state and its doalls; bodies print as Python by default:
 
 ```
 `- state2  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
-   |- doall2  [_loop_it_0=0:T]  reduce=(+ over _loop_it_0 -> y)  reads=['x'] writes=['y']
-   |  `- doall3  [_loop_it_1=0:N]  reduce=(+ over - -> y)  reads=['x'] writes=['y']  num_states=1
-   |     : _wcr_priv__Add____out = 2.0 * x[_loop_it_1]
-   |     : y[_loop_it_1] = y[_loop_it_1] + _wcr_priv__Add____out
-   |     `- state3  reads=['x'] writes=['_wcr_priv__Add____out']
+   |- doall2  [_loop_it_0=0:T]  accum=(y += over _loop_it_0)  reads=['x'] writes=['y']
+   |  `- doall3  [_loop_it_1=0:N]  accum=(y +=)  reads=['x'] writes=['y']  num_states=1
+   |     : tmp5 = 2.0 * x[_loop_it_1]
+   |     : y[_loop_it_1] = y[_loop_it_1] + tmp5
+   |     `- state3  reads=['x'] writes=['tmp5']
    |- doall4  [_loop_it_2=0:N]  reads=['y'] writes=['z']  num_states=1
    |  : z[_loop_it_2] = y[N - _loop_it_2 - 1] * 3.0
    |  `- state4  reads=['y'] writes=['z']
-   `- lib_reduce0  LIBNODE Reduce [CPU]  reads=['z'] writes=['s_slice']
+   |- lib_reduce0  LIBNODE Reduce [CPU]  reads=['z'] writes=['tmp3']
+   `- lib_copy0  LIBNODE Copy [tasklet]  reads=['tmp3'] writes=['s']
 ```
 
 `view_tree c=[state2]` prints the same bodies as C:
 
 ```
-   |     : _wcr_priv__Add____out[0] = (2.0 * x[_loop_it_1]);
-   |     : y[_loop_it_1] += _wcr_priv__Add____out[0];
+   |     : tmp5[0] = (2.0 * x[_loop_it_1]);
+   |     : y[_loop_it_1] += tmp5[0];
    ...
    |  : z[_loop_it_2] = (y[((N - _loop_it_2) - 1)] * 3.0);
+```
+
+`get_work_depth labels=[doall2, doall3, doall4]` gives the costs the tree leaves out:
+
+```
+work and depth (at N=1000, T=10; formula=true for the formulas)
+doall2  work=1.00e+4 depth=11
+doall3  work=1.00e+3 depth=2
+doall4  work=1.00e+3 depth=1
 ```
 
 ## Rows
@@ -54,11 +64,12 @@ Every row is one SDFG object. Children print below their parent in execution ord
 | Row | SDFG object | Prints |
 |---|---|---|
 | `SDFG '<name>'` | the root `SDFG` | the header |
-| `for<n>  <var>=<lo>:<hi>` | `LoopRegion` | a sequential loop: its iterations run in order (`for` and `while` alike); an innermost loop adds `num_states=` |
+| `for<n>  <var>=<lo>:<hi>` | `LoopRegion` with a known range | a sequential loop over its range; an innermost loop adds `num_states=` |
+| `while<n>  <cond>` | `LoopRegion` without one | a sequential loop that runs until its condition fails; no tiling or unrolling applies |
 | `if<n>`, then `<branch>  when <cond>` / `else` | `ConditionalBlock` and its branch regions | the first branch whose condition holds runs, so stored order is execution order |
 | `state<n>` | `SDFGState` | one dataflow step; collapsed it adds `doalls=<k>` (top-level maps and library calls) |
 | `doall<n>  [<p>=<lo>:<hi>[:<step>], ...]` | `MapEntry` | a map: iterations proven independent, run in any order or at once |
-| `lib_<family><n>  LIBNODE <Kind> [<impl>]` | `LibraryNode`, or a one-element copy's tasklet | a library call, a black-box doall; `[<impl>]` is its implementation (`auto` until chosen), none on an `ExternalCall`. DaCe makes a one-element copy outside every map the tasklet `_cpy_out = _cpy_in`, what a `Copy` node's automatic expansion becomes, so it prints `lib_copy<n>  LIBNODE Copy [tasklet]` and the `lib-*` moves take it like any copy |
+| `lib_<family><n>  LIBNODE <Kind> [<impl>]` | `LibraryNode`, or a one-element copy's tasklet | a library call, a black-box doall, with its implementation (fields below), none on an `ExternalCall`. DaCe makes a one-element copy outside every map the tasklet `_cpy_out = _cpy_in`, what a `Copy` node's automatic expansion becomes, so it prints `lib_copy<n>  LIBNODE Copy [tasklet]` and the `lib-*` moves take it like any copy |
 | `: <statement>` | the body of a leaf doall | what one iteration computes, in the row's body language |
 
 A doall whose body is a nested SDFG (canonical form puts most bodies there) shows that SDFG's blocks as rows below
@@ -70,24 +81,32 @@ doall only.
 | Field | On | Means |
 |---|---|---|
 | `reads=[..] writes=[..]` | state, doall, library call | the containers it reads and writes, sorted. A state leaves out the transients no other state touches (`introspect.outlives`): a temporary of one state is not part of its interface |
-| (none) | state, loop, doall | work and depth are not printed: `get_work_depth labels=[...]` gives them per row (DaCe's work-depth analysis, one pass per program, at most 60 s), at the session's sizes or as formulas (`formula=true`), simplified under the program's facts. A library call's own cost is a free symbol (`lib_tileops2_work`) |
 | `doalls=<k>` | collapsed state | how many top-level doalls and library calls it holds |
 | `num_states=<k>` | innermost loop, doall holding a nest | the states under it, nested SDFGs included |
-| `reduce=(<op> over <axes> -> <target>)` | doall | an accumulation leaving the doall (a WCR edge on its exit): `+`, `*` or the reduction's name, the parameters the written subset does not mention (`-`: none, an element-wise accumulation), the array it lands in |
-| `[<impl>]` | library call | its implementation: the fastest one this host has for the target, never `pure` while another exists, until `set-library-implementation` pins one |
+| `accum=(<target> <op>= over <axes>)` | doall | an accumulation leaving the doall (a WCR edge on its exit) into `<target>`: `+=`, `*=` or the reduction's name (`max=`), across the parameters the written subset does not mention. `accum=(<target> <op>=)` without `over`: each iteration updates its own element |
+| `[<impl>]` | library call | its implementation: canonicalization sets the fastest this host has for the target (never `pure` while another exists), `set-library-implementation` another; `auto` only on a call none was set for |
 
 Symbolic text is DaCe's: `int_floor(a, b)` is floor division, `Max`/`Min` as in SymPy, and canonical form names map
 parameters `_loop_it_<k>`.
 
-## Labels
+## Labels and names
 
-A label is `<kind><n>` (`for`, `if`, `state`, `doall`, `lib_<family>`): unique across the whole program, nested SDFGs
+A label is `<kind><n>` (`for`, `while`, `if`, `state`, `doall`, `lib_<family>`): unique across the whole program, nested SDFGs
 included, and stored on the object itself (a state's or region's label, a map's label, a library node's label), so it
 survives a deep copy. `Namer` hands them out once: a label is never reused, even after its row is gone.
 
 A row keeps its label while it lives. A move retires the labels of the rows it consumed and names whatever it made
 afresh (`Session.bump`), so a label read before a move either still names the same row or is refused as unknown.
 Labels are names, not positions: nothing about them is computed from the tree's shape.
+
+Container names follow one rule: one name, one container, in every view. Arguments keep the program's names.
+`names.shorten_temporaries` renames, in the program itself, each temporary DaCe made up (`__tmp3`, `A_slice`,
+`__map_fusion_T`, `_wcr_priv__Add____out`) to `tmp<n>` (one element) or `Tmp<n>` (an array), and the frontend's
+read of an index array (`<program>_A_index`) to `A_index` while that name is free; a `tmp<n>` is never handed out
+twice, so the tree, the kernel source and a move's `container=` agree. A nested program's connector whose name is a
+different container around it takes the name of the container it is bound to (`unshadow_connectors`). Printed
+bodies also fold a line that only renames a symbol (`_loop_it_1 = _loop_it_0`, what a fusion leaves) and shorten a
+statement's own generated locals to `v<n>` (`introspect.folded_renames`, `introspect.shortened_locals`).
 
 ## Bodies: Python or C
 
@@ -109,11 +128,20 @@ The language is set per row and inherited: a row prints in its own setting, else
 else Python. So `c=[state2]` prints every body in `state2` as C, and `python=[doall4]` then takes `doall4` back to
 Python alone.
 
-## View calls change nothing
+## Read calls change nothing
 
-Two kinds of call act on the tree. View calls choose what is shown; program calls (moves, defaults, scopes, kernel
-writes) rewrite the SDFG. A view call never touches the SDFG: the tests check that the program's hash is the same
-before and after printing.
+Read calls show the program; program calls (moves, defaults, scopes, kernel writes) rewrite it. A read call never
+touches the SDFG: the tests check that the program's hash is the same before and after printing.
+
+| Call | Session | Answers |
+|---|---|---|
+| `view_tree` | `Session.view` | the tree, after the view arguments below |
+| `get_work_depth labels=[..]` | `Session.work_depth` | per row, work and depth at the session's sizes, or as formulas with `formula=true` (DaCe's work-depth analysis, at most 60 s, simplified under the program's facts) |
+| `list_move_kinds` | `move_kinds` | every kind, the rows it takes in order, the transformation it runs |
+| `list_moves` | `Session.list_moves` | the moves legal now, with the arguments they were checked with |
+| `tune_move` | `Session.tune_move` | a tiling move timed at 1 to 4 sizes, each rolled back |
+
+The view arguments of `view_tree`:
 
 | Call (`view_tree` argument) | Session | Does |
 |---|---|---|
@@ -132,4 +160,4 @@ does not retire and drops the others. Rolling a move back restores the view the 
 The tree is a summary, so some of the SDFG is not on it: memlet subsets other than in bodies, access nodes, the
 ordering edges between nodes, interstate conditions other than a loop's domain and a branch's condition, and the
 storage and schedule of each container. A move reads all of it: legality is DaCe's check on the full SDFG, never the
-tree's. For the whole picture of one kernel, its CPF source (`read_kernel`) is the program text DaCe compiles.
+tree's. For the whole picture of one kernel, its source (`read_kernel`) is the program text DaCe compiles.

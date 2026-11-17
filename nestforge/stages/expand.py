@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ``expand-library`` move: a library node becomes the maps and tasklets of DaCe's vendor-free expansion, in
+"""The ``inline-library`` move: a library node becomes the maps and tasklets of DaCe's vendor-free expansion, in
 canonical parallel form, so the other moves reach inside it."""
 
 from __future__ import annotations

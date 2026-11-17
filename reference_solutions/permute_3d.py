@@ -18,7 +18,7 @@ TILE = 16
 
 def expand_and_tile(s: Script, edge: int) -> None:
     """The transpose as loops, its map tiled ``edge`` per dimension, then the default."""
-    s.apply(s.pick("expand-library", reads=["A"], writes=["B"]))
+    s.apply(s.pick("inline-library", reads=["A"], writes=["B"]))
     tile = s.pick("tile-doall", reads=["A"], writes=["B"])
     s.apply(tile.model_copy(update={"tile_sizes": (edge,) * len(tile.tile_sizes)}))
     s.defaults()

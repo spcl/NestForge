@@ -47,7 +47,7 @@ bench's: they take no code, and each sends the judge the library `finalize` buil
 library's scratch needs.
 
 Every library call has its implementation from the start, the fastest this host has for the target, shown in the tree;
-`pure` loops come only from `expand-library` or `set-library-implementation`, or where a call has nothing else.
+`pure` loops come only from `inline-library` or `set-library-implementation`, or where a call has nothing else.
 
 A call stops when its client leaves or after `TOOL_TIMEOUT_S`, and the session keeps what it built and measured, so
 repeating the call goes on from there. The route journals every change, and a session that dies is rebuilt from it.
