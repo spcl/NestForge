@@ -165,6 +165,24 @@ ERROR_TAIL = 1500
 #: How many of the last moves and default move stages :meth:`Session.undo` can take back, each a copy of the program.
 UNDO_DEPTH = 8
 
+#: Move kind -> the kind that takes it back exactly and takes no arguments. Sent right after the move, on rows that
+#: move made, the inverse is answered by :meth:`Session.undo`: the program and its labels come back, no new rows.
+#: Left out: a tile after an untile (its size makes another program) and hoist-invariant-code after a sink (it hoists
+#: every invariant statement, not only the one sunk).
+UNDONE_BY = {
+    "tile-doall": "untile-doall",
+    "tile-for": "untile-for",
+    "collapse-doalls": "expand-doall",
+    "expand-doall": "collapse-doalls",
+    "interchange-for-doall": "interchange-doall-for",
+    "interchange-doall-for": "interchange-for-doall",
+    "interchange-doall-doall": "interchange-doall-doall",
+    "doall-to-for": "for-to-doall",
+    "for-to-doall": "doall-to-for",
+    "hoist-invariant-guard": "sink-invariant-guard",
+    "sink-invariant-guard": "hoist-invariant-guard",
+}
+
 
 #: The kernel source language each device's kernels are written in.
 def kernel_language(device: str) -> str:
@@ -220,6 +238,30 @@ FORCED_WARNING = (
 )
 #: The kind a default stage records in ``Session.applied``, before the stage's name.
 DEFAULTS_PREFIX = "defaults-"
+
+
+#: The move kinds :meth:`Session.tune_move` tries several values of, and the most values one call tries.
+TUNABLE = frozenset({"tile-doall", "tile-for"})
+MAX_TUNED_VALUES = 4
+
+
+class TunedValue(Record):
+    """One value :meth:`Session.tune_move` tried: the program's time with the move at it, or why it did not apply.
+    ``tile_sizes`` empty: the program as it stands, for comparison."""
+
+    tile_sizes: tuple[int, ...] = ()
+    status: str
+    time_us: float | None = None
+    correct: bool | None = None
+    reason: str = ""
+
+
+class TuneResult(Record):
+    """What :meth:`Session.tune_move` measured; the program is as it was before the call."""
+
+    kind: str
+    labels: tuple[str, ...]
+    values: list[TunedValue]
 
 
 class MoveResult(Record):
@@ -478,6 +520,7 @@ class Session:
         "oracles_out_of_time",
         "measured",
         "gpu_choices",
+        "made_by_last",
         "bench",
         "stopper",
         "in_atomic",
@@ -563,6 +606,8 @@ class Session:
         # the program before the change :meth:`atomic` is running, and before each of the last changes kept for undo
         self.checkpoint: Checkpoint | None = None
         self.history: list[Checkpoint] = []
+        #: The rows the last applied move made, with that move's index in :attr:`applied`; any later change voids it.
+        self.made_by_last: tuple[int, frozenset[str]] = (-1, frozenset())
         #: The kernel the agent's kernel work is scoped to (:meth:`focus_kernel`); ``None`` before the first.
         self.focus: str | None = None
 
@@ -631,6 +676,7 @@ class Session:
             reason = f"nothing to roll back: no change was made, or the last {UNDO_DEPTH} are taken back; unchanged."
             return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=(), reason=reason)
         saved, counters = self.history.pop(), self.namer.counters
+        self.made_by_last = (-1, frozenset())
         undone = self.applied[min(len(saved.applied), len(self.applied) - 1)]
         self.restore(saved)
         self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
@@ -1035,6 +1081,9 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         if kind == ROLLBACK:
             return self.undo()
+        undone = self.inverse_of_last(kind, names, scope, force)
+        if undone is not None:
+            return undone
         if kind == RELAYOUT:
             if scope is not None:
                 reason = Refused(
@@ -1087,6 +1136,7 @@ class Session:
                 )
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
+        labels_now = self.labels_in(scope, target)
         with self.atomic():
             made = plan.commit()
             if kind == EXPAND_LIBRARY:
@@ -1132,7 +1182,68 @@ class Session:
             )
             self.applied.append(done)
             self.remember()
+        self.made_by_last = (len(self.applied) - 1, frozenset(self.labels_in(scope, target) - labels_now))
         return done
+
+    def tune_move(
+        self,
+        kind: str,
+        labels: Sequence[str],
+        values: Sequence[Sequence[int]],
+        inputs: dict[str, np.ndarray],
+        reference: Reference | None,
+        codegen: Codegen = "first",
+    ) -> TuneResult:
+        """Measure the program with the move ``kind`` on ``labels`` at each of ``values`` (tile sizes), and as it
+        stands: each value is applied, measured as :meth:`performance` measures, and rolled back, so the program and
+        its labels end as they were. The agent then applies the value it picks."""
+        names = tuple(labels)
+        if kind not in TUNABLE or not 1 <= len(values) <= MAX_TUNED_VALUES:
+            reason = f"tune_move takes one of {sorted(TUNABLE)} and 1 to {MAX_TUNED_VALUES} values of tile_sizes"
+            return TuneResult(kind=kind, labels=names, values=[TunedValue(status="illegal", reason=reason)])
+        now = self.performance(inputs, reference, codegen=codegen).structured
+        tried = [TunedValue(status="now", time_us=now.time_us, correct=now.correct, reason=now.error)]
+        for sizes in values:
+            result = self.apply_move(kind, names, tile_sizes=sizes)
+            if result.status is not MoveStatus.APPLIED:
+                tried.append(
+                    TunedValue(tile_sizes=tuple(sizes), status=result.status.name.lower(), reason=result.reason)
+                )
+                continue
+            try:
+                report = self.performance(inputs, reference, codegen=codegen).structured
+            finally:
+                self.undo()
+            tried.append(
+                TunedValue(
+                    tile_sizes=tuple(sizes),
+                    status="measured" if not report.error else "failed",
+                    time_us=report.time_us,
+                    correct=report.correct,
+                    reason=report.error,
+                )
+            )
+        return TuneResult(kind=kind, labels=names, values=tried)
+
+    def labels_in(self, scope: str | None, target: dace.SDFG) -> set[str]:
+        """The row labels of the program, or of the kernel body ``target`` a scope move rewrites."""
+        return set(self.row_index()) if scope is None else set(tree_rows(target))
+
+    def inverse_of_last(self, kind: str, names: tuple[str, ...], scope: str | None, force: bool) -> MoveResult | None:
+        """``kind`` on ``names`` answered by :meth:`undo`, when it exactly takes back the last change: the inverse
+        (:data:`UNDONE_BY`) of the last applied move, in its scope, on rows that move made; else ``None``."""
+        index, made = self.made_by_last
+        if force or not self.history or index != len(self.applied) - 1 or not set(names) <= made:
+            return None
+        last = self.applied[index]
+        if UNDONE_BY.get(last.kind) != kind or last.scope != scope:
+            return None
+        self.undo()
+        self.made_by_last = (-1, frozenset())
+        reason = (
+            f"rollback: {kind} on the rows {last.kind} made takes it back; the program and its labels are as before it"
+        )
+        return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=reason, scope=scope)
 
     def metrics(self, label: str) -> str:
         """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""

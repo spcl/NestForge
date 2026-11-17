@@ -25,7 +25,7 @@ import test_unroll_config_moves
 from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
-from nestforge.session import Move, Session
+from nestforge.session import UNDONE_BY, Move, Session
 from nestforge.stages.moves import AUTO_VECTORIZE, MOVE_SHAPES, ROLLBACK, config_names
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
@@ -37,6 +37,8 @@ OWN_CASES = {
     "set-schedule-gpu": "test_rollback_after_a_scope_move",
     "stage-loads-shared": "test_rollback_after_a_scope_move",
     "auto-vectorize-scope": "test_rollback_after_vectorizing_a_doall",
+    "untile-doall": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
+    "untile-for": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
 }
 
 #: Fields of a listed move that are notes for the agent, not arguments of apply_move.
@@ -121,12 +123,13 @@ def applied_then_rolled_back(
     return True, ", ".join(part for part, a, b in zip(parts, before, after, strict=True) if a != b)
 
 
-def uncovered_moves_after(session: Session, name: str, found: list[Outcome]) -> None:
-    """Apply and roll back one listed move of each kind not yet covered, on the program as it is now: a kind only a
-    move makes possible (``untile-for`` after ``tile-for``) is covered one move deep."""
+def uncovered_moves_after(session: Session, name: str, found: list[Outcome], outer: Move) -> None:
+    """Apply and roll back one listed move of each kind not yet covered, on the program as it is now, after ``outer``:
+    a kind only a move makes possible is covered one move deep. The exact inverse of ``outer`` is left out: the
+    session answers it with ``rollback`` itself (its own test below)."""
     covered = {kind for _, kind, _, _ in found}
     for move in session.list_moves():
-        if move.kind in OWN_CASES or move.kind in covered:
+        if move.kind in OWN_CASES or move.kind in covered or move.kind == UNDONE_BY.get(outer.kind):
             continue
         applied, differs = applied_then_rolled_back(session, move)
         if applied:
@@ -144,7 +147,7 @@ def outcomes(tmp_path_factory: pytest.TempPathFactory) -> list[Outcome]:
             if move.kind in OWN_CASES:
                 continue
             applied, differs = applied_then_rolled_back(
-                session, move, lambda: uncovered_moves_after(session, name, found)
+                session, move, lambda: uncovered_moves_after(session, name, found, move)
             )
             if applied:
                 found.append((name, move.kind, move.labels, differs))
@@ -230,4 +233,47 @@ def test_rollback_after_vectorizing_a_doall(tmp_path):
         session, lambda: session.apply_move(AUTO_VECTORIZE, move.labels, tile_sizes=[4], isa="scalar")
     )
 
+    assert not differs, differs
+
+
+def listed_move(session: Session, kind: str) -> Move:
+    return session.list_moves(kind)[0]
+
+
+def apply_listed(session: Session, kind: str):
+    move = listed_move(session, kind)
+    return session.apply_move(
+        kind, move.labels, **{k: v for k, v in move.model_dump().items() if k not in NOT_ARGUMENTS}
+    )
+
+
+def test_the_inverse_of_the_last_move_on_the_rows_it_made_is_answered_by_rollback(tmp_path):
+    session = Session(scope_fixtures.chain.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    before = state_of(session)
+    assert apply_listed(session, "tile-doall").status is MoveStatus.APPLIED
+
+    undone = apply_listed(session, "untile-doall")
+
+    assert undone.status is MoveStatus.APPLIED and undone.reason.startswith("rollback:"), undone
+    assert state_of(session) == before
+
+
+@pytest.mark.parametrize(
+    ("program", "tile", "untile"),
+    [
+        (scope_fixtures.chain, "tile-doall", "untile-doall"),
+        (test_session_moves.calls_then_loops, "tile-for", "untile-for"),
+    ],
+)
+def test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back(tmp_path, program, tile, untile):
+    session = Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    first, second = (move.labels for move in session.list_moves(tile)[:2])
+    session.apply_move(tile, first, tile_sizes=[8])
+    tiled_first = set(session.row_index())
+    session.apply_move(tile, second, tile_sizes=[8])
+    (pair,) = [move.labels for move in session.list_moves(untile) if set(move.labels) <= tiled_first]
+
+    differs = differs_after_rollback(session, lambda: session.apply_move(untile, pair))
+
+    assert session.applied[-1].kind == tile, "the untile was a move of its own, and only it was taken back"
     assert not differs, differs

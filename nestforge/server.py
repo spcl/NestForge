@@ -144,6 +144,7 @@ CALLS: dict[str, Callable[..., object]] = {
     "write_kernel": focused(Session.set_kernel_source),
     "tune_kernel": focused(Session.sweep),
     "get_performance": lambda session: None,
+    "tune_move": Session.tune_move,
     "finalize": finalize,
 }
 
@@ -152,7 +153,10 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 
 #: Tools that build or run code, so they hold a device slot and need the bench's data. Everything else is Python on
 #: the session's program: a read or a move takes a fraction of a second and no device.
-MEASURING = TIMED | {"finalize"}
+MEASURING = TIMED | {"finalize", "tune_move"}
+
+#: Tools that measure inside the call itself, so they take the bench's data as arguments.
+TAKES_DATA = frozenset({"tune_move"})
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 #: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
@@ -427,6 +431,9 @@ def timed_call(
     undo the tool: its result stands, without the feedback.
 
     :param timed: False for a rebuild's repeat: nobody reads its performance."""
+    if tool in TAKES_DATA:
+        assert data is not None, "a tool that measures has its data loaded"
+        arguments = {**arguments, "inputs": data[0], "reference": data[1], "codegen": FEEDBACK_CODEGEN}
     result = CALLS[tool](session, **arguments)
     if tool not in TIMED or not timed:
         return Reply(result=result)

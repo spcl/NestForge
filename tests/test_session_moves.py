@@ -1172,7 +1172,7 @@ def strip_labels(tree: str) -> str:
     return re.sub(r"\b([a-z]+)\d+\b", r"\1", tree)
 
 
-def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_the_doall_nest():
+def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
     sut, reference = session_and_reference(level_pass)
     apply_listed(sut, "expand-doall")
     nest = sut.describe()
@@ -1180,13 +1180,29 @@ def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_the_doall_nest
 
     result = apply_listed(sut, "for-to-doall")
 
+    assert result.status is MoveStatus.APPLIED and result.reason.startswith("rollback:"), result
+    assert loops(sut.sdfg) == []
+    assert sut.describe() == nest, "the very nest, labels included"
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_a_later_move():
+    sut, reference = session_and_reference(two_level_passes)
+    apply_listed_first(sut, "expand-doall")
+    apply_listed_first(sut, "expand-doall")
+    first, second = (move.labels for move in sut.list_moves("doall-to-for")[:2])
+    sut.apply_move("doall-to-for", first)
+    (loop,) = loops(sut.sdfg)
+    sut.apply_move("doall-to-for", second)
+
+    result = sut.apply_move("for-to-doall", [loop.label])
+
     assert (result.status, result.reason, result.forced, result.warning) == (
         MoveStatus.APPLIED, "LoopToMap", False, None
     )  # fmt: skip
-    assert loops(sut.sdfg) == []
-    assert len(top_level_maps(sut.sdfg)) == 1, "one outer doall, its inner doall under it"
-    assert strip_labels(sut.describe()) == strip_labels(nest)
-    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+    assert len(loops(sut.sdfg)) == 1, "the other nest's loop stays"
+    arrays = random_arrays(A=(SIZE, SIZE)) | {"B": np.zeros((SIZE, SIZE)), "C": np.zeros((SIZE, SIZE))}
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
 def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason():

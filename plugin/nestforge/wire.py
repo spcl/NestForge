@@ -61,6 +61,15 @@ class Labeled(Args):
     labels: list[str] = pydantic.Field(description="Tree labels as view_tree printed them.")
 
 
+class TuneMove(Labeled):
+    kind: Literal["tile-doall", "tile-for"] = pydantic.Field(description="The tiling move to try sizes of.")
+    values: list[list[int]] = pydantic.Field(
+        min_length=1,
+        max_length=4,
+        description="1 to 4 tile_sizes to try, each as apply_move takes them, e.g. [[64], [128], [256]].",
+    )
+
+
 class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
@@ -226,6 +235,14 @@ TOOLS: dict[str, ToolDef] = {
         "at once with the outcome, not with a time: call get_performance after the moves you want to compare. It "
         "retires the labels of the rows it took: read the tree again before the next move. kind rollback, labels [], "
         "takes the last change back (the last 8 can be).",
+    ),
+    "tune_move": ToolDef(
+        Phase.MOVES,
+        TuneMove,
+        "Try a tiling move at several sizes in one call: each size is applied, measured as get_performance measures, "
+        "and rolled back, so the program is unchanged afterwards. Answers the time now and per size; then apply_move "
+        "the size you pick. Use it instead of tiling, untiling and tiling again.",
+        Effect.READ,
     ),
     "run_defaults": ToolDef(
         Phase.MOVES,
