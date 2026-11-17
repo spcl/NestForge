@@ -89,7 +89,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
    `doall-fission`), then `loop not vectorized` with the compiler's reason.
 
 Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
-`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `hoist-invariant-guard`, and
+`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `hoist-invariant-guard` / `sink-invariant-guard`, and
 `interchange-doall-doall` with itself, and `doall-to-for` / `for-to-doall`. Fusion, fission, unrolling, hoisting,
 `propagate-config`, `expand-library`, `snapshot-reads`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
 never moves back into a loop) have none: `rollback` is the way back.
@@ -195,9 +195,6 @@ time loop whose iterator indexes nothing only grows each column's working set, s
 **`interchange-doall-for`** `[doall, for]`, MapLoopInterchange. `doall i: for t: B` becomes `for t: doall i: B`; the
 loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.
 
-**`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
-fuse with its neighbors. Its inverse is `hoist-invariant-guard` (Loop-invariant code).
-
 ### Tiling: work in cache-sized blocks
 
 **`tile-doall`** `[doall]` with `tile_sizes` (one per dimension, `[32, 32]`), MapTiling.
@@ -267,6 +264,10 @@ variable nor anything the loop writes; the test runs once instead of once per it
 a doall (MoveMapInvariantIfUp), `doall i: if c: B` becomes `if c: doall i: B`, and the doall can then be reordered with
 the loops inside the branch. A doall with other work around the `if` is split into one doall per branch. Only this
 doall's `if` moves; the guards of other doalls stay where they are.
+
+**`sink-invariant-guard`** `[if]`, MoveIfIntoLoop, the inverse on a for loop: `if c: for i: B` becomes
+`for i: if c: B`. The test then runs every iteration, and the loop can fuse with its neighbors. The branch must end in
+one for loop; a doall takes no `if` yet.
 
 ### Vectorization
 

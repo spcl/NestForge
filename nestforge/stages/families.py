@@ -14,14 +14,20 @@ FAMILIES: dict[str, frozenset[str]] = {
             "interchange-doall-doall",
             "interchange-doall-for",
             "interchange-for-doall",
-            "interchange-if-for",
         }
     ),
     "tiling": frozenset(
         {"tile-doall", "tile-for", "untile-doall", "untile-for", "unroll-doall", "unroll-for", "expand-doall"}
     ),
     "hoisting": frozenset(
-        {"hoist-invariant-code", "hoist-invariant-guard", "snapshot-reads", "stage-loads-shared", "propagate-config"}
+        {
+            "hoist-invariant-code",
+            "hoist-invariant-guard",
+            "sink-invariant-guard",
+            "snapshot-reads",
+            "stage-loads-shared",
+            "propagate-config",
+        }
     ),
     "library": frozenset({"lib-before", "lib-after", "lib-into", "expand-library", "set-library-implementation"}),
     "layout": frozenset({"relayout"}),

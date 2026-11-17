@@ -145,6 +145,8 @@ SKEW_WAVEFRONT = "skew-wavefront"
 HOIST_INVARIANT_CODE = "hoist-invariant-code"
 #: The move kind that moves a for loop's or a doall's invariant guard above it: ``if c`` then runs once.
 HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
+#: The move kind that moves an if into the for loop it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
+SINK_INVARIANT_GUARD = "sink-invariant-guard"
 #: A row a move takes as either a for loop or a doall.
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
 
@@ -158,7 +160,6 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "interchange-for-doall": (LoopRegion, nodes.MapEntry),
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
-    "interchange-if-for": (ConditionalBlock, LoopRegion),
     EXPAND_LIBRARY: (nodes.LibraryNode,),
     SET_IMPLEMENTATION: (nodes.LibraryNode,),
     "tile-doall": (nodes.MapEntry,),
@@ -173,6 +174,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "unroll-doall": (nodes.MapEntry,),
     HOIST_INVARIANT_CODE: (LOOP_ROW,),
     HOIST_INVARIANT_GUARD: (LOOP_ROW,),
+    SINK_INVARIANT_GUARD: (ConditionalBlock,),
     AUTO_VECTORIZE: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
@@ -248,8 +250,8 @@ LOOP_INTO_MAP_REFUSED = Refused(
     Refusal.DEPENDENCE,
 )
 IF_INTO_LOOP_REFUSED = Refused(
-    "blocked by MoveIfIntoLoop: the branch is not a single no-else guard whose body ends in this loop, or the "
-    "condition or its prep reads what the loop writes.",
+    "blocked by MoveIfIntoLoop: the branch is not a single no-else guard whose body ends in one for loop (a doall "
+    "does not take an if yet), or the condition or its prep reads what the loop writes.",
     Refusal.DEPENDENCE,
 )
 IF_OUT_OF_LOOP_REFUSED = Refused(
@@ -786,13 +788,14 @@ def plan_nested_map_loop(state: SDFGState, entry: nodes.MapEntry) -> Rewrite | s
     return Rewrite("MapLoopInterchange", commit)
 
 
-def plan_if_loop(cond_row: Row, loop_row: Row) -> Rewrite | str:
-    """``if c: for i: B`` -> ``for i: if c: B``."""
-    cond, loop = cond_row[0], loop_row[0]
+def plan_sink_invariant_guard(cond_row: Row) -> Rewrite | str:
+    """``if c: for i: B`` -> ``for i: if c: B``, for the one loop the branch ends in."""
+    cond = cond_row[0]
     match = match_guard(cond)
-    if match is None or loop.parent_graph is not match[2] or match[2].out_degree(loop):
+    sinks = match[2].sink_nodes() if match is not None else []
+    if len(sinks) != 1 or not isinstance(sinks[0], LoopRegion):
         return IF_INTO_LOOP_REFUSED
-    return region_rewrite("MoveIfIntoLoop", loop.sdfg, lambda: MoveIfIntoLoop.push(cond))
+    return region_rewrite("MoveIfIntoLoop", cond.sdfg, lambda: MoveIfIntoLoop.push(cond))
 
 
 def plan_hoist_invariant_guard(row: Row) -> Rewrite | str:
@@ -1535,7 +1538,6 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-for-doall": plan_loop_map,
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
-    "interchange-if-for": plan_if_loop,
     EXPAND_LIBRARY: plan_expand_library,
     SET_IMPLEMENTATION: plan_set_implementation,
     "tile-doall": plan_tile_doall,
@@ -1550,6 +1552,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "unroll-doall": plan_unroll_doall,
     HOIST_INVARIANT_CODE: plan_hoist_invariant_code,
     HOIST_INVARIANT_GUARD: plan_hoist_invariant_guard,
+    SINK_INVARIANT_GUARD: plan_sink_invariant_guard,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
@@ -1616,7 +1619,6 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
         "inlined and its one-iteration maps dropped first).",
     ),
-    "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
     EXPAND_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
@@ -1698,6 +1700,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
         "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
         "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A.",
+    ),
+    SINK_INVARIANT_GUARD: (
+        "MoveIfIntoLoop",
+        "if c: for i: B becomes for i: if c: B, the inverse of hoist-invariant-guard: the test runs every iteration, "
+        "and the loop can fuse with its neighbors. The branch must end in one for loop; a doall takes no if yet.",
     ),
     HOIST_INVARIANT_CODE: (
         "LoopInvariantCodeMotion on this for loop or doall",
@@ -1952,11 +1959,12 @@ def interchange_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     yield from body_map_pairs(sdfg)
 
 
-def guard_loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+def loop_guards(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The ifs whose first branch ends in one for loop."""
     for cond in every_region_block(sdfg, ConditionalBlock):
         sinks = cond.branches[0][1].sink_nodes() if cond.branches else []
         if len(sinks) == 1 and isinstance(sinks[0], LoopRegion):
-            yield (cond, None), (sinks[0], None)
+            yield ((cond, None),)
 
 
 def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
@@ -1975,7 +1983,6 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-for-doall": loop_map_pairs,
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
-    "interchange-if-for": guard_loop_pairs,
     EXPAND_LIBRARY: library_rows,
     SET_IMPLEMENTATION: library_rows,
     "tile-doall": doall_rows,
@@ -1992,6 +1999,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     HOIST_INVARIANT_CODE: lambda sdfg: chain(for_rows(sdfg), doall_rows(sdfg)),
     HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
+    SINK_INVARIANT_GUARD: loop_guards,
     AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,

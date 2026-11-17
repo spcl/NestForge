@@ -250,6 +250,13 @@ def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
 
 
 @dace.program
+def doall_under_guard(a: dace.float64[N], b: dace.float64[N]):
+    if K > 0:
+        for i in dace.map[0:N]:
+            b[i] = a[i] * 2.0 + 1.0
+
+
+@dace.program
 def guarded_map(a: dace.float64[N], b: dace.float64[N]):
     for i in dace.map[0:N]:
         if K > 0:
@@ -838,18 +845,30 @@ def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-# if-loop interchange
+# sink-invariant-guard
 
 
 def test_a_guard_moves_into_the_loop_it_guards():
     sut, reference = session_and_reference(guarded_loop)
 
-    result = apply_listed(sut, "interchange-if-for")
+    result = apply_listed(sut, "sink-invariant-guard")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveIfIntoLoop")
     assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
     for k in (0, 3):
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
+
+
+def test_a_guard_over_a_doall_stays_outside_it_until_dace_can_move_it_in():
+    sut = Session(doall_under_guard.to_sdfg(simplify=True))
+    (cond,) = [b for b, _ in sut.sdfg.all_nodes_recursive() if isinstance(b, ConditionalBlock)]
+    before = digest(sut.sdfg)
+
+    result = sut.apply_move("sink-invariant-guard", [cond.label])
+
+    assert sut.list_moves("sink-invariant-guard") == []
+    assert result.status is MoveStatus.ILLEGAL and "a doall does not take an if yet" in result.reason, result
+    assert digest(sut.sdfg) == before
 
 
 def test_a_loop_invariant_guard_moves_out_of_its_loop():
