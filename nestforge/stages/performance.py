@@ -17,12 +17,13 @@ import dace
 import numpy as np
 from relayout.layout import IndexMap
 
-from nestforge.build.arena import US_PER_S, reps_within_budget, rewind
+from nestforge.build.arena import US_PER_S, reps_within_budget, rewind, rung_rtol
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
 from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
+from nestforge.stages.kernel import KernelVerdict
 from nestforge.stages.layout import logical_outputs
 from nestforge.stages.placement import Transfer, device_copy_edges
 
@@ -83,7 +84,10 @@ class OffloadReport(Record):
 
 
 class KernelReport(Record):
-    """One kernel against its oracle; ``correct`` is ``None`` when it cannot run alone (``error`` says why)."""
+    """One kernel against its oracle; ``correct`` is ``None`` when it cannot run alone (``error`` says why).
+    ``max_rel_error`` is the largest relative difference to the oracle and ``tolerance`` the bound ``correct`` was
+    decided at, both ``None`` when the kernel was not compared: a kernel a few rounding errors over the bound and one
+    that computes something else are both ``correct=False``, and only the size of the difference tells them apart."""
 
     name: str
     device: str
@@ -91,6 +95,8 @@ class KernelReport(Record):
     time_us: float | None
     share: float | None
     error: str = ""
+    max_rel_error: float | None = None
+    tolerance: float | None = None
 
 
 class Performance(Record):
@@ -305,6 +311,13 @@ def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[Ke
             time_us=ev.verdict.time_us if ev.verdict.ok else None,
             share=ev.verdict.time_us / total if ev.verdict.ok and total > 0 else None,
             error=ev.verdict.error or ev.verdict.unchecked,
+            max_rel_error=ev.verdict.md_rel if compared(ev.verdict) else None,
+            tolerance=rung_rtol(ev.verdict.fp_mode, ev.verdict.dtype_floor) if compared(ev.verdict) else None,
         )
         for ev in evidence
     ]
+
+
+def compared(verdict: KernelVerdict) -> bool:
+    """Whether the kernel ran alone and its outputs were compared with its oracle's."""
+    return not verdict.error and not verdict.unchecked

@@ -238,7 +238,9 @@ keeps its build and verdict; `finalize` keeps the sweep:
   timed program with their bytes per execution (`copies`, `copy_bytes`), and the GPU kernels that still copy inside
   their own call in the session's program (`copies_in_call`: placed, `insert_copies` not run; the timed program had
   the default insert their copies);
-- `kernels`: each kernel's correctness, time and share, and the hints above.
+- `kernels`: each kernel's correctness, time and share, and the hints above. A compared kernel also carries
+  `max_rel_error`, its largest relative difference to its oracle, and the `tolerance` it was judged at: a kernel is
+  checked alone at 1e-14, so `correct: false` can be a few rounding errors or a wrong kernel, and the size says which.
 
 It is cached until the program or a kernel library changes.
 
