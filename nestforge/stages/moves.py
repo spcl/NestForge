@@ -9,6 +9,7 @@ import copy
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from math import prod
 from pathlib import Path
 from typing import Any, cast
@@ -140,9 +141,13 @@ MAX_BLOCK_THREADS = 1024
 SCOPE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU})
 #: The move kind that skews a loop nest into a wavefront: a sequential diagonal loop over a doall per diagonal.
 SKEW_WAVEFRONT = "skew-wavefront"
+#: The move kind that runs the loop-invariant statements of a for loop or a doall once, before it.
+HOIST_INVARIANT_CODE = "hoist-invariant-code"
+#: A row a move takes as either a for loop or a doall.
+LOOP_ROW = (LoopRegion, nodes.MapEntry)
 
 #: Every move kind, with the tree rows it takes in order.
-MOVE_SHAPES: dict[str, tuple[type, ...]] = {
+MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "for-fusion": (LoopRegion, LoopRegion),
     "for-fission": (LoopRegion,),
     "doall-fusion": (nodes.MapEntry, nodes.MapEntry),
@@ -166,8 +171,7 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "untile-for": (LoopRegion,),
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
-    "hoist-invariant-for": (LoopRegion,),
-    "hoist-invariant-doall": (nodes.MapEntry,),
+    HOIST_INVARIANT_CODE: (LOOP_ROW,),
     AUTO_VECTORIZE: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
@@ -1486,6 +1490,13 @@ def set_gpu_choices(sdfg: dace.SDFG, choices: Mapping[str, Mapping[str, GpuChoic
                     node.map.schedule = GPU_INNER_SCHEDULES[choice.schedule]
 
 
+def plan_hoist_invariant_code(row: Row) -> Rewrite | str:
+    """LoopInvariantCodeMotion on the one for loop or doall ``row`` names."""
+    if isinstance(row[0], LoopRegion):
+        return plan_hoist_invariant_for(row)
+    return plan_hoist_invariant_doall(row)
+
+
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
@@ -1532,8 +1543,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "untile-for": plan_untile_for,
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
-    "hoist-invariant-for": plan_hoist_invariant_for,
-    "hoist-invariant-doall": plan_hoist_invariant_doall,
+    HOIST_INVARIANT_CODE: plan_hoist_invariant_code,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
@@ -1553,7 +1563,7 @@ class MoveKind(Record):
 
 
 #: The tree keyword of each row type a move takes.
-ROW_KEYWORDS: dict[type, str] = {
+ROW_KEYWORDS: dict[type | tuple[type, ...], str] = {
     LoopRegion: "for",
     nodes.MapEntry: "doall",
     ControlFlowBlock: "state",
@@ -1562,6 +1572,7 @@ ROW_KEYWORDS: dict[type, str] = {
     nodes.LibraryNode: "lib_<family>",
     # a library call, or a one-element copy as the tasklet DaCe makes it (``names.is_call``)
     nodes.CodeNode: "lib_<family>",
+    LOOP_ROW: "for|doall",
 }
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
@@ -1681,16 +1692,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
     ),
-    "hoist-invariant-for": (
-        "LoopInvariantCodeMotion on this loop",
-        "the loop's loop-invariant statements (an expression or load whose inputs no iteration changes) and whole "
-        "sub-blocks that use neither the loop variable nor what the loop writes run once, before the loop. The "
-        "pass picks them; the loop stays.",
-    ),
-    "hoist-invariant-doall": (
-        "LoopInvariantCodeMotion on this doall",
-        "the same for a doall: a statement no parameter of the doall nest changes runs once, before the nest. A "
-        "statement invariant only in an inner doall of a perfect nest stays, so the nest stays whole.",
+    HOIST_INVARIANT_CODE: (
+        "LoopInvariantCodeMotion on this for loop or doall",
+        "the loop's invariant statements (an expression or load whose inputs no iteration changes) run once, before "
+        "the loop; for a for loop also whole sub-blocks that use neither the loop variable nor what the loop writes. "
+        "The pass picks them; the loop stays. In a perfect doall nest, a statement invariant only in an inner doall "
+        "stays, so the nest stays whole.",
     ),
     LIB_BEFORE: (
         "a state of its own, checked against the read and write sets of every block it crosses",
@@ -1787,7 +1794,7 @@ def plan_move(
         return plan_propagate_config(program, config_values or {}, output_dir)
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
-            expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
+            expected = ", ".join(ROW_KEYWORDS[t] for t in MOVE_SHAPES[kind])
             return Refused(
                 f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
             )
@@ -1976,8 +1983,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-for": tile_loops,
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
-    "hoist-invariant-for": for_rows,
-    "hoist-invariant-doall": doall_rows,
+    HOIST_INVARIANT_CODE: lambda sdfg: chain(for_rows(sdfg), doall_rows(sdfg)),
     AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,

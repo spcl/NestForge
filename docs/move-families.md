@@ -12,7 +12,7 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | `fission` | `for-fission`, `doall-fission`, `subgraph-fission` |
 | `interchange` | `interchange-doall-doall`, `interchange-doall-for`, `interchange-for-doall`, `interchange-doall-if`, `interchange-for-if`, `interchange-if-for` |
 | `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for`, `unroll-doall`, `unroll-for`, `expand-doall` |
-| `hoisting` | `hoist-invariant-doall`, `hoist-invariant-for`, `snapshot-reads`, `stage-loads-shared`, `propagate-config` |
+| `hoisting` | `hoist-invariant-code`, `snapshot-reads`, `stage-loads-shared`, `propagate-config` |
 | `library` | `lib-before`, `lib-after`, `lib-into`, `expand-library`, `set-library-implementation` |
 | `layout` | `relayout` |
 | `vectorize` | `auto-vectorize-scope` |

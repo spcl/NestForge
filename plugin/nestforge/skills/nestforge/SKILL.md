@@ -76,7 +76,7 @@ size is checked at a smaller one and timed at the graded size; the whole program
 | a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
 | a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
 | a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
-| a statement in a loop or doall body that uses nothing the iterations change (`scale = a * b`, a load of `w[0]`) | `hoist-invariant-for`, `hoist-invariant-doall` | it runs once, not every iteration |
+| a statement in a loop or doall body that uses nothing the iterations change (`scale = a * b`, a load of `w[0]`) | `hoist-invariant-code` | it runs once, not every iteration |
 | a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
 | a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after`, `lib-into` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
 | a `lib_sync` waiting earlier than the host needs the device's results | `lib-after` past host work on other data | the host overlaps that work with the device |
@@ -257,8 +257,7 @@ different doalls of one state.
 
 ### Loop-invariant code
 
-**`hoist-invariant-for`** `[for]` and **`hoist-invariant-doall`** `[doall]`, LoopInvariantCodeMotion on that one loop
-or doall: you name the loop, the pass picks what moves. A statement whose inputs no iteration changes (an expression of
+**`hoist-invariant-code`** `[for|doall]`, LoopInvariantCodeMotion on that one loop or doall: you name the loop, the pass picks what moves. A statement whose inputs no iteration changes (an expression of
 arguments, a load of an element the loop never writes), and for a loop a whole sub-block that uses neither the loop
 variable nor anything the loop writes, runs once, before the loop.
 ```

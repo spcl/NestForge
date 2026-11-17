@@ -22,9 +22,7 @@ FAMILIES: dict[str, frozenset[str]] = {
     "tiling": frozenset(
         {"tile-doall", "tile-for", "untile-doall", "untile-for", "unroll-doall", "unroll-for", "expand-doall"}
     ),
-    "hoisting": frozenset(
-        {"hoist-invariant-doall", "hoist-invariant-for", "snapshot-reads", "stage-loads-shared", "propagate-config"}
-    ),
+    "hoisting": frozenset({"hoist-invariant-code", "snapshot-reads", "stage-loads-shared", "propagate-config"}),
     "library": frozenset({"lib-before", "lib-after", "lib-into", "expand-library", "set-library-implementation"}),
     "layout": frozenset({"relayout"}),
     "vectorize": frozenset({"auto-vectorize-scope"}),

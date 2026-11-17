@@ -186,7 +186,7 @@ The skeleton decides every case with one comparison.
 | `for-fission` that separates communication rows of one loop | two loops where one was | refused |
 | `interchange-*`, `tile-for`, `untile-for`, `unroll-for` on a loop that holds a row | nesting, range, or count differs | refused |
 | a move that turns such a `for` into a doall, `collapse-doalls`, vectorization of it | kind differs | refused (also I3) |
-| `hoist-invariant-*` of a row other than `QUERY` | the row's region differs | refused |
+| `hoist-invariant-code` of a row other than `QUERY` | the row's region differs | refused |
 | two `START` or `BLOCKING` rows change places | order differs | refused (R1) |
 | a `WAIT` changes places with another row | same | applies, if I2 holds |
 
