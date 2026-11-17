@@ -11,11 +11,13 @@ from collections.abc import Callable
 
 import dace
 import pytest
+import test_auto_vectorize_and_c_view as vectorize_fixtures
 import test_doall_tiling
 import test_expand_library
 import test_hoist_invariant_moves as hoist_fixtures
 import test_lib_motion_moves
 import test_move_soundness
+import test_scope_moves as scope_fixtures
 import test_session_moves
 import test_sink_invariant_code
 import test_skew_wavefront
@@ -24,17 +26,17 @@ from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
 from nestforge.session import Move, Session
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK
+from nestforge.stages.moves import AUTO_VECTORIZE, MOVE_SHAPES, ROLLBACK, config_names
 
-#: Kinds no fixture program here offers, each with why; every other kind must be applied and rolled back at least
-#: once, so a new kind without a fixture fails the coverage test.
-NOT_COVERED_HERE = {
-    ROLLBACK: "the undo itself",
-    "propagate-config": "listed without values; its variants are written and checked in test_unroll_config_moves",
-    "set-schedule-cpu": "a scope move, applied inside a placed kernel",
-    "set-schedule-gpu": "a scope move, applied inside a placed GPU kernel",
-    "stage-loads-shared": "a device move, applied inside a placed GPU kernel",
-    "auto-vectorize-scope": "judged when applied, on a copy, by a C++ build",
+#: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
+#: below, so every kind is applied and rolled back somewhere in this file.
+OWN_CASES = {
+    ROLLBACK: "test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing",
+    "propagate-config": "test_rollback_after_propagate_config",
+    "set-schedule-cpu": "test_rollback_after_a_scope_move",
+    "set-schedule-gpu": "test_rollback_after_a_scope_move",
+    "stage-loads-shared": "test_rollback_after_a_scope_move",
+    "auto-vectorize-scope": "test_rollback_after_vectorizing_a_doall",
 }
 
 #: Fields of a listed move that are notes for the agent, not arguments of apply_move.
@@ -78,10 +80,24 @@ def without_guids(value: object) -> object:
     return value
 
 
-def state_of(session: Session) -> tuple[str, list[str], str]:
-    """The program as the agent sees it: the SDFG (its content), the row labels, and the tree text."""
-    content = json.dumps(without_guids(json.loads(json.dumps(session.sdfg.to_json(), default=str))), sort_keys=True)
-    return hashlib.sha256(content.encode()).hexdigest(), sorted(session.row_index()), session.describe()
+def content_of(sdfg: dace.SDFG) -> str:
+    """A digest of ``sdfg``'s content, node GUIDs aside."""
+    content = json.dumps(without_guids(json.loads(json.dumps(sdfg.to_json(), default=str))), sort_keys=True)
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+def state_of(session: Session) -> tuple[str, list[str], str, list[tuple[str, str, list[tuple[str, ...]]]]]:
+    """The program as the agent sees it: the SDFG (its content), the row labels, the tree text, and each kernel's
+    body as placed with the schedules its scope's moves report."""
+    kernels = [
+        (
+            info.name,
+            content_of(session.kernel(info.name).standalone_sdfg),
+            sorted((move.kind, *move.labels, str(move.current)) for move in session.list_moves(scope=info.name)),
+        )
+        for info in session.list_kernels()
+    ]
+    return content_of(session.sdfg), sorted(session.row_index()), session.describe(), kernels
 
 
 #: One applied move and rolled back: ``(program, kind, labels, what differed)``.
@@ -101,7 +117,7 @@ def applied_then_rolled_back(
     inside()
     session.apply_move(ROLLBACK, [])
     after = state_of(session)
-    parts = ("SDFG", "row labels", "tree text")
+    parts = ("SDFG", "row labels", "tree text", "kernels")
     return True, ", ".join(part for part, a, b in zip(parts, before, after, strict=True) if a != b)
 
 
@@ -110,7 +126,7 @@ def uncovered_moves_after(session: Session, name: str, found: list[Outcome]) -> 
     move makes possible (``untile-for`` after ``tile-for``) is covered one move deep."""
     covered = {kind for _, kind, _, _ in found}
     for move in session.list_moves():
-        if move.kind in NOT_COVERED_HERE or move.kind in covered:
+        if move.kind in OWN_CASES or move.kind in covered:
             continue
         applied, differs = applied_then_rolled_back(session, move)
         if applied:
@@ -125,7 +141,7 @@ def outcomes(tmp_path_factory: pytest.TempPathFactory) -> list[Outcome]:
     for name, sdfg in fixture_programs():
         session = Session(sdfg, work_dir=str(tmp_path_factory.mktemp(name.replace(".", "_"))))
         for move in session.list_moves():
-            if move.kind in NOT_COVERED_HERE:
+            if move.kind in OWN_CASES:
                 continue
             applied, differs = applied_then_rolled_back(
                 session, move, lambda: uncovered_moves_after(session, name, found)
@@ -145,6 +161,73 @@ def test_rollback_after_any_move_gives_back_the_same_program_labels_and_tree(out
 def test_every_move_kind_is_applied_and_rolled_back_by_some_fixture(outcomes):
     covered = {kind for _, kind, _, _ in outcomes}
 
-    missing = set(MOVE_SHAPES) - covered - NOT_COVERED_HERE.keys()
+    missing = set(MOVE_SHAPES) - covered - OWN_CASES.keys()
 
     assert not missing, f"no fixture program here applies {sorted(missing)}; add one"
+    assert {name for name in OWN_CASES.values()} <= set(globals()), "a kind's own case is missing"
+
+
+def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str:
+    """What differs once ``apply``'s change is rolled back (empty: nothing); it must have applied."""
+    before = state_of(session)
+    result = apply()
+    assert result.status is MoveStatus.APPLIED, result
+    session.apply_move(ROLLBACK, [])
+    parts = ("SDFG", "row labels", "tree text", "kernels")
+    return ", ".join(part for part, a, b in zip(parts, before, state_of(session), strict=True) if a != b)
+
+
+def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path):
+    session = Session(test_session_moves.guarded_map.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    start = state_of(session)
+    nothing = session.apply_move(ROLLBACK, [])
+    for move in session.list_moves()[:2]:
+        session.apply_move(
+            move.kind, move.labels, **{k: v for k, v in move.model_dump().items() if k not in NOT_ARGUMENTS}
+        )
+
+    session.apply_move(ROLLBACK, [])
+    session.apply_move(ROLLBACK, [])
+
+    assert nothing.status is MoveStatus.APPLIED and "nothing to roll back" in nothing.reason
+    assert state_of(session) == start
+
+
+def test_rollback_after_propagate_config(tmp_path):
+    session = Session(test_unroll_config_moves.repeat.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    values = {name: 3 for name in config_names(session.sdfg) if name == "K"}
+
+    differs = differs_after_rollback(session, lambda: session.apply_move("propagate-config", [], config_values=values))
+
+    assert not differs, differs
+
+
+@pytest.mark.parametrize(
+    ("kind", "device", "arguments"),
+    [
+        ("set-schedule-cpu", "cpu", {"schedule": "dynamic", "chunk": 16, "threads": 4}),
+        ("set-schedule-gpu", "gpu", {"tile_sizes": [128]}),
+        ("stage-loads-shared", "gpu", {"tile_sizes": [64]}),
+    ],
+)
+def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments: dict):
+    session, first, second = scope_fixtures.two_kernels(tmp_path, gpu=device == "gpu")
+    session.place({first: device, second: device})
+    if device == "gpu":
+        session.insert_copies()
+    (move,) = session.list_moves(kind, scope=first)
+
+    differs = differs_after_rollback(session, lambda: session.apply_move(kind, move.labels, scope=first, **arguments))
+
+    assert not differs, differs
+
+
+def test_rollback_after_vectorizing_a_doall(tmp_path):
+    session = vectorize_fixtures.session(tmp_path)
+    move = session.list_moves(AUTO_VECTORIZE)[0]
+
+    differs = differs_after_rollback(
+        session, lambda: session.apply_move(AUTO_VECTORIZE, move.labels, tile_sizes=[4], isa="scalar")
+    )
+
+    assert not differs, differs
