@@ -93,7 +93,20 @@ from nestforge.records import CRASHES, Record, Refusal, Refused
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.layout import RELAYOUT
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
-from nestforge.stages.sinking import match_if_over_maps, push_if_into_maps
+from nestforge.stages.sinking import (
+    SinkPlan,
+    match_if_over_maps,
+    predecessor_state,
+    push_if_into_maps,
+    sink_into_loop,
+    sink_into_map,
+)
+from nestforge.stages.sinking import (
+    plan_loop as plan_sink_loop,
+)
+from nestforge.stages.sinking import (
+    plan_map as plan_sink_map,
+)
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
 from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, vectorize_config, vectorize_refusal
@@ -148,6 +161,9 @@ HOIST_INVARIANT_CODE = "hoist-invariant-code"
 HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
 #: The move kind that moves an if into the for loop or doalls it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
 SINK_INVARIANT_GUARD = "sink-invariant-guard"
+#: The move kind that moves the statements computing one temporary into the for loop or doall that reads it, the
+#: inverse of :data:`HOIST_INVARIANT_CODE`; it takes ``container``.
+SINK_INVARIANT_CODE = "sink-invariant-code"
 #: A row a move takes as either a for loop or a doall.
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
 
@@ -174,6 +190,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
     HOIST_INVARIANT_CODE: (LOOP_ROW,),
+    SINK_INVARIANT_CODE: (LOOP_ROW,),
     HOIST_INVARIANT_GUARD: (LOOP_ROW,),
     SINK_INVARIANT_GUARD: (ConditionalBlock,),
     AUTO_VECTORIZE: (nodes.MapEntry,),
@@ -1516,6 +1533,46 @@ def plan_hoist_invariant_code(row: Row) -> Rewrite | str:
     return plan_hoist_invariant_doall(row)
 
 
+def plan_sink_invariant_code(row: Row, container: str | None) -> Rewrite | str:
+    """The statements before the for loop or doall ``row`` names that compute ``container`` move into it."""
+    obj = row[0]
+    if container is None:
+        return Refused(
+            f"{SINK_INVARIANT_CODE} takes container=, the temporary whose statements sink; list_moves names them.",
+            Refusal.ARGUMENT,
+        )
+    sdfg = obj.sdfg if isinstance(obj, LoopRegion) else node_state(row).sdfg
+    desc = sdfg.arrays.get(container)
+    if desc is None or not desc.transient:
+        what = "no container" if desc is None else "an argument, not a temporary"
+        return Refused(f"{container} is {what} of {sdfg.label}; only a temporary sinks.", Refusal.ARGUMENT)
+    if isinstance(obj, LoopRegion):
+        loop = obj
+        planned = plan_sink_loop(loop, container)
+        rewrite = region_rewrite("sink_into_loop", sdfg, lambda: sink_into_loop(loop, container))
+    else:
+        entry, state = cast(nodes.MapEntry, obj), node_state(row)
+        planned = plan_sink_map(state, entry, container)
+        rewrite = region_rewrite("sink_into_map", sdfg, lambda: sink_into_map(state, entry, container))
+    if isinstance(planned, str):
+        return Refused(planned, Refusal.DEPENDENCE)
+    return rewrite
+
+
+def sinkable_containers(row: Row) -> list[str]:
+    """The temporaries whose statements can sink into the for loop or doall ``row`` names, sorted."""
+    obj = row[0]
+    if isinstance(obj, LoopRegion):
+        source = predecessor_state(obj)
+        if source is None:
+            return []
+        names = {n.data for n in source.data_nodes() if source.in_degree(n) > 0}
+        return [name for name in sorted(names) if isinstance(plan_sink_loop(obj, name), SinkPlan)]
+    entry, state = cast(nodes.MapEntry, obj), node_state(row)
+    names = {e.data.data for e in state.in_edges(entry) if e.data.data is not None}
+    return [name for name in sorted(names) if isinstance(plan_sink_map(state, entry, name), SinkPlan)]
+
+
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
@@ -1717,6 +1774,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "branch takes a copy of the test), the inverse of hoist-invariant-guard: the test runs every iteration, and "
         "the loop or doall can fuse with its neighbors.",
     ),
+    SINK_INVARIANT_CODE: (
+        "sink_into_loop or sink_into_map (container, the temporary to sink)",
+        "the inverse of hoist-invariant-code for one temporary: t = a * b; for i: ... t ... becomes for i: {t = a * b; "
+        "... t ...}. The statements run every iteration instead of once, t no longer lives across the loop, and a "
+        "doall no longer has an input that ties it to the statements before it. Only plain statements sink, from "
+        "the state just before the loop or doall (or above the doall in its state); t must be used nowhere else, and "
+        "the loop must not write what the statements read.",
+    ),
     HOIST_INVARIANT_CODE: (
         "LoopInvariantCodeMotion on this for loop or doall",
         "the loop's invariant statements (an expression or load whose inputs no iteration changes) run once, before "
@@ -1807,6 +1872,7 @@ def plan_move(
     schedule: str | None = None,
     chunk: int | None = None,
     threads: int | None = None,
+    container: str | None = None,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
@@ -1829,6 +1895,8 @@ def plan_move(
         return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
     if kind == FOR_TO_DOALL:
         return plan_for_to_doall(*rows, force=force)
+    if kind == SINK_INVARIANT_CODE:
+        return plan_sink_invariant_code(*rows, container=container)
     if kind == SET_SCHEDULE_CPU:
         return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
@@ -2009,6 +2077,9 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
     HOIST_INVARIANT_CODE: lambda sdfg: chain(for_rows(sdfg), doall_rows(sdfg)),
+    SINK_INVARIANT_CODE: lambda sdfg: (
+        rows for rows in chain(for_rows(sdfg), doall_rows(sdfg)) if sinkable_containers(rows[0])
+    ),
     HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
     SINK_INVARIANT_GUARD: loop_guards,
     AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
@@ -2041,7 +2112,8 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
                 AUTO_VECTORIZE,
                 SET_SCHEDULE_CPU,
                 SET_SCHEDULE_GPU,
-            ):  # no values to probe with, or too costly: judged when applied
+                SINK_INVARIANT_CODE,
+            ):  # no values to probe with, or too costly, or probed by its candidates: judged when applied
                 found[(name, labels)] = None
                 continue
             try:

@@ -122,6 +122,7 @@ from nestforge.stages.moves import (
     SET_IMPLEMENTATION,
     SET_SCHEDULE_CPU,
     SET_SCHEDULE_GPU,
+    SINK_INVARIANT_CODE,
     SIZED,
     GpuChoice,
     Rewrite,
@@ -134,6 +135,7 @@ from nestforge.stages.moves import (
     scope_metrics,
     sdfg_metrics,
     set_gpu_choices,
+    sinkable_containers,
 )
 from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
 from nestforge.stages.placement import (
@@ -274,6 +276,8 @@ class Move(Record):
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
+    #: For ``sink-invariant-code``, the temporary whose statements sink.
+    container: str | None = None
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -830,6 +834,11 @@ class Session:
                     Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
                     for name in implementations(node, self.targets.gpu)
                 ]
+            elif k == SINK_INVARIANT_CODE:
+                moves += [
+                    Move(kind=k, labels=labels, container=name, **scoped)
+                    for name in sinkable_containers(rows[labels[0]])
+                ]
             elif k in SCOPE_KINDS:
                 if self.scope_refusal(k, scope) is None:
                     assert scope is not None, "scope_refusal requires one"
@@ -989,6 +998,7 @@ class Session:
         schedule: str | None = None,
         chunk: int | None = None,
         threads: int | None = None,
+        container: str | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -1009,6 +1019,7 @@ class Session:
         :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
         :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
         :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
+        :param container: For ``sink-invariant-code``, the temporary whose statements sink into the row.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -1065,6 +1076,7 @@ class Session:
             schedule=schedule,
             chunk=chunk,
             threads=threads,
+            container=container,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node = cast(nodes.LibraryNode, rows[0][0])

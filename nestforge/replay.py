@@ -115,6 +115,7 @@ class AppliedMove(Record):
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
+    container: str | None = None
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -191,6 +192,7 @@ class Script:
             schedule=move.schedule,
             chunk=move.chunk,
             threads=move.threads,
+            container=move.container,
         )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -208,6 +210,7 @@ class Script:
             schedule=move.schedule,
             chunk=move.chunk,
             threads=move.threads,
+            container=move.container,
         )
         self.applied.append(done)
         return done

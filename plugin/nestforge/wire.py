@@ -108,6 +108,11 @@ class ApplyMove(Labeled):
     threads: int | None = pydantic.Field(
         None, description="set-schedule-cpu: the threads that run the doall; none: all of them."
     )
+    container: str | None = pydantic.Field(
+        None,
+        description="sink-invariant-code: the temporary whose statements move into the loop or doall, as list_moves "
+        "names it (the state's writes=[..] shows it).",
+    )
     operation: dict[str, Any] = pydantic.Field(
         default_factory=dict,
         description="relayout (labels []): one operation of the bench's requests on an array argument, as relayout "

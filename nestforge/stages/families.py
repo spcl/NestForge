@@ -22,6 +22,7 @@ FAMILIES: dict[str, frozenset[str]] = {
     "hoisting": frozenset(
         {
             "hoist-invariant-code",
+            "sink-invariant-code",
             "hoist-invariant-guard",
             "sink-invariant-guard",
             "snapshot-reads",

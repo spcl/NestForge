@@ -258,6 +258,15 @@ for i: t = a * b; C[i] = t * X[i]   ->   t = a * b; for i: C[i] = t * X[i]
 A statement invariant only in an inner doall of a perfect doall nest stays, so the nest stays one parallel space.
 Offered only where the pass finds something to hoist.
 
+**`sink-invariant-code`** `[for|doall]` with `container`, the inverse for one temporary: the statements before the
+loop that compute `container` move into it and run every iteration.
+```
+t = a * b; for i: C[i] = t * X[i]   ->   for i: t = a * b; C[i] = t * X[i]
+```
+It pays when `t` is cheap to recompute and keeping it costs more: a doall that read `t` from outside no longer depends
+on the statements before it, so it can fuse with a neighbor, and `t` no longer lives across the loop. `list_moves`
+names each temporary that can sink. Only plain statements sink, and `t` must be used nowhere but in the loop.
+
 **`hoist-invariant-guard`** `[for|doall]`: the loop's `if` moves above it, for a condition that reads neither the loop
 variable nor anything the loop writes; the test runs once instead of once per iteration. On a for loop
 (MoveLoopInvariantIfUp), `for i: if c: B` becomes `if c: for i: B`, and the `if` must be the loop's only statement. On

@@ -76,7 +76,8 @@ def product_runs_in(sdfg: dace.SDFG) -> str:
         if isinstance(node, nodes.Tasklet) and node.label.startswith("product"):
             if isinstance(graph, dace.SDFGState) and isinstance(graph.parent_graph, LoopRegion):
                 return "loop"
-            return "doall" if graph.entry_node(node) is not None else "outside"
+            in_body = graph.sdfg.parent_nsdfg_node is not None  # a doall's body nested as an SDFG
+            return "doall" if in_body or graph.entry_node(node) is not None else "outside"
     raise AssertionError("the product tasklet is gone")
 
 
@@ -132,3 +133,41 @@ def test_a_doall_without_invariant_statements_is_not_offered(tmp_path: pathlib.P
     refused = sut.apply_move("hoist-invariant-code", [doall])
 
     assert refused.status is MoveStatus.ILLEGAL and "invariant" in refused.reason, refused
+
+
+def test_a_hoisted_product_sinks_back_into_the_loop_and_runs_every_iteration(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
+    (hoist,) = sut.list_moves("hoist-invariant-code")
+    sut.apply_move(hoist.kind, hoist.labels)
+    (move,) = sut.list_moves("sink-invariant-code")
+
+    result = sut.apply_move(move.kind, move.labels, container=move.container)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "sink_into_loop"), result
+    assert product_runs_in(sut.sdfg) == "loop"
+    np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
+
+
+def test_a_hoisted_product_sinks_back_into_the_doall(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
+    (hoist,) = sut.list_moves("hoist-invariant-code")
+    sut.apply_move(hoist.kind, hoist.labels)
+    (move,) = sut.list_moves("sink-invariant-code")
+
+    result = sut.apply_move(move.kind, move.labels, container=move.container)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "sink_into_map"), result
+    assert product_runs_in(sut.sdfg) == "doall"
+    np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
+
+
+def test_sinking_without_a_container_or_with_an_argument_is_refused(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
+    (loop,) = labels_of(sut, LoopRegion)
+
+    unnamed = sut.apply_move("sink-invariant-code", [loop])
+    argument = sut.apply_move("sink-invariant-code", [loop], container="X")
+
+    assert unnamed.status is MoveStatus.ILLEGAL and "container=" in unnamed.reason, unnamed
+    assert argument.status is MoveStatus.ILLEGAL and "argument" in argument.reason, argument
+    assert product_runs_in(sut.sdfg) == "loop"
