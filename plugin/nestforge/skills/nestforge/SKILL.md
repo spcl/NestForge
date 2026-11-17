@@ -52,7 +52,9 @@ your own `tile_sizes`. An illegal move is refused with the reason and changes no
 a broken program. Every move keeps the program's results: it changes how the loops run, never what they compute.
 The move `rollback` (`apply_move` with `labels []`, always legal; with nothing to take back it changes nothing) takes
 the last move back (program, labels and `applied_moves` as before it), and again for the one before, up to 8. So
-trying a move costs two calls and a measurement, never the program.
+trying a move costs two calls and a measurement, never the program. Undo a move with `rollback`, never with its
+inverse move: `rollback` gives back the very program and labels you had (tested for every move kind), while an
+inverse move makes new rows with new labels.
 
 `apply_move` and `run_defaults` answer at once, without a time. `get_performance` measures the program as it stands:
 each kernel in one fixed compiler configuration, so two measurements compare (`finalize`'s sweep, what `score` and
@@ -88,7 +90,8 @@ size is checked at a smaller one and timed at the graded size; the whole program
    `wrong result` first (`rollback` the move that caused it), then `bytes spilled` (the body is too big:
    `doall-fission`), then `loop not vectorized` with the compiler's reason.
 
-Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
+Moves with a listed inverse, to change an earlier choice after other moves (to undo the last move, `rollback`):
+`tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
 `expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `hoist-invariant-guard` / `sink-invariant-guard`, and
 `interchange-doall-doall` with itself, and `doall-to-for` / `for-to-doall`. Fusion, fission, unrolling, hoisting,
 `propagate-config`, `expand-library`, `snapshot-reads`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
