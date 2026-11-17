@@ -19,21 +19,21 @@ Code: `nestforge/ir/introspect.py` renders the tree (`describe_graph`), `nestfor
 
 ```
 SDFG 'axpy_then_reverse'
-`- state2  doalls=3  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']  work=3*N + T + (N - 1)*(T - 1) - 1 depth=T + log(N)/log(2) + 2
+`- state2  doalls=3  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
 ```
 
 `view_tree expand=[state2, state3, state4]` opens it; leaf bodies print as Python by default:
 
 ```
-`- state2  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']  work=... depth=...
-   |- doall2  [_loop_it_0=0:T]  reduce=(+ over _loop_it_0 -> y)  reads=['x'] writes=['y']  work=N*T depth=T + 1
-   |  `- doall3  [_loop_it_1=0:N]  reduce=(+ over - -> y)  reads=['x'] writes=['y']  num_states=1  work=N depth=2
+`- state2  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
+   |- doall2  [_loop_it_0=0:T]  reduce=(+ over _loop_it_0 -> y)  reads=['x'] writes=['y']
+   |  `- doall3  [_loop_it_1=0:N]  reduce=(+ over - -> y)  reads=['x'] writes=['y']  num_states=1
    |     : _wcr_priv__Add____out = 2.0 * x[_loop_it_1]
    |     : y[_loop_it_1] = y[_loop_it_1] + _wcr_priv__Add____out
-   |     `- state3  reads=['x'] writes=['_wcr_priv__Add____out']  work=1 depth=1
-   |- doall4  [_loop_it_2=0:N]  reads=['y'] writes=['z']  num_states=1  work=N depth=1
+   |     `- state3  reads=['x'] writes=['_wcr_priv__Add____out']
+   |- doall4  [_loop_it_2=0:N]  reads=['y'] writes=['z']  num_states=1
    |  : z[_loop_it_2] = y[N - _loop_it_2 - 1] * 3.0
-   |  `- state4  reads=['y'] writes=['z']  work=1 depth=1
+   |  `- state4  reads=['y'] writes=['z']
    `- lib_reduce0  LIBNODE Reduce [CPU]  reads=['z'] writes=['s_slice']
 ```
 
@@ -53,7 +53,7 @@ Every row is one SDFG object. Children print below their parent in execution ord
 
 | Row | SDFG object | Prints |
 |---|---|---|
-| `SDFG '<name>'` | the root `SDFG` | the header; a second line `(no work= or depth=: <why>)` when the cost analysis failed or ran out of time |
+| `SDFG '<name>'` | the root `SDFG` | the header |
 | `for<n>  <var>=<lo>:<hi>` | `LoopRegion` | a sequential loop: its iterations run in order (`for` and `while` alike); an innermost loop adds `num_states=` |
 | `if<n>`, then `<branch>  when <cond>` / `else` | `ConditionalBlock` and its branch regions | the first branch whose condition holds runs, so stored order is execution order |
 | `state<n>` | `SDFGState` | one dataflow step; collapsed it adds `doalls=<k>` (top-level maps and library calls) |
@@ -70,7 +70,7 @@ doall only.
 | Field | On | Means |
 |---|---|---|
 | `reads=[..] writes=[..]` | state, doall, library call | the containers it reads and writes, sorted. A state leaves out the transients no other state touches (`introspect.outlives`): a temporary of one state is not part of its interface |
-| `work=` `depth=` | state, loop, doall | DaCe's work-depth analysis, one pass per program (`guarded_work_depth`, at most 60 s): `work` counts operations, `depth` the longest dependent chain, both formulas in the program's symbols. A library call's own cost is a free symbol (`lib_tileops2_work`) |
+| (none) | state, loop, doall | work and depth are not printed: `get_work_depth labels=[...]` gives them per row (DaCe's work-depth analysis, one pass per program, at most 60 s), at the session's sizes or as formulas (`formula=true`), simplified under the program's facts. A library call's own cost is a free symbol (`lib_tileops2_work`) |
 | `doalls=<k>` | collapsed state | how many top-level doalls and library calls it holds |
 | `num_states=<k>` | innermost loop, doall holding a nest | the states under it, nested SDFGs included |
 | `reduce=(<op> over <axes> -> <target>)` | doall | an accumulation leaving the doall (a WCR edge on its exit): `+`, `*` or the reduction's name, the parameters the written subset does not mention (`-`: none, an element-wise accumulation), the array it lands in |
@@ -117,7 +117,7 @@ before and after printing.
 
 | Call (`view_tree` argument) | Session | Does |
 |---|---|---|
-| `expand=[labels]` | `Session.expand` | opens states and doalls: everything below them shows (doalls, nested doalls, leaf bodies, the states of nested SDFGs); what was closed inside opens with them |
+| `expand=[labels]` | `Session.expand` | opens states and doalls: an open state shows its doalls as rows; an open doall shows its statements, nested doalls and the states of its body. A doall of an open state stays closed until opened itself |
 | `collapse=[labels]` | `Session.collapse` | closes open states and doalls, one opened by a row around it included; the row stays, its content goes |
 | `c=[labels]` | `Session.set_language(labels, "c")` | prints the bodies under the rows as C |
 | `python=[labels]` | `Session.set_language(labels, "python")` | prints them as Python again |

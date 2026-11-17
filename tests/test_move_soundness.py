@@ -165,9 +165,11 @@ def test_doall_fission_refuses_a_body_bound_to_an_expression_of_the_map_but_subg
 def test_a_while_loop_inside_a_loop_gets_a_tree_without_costs_and_the_reason(tmp_path):
     sut = session(while_in_a_carried_loop, tmp_path)
 
+    tree = sut.describe(costs=True)
+
     assert guarded_work_depth(sut.sdfg)[0] == {}
     assert sut.costs_skipped is not None and "NodeNotFoundError" in sut.costs_skipped
-    assert "no work= or depth=" in sut.describe()
+    assert "no work= or depth=" in tree
 
 
 def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path):
@@ -176,7 +178,7 @@ def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path):
         sut.apply_move("tile-doall", sut.list_moves("tile-doall")[-1].labels, tile_sizes=[size])
 
     assert sut.list_moves()
-    sut.describe()
+    sut.describe(costs=True)
     assert sut.costs_skipped is None and sut.costs
     a, b = np.arange(1.0, SIZE + 1) ** 2, np.zeros(SIZE)
     sut.sdfg(a=a, b=b, N=SIZE)
@@ -203,7 +205,7 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
         expand = sut.list_moves("expand-library")[0]
         assert sut.apply_move("expand-library", expand.labels).status is MoveStatus.APPLIED
 
-    assert "no work= or depth=" in sut.describe()
+    assert "no work= or depth=" in sut.describe(costs=True)
 
 
 def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
@@ -217,7 +219,7 @@ def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
     while expands := sut.list_moves("expand-library"):
         assert sut.apply_move("expand-library", expands[0].labels).status is MoveStatus.APPLIED
 
-    tree = sut.describe()
+    tree = sut.describe(costs=True)
     assert "no work= or depth=" not in tree
     assert "work=" in tree and "depth=" in tree
 
@@ -242,4 +244,4 @@ def test_a_stop_iteration_out_of_sympys_sum_simplification_leaves_a_tree(tmp_pat
     monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", sum_add_failure)
     sut.bump()
 
-    assert "no work= or depth=" in sut.describe()
+    assert "no work= or depth=" in sut.describe(costs=True)

@@ -48,8 +48,22 @@ SDFG 'shaped'
          `- state3  reads=['B'] writes=['out']  work=1 depth=1
 """
 
-#: The agent's view after it expands ``state0``: that state's kernels and their bodies, the rest still closed.
+#: The agent's view after it expands ``state0``: that state's kernels as rows, their bodies still closed.
 OPENED = """\
+SDFG 'shaped'
+|- state0  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
+|  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
+`- for0  i=1:20  num_states=3  work=19 depth=19
+   |- state1
+   `- if0
+      |- block0  when A[i] > 0.0
+      |  `- state2  reads=['B', 's'] writes=['out']  work=1 depth=1
+      `- block1  else
+         `- state3  reads=['B'] writes=['out']  work=1 depth=1
+"""
+
+#: After it also expands ``doall0``: the doall's statements, which fission splits.
+OPENED_DOALL = """\
 SDFG 'shaped'
 |- state0  reads=['A', 'B'] writes=['B', 's']  work=21 depth=2
 |  `- doall0  [i=0:20]  reads=['A'] writes=['B']  work=20 depth=1
@@ -99,9 +113,11 @@ def test_a_state_shows_its_kernels_only_once_expanded():
 
     collapsed = describe_graph(sdfg, expanded=())
     opened = describe_graph(sdfg, expanded=["state0"])
+    opened_doall = describe_graph(sdfg, expanded=["state0", "doall0"])
 
     assert collapsed + "\n" == COLLAPSED
     assert opened + "\n" == OPENED
+    assert opened_doall + "\n" == OPENED_DOALL
 
 
 def test_every_line_is_a_guide_then_one_labelled_thing():
@@ -158,21 +174,22 @@ def shown_labels(tree: str) -> set[str]:
     return {re.sub(r"^[|` -]*", "", line).split()[0] for line in tree.splitlines()[1:]}
 
 
-def test_an_expanded_state_opens_everything_below_it_and_a_row_inside_it_collapses_alone():
+def test_an_expanded_state_shows_its_doall_and_the_doall_opens_its_body_states_alone():
     sut = Session(branchy.to_sdfg(simplify=True))
     (doall,) = [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dc.nodes.MapEntry)]
     (state,) = [label for label, (obj, _) in sut.row_index().items() if obj is sut.row_index()[doall][1]]
     inner = nested_state_labels(sut)
     assert inner and not shown_labels(sut.describe()) & set(inner), "a closed state hides the doall's body states"
 
-    opened = sut.view(expand=[state])
+    state_open = sut.view(expand=[state])
+    opened = sut.view(expand=[doall])
     folded = sut.view(collapse=[doall])
 
-    assert set(inner) <= shown_labels(opened), "expanding the state opens the doall inside it, body states included"
+    assert doall in shown_labels(state_open) and not shown_labels(state_open) & set(inner), "the doall stays closed"
+    assert set(inner) <= shown_labels(opened), "expanding the doall shows its body states"
     assert folded.startswith(f"ok: collapsed {doall}\n")
     assert doall in shown_labels(folded) and not shown_labels(folded) & set(inner)
-    assert sut.view(expand=[state]) == opened, "expanding the state again opens what was closed inside it"
-    assert sut.view(expand=[state], collapse=[doall]).endswith(folded.partition("\n")[2]), "one call opens, then closes"
+    assert sut.view(expand=[doall], collapse=[doall]).endswith(folded.partition("\n")[2]), "one call opens, then closes"
 
 
 # conditions read as the arrays they test

@@ -82,6 +82,11 @@ def doall_writing(sut: Session, name: str) -> str:
     raise AssertionError(f"no top-level doall writes {name}")
 
 
+def doall_labels(sut: Session) -> list[str]:
+    """Every doall row: a doall shows its body only once opened itself."""
+    return [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
+
+
 def tile_call(node: dace.nodes.Node) -> bool:
     """Whether ``node`` is a C++ tasklet calling a tile function: what a vectorized body is made of."""
     return (
@@ -142,7 +147,7 @@ def test_the_c_view_prints_a_scalar_body_with_its_accesses(tmp_path):
     i = param(sut, axpy)
     before = sut.sdfg.hash_sdfg()
 
-    tree = sut.view(expand=[state_of(sut, axpy)], c=[state_of(sut, axpy)])
+    tree = sut.view(expand=[state_of(sut, axpy), axpy], c=[state_of(sut, axpy)])
 
     assert f"y[{i}] = (__tmp0[0] + y[{i}]);" in tree, tree
     assert "auto " not in tree, tree
@@ -156,7 +161,7 @@ def test_the_c_view_shows_a_vectorized_body_as_tile_functions(tmp_path):
     sut.apply_move(AUTO_VECTORIZE, [axpy], tile_sizes=[4], isa="scalar")
     state = state_of(sut, doall_writing(sut, "z"))
 
-    c_tree, python_tree = sut.view(expand=[state], c=[state]), sut.view(python=[state])
+    c_tree, python_tree = sut.view(expand=[state, *doall_labels(sut)], c=[state]), sut.view(python=[state])
 
     assert "tile_load" in c_tree and "tile_store" in c_tree and "<not emitted" not in c_tree, c_tree
     assert "<not emitted" in python_tree, "the Python view spells no C++ tasklet"
@@ -168,7 +173,7 @@ def test_a_row_inside_a_c_row_keeps_its_own_language(tmp_path):
     i, j = param(sut, axpy), param(sut, reverse)
     state = state_of(sut, axpy)
 
-    tree = sut.view(expand=[state], c=[state], python=[reverse])
+    tree = sut.view(expand=[state, axpy, reverse], c=[state], python=[reverse])
 
     assert f"y[{i}] = (__tmp0[0] + y[{i}]);" in tree, tree
     assert f"z[{j}] = (y[" not in tree and f"z[{j}] = y[N - {j} - 1] * 3.0" in tree, tree
@@ -181,7 +186,7 @@ def test_a_doall_nested_in_another_prints_its_state_once_and_its_accumulation_in
     sut.canonicalize()
     states = [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dace.SDFGState)]
 
-    tree = sut.view(expand=states, c=states)
+    tree = sut.view(expand=[*states, *doall_labels(sut)], c=states)
 
     rows = [line.split("- ", 1)[1].split()[0] for line in tree.splitlines() if "- " in line and ": " not in line]
     assert len(rows) == len(set(rows)), tree
