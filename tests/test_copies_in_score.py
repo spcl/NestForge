@@ -22,9 +22,10 @@ from nestforge.stages.performance import (
     copy_reports,
     offload_report,
 )
-from nestforge.stages.placement import copies_in_call, has_device_memory
+from nestforge.stages.placement import copies_in_call, device_copy_edges, has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
+TSTEPS = dace.symbol("TSTEPS", dtype=dace.int64)
 
 #: The size the reports are evaluated at.
 SIZE = 100
@@ -90,6 +91,40 @@ def test_a_transfer_of_an_array_the_program_sizes_at_run_time_has_no_bytes() -> 
     assert array_bytes(sdfg, "a", {"N": SIZE}) == VECTOR_BYTES
     assert array_bytes(sdfg, "h", {"N": SIZE, "m": 3}) == 12 * 8
     assert array_bytes(sdfg, "no_such_array", {"N": SIZE}) is None
+
+
+@dace.program
+def map_feeds_recurrence(A: dace.float64[N], C: dace.float64[N]):
+    """A parallel map feeds a sequential recurrence every step: the GPU default splits them across devices."""
+    T = dace.define_local([N], dace.float64)
+    for t in range(TSTEPS):
+        for i in dace.map[0:N]:
+            T[i] = A[i] * A[i] + 1.0
+        C[0] = T[0]
+        for i in range(1, N):
+            C[i] = 0.5 * C[i - 1] * C[i - 1] + T[i]
+        for i in dace.map[0:N]:
+            A[i] = C[i] * 1e-3
+
+
+def test_an_empty_memlet_between_memory_spaces_is_no_copy(tmp_path: Path) -> None:
+    """The GPU default of a map feeding a recurrence orders ``T`` before ``C_slice`` by an empty memlet; counted as a
+    copy, its bytes raised ``KeyError: None`` and every measurement of the program failed (job 5372503)."""
+    session = Session(
+        map_feeds_recurrence.to_sdfg(simplify=True),
+        Targets(gpu=True),
+        sizes={"N": SIZE, "TSTEPS": 4},
+        work_dir=str(tmp_path),
+    )
+    session.canonicalize()
+    for stage in ("moves", "scopes", "placement"):
+        session.run_defaults(stage)
+    sdfg = program(session)
+
+    edges = device_copy_edges(sdfg)
+
+    assert edges and not any(edge.data.is_empty() for _, edge in edges)
+    assert all(copy.bytes is not None for copy in copy_reports(sdfg, dict(session.sizes)))
 
 
 def test_inserting_the_copies_moves_them_into_the_program_with_their_bytes(tmp_path: Path) -> None:

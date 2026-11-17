@@ -124,13 +124,15 @@ def on_device(state: dace.SDFGState, node: nodes.AccessNode) -> bool:
 
 
 def device_copy_edges(sdfg: dace.SDFG) -> list[tuple[dace.SDFGState, CopyEdge]]:
-    """Access-to-access edges whose two ends live in different memory spaces, in state order, with their state."""
+    """Access-to-access edges whose two ends live in different memory spaces, in state order, with their state. An
+    empty memlet only orders the two accesses and copies nothing, so it is no copy."""
     return [
         (state, edge)
         for state in sdfg.states()
         for edge in state.edges()
         if isinstance(edge.src, nodes.AccessNode)
         and isinstance(edge.dst, nodes.AccessNode)
+        and not edge.data.is_empty()
         and on_device(state, edge.src) != on_device(state, edge.dst)
     ]
 
