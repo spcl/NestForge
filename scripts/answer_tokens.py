@@ -18,11 +18,19 @@ from an agent transcript (``--transcript``), whose NestForge calls are taken in 
     python scripts/answer_tokens.py --kernel pagerank --calls calls.jsonl --tokenizer tokenizer.json
     python scripts/answer_tokens.py --kernel pagerank --transcript transcript.jsonl --tokenizer tokenizer.json \\
         --format v1 --out answers.csv
+
+``--recorded`` counts a transcript as it happened instead: every tool call, NestForge's or a free-form agent's
+(``Bash``, ``Read``, ``Edit``), with the result the agent read. Shell commands count as read (``cat``, ``grep``,
+``sed -n``), edit (``sed -i``, a heredoc, ``>``), build or run, so a free-form run's read-edit-build loop and a
+NestForge run's calls compare on one tokenizer:
+
+    python scripts/answer_tokens.py --transcript freeform.jsonl --recorded --tokenizer o200k_base
 """
 
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -51,6 +59,9 @@ class ToolAnswer(JudgeAnswer):
 
 #: How an answer is turned into the text the agent reads, by format name.
 Renderer = Callable[[str, Reply], str]
+
+#: What a transcript line holds when it carries no record: whitespace, or the NUL bytes a crash leaves.
+PADDING = "\x00 \t\r\n"
 
 #: The prefix Claude Code gives an MCP tool's name (``mcp__<server>__<tool>``).
 MCP_PREFIX = "mcp__"
@@ -136,6 +147,8 @@ def token_counter(name: str) -> Callable[[str], int]:
     if name in TIKTOKEN_NAMES:
         encoding = tiktoken.get_encoding(name)
         return lambda text: len(encoding.encode(text, disallowed_special=()))
+    if not Path(name).is_file():
+        raise ValueError(f"unknown tokenizer {name!r}: neither {sorted(TIKTOKEN_NAMES)} nor a tokenizer.json file")
     tokenizer = Tokenizer.from_file(name)
     return lambda text: len(tokenizer.encode(text).ids)
 
@@ -170,6 +183,8 @@ def transcript_calls(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]
     """The NestForge calls of an agent transcript (Claude Code's JSONL), in order, each tool use once."""
     seen: set[str] = set()
     for line in lines:
+        if not line.strip(PADDING):
+            continue
         record = json.loads(line)
         if record.get("type") != "assistant":
             continue
@@ -188,6 +203,113 @@ def journal_calls(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
         if line.strip():
             tool, arguments = json.loads(line)
             yield str(tool), dict(arguments)
+
+
+@dataclass(frozen=True, slots=True)
+class Recorded:
+    """One tool use of a transcript and the result the agent read back, as recorded."""
+
+    tool: str
+    arguments: dict[str, Any]
+    result: str
+    failed: bool
+
+
+def result_text(content: Any) -> str:
+    """A ``tool_result``'s content as the agent read it: a string, or the text of its text blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+    return ""
+
+
+def recorded_calls(lines: Iterable[str]) -> Iterator[Recorded]:
+    """Every tool use of an agent transcript (Claude Code's JSONL), NestForge's or not, with its recorded result,
+    in order, each once. A tool use without a result (the run ended) counts with an empty one."""
+    uses: dict[str, tuple[str, dict[str, Any]]] = {}
+    results: dict[str, tuple[str, bool]] = {}
+    for line in lines:
+        if not line.strip(PADDING):
+            continue
+        record = json.loads(line)
+        for block in (
+            record.get("message", {}).get("content", []) if record.get("type") in ("assistant", "user") else []
+        ):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("id") not in uses:
+                uses[str(block.get("id"))] = (tool_name(str(block.get("name", ""))), dict(block.get("input", {})))
+            elif block.get("type") == "tool_result":
+                text = result_text(block.get("content"))
+                results.setdefault(str(block.get("tool_use_id")), (text, block.get("is_error") is True))
+    for use_id, (tool, arguments) in uses.items():
+        yield Recorded(tool, arguments, *results.get(use_id, ("", False)))
+
+
+#: What a shell command does, by its first word: reading source, editing it, building, or running.
+SHELL_KINDS: dict[str, frozenset[str]] = {
+    "read": frozenset({"cat", "head", "tail", "less", "grep", "rg", "find", "ls", "wc", "diff", "nl", "awk"}),
+    "edit": frozenset({"patch", "cp", "mv", "tee", "perl"}),
+    "build": frozenset({"make", "cmake", "gcc", "g++", "clang", "clang++", "nvcc", "hipcc", "icpx", "mpicc"}),
+    "run": frozenset({"python", "python3", "pytest", "srun", "mpirun", "perf"}),
+}
+
+#: Words that only start another command (``nice -n 5 make``, ``OMP_NUM_THREADS=8 ./k``, ``timeout 60 ./k``): the
+#: command after them decides.
+WRAPPERS = frozenset({"nice", "-n", "timeout", "time", "env", "stdbuf", "-oL"})
+
+#: Shell words that edit when they write into a file (``cat > f``, ``cat <<EOF > f``, ``tee f``).
+WRITERS = frozenset({"cat", "echo", "printf", "tee"})
+
+#: Claude Code's own file tools, by what they do.
+FILE_TOOLS = {"Read": "read", "Grep": "read", "Glob": "read", "Edit": "edit", "Write": "edit", "MultiEdit": "edit"}
+
+
+def shell_kind(command: str) -> str:
+    """``read``, ``edit``, ``build``, ``run`` or ``other`` for a shell command, by the first word of the last step of
+    its first line, before any pipe (``cd dir && make 2>&1 | tail`` builds; a heredoc's body is not looked at). ``sed -n`` reads, ``sed -i``
+    edits, and ``cat``, ``echo``, ``printf`` or ``tee`` writing into a file edit."""
+    step = re.split(r"&&|;|\|\|", command.splitlines()[0] if command.strip() else "")[-1]
+    last = step.split("|")[0].strip()
+    words = last.split()
+    while words and (words[0] in WRAPPERS or "=" in words[0] or (words[0].isdigit() and len(words) > 1)):
+        words = words[1:]
+    word = words[0] if words else ""
+    if word in WRITERS and re.search(r">|<<|^tee", last):
+        return "edit"
+    if word == "sed":
+        return "edit" if re.search(r"\s-i", last) else "read"
+    if word.startswith("./"):
+        return "run"
+    return next((kind for kind, words in SHELL_KINDS.items() if word in words), "other")
+
+
+def tool_group(tool: str, arguments: dict[str, Any]) -> str:
+    """The row a recorded call counts under: ``Bash:<kind>``, ``<File tool>:<kind>``, or the tool's own name."""
+    if tool == "Bash":
+        return f"Bash:{shell_kind(str(arguments.get('command', '')))}"
+    if tool in FILE_TOOLS:
+        return f"{tool}:{FILE_TOOLS[tool]}"
+    return tool
+
+
+def count_recorded(recorded: Iterable[Recorded], tokens_of: Callable[[str], int]) -> list[Counted]:
+    """Each recorded call's tokens, as format ``recorded``: what the agent wrote and what it read, nothing replayed.
+    The status is ``error`` when the transcript marks the result as one, else ``ok``."""
+    counted: list[Counted] = []
+    for call in recorded:
+        counted.append(
+            Counted(
+                len(counted),
+                tool_group(call.tool, call.arguments),
+                json.dumps(call.arguments, sort_keys=True),
+                "error" if call.failed else "ok",
+                tokens_of(call_text(call.tool, call.arguments)),
+                {"recorded": tokens_of(call.result)},
+            )
+        )
+    return counted
 
 
 def call_text(tool: str, arguments: dict[str, Any]) -> str:
@@ -247,9 +369,22 @@ def report(counted: list[Counted], formats: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def write_csv(path: Path | None, counted: list[Counted], formats: Sequence[str]) -> None:
+    """Every call and its tokens per format, when a path is given."""
+    if path is None:
+        return
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["index", "tool", "arguments", "status", "call", *formats])
+        writer.writerows(
+            [row.index, row.tool, row.arguments, row.status, row.call_tokens, *(row.tokens[f] for f in formats)]
+            for row in counted
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--kernel", required=True, help="The bench kernel the session serves.")
+    parser.add_argument("--kernel", help="The bench kernel the session serves; not needed with --recorded.")
     parser.add_argument("--preset", default="S")
     parser.add_argument("--datatype", default="float64")
     source = parser.add_mutually_exclusive_group(required=True)
@@ -264,7 +399,26 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--format", default=",".join(RENDERERS), help="Formats to count, comma-separated.")
     parser.add_argument("--measure", action="store_true", help="Also run the timed tools (builds and runs code).")
     parser.add_argument("--out", type=Path, help="CSV of every call and its tokens per format.")
+    parser.add_argument(
+        "--recorded",
+        action="store_true",
+        help="With --transcript: count every tool call (Bash, Read, Edit, NestForge) and the result recorded for it, "
+        "nothing replayed; shell commands count as read, edit, build or run.",
+    )
     args = parser.parse_args(argv)
+    try:
+        tokens_of = token_counter(args.tokenizer)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.recorded:
+        if not args.transcript:
+            parser.error("--recorded needs --transcript")
+        counted = count_recorded(recorded_calls(args.transcript.read_text().splitlines()), tokens_of)
+        write_csv(args.out, counted, ["recorded"])
+        print(report(counted, ["recorded"]), file=sys.stdout)
+        return
+    if not args.kernel:
+        parser.error("--kernel is required unless --recorded")
 
     formats = [name for name in args.format.split(",") if name]
     unknown = [name for name in formats if name not in RENDERERS]
@@ -272,7 +426,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error(f"unknown format(s) {unknown}; known: {sorted(RENDERERS)}")
     lines = (args.calls or args.transcript).read_text().splitlines()
     calls = journal_calls(lines) if args.calls else transcript_calls(lines)
-    tokens_of = token_counter(args.tokenizer)
     session = started_session(Setup(args.kernel, args.preset, args.datatype, False), codegen="first")
     data = session_data(Setup(args.kernel, args.preset, args.datatype, False), session) if args.measure else None
 
@@ -290,14 +443,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     for name, text in shown.items():
         print(f"----- call {args.show} as {name}\n{text}")
-    if args.out:
-        with args.out.open("w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["index", "tool", "arguments", "status", "call", *formats])
-            writer.writerows(
-                [row.index, row.tool, row.arguments, row.status, row.call_tokens, *(row.tokens[f] for f in formats)]
-                for row in counted
-            )
+    write_csv(args.out, counted, formats)
     print(report(counted, formats), file=sys.stdout)
 
 

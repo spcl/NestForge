@@ -7,6 +7,8 @@ import json
 import sys
 from types import ModuleType
 
+import pytest
+
 from nestforge.paths import REPO_ROOT
 from nestforge.server import Reply
 
@@ -85,3 +87,72 @@ def test_the_scripts_answer_record_has_the_routes_fields(nestforge_plugin):
     (route,) = [m for name, m in sys.modules.items() if name.endswith("routes.nestforge") and "ToolAnswer" in vars(m)]
 
     assert sut.ToolAnswer.model_fields.keys() == vars(route)["ToolAnswer"].model_fields.keys()
+
+
+def user(*blocks: dict) -> str:
+    return json.dumps({"type": "user", "message": {"content": list(blocks)}})
+
+
+def test_a_recorded_transcript_counts_every_tool_call_with_the_result_the_agent_read():
+    sut = script()
+    lines = [
+        assistant({"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "sed -n 1,40p kernel.cpp"}}),
+        user({"type": "tool_result", "tool_use_id": "a", "content": "for (int i = 0; i < n; ++i)"}),
+        assistant({"type": "tool_use", "id": "b", "name": "Edit", "input": {"file_path": "k.cpp", "old_string": "x"}}),
+        user(
+            {
+                "type": "tool_result",
+                "tool_use_id": "b",
+                "content": [{"type": "text", "text": "no match"}],
+                "is_error": True,
+            }
+        ),
+        assistant({"type": "tool_use", "id": "c", "name": "mcp__hpcagent__view_tree", "input": {}}),
+    ]
+
+    counted = sut.count_recorded(sut.recorded_calls(lines), len)
+
+    assert [(row.tool, row.status, row.tokens["recorded"]) for row in counted] == [
+        ("Bash:read", "ok", len("for (int i = 0; i < n; ++i)")),
+        ("Edit:edit", "error", len("no match")),
+        ("view_tree", "ok", 0),
+    ]
+    assert counted[0].call_tokens == len('{"name": "Bash", "input": {"command": "sed -n 1,40p kernel.cpp"}}')
+
+
+def test_shell_commands_count_as_read_edit_build_or_run():
+    sut = script()
+    kinds = {
+        "cat kernel.cpp | head -50": "read",
+        "grep -n omp kernel.cpp": "read",
+        "sed -i 's/i++/++i/' kernel.cpp": "edit",
+        "cat > kernel.cpp <<'EOF'\nint main() {}\nEOF": "edit",
+        "cd build && make -j8 2>&1 | tail -20": "build",
+        "g++ -O3 -fopenmp kernel.cpp -o k": "build",
+        "./k > out.txt": "run",
+        "echo done": "other",
+    }
+
+    assert {command: sut.shell_kind(command) for command in kinds} == kinds
+
+
+def test_an_unknown_tokenizer_name_is_refused_by_name():
+    sut = script()
+
+    with pytest.raises(ValueError, match="unknown tokenizer 'o200k'"):
+        sut.token_counter("o200k")
+
+
+def test_o200k_base_counts_special_token_text_as_plain_text():
+    sut = script()
+    tokens_of = sut.token_counter("o200k_base")
+
+    assert tokens_of("hello world") == 2
+    assert tokens_of("<|endoftext|>") > 1
+
+
+def test_a_wrapped_command_counts_as_the_command_it_wraps():
+    sut = script()
+
+    assert sut.shell_kind("nice -n 5 timeout 600 make -j4") == "build"
+    assert sut.shell_kind("OMP_NUM_THREADS=8 ./kernel") == "run"
