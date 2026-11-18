@@ -61,6 +61,11 @@ each kernel in one fixed compiler configuration, so two measurements compare (`f
 `submit` grade, is faster), and each kernel once until a move changes it. A kernel too slow for its oracle at the graded
 size is checked at a smaller one and timed at the graded size; the whole program is always checked at the graded size.
 
+`score`, `get_performance` and `profile` answer as lines: the verdict first (`speedup=… correct=…`), the other fields
+as `name=value`, times with their unit (`1.35s`, `893ms`). A list of records (the graded cells, the kernels, the
+transfers) is a table under a `cells:`, `kernels:` or `transfers:` line, which states once the values every row shares.
+An error comes as it came.
+
 ### Choosing a move
 
 1. `get_performance` first. Work on the kernel with the largest share; a move on a 2% kernel cannot pay.

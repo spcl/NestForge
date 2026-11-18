@@ -44,7 +44,7 @@ def test_a_listed_move_is_its_kind_and_labels_then_the_arguments_it_was_checked_
         'relayout operation={"action":"permute","array":"A","order":["i1","i0"]}',
         "unroll-for for4 max_iterations=8",
     ]
-    assert answer == {"tool": "list_moves", "result": "\n".join(expected)}
+    assert answer == {"text": "\n".join(expected)}
 
 
 def test_every_value_of_a_move_that_is_not_its_default_can_be_read_back_from_its_line(
@@ -63,10 +63,7 @@ def test_the_wire_defaults_are_those_apply_move_takes(defaults: dict[str, object
 
 
 def test_no_moves_and_an_error_answer(answers: ModuleType, defaults: dict[str, object]) -> None:
-    assert answers.moves_answer({"tool": "list_moves", "result": []}, defaults) == {
-        "tool": "list_moves",
-        "result": "none",
-    }
+    assert answers.moves_answer({"tool": "list_moves", "result": []}, defaults) == {"text": "none"}
     error = {"ok": False, "error": "Bad Request: list_moves: no such kind", "status": 400}
     assert answers.moves_answer(error, defaults) is error
 
@@ -98,17 +95,13 @@ def test_an_applied_list_keeps_status_reason_and_warning(answers: ModuleType) ->
         "legal.)",
         "refused fuse doall1 doall2 refusal=data: kmin is read",
     ]
-    assert answers.results_answer({"tool": "applied_moves", "result": applied}) == {
-        "tool": "applied_moves",
-        "result": "\n".join(expected),
-    }
+    assert answers.results_answer({"tool": "applied_moves", "result": applied}) == {"text": "\n".join(expected)}
 
 
 def test_a_kind_is_its_rows_its_transformation_and_what_it_does(answers: ModuleType) -> None:
     kinds = [{"kind": "for-fusion", "rows": ["for", "for"], "runs": "LoopFusion", "does": "two loops become one."}]
     assert answers.kinds_answer({"tool": "list_move_kinds", "result": kinds, "performance": None}) == {
-        "tool": "list_move_kinds",
-        "result": "for-fusion [for for] LoopFusion: two loops become one.",
+        "text": "for-fusion [for for] LoopFusion: two loops become one.",
     }
 
 
@@ -150,8 +143,11 @@ def test_a_score_reads_speedup_and_correctness_first_and_keeps_every_measured_fi
     expected = [
         "speedup=0.507 correct=false build_ok=true timed_out=false",
         "detail: vs numba: pre_gsp: numeric mismatch: 2 of 1415224 elements",
-        'baseline=numba baseline_ns=8720228534 harness_fault=false max_rel_error=4.58e-07 speedups={"numba":0.148}',
-        'cell label=fuzzed:submit ratio=0.507 shape={"dt":60.0,"ke":90}',
+        "baseline=numba baseline_time=8.72s harness_fault=false max_rel_error=4.58e-07 speedups=numba:0.148",
+        "cells:",
+        "| label | ratio | shape |",
+        "| --- | --- | --- |",
+        "| fuzzed:submit | 0.507 | dt:60,ke:90 |",
     ]
     assert answers.score_answer(grade) == {"text": "\n".join(expected)}
 
@@ -169,29 +165,36 @@ def test_a_performance_report_is_hints_kernels_and_program_and_says_where_data_m
     answer = {"tool": "get_performance", "result": None, "performance": report}
     expected = [
         "kernel times: k0 81323.9 us",
-        "kernel k0 cpu correct=true share=0.77 time_us=8.13e+04",
-        "program correct=true time_us=1.06e+05",
+        "kernels:",
+        "| name | device | correct | share | time |",
+        "| --- | --- | --- | --- | --- |",
+        "| k0 | cpu | true | 0.77 | 81.3ms |",
+        "program correct=true time=106ms",
     ]
-    assert answers.performance_answer(answer) == {"tool": "get_performance", "text": "\n".join(expected)}
+    assert answers.performance_answer(answer) == {"text": "\n".join(expected)}
 
     moved = {"direction": "h2d", "arg": "A", "producer": "host", "consumer": "k0", "bytes": 4096}
     report["offloading"] = {"devices": {"k0": "gpu"}, "transfers": [moved], "transfer_bytes": 4096}
     lines = answers.performance_answer(answer)["text"].splitlines()
-    assert lines[-2:] == [
-        'offloading devices={"k0":"gpu"} transfer_bytes=4096',
-        "transfer arg=A bytes=4096 consumer=k0 direction=h2d producer=host",
+    assert lines[-5:] == [
+        "offloading devices=k0:gpu transfer_bytes=4096",
+        "transfers:",
+        "| arg | direction | bytes | consumer | producer |",
+        "| --- | --- | --- | --- | --- |",
+        "| A | h2d | 4096 | k0 | host |",
     ]
 
 
 def test_a_profile_keeps_its_report_text_and_drops_the_structured_copy(answers: ModuleType) -> None:
     report = {
         "build_ok": True,
+        "kernel": "s231",
         "threads": 24,
         "text": "hardware counters ...",
         "counters": {"cycles": 9},
         "hotspots": [],
     }
-    assert answers.profile_answer(report) == {"build_ok": True, "threads": 24, "text": "hardware counters ..."}
+    assert answers.profile_answer(report) == {"text": "build_ok=true threads=24\nhardware counters ..."}
     without_text = {"result": {"library": "/shared/lib.so"}, "profiled": True}
     assert answers.profile_answer(without_text) is without_text
 
@@ -201,3 +204,55 @@ def test_a_failed_measurement_reaches_the_agent_as_it_came(answers: ModuleType) 
     assert answers.score_answer(timed_out) is timed_out
     assert answers.profile_answer(timed_out) is timed_out
     assert answers.performance_answer(timed_out) is timed_out
+
+
+def test_a_score_leaves_out_the_kernel_and_hidden_counts_of_zero_but_keeps_the_language(answers: ModuleType) -> None:
+    grade = {
+        "speedup": 1.5,
+        "correct": True,
+        "kernel": "s231",
+        "language": "cpp",
+        "hidden_total": 0,
+        "hidden_passed": 0,
+        "hidden_correct": True,
+        "native_ns": 1349396944,
+    }
+    assert answers.score_answer(grade)["text"].splitlines() == [
+        "speedup=1.5 correct=true",
+        "language=cpp native_time=1.35s",
+    ]
+    grade["hidden_total"] = grade["hidden_passed"] = 3
+    assert "hidden_correct=true hidden_passed=3 hidden_total=3" in answers.score_answer(grade)["text"]
+
+
+def test_times_read_in_one_unit_at_three_digits(answers: ModuleType) -> None:
+    assert [answers.duration(seconds) for seconds in (1.755709786, 0.893448152, 8.13e-05, 4e-08, 0.9996)] == [
+        "1.76s",
+        "893ms",
+        "81.3us",
+        "40ns",
+        "1s",
+    ]
+    assert answers.measured("baselines", {"c": 1391490146, "numba": 877854893}) == ("baselines", "c:1.39s,numba:878ms")
+
+
+def test_the_cells_say_once_what_every_cell_shares(answers: ModuleType) -> None:
+    cells = [
+        {"label": "cfg0:large0", "graded": True, "ratio": 0.5088814558786084, "baseline": "numba"},
+        {"label": "cfg0:large3", "graded": True, "ratio": 0.5167499458015494, "baseline": "numba"},
+    ]
+    text = answers.score_answer({"speedup": 0.51, "baseline": "numba", "cells": cells})["text"]
+    assert text.splitlines()[-5:] == [
+        "cells: graded=true",
+        "| label | ratio |",
+        "| --- | --- |",
+        "| cfg0:large0 | 0.509 |",
+        "| cfg0:large3 | 0.517 |",
+    ]
+
+
+def test_a_measurement_answer_has_no_quotes_and_a_value_with_spaces_gets_its_own_line(answers: ModuleType) -> None:
+    grade = {"speedup": 1.0, "baselines": {"c": 10}, "shape": '{"N": 4}', "note": "two words"}
+    text = answers.score_answer(grade)["text"]
+    assert '"' not in text
+    assert text.splitlines()[-2:] == ["baselines=c:10ns shape=N:4", "note: two words"]

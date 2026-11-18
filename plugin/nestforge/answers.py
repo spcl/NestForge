@@ -84,8 +84,21 @@ def lines(answer: dict[str, Any], line: Callable[[Mapping[str, Any]], str]) -> d
     result = answer.get("result")
     if "error" in answer or answer.get("ok") is False or not isinstance(result, list):
         return answer
-    rendered = {name: value for name, value in answer.items() if name != "result" and value is not None}
-    return {**rendered, "result": "\n".join(map(line, result)) if result else NONE}
+    return {**wrapper(answer, ("result",)), "text": "\n".join(map(line, result)) if result else NONE}
+
+
+#: Answer fields the agent does not need beside the text: the tool's own name, and ``ok`` when it is true.
+WRAPPER_DROP = ("tool",)
+
+
+def wrapper(answer: Mapping[str, Any], rendered: Collection[str]) -> dict[str, Any]:
+    """What of ``answer`` stays beside its text: every field that says something, but the ``rendered`` ones, the
+    tool's name and a true ``ok``."""
+    return {
+        name: value
+        for name, value in answer.items()
+        if name not in (*rendered, *WRAPPER_DROP) and value is not None and not (name == "ok" and value is True)
+    }
 
 
 def moves_answer(answer: dict[str, Any], defaults: Mapping[str, object]) -> dict[str, Any]:
@@ -108,33 +121,94 @@ def unset(value: object) -> bool:
     return value is None or value in ("", [], {}, ())
 
 
-def rounded(value: object) -> object:
-    """``value`` with every float in it kept to :data:`DIGITS` significant digits."""
-    if isinstance(value, float):
-        return float(f"{value:.{DIGITS}g}")
-    if isinstance(value, dict):
-        return {name: rounded(item) for name, item in value.items()}
-    if isinstance(value, list):
-        return [rounded(item) for item in value]
-    return value
+#: Seconds per unit of a time field, by the suffix its name ends with.
+TIME_UNITS = {"_ns": 1e-9, "_us": 1e-6, "_ms": 1e-3}
+#: Fields that hold a map of times in a unit their name does not say.
+TIME_MAPS = {"baselines": 1e-9}
+#: The units a time is printed in, largest first: each with its size in seconds.
+PRINTED_UNITS = (("s", 1.0), ("ms", 1e-3), ("us", 1e-6), ("ns", 1e-9))
 
 
-def measured_text(value: object) -> str:
-    """A measured value as one token: numbers rounded, a JSON object sent as a string (a cell's shape) unpacked."""
-    if isinstance(value, float):
-        return f"{value:.{DIGITS}g}"
+def number(value: float) -> str:
+    """``value`` at :data:`DIGITS` significant digits, without an exponent where one is not needed."""
+    text = f"{value:.{DIGITS}g}"
+    return text if "e" not in text or abs(value) < 1e-4 or abs(value) >= 1e15 else f"{float(text):.0f}"
+
+
+def duration(seconds: float) -> str:
+    """A time in the largest unit it is at least one of, at :data:`DIGITS` significant digits: ``0.893s`` reads
+    ``893ms``."""
+    for unit, size in PRINTED_UNITS:
+        scaled = float(f"{seconds / size:.{DIGITS}g}")
+        if abs(scaled) >= 1 or unit == "ns":
+            return f"{number(scaled)}{unit}"
+    raise AssertionError("unreachable: the last unit always prints")
+
+
+def plain(value: object) -> str:
+    """A measured value without quotes: numbers rounded, a map as ``key:value,...``, a list as ``[a,b]``, a JSON
+    object sent as a string (a cell's shape) unpacked."""
     if isinstance(value, str) and value.startswith("{"):
         with contextlib.suppress(json.JSONDecodeError):
             value = json.loads(value)
-    return value_text(rounded(value))
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, float):
+        return number(value)
+    if isinstance(value, dict):
+        return ",".join(f"{key}:{plain(item)}" for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return f"[{','.join(map(plain, value))}]"
+    return str(value)
+
+
+def measured(name: str, value: object) -> tuple[str, str]:
+    """A measured field as the agent reads it: a time renamed without its unit and printed with one."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        for suffix, size in TIME_UNITS.items():
+            if name.endswith(suffix):
+                stem = name.removesuffix(suffix)
+                return (stem if stem.endswith("time") else f"{stem}_time"), duration(float(value) * size)
+    if name in TIME_MAPS and isinstance(value, dict):
+        size = TIME_MAPS[name]
+        return name, ",".join(f"{key}:{duration(float(item) * size)}" for key, item in value.items())
+    return name, plain(value)
 
 
 def fields(record: Mapping[str, Any], skip: Collection[str] = ()) -> list[str]:
-    """``record``'s measured fields as ``name=value``, by name, those that say nothing left out."""
+    """``record``'s measured fields as ``name=value``, by name, those that say nothing left out. A value with a space
+    in it goes on a line of its own, as ``name: value``, after the others."""
+    pairs = [measured(name, value) for name, value in sorted(record.items()) if name not in skip and not unset(value)]
+    inline = [f"{name}={text}" for name, text in pairs if not any(char.isspace() for char in text)]
+    own = [f"{name}: {text}" for name, text in pairs if any(char.isspace() for char in text)]
+    return [" ".join(inline), *own] if inline else own
+
+
+def cell_text(text: str) -> str:
+    """A table cell: a ``|`` in it would end the cell, so it reads ``/``."""
+    return text.replace("|", "/")
+
+
+def table(title: str, records: list[Mapping[str, Any]], lead: tuple[str, ...], skip: Collection[str] = ()) -> list[str]:
+    """``records`` as a markdown table under ``title:``. With more than one record, a value every record shares is
+    said once on the title line instead of in a column; a column no record fills goes; a missing value reads ``-``."""
+    rows = [
+        dict(measured(name, value) for name, value in record.items() if name not in skip and not unset(value))
+        for record in records
+    ]
+    names = {name for row in rows for name in row}
+    shared = {
+        name: rows[0][name]
+        for name in sorted(names)
+        if len(rows) > 1 and name not in lead and all(row.get(name) == rows[0].get(name) for row in rows)
+    }
+    columns = [name for name in lead if name in names] + sorted(names - set(lead) - set(shared))
+    head = " ".join([f"{title}:", *(f"{name}={text}" for name, text in shared.items())])
     return [
-        f"{name}={measured_text(value)}"
-        for name, value in sorted(record.items())
-        if name not in skip and not unset(value)
+        head,
+        f"| {' | '.join(columns)} |",
+        f"|{'|'.join(' --- ' for _ in columns)}|",
+        *(f"| {' | '.join(cell_text(row.get(name, '-')) for name in columns)} |" for row in rows),
     ]
 
 
@@ -143,26 +217,33 @@ def failed(answer: Mapping[str, Any]) -> bool:
     return answer.get("ok") is False or ("error" in answer and not answer.get("text"))
 
 
+#: ``score`` fields the agent already has: the task prompt names the kernel.
+GIVEN = ("kernel",)
+#: ``score``'s counts of hidden inputs, which say nothing when there were none.
+HIDDEN = ("hidden_correct", "hidden_passed", "hidden_total")
+
+
+def score_skip(answer: Mapping[str, Any]) -> tuple[str, ...]:
+    """The ``score`` fields its other-fields line leaves out."""
+    hidden = HIDDEN if not answer.get("hidden_total") else ()
+    return (*SCORE_OWN, *GIVEN, *hidden)
+
+
 def score_answer(answer: dict[str, Any]) -> dict[str, Any]:
-    """``score``'s grade as lines: speedup and correctness first, the judge's detail, the other fields, one line per
-    graded cell. The grading protocol's own fields go."""
+    """``score``'s grade as lines: speedup and correctness first, the judge's detail, the other fields, then the graded
+    cells as a table. The grading protocol's fields, the kernel's name and hidden-input counts of zero go."""
     if failed(answer) or "speedup" not in answer:
         return answer
-    head = [f"{name}={measured_text(answer[name])}" for name in SCORE_HEAD if name in answer]
-    text = [" ".join(head)]
+    text = [" ".join(f"{name}={plain(answer[name])}" for name in SCORE_HEAD if name in answer)]
     if answer.get("detail"):
         text.append(f"detail: {answer['detail']}")
-    text.append(" ".join(fields(answer, SCORE_OWN)))
-    for cell in answer.get("cells") or []:
+    text += fields(answer, score_skip(answer))
+    cells = answer.get("cells") or []
+    if cells:
         # what the grade's own fields already say is left out of each cell
-        same = [name for name, value in cell.items() if name in answer and answer[name] == value]
-        text.append(" ".join(["cell", *fields(cell, same)]))
+        same = {name for cell in cells for name, value in cell.items() if name in answer and answer[name] == value}
+        text += table("cells", cells, ("label",), same)
     return {"text": "\n".join(line for line in text if line)}
-
-
-def kernel_line(kernel: Mapping[str, Any]) -> str:
-    """One kernel's time against its oracle."""
-    return " ".join(["kernel", str(kernel.get("name")), str(kernel.get("device")), *fields(kernel, ("name", "device"))])
 
 
 def offloaded(offloading: Mapping[str, Any]) -> bool:
@@ -172,29 +253,42 @@ def offloaded(offloading: Mapping[str, Any]) -> bool:
     return bool(moves) or any(device != "cpu" for device in devices.values()) or offloading.get("transfers") is None
 
 
+def offloading_lines(offloading: Mapping[str, Any]) -> list[str]:
+    """Where data moves, when anything runs off the CPU: the summary line, then the transfers as a table."""
+    if not offloaded(offloading):
+        return []
+    text = [" ".join(["offloading", *fields(offloading, ("transfers",))])]
+    transfers = offloading.get("transfers") or []
+    return text + table("transfers", transfers, ("arg", "direction")) if transfers else text
+
+
 def performance_answer(answer: dict[str, Any]) -> dict[str, Any]:
-    """``get_performance``'s report as lines: the ranked hints, each kernel, the whole program, and where data moves
-    when anything runs off the CPU."""
+    """``get_performance``'s report as lines: the ranked hints, the kernels as a table, the whole program, and where
+    data moves when anything runs off the CPU."""
     performance = answer.get("performance")
     if failed(answer) or not isinstance(performance, dict):
         return answer
     text = [str(performance["hints"])] if performance.get("hints") else []
-    text += [kernel_line(kernel) for kernel in performance.get("kernels") or []]
+    kernels = performance.get("kernels") or []
+    if kernels:
+        text += table("kernels", kernels, ("name", "device"))
     text.append(" ".join(["program", *fields(performance.get("structured") or {})]))
-    offloading = performance.get("offloading") or {}
-    if offloaded(offloading):
-        text.append(" ".join(["offloading", *fields(offloading, ("transfers",))]))
-        text += [" ".join(["transfer", *fields(move)]) for move in offloading.get("transfers") or []]
-    rest = {name: value for name, value in answer.items() if name != "performance" and value is not None}
-    return {**rest, "text": "\n".join(text)}
+    text += offloading_lines(performance.get("offloading") or {})
+    return {**wrapper(answer, ("performance",)), "text": "\n".join(text)}
 
 
 def profile_answer(answer: dict[str, Any]) -> dict[str, Any]:
-    """``profile``'s report: its own ``text`` and the scalar fields beside it. The structured copy of the same data
-    (counters, call graph, hotspots) goes; an answer without a text comes as it came."""
+    """``profile``'s report: the scalar fields beside it on one line, then its own ``text``. The structured copy of
+    the same data (counters, call graph, hotspots) and the kernel's name go; an answer without a text comes as it
+    came."""
     if failed(answer) or not isinstance(answer.get("text"), str):
         return answer
-    return {name: value for name, value in answer.items() if not isinstance(value, (dict, list))}
+    scalars = {
+        name: value
+        for name, value in answer.items()
+        if name != "text" and name not in GIVEN and not isinstance(value, (dict, list))
+    }
+    return {"text": "\n".join([*fields(scalars), answer["text"]])}
 
 
 #: Tool -> how its answer reaches the agent, given the move arguments' defaults; tools not here answer as they came.
