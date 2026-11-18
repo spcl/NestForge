@@ -7,8 +7,7 @@ Each seed canonicalizes one program of the fusion fuzzer's grammar and makes :da
 name or a device that does not exist. Nothing is built: the checks are on the program.
 
 - a refused call leaves the program, its journal and its placement as they were;
-- an applied call leaves a valid program in which every kernel keeps its body and has a device (the program is not
-  validated once an ``unset_scope`` applied: see :func:`test_unset_scope_can_leave_an_invalid_program`);
+- an applied call leaves a valid program in which every kernel keeps its body and has a device;
 - after ``insert_copies`` no GPU kernel copies in its own call;
 - placing the kernels again on the devices they have gives the same program;
 - a fresh session repeating the applied calls is the same program.
@@ -112,9 +111,8 @@ def status_of(answer: object) -> MoveStatus:
     return answer.status if isinstance(answer, (PlaceResult, MoveResult)) else MoveStatus.APPLIED
 
 
-def check_program(session: Session, call: Call, validate: bool) -> None:
-    if validate:
-        program(session).validate()
+def check_program(session: Session, call: Call) -> None:
+    program(session).validate()
     # a scope over a block that holds a kernel takes that kernel into its body: it builds and runs (job 5371457)
     for ext in external_calls(program(session)):
         assert ext.standalone_sdfg is not None, (call, ext.name)
@@ -128,7 +126,6 @@ def run_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Call]]:
     """The session after :data:`STEPS` random calls, each checked, and the calls that applied."""
     session, rng = fresh(seed, tmp_path, gpu), np.random.default_rng(seed)
     applied: list[Call] = []
-    valid = True  # until an unset_scope applies, which can leave a nested SDFG with transient connectors
     for _ in range(STEPS):
         call = random_call(session, rng)
         before = structure(session), list(session.applied), session.unplaced is None
@@ -138,8 +135,7 @@ def run_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Call]]:
             assert after == before, f"seed={seed} gpu={gpu}: refused {call} changed the session ({answer})"
             continue
         applied.append(call)
-        valid = valid and call[0] != "unset_scope"
-        check_program(session, call, valid)
+        check_program(session, call)
     return session, applied
 
 
@@ -178,10 +174,9 @@ def test_the_sequences_place_and_refuse(tmp_path):
     assert placed >= NCASES // 4, placed
 
 
-@pytest.mark.xfail(strict=True, reason="unset_scope makes the connectors of a body it cannot inline transient")
-def test_unset_scope_can_leave_an_invalid_program(tmp_path):
-    """Seed 2: one map scoped and unset again. The kernel's body is not inlined, and the nested SDFG that stays has
-    its connector arrays marked transient. When this passes, validate after ``unset_scope`` in the sequences too."""
+def test_unset_scope_keeps_a_kernel_body_it_cannot_inline_valid(tmp_path):
+    """Seed 2: one map scoped and unset again. The kernel's body is not inlined; the nested SDFG that stays keeps
+    its connector arrays (named ``_out_...``) non-transient."""
     session = fresh(2, tmp_path, False)
     kernel = session.set_scope(doalls(session)[1:2]).reason
 
@@ -234,7 +229,6 @@ def run_tool_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Too
     """The session after :data:`STEPS` random tool calls, each checked, and the calls that applied."""
     session, rng = fresh(seed, tmp_path, gpu), np.random.default_rng(seed)
     applied: list[ToolCall] = []
-    valid = True  # until an unset_scope applies (test_unset_scope_can_leave_an_invalid_program)
     for _ in range(STEPS):
         call = random_tool_call(session, rng)
         before = structure(session), list(session.applied), session.unplaced is None
@@ -244,8 +238,7 @@ def run_tool_sequence(seed: int, tmp_path, gpu: bool) -> tuple[Session, list[Too
             assert after == before, f"seed={seed} gpu={gpu}: refused {call} changed the session ({said})"
             continue
         applied.append(call)
-        valid = valid and call[0] != "unset_scope"
-        check_program(session, (call[0], tuple(call[1].values())), valid)
+        check_program(session, (call[0], tuple(call[1].values())))
     return session, applied
 
 

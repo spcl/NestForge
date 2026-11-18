@@ -1292,8 +1292,9 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=PLACED)
         ext = self.kernel(name)
         assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
-        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only
-        connected = {data_name(conn) for conn in (*ext.in_connectors, *ext.out_connectors)}
+        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only; the
+        # expansion copies that SDFG, so its arrays carry the connectors' names, prefix included
+        connected = {*ext.in_connectors, *ext.out_connectors}
         for array, desc in ext.standalone_sdfg.arrays.items():
             if array not in connected:
                 desc.transient = True
