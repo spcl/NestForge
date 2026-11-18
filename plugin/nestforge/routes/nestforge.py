@@ -251,7 +251,7 @@ def repeats_of(call: Call, reply: Reply) -> list[Call]:
     """How a new session repeats an applied change: a written kernel passed its check and a sweep timed its winner, so
     the repeat builds the source, or that winner, without checking or timing again; a sweep without one changed
     nothing. A tune_move repeats as the move at the size it kept, or not at all; a get_performance that restored the
-    fastest version as its rollbacks, or not at all."""
+    fastest version as its rollbacks, or not at all; an apply_moves as its moves, one by one, unchecked."""
     name, arguments = call
     if name == "write_kernel":
         return [(name, {**arguments, "checked": False})]
@@ -272,6 +272,9 @@ def repeats_of(call: Call, reply: Reply) -> list[Call]:
     if name == "get_performance":
         restored = reply.result.rolled_back if isinstance(reply.result, Restored) else 0
         return [("apply_move", {"kind": ROLLBACK, "labels": []})] * restored
+    if name == "apply_moves":
+        # each move its own change, as rollback takes them back; checked when the agent applied them
+        return [("apply_move", move) for move in arguments["moves"]]
     return [call]
 
 

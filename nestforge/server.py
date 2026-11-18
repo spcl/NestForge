@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import functools
 import hashlib
 import importlib
@@ -40,7 +41,18 @@ from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
-from nestforge.session import Codegen, KernelOutcome, MoveResult, PhaseStep, PlaceResult, Session, Stage, Stopped
+from nestforge.session import (
+    BatchResult,
+    CheckData,
+    Codegen,
+    KernelOutcome,
+    MoveResult,
+    PhaseStep,
+    PlaceResult,
+    Session,
+    Stage,
+    Stopped,
+)
 from nestforge.stages.authored import AUTHORED_FAMILY
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
@@ -142,6 +154,7 @@ CALLS: dict[str, Callable[..., object]] = {
     ),
     "list_moves": Session.list_moves,
     "apply_move": Session.apply_move,
+    "apply_moves": Session.apply_moves,
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
@@ -177,7 +190,7 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 
 #: Tools that build or run code, so they hold a device slot and need the bench's data. Everything else is Python on
 #: the session's program: a read or a move takes a fraction of a second and no device.
-MEASURING = TIMED | {"finalize", "tune_move"}
+MEASURING = TIMED | {"finalize", "tune_move", "apply_moves"}
 
 #: Tools that measure inside the call itself, so they take the bench's data as arguments.
 TAKES_DATA = frozenset({"tune_move"})
@@ -191,6 +204,7 @@ CHANGING = frozenset(
         "undo_phase",
         "return_to_phase",
         "apply_move",
+        "apply_moves",
         "run_defaults",
         "set_scope",
         "unset_scope",
@@ -397,6 +411,17 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     return inputs, reference
 
 
+def check_data(setup: Setup, session: Session) -> CheckData:
+    """What ``apply_moves`` checks each move on: the bench's data at :data:`CHECK_RUNG`, and the sizes it binds."""
+    small = dataclasses.replace(setup, preset=CHECK_RUNG)
+    inputs, reference = bench_data(small)
+    kernel = corpus_kernel(setup.kernel)
+    assert kernel is not None, "the session started from it"
+    inputs |= closure_inputs(kernel.program(), session.sdfg)
+    sizes = session.sizes | preset_sizes(kernel, CHECK_RUNG) | symbol_inputs(session.sdfg, inputs)
+    return CheckData(inputs, reference, sizes)
+
+
 def check_rung_sizes(setup: Setup, session: Session) -> dict[str, SymbolValue]:
     """:attr:`Session.sizes` at :data:`CHECK_RUNG` where the rung gives a value."""
     from hpcagent_bench.categories import Preset
@@ -464,6 +489,8 @@ def applied(reply: Reply) -> bool:
     result = reply.result
     if isinstance(result, PhaseStep):
         return not reply.error and result.status == "moved"
+    if isinstance(result, BatchResult):
+        return not reply.error and result.status == "applied"
     status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
     return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK, KernelStatus.UNCHECKED)
 
@@ -502,6 +529,7 @@ def timed_call(
 TOOL_PHASES: dict[str, frozenset[PhaseName]] = {
     "list_moves": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
     "apply_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "apply_moves": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
     "tune_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
     "run_defaults": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPES}),
     "set_scope": frozenset({PhaseName.SCOPES}),
@@ -535,6 +563,14 @@ def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> 
     if allowed is not None and phase not in allowed:
         names = ", ".join(sorted(p.value for p in allowed))
         return f"{tool} is a tool of the phase {names}; this kernel is in the phase {phase}: call advance_phase or undo_phase"
+    if tool == "apply_moves":
+        moves = arguments.get("moves")
+        refusals = (
+            (phase_refusal(session, "apply_move", move) for move in moves if isinstance(move, Mapping))
+            if isinstance(moves, list)
+            else ()
+        )
+        return next((f"move {i}: {why}" for i, why in enumerate(refusals) if why), None)
     kind, scoped = str(arguments.get("kind") or ""), arguments.get("scope") is not None
     if tool == "run_defaults":
         stage = str(arguments.get("stage"))
@@ -617,6 +653,7 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
+    check: CheckData | None = None
     # the session's own mask, not the current one: libomp may have bound this thread to one CPU already
     cores, environment = set(CHILD_CPUS.cpus), dict(os.environ)
     while True:
@@ -632,6 +669,11 @@ def serve(connection: Connection, setup: Setup) -> None:
             if data is None and tool in MEASURING:
                 with session.stopper.armed():
                     data = session_data(setup, session)
+            if tool == "apply_moves" and timed:
+                if check is None:
+                    with session.stopper.armed():
+                        check = check_data(setup, session)
+                arguments = {**arguments, "check": check}
             connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))

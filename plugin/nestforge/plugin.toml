@@ -35,7 +35,7 @@ packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 [packets.nestforge]
 name = "NestForge"
 skills = ["nestforge"]
-tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
 overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/phase-structured.yaml"]
 # The judge takes only a library, and the agent has no shell or editor: what is graded is what the tools built.
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_AGENT_PHASES = "structured" }
@@ -44,7 +44,7 @@ env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NEST
 [packets.nestforge-requests]
 extends = "nestforge"
 name = "NestForge (move requests)"
-tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit", "request_transformation"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit", "request_transformation"]
 
 # The baselines that choose compiler passes instead of moves (the paper's LLVM and MLIR agents): the same program,
 # entry and library as NestForge's, every kernel built through the agent's pipeline; no move, no written code.
@@ -69,7 +69,7 @@ env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NEST
 extends = "nestforge"
 name = "NestForge (all phases)"
 aliases = ["nestforge-two-stage"]
-tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "tune_move", "run_defaults", "advance_phase", "undo_phase", "return_to_phase", "set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "place", "insert_copies", "list_kernels", "focus_kernel", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "advance_phase", "undo_phase", "return_to_phase", "set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "place", "insert_copies", "list_kernels", "focus_kernel", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
 overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/phase-structured.yaml"]
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_AGENT_PHASES = "" }
 

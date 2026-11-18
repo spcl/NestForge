@@ -630,6 +630,29 @@ class Restored(Record):
     rolled_back: int
 
 
+class BatchResult(Record):
+    """What ``apply_moves`` did: every move ``applied``, each checked; or ``refused``, the program as before the batch.
+    A refusal names the move (``failed_at``, from 0), the substep that failed (``apply``: the move was refused or
+    crashed; ``check``: the program it left computes wrong at the small check sizes) and why. ``unchecked`` says why no
+    numerical check ran (the bench has no reference)."""
+
+    status: Literal["applied", "refused"]
+    results: tuple[MoveResult, ...] = ()
+    failed_at: int | None = None
+    substep: Literal["apply", "check"] | None = None
+    reason: str = ""
+    unchecked: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckData:
+    """What a numerical check runs on: the bench's inputs and reference at the small check sizes, and those sizes."""
+
+    inputs: dict[str, np.ndarray]
+    reference: Reference | None
+    sizes: dict[str, SymbolValue]
+
+
 class PhaseStep(Record):
     """What a phase tool did: ``moved`` into ``phase``, or ``refused`` with the reason and the phase unchanged. ``ran``
     names the defaults of the phases passed on the way (each with what it reported); ``undone``, the phases taken
@@ -1114,6 +1137,49 @@ class Session:
         for label in labels:
             self.languages[label] = language
         return f"ok: {', '.join(labels)} print bodies in {language}"
+
+    def check_numerics(self, check: CheckData) -> str:
+        """Why the program computes wrong at the check sizes, or ``""``: built on a trial (the session is untouched)
+        with stage 5's first configuration and run once against the reference."""
+        trial = self.trial()
+        trial.sizes, trial.codegen = dict(check.sizes), "first"
+        try:
+            report = trial.measure(check.inputs, check.reference, 1).structured
+        finally:
+            shutil.rmtree(trial.work_dir, ignore_errors=True)
+        if report.error:
+            return f"the program does not build or run: {report.error}"
+        if report.correct is False:
+            return f"the outputs {report.mismatched} differ from the reference"
+        return ""
+
+    def apply_moves(self, moves: Sequence[Mapping[str, Any]], check: CheckData | None = None) -> BatchResult:
+        """Apply ``moves`` (each the arguments of :meth:`apply_move`) in order, checking the program numerically after
+        each at the check sizes (``check``; none: no check). All or nothing: the first move refused, crashed or found
+        wrong takes the whole batch back, and the answer names it. Each applied move stays its own change, so
+        ``rollback`` takes back the last."""
+        saved, kept = self.saved(), len(self.history)
+        results: list[MoveResult] = []
+        unchecked = "" if check is not None and check.reference is not None else "the bench has no reference here"
+
+        def refused(index: int, substep: Literal["apply", "check"], reason: str) -> BatchResult:
+            self.restore(saved)
+            del self.history[kept:]
+            return BatchResult(status="refused", failed_at=index, substep=substep, reason=reason, unchecked=unchecked)
+
+        for index, arguments in enumerate(moves):
+            try:
+                result = self.apply_move(**arguments)
+            except (*CRASHES, TypeError) as err:
+                return refused(index, "apply", f"{type(err).__name__}: {err}")
+            if result.status is not MoveStatus.APPLIED:
+                return refused(index, "apply", str(result.reason) or result.status.name.lower())
+            results.append(result)
+            if check is not None and check.reference is not None:
+                wrong = self.check_numerics(check)
+                if wrong:
+                    return refused(index, "check", wrong)
+        return BatchResult(status="applied", results=tuple(results), unchecked=unchecked)
 
     # Phases (``nestforge.stages.phases``)
 

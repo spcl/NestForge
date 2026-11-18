@@ -111,6 +111,12 @@ class SetMlirPasses(Args):
     )
 
 
+class ApplyMoves(Args):
+    moves: list["ApplyMove"] = pydantic.Field(
+        min_length=1, description="The moves in order, each as apply_move takes it (labels as the tree has them then)."
+    )
+
+
 class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
@@ -326,6 +332,14 @@ TOOLS: dict[str, ToolDef] = {
         "implementation, and propagate-config.",
         Effect.READ,
     ),
+    "apply_moves": ToolDef(
+        phases(Phase.STRUCTURED, Phase.SCOPED),
+        ApplyMoves,
+        "Apply several moves in order, all or nothing: after each move the program is built and run at the small "
+        "check sizes against the reference. The first move refused or found wrong takes the whole batch back; the "
+        "answer names it (failed_at), the substep (apply or check) and why. Labels change as moves apply: name each "
+        "move's rows as the tree has them when it runs.",
+    ),
     "apply_move": ToolDef(
         phases(Phase.STRUCTURED, Phase.SCOPED),
         ApplyMove,
@@ -435,3 +449,5 @@ TOOLS: dict[str, ToolDef] = {
     ),
     "finalize": ToolDef(phases(Phase.ANY), NoArgs, "Build the program as one library in the bench C ABI."),
 }
+
+ApplyMoves.model_rebuild()
