@@ -1,11 +1,11 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ICON AES graupel: split the map computing the sedimentation sink and its ratio (``sink``, ``sx2x``), then the
-default stage 2 on top.
+"""ICON AES graupel: the default stage 2.
 
-That map is the loop over the 6 species of each level, with the column maps inside it: left whole, only its 6
-iterations run in parallel. Split, each statement becomes a species map the default collapses with its column map,
-so the parallel space is species by columns (1.83x at preset M, 72 threads, on c2daa40, job 5256868)."""
+The canonical form unrolls the loop over the 6 species of each level (DaCe d3b47fd05c), so every species already has
+its own column map: the parallel space is species by columns without a move. Before that, the species loop was one
+map holding the column maps, and this solution split it with ``doall-fission`` on ``sink`` and ``sx2x`` (1.83x at
+preset M, 72 threads, on c2daa40, job 5256868)."""
 
 from nestforge.replay import Context, Script
 
@@ -14,5 +14,4 @@ CONFIGS = (Context("cpu", 72, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.apply(s.pick("doall-fission", writes=["Tmp107", "Tmp110"]))  # sink and sx2x, short-named
     s.defaults()
