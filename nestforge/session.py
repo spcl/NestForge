@@ -261,6 +261,17 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
+def marked_persistent(tree: str, kernels: frozenset[str]) -> str:
+    """``tree`` with each kernel row of ``kernels`` marked ``persistent``: its loops run as one persistent kernel, with a
+    barrier where a launch or an implicit barrier was."""
+    if not kernels:
+        return tree
+    return "\n".join(
+        f"{line}  persistent" if any(f"{k}  LIBNODE ExternalCall" in line for k in kernels) else line
+        for line in tree.splitlines()
+    )
+
+
 #: The pass pipelines :meth:`Session.apply_pipeline` builds through, by the IR they run on.
 PIPELINES = {"llvm": build_llvm_pipeline, "mlir": build_mlir_pipeline}
 #: The compiler of a pipeline build: its IR is LLVM's, so it is clang.
@@ -908,6 +919,7 @@ class Session:
             costs=(self.costs or {}) if costs else {},
             languages=self.languages,
         )
+        tree = marked_persistent(tree, self.persistent)
         if not costs or self.costs_skipped is None:
             return tree
         header, _, rows = tree.partition("\n")

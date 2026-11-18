@@ -64,6 +64,9 @@ def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_pat
     assert "nowait" not in before and "#pragma omp barrier" not in before
     assert after.count("nowait") == 2 and "#pragma omp barrier" in after, "each doall shares work, then synchronizes"
     assert sut.performance(*data()).structured.correct is True
+    sut.expand([label for label in sut.row_index() if label.startswith("state")])
+    (row,) = [line for line in sut.describe().splitlines() if f"{kernel}  LIBNODE" in line]
+    assert row.endswith("persistent"), "the tree marks the kernel whose loops run persistent"
     sut.apply_move("rollback", [])
     assert sut.persistent == frozenset()
 
