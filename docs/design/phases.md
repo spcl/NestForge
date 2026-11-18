@@ -29,6 +29,16 @@ Leaving `scopes`, whoever runs it, places every kernel: what no scope covers get
 
 The names differ from the bench's own `next_phase` tool, which the agent's tool registry already holds.
 
+## Moves of the phases (P5, P6)
+
+- `apply_moves moves=[...]`: several moves in order, all or nothing; after each, the program is built and run at the
+  smallest preset against the reference. The answer names the first move refused or wrong, its substep (`apply` or
+  `check`) and why; each applied move stays its own change for `rollback`.
+- In `scopes`, `apply_scope_move` places kernels: `run-on-cpu`, `run-on-gpu` (labels: the kernels), and
+  `run-on-cpu-persistent`, `run-on-gpu-persistent`, which merge consecutive kernels into one (their scopes unset and
+  set again as one) and run its longest run of blocks with doalls as one persistent kernel (MegakernelLoops). Each is
+  one change for `rollback`. The `place` tool is gone; leaving `scopes` still places what the agent did not.
+
 ## Mechanism
 
 - The session keeps the phase and, for every phase the agent left, the program as it left it (`Session.saved()`,

@@ -201,8 +201,10 @@ too.
   a straight run of blocks; group doalls that pass an array between them. `unset_scope` undoes it until the kernels
   are fixed.
 - `list_scope_moves scope=<kernel>` and `apply_scope_move scope=<kernel> ...` are `list_moves` and `apply_move` inside
-  one kernel. With a GPU target, `place devices={...}` puts each kernel on `cpu` or `gpu`; `insert_copies` moves the
-  copies into the program, where adjacent GPU kernels share them.
+  one kernel. `apply_scope_move kind=run-on-gpu labels=[<kernels>]` (or `run-on-cpu`) puts kernels on a device;
+  `run-on-gpu-persistent labels=[k1, k2]` merges consecutive kernels into one persistent kernel (one launch, a grid
+  barrier between them); `rollback` takes a placement back. `insert_copies` moves the copies into the program, where
+  adjacent GPU kernels share them.
 - `list_kernels` shows each kernel's device, arguments and producers. `focus_kernel name=...` picks the kernel that
   `write_kernel` and `tune_kernel` may change.
 - `read_kernel` gives the kernel's source. `write_kernel` takes a replacement with the same `extern "C"` entry, in

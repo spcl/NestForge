@@ -131,6 +131,13 @@ SET_FP_MODE = "set-fp-mode"
 #: The move that runs consecutive rows of kernel ``scope`` (for loops, states, doalls for their states) as one
 #: persistent kernel; it takes one row or more.
 PERSISTENT_KERNEL = "persistent-kernel"
+#: The moves of the scopes phase that place kernels, named by their labels: on the CPU or the GPU, and the persistent
+#: forms, which run the kernels named (consecutive ones merged into one) as one persistent kernel there.
+RUN_ON_CPU = "run-on-cpu"
+RUN_ON_GPU = "run-on-gpu"
+RUN_ON_CPU_PERSISTENT = "run-on-cpu-persistent"
+RUN_ON_GPU_PERSISTENT = "run-on-gpu-persistent"
+RUN_ON_KINDS = frozenset({RUN_ON_CPU, RUN_ON_GPU, RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT})
 #: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
 #: ``dtype``.
 CHANGE_PRECISION = "change-precision"
@@ -211,6 +218,10 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     SET_FP_MODE: (),
     CHANGE_PRECISION: (),
     PERSISTENT_KERNEL: (RUN_ROW,),
+    RUN_ON_CPU: (),
+    RUN_ON_GPU: (),
+    RUN_ON_CPU_PERSISTENT: (),
+    RUN_ON_GPU_PERSISTENT: (),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
@@ -1712,7 +1723,7 @@ ROW_KEYWORDS: dict[type | tuple[type, ...], str] = {
     RUN_ROW: "for|state|doall",
 }
 #: The kinds that take one row or more, each of their shape's one row kind.
-VARIADIC = frozenset({PERSISTENT_KERNEL})
+VARIADIC = frozenset({PERSISTENT_KERNEL, *RUN_ON_KINDS})
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
 MOVE_TEXT: dict[str, tuple[str, str]] = {
@@ -1909,6 +1920,28 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "behind a runtime test that the largest doall fits the resident threads (else the rows launch as before); on "
         "the CPU the doalls share one OpenMP team and synchronize explicitly. Pays when launches and barriers cost "
         "more than the doalls. A kernel holds one persistent run: to change it, roll back and apply a longer list.",
+    ),
+    RUN_ON_CPU: (
+        "the placement of kernels (labels: kernel names)",
+        "the kernels run on the CPU, as OpenMP code; every other kernel keeps its device. Rollback takes it back.",
+    ),
+    RUN_ON_GPU: (
+        "the placement of kernels (labels: kernel names)",
+        "the kernels run on the GPU: their arguments are copied to the device at their boundary until the scopes "
+        "phase ends, whose copies then move into the program between the kernels. Every other kernel keeps its "
+        "device. Rollback takes it back.",
+    ),
+    RUN_ON_CPU_PERSISTENT: (
+        "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
+        "one kernel runs its longest run of loops and states with doalls as one persistent kernel on the CPU (one "
+        "OpenMP team, explicit barriers); several kernels named are first merged into one kernel, with a barrier "
+        "where one kernel ended and the next began. Refused when the kernels are not consecutive or MegakernelLoops "
+        "fuses nothing of them.",
+    ),
+    RUN_ON_GPU_PERSISTENT: (
+        "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
+        "as run-on-cpu-persistent, on the GPU: one launch with a grid barrier where a launch was, behind a runtime "
+        "test that the largest doall fits the resident threads (else the kernels launch as before).",
     ),
     CHANGE_PRECISION: (
         "a new element type of one internal array (container; dtype: float32, float64)",

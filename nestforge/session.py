@@ -137,6 +137,11 @@ from nestforge.stages.moves import (
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
     ROLLBACK,
+    RUN_ON_CPU,
+    RUN_ON_CPU_PERSISTENT,
+    RUN_ON_GPU,
+    RUN_ON_GPU_PERSISTENT,
+    RUN_ON_KINDS,
     SCOPE_KINDS,
     SET_FP_MODE,
     SET_IMPLEMENTATION,
@@ -279,20 +284,34 @@ def holds_doall(block: ControlFlowBlock) -> bool:
 
 def persistent_runs(body: dace.SDFG) -> list[tuple[str, ...]]:
     """What ``persistent-kernel`` is offered on in a kernel's ``body``: each for loop holding doalls, and each longest
-    run of two or more consecutive blocks holding doalls in a region whose blocks follow one another."""
+    run of two or more blocks holding doalls in a region whose blocks follow one another; blocks without doalls between
+    them are glue MegakernelLoops runs inside the persistent kernel."""
     runs: list[tuple[str, ...]] = []
     for region in body.all_control_flow_regions(recursive=True):
         runs += [(b.label,) for b in region.nodes() if isinstance(b, LoopRegion) and b.loop_variable and holds_doall(b)]
-        order = linear_chain(region)
-        current: list[str] = []
-        for block in [*(order or []), None]:
-            if block is not None and holds_doall(block):
-                current.append(block.label)
-                continue
-            if len(current) > 1:
-                runs.append(tuple(current))
-            current = []
+        with_doalls = [block.label for block in linear_chain(region) or [] if holds_doall(block)]
+        if len(with_doalls) > 1:
+            runs.append(tuple(with_doalls))
     return runs
+
+
+def external_calls_in(block: ControlFlowBlock) -> list[ExternalCall]:
+    """The kernels ``block`` holds, at any depth."""
+    return [n for n, _ in block.all_nodes_recursive() if isinstance(n, ExternalCall)]
+
+
+def megakernel_refusal(ext: ExternalCall, device: str, blocks: Sequence[str]) -> Refused | None:
+    """Why MegakernelLoops runs none of ``blocks`` of kernel ``ext`` as one persistent kernel on ``device``, or
+    ``None``: tried on the kernel's scheduled body."""
+    trial = kernel_form(device).schedule(node_boundary(ext))
+    if persistent_loops(trial, device, set(blocks)) > 0:
+        return None
+    return Refused(
+        f"blocked by MegakernelLoops: {', '.join(blocks)} are not consecutive blocks of one region whose doalls run "
+        "together (control flow reading only grid-uniform values), or, on the GPU, no bound of their doalls' work is "
+        "known.",
+        Refusal.WRONG_ROW_KIND,
+    )
 
 
 def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
@@ -1397,7 +1416,8 @@ class Session:
             return Refused(f"{scope} runs on the GPU; set-schedule-cpu sets OpenMP schedules.", Refusal.ARGUMENT)
         if kind == SET_SCHEDULE_GPU and device != "gpu":
             return Refused(
-                f"{scope} runs on the CPU; set-schedule-gpu takes a kernel placed on the GPU (place).", Refusal.ARGUMENT
+                f"{scope} runs on the CPU; set-schedule-gpu takes a kernel placed on the GPU (run-on-gpu).",
+                Refusal.ARGUMENT,
             )
         return None
 
@@ -1538,21 +1558,154 @@ class Session:
         if isinstance(blocks, Refused):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocks)
         ext = kernels[scope]
-        trial = kernel_form(kernel_device(ext)).schedule(node_boundary(ext))
-        if persistent_loops(trial, kernel_device(ext), set(blocks)) == 0:
-            reason = Refused(
-                f"blocked by MegakernelLoops: {', '.join(blocks)} are not consecutive blocks of one region whose doalls "
-                "run together (control flow reading only grid-uniform values), or, on the GPU, no bound of their "
-                "doalls' work is known.",
-                Refusal.WRONG_ROW_KIND,
-            )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        blocked = megakernel_refusal(ext, kernel_device(ext), blocks)
+        if blocked is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocked)
 
         def change() -> None:
             self.persistent = self.persistent | {(scope, block) for block in blocks}
 
         reason = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
         return self.program_change(PERSISTENT_KERNEL, reason, change)
+
+    def list_scope_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
+        """The moves of the scopes phase legal now, of ``kind`` or every kind: where kernels run (``run-on-*``, every
+        kernel and every run of consecutive kernels), and with ``scope`` the schedules and persistent runs inside it."""
+        inside = (
+            [m for m in self.list_moves(kind, scope) if m.kind in {*SCOPE_KINDS, PERSISTENT_KERNEL}] if scope else []
+        )
+        devices = self.devices()
+        targets = (
+            RUN_ON_CPU,
+            RUN_ON_CPU_PERSISTENT,
+            *((RUN_ON_GPU, RUN_ON_GPU_PERSISTENT) if self.targets.gpu else ()),
+        )
+        groups = [(name,) for name in devices if scope in (None, name)] + [
+            run for run in self.consecutive_kernels() if scope is None or scope in run
+        ]
+        offered = [
+            Move(kind=k, labels=group, current=",".join(devices[name] for name in group))
+            for group in groups
+            for k in targets
+            if kind in (None, k)
+            and (len(group) == 1 or k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT))
+            and not (
+                k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT) and len(group) == 1 and not self.runs_of(group[0])
+            )
+        ]
+        return inside + offered
+
+    def runs_of(self, name: str) -> list[tuple[str, ...]]:
+        """What kernel ``name`` could run as one persistent kernel: none once it does."""
+        if any(k == name for k, _ in self.persistent):
+            return []
+        return persistent_runs(self.move_programs(name)[0])
+
+    def consecutive_kernels(self) -> list[tuple[str, ...]]:
+        """Every longest run of two or more kernels in consecutive blocks of one region, each block holding one kernel
+        and no other work: what a ``-persistent`` run-on move merges."""
+        runs: list[tuple[str, ...]] = []
+        for region in self.sdfg.all_control_flow_regions(recursive=True):
+            current: list[str] = []
+            for block in [*(linear_chain(region) or []), None]:
+                held = external_calls_in(block) if block is not None else []
+                if isinstance(block, SDFGState) and len(held) == 1 and not holds_doall(block):
+                    current.append(held[0].name)
+                    continue
+                if len(current) > 1:
+                    runs.append(tuple(current))
+                current = []
+        return runs
+
+    def run_on(self, kind: str, names: tuple[str, ...]) -> MoveResult:
+        """Place the kernels ``names`` on the device ``kind`` names, every other kernel keeping its device; a
+        ``-persistent`` kind first merges them into one kernel (when several) and runs its longest run of blocks with
+        doalls as one persistent kernel. One change for ``rollback``; refused, with nothing changed, when a name is no
+        kernel, the GPU is no target, or the kernels cannot run as one."""
+        device = "gpu" if kind in (RUN_ON_GPU, RUN_ON_GPU_PERSISTENT) else "cpu"
+        kernels = {ext.name for ext in external_calls(self.sdfg)}
+        unknown = sorted(set(names) - kernels)
+        if unknown:
+            reason = Refused(
+                f"{', '.join(unknown)} are no kernels; kernels are {sorted(kernels)}.", Refusal.UNKNOWN_LABEL
+            )
+            return MoveResult(status=MoveStatus.NOT_FOUND, kind=kind, labels=names, reason=reason)
+        if device == "gpu" and not self.targets.gpu:
+            reason = Refused(f"{kind}: this run has no GPU target.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+        saved = self.saved()
+        with self.atomic():
+            outcome = self.placed_on(kind, device, names)
+            if isinstance(outcome, Refused):
+                self.restore(saved)
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=outcome)
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=outcome)
+            self.applied = [*saved.applied, done]
+            self.remember()
+        return done
+
+    def placed_on(self, kind: str, device: str, names: tuple[str, ...]) -> str | Refused:
+        """:meth:`run_on`'s change, without its bookkeeping: what it did, or why it refuses."""
+        placed = self.devices() if self.unplaced is not None else {}
+        if kind in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT):
+            if self.unplaced is not None:
+                self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+            merged = self.merge_kernels(names) if len(names) > 1 else names[0]
+            if isinstance(merged, Refused):
+                return merged
+            if any(k == merged for k, _ in self.persistent):
+                return Refused(f"{merged} runs as a persistent kernel already.", Refusal.ARGUMENT)
+            runs = persistent_runs(self.move_programs(merged)[0])
+            if not runs:
+                return Refused(
+                    f"{merged} holds no for loop or run of blocks with doalls to run as one.", Refusal.ARGUMENT
+                )
+            run = max(runs, key=len)
+            blocked = megakernel_refusal(self.kernel(merged), device, run)
+            if blocked is not None:
+                return blocked
+            self.persistent = self.persistent | {(merged, block) for block in run}
+            names = (merged,)
+        kernels = {ext.name for ext in external_calls(self.sdfg)}
+        devices = {k: d for k, d in placed.items() if k in kernels} | dict.fromkeys(names, device)
+        result = self.place(devices)
+        if result.status is not MoveStatus.APPLIED:
+            return Refused(str(result.reason), Refusal.ARGUMENT)
+        persistent = sorted(block for k, block in self.persistent if k in names)
+        return f"{', '.join(names)} on the {device.upper()}" + (
+            f", {', '.join(persistent)} persistent" if persistent else ""
+        )
+
+    def merge_kernels(self, names: tuple[str, ...]) -> str | Refused:
+        """The kernels ``names`` inlined and scoped again as one kernel, its name; or why not: they sit in different
+        regions, a block between them holds a doall or another kernel, or their states hold work besides them."""
+        homes = [find_state_of_node(self.sdfg, self.kernel(name)) for name in names]
+        region = homes[0].parent_graph
+        order = linear_chain(region) if all(home.parent_graph is region for home in homes) else None
+        if order is None or not all(home in order for home in homes):
+            return Refused(f"{', '.join(names)} are not kernels of one straight run of blocks.", Refusal.WRONG_ROW_KIND)
+        span = order[min(map(order.index, homes)) : max(map(order.index, homes)) + 1]
+        busy = [
+            block.label for block in span if holds_doall(block) or len(external_calls_in(block)) != (block in homes)
+        ]
+        if busy:
+            return Refused(
+                f"{', '.join(busy)} hold work besides the kernels {', '.join(names)}: they are no consecutive kernels.",
+                Refusal.WRONG_ROW_KIND,
+            )
+        before = set(region.nodes())
+        for name in names:
+            unset = self.unset_scope(name)
+            if unset.status is not MoveStatus.APPLIED:
+                return Refused(str(unset.reason), Refusal.WRONG_ROW_KIND)
+        after = linear_chain(region) or []
+        members = [i for i, block in enumerate(after) if block not in before or block in homes]
+        labels = [block.label for block in after[members[0] : members[-1] + 1]]
+        self.describe()  # the rows of the inlined blocks get their labels
+        scoped = self.set_scope(labels)
+        if scoped.status is not MoveStatus.APPLIED:
+            return Refused(str(scoped.reason), Refusal.WRONG_ROW_KIND)
+        return str(scoped.reason)
 
     def set_fp_mode(self, scope: str | None, fp_mode: str | None) -> MoveResult:
         """Build kernel ``scope`` in ``fp_mode`` only, from now on; refused for an unknown kernel or a mode the target
@@ -1714,6 +1867,8 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         if kind == ROLLBACK:
             return self.undo()
+        if kind in RUN_ON_KINDS:
+            return self.run_on(kind, names)
         sizes = chosen_sizes(kind, tile_sizes, lanes, block)
         if isinstance(sizes, Refused):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=sizes)
@@ -2134,7 +2289,9 @@ class Session:
         """DaCe's offloading of the placed program: the GPU kernels' operands move to device memory and the host/device
         copies sit at the kernels' boundaries in the program, so adjacent GPU kernels share them."""
         if self.unplaced is None:
-            return PlaceResult(status=MoveStatus.ILLEGAL, reason="no kernel is placed yet; call place first.")
+            return PlaceResult(
+                status=MoveStatus.ILLEGAL, reason="no kernel is placed yet; run-on-cpu or run-on-gpu first."
+            )
         devices = self.devices()
         moves = self.transfers(devices)
         interfaces, builds = kernel_interfaces(self.sdfg), self.builds

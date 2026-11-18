@@ -17,6 +17,7 @@ import test_inline_library
 import test_lib_motion_moves
 import test_move_soundness
 import test_persistent_kernel
+import test_run_on
 import test_scope_moves as scope_fixtures
 import test_session_moves
 import test_sink_invariant_code
@@ -40,6 +41,10 @@ OWN_CASES = {
     "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
     "persistent-kernel": "test_rollback_after_a_persistent_kernel",
     "set-fp-mode": "test_rollback_after_set_fp_mode",
+    "run-on-cpu": "test_rollback_after_a_placement_move",
+    "run-on-gpu": "test_rollback_after_a_placement_move",
+    "run-on-cpu-persistent": "test_rollback_after_a_placement_move",
+    "run-on-gpu-persistent": "test_rollback_after_a_placement_move",
     "untile-doall": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
     "untile-for": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
 }
@@ -188,6 +193,13 @@ def test_rollback_after_a_persistent_kernel(tmp_path):
     ((loop,),) = test_persistent_kernel.offered(session, kernel)
 
     assert differs_after_rollback(session, lambda: session.apply_move("persistent-kernel", [loop], scope=kernel)) == ""
+
+
+@pytest.mark.parametrize("kind", ["run-on-cpu", "run-on-gpu", "run-on-cpu-persistent", "run-on-gpu-persistent"])
+def test_rollback_after_a_placement_move(tmp_path, kind: str):
+    session, kernels = test_run_on.scoped(test_run_on.two_time_loops, tmp_path, gpu=True)
+
+    assert differs_after_rollback(session, lambda: session.apply_move(kind, kernels)) == ""
 
 
 def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path):

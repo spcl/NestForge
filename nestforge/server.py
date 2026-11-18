@@ -57,7 +57,15 @@ from nestforge.stages.authored import AUTHORED_FAMILY
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
 from nestforge.stages.finalize import BenchTarget, Final
-from nestforge.stages.moves import PERSISTENT_KERNEL, ROLLBACK, SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, MoveKind, move_kinds
+from nestforge.stages.moves import (
+    PERSISTENT_KERNEL,
+    ROLLBACK,
+    RUN_ON_KINDS,
+    SET_SCHEDULE_CPU,
+    SET_SCHEDULE_GPU,
+    MoveKind,
+    move_kinds,
+)
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
 from nestforge.stages.phases import PhaseName
 
@@ -159,12 +167,11 @@ CALLS: dict[str, Callable[..., object]] = {
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
     "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
-    "list_scope_moves": Session.list_moves,
+    "list_scope_moves": Session.list_scope_moves,
     "advance_phase": Session.next_phase,
     "undo_phase": Session.prev_phase,
     "return_to_phase": Session.goto_phase,
     "apply_scope_move": Session.apply_move,
-    "place": Session.place,
     "insert_copies": Session.insert_copies,
     "list_kernels": Session.list_kernels,
     "focus_kernel": Session.focus_kernel,
@@ -209,7 +216,6 @@ CHANGING = frozenset(
         "set_scope",
         "unset_scope",
         "apply_scope_move",
-        "place",
         "insert_copies",
         "focus_kernel",
         "write_kernel",
@@ -536,7 +542,6 @@ TOOL_PHASES: dict[str, frozenset[PhaseName]] = {
     "unset_scope": frozenset({PhaseName.SCOPES}),
     "list_scope_moves": frozenset({PhaseName.SCOPES}),
     "apply_scope_move": frozenset({PhaseName.SCOPES}),
-    "place": frozenset({PhaseName.SCOPES}),
     "insert_copies": frozenset({PhaseName.SCOPES}),
     "list_kernels": frozenset({PhaseName.KERNELS}),
     "focus_kernel": frozenset({PhaseName.KERNELS}),
@@ -551,9 +556,9 @@ STAGE_PHASES: dict[str, PhaseName] = {
     "scopes": PhaseName.SCOPES,
     "placement": PhaseName.SCOPES,
 }
-#: The move kinds of the scopes phase: where a kernel runs and how its doalls are scheduled. Every other move with a
+#: The move kinds of the scopes phase: where kernels run (``run-on-*``) and how their doalls are scheduled. Every other move with a
 #: ``scope`` is the scoped phase's.
-SCOPES_PHASE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, PERSISTENT_KERNEL})
+SCOPES_PHASE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, PERSISTENT_KERNEL, *RUN_ON_KINDS})
 
 
 def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> str | None:

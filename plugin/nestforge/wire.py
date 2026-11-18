@@ -199,7 +199,11 @@ class ApplyMove(Labeled):
 
 
 class InScope(Args):
-    scope: str = pydantic.Field(description="The kernel whose body holds the rows, as list_kernels names it.")
+    scope: str | None = pydantic.Field(
+        None,
+        description="The kernel whose body holds the rows, as list_kernels names it; none for run-on-cpu, run-on-gpu and "
+        "their -persistent forms, whose labels are the kernels.",
+    )
 
 
 class ListScopeMoves(ListMoves, InScope):
@@ -221,12 +225,6 @@ class RunDefaults(Args):
 
 class UnsetScope(Args):
     name: str = pydantic.Field(description="The kernel to inline back, as list_kernels names it.")
-
-
-class Place(Args):
-    devices: dict[str, Literal["cpu", "gpu"]] = pydantic.Field(
-        default_factory=dict, description="Kernel name -> cpu or gpu; kernels left out keep the default device."
-    )
 
 
 class KernelName(Args):
@@ -393,21 +391,15 @@ TOOLS: dict[str, ToolDef] = {
     "list_scope_moves": ToolDef(
         phases(Phase.SCOPES),
         ListScopeMoves,
-        "list_moves inside one kernel's body; on a GPU kernel with its copies inserted also stage-loads-shared.",
+        "The moves of the scopes phase: run-on-cpu, run-on-gpu and their -persistent forms on every kernel and every "
+        "run of consecutive kernels; with scope, the schedules and persistent runs inside that kernel.",
         Effect.READ,
     ),
     "apply_scope_move": ToolDef(
         phases(Phase.SCOPES),
         ApplyScopeMove,
-        "apply_move inside one kernel's body, as list_scope_moves listed it. A placed kernel is placed again with the "
-        "change; stage-loads-shared rewrites the GPU kernel as placed, so do it last: placing again drops it.",
-    ),
-    "place": ToolDef(
-        phases(Phase.SCOPES),
-        Place,
-        "Run each kernel on the CPU or the GPU; a GPU kernel copies its arguments to the device and back inside its "
-        "call. Answers each kernel's device and the transfers between them.",
-        Effect.REPLACE,
+        "A move of the scopes phase, as list_scope_moves listed it: run-on-* places kernels (rollback takes it back); "
+        "a schedule or persistent run names its kernel (scope). A placed kernel is placed again with the change.",
     ),
     "insert_copies": ToolDef(
         phases(Phase.SCOPES),
