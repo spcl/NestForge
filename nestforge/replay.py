@@ -254,13 +254,14 @@ class Script:
         return done
 
     def finish(self) -> None:
-        """Close stage 2 after hand-picked moves (:meth:`Session.finish_moves`)."""
-        self.session.finish_moves()
+        """Close stage 2 after hand-picked moves, as the agent's ``run_defaults`` does (a change ``rollback`` takes
+        back)."""
+        self.session.run_defaults("finish")
         self.finished = True
 
     def defaults(self) -> None:
-        """Close stage 2 with its default (:meth:`Session.default_moves`), as the baseline does."""
-        self.session.default_moves()
+        """Close stage 2 with its default, as the agent's ``run_defaults`` does and the baseline does."""
+        self.session.run_defaults("moves")
         self.finished = True
 
 

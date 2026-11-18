@@ -21,6 +21,6 @@ CI_SKIP = (
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.session.default_moves()
+    s.session.run_defaults("moves")
     s.apply(s.pick("interchange-doall-for"))
     s.finish()

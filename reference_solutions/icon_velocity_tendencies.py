@@ -392,7 +392,7 @@ def _bind(session: Script, name: str, source: str) -> None:
 
 def solve(script: Script, ctx: Context) -> None:
     session = script.session
-    session.default_moves()
+    session.run_defaults("moves")
     refusals: list[str] = []
     tried = 0
     # an unset kernel comes back under new labels, so the pieces are read again after each refusal, in the same order

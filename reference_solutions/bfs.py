@@ -17,7 +17,7 @@ CONFIGS = (Context("gpu", 1, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.session.default_moves()
+    s.session.run_defaults("moves")
     if ctx.device == "gpu":
         s.apply(s.pick("interchange-doall-for", writes=["reach"]))
     s.finish()

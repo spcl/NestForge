@@ -21,6 +21,6 @@ def is_tensordot(rows: list[Row]) -> bool:
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.session.default_moves()
+    s.session.run_defaults("moves")
     s.apply(s.pick("inline-library", where=is_tensordot))
     s.finish()
