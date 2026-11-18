@@ -33,6 +33,7 @@ from dace.sdfg.state import LoopRegion, SDFGState
 from relayout.ops import Operation
 
 from nestforge.build.arena import TIMED_REPS
+from nestforge.build.pipelines import build_llvm_pipeline, build_mlir_pipeline, pipeline_syntax_error
 from nestforge.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from nestforge.build.toolchain import SymbolValue, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
@@ -91,6 +92,7 @@ from nestforge.stages.kernel import (
     bounded_probe,
     build_kernel_library,
     computed_symbols_reason,
+    cpu_runtime_libraries,
     full_probe,
     kernel_form,
     kernel_runtime_libraries,
@@ -257,6 +259,13 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
+#: The pass pipelines :meth:`Session.apply_pipeline` builds through, by the IR they run on.
+PIPELINES = {"llvm": build_llvm_pipeline, "mlir": build_mlir_pipeline}
+#: The compiler of a pipeline build: its IR is LLVM's, so it is clang.
+PIPELINE_COMPILER = "clang++"
+#: The FP mode a pipeline build is checked at: its passes decide the rounding, so the gate is the strict one.
+PIPELINE_FP_MODE = "strict-ieee"
+
 #: How the reason of a relayout of internal arrays ends, which :meth:`Session.relayout_refusal` reads.
 LOCAL_MARK = "(internal)"
 
@@ -555,6 +564,7 @@ class Checkpoint:
     measured: Measured | None
     gpu_choices: dict[str, dict[str, GpuChoice]]
     fp_mode: str | None
+    pipeline: tuple[str, str] | None
 
 
 class Session:
@@ -592,6 +602,7 @@ class Session:
         "measured",
         "gpu_choices",
         "fp_mode",
+        "pipeline",
         "made_by_last",
         "bench",
         "stopper",
@@ -674,6 +685,8 @@ class Session:
         self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
         #: The floating-point mode every kernel is built in (``set-fp-mode``); ``None``: the sweep picks it.
         self.fp_mode: str | None = None
+        #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
+        self.pipeline: tuple[str, str] | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -716,6 +729,7 @@ class Session:
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
             self.fp_mode,
+            self.pipeline,
         )
         kept = len(self.history)
         self.in_atomic, self.checkpoint = True, saved
@@ -741,6 +755,7 @@ class Session:
         self.measured = saved.measured
         self.gpu_choices = saved.gpu_choices
         self.fp_mode = saved.fp_mode
+        self.pipeline = saved.pipeline
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -1819,8 +1834,20 @@ class Session:
 
     def optimize_kernel(self, name: str) -> KernelLibrary:
         """Stage 5 default: render the kernel's CPF unit, build it with the first configuration stage 6 sweeps for
-        its device, and link it into the kernel's ``ExternalCall``."""
+        its device, or through the agent's pass pipeline when one is set, and link it into the kernel's
+        ``ExternalCall``."""
         src = self.default_kernel(name)
+        if self.pipeline is not None and src.device == "cpu":
+            variant, archive = self.pipeline_build(name, src)
+            self.bind(name, KernelBuild(src, variant, archive))
+            return KernelLibrary(
+                kernel=name,
+                symbol=src.symbol,
+                abi_order=tuple(src.abi_order),
+                unit=src.unit,
+                library=archive,
+                variant=variant.label,
+            )
         variant = self.first_variant(src.device)
         with self.stopper.armed():
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
@@ -1833,6 +1860,22 @@ class Session:
             library=archive,
             variant=variant.label,
         )
+
+    def pipeline_build(self, name: str, src: KernelSource) -> tuple[Variant, Path]:
+        """The kernel's unit built through the session's pass pipeline, in a folder of its own.
+
+        :raises PipelineError: A step of the pipeline failed, with its output."""
+        assert self.pipeline is not None, "a pipeline is set"
+        ir, pipeline = self.pipeline
+        compiler = shutil.which(PIPELINE_COMPILER) or PIPELINE_COMPILER
+        out = self.work_dir / name / f"{ir}{len(list((self.work_dir / name).glob(f'{ir}*')))}"
+        out.mkdir(parents=True)
+        unit = out / src.unit.name
+        shutil.copy(src.unit, unit)
+        archive = out / f"lib{name}.a"
+        with self.stopper.armed():
+            PIPELINES[ir]([unit], compiler, pipeline, archive, [*src.link, *cpu_runtime_libraries(compiler)])
+        return Variant(compiler, PIPELINE_FP_MODE, ir, (pipeline,), f"{ir}-pipeline"), archive
 
     def focus_kernel(self, name: str) -> str:
         """Scope the kernel work to the kernel ``name``; returns it."""
@@ -1909,6 +1952,29 @@ class Session:
         if verdict.unchecked:
             return KernelOutcome(kernel=name, status=KernelStatus.UNCHECKED, reason=verdict.unchecked)
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
+
+    def set_pipeline(self, ir: str, pipeline: str) -> MoveResult:
+        """Build every kernel through the agent's own pass ``pipeline`` from now on (``ir``: ``llvm`` for ``opt
+        -passes``, ``mlir`` for ``polygeist-opt --pass-pipeline``): the LLVM and MLIR agents' one setting, undone by
+        ``rollback``. The pipeline's syntax is checked now; each build is checked by the reference at
+        ``get_performance``, not proven."""
+        kind = f"{ir}-pipeline"
+        compiler = shutil.which(PIPELINE_COMPILER)
+        reason = (
+            f"ir is one of {sorted(PIPELINES)}"
+            if ir not in PIPELINES
+            else f"no {PIPELINE_COMPILER} on this machine"
+            if compiler is None
+            else pipeline_syntax_error(ir, compiler, pipeline)
+        )
+        if reason:
+            refused = Refused(reason, Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=(), reason=refused)
+
+        def change() -> None:
+            self.pipeline = (ir, pipeline)
+
+        return self.precision_change(kind, f"every kernel builds through {pipeline}", change)
 
     def kernel_verdict(self, name: str, src: KernelSource, archive: Path, reps: int, fp_mode: str) -> KernelVerdict:
         """``archive`` against the kernel's oracle, unchecked when the oracle has no value for a symbol it takes."""
@@ -2028,7 +2094,7 @@ class Session:
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
         a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
         only the running program computes: its oracle has no value for it)."""
-        if self.codegen == "first":
+        if self.codegen == "first" or self.pipeline is not None:
             self.first_build(name)
             return
         src = self.default_kernel(name)
@@ -2046,7 +2112,7 @@ class Session:
         kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
         ext = self.kernel(name)
         body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
-        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode
+        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode, self.pipeline
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)
@@ -2132,7 +2198,7 @@ class Session:
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         copied.unlaid, copied.layout = self.unlaid, self.layout
-        copied.fp_mode = self.fp_mode
+        copied.fp_mode, copied.pipeline = self.fp_mode, self.pipeline
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied

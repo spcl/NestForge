@@ -35,7 +35,7 @@ packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 title = "Moves"
 summary = "NestForge applies its default moves: the wavefront skew, then fusion, each unless the run switches its family off."
 text = "prompt/phases/moves.md"
-tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "tune_move", "run_defaults"]
 default = { tool = "run_defaults", args = { stage = "moves" } }
 
 [phases.scopes]
@@ -83,6 +83,26 @@ env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }
 extends = "nestforge"
 name = "NestForge (move requests)"
 tools = ["get_performance", "applied_moves", "finalize", "profile", "score", "submit", "request_transformation"]
+
+# The baselines that choose compiler passes instead of moves (the paper's LLVM and MLIR agents): the same program,
+# entry and library as NestForge's, every kernel built through the agent's pipeline; no move, no written code.
+[packets.nestforge-llvm]
+extends = "nestforge"
+name = "LLVM passes (baseline)"
+agent = []
+tools = ["get_cpf", "view_tree", "set_llvm_passes", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/passes-llvm.yaml"]
+skills = []
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
+
+[packets.nestforge-mlir]
+extends = "nestforge"
+name = "MLIR passes (baseline)"
+agent = []
+tools = ["get_cpf", "view_tree", "set_mlir_passes", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/passes-mlir.yaml"]
+skills = []
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
 
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]

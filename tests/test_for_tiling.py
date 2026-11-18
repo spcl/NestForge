@@ -73,6 +73,8 @@ def test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_
     (old,) = [r.loop_variable for r in sut.sdfg.all_control_flow_regions(recursive=True) if isinstance(r, LoopRegion)]
 
     assert sut.apply_move("tile-for", [loop], tile_sizes=[8]).status is MoveStatus.APPLIED
+    # a change between: an untile right after its tile is answered by rollback, which keeps the old iterator
+    assert sut.apply_move("set-fp-mode", [], fp_mode="strict-ieee").status is MoveStatus.APPLIED
     (move,) = sut.list_moves("untile-for")
     assert sut.apply_move("untile-for", list(move.labels)).status is MoveStatus.APPLIED
 

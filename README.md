@@ -28,6 +28,8 @@ run the `nestforge` packet; it sets the library input mode itself (`finalize` ha
 kernels, and the agent then writes and tunes them one at a time.
 `nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent. `nestforge-requests` is `nestforge` with
 `request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
+`nestforge-llvm` and `nestforge-mlir` are the baselines that choose compiler passes instead of moves: the same program,
+entry and library, every kernel built through the agent's `opt -passes=` or `polygeist-opt --pass-pipeline=` pipeline.
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 

@@ -65,6 +65,13 @@ PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
+#: Tools only one packet of its own serves, never nestforge-full: transformation requests (E6) and the LLVM and MLIR
+#: baselines, whose agents choose passes instead of moves.
+PACKET_OWN_TOOLS = {
+    "request_transformation": "nestforge-requests",
+    "set_llvm_passes": "nestforge-llvm",
+    "set_mlir_passes": "nestforge-mlir",
+}
 #: The device slot a fake judge hands out.
 SLOT = DeviceSlot("cpu", 3)
 #: Seconds a spawned judge has to import the bench and bind its port.
@@ -243,8 +250,10 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
     from hpcagent_bench_plugins.nestforge.wire import TOOLS
 
     packet = PACKETS["nestforge-full"].tools
+    own = {tool: PACKETS[name].tools for tool, name in PACKET_OWN_TOOLS.items()}
 
-    assert sorted(packet) == sorted((*TOOLS, *OVERRIDDEN, plugins.NEXT_PHASE))
+    assert sorted(packet) == sorted((*(t for t in TOOLS if t not in PACKET_OWN_TOOLS), *OVERRIDDEN, plugins.NEXT_PHASE))
+    assert all(tool in tools and tool not in packet for tool, tools in own.items())
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()
@@ -256,8 +265,9 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "list_scope_moves",
         "list_kernels",
         "read_kernel",
-        "get_performance",
         "applied_moves",
+        "get_work_depth",
+        "request_transformation",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 

@@ -98,6 +98,16 @@ class RequestTransformation(Args):
     )
 
 
+class SetLlvmPasses(Args):
+    passes: str = pydantic.Field(description="An opt -passes= pipeline, e.g. default<O3> or function(loop-mssa(licm)).")
+
+
+class SetMlirPasses(Args):
+    pipeline: str = pydantic.Field(
+        description="A polygeist-opt --pass-pipeline=, e.g. builtin.module(affine-loop-tile{tile-size=32},canonicalize)."
+    )
+
+
 class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
@@ -294,6 +304,20 @@ TOOLS: dict[str, ToolDef] = {
         "get_performance measures. The fastest "
         "size that beats the program now is kept (status kept); if none does, the program stays as it was. Use it "
         "instead of tiling, untiling and tiling again.",
+    ),
+    "set_llvm_passes": ToolDef(
+        Phase.ANY,
+        SetLlvmPasses,
+        "Build every kernel through this LLVM pass pipeline (opt -passes= syntax): its C++ is lowered to IR without "
+        "optimization, the pipeline runs, then only the back end. The syntax is checked now; get_performance checks "
+        "the results. A second call replaces the pipeline.",
+    ),
+    "set_mlir_passes": ToolDef(
+        Phase.ANY,
+        SetMlirPasses,
+        "Build every kernel through this MLIR pass pipeline (polygeist-opt --pass-pipeline= syntax) on the affine MLIR "
+        "cgeist makes of its C++, then a fixed lowering to LLVM. The syntax is checked now; get_performance checks the "
+        "results. A second call replaces the pipeline.",
     ),
     "request_transformation": ToolDef(
         Phase.ANY,

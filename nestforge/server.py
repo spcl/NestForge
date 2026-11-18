@@ -146,8 +146,14 @@ CALLS: dict[str, Callable[..., object]] = {
     "tune_kernel": focused(Session.sweep),
     "get_performance": lambda session: None,
     "tune_move": Session.tune_move,
-    "request_transformation": lambda session, **request: session.request_transformation(
-        **request, reference=reference_source(session.bench.kernel) if session.bench is not None else ""
+    "set_llvm_passes": lambda session, passes: session.set_pipeline("llvm", passes),
+    "set_mlir_passes": lambda session, pipeline: session.set_pipeline("mlir", pipeline),
+    "request_transformation": lambda session, name, description, rows, examples: session.request_transformation(
+        name,
+        description,
+        rows,
+        examples,
+        reference=reference_source(session.bench.kernel) if session.bench is not None else "",
     ),
     "finalize": finalize,
 }
@@ -179,6 +185,8 @@ CHANGING = frozenset(
         "tune_kernel",
         "tune_move",
         "get_performance",
+        "set_llvm_passes",
+        "set_mlir_passes",
     }
 )
 
