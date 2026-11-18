@@ -141,7 +141,14 @@ from nestforge.stages.moves import (
     sinkable_containers,
     size_argument,
 )
-from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
+from nestforge.stages.performance import (
+    Performance,
+    ProgramReport,
+    Reference,
+    kernel_reports,
+    offload_report,
+    time_program,
+)
 from nestforge.stages.placement import (
     Placement,
     Transfer,
@@ -490,6 +497,20 @@ def undone_on_failure[**Params, Answer](
     return guarded
 
 
+#: How much slower than the fastest version a measured program must be before ``get_performance`` restores that
+#: version: a margin over the timing noise, so a tie never undoes the agent's work.
+GUARD_MARGIN = 1.03
+
+
+class Restored(Record):
+    """What ``get_performance`` did about a program slower than the fastest version it measured: ``rolled_back``
+    changes taken back to reach that version (0: out of reach of :data:`UNDO_DEPTH` rollbacks, nothing changed)."""
+
+    fastest_us: float
+    now_us: float
+    rolled_back: int
+
+
 @dataclass(slots=True)
 class Checkpoint:
     """What a change to the program can touch: :meth:`Session.atomic` puts it back when the change fails."""
@@ -554,6 +575,7 @@ class Session:
         "history",
         "focus",
         "disabled_families",
+        "fastest",
     )
 
     def __init__(
@@ -636,6 +658,8 @@ class Session:
         self.made_by_last: tuple[int, frozenset[str]] = (-1, frozenset())
         #: The kernel the agent's kernel work is scoped to (:meth:`focus_kernel`); ``None`` before the first.
         self.focus: str | None = None
+        #: The fastest correct program ``get_performance`` measured: its time and the changes that made it.
+        self.fastest: tuple[float, list[MoveResult]] | None = None
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -707,6 +731,30 @@ class Session:
         self.restore(saved)
         self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
         return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=undone.labels, reason=f"undid {undone.kind}")
+
+    def keep_fastest(self, report: ProgramReport) -> Restored | None:
+        """After ``get_performance`` measured ``report``: a correct program faster than every one before becomes the
+        fastest version; one slower by more than :data:`GUARD_MARGIN` is rolled back to it, when rollbacks reach it.
+        One rule, no argument: no measured program is ever lost to a slower one."""
+        if report.correct is not True or report.time_us is None:
+            return None
+        if self.fastest is None or report.time_us < self.fastest[0]:
+            self.fastest = (report.time_us, list(self.applied))
+            return None
+        fastest_us, made = self.fastest
+        if report.time_us <= fastest_us * GUARD_MARGIN or self.applied == made:
+            return None
+        depth = next(
+            (
+                len(self.history) - index
+                for index in reversed(range(len(self.history)))
+                if self.history[index].applied == made
+            ),
+            0,
+        )
+        for _ in range(depth):
+            self.undo()
+        return Restored(fastest_us=fastest_us, now_us=report.time_us, rolled_back=depth)
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""

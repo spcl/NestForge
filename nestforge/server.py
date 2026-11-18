@@ -161,7 +161,7 @@ TAKES_DATA = frozenset({"tune_move"})
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
 #: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel, and a
-#: tune_move as the move it kept.
+#: tune_move as the move it kept, and a get_performance as the rollbacks that restored the fastest version.
 CHANGING = frozenset(
     {
         "apply_move",
@@ -175,6 +175,7 @@ CHANGING = frozenset(
         "write_kernel",
         "tune_kernel",
         "tune_move",
+        "get_performance",
     }
 )
 
@@ -442,7 +443,10 @@ def timed_call(
         return Reply(result=result)
     assert data is not None, "a timed tool measures, so its data was loaded"
     try:
-        return Reply(result=result, performance=session.performance(*data, codegen=FEEDBACK_CODEGEN))
+        performance = session.performance(*data, codegen=FEEDBACK_CODEGEN)
+        if tool == "get_performance":
+            result = session.keep_fastest(performance.structured)
+        return Reply(result=result, performance=performance)
     except Stopped:
         if tool == "get_performance":
             raise

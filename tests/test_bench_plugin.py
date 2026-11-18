@@ -56,7 +56,7 @@ import nestforge_bench
 from nestforge.paths import REPO_ROOT
 from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
 from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import KernelOutcome, Move, MoveResult, Session, TunedValue, TuneResult
+from nestforge.session import KernelOutcome, Move, MoveResult, Restored, Session, TunedValue, TuneResult
 from nestforge.stages.families import FAMILIES
 from nestforge_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
@@ -614,11 +614,20 @@ def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(
         kind="tile-doall", labels=("doall8",), values=[now, TunedValue(tile_sizes=(32, 32), status="measured")]
     )
 
-    assert route.repeat_of(call, Reply(result=kept)) == (
-        "apply_move",
-        {"kind": "tile-doall", "labels": ["doall8"], "tile_sizes": [64, 64]},
-    )
-    assert route.repeat_of(call, Reply(result=none)) is None
+    assert route.repeats_of(call, Reply(result=kept)) == [
+        ("apply_move", {"kind": "tile-doall", "labels": ["doall8"], "tile_sizes": [64, 64]})
+    ]
+    assert route.repeats_of(call, Reply(result=none)) == []
+
+
+def test_a_get_performance_that_restored_the_fastest_version_is_journaled_as_its_rollbacks(loaded: None) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    call = ("get_performance", {})
+
+    restored = route.repeats_of(call, Reply(result=Restored(fastest_us=10.0, now_us=30.0, rolled_back=2)))
+
+    assert restored == [("apply_move", {"kind": "rollback", "labels": []})] * 2
+    assert route.repeats_of(call, Reply(result=None)) == []
 
 
 def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:

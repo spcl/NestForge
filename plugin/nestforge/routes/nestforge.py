@@ -37,8 +37,9 @@ from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
 
 from nestforge.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
-from nestforge.session import Sweep, TuneResult
+from nestforge.session import Restored, Sweep, TuneResult
 from nestforge.stages.families import checked_families, family_of
+from nestforge.stages.moves import ROLLBACK
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
@@ -108,6 +109,8 @@ def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: objec
         status = "failed"
     elif outcome:
         status = str(outcome["status"])
+    elif name == "get_performance":
+        status = "restored" if isinstance(result, Restored) and result.rolled_back else "ok"
     else:
         status = "applied" if name in CHANGING else "ok"
     return {
@@ -216,23 +219,27 @@ def device_slot(
         episode.measuring.release()
 
 
-def repeat_of(call: Call, reply: Reply) -> Call | None:
+def repeats_of(call: Call, reply: Reply) -> list[Call]:
     """How a new session repeats an applied change: a written kernel passed its check and a sweep timed its winner, so
     the repeat builds the source, or that winner, without checking or timing again; a sweep without one changed
-    nothing. A tune_move repeats as the move at the size it kept, or not at all."""
+    nothing. A tune_move repeats as the move at the size it kept, or not at all; a get_performance that restored the
+    fastest version as its rollbacks, or not at all."""
     name, arguments = call
     if name == "write_kernel":
-        return name, {**arguments, "checked": False}
+        return [(name, {**arguments, "checked": False})]
     if name == "tune_kernel":
         assert isinstance(reply.result, Sweep), "a tune_kernel answers its sweep"
-        return None if reply.result.winner is None else (name, {**arguments, "variant": reply.result.winner})
+        return [] if reply.result.winner is None else [(name, {**arguments, "variant": reply.result.winner})]
     if name == "tune_move":
         assert isinstance(reply.result, TuneResult), "a tune_move answers what it measured"
         kept = [value.tile_sizes for value in reply.result.values if value.status == "kept"]
         if not kept:
-            return None
-        return "apply_move", {"kind": arguments["kind"], "labels": arguments["labels"], "tile_sizes": list(kept[0])}
-    return call
+            return []
+        return [("apply_move", {"kind": arguments["kind"], "labels": arguments["labels"], "tile_sizes": list(kept[0])})]
+    if name == "get_performance":
+        restored = reply.result.rolled_back if isinstance(reply.result, Restored) else 0
+        return [("apply_move", {"kind": ROLLBACK, "labels": []})] * restored
+    return [call]
 
 
 def session_of(
@@ -296,8 +303,7 @@ def run_call(
         del episode.sessions[kernel]
         return crashed(call, reply)
     if name in CHANGING and not reply.error:
-        repeat = repeat_of(call, reply) if applied(reply) else None
-        if repeat is not None:
+        for repeat in repeats_of(call, reply) if applied(reply) else []:
             try:
                 record(request.episode_id, kernel, repeat)
             except OSError as err:

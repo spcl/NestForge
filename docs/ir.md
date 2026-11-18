@@ -131,7 +131,8 @@ Python alone.
 ## Read calls change nothing
 
 Read calls show the program; program calls (moves, defaults, scopes, kernel writes) rewrite it.
-`tune_move` is a program call: it keeps the fastest size it timed if that size beats the program, and otherwise
+`get_performance` is a program call too: a correct program more than 3% slower than the fastest one measured is
+rolled back to it, and the rollbacks are journaled. `tune_move` is a program call: it keeps the fastest size it timed if that size beats the program, and otherwise
 changes nothing. A read call never
 touches the SDFG: the tests check that the program's hash is the same before and after printing.
 

@@ -67,8 +67,10 @@ grades, is faster). Every move keeps the program's results: it changes how loops
 
 1. `get_performance`; work on the kernel with the largest share (a move on a 2% kernel cannot pay).
 2. Open its rows and, if you need to rank loops, `get_work_depth` them.
-3. Pick a move below, `list_moves kind=...` for its labels, `apply_move`, then `get_performance`. Faster: keep.
-   Not faster: `rollback`. To pick a tile size, `tune_move` instead of tiling, measuring and untiling.
+3. Pick a move below, `list_moves kind=...` for its labels, `apply_move`, then `get_performance`. A correct program
+   more than 3% slower than the fastest one measured is rolled back to it by `get_performance` itself, so measure
+   only after the moves that should pay together. To pick a tile size, `tune_move` instead of tiling, measuring and
+   untiling.
 4. Undo with `rollback`, never with an inverse move: an inverse makes new rows with new labels; `rollback` gives back
    the very program. After a move, open only the rows you need; do not reprint the whole tree.
 5. Hints outrank this page, in their order: a `failed` or `wrong result` kernel first (`rollback`), then `bytes
@@ -80,6 +82,7 @@ grades, is faster). Every move keeps the program's results: it changes how loops
 | the same in different states or loops | `for-fusion` of the loops, then `doall-fusion` |
 | `doall-fusion` refused: one doall reads a slice (`path[:, k]`) the other writes | `snapshot-reads`, then `doall-fusion` |
 | `for t: doall i` with a short body | `interchange-for-doall` |
+| `for t: doall i` over large rows, `t` carrying a recurrence (prefix sums, a time loop per column) | column slabs: `interchange-for-doall`, `tile-doall` the doall, `interchange-doall-for` the inner pair (`doall ii: for t: doall i`) |
 | a doall nest whose inner parameter is not the last subscript (`A[j, i]`, `j` inner) | `interchange-doall-doall` |
 | a doall over data far larger than the cache, reread | `tile-doall` (sizes: `tune_move`) |
 | a loop whose iterations each read the previous along two axes (Gauss-Seidel, LU) | `skew-wavefront` |
@@ -94,7 +97,7 @@ grades, is faster). Every move keeps the program's results: it changes how loops
 | short doall ranges that leave threads idle | `flatten-doalls` |
 | iterations of uneven cost, in a CPU kernel | `set-schedule-cpu` with `dynamic` or `guided` |
 | a hot leaf doall whose hint says `loop not vectorized` | `vectorize-doall`, last |
-| an argument read with a stride no move can change | `relayout`, first |
+| an argument read with a stride no move can change (`trans[i, j]` with `i` inner, a matrix used transposed) | `relayout`, first |
 
 ## Moves
 
