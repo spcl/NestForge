@@ -61,6 +61,7 @@ The packets:
 | `nestforge` | `moves` | Structured only. The agent writes no code. |
 | `nestforge-full`, also `nestforge-two-stage` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
 | `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
+| `nestforge-requests` | `moves` | As `nestforge`, and the agent may ask for a transformation no move offers (`request_transformation`). |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
 every caller of the route. The agent focuses each kernel before it starts that kernel's subagent; a

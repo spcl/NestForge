@@ -161,6 +161,8 @@ from nestforge.stages.placement import (
     place,
     transfers,
 )
+from nestforge.stages.requests import Example, Request, RequestResult, example_refusal
+from nestforge.stages.requests import refused as request_refused
 from nestforge.stages.scopes import (
     is_parallel_kernel,
     lower_default_scopes,
@@ -578,6 +580,7 @@ class Session:
         "focus",
         "disabled_families",
         "fastest",
+        "requests",
     )
 
     def __init__(
@@ -662,6 +665,8 @@ class Session:
         self.focus: str | None = None
         #: The fastest correct program ``get_performance`` measured: its time and the changes that made it.
         self.fastest: tuple[float, list[MoveResult]] | None = None
+        #: The transformations the agent asked for (:meth:`request_transformation`), recorded in order.
+        self.requests: list[Request] = []
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -733,6 +738,27 @@ class Session:
         self.restore(saved)
         self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
         return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=undone.labels, reason=f"undid {undone.kind}")
+
+    def request_transformation(
+        self,
+        name: str,
+        description: str,
+        rows: Sequence[str],
+        examples: Sequence[Example | Mapping[str, str]],
+        reference: str = "",
+    ) -> RequestResult:
+        """Record a transformation no move offers, for the authoring step between rounds; the program is unchanged.
+        Refused, with the reason, when a row is unknown or an example fails a check of
+        :mod:`nestforge.stages.requests` (``reference``: the task's reference source, which no example may copy)."""
+        pairs = [Example.model_validate(example) for example in examples]
+        unknown = [row for row in rows if row not in self.row_index()]
+        if unknown:
+            return request_refused(name, rows, f"no tree row is labeled {', '.join(unknown)}.", Refusal.UNKNOWN_LABEL)
+        reason = example_refusal(pairs, self.targets, reference)
+        if reason:
+            return request_refused(name, rows, reason, Refusal.ARGUMENT)
+        self.requests.append(Request(name=name, description=description, rows=tuple(rows), examples=pairs))
+        return RequestResult(status="recorded", name=name, rows=tuple(rows))
 
     def keep_fastest(self, report: ProgramReport) -> Restored | None:
         """After ``get_performance`` measured ``report``: a correct program faster than every one before becomes the

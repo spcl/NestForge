@@ -78,6 +78,12 @@ overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml
 # The judge takes only a library, and the agent has no shell or editor: what is graded is what the tools built.
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }
 
+# nestforge, and the agent may ask for a transformation no move offers (E6, round 1); E1 runs without requests.
+[packets.nestforge-requests]
+extends = "nestforge"
+name = "NestForge (move requests)"
+tools = ["get_performance", "applied_moves", "finalize", "profile", "score", "submit", "request_transformation"]
+
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]
 extends = "nestforge"

@@ -26,7 +26,8 @@ run the `nestforge` packet; it sets the library input mode itself (`finalize` ha
 `get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet (alias
 `nestforge-two-stage`) is structured, then unstructured: the agent settles moves and scopes, placement fixes the
 kernels, and the agent then writes and tunes them one at a time.
-`nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent.
+`nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent. `nestforge-requests` is `nestforge` with
+`request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 

@@ -146,6 +146,9 @@ CALLS: dict[str, Callable[..., object]] = {
     "tune_kernel": focused(Session.sweep),
     "get_performance": lambda session: None,
     "tune_move": Session.tune_move,
+    "request_transformation": lambda session, **request: session.request_transformation(
+        **request, reference=reference_source(session.bench.kernel) if session.bench is not None else ""
+    ),
     "finalize": finalize,
 }
 
@@ -278,6 +281,16 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
         )
     rtol, atol = kernel_tolerances(kernel.spec, graded_datatype(kernel.spec, setup.datatype))
     return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol, source)
+
+
+def reference_source(kernel_name: str) -> str:
+    """The text of the kernel's NumPy reference (``<module>_numpy.py``), which no example of a request may copy;
+    empty when the kernel has none."""
+    from hpcagent_bench.spec import numpy_reference_path
+
+    kernel = corpus_kernel(kernel_name)
+    path = None if kernel is None else numpy_reference_path(kernel.spec.relative_path, kernel.spec.module_name)
+    return "" if path is None else path.read_text()
 
 
 def numpy_outputs(spec: Any, data: dict[str, Any]) -> dict[str, np.ndarray]:

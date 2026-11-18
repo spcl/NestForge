@@ -41,6 +41,7 @@ from nestforge.session import Restored, Sweep, TuneResult
 from nestforge.stages.families import checked_families, family_of
 from nestforge.stages.moves import ROLLBACK, size_argument
 from nestforge.stages.performance import Performance
+from nestforge.stages.requests import RequestResult
 
 #: What a tool that needs no device holds instead of a slot.
 NO_SLOT = contextlib.nullcontext(object())
@@ -178,6 +179,15 @@ def record(episode_id: str, kernel: str, call: Call) -> None:
         journal.write(json.dumps(call) + "\n")
 
 
+def record_request(episode_id: str, kernel: str, arguments: dict[str, Any]) -> None:
+    """Keep a recorded transformation request whole, examples included, beside the journal: the authoring step between
+    rounds reads it there. A request changes nothing in the program, so the journal never repeats it."""
+    file = journal_file(episode_id, kernel, "requests")
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with file.open("a", encoding="utf-8") as requests:
+        requests.write(json.dumps(arguments) + "\n")
+
+
 class ToolAnswer(JudgeAnswer):
     tool: str
     result: Any = None
@@ -307,6 +317,12 @@ def run_call(
         # The call's change is not journaled, so the next session is the program before it.
         del episode.sessions[kernel]
         return crashed(call, reply)
+    if (
+        name == "request_transformation"
+        and isinstance(reply.result, RequestResult)
+        and reply.result.status == "recorded"
+    ):
+        record_request(request.episode_id, kernel, arguments)
     if name in CHANGING and not reply.error:
         for repeat in repeats_of(call, reply) if applied(reply) else []:
             try:

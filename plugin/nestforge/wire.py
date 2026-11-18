@@ -84,6 +84,20 @@ class TuneMove(Labeled):
     )
 
 
+class ExamplePair(Args):
+    before: str = pydantic.Field(description="A small Python module with one @dace.program, before the transformation.")
+    after: str = pydantic.Field(description="The same program after it: same parameters, same results.")
+
+
+class RequestTransformation(Args):
+    name: str = pydantic.Field(description="A short kind name for the transformation, e.g. split-reduction-by-sign.")
+    description: str = pydantic.Field(description="What it does and when it is legal, in a few sentences.")
+    rows: list[str] = pydantic.Field(description="The rows of the current tree it would apply to.")
+    examples: list[ExamplePair] = pydantic.Field(
+        min_length=5, description="At least 5 pairs of small programs of your own, before and after; not the task."
+    )
+
+
 class ApplyMove(Labeled):
     kind: str = pydantic.Field(description="A move kind list_moves offered.")
     tile_sizes: list[int] = pydantic.Field(
@@ -273,6 +287,14 @@ TOOLS: dict[str, ToolDef] = {
         "get_performance measures. The fastest "
         "size that beats the program now is kept (status kept); if none does, the program stays as it was. Use it "
         "instead of tiling, untiling and tiling again.",
+    ),
+    "request_transformation": ToolDef(
+        Phase.ANY,
+        RequestTransformation,
+        "Ask for a transformation no move offers, after list_moves on the rows found none. Give at least 5 pairs of "
+        "small programs before and after it, each one @dace.program computing the same results. The request is "
+        "checked and kept for a later round; it does not change this program.",
+        Effect.READ,
     ),
     "run_defaults": ToolDef(
         Phase.MOVES,
