@@ -184,8 +184,9 @@ def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str
 
 def test_rollback_after_a_persistent_kernel(tmp_path):
     session, kernel = test_persistent_kernel.scoped(tmp_path)
+    (loop,) = test_persistent_kernel.offered(session, kernel)
 
-    assert differs_after_rollback(session, lambda: session.apply_move("persistent-kernel", [], scope=kernel)) == ""
+    assert differs_after_rollback(session, lambda: session.apply_move("persistent-kernel", [loop], scope=kernel)) == ""
 
 
 def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path):

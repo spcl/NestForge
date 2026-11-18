@@ -128,7 +128,7 @@ SET_IMPLEMENTATION = "set-library-implementation"
 PROPAGATE_CONFIG = "propagate-config"
 #: The move, on no row, that fixes the program's floating-point mode; it takes ``fp_mode``.
 SET_FP_MODE = "set-fp-mode"
-#: The move, on no row, that runs a kernel's loops of kernels as one persistent kernel; it takes ``scope``.
+#: The move that runs one for loop of kernels inside kernel ``scope`` as one persistent kernel.
 PERSISTENT_KERNEL = "persistent-kernel"
 #: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
 #: ``dtype``.
@@ -207,7 +207,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     PROPAGATE_CONFIG: (),
     SET_FP_MODE: (),
     CHANGE_PRECISION: (),
-    PERSISTENT_KERNEL: (),
+    PERSISTENT_KERNEL: (LoopRegion,),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
@@ -1897,12 +1897,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "against the reference at get_performance, not proven.",
     ),
     PERSISTENT_KERNEL: (
-        "MegakernelLoops (scope: the kernel)",
-        "every sequential loop of kernels in the kernel runs as one persistent kernel: on the GPU one launch with grid "
+        "MegakernelLoops (a for loop inside scope, the kernel)",
+        "the for loop, whose body is only doalls, runs as one persistent kernel: on the GPU one launch with grid "
         "barriers where launches were, behind a runtime test that every kernel's work fits the resident threads (else "
         "the loop launches as before); on the CPU, whose code already runs the loop in one OpenMP team, the doalls "
         "share work without an implicit barrier each and synchronize explicitly. Pays on the GPU when the loop's "
-        "launches cost more than its kernels. set_scope a time loop first, so the loop is one kernel.",
+        "launches cost more than its kernels. set_scope a time loop first, so the loop is inside one kernel; apply the "
+        "move again for another loop. A doall or a run of states launches once and is refused: one persistent kernel "
+        "over it only adds barriers.",
     ),
     CHANGE_PRECISION: (
         "a new element type of one internal array (container; dtype: float32, float64)",

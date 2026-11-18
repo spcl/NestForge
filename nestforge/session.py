@@ -261,15 +261,22 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
-def marked_persistent(tree: str, kernels: frozenset[str]) -> str:
-    """``tree`` with each kernel row of ``kernels`` marked ``persistent``: its loops run as one persistent kernel, with a
-    barrier where a launch or an implicit barrier was."""
-    if not kernels:
+def marked_persistent(tree: str, loops: frozenset[tuple[str, str]]) -> str:
+    """``tree`` with each kernel row marked ``persistent: <loops>``: those loops of its body run as one persistent
+    kernel each, with a barrier where a launch or an implicit barrier was."""
+    if not loops:
         return tree
-    return "\n".join(
-        f"{line}  persistent" if any(f"{k}  LIBNODE ExternalCall" in line for k in kernels) else line
-        for line in tree.splitlines()
-    )
+    held: dict[str, list[str]] = {}
+    for kernel, loop in sorted(loops):
+        held.setdefault(kernel, []).append(loop)
+
+    def marked(line: str) -> str:
+        for kernel, names in held.items():
+            if f"{kernel}  LIBNODE ExternalCall" in line:
+                return f"{line}  persistent: {', '.join(names)}"
+        return line
+
+    return "\n".join(marked(line) for line in tree.splitlines())
 
 
 #: The pass pipelines :meth:`Session.apply_pipeline` builds through, by the IR they run on.
@@ -578,7 +585,7 @@ class Checkpoint:
     gpu_choices: dict[str, dict[str, GpuChoice]]
     fp_mode: str | None
     pipeline: tuple[str, str] | None
-    persistent: frozenset[str]
+    persistent: frozenset[tuple[str, str]]
 
 
 class Session:
@@ -702,8 +709,8 @@ class Session:
         self.fp_mode: str | None = None
         #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
         self.pipeline: tuple[str, str] | None = None
-        #: The kernels whose loops of kernels run as one persistent kernel (``persistent-kernel``).
-        self.persistent: frozenset[str] = frozenset()
+        #: ``(kernel, loop)``: the loops of kernels that run as one persistent kernel each (``persistent-kernel``).
+        self.persistent: frozenset[tuple[str, str]] = frozenset()
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -1083,6 +1090,15 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
+        if kind in (None, PERSISTENT_KERNEL) and scope is not None:
+            moves += [
+                Move(kind=PERSISTENT_KERNEL, labels=(label,), scope=scope)
+                for label, (block, _) in rows.items()
+                if isinstance(block, LoopRegion)
+                and block.loop_variable
+                and (scope, block.label) not in self.persistent
+                and any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
+            ]
         # moves on the whole program close with its first kernel, as the program's own rows do
         program_wide = scope is None and not external_calls(self.sdfg)
         if kind in (None, SET_FP_MODE) and program_wide:
@@ -1207,31 +1223,42 @@ class Session:
             self.remember()
         return done
 
-    def make_persistent(self, scope: str | None) -> MoveResult:
-        """Run the loops of kernels of kernel ``scope`` as one persistent kernel from now on; refused, before anything
-        changes, when its scheduled body has no loop of kernels MegakernelLoops fuses."""
-        names = (scope,) if scope else ()
+    def make_persistent(self, names: tuple[str, ...], scope: str | None) -> MoveResult:
+        """Run the for loop ``names`` of kernel ``scope`` as one persistent kernel from now on; refused, before
+        anything changes, when MegakernelLoops fuses nothing of it in the scheduled body."""
         kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
         if scope not in kernels:
             reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
-        if scope in self.persistent:
-            reason = Refused(f"{scope} runs its loops as one persistent kernel already.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
         ext = kernels[scope]
-        trial = kernel_form(kernel_device(ext)).schedule(node_boundary(ext))
-        if persistent_loops(trial, kernel_device(ext)) == 0:
+        rows = self.named_rows(PERSISTENT_KERNEL, names, tree_rows(self.move_programs(scope)[0]))
+        if isinstance(rows, MoveResult):
+            return rows
+        ((loop, _),) = rows
+        if not isinstance(loop, LoopRegion) or not loop.loop_variable:
             reason = Refused(
-                f"blocked by MegakernelLoops: {scope} holds no sequential loop whose body is only kernels; set_scope "
-                "a time loop of doalls as one kernel first.",
+                f"persistent-kernel takes a for loop; {names[0]!r} is a {type(loop).__name__}. A doall or a run of "
+                "states launches once, and one persistent kernel over it only adds barriers.",
+                Refusal.WRONG_ROW_KIND,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        if (scope, loop.label) in self.persistent:
+            reason = Refused(f"{loop.label} of {scope} runs as one persistent kernel already.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        trial = kernel_form(kernel_device(ext)).schedule(node_boundary(ext))
+        if persistent_loops(trial, kernel_device(ext), {loop.label}) == 0:
+            reason = Refused(
+                f"blocked by MegakernelLoops: the body of {loop.label} is not only kernels whose control flow reads "
+                "grid-uniform values (or, on the GPU, no launch bound of its kernels is known).",
                 Refusal.WRONG_ROW_KIND,
             )
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
 
         def change() -> None:
-            self.persistent = self.persistent | {scope}
+            self.persistent = self.persistent | {(scope, loop.label)}
 
-        return self.program_change(PERSISTENT_KERNEL, f"{scope} runs its loops as one persistent kernel", change)
+        reason = f"{loop.label} of {scope} runs as one persistent kernel"
+        return self.program_change(PERSISTENT_KERNEL, reason, change)
 
     def set_fp_mode(self, fp_mode: str | None) -> MoveResult:
         """Build every kernel in ``fp_mode`` only, from now on; refused for a mode the target has no build of."""
@@ -1392,7 +1419,7 @@ class Session:
         if undone is not None:
             return undone
         if kind == PERSISTENT_KERNEL:
-            return self.make_persistent(scope)
+            return self.make_persistent(names, scope)
         if kind in (SET_FP_MODE, CHANGE_PRECISION):
             if scope is not None:
                 reason = Refused(
@@ -1861,7 +1888,9 @@ class Session:
         if name not in self.sources:
             ext = self.kernel(name)
             out = self.work_dir / name / "kernel"
-            self.sources[name] = schedule_kernel(ext, node_boundary(ext), out, persistent=name in self.persistent)
+            self.sources[name] = schedule_kernel(
+                ext, node_boundary(ext), out, persistent={loop for kernel, loop in self.persistent if kernel == name}
+            )
         return self.sources[name]
 
     def mode_variants(self, variants: Sequence[Variant]) -> list[Variant]:
