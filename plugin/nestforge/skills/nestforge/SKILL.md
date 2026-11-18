@@ -53,7 +53,7 @@ every later call.
 | `get_performance` | each kernel's time and share, and ranked hints | no |
 | `apply_move kind labels [arguments]` | one move; answers `applied` or `illegal: <reason>` at once, without the tree | yes |
 | `apply_move rollback []` | takes the last move back, labels included; again for the one before, up to 8 | yes |
-| `tune_move kind labels values` | `tile-doall` or `tile-for` at 1 to 4 sizes, each measured; keeps the fastest if it beats the program, else nothing | yes |
+| `tune_move kind labels values [scope]` | a tiling move, `vectorize-doall` or `set-schedule-gpu` at 1 to 4 sizes (tile sizes, lanes, block), each measured; keeps the fastest if it beats the program, else nothing | yes |
 | `run_defaults stage=moves` / `finish` | the default moves (wavefronts, then fusion) / the stages after your moves | yes |
 
 Arguments, each meaning one thing: `tile_sizes` (tile extents), `lanes` (vector lanes), `block` (a GPU thread block),
@@ -96,7 +96,7 @@ grades, is faster). Every move keeps the program's results: it changes how loops
 | a `lib_copy` or other call in a loop that never changes its inputs, or between two loops | `lib-before`, `lib-after`, `lib-into` |
 | short doall ranges that leave threads idle | `flatten-doalls` |
 | iterations of uneven cost, in a CPU kernel | `set-schedule-cpu` with `dynamic` or `guided` |
-| a hot leaf doall whose hint says `loop not vectorized` | `vectorize-doall`, last |
+| a hot leaf doall whose hint says `loop not vectorized` | `vectorize-doall`, last (lanes: `tune_move`) |
 | an argument read with a stride no move can change (`trans[i, j]` with `i` inner, a matrix used transposed) | `relayout`, first |
 
 ## Moves

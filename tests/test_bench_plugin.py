@@ -606,12 +606,12 @@ def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(
         labels=("doall8",),
         values=[
             now,
-            TunedValue(tile_sizes=(32, 32), status="measured"),
-            TunedValue(tile_sizes=(64, 64), status="kept"),
+            TunedValue(sizes=(32, 32), status="measured"),
+            TunedValue(sizes=(64, 64), status="kept"),
         ],
     )
     none = TuneResult(
-        kind="tile-doall", labels=("doall8",), values=[now, TunedValue(tile_sizes=(32, 32), status="measured")]
+        kind="tile-doall", labels=("doall8",), values=[now, TunedValue(sizes=(32, 32), status="measured")]
     )
 
     assert route.repeats_of(call, Reply(result=kept)) == [

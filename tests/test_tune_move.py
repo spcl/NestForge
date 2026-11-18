@@ -65,7 +65,7 @@ def test_without_a_faster_size_every_try_is_measured_and_the_program_stays(tmp_p
 
     result = sut.tune_move("tile-doall", move.labels, [[4], [16], [64]], *data())
 
-    assert [(v.tile_sizes, v.status, v.correct, v.time_us) for v in result.values] == [
+    assert [(v.sizes, v.status, v.correct, v.time_us) for v in result.values] == [
         ((), "now", True, 10.0),
         ((4,), "measured", True, 40.0),
         ((16,), "measured", True, 20.0),
@@ -91,14 +91,14 @@ def test_the_fastest_size_that_beats_the_program_is_kept_and_rollback_takes_it_b
 def test_only_a_correct_measured_size_faster_than_a_correct_program_wins():
     now = TunedValue(status="now", time_us=10.0, correct=True)
 
-    assert fastest_beating([now, TunedValue(tile_sizes=(8,), status="measured", time_us=5.0, correct=True)]) == 1
-    assert fastest_beating([now, TunedValue(tile_sizes=(8,), status="measured", time_us=5.0, correct=False)]) is None
-    assert fastest_beating([now, TunedValue(tile_sizes=(8,), status="illegal")]) is None
+    assert fastest_beating([now, TunedValue(sizes=(8,), status="measured", time_us=5.0, correct=True)]) == 1
+    assert fastest_beating([now, TunedValue(sizes=(8,), status="measured", time_us=5.0, correct=False)]) is None
+    assert fastest_beating([now, TunedValue(sizes=(8,), status="illegal")]) is None
     assert (
         fastest_beating(
             [
                 TunedValue(status="now", correct=False, time_us=10.0),
-                TunedValue(tile_sizes=(8,), status="measured", time_us=5.0, correct=True),
+                TunedValue(sizes=(8,), status="measured", time_us=5.0, correct=True),
             ]
         )
         is None
@@ -125,3 +125,14 @@ def test_another_kind_or_too_many_sizes_is_refused_without_measuring(tmp_path):
     too_many = sut.tune_move("tile-doall", move.labels, many, *data())
 
     assert [v.status for v in other.values] == ["illegal"] and [v.status for v in too_many.values] == ["illegal"]
+
+
+def test_lanes_of_vectorize_doall_are_tried_in_the_argument_that_move_takes(tmp_path, monkeypatch):
+    sut = session(tmp_path)
+    (move,) = sut.list_moves("vectorize-doall")
+    timed_by_tile_size(monkeypatch, {0: 10.0, 4: 20.0, 8: 20.0})  # a vector body steps by its lanes
+
+    result = sut.tune_move("vectorize-doall", move.labels, [[4], [8]], *data())
+
+    assert [(v.sizes, v.status) for v in result.values] == [((), "now"), ((4,), "measured"), ((8,), "measured")]
+    assert all(v.correct for v in result.values)

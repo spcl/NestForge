@@ -39,7 +39,7 @@ from nestforge.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entr
 from nestforge.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
 from nestforge.session import Restored, Sweep, TuneResult
 from nestforge.stages.families import checked_families, family_of
-from nestforge.stages.moves import ROLLBACK
+from nestforge.stages.moves import ROLLBACK, size_argument
 from nestforge.stages.performance import Performance
 
 #: What a tool that needs no device holds instead of a slot.
@@ -232,10 +232,15 @@ def repeats_of(call: Call, reply: Reply) -> list[Call]:
         return [] if reply.result.winner is None else [(name, {**arguments, "variant": reply.result.winner})]
     if name == "tune_move":
         assert isinstance(reply.result, TuneResult), "a tune_move answers what it measured"
-        kept = [value.tile_sizes for value in reply.result.values if value.status == "kept"]
+        kept = [value.sizes for value in reply.result.values if value.status == "kept"]
         if not kept:
             return []
-        return [("apply_move", {"kind": arguments["kind"], "labels": arguments["labels"], "tile_sizes": list(kept[0])})]
+        move = {
+            "kind": arguments["kind"],
+            "labels": arguments["labels"],
+            size_argument(arguments["kind"]): list(kept[0]),
+        }
+        return [("apply_move", move if arguments.get("scope") is None else {**move, "scope": arguments["scope"]})]
     if name == "get_performance":
         restored = reply.result.rolled_back if isinstance(reply.result, Restored) else 0
         return [("apply_move", {"kind": ROLLBACK, "labels": []})] * restored

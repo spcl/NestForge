@@ -252,15 +252,17 @@ DEFAULTS_PREFIX = "defaults-"
 
 
 #: The move kinds :meth:`Session.tune_move` tries several values of, and the most values one call tries.
-TUNABLE = frozenset({"tile-doall", "tile-for"})
+#: The moves :meth:`Session.tune_move` tries at several sizes, each in the sizes argument it takes
+#: (:func:`~nestforge.stages.moves.size_argument`): tile sizes, vector lanes, a GPU thread block.
+TUNABLE = frozenset({"tile-doall", "tile-for", VECTORIZE_DOALL, SET_SCHEDULE_GPU})
 MAX_TUNED_VALUES = 4
 
 
 class TunedValue(Record):
     """One value :meth:`Session.tune_move` tried: the program's time with the move at it, or why it did not apply.
-    ``tile_sizes`` empty: the program as it stands, for comparison."""
+    ``sizes`` are the move's sizes argument (tile sizes, lanes or a block); empty: the program as it stands."""
 
-    tile_sizes: tuple[int, ...] = ()
+    sizes: tuple[int, ...] = ()
     status: str
     time_us: float | None = None
     correct: bool | None = None
@@ -1302,23 +1304,23 @@ class Session:
         inputs: dict[str, np.ndarray],
         reference: Reference | None,
         codegen: Codegen = "first",
+        scope: str | None = None,
     ) -> TuneResult:
-        """Measure the program with the move ``kind`` on ``labels`` at each of ``values`` (tile sizes), and as it
+        """Measure the program with the move ``kind`` on ``labels`` (in kernel ``scope``, as :meth:`apply_move`) at
+        each of ``values`` (the sizes argument the kind takes: tile sizes, lanes, or a block), and as it
         stands: each value is applied, measured as :meth:`performance` measures, and rolled back. The fastest correct
         value that beats the program as it stands is then applied again and marked ``kept``; with none, the program
         and its labels end as they were. One rule, no argument: the agent reads what was kept."""
         names = tuple(labels)
         if kind not in TUNABLE or not 1 <= len(values) <= MAX_TUNED_VALUES:
-            reason = f"tune_move takes one of {sorted(TUNABLE)} and 1 to {MAX_TUNED_VALUES} values of tile_sizes"
+            reason = f"tune_move takes one of {sorted(TUNABLE)} and 1 to {MAX_TUNED_VALUES} values of its sizes"
             return TuneResult(kind=kind, labels=names, values=[TunedValue(status="illegal", reason=reason)])
         now = self.performance(inputs, reference, codegen=codegen).structured
         tried = [TunedValue(status="now", time_us=now.time_us, correct=now.correct, reason=now.error)]
         for sizes in values:
-            result = self.apply_move(kind, names, tile_sizes=sizes)
+            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): sizes})
             if result.status is not MoveStatus.APPLIED:
-                tried.append(
-                    TunedValue(tile_sizes=tuple(sizes), status=result.status.name.lower(), reason=result.reason)
-                )
+                tried.append(TunedValue(sizes=tuple(sizes), status=result.status.name.lower(), reason=result.reason))
                 continue
             try:
                 report = self.performance(inputs, reference, codegen=codegen).structured
@@ -1326,7 +1328,7 @@ class Session:
                 self.undo()
             tried.append(
                 TunedValue(
-                    tile_sizes=tuple(sizes),
+                    sizes=tuple(sizes),
                     status="measured" if not report.error else "failed",
                     time_us=report.time_us,
                     correct=report.correct,
@@ -1335,7 +1337,7 @@ class Session:
             )
         best = fastest_beating(tried)
         if best is not None:
-            result = self.apply_move(kind, names, tile_sizes=tried[best].tile_sizes)
+            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): tried[best].sizes})
             assert result.status is MoveStatus.APPLIED, "a size that applied and was rolled back applies again"
             tried[best] = tried[best].model_copy(update={"status": "kept"})
         return TuneResult(kind=kind, labels=names, values=tried)

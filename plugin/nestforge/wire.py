@@ -71,11 +71,16 @@ class Labeled(Args):
 
 
 class TuneMove(Labeled):
-    kind: Literal["tile-doall", "tile-for"] = pydantic.Field(description="The tiling move to try sizes of.")
+    kind: Literal["tile-doall", "tile-for", "vectorize-doall", "set-schedule-gpu"] = pydantic.Field(
+        description="The move to try sizes of: tile sizes (tiling), lanes (vectorize-doall), block (set-schedule-gpu)."
+    )
     values: list[list[int]] = pydantic.Field(
         min_length=1,
         max_length=4,
-        description="1 to 4 tile_sizes to try, each as apply_move takes them, e.g. [[64], [128], [256]].",
+        description="1 to 4 values of the kind's sizes, each as apply_move takes them, e.g. [[64], [128], [256]].",
+    )
+    scope: str | None = pydantic.Field(
+        None, description="The kernel, as apply_move takes it; set-schedule-gpu needs one."
     )
 
 
@@ -264,7 +269,8 @@ TOOLS: dict[str, ToolDef] = {
     "tune_move": ToolDef(
         Phase.MOVES,
         TuneMove,
-        "Try a tiling move at several sizes in one call, each measured as get_performance measures. The fastest "
+        "Try a tiling, vectorize-doall or set-schedule-gpu move at several sizes in one call, each measured as "
+        "get_performance measures. The fastest "
         "size that beats the program now is kept (status kept); if none does, the program stays as it was. Use it "
         "instead of tiling, untiling and tiling again.",
     ),
