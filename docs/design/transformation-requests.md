@@ -2,7 +2,14 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: step 1 built (the tool, its checks, the record); clustering, authoring and the gate are not built.
+Status: steps 1 and 2 built (the tool, its checks, the record; clustering); authoring and the gate are not built.
+
+Clustering (`scripts/cluster_requests.py <run folders> --out clusters.json`, `nestforge.stages.requests.cluster_requests`):
+two requests are one candidate when one of their example pairs is the same after canonicalization, up to the names of
+arrays and symbols (and the identifiers code generation derives from them, such as `a_idx`); candidates come out most
+asked first, by kernels, then episodes. Constants count: two requests whose examples share no pair stay apart even when
+they ask for one transformation, and the author merges those by reading. An example that does not build is listed with
+its cluster and kept out of every key.
 
 An agent that finds no fitting move may name one with `request_transformation` (packet `nestforge-requests`; E1 runs
 without it, so requests never count in E1's cost). A request names the rows, describes the transformation, and gives at

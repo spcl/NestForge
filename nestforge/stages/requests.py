@@ -6,12 +6,19 @@ and kept for the authoring step between rounds.
 
 The checks are cheap and need no LLM: enough examples; every ``before`` and ``after`` is one ``@dace.program``; each
 pair computes the same on random inputs; no pair is the same program after canonicalization (it would ask for
-nothing); and no example copies the task's reference source."""
+nothing); and no example copies the task's reference source.
+
+Between rounds, :func:`cluster_requests` groups the recorded requests that ask for one transformation: requests share a
+cluster when one of their example pairs is the same after canonicalization, up to the names of arrays and symbols. Two
+requests for one transformation whose examples all differ stay apart; the author merges those by reading them."""
 
 import copy
+import hashlib
 import inspect
 import linecache
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import dace
@@ -137,6 +144,91 @@ def canonical_code(program: DaceProgram, targets: Targets) -> str:
     canonicalize(sdfg, targets)
     sdfg.name = "example"
     return "\n".join(line.strip() for line in sdfg.generate_code()[0].clean_code.splitlines() if line.strip())
+
+
+def named_code(program: DaceProgram, targets: Targets) -> tuple[str, list[str]]:
+    """:func:`canonical_code` of ``program``, and the names of its data and symbols."""
+    sdfg = program.to_sdfg(simplify=True)
+    canonicalize(sdfg, targets)
+    sdfg.name = "example"
+    names = [name for nested in sdfg.all_sdfgs_recursive() for name in (*nested.arrays, *nested.symbols)]
+    code = "\n".join(line.strip() for line in sdfg.generate_code()[0].clean_code.splitlines() if line.strip())
+    return code, names
+
+
+def pattern_key(example: Example, targets: Targets) -> str:
+    """The pair as a pattern: the canonical code of ``before`` and of ``after``, with every array and symbol renamed
+    ``v<n>`` in the order the two codes first use them (in the identifiers derived from them too), hashed.
+
+    :raises ExampleError: A side does not define, build or run one program."""
+    codes, names = [], []
+    for side, source in (("before", example.before), ("after", example.after)):
+        code, held = named_code(program_of(source, side)[0], targets)
+        codes.append(code)
+        names += held
+    text = "\n\0\n".join(codes)
+    # a name also starts the identifiers code generation derives from it (``a_idx``)
+    alternatives = "|".join(re.escape(name) for name in sorted(set(names), key=len, reverse=True))
+    words = re.compile(rf"\b({alternatives})(?=\b|_[A-Za-z])")
+    renamed: dict[str, str] = {}
+    pattern = words.sub(lambda match: renamed.setdefault(match.group(0), f"v{len(renamed)}"), text)
+    return hashlib.sha256(pattern.encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class Asked:
+    """A recorded request with where it came from: the episode and the kernel it was asked on."""
+
+    episode: str
+    kernel: str
+    request: Request
+
+
+@dataclass(slots=True)
+class Cluster:
+    """Requests that ask for one transformation, as far as their examples show."""
+
+    asked: list[Asked] = field(default_factory=list)
+    #: Examples that did not build, ``(episode, kernel, request name, error)``: kept out of every key.
+    failed: list[tuple[str, str, str, str]] = field(default_factory=list)
+
+    @property
+    def kernels(self) -> set[str]:
+        return {asked.kernel for asked in self.asked}
+
+    @property
+    def episodes(self) -> set[str]:
+        return {asked.episode for asked in self.asked}
+
+
+def cluster_requests(requests: Iterable[Asked], targets: Targets) -> list[Cluster]:
+    """The requests grouped into clusters (shared pattern keys, transitively), the most asked first: by kernels, then
+    episodes, then requests. A request whose examples all fail to build is a cluster of its own."""
+    asked = list(requests)
+    parent = list(range(len(asked)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: dict[str, int] = {}
+    failures: dict[int, list[tuple[str, str, str, str]]] = {}
+    for i, one in enumerate(asked):
+        for example in one.request.examples:
+            try:
+                key = pattern_key(example, targets)
+            except Exception as err:  # noqa: BLE001 -- a recorded example DaCe cannot build is reported, not fatal
+                failures.setdefault(i, []).append((one.episode, one.kernel, one.request.name, str(err)))
+                continue
+            parent[root(i)] = root(owner.setdefault(key, i))
+    groups: dict[int, Cluster] = {}
+    for i, one in enumerate(asked):
+        cluster = groups.setdefault(root(i), Cluster())
+        cluster.asked.append(one)
+        cluster.failed += failures.get(i, [])
+    return sorted(groups.values(), key=lambda c: (-len(c.kernels), -len(c.episodes), -len(c.asked)))
 
 
 def copied_lines(text: str, reference: str) -> bool:
