@@ -71,6 +71,14 @@ from nestforge.records import (
     spelled,
 )
 from nestforge.stages import feedback
+from nestforge.stages.authored import (
+    AUTHORED_FAMILY,
+    AuthoredMove,
+    apply_authored,
+    catalogue_dir,
+    load_catalogue,
+    matches,
+)
 from nestforge.stages.canonicalize import (
     Targets,
     canonicalize,
@@ -691,6 +699,7 @@ class Session:
         "history",
         "focus",
         "disabled_families",
+        "authored",
         "fastest",
         "requests",
     )
@@ -705,6 +714,7 @@ class Session:
         codegen: Codegen = "first",
         namer: Namer | None = None,
         disabled_families: Iterable[str] = (),
+        catalogue: Mapping[str, AuthoredMove] | None = None,
     ) -> None:
         """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
         :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
@@ -712,9 +722,15 @@ class Session:
         :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default.
         :param disabled_families: Move families (:data:`~nestforge.stages.families.FAMILIES`, or ``all``) this run
             switches off: no listing offers their kinds, no call applies one, and no default runs one.
-        :raises ValueError: A name in ``disabled_families`` is no family."""
+        :param catalogue: The authored moves by kind (:mod:`~nestforge.stages.authored`); the catalogue folder's by
+            default.
+        :raises ValueError: A name in ``disabled_families`` is no family, or a catalogue entry does not load."""
         #: The move families switched off for the whole run.
         self.disabled_families = checked_families(disabled_families)
+        #: The authored moves this session offers, by kind (family ``authored``).
+        self.authored: Mapping[str, AuthoredMove] = (
+            catalogue if catalogue is not None else load_catalogue(catalogue_dir())
+        )
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
@@ -1121,8 +1137,9 @@ class Session:
         """Every legal move right now, of ``kind`` or of every kind, in the program or inside the kernel ``scope``."""
         structured, device = self.move_programs(scope)
         target = self.targets.canon_target
-        found = [move for move in legal_moves(structured, kind, target) if move[0] not in DEVICE_KINDS]
-        found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k, target)]
+        built_in = kind is None or kind not in self.authored  # an authored kind is no kind legal_moves knows
+        found = [m for m in legal_moves(structured, kind, target) if m[0] not in DEVICE_KINDS] if built_in else []
+        found += [m for k in sorted(DEVICE_KINDS) if kind in (None, k) for m in legal_moves(device, k, target)]
         rows = self.row_index() if scope is None else tree_rows(structured)
         # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
         scoped: dict[str, str] = {} if scope is None else {"scope": scope}
@@ -1149,6 +1166,13 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
+        if AUTHORED_FAMILY not in self.disabled_families:
+            moves += [
+                Move(kind=move.kind, labels=tuple(tree_label(obj) for obj in found), **scoped)
+                for move in self.authored.values()
+                if kind in (None, move.kind)
+                for found in matches(structured, move)
+            ]
         if kind in (None, PERSISTENT_KERNEL) and scope is not None and all(k != scope for k, _ in self.persistent):
             moves += [Move(kind=PERSISTENT_KERNEL, labels=run, scope=scope) for run in persistent_runs(structured)]
         # moves on the whole program close with its first kernel, as the program's own rows do
@@ -1271,6 +1295,42 @@ class Session:
             change()
             self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
             done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=warning)
+            self.applied.append(done)
+            self.remember()
+        return done
+
+    def apply_authored_move(self, move: AuthoredMove, names: tuple[str, ...], scope: str | None) -> MoveResult:
+        """Apply the authored ``move`` on the rows ``names`` (of kernel ``scope``'s body, or the program); refused,
+        with nothing changed, when its family is off, a label is unknown, or the transformation does not apply."""
+        if AUTHORED_FAMILY in self.disabled_families:
+            reason = Refused(
+                f"{move.kind} belongs to the family {AUTHORED_FAMILY}, which this run has switched off.",
+                Refusal.FAMILY_OFF,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
+        if len(names) != len(move.rows):
+            raise ValueError(f"{move.kind} takes {len(move.rows)} label(s); got {len(names)}")
+        program = self.move_programs(scope)[0]
+        rows = self.named_rows(move.kind, names, None if scope is None else tree_rows(program))
+        if isinstance(rows, MoveResult):
+            return rows
+        refused: list[str] = []
+
+        def change() -> None:
+            why = apply_authored(program, move, [obj for obj, _ in rows])
+            if why is not None:
+                refused.append(why)
+                return
+            self.bump()
+            program.validate()
+
+        with self.atomic():
+            change()
+            if refused:
+                reason = Refused(refused[0], Refusal.WRONG_ROW_KIND)
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
+            self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
+            done = MoveResult(status=MoveStatus.APPLIED, kind=move.kind, labels=names, reason=move.text)
             self.applied.append(done)
             self.remember()
         return done
@@ -1458,6 +1518,8 @@ class Session:
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
         names = tuple(labels)
+        if kind in self.authored:
+            return self.apply_authored_move(self.authored[kind], names, scope)
         shape = MOVE_SHAPES[check_kind(kind)]
         if kind in VARIADIC and not names:
             raise ValueError(f"{kind} takes one label or more; got none")
@@ -2338,6 +2400,7 @@ class Session:
             sizes=self.sizes,
             codegen=self.codegen,
             namer=copy.deepcopy(self.namer),
+            catalogue=self.authored,
             disabled_families=self.disabled_families,
         )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder

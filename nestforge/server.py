@@ -41,10 +41,11 @@ from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
 from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
+from nestforge.stages.authored import AUTHORED_FAMILY
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
 from nestforge.stages.finalize import BenchTarget, Final
-from nestforge.stages.moves import move_kinds
+from nestforge.stages.moves import MoveKind, move_kinds
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
 
 if TYPE_CHECKING:
@@ -101,6 +102,16 @@ def until(closed: Callable[[Session], bool], why: str, call: Callable[..., objec
     return run
 
 
+def authored_kinds(session: Session) -> list[MoveKind]:
+    """The catalogue's moves as ``list_move_kinds`` names them; none when the family ``authored`` is off."""
+    if AUTHORED_FAMILY in session.disabled_families:
+        return []
+    return [
+        MoveKind(kind=m.kind, rows=m.row_kinds(), runs=m.transformation.__name__, does=m.text)
+        for m in session.authored.values()
+    ]
+
+
 def unscoped_until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
     """``call``, refused with ``why`` while ``closed`` holds of the session, unless it names a kernel ``scope``: a move
     inside a kernel works on the kernel's body, which the closing leaves open."""
@@ -139,9 +150,10 @@ CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
     "get_work_depth": Session.work_depth,
-    "list_move_kinds": lambda session: [
-        kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None
-    ],
+    "list_move_kinds": lambda session: (
+        [kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None]
+        + authored_kinds(session)
+    ),
     "list_moves": Session.list_moves,
     "apply_move": unscoped_until(has_kernels, MOVES_CLOSED, Session.apply_move),
     "applied_moves": lambda session: session.applied,

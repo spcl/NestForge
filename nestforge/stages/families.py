@@ -22,6 +22,8 @@ FAMILIES: dict[str, frozenset[str]] = {
     "vectorize": frozenset({"vectorize-doall"}),
     "schedule": frozenset({"set-schedule-cpu", "set-schedule-gpu", "stage-loads-shared", "persistent-kernel"}),
     "wavefront": frozenset({"skew-wavefront"}),
+    # the moves of the catalogue (``nestforge.stages.authored``): their kinds are known only when a session loads it
+    "authored": frozenset(),
 }
 
 #: The name that stands for every family.
