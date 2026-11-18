@@ -39,6 +39,13 @@ The names differ from the bench's own `next_phase` tool, which the agent's tool 
   set again as one) and run its longest run of blocks with doalls as one persistent kernel (MegakernelLoops). Each is
   one change for `rollback`. The `place` tool is gone; leaving `scopes` still places what the agent did not.
 
+- Layouts and precision (P9): `relayout` and `change-precision` change the whole program and refuse a `scope`, so
+  they are moves of `structured`; `set-fp-mode` names its kernel (`scope`), so it is a move of `scoped`. The gate
+  below places them; no list says it twice.
+- `finalize_scope` (P7) ends the work of `scopes`: what no run-on move placed gets its default device and the GPU
+  kernels' copies move into the program; the scopes guide asks for `get_performance` only after it. Inside a doall,
+  `set-library-implementation` offers no device library (P7b).
+
 ## Mechanism
 
 - The session keeps the phase and, for every phase the agent left, the program as it left it (`Session.saved()`,
