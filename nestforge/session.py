@@ -98,6 +98,7 @@ from nestforge.stages.kernel import (
     kernel_runtime_libraries,
     kernel_text,
     measure_kernel,
+    persistent_loops,
     schedule_kernel,
     split_kernel_text,
     unchecked_verdict,
@@ -123,6 +124,7 @@ from nestforge.stages.moves import (
     FORCED_LOOP_TO_MAP,
     INLINE_LIBRARY,
     MOVE_SHAPES,
+    PERSISTENT_KERNEL,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
     ROLLBACK,
@@ -565,6 +567,7 @@ class Checkpoint:
     gpu_choices: dict[str, dict[str, GpuChoice]]
     fp_mode: str | None
     pipeline: tuple[str, str] | None
+    persistent: frozenset[str]
 
 
 class Session:
@@ -603,6 +606,7 @@ class Session:
         "gpu_choices",
         "fp_mode",
         "pipeline",
+        "persistent",
         "made_by_last",
         "bench",
         "stopper",
@@ -687,6 +691,8 @@ class Session:
         self.fp_mode: str | None = None
         #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
         self.pipeline: tuple[str, str] | None = None
+        #: The kernels whose loops of kernels run as one persistent kernel (``persistent-kernel``).
+        self.persistent: frozenset[str] = frozenset()
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -730,6 +736,7 @@ class Session:
             {name: dict(held) for name, held in self.gpu_choices.items()},
             self.fp_mode,
             self.pipeline,
+            self.persistent,
         )
         kept = len(self.history)
         self.in_atomic, self.checkpoint = True, saved
@@ -756,6 +763,7 @@ class Session:
         self.gpu_choices = saved.gpu_choices
         self.fp_mode = saved.fp_mode
         self.pipeline = saved.pipeline
+        self.persistent = saved.persistent
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -1174,16 +1182,44 @@ class Session:
             self.remember()
         return done
 
-    def precision_change(self, kind: str, reason: str, change: Callable[[], None]) -> MoveResult:
-        """Apply ``change`` as one program change of ``kind``: undone by ``rollback``, its result checked by the
-        reference at ``get_performance``, not proven."""
+    def program_change(
+        self, kind: str, reason: str, change: Callable[[], None], warning: str | None = None
+    ) -> MoveResult:
+        """Apply ``change``, a setting of the whole program, as one change of ``kind``, undone by ``rollback``: every
+        kernel is rendered and built again. ``warning``: what the answer tells the agent besides."""
         with self.atomic():
             change()
             self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
-            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=PRECISION_WARNING)
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=warning)
             self.applied.append(done)
             self.remember()
         return done
+
+    def make_persistent(self, scope: str | None) -> MoveResult:
+        """Run the loops of kernels of kernel ``scope`` as one persistent kernel from now on; refused, before anything
+        changes, when its scheduled body has no loop of kernels MegakernelLoops fuses."""
+        names = (scope,) if scope else ()
+        kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
+        if scope not in kernels:
+            reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        if scope in self.persistent:
+            reason = Refused(f"{scope} runs its loops as one persistent kernel already.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        ext = kernels[scope]
+        trial = kernel_form(kernel_device(ext)).schedule(node_boundary(ext))
+        if persistent_loops(trial, kernel_device(ext)) == 0:
+            reason = Refused(
+                f"blocked by MegakernelLoops: {scope} holds no sequential loop whose body is only kernels; set_scope "
+                "a time loop of doalls as one kernel first.",
+                Refusal.WRONG_ROW_KIND,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+
+        def change() -> None:
+            self.persistent = self.persistent | {scope}
+
+        return self.program_change(PERSISTENT_KERNEL, f"{scope} runs its loops as one persistent kernel", change)
 
     def set_fp_mode(self, fp_mode: str | None) -> MoveResult:
         """Build every kernel in ``fp_mode`` only, from now on; refused for a mode the target has no build of."""
@@ -1197,7 +1233,7 @@ class Session:
         def change() -> None:
             self.fp_mode = fp_mode
 
-        return self.precision_change(SET_FP_MODE, f"every kernel builds in {fp_mode}", change)
+        return self.program_change(SET_FP_MODE, f"every kernel builds in {fp_mode}", change, PRECISION_WARNING)
 
     def change_precision(self, container: str | None, dtype: str | None) -> MoveResult:
         """Store the internal array ``container`` as ``dtype``; refused with the reason
@@ -1212,7 +1248,7 @@ class Session:
             self.bump()
             self.sdfg.validate()
 
-        return self.precision_change(CHANGE_PRECISION, f"{container} stored as {dtype}", change)
+        return self.program_change(CHANGE_PRECISION, f"{container} stored as {dtype}", change, PRECISION_WARNING)
 
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
@@ -1343,6 +1379,8 @@ class Session:
         undone = self.inverse_of_last(kind, names, scope, force)
         if undone is not None:
             return undone
+        if kind == PERSISTENT_KERNEL:
+            return self.make_persistent(scope)
         if kind in (SET_FP_MODE, CHANGE_PRECISION):
             if scope is not None:
                 reason = Refused(
@@ -1810,7 +1848,8 @@ class Session:
         """The kernel's CPF unit for its device, rendered once per change of the program."""
         if name not in self.sources:
             ext = self.kernel(name)
-            self.sources[name] = schedule_kernel(ext, node_boundary(ext), self.work_dir / name / "kernel")
+            out = self.work_dir / name / "kernel"
+            self.sources[name] = schedule_kernel(ext, node_boundary(ext), out, persistent=name in self.persistent)
         return self.sources[name]
 
     def mode_variants(self, variants: Sequence[Variant]) -> list[Variant]:
@@ -1976,7 +2015,7 @@ class Session:
         def change() -> None:
             self.pipeline = (ir, pipeline)
 
-        return self.precision_change(kind, f"every kernel builds through {pipeline}", change)
+        return self.program_change(kind, f"every kernel builds through {pipeline}", change)
 
     def kernel_verdict(self, name: str, src: KernelSource, archive: Path, reps: int, fp_mode: str) -> KernelVerdict:
         """``archive`` against the kernel's oracle, unchecked when the oracle has no value for a symbol it takes."""
@@ -2200,7 +2239,7 @@ class Session:
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         copied.unlaid, copied.layout = self.unlaid, self.layout
-        copied.fp_mode, copied.pipeline = self.fp_mode, self.pipeline
+        copied.fp_mode, copied.pipeline, copied.persistent = self.fp_mode, self.pipeline, self.persistent
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied

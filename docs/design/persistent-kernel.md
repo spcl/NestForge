@@ -2,8 +2,10 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: design. Written 2026-11-17 against NestForge `hoist-sink-moves` and DaCe extended branch `mk-1117` (not yet
-on extended); nothing here is built or run.
+Status: built (2026-11-18) on DaCe extended `b388ffe896`, as `persistent-kernel` `[]` with `scope`: the kernel's
+rendering runs `MegakernelLoops` for its device (`nestforge.stages.kernel.persistent_loops`); the move is refused when
+a trial render fuses no loop. Tested on the CPU (`tests/test_persistent_kernel.py`); the GPU path needs a GPU run.
+The row form below (`for7 ... persistent`) is not built: the scope names the kernel instead.
 
 ## Goal
 

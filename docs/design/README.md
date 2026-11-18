@@ -16,7 +16,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
 | [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | steps 1 and 2 now; `guided` on the GPU needs DaCe |
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
-| [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | `MegakernelLoops` is on DaCe extended since `bbe52008cc` (after the pin); needs the pin bump and a scope over a whole loop |
+| [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
 | [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | step 1 built; clustering and authoring next |
 
 ## Where to start

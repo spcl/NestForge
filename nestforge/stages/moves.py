@@ -128,6 +128,8 @@ SET_IMPLEMENTATION = "set-library-implementation"
 PROPAGATE_CONFIG = "propagate-config"
 #: The move, on no row, that fixes the program's floating-point mode; it takes ``fp_mode``.
 SET_FP_MODE = "set-fp-mode"
+#: The move, on no row, that runs a kernel's loops of kernels as one persistent kernel; it takes ``scope``.
+PERSISTENT_KERNEL = "persistent-kernel"
 #: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
 #: ``dtype``.
 CHANGE_PRECISION = "change-precision"
@@ -205,6 +207,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     PROPAGATE_CONFIG: (),
     SET_FP_MODE: (),
     CHANGE_PRECISION: (),
+    PERSISTENT_KERNEL: (),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
@@ -1892,6 +1895,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
         "assumes no NaN or infinity. Unset, the sweep picks the fastest correct mode itself. The result is checked "
         "against the reference at get_performance, not proven.",
+    ),
+    PERSISTENT_KERNEL: (
+        "MegakernelLoops (scope: the kernel)",
+        "every sequential loop of kernels in the kernel runs as one persistent kernel: on the GPU one launch with grid "
+        "barriers where launches were, behind a runtime test that every kernel's work fits the resident threads (else "
+        "the loop launches as before); on the CPU, whose code already runs the loop in one OpenMP team, the doalls "
+        "share work without an implicit barrier each and synchronize explicitly. Pays on the GPU when the loop's "
+        "launches cost more than its kernels. set_scope a time loop first, so the loop is one kernel.",
     ),
     CHANGE_PRECISION: (
         "a new element type of one internal array (container; dtype: float32, float64)",

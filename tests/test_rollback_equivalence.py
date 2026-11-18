@@ -16,6 +16,7 @@ import test_hoist_invariant_moves as hoist_fixtures
 import test_inline_library
 import test_lib_motion_moves
 import test_move_soundness
+import test_persistent_kernel
 import test_scope_moves as scope_fixtures
 import test_session_moves
 import test_sink_invariant_code
@@ -37,6 +38,7 @@ OWN_CASES = {
     "set-schedule-gpu": "test_rollback_after_a_scope_move",
     "stage-loads-shared": "test_rollback_after_a_scope_move",
     "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
+    "persistent-kernel": "test_rollback_after_a_persistent_kernel",
     "untile-doall": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
     "untile-for": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
 }
@@ -178,6 +180,12 @@ def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str
     session.apply_move(ROLLBACK, [])
     parts = ("SDFG", "row labels", "tree text", "kernels")
     return ", ".join(part for part, a, b in zip(parts, before, state_of(session), strict=True) if a != b)
+
+
+def test_rollback_after_a_persistent_kernel(tmp_path):
+    session, kernel = test_persistent_kernel.scoped(tmp_path)
+
+    assert differs_after_rollback(session, lambda: session.apply_move("persistent-kernel", [], scope=kernel)) == ""
 
 
 def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path):
