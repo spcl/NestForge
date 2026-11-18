@@ -2,12 +2,17 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: built (2026-11-18) on DaCe extended `5f153d1d28`, as `persistent-kernel` `[for]` with `scope`: the row is one
-for loop of the kernel's body, and the kernel's rendering runs `MegakernelLoops` for its device on the loops named so
-far (its `loops` property; `nestforge.stages.kernel.persistent_loops`). The move is refused when a trial render fuses
-nothing of the loop, and for a doall or a state: a straight run of kernels launches once each, and one persistent
-kernel over it only adds barriers (DaCe measured ICON velocity tendencies 2x slower so). The tree marks the kernel row
-`persistent: <loops>`. Tested on the CPU (`tests/test_persistent_kernel.py`); the GPU path needs a GPU run.
+Status: built (2026-11-18) on DaCe extended `ca51d13cf5`, as `persistent-kernel` `[for|state|doall ...]` with
+`scope` (owner's decision: a list in one move). The rows are consecutive blocks of one region of the kernel's body
+(for loops and states; a doall stands for its state; a block between them may hold no doall), and they run as one
+persistent kernel with a barrier where a launch or an implicit barrier was. The kernel's rendering runs
+`MegakernelLoops(blocks=...)` for its device (`nestforge.stages.kernel.persistent_loops`): on the GPU behind a runtime
+test that the largest doall fits the resident threads, with the per-launch blocks as the fallback (owner's decision);
+on the CPU in one OpenMP team. A kernel holds one persistent run; to change it, roll back and apply a longer list. The
+move is refused when the rows are not consecutive in one region, or a trial render fuses nothing. A straight run of
+kernels can be slower as one persistent kernel (DaCe measured ICON velocity tendencies 2x slower), so the 3% guard of
+`get_performance` decides by measurement. The tree marks the kernel row `persistent: <blocks>`. Tested on the CPU
+(`tests/test_persistent_kernel.py`); the GPU path needs a GPU run.
 
 ## Goal
 

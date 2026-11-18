@@ -128,7 +128,8 @@ SET_IMPLEMENTATION = "set-library-implementation"
 PROPAGATE_CONFIG = "propagate-config"
 #: The move, on no row, that fixes the program's floating-point mode; it takes ``fp_mode``.
 SET_FP_MODE = "set-fp-mode"
-#: The move that runs one for loop of kernels inside kernel ``scope`` as one persistent kernel.
+#: The move that runs consecutive rows of kernel ``scope`` (for loops, states, doalls for their states) as one
+#: persistent kernel; it takes one row or more.
 PERSISTENT_KERNEL = "persistent-kernel"
 #: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
 #: ``dtype``.
@@ -173,6 +174,8 @@ SINK_INVARIANT_GUARD = "sink-invariant-guard"
 SINK_INVARIANT_CODE = "sink-invariant-code"
 #: A row a move takes as either a for loop or a doall.
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
+#: A row of a persistent run: a for loop, a state, or a doall standing for its state.
+RUN_ROW = (LoopRegion, SDFGState, nodes.MapEntry)
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
@@ -207,7 +210,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     PROPAGATE_CONFIG: (),
     SET_FP_MODE: (),
     CHANGE_PRECISION: (),
-    PERSISTENT_KERNEL: (LoopRegion,),
+    PERSISTENT_KERNEL: (RUN_ROW,),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
@@ -1706,7 +1709,10 @@ ROW_KEYWORDS: dict[type | tuple[type, ...], str] = {
     # a library call, or a one-element copy as the tasklet DaCe makes it (``names.is_call``)
     nodes.CodeNode: "lib_<family>",
     LOOP_ROW: "for|doall",
+    RUN_ROW: "for|state|doall",
 }
+#: The kinds that take one row or more, each of their shape's one row kind.
+VARIADIC = frozenset({PERSISTENT_KERNEL})
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
 MOVE_TEXT: dict[str, tuple[str, str]] = {
@@ -1897,14 +1903,12 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "against the reference at get_performance, not proven.",
     ),
     PERSISTENT_KERNEL: (
-        "MegakernelLoops (a for loop inside scope, the kernel)",
-        "the for loop, whose body is only doalls, runs as one persistent kernel: on the GPU one launch with grid "
-        "barriers where launches were, behind a runtime test that every kernel's work fits the resident threads (else "
-        "the loop launches as before); on the CPU, whose code already runs the loop in one OpenMP team, the doalls "
-        "share work without an implicit barrier each and synchronize explicitly. Pays on the GPU when the loop's "
-        "launches cost more than its kernels. set_scope a time loop first, so the loop is inside one kernel; apply the "
-        "move again for another loop. A doall or a run of states launches once and is refused: one persistent kernel "
-        "over it only adds barriers.",
+        "MegakernelLoops (consecutive rows inside scope, the kernel)",
+        "the rows (for loops, states, doalls for their states), consecutive in one region of the kernel's body, run as "
+        "one persistent kernel with a barrier where a launch or an implicit barrier was: on the GPU one launch, "
+        "behind a runtime test that the largest doall fits the resident threads (else the rows launch as before); on "
+        "the CPU the doalls share one OpenMP team and synchronize explicitly. Pays when launches and barriers cost "
+        "more than the doalls. A kernel holds one persistent run: to change it, roll back and apply a longer list.",
     ),
     CHANGE_PRECISION: (
         "a new element type of one internal array (container; dtype: float32, float64)",
@@ -1935,7 +1939,10 @@ def move_kinds() -> list[MoveKind]:
     """Every move kind, in :data:`MOVE_SHAPES` order."""
     return [
         MoveKind(
-            kind=kind, rows=tuple(ROW_KEYWORDS[t] for t in shape), runs=MOVE_TEXT[kind][0], does=MOVE_TEXT[kind][1]
+            kind=kind,
+            rows=tuple(ROW_KEYWORDS[t] for t in shape) + (("...",) if kind in VARIADIC else ()),
+            runs=MOVE_TEXT[kind][0],
+            does=MOVE_TEXT[kind][1],
         )
         for kind, shape in MOVE_SHAPES.items()
     ]

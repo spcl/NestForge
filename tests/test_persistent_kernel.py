@@ -42,9 +42,30 @@ def two_loops(a: dace.float64[N], b: dace.float64[N]):
             a[i] = b[i]
 
 
-def offered(sut: Session, kernel: str) -> list[str]:
-    """The for loops of ``kernel`` that list_moves offers to persistent-kernel, in tree order."""
-    return [move.labels[0] for move in sut.list_moves("persistent-kernel", scope=kernel)]
+def offered(sut: Session, kernel: str) -> list[tuple[str, ...]]:
+    """The rows of ``kernel`` that list_moves offers to persistent-kernel, one tuple per offer."""
+    return [move.labels for move in sut.list_moves("persistent-kernel", scope=kernel)]
+
+
+def two_loops_scoped(tmp_path) -> tuple[Session, str, str, str]:
+    """``two_loops`` with both time loops in one kernel: the session, the kernel, the first and the second loop."""
+    sut = Session(two_loops.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
+    sut.canonicalize()
+    loops = [label for label in sut.row_index() if label.startswith("for")]
+    assert len(loops) == 2 and sut.set_scope(loops).status is MoveStatus.APPLIED
+    (ext,) = external_calls(sut.sdfg)
+    first, second = sorted(run[0] for run in offered(sut, ext.name) if len(run) == 1)
+    return sut, ext.name, first, second
+
+
+def two_loops_data() -> tuple[dict[str, np.ndarray], Reference]:
+    a = np.linspace(0.0, 1.0, SIZE)
+    want = a.copy()
+    for _ in range(STEPS):
+        want[1:-1] = (want[:-2] + want[1:-1] + want[2:]) / 3.0
+    for _ in range(SIZE):
+        want[1:-1] = (want[:-2] + want[2:]) / 2.0
+    return {"a": a, "b": np.zeros(SIZE)}, Reference({"a": want}, 1e-12, 1e-12)
 
 
 def scoped(tmp_path) -> tuple[Session, str]:
@@ -75,7 +96,7 @@ def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_pat
     sut, kernel = scoped(tmp_path)
     before = sut.default_kernel(kernel).unit.read_text()
 
-    (loop,) = offered(sut, kernel)
+    ((loop,),) = offered(sut, kernel)
     done = sut.apply_move("persistent-kernel", [loop], scope=kernel)
 
     after = sut.default_kernel(kernel).unit.read_text()
@@ -87,42 +108,51 @@ def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_pat
     sut.expand([label for label in sut.row_index() if label.startswith("state")])
     (row,) = [line for line in sut.describe().splitlines() if f"{kernel}  LIBNODE" in line]
     assert row.endswith(f"persistent: {loop}"), "the tree names the loop that runs persistent"
-    assert offered(sut, kernel) == [], "a persistent loop is not offered again"
+    assert offered(sut, kernel) == [], "a kernel holds one persistent run"
     sut.apply_move("rollback", [])
     assert sut.persistent == frozenset()
 
 
 def test_only_the_named_loop_runs_persistent(tmp_path):
-    sut = Session(two_loops.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
-    sut.canonicalize()
-    loops = [label for label in sut.row_index() if label.startswith("for")]
-    assert len(loops) == 2 and sut.set_scope(loops).status is MoveStatus.APPLIED
-    (ext,) = external_calls(sut.sdfg)
-    first, second = offered(sut, ext.name)
+    sut, kernel, first, second = two_loops_scoped(tmp_path)
+    assert (first, second) in offered(sut, kernel), "the two consecutive loops are offered as one run"
 
-    done = sut.apply_move("persistent-kernel", [second], scope=ext.name)
+    done = sut.apply_move("persistent-kernel", [second], scope=kernel)
 
-    source = sut.default_kernel(ext.name).unit.read_text()
+    source = sut.default_kernel(kernel).unit.read_text()
     assert done.status is MoveStatus.APPLIED
-    assert sut.persistent == frozenset({(ext.name, second)})
+    assert sut.persistent == frozenset({(kernel, second)})
     assert source.count("nowait") == 2, "only the second loop's two doalls share work without an implicit barrier"
-    assert offered(sut, ext.name) == [first]
 
 
-def test_a_doall_and_a_kernel_without_a_loop_of_kernels_are_refused(tmp_path):
-    sut = Session(steps.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
-    sut.canonicalize()
-    sut.default_scopes()
-    kernel = next(ext for ext in external_calls(sut.sdfg) if ext.standalone_sdfg is not None)
-    doall = next(
+def test_two_consecutive_loops_run_as_one_persistent_kernel_and_compute_the_same(tmp_path):
+    sut, kernel, first, second = two_loops_scoped(tmp_path)
+
+    done = sut.apply_move("persistent-kernel", [first, second], scope=kernel)
+
+    source = sut.default_kernel(kernel).unit.read_text()
+    assert done.status is MoveStatus.APPLIED
+    assert sut.persistent == frozenset({(kernel, first), (kernel, second)})
+    assert parallel_regions(source) == 1 and source.count("nowait") == 4, "one team runs both loops' four doalls"
+    assert sut.performance(*two_loops_data()).structured.correct is True
+
+
+def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_path):
+    sut, kernel, first, second = two_loops_scoped(tmp_path)
+    body = sut.kernel(kernel).standalone_sdfg
+    inner = next(
         entry.map.label
-        for entry, _ in kernel.standalone_sdfg.all_nodes_recursive()
+        for entry, _ in next(
+            r for r in body.all_control_flow_regions(recursive=True) if r.label == first
+        ).all_nodes_recursive()
         if isinstance(entry, dace.nodes.MapEntry)
     )
 
-    refused = sut.apply_move("persistent-kernel", [doall], scope=kernel.name)
-    unknown = sut.apply_move("persistent-kernel", [doall], scope="no_such_kernel")
+    split = sut.apply_move("persistent-kernel", [inner, second], scope=kernel)
+    unknown = sut.apply_move("persistent-kernel", [second], scope="no_such_kernel")
+    sut.apply_move("persistent-kernel", [second], scope=kernel)
+    again = sut.apply_move("persistent-kernel", [first], scope=kernel)
 
-    assert offered(sut, kernel.name) == []
-    assert (refused.status, refused.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND)
+    assert (split.status, split.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND)
     assert (unknown.status, unknown.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+    assert (again.status, again.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)

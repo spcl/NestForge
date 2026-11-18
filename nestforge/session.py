@@ -29,7 +29,8 @@ import pydantic
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.performance_evaluation.helpers import get_uuid
-from dace.sdfg.state import LoopRegion, SDFGState
+from dace.sdfg.state import ControlFlowBlock, LoopRegion, SDFGState
+from dace.transformation.passes.megakernel.discovery import linear_chain
 from relayout.ops import Operation
 
 from nestforge.build.arena import TIMED_REPS
@@ -135,6 +136,7 @@ from nestforge.stages.moves import (
     SET_SCHEDULE_GPU,
     SINK_INVARIANT_CODE,
     SIZED,
+    VARIADIC,
     GpuChoice,
     Rewrite,
     check_kind,
@@ -149,6 +151,7 @@ from nestforge.stages.moves import (
     set_gpu_choices,
     sinkable_containers,
     size_argument,
+    tree_label,
 )
 from nestforge.stages.performance import (
     Performance,
@@ -261,9 +264,64 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
+def holds_doall(block: ControlFlowBlock) -> bool:
+    return any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
+
+
+def persistent_runs(body: dace.SDFG) -> list[tuple[str, ...]]:
+    """What ``persistent-kernel`` is offered on in a kernel's ``body``: each for loop holding doalls, and each longest
+    run of two or more consecutive blocks holding doalls in a region whose blocks follow one another."""
+    runs: list[tuple[str, ...]] = []
+    for region in body.all_control_flow_regions(recursive=True):
+        runs += [(b.label,) for b in region.nodes() if isinstance(b, LoopRegion) and b.loop_variable and holds_doall(b)]
+        order = linear_chain(region)
+        current: list[str] = []
+        for block in [*(order or []), None]:
+            if block is not None and holds_doall(block):
+                current.append(block.label)
+                continue
+            if len(current) > 1:
+                runs.append(tuple(current))
+            current = []
+    return runs
+
+
+def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
+    """The labels of the blocks ``rows`` name, in program order without repeats: a for loop or a state itself, a doall
+    its state; or why they are no persistent run: a row of another kind, blocks of two regions, or a block between
+    them that holds doalls."""
+    found: list[ControlFlowBlock] = []
+    for obj, state in rows:
+        if isinstance(obj, nodes.MapEntry) and state is not None:
+            block = state
+        elif isinstance(obj, SDFGState) or (isinstance(obj, LoopRegion) and obj.loop_variable):
+            block = obj
+        else:
+            return Refused(
+                f"persistent-kernel takes for loops, states and doalls; {tree_label(obj)!r} is a {type(obj).__name__}.",
+                Refusal.WRONG_ROW_KIND,
+            )
+        if block not in found:
+            found.append(block)
+    region = found[0].parent_graph
+    order = linear_chain(region) or [found[0]]
+    if any(b.parent_graph is not region or b not in order for b in found):
+        return Refused(
+            f"persistent-kernel takes rows of one region that follow one another; {[b.label for b in found]} are not.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    held = sorted(order.index(b) for b in found)
+    if any(holds_doall(b) for b in order[held[0] : held[-1] + 1] if b not in found):
+        return Refused(
+            f"persistent-kernel takes consecutive rows; a block between {[b.label for b in found]} holds doalls.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    return [b.label for b in sorted(found, key=order.index)]
+
+
 def marked_persistent(tree: str, loops: frozenset[tuple[str, str]]) -> str:
-    """``tree`` with each kernel row marked ``persistent: <loops>``: those loops of its body run as one persistent
-    kernel each, with a barrier where a launch or an implicit barrier was."""
+    """``tree`` with each kernel row marked ``persistent: <blocks>``: those blocks of its body run as one persistent
+    kernel, with a barrier where a launch or an implicit barrier was."""
     if not loops:
         return tree
     held: dict[str, list[str]] = {}
@@ -709,7 +767,7 @@ class Session:
         self.fp_mode: str | None = None
         #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
         self.pipeline: tuple[str, str] | None = None
-        #: ``(kernel, loop)``: the loops of kernels that run as one persistent kernel each (``persistent-kernel``).
+        #: ``(kernel, block)``: the blocks of each kernel's body that run as its one persistent kernel.
         self.persistent: frozenset[tuple[str, str]] = frozenset()
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
@@ -1090,15 +1148,8 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
-        if kind in (None, PERSISTENT_KERNEL) and scope is not None:
-            moves += [
-                Move(kind=PERSISTENT_KERNEL, labels=(label,), scope=scope)
-                for label, (block, _) in rows.items()
-                if isinstance(block, LoopRegion)
-                and block.loop_variable
-                and (scope, block.label) not in self.persistent
-                and any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
-            ]
+        if kind in (None, PERSISTENT_KERNEL) and scope is not None and all(k != scope for k, _ in self.persistent):
+            moves += [Move(kind=PERSISTENT_KERNEL, labels=run, scope=scope) for run in persistent_runs(structured)]
         # moves on the whole program close with its first kernel, as the program's own rows do
         program_wide = scope is None and not external_calls(self.sdfg)
         if kind in (None, SET_FP_MODE) and program_wide:
@@ -1224,40 +1275,41 @@ class Session:
         return done
 
     def make_persistent(self, names: tuple[str, ...], scope: str | None) -> MoveResult:
-        """Run the for loop ``names`` of kernel ``scope`` as one persistent kernel from now on; refused, before
-        anything changes, when MegakernelLoops fuses nothing of it in the scheduled body."""
+        """Run the rows ``names`` of kernel ``scope`` (for loops, states, doalls for their states; consecutive in one
+        region) as one persistent kernel from now on; refused, before anything changes, when MegakernelLoops fuses
+        nothing of them in the scheduled body, or the kernel holds a persistent run already."""
         kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
         if scope not in kernels:
             reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
-        ext = kernels[scope]
+        held = sorted(block for kernel, block in self.persistent if kernel == scope)
+        if held:
+            reason = Refused(
+                f"{scope} runs {held} as one persistent kernel already; roll it back and apply a longer list.",
+                Refusal.ARGUMENT,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
         rows = self.named_rows(PERSISTENT_KERNEL, names, tree_rows(self.move_programs(scope)[0]))
         if isinstance(rows, MoveResult):
             return rows
-        ((loop, _),) = rows
-        if not isinstance(loop, LoopRegion) or not loop.loop_variable:
-            reason = Refused(
-                f"persistent-kernel takes a for loop; {names[0]!r} is a {type(loop).__name__}. A doall or a run of "
-                "states launches once, and one persistent kernel over it only adds barriers.",
-                Refusal.WRONG_ROW_KIND,
-            )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
-        if (scope, loop.label) in self.persistent:
-            reason = Refused(f"{loop.label} of {scope} runs as one persistent kernel already.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        blocks = run_blocks(rows)
+        if isinstance(blocks, Refused):
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocks)
+        ext = kernels[scope]
         trial = kernel_form(kernel_device(ext)).schedule(node_boundary(ext))
-        if persistent_loops(trial, kernel_device(ext), {loop.label}) == 0:
+        if persistent_loops(trial, kernel_device(ext), set(blocks)) == 0:
             reason = Refused(
-                f"blocked by MegakernelLoops: the body of {loop.label} is not only kernels whose control flow reads "
-                "grid-uniform values (or, on the GPU, no launch bound of its kernels is known).",
+                f"blocked by MegakernelLoops: {', '.join(blocks)} are not consecutive blocks of one region whose doalls "
+                "run together (control flow reading only grid-uniform values), or, on the GPU, no bound of their "
+                "doalls' work is known.",
                 Refusal.WRONG_ROW_KIND,
             )
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
 
         def change() -> None:
-            self.persistent = self.persistent | {(scope, loop.label)}
+            self.persistent = self.persistent | {(scope, block) for block in blocks}
 
-        reason = f"{loop.label} of {scope} runs as one persistent kernel"
+        reason = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
         return self.program_change(PERSISTENT_KERNEL, reason, change)
 
     def set_fp_mode(self, fp_mode: str | None) -> MoveResult:
@@ -1401,7 +1453,9 @@ class Session:
         """
         names = tuple(labels)
         shape = MOVE_SHAPES[check_kind(kind)]
-        if len(names) != len(shape):
+        if kind in VARIADIC and not names:
+            raise ValueError(f"{kind} takes one label or more; got none")
+        if kind not in VARIADIC and len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
         family = switched_off(kind, self.disabled_families)
         if family is not None:

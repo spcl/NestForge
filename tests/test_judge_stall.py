@@ -261,9 +261,9 @@ def test_an_unchanged_kernel_keeps_its_build_without_a_render(tmp_path, monkeypa
     rendered: list[str] = []
     render = session_module.schedule_kernel
 
-    def counted(ext: ExternalCall, *args: object) -> object:
+    def counted(ext: ExternalCall, *args: object, **kwargs: object) -> object:
         rendered.append(ext.name)
-        return render(ext, *args)
+        return render(ext, *args, **kwargs)
 
     monkeypatch.setattr(session_module, "schedule_kernel", counted)
     names = [ext.name for ext in external_calls(sut.sdfg)]

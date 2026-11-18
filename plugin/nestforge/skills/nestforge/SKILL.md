@@ -176,10 +176,10 @@ DaCe transformation behind each.
   mode; unset, `finalize`'s sweep picks the fastest correct one. `change-precision` `[]` with `container` and `dtype`
   (`float32`): an internal array is stored in that type, statements convert at the array; `list_moves` lists the
   arrays it takes. Both change results within rounding: `get_performance` checks them, a wrong result is not kept.
-- `persistent-kernel` `[for]` with `scope`: after `set_scope` put a time loop of doalls inside one kernel, that for
-  loop (a row of the kernel's body) runs as one persistent kernel (on the GPU one launch with grid barriers, behind a
-  size test; on the CPU explicit barriers in one team). Apply it once per loop; a doall or a run of states is refused.
-  Pays on the GPU when the loop's launches cost more than its doalls.
+- `persistent-kernel` `[for|state|doall ...]` with `scope`: consecutive rows of one region of a kernel's body (for
+  loops, states; a doall stands for its state) run as one persistent kernel (on the GPU one launch with grid barriers,
+  behind a size test; on the CPU explicit barriers in one team). One run per kernel: roll back to change it. Pays when
+  launches and barriers cost more than the doalls; `list_moves` offers each loop and each longest run.
 - `vectorize-doall` `[doall]`, an outermost one, with `lanes` (`[8]`, innermost last) and `isa` (`auto`, `avx512`, `avx2`, `sve`, `neon`,
   `scalar`): the doall runs as SIMD tiles, with a masked tail. Last: no move takes its body apart afterwards; read it
   with `c=`.
