@@ -39,6 +39,7 @@ OWN_CASES = {
     "stage-loads-shared": "test_rollback_after_a_scope_move",
     "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
     "persistent-kernel": "test_rollback_after_a_persistent_kernel",
+    "set-fp-mode": "test_rollback_after_set_fp_mode",
     "untile-doall": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
     "untile-for": "test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back",
 }
@@ -230,6 +231,16 @@ def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments
     (move,) = session.list_moves(kind, scope=first)
 
     differs = differs_after_rollback(session, lambda: session.apply_move(kind, move.labels, scope=first, **arguments))
+
+    assert not differs, differs
+
+
+def test_rollback_after_set_fp_mode(tmp_path):
+    session, first, _ = scope_fixtures.two_kernels(tmp_path, gpu=False)
+
+    differs = differs_after_rollback(
+        session, lambda: session.apply_move("set-fp-mode", [], fp_mode="fast-math", scope=first)
+    )
 
     assert not differs, differs
 

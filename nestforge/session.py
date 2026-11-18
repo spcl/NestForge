@@ -641,7 +641,7 @@ class Checkpoint:
     prepared: dict[str, Prepared]
     measured: Measured | None
     gpu_choices: dict[str, dict[str, GpuChoice]]
-    fp_mode: str | None
+    kernel_modes: frozenset[tuple[str, str]]
     pipeline: tuple[str, str] | None
     persistent: frozenset[tuple[str, str]]
 
@@ -680,7 +680,7 @@ class Session:
         "oracles_out_of_time",
         "measured",
         "gpu_choices",
-        "fp_mode",
+        "kernel_modes",
         "pipeline",
         "persistent",
         "made_by_last",
@@ -763,8 +763,9 @@ class Session:
         self.measured: Measured | None = None
         #: Per GPU kernel, what set-schedule-gpu chose for its doalls, by label; set again after every placement.
         self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
-        #: The floating-point mode every kernel is built in (``set-fp-mode``); ``None``: the sweep picks it.
-        self.fp_mode: str | None = None
+        #: ``(kernel, mode)``: the floating-point mode a kernel is built in (``set-fp-mode``); a kernel not here is
+        #: built in the mode its sweep picks.
+        self.kernel_modes: frozenset[tuple[str, str]] = frozenset()
         #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
         self.pipeline: tuple[str, str] | None = None
         #: ``(kernel, block)``: the blocks of each kernel's body that run as its one persistent kernel.
@@ -810,7 +811,7 @@ class Session:
             dict(self.prepared),
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
-            self.fp_mode,
+            self.kernel_modes,
             self.pipeline,
             self.persistent,
         )
@@ -837,7 +838,7 @@ class Session:
         self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
         self.measured = saved.measured
         self.gpu_choices = saved.gpu_choices
-        self.fp_mode = saved.fp_mode
+        self.kernel_modes = saved.kernel_modes
         self.pipeline = saved.pipeline
         self.persistent = saved.persistent
 
@@ -1152,11 +1153,11 @@ class Session:
             moves += [Move(kind=PERSISTENT_KERNEL, labels=run, scope=scope) for run in persistent_runs(structured)]
         # moves on the whole program close with its first kernel, as the program's own rows do
         program_wide = scope is None and not external_calls(self.sdfg)
-        if kind in (None, SET_FP_MODE) and program_wide:
+        if kind in (None, SET_FP_MODE) and scope is not None:
             moves += [
-                Move(kind=SET_FP_MODE, labels=(), fp_mode=mode)
+                Move(kind=SET_FP_MODE, labels=(), fp_mode=mode, scope=scope)
                 for mode in fp_modes(self.targets.gpu)
-                if mode != self.fp_mode
+                if mode != self.mode_of(scope)
             ]
         if kind in (None, CHANGE_PRECISION) and program_wide:
             moves += [
@@ -1312,9 +1313,14 @@ class Session:
         reason = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
         return self.program_change(PERSISTENT_KERNEL, reason, change)
 
-    def set_fp_mode(self, fp_mode: str | None) -> MoveResult:
-        """Build every kernel in ``fp_mode`` only, from now on; refused for a mode the target has no build of."""
+    def set_fp_mode(self, scope: str | None, fp_mode: str | None) -> MoveResult:
+        """Build kernel ``scope`` in ``fp_mode`` only, from now on; refused for an unknown kernel or a mode the target
+        has no build of."""
+        kernels = sorted(ext.name for ext in external_calls(self.sdfg))
         offered = fp_modes(self.targets.gpu)
+        if scope not in kernels:
+            reason = Refused(f"set-fp-mode takes scope, one of the kernels {kernels}.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
         if fp_mode not in offered:
             reason = Refused(
                 f"set-fp-mode takes one of {list(offered)} on this target; not {fp_mode!r}.", Refusal.ARGUMENT
@@ -1322,9 +1328,9 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
 
         def change() -> None:
-            self.fp_mode = fp_mode
+            self.kernel_modes = frozenset((k, m) for k, m in self.kernel_modes if k != scope) | {(scope, fp_mode)}
 
-        return self.program_change(SET_FP_MODE, f"every kernel builds in {fp_mode}", change, PRECISION_WARNING)
+        return self.program_change(SET_FP_MODE, f"{scope} builds in {fp_mode}", change, PRECISION_WARNING)
 
     def change_precision(self, container: str | None, dtype: str | None) -> MoveResult:
         """Store the internal array ``container`` as ``dtype``; refused with the reason
@@ -1474,13 +1480,15 @@ class Session:
             return undone
         if kind == PERSISTENT_KERNEL:
             return self.make_persistent(names, scope)
-        if kind in (SET_FP_MODE, CHANGE_PRECISION):
+        if kind == SET_FP_MODE:
+            return self.set_fp_mode(scope, fp_mode)
+        if kind == CHANGE_PRECISION:
             if scope is not None:
                 reason = Refused(
                     f"{kind} changes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
                 )
                 return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
-            return self.set_fp_mode(fp_mode) if kind == SET_FP_MODE else self.change_precision(container, dtype)
+            return self.change_precision(container, dtype)
         if kind == RELAYOUT:
             if scope is not None:
                 reason = Refused(
@@ -1947,12 +1955,17 @@ class Session:
             )
         return self.sources[name]
 
-    def mode_variants(self, variants: Sequence[Variant]) -> list[Variant]:
-        """``variants`` in the program's floating-point mode (``set-fp-mode``), all of them when it is unset."""
-        return [v for v in variants if self.fp_mode is None or v.fp_mode == self.fp_mode]
+    def mode_of(self, name: str) -> str | None:
+        """The floating-point mode ``set-fp-mode`` fixed for kernel ``name``, or ``None``: its sweep picks one."""
+        return next((mode for kernel, mode in self.kernel_modes if kernel == name), None)
 
-    def first_variant(self, device: str) -> Variant:
-        variants = self.mode_variants(device_variants(device))
+    def mode_variants(self, variants: Sequence[Variant], name: str) -> list[Variant]:
+        """``variants`` in kernel ``name``'s floating-point mode (``set-fp-mode``), all of them when it is unset."""
+        mode = self.mode_of(name)
+        return [v for v in variants if mode is None or v.fp_mode == mode]
+
+    def first_variant(self, device: str, name: str) -> Variant:
+        variants = self.mode_variants(device_variants(device), name)
         if not variants:
             raise LookupError(f"no {device} toolchain on this machine")
         return variants[0]
@@ -1984,7 +1997,7 @@ class Session:
                 library=archive,
                 variant=variant.label,
             )
-        variant = self.first_variant(src.device)
+        variant = self.first_variant(src.device, name)
         with self.stopper.armed():
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
         self.bind(name, KernelBuild(src, variant, archive))
@@ -2069,7 +2082,7 @@ class Session:
         src = KernelSource(
             name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)
         )
-        variant = self.first_variant(src.device)
+        variant = self.first_variant(src.device, name)
         with self.stopper.armed():
             try:
                 archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
@@ -2184,7 +2197,7 @@ class Session:
         unspelled = self.prepare_kernel(name).unspelled
         if unspelled:
             raise ValueError(f"{name}: {unspelled}, so it cannot be swept. finalize builds its first configuration.")
-        variants = self.mode_variants(device_variants(src.device, compilers))
+        variants = self.mode_variants(device_variants(src.device, compilers), name)
         key = self.sweep_key(name, src)
         cells = self.sweep_cells.setdefault(key, {})
         out_dir = self.swept_dir / f"{name}_cells_{list(self.sweep_cells).index(key)}"
@@ -2223,7 +2236,7 @@ class Session:
 
     def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
         units = tuple(unit.read_text() for unit in src.units)
-        return name, units, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode
+        return name, units, tuple(sorted(self.kernel_sizes(name).items())), self.mode_of(name)
 
     def default_build(self, name: str) -> None:
         """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
@@ -2248,7 +2261,7 @@ class Session:
         kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
         ext = self.kernel(name)
         body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
-        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode, self.pipeline
+        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.mode_of(name), self.pipeline
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)
@@ -2334,7 +2347,7 @@ class Session:
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         copied.unlaid, copied.layout = self.unlaid, self.layout
-        copied.fp_mode, copied.pipeline, copied.persistent = self.fp_mode, self.pipeline, self.persistent
+        copied.kernel_modes, copied.pipeline, copied.persistent = self.kernel_modes, self.pipeline, self.persistent
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied

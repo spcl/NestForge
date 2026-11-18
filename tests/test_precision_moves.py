@@ -1,10 +1,11 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ``precision`` family: ``set-fp-mode`` fixes the floating-point flags of every kernel build, and
+"""The ``precision`` family: ``set-fp-mode`` fixes the floating-point flags of one kernel's build, and
 ``change-precision`` stores an internal array in another floating-point type. Both are undone by ``rollback``."""
 
 import dace
 import numpy as np
+from dace.libraries.standard.nodes.external_call import external_calls
 
 from nestforge.records import MoveStatus, Refusal
 from nestforge.session import Session
@@ -33,27 +34,35 @@ def internal(sut: Session) -> str:
     return name
 
 
-def test_set_fp_mode_builds_every_kernel_in_that_mode_until_rollback(tmp_path):
+def test_set_fp_mode_builds_one_kernel_in_that_mode_until_rollback(tmp_path):
     sut = session(tmp_path)
-    offered = [move.fp_mode for move in sut.list_moves("set-fp-mode")]
+    sut.default_scopes()
+    first, second = sorted(ext.name for ext in external_calls(sut.sdfg))
+    offered = [move.fp_mode for move in sut.list_moves("set-fp-mode", scope=first)]
 
-    done = sut.apply_move("set-fp-mode", [], fp_mode="fast-math")
+    done = sut.apply_move("set-fp-mode", [], fp_mode="fast-math", scope=first)
 
     assert offered == ["strict-ieee", "contract-fma", "fast-math"]
     assert done.status is MoveStatus.APPLIED and done.warning
-    assert sut.first_variant("cpu").fp_mode == "fast-math"
-    assert [move.fp_mode for move in sut.list_moves("set-fp-mode")] == ["strict-ieee", "contract-fma"]
+    assert sut.first_variant("cpu", first).fp_mode == "fast-math"
+    assert sut.mode_of(second) is None, "the other kernel's sweep still picks its mode"
+    assert [move.fp_mode for move in sut.list_moves("set-fp-mode", scope=first)] == ["strict-ieee", "contract-fma"]
     sut.apply_move("rollback", [])
-    assert sut.fp_mode is None
+    assert sut.kernel_modes == frozenset()
 
 
-def test_a_mode_the_target_does_not_build_is_refused(tmp_path):
+def test_a_mode_the_target_does_not_build_and_a_program_without_kernels_are_refused(tmp_path):
     sut = session(tmp_path)
 
-    refused = sut.apply_move("set-fp-mode", [], fp_mode="loose")
+    unscoped = sut.apply_move("set-fp-mode", [], fp_mode="fast-math")
+    sut.default_scopes()
+    kernel = sorted(ext.name for ext in external_calls(sut.sdfg))[0]
+    loose = sut.apply_move("set-fp-mode", [], fp_mode="loose", scope=kernel)
 
-    assert (refused.status, refused.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
-    assert sut.fp_mode is None
+    assert sut.list_moves("set-fp-mode") == [], "set-fp-mode is offered inside a kernel only"
+    assert (unscoped.status, unscoped.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+    assert (loose.status, loose.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+    assert sut.kernel_modes == frozenset()
 
 
 def test_change_precision_stores_an_internal_array_in_float32_and_the_program_computes_in_it(tmp_path):

@@ -170,7 +170,7 @@ class ApplyMove(Labeled):
         "names it (the state's writes=[..] shows it).",
     )
     fp_mode: str | None = pydantic.Field(
-        None, description="set-fp-mode (labels []): strict-ieee, contract-fma or fast-math, for every kernel."
+        None, description="set-fp-mode (labels [], scope: the kernel): strict-ieee, contract-fma or fast-math."
     )
     dtype: str | None = pydantic.Field(
         None,

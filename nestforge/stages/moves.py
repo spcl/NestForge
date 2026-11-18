@@ -1896,10 +1896,10 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
     ),
     SET_FP_MODE: (
-        "the compiler's floating-point flags (fp_mode: strict-ieee, contract-fma, fast-math)",
-        "every kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
+        "the compiler's floating-point flags of one kernel (scope; fp_mode: strict-ieee, contract-fma, fast-math)",
+        "the kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
         "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
-        "assumes no NaN or infinity. Unset, the sweep picks the fastest correct mode itself. The result is checked "
+        "assumes no NaN or infinity. Unset, the kernel's sweep picks the fastest correct mode. The result is checked "
         "against the reference at get_performance, not proven.",
     ),
     PERSISTENT_KERNEL: (
