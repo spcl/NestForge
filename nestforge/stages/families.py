@@ -18,6 +18,7 @@ FAMILIES: dict[str, frozenset[str]] = {
     "specialize": frozenset({"propagate-config", "unroll-for", "unroll-doall"}),
     "library": frozenset({"lib-before", "lib-after", "lib-into", "inline-library", "set-library-implementation"}),
     "layout": frozenset({"relayout"}),
+    "precision": frozenset({"set-fp-mode", "change-precision"}),
     "vectorize": frozenset({"vectorize-doall"}),
     "schedule": frozenset({"set-schedule-cpu", "set-schedule-gpu", "stage-loads-shared"}),
     "wavefront": frozenset({"skew-wavefront"}),

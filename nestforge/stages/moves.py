@@ -126,6 +126,11 @@ INLINE_LIBRARY = "inline-library"
 SET_IMPLEMENTATION = "set-library-implementation"
 #: The move kind, on no row, that specializes the program for argument values; it takes ``config_values``.
 PROPAGATE_CONFIG = "propagate-config"
+#: The move, on no row, that fixes the program's floating-point mode; it takes ``fp_mode``.
+SET_FP_MODE = "set-fp-mode"
+#: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
+#: ``dtype``.
+CHANGE_PRECISION = "change-precision"
 #: The move kind, on no row, that takes the last change back; the session keeps the programs it returns to.
 ROLLBACK = "rollback"
 #: The move kind that turns a sequential loop into a doall; it takes ``force``.
@@ -198,6 +203,8 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
     LIB_INTO: (nodes.CodeNode, SDFGState),
     PROPAGATE_CONFIG: (),
+    SET_FP_MODE: (),
+    CHANGE_PRECISION: (),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
@@ -1878,6 +1885,20 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "sve takes its own vector length, so its lanes are ignored), with a masked tile for the remainder; the "
         "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
         "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
+    ),
+    SET_FP_MODE: (
+        "the compiler's floating-point flags (fp_mode: strict-ieee, contract-fma, fast-math)",
+        "every kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
+        "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
+        "assumes no NaN or infinity. Unset, the sweep picks the fastest correct mode itself. The result is checked "
+        "against the reference at get_performance, not proven.",
+    ),
+    CHANGE_PRECISION: (
+        "a new element type of one internal array (container; dtype: float32, float64)",
+        "the array is stored, read and written in dtype; every statement converts at the array, so the arithmetic "
+        "around it is unchanged. Only an array the program makes itself, read and written by statements alone. The "
+        "result is checked against the reference at get_performance, not proven; an argument's type changes with "
+        "relayout cast.",
     ),
     RELAYOUT: (
         "relayout's apply_requests (operation: one operation of the bench's requests on an array argument)",

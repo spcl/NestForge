@@ -17,6 +17,7 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | `specialize` | `propagate-config`, `unroll-for`, `unroll-doall` |
 | `library` | `lib-before`, `lib-after`, `lib-into`, `inline-library`, `set-library-implementation` |
 | `layout` | `relayout` |
+| `precision` | `set-fp-mode`, `change-precision` |
 | `vectorize` | `vectorize-doall` |
 | `schedule` | `set-schedule-cpu`, `set-schedule-gpu`, `stage-loads-shared` |
 | `wavefront` | `skew-wavefront` |

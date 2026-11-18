@@ -58,7 +58,7 @@ every later call.
 
 Arguments, each meaning one thing: `tile_sizes` (tile extents), `lanes` (vector lanes), `block` (a GPU thread block),
 `max_iterations`, `implementation`, `config_values`, `operation`, `container`, `isa`, `schedule`, `chunk`,
-`threads`, `force`, `scope`.
+`threads`, `force`, `fp_mode`, `dtype`, `scope`.
 
 `get_performance` times each kernel in one fixed build, so two measurements compare (`finalize`'s sweep, what `score`
 grades, is faster). Every move keeps the program's results: it changes how loops run, never what they compute.
@@ -169,6 +169,10 @@ DaCe transformation behind each.
   harness lays it out outside the timing. Dimensions are named `i0`, `i1`, ... and keep their names through a permute.
   `list_moves` offers the transpose of the first 2D argument. A `cast` (`"to": "fp32"`) applies and times, but
   `finalize` refuses it: roll it back before you submit.
+- `set-fp-mode` `[]` with `fp_mode` (`strict-ieee`, `contract-fma`, `fast-math`): every kernel is built in that
+  mode; unset, `finalize`'s sweep picks the fastest correct one. `change-precision` `[]` with `container` and `dtype`
+  (`float32`): an internal array is stored in that type, statements convert at the array; `list_moves` lists the
+  arrays it takes. Both change results within rounding: `get_performance` checks them, a wrong result is not kept.
 - `vectorize-doall` `[doall]`, an outermost one, with `lanes` (`[8]`, innermost last) and `isa` (`auto`, `avx512`, `avx2`, `sve`, `neon`,
   `scalar`): the doall runs as SIMD tiles, with a masked tail. Last: no move takes its body apart afterwards; read it
   with `c=`.

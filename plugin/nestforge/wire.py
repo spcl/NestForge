@@ -159,6 +159,13 @@ class ApplyMove(Labeled):
         description="sink-invariant-code: the temporary whose statements move into the loop or doall, as list_moves "
         "names it (the state's writes=[..] shows it).",
     )
+    fp_mode: str | None = pydantic.Field(
+        None, description="set-fp-mode (labels []): strict-ieee, contract-fma or fast-math, for every kernel."
+    )
+    dtype: str | None = pydantic.Field(
+        None,
+        description="change-precision (labels [], container): the element type the array takes, float32 or float64.",
+    )
     operation: dict[str, Any] = pydantic.Field(
         default_factory=dict,
         description="relayout (labels []): one operation of the bench's requests on an array argument, as relayout "

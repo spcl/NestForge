@@ -112,6 +112,7 @@ from nestforge.stages.layout import (
     requests_of,
 )
 from nestforge.stages.moves import (
+    CHANGE_PRECISION,
     DEFAULT_ISA,
     DEVICE_KINDS,
     FORCED_LOOP_TO_MAP,
@@ -121,6 +122,7 @@ from nestforge.stages.moves import (
     PROPAGATE_CONFIG,
     ROLLBACK,
     SCOPE_KINDS,
+    SET_FP_MODE,
     SET_IMPLEMENTATION,
     SET_SCHEDULE_CPU,
     SET_SCHEDULE_GPU,
@@ -160,6 +162,13 @@ from nestforge.stages.placement import (
     kernel_interfaces,
     place,
     transfers,
+)
+from nestforge.stages.precision import (
+    PRECISION_WARNING,
+    fp_modes,
+    precision_candidates,
+    precision_refusal,
+    set_precision,
 )
 from nestforge.stages.requests import Example, Request, RequestResult, example_refusal
 from nestforge.stages.requests import refused as request_refused
@@ -355,8 +364,12 @@ class Move(Record):
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
-    #: For ``sink-invariant-code``, the temporary whose statements sink.
+    #: For ``sink-invariant-code``, the temporary whose statements sink; for ``change-precision``, the array.
     container: str | None = None
+    #: For ``set-fp-mode``, the floating-point mode every kernel is built in.
+    fp_mode: str | None = None
+    #: For ``change-precision``, the element type the array takes.
+    dtype: str | None = None
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -463,8 +476,8 @@ Codegen = Literal["first", "sweep"]
 Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 #: A measurement and what it was of: the inputs, the reference, the repetitions and the codegen.
 Measured = tuple[dict[str, np.ndarray], Reference | None, int, Codegen, Performance]
-#: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
-SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...]]
+#: A sweep winner's identity: the kernel, the text of its units, the sizes it was timed at, and the FP mode.
+SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...], str | None]
 
 
 def kept(build: KernelBuild, folder: Path) -> KernelBuild:
@@ -535,6 +548,7 @@ class Checkpoint:
     prepared: dict[str, Prepared]
     measured: Measured | None
     gpu_choices: dict[str, dict[str, GpuChoice]]
+    fp_mode: str | None
 
 
 class Session:
@@ -571,6 +585,7 @@ class Session:
         "oracles_out_of_time",
         "measured",
         "gpu_choices",
+        "fp_mode",
         "made_by_last",
         "bench",
         "stopper",
@@ -651,6 +666,8 @@ class Session:
         self.measured: Measured | None = None
         #: Per GPU kernel, what set-schedule-gpu chose for its doalls, by label; set again after every placement.
         self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
+        #: The floating-point mode every kernel is built in (``set-fp-mode``); ``None``: the sweep picks it.
+        self.fp_mode: str | None = None
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -692,6 +709,7 @@ class Session:
             dict(self.prepared),
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
+            self.fp_mode,
         )
         kept = len(self.history)
         self.in_atomic, self.checkpoint = True, saved
@@ -716,6 +734,7 @@ class Session:
         self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
         self.measured = saved.measured
         self.gpu_choices = saved.gpu_choices
+        self.fp_mode = saved.fp_mode
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -1023,6 +1042,17 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
+        if kind in (None, SET_FP_MODE) and scope is None:
+            moves += [
+                Move(kind=SET_FP_MODE, labels=(), fp_mode=mode)
+                for mode in fp_modes(self.targets.gpu)
+                if mode != self.fp_mode
+            ]
+        if kind in (None, CHANGE_PRECISION) and scope is None:
+            moves += [
+                Move(kind=CHANGE_PRECISION, labels=(), container=name, dtype="float32")
+                for name in precision_candidates(self.sdfg)
+            ]
         if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
             listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
             if listed is not None:
@@ -1121,6 +1151,46 @@ class Session:
             self.remember()
         return done
 
+    def precision_change(self, kind: str, reason: str, change: Callable[[], None]) -> MoveResult:
+        """Apply ``change`` as one program change of ``kind``: undone by ``rollback``, its result checked by the
+        reference at ``get_performance``, not proven."""
+        with self.atomic():
+            change()
+            self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=PRECISION_WARNING)
+            self.applied.append(done)
+            self.remember()
+        return done
+
+    def set_fp_mode(self, fp_mode: str | None) -> MoveResult:
+        """Build every kernel in ``fp_mode`` only, from now on; refused for a mode the target has no build of."""
+        offered = fp_modes(self.targets.gpu)
+        if fp_mode not in offered:
+            reason = Refused(
+                f"set-fp-mode takes one of {list(offered)} on this target; not {fp_mode!r}.", Refusal.ARGUMENT
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
+
+        def change() -> None:
+            self.fp_mode = fp_mode
+
+        return self.precision_change(SET_FP_MODE, f"every kernel builds in {fp_mode}", change)
+
+    def change_precision(self, container: str | None, dtype: str | None) -> MoveResult:
+        """Store the internal array ``container`` as ``dtype``; refused with the reason
+        :func:`~nestforge.stages.precision.precision_refusal` gives."""
+        refused = precision_refusal(self.sdfg, container, dtype)
+        if refused is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=CHANGE_PRECISION, labels=(), reason=refused)
+        assert container is not None and dtype is not None, "precision_refusal requires both"
+
+        def change() -> None:
+            set_precision(self.sdfg, container, dtype)
+            self.bump()
+            self.sdfg.validate()
+
+        return self.precision_change(CHANGE_PRECISION, f"{container} stored as {dtype}", change)
+
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
         others = sorted({move.kind for move in self.applied if move.kind != RELAYOUT})
@@ -1175,6 +1245,8 @@ class Session:
         chunk: int | None = None,
         threads: int | None = None,
         container: str | None = None,
+        fp_mode: str | None = None,
+        dtype: str | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -1221,6 +1293,13 @@ class Session:
         undone = self.inverse_of_last(kind, names, scope, force)
         if undone is not None:
             return undone
+        if kind in (SET_FP_MODE, CHANGE_PRECISION):
+            if scope is not None:
+                reason = Refused(
+                    f"{kind} changes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
+                )
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+            return self.set_fp_mode(fp_mode) if kind == SET_FP_MODE else self.change_precision(container, dtype)
         if kind == RELAYOUT:
             if scope is not None:
                 reason = Refused(
@@ -1684,8 +1763,12 @@ class Session:
             self.sources[name] = schedule_kernel(ext, node_boundary(ext), self.work_dir / name / "kernel")
         return self.sources[name]
 
+    def mode_variants(self, variants: Sequence[Variant]) -> list[Variant]:
+        """``variants`` in the program's floating-point mode (``set-fp-mode``), all of them when it is unset."""
+        return [v for v in variants if self.fp_mode is None or v.fp_mode == self.fp_mode]
+
     def first_variant(self, device: str) -> Variant:
-        variants = device_variants(device)
+        variants = self.mode_variants(device_variants(device))
         if not variants:
             raise LookupError(f"no {device} toolchain on this machine")
         return variants[0]
@@ -1866,7 +1949,7 @@ class Session:
         unspelled = self.prepare_kernel(name).unspelled
         if unspelled:
             raise ValueError(f"{name}: {unspelled}, so it cannot be swept. finalize builds its first configuration.")
-        variants = device_variants(src.device, compilers)
+        variants = self.mode_variants(device_variants(src.device, compilers))
         key = self.sweep_key(name, src)
         cells = self.sweep_cells.setdefault(key, {})
         out_dir = self.swept_dir / f"{name}_cells_{list(self.sweep_cells).index(key)}"
@@ -1905,7 +1988,7 @@ class Session:
 
     def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
         units = tuple(unit.read_text() for unit in src.units)
-        return name, units, tuple(sorted(self.kernel_sizes(name).items()))
+        return name, units, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode
 
     def default_build(self, name: str) -> None:
         """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
@@ -1930,7 +2013,7 @@ class Session:
         kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
         ext = self.kernel(name)
         body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
-        key = name, body, tuple(sorted(self.kernel_sizes(name).items()))
+        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.fp_mode
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)
@@ -2016,6 +2099,7 @@ class Session:
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         copied.unlaid, copied.layout = self.unlaid, self.layout
+        copied.fp_mode = self.fp_mode
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
