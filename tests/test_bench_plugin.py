@@ -183,7 +183,12 @@ def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) ->
     for name, phase in manifest["phases"].items():
         assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == name), name
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
-        (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "profile", "score", "submit")
+        (
+            *(t for t, d in TOOLS.items() if d.phase == Phase.ANY and t not in PACKET_OWN_TOOLS),
+            "profile",
+            "score",
+            "submit",
+        )
     )
 
 
