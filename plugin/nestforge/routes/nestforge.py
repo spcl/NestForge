@@ -41,6 +41,7 @@ from nestforge.session import Restored, Sweep, TuneResult
 from nestforge.stages.families import checked_families, family_of
 from nestforge.stages.moves import ROLLBACK, size_argument
 from nestforge.stages.performance import Performance
+from nestforge.stages.phases import checked_phases
 from nestforge.stages.requests import RequestResult
 
 #: What a tool that needs no device holds instead of a slot.
@@ -57,11 +58,13 @@ class Episode:
     measuring calls queue for a device slot. ``orphans`` keeps, per kernel, a finished change whose client had left, so
     that the client's retry reads the answer instead of repeating the change."""
 
-    __slots__ = ("families", "lock", "measuring", "orphans", "sessions")
+    __slots__ = ("families", "lock", "measuring", "orphans", "phases", "sessions")
 
     def __init__(self) -> None:
         #: The move families the episode switches off, fixed by its first call; ``None`` before it.
         self.families: tuple[str, ...] | None = None
+        #: The phases the episode's agent runs, fixed by its first call; ``None`` before it.
+        self.phases: tuple[str, ...] | None = None
         self.lock = threading.Lock()
         self.measuring = threading.Lock()
         self.sessions: dict[str, SessionProcess] = {}
@@ -121,7 +124,7 @@ def call_entry(name: str, arguments: dict[str, Any], reply: Reply, tokens: objec
         "status": status,
         "refusal": outcome.get("refusal") or "",
         "forced": bool(outcome.get("forced", False)),
-        "phase": TOOLS[name].phase.value,
+        "phase": TOOLS[name].label,
         "tokens": tokens if isinstance(tokens, int) else None,
     }
 
@@ -168,6 +171,21 @@ def fix_families(episode: Episode, sent: object) -> str | None:
         episode.families = families
     if episode.families != families:
         return f"this episode switched off {list(episode.families)} at its first call; a call cannot change that"
+    return None
+
+
+def fix_phases(episode: Episode, sent: object) -> str | None:
+    """Fix the phases the episode's agent runs at its first call; why a call is refused, or ``None``. A call naming
+    other phases than the first did is refused: a packet fixes them for the whole run."""
+    names = sent if isinstance(sent, list) else []
+    try:
+        phases = tuple(p.value for p in checked_phases(str(name) for name in names))
+    except ValueError as err:
+        return str(err)
+    if episode.phases is None:
+        episode.phases = phases
+    if episode.phases != phases:
+        return f"this episode's agent runs the phases {list(episode.phases)}, fixed at its first call"
     return None
 
 
@@ -270,8 +288,10 @@ def session_of(
     episode.sessions.pop(kernel, None)  # its finalizer ends what a dead session left running
     journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
-    root, families = str(agent_root(episode_id)), episode.families or ()
-    setup = Setup(kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, root, disabled_families=families)
+    root, families, phases = str(agent_root(episode_id)), episode.families or (), episode.phases or ()
+    setup = Setup(
+        kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, root, disabled_families=families, agent_phases=phases
+    )
     session = SessionProcess(setup)
     for tool, arguments in journal:
         repeated = session.call(tool, arguments, gone, slot=slot, timed=False)
@@ -356,7 +376,7 @@ def serve(judge: Judge, request: RouteRequest) -> None:
         error = f"no NestForge tool {name!r}; tools: {sorted(TOOLS)}"
         return judge.reply(HTTPStatus.NOT_FOUND, JudgeError(error=error))
     if name not in CALLS:
-        error = f"{name} ({entry.phase} phase) is not implemented yet; this run serves {sorted(CALLS)}"
+        error = f"{name} ({entry.label} phase) is not implemented yet; this run serves {sorted(CALLS)}"
         return judge.reply(HTTPStatus.NOT_IMPLEMENTED, JudgeError(error=error, cause="not-implemented"))
     kernel = str(request.body.get("kernel") or "")
     tokens = request.body.get("tokens")
@@ -366,7 +386,9 @@ def serve(judge: Judge, request: RouteRequest) -> None:
         log_call(request.episode_id, kernel, call_entry(name, dict(request.body), Reply(error=str(err)), tokens))
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
     episode = episode_of(request.episode_id)
-    refused = fix_families(episode, request.body.get("disabled_families"))
+    refused = fix_families(episode, request.body.get("disabled_families")) or fix_phases(
+        episode, request.body.get("agent_phases")
+    )
     if refused is not None:
         log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), Reply(error=refused), tokens))
         return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {refused}"))

@@ -144,11 +144,11 @@ def tool(name: str, kernel: str, /, **args: object) -> dict[str, object]:
     return answer
 
 
-def next_phase(kernel: str, phase: str) -> None:
-    """End the kernel's phase as the agent's ``next_phase`` tool does; raises unless the judge moved it to ``phase``."""
-    answer = http_json.post_judge("/next_phase", {"kernel": kernel})
-    if answer.get("phase") != phase:
-        raise RuntimeError(f"next_phase, expected {phase}: {answer}")
+def advance_phase(kernel: str, phase: str) -> None:
+    """End the kernel's phase as the agent's ``advance_phase`` tool does; raises unless NestForge moved it to ``phase``."""
+    step = tool("advance_phase", kernel)["result"]
+    if not isinstance(step, dict) or step.get("status") != "moved" or step.get("phase") != phase:
+        raise RuntimeError(f"advance_phase, expected {phase}: {step}")
 
 
 def seeded(kernel: str) -> random.Random:
@@ -217,22 +217,22 @@ class StubAgent(FlavorOptimizer):
 
 class TwoStageStub(FlavorOptimizer):
     """``nestforge_two_stage``: the stand-in for an LLM agent on the two-stage packet, structured then unstructured.
-    It walks every phase of ``nestforge-full`` through the agent's tools and the judge's phase gate: the moves
-    :class:`StubAgent` applies, one scope, each kernel read and written back unchanged, each kernel tuned, then
-    finalize. Repeatable for the same reason. The judge must run with that packet as its ``record.packet``."""
+    It walks every phase of ``nestforge-full`` through the agent's tools and NestForge's phase gate: the moves
+    :class:`StubAgent` applies, one scope, the scoped phase passed, each kernel read, written back unchanged and
+    tuned, then finalize. Repeatable for the same reason."""
 
     __slots__ = ()
 
     def tune(self, task: Task, pipeline: str) -> Submission:
         kernel, pick = task.kernel, seeded(task.kernel)
         apply_moves(kernel, pick)
-        next_phase(kernel, "scopes")
+        advance_phase(kernel, "scopes")
         set_one_scope(kernel, pick)
-        next_phase(kernel, "kernels")
+        advance_phase(kernel, "scoped")
+        advance_phase(kernel, "kernels")
         kernels = tool("list_kernels", kernel)["result"]
         assert isinstance(kernels, list), kernels
         checked = [info["name"] for info in kernels if write_back(kernel, info)]
-        next_phase(kernel, "codegen")
         for name in checked:
             tool("focus_kernel", kernel, name=name)
             tool("tune_kernel", kernel, name=name)

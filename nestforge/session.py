@@ -169,6 +169,7 @@ from nestforge.stages.performance import (
     offload_report,
     time_program,
 )
+from nestforge.stages.phases import PHASE_ORDER, PhaseName, checked_phases
 from nestforge.stages.placement import (
     Placement,
     Transfer,
@@ -629,6 +630,18 @@ class Restored(Record):
     rolled_back: int
 
 
+class PhaseStep(Record):
+    """What a phase tool did: ``moved`` into ``phase``, or ``refused`` with the reason and the phase unchanged. ``ran``
+    names the defaults of the phases passed on the way (each with what it reported); ``undone``, the phases taken
+    back."""
+
+    status: Literal["moved", "refused"]
+    phase: str
+    reason: str = ""
+    ran: tuple[str, ...] = ()
+    undone: tuple[str, ...] = ()
+
+
 @dataclass(slots=True)
 class Checkpoint:
     """What a change to the program can touch: :meth:`Session.atomic` puts it back when the change fails."""
@@ -700,6 +713,9 @@ class Session:
         "focus",
         "disabled_families",
         "authored",
+        "agent_phases",
+        "phase",
+        "phase_exits",
         "fastest",
         "requests",
     )
@@ -715,6 +731,7 @@ class Session:
         namer: Namer | None = None,
         disabled_families: Iterable[str] = (),
         catalogue: Mapping[str, AuthoredMove] | None = None,
+        agent_phases: Iterable[str] = (),
     ) -> None:
         """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
         :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
@@ -724,7 +741,16 @@ class Session:
             switches off: no listing offers their kinds, no call applies one, and no default runs one.
         :param catalogue: The authored moves by kind (:mod:`~nestforge.stages.authored`); the catalogue folder's by
             default.
-        :raises ValueError: A name in ``disabled_families`` is no family, or a catalogue entry does not load."""
+        :param agent_phases: The phases the agent runs (:mod:`~nestforge.stages.phases`); none named: every phase.
+            Every other phase runs its default when the agent passes it.
+        :raises ValueError: A name in ``disabled_families`` is no family or in ``agent_phases`` no phase, or a
+            catalogue entry does not load."""
+        #: The phases the agent runs, in order; the session starts in the first (:meth:`enter_first_phase`).
+        self.agent_phases = checked_phases(agent_phases)
+        #: The phase the agent is in.
+        self.phase: PhaseName = self.agent_phases[0]
+        #: The program as the agent left each phase it left, for :meth:`prev_phase`.
+        self.phase_exits: dict[PhaseName, Checkpoint] = {}
         #: The move families switched off for the whole run.
         self.disabled_families = checked_families(disabled_families)
         #: The authored moves this session offers, by kind (family ``authored``).
@@ -810,7 +836,21 @@ class Session:
         if self.in_atomic:
             yield
             return
-        saved = Checkpoint(
+        saved = self.saved()
+        kept = len(self.history)
+        self.in_atomic, self.checkpoint = True, saved
+        try:
+            yield
+        except (*CRASHES, Stopped):
+            self.restore(saved)
+            del self.history[kept:]
+            raise
+        finally:
+            self.in_atomic, self.checkpoint = False, None
+
+    def saved(self) -> Checkpoint:
+        """The program and everything a change can touch, copied so that :meth:`restore` brings it back."""
+        return Checkpoint(
             copy.deepcopy(self.sdfg),
             copy.deepcopy(self.unplaced),
             self.unscoped,  # replaced, never changed
@@ -831,16 +871,6 @@ class Session:
             self.pipeline,
             self.persistent,
         )
-        kept = len(self.history)
-        self.in_atomic, self.checkpoint = True, saved
-        try:
-            yield
-        except (*CRASHES, Stopped):
-            self.restore(saved)
-            del self.history[kept:]
-            raise
-        finally:
-            self.in_atomic, self.checkpoint = False, None
 
     def restore(self, saved: Checkpoint) -> None:
         """Make ``saved`` the session's program again."""
@@ -1084,6 +1114,91 @@ class Session:
         for label in labels:
             self.languages[label] = language
         return f"ok: {', '.join(labels)} print bodies in {language}"
+
+    # Phases (``nestforge.stages.phases``)
+
+    def phase_default(self, phase: PhaseName) -> str:
+        """Run the default of ``phase``, which the agent does not run, and say what it did."""
+        match phase:
+            case PhaseName.STRUCTURED:
+                self.run_defaults("moves")
+                return f"{phase}: the default moves"
+            case PhaseName.SCOPES:
+                kernels = self.default_scopes()
+                return f"{phase}: {len(kernels)} default scopes"
+        if phase is PhaseName.KERNELS:
+            return f"{phase}: nothing now (finalize builds every kernel)"
+        return f"{phase}: no move inside the kernels"
+
+    def close_phase(self, phase: PhaseName) -> str | None:
+        """What leaving ``phase`` does: leaving the scopes places every kernel (what no scope covers gets its default
+        scope first)."""
+        if phase is PhaseName.SCOPES:
+            self.run_defaults("placement")
+            return "placement: every kernel placed"
+        return None
+
+    def enter_first_phase(self) -> tuple[str, ...]:
+        """Run the defaults of the phases before the agent's first; what they did. Called once, after canonicalization."""
+        ran: list[str] = []
+        for phase in PHASE_ORDER[: PHASE_ORDER.index(self.phase)]:
+            ran.append(self.phase_default(phase))
+            ran += [closed] if (closed := self.close_phase(phase)) else []
+        self.history.clear()
+        return tuple(ran)
+
+    def next_phase(self) -> PhaseStep:
+        """Leave the current phase for the agent's next one: the phases between run their defaults. Refused in the
+        agent's last phase: ``finalize`` and ``score`` follow, and ``goto_phase`` returns to an earlier phase."""
+        position = self.agent_phases.index(self.phase)
+        if position == len(self.agent_phases) - 1:
+            reason = f"{self.phase} is the last phase: finalize and score, or return_to_phase to run a phase again."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        target = self.agent_phases[position + 1]
+        exit_point = self.saved()
+        ran: list[str] = []
+        with self.atomic():
+            ran += [closed] if (closed := self.close_phase(self.phase)) else []
+            for phase in PHASE_ORDER[PHASE_ORDER.index(self.phase) + 1 : PHASE_ORDER.index(target)]:
+                ran.append(self.phase_default(phase))
+                ran += [closed] if (closed := self.close_phase(phase)) else []
+        self.phase_exits[self.phase] = exit_point
+        self.phase, self.focus = target, None
+        self.history.clear()  # rollback takes back changes of the phase the agent is in
+        return PhaseStep(status="moved", phase=target, ran=tuple(ran))
+
+    def prev_phase(self) -> PhaseStep:
+        """Take the current phase back completely, with the defaults run on the way into it: the program is again as
+        the agent left the previous phase, and the agent is in it. Refused in the agent's first phase: the canonical
+        parallel form runs once."""
+        position = self.agent_phases.index(self.phase)
+        if position == 0:
+            reason = f"{self.phase} is the first phase; the canonical parallel form before it runs once."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        target = self.agent_phases[position - 1]
+        undone = self.phase
+        self.restore(self.phase_exits.pop(target))
+        self.phase, self.focus = target, None
+        self.history.clear()
+        return PhaseStep(status="moved", phase=target, undone=(undone,))
+
+    def goto_phase(self, phase: str) -> PhaseStep:
+        """Back to the earlier phase ``phase``, every phase after it taken back (:meth:`prev_phase` until there); for
+        a later phase, ``advance_phase``."""
+        try:
+            (wanted,) = checked_phases([phase])
+        except ValueError as err:
+            return PhaseStep(status="refused", phase=self.phase, reason=str(err))
+        if wanted not in self.agent_phases or self.agent_phases.index(wanted) >= self.agent_phases.index(self.phase):
+            reason = f"return_to_phase returns to an earlier phase the agent runs, one of {self.earlier_phases()}."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        undone: list[str] = []
+        while self.phase is not wanted:
+            undone += self.prev_phase().undone
+        return PhaseStep(status="moved", phase=wanted, undone=tuple(undone))
+
+    def earlier_phases(self) -> list[str]:
+        return [p.value for p in self.agent_phases[: self.agent_phases.index(self.phase)]]
 
     @undone_on_failure
     def run_defaults(self, stage: Stage) -> object:
@@ -2401,6 +2516,7 @@ class Session:
             codegen=self.codegen,
             namer=copy.deepcopy(self.namer),
             catalogue=self.authored,
+            agent_phases=self.agent_phases,
             disabled_families=self.disabled_families,
         )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder

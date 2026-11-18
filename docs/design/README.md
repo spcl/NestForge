@@ -17,7 +17,8 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | steps 1 and 2 now; `guided` on the GPU needs DaCe |
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
 | [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
-| [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | step 1 built; clustering and authoring next |
+| [phases.md](phases.md) | NestForge's own phases: `advance_phase`, `undo_phase`, `return_to_phase`, the gate per phase | none | built |
+| [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | request, clustering and the authored catalogue built; authoring script and gate next |
 
 ## Where to start
 

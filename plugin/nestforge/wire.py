@@ -14,16 +14,19 @@ __all__ = ["IDENTITY", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "T
 ROUTE = "nestforge"
 
 #: Body fields the transport adds to every request; never a tool argument.
-IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens", "disabled_families"})
+IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens", "disabled_families", "agent_phases"})
+#: The packet setting naming the phases its agent runs, comma-separated; unset, every phase. Like the families, a
+#: packet's ``env`` reaches only the agent's side, so every call carries it to the judge, which fixes it at the first.
+AGENT_PHASES_ENV = "NESTFORGE_AGENT_PHASES"
 
 
 class Phase(enum.StrEnum):
     """A tool's phase: the id of its ``[phases.<id>]`` in plugin.toml, or any phase."""
 
-    MOVES = "moves"
+    STRUCTURED = "structured"
     SCOPES = "scopes"
+    SCOPED = "scoped"
     KERNELS = "kernels"
-    CODEGEN = "codegen"
     ANY = "any"
 
 
@@ -248,49 +251,83 @@ class Effect(enum.StrEnum):
     REPLACE = "replace"  # overwrites earlier work (a kernel's source, a scope's kernel)
 
 
+class GotoPhase(Args):
+    phase: str = pydantic.Field(
+        description="An earlier phase to return to: structured, scopes, scoped or kernels (one the run gives the agent)."
+    )
+
+
 class ToolDef(NamedTuple):
-    phase: Phase
+    phases: frozenset[Phase]
     args: type[Args]
     description: str
     effect: Effect = Effect.ADD
 
+    @property
+    def label(self) -> str:
+        """The phases as the tool's description and its record name them: ``structured|scoped``, or ``any``."""
+        return "|".join(p.value for p in Phase if p in self.phases)
+
+
+def phases(*names: Phase) -> frozenset[Phase]:
+    return frozenset(names)
+
 
 TOOLS: dict[str, ToolDef] = {
+    "advance_phase": ToolDef(
+        phases(Phase.ANY),
+        NoArgs,
+        "Leave this phase for the next one; the phases between run their defaults. The answer names the new phase and "
+        "what ran on the way.",
+    ),
+    "undo_phase": ToolDef(
+        phases(Phase.ANY),
+        NoArgs,
+        "Take this phase back completely, with the defaults run on the way into it, and return to the previous phase as "
+        "you left it.",
+        Effect.REPLACE,
+    ),
+    "return_to_phase": ToolDef(
+        phases(Phase.ANY),
+        GotoPhase,
+        "Return to an earlier phase, taking every phase after it back (undo_phase until there); e.g. after a score.",
+        Effect.REPLACE,
+    ),
     "get_cpf": ToolDef(
-        Phase.MOVES,
+        phases(Phase.ANY),
         NoArgs,
         "Start here: the program in canonical parallel form, as a labeled tree.",
         Effect.READ,
     ),
     "view_tree": ToolDef(
-        Phase.MOVES,
+        phases(Phase.ANY),
         ViewTree,
         "Open states and doalls with everything below them, close some again, print bodies as C or Python, then show "
         "the tree. Changes only what is shown, never the program.",
         Effect.READ,
     ),
     "get_work_depth": ToolDef(
-        Phase.MOVES,
+        phases(Phase.ANY),
         GetWorkDepth,
         "Work (operations) and depth (the longest dependent chain) of tree rows, at this session's sizes or as "
         "formulas: rank loops by them before choosing what to move. The tree does not print them.",
         Effect.READ,
     ),
     "list_move_kinds": ToolDef(
-        Phase.MOVES,
+        phases(Phase.ANY),
         NoArgs,
         "Every move kind: the tree rows it takes, the transformation it runs, what it does.",
         Effect.READ,
     ),
     "list_moves": ToolDef(
-        Phase.MOVES,
+        phases(Phase.STRUCTURED, Phase.SCOPED),
         ListMoves,
         "Every legal move right now: fusion, fission, interchange, tiling, unrolling, library expansion and "
         "implementation, and propagate-config.",
         Effect.READ,
     ),
     "apply_move": ToolDef(
-        Phase.MOVES,
+        phases(Phase.STRUCTURED, Phase.SCOPED),
         ApplyMove,
         "Apply one move as list_moves listed it (or with your own tile_sizes, lanes, block, max_iterations, config_values); answers "
         "at once with the outcome, not with a time: call get_performance after the moves you want to compare. It "
@@ -298,7 +335,7 @@ TOOLS: dict[str, ToolDef] = {
         "takes the last change back (the last 8 can be).",
     ),
     "tune_move": ToolDef(
-        Phase.MOVES,
+        phases(Phase.STRUCTURED, Phase.SCOPED),
         TuneMove,
         "Try a tiling, vectorize-doall or set-schedule-gpu move at several sizes in one call, each measured as "
         "get_performance measures. The fastest "
@@ -306,21 +343,21 @@ TOOLS: dict[str, ToolDef] = {
         "instead of tiling, untiling and tiling again.",
     ),
     "set_llvm_passes": ToolDef(
-        Phase.ANY,
+        phases(Phase.ANY),
         SetLlvmPasses,
         "Build every kernel through this LLVM pass pipeline (opt -passes= syntax): its C++ is lowered to IR without "
         "optimization, the pipeline runs, then only the back end. The syntax is checked now; get_performance checks "
         "the results. A second call replaces the pipeline.",
     ),
     "set_mlir_passes": ToolDef(
-        Phase.ANY,
+        phases(Phase.ANY),
         SetMlirPasses,
         "Build every kernel through this MLIR pass pipeline (polygeist-opt --pass-pipeline= syntax) on the affine MLIR "
         "cgeist makes of its C++, then a fixed lowering to LLVM. The syntax is checked now; get_performance checks the "
         "results. A second call replaces the pipeline.",
     ),
     "request_transformation": ToolDef(
-        Phase.ANY,
+        phases(Phase.ANY),
         RequestTransformation,
         "Ask for a transformation no move offers, after list_moves on the rows found none. Give at least 5 pairs of "
         "small programs before and after it, each one @dace.program computing the same results. The request is "
@@ -328,59 +365,59 @@ TOOLS: dict[str, ToolDef] = {
         Effect.READ,
     ),
     "run_defaults": ToolDef(
-        Phase.MOVES,
+        phases(Phase.STRUCTURED, Phase.SCOPES),
         RunDefaults,
         "Finish one stage with NestForge's default heuristic; call get_performance to time it.",
     ),
     "set_scope": ToolDef(
-        Phase.SCOPES,
+        phases(Phase.SCOPES),
         Labeled,
         "Make one kernel of several top-level doalls of one state, or of a straight run of blocks; answers with the "
         "kernel's name.",
     ),
-    "unset_scope": ToolDef(Phase.SCOPES, UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
+    "unset_scope": ToolDef(phases(Phase.SCOPES), UnsetScope, "Inline a kernel back into the program.", Effect.REPLACE),
     "list_scope_moves": ToolDef(
-        Phase.SCOPES,
+        phases(Phase.SCOPES),
         ListScopeMoves,
         "list_moves inside one kernel's body; on a GPU kernel with its copies inserted also stage-loads-shared.",
         Effect.READ,
     ),
     "apply_scope_move": ToolDef(
-        Phase.SCOPES,
+        phases(Phase.SCOPES),
         ApplyScopeMove,
         "apply_move inside one kernel's body, as list_scope_moves listed it. A placed kernel is placed again with the "
         "change; stage-loads-shared rewrites the GPU kernel as placed, so do it last: placing again drops it.",
     ),
     "place": ToolDef(
-        Phase.SCOPES,
+        phases(Phase.SCOPES),
         Place,
         "Run each kernel on the CPU or the GPU; a GPU kernel copies its arguments to the device and back inside its "
         "call. Answers each kernel's device and the transfers between them.",
         Effect.REPLACE,
     ),
     "insert_copies": ToolDef(
-        Phase.SCOPES,
+        phases(Phase.SCOPES),
         NoArgs,
         "Move the GPU kernels' host/device copies out of the calls into the program, so a value that stays on the "
         "GPU between kernels is copied once; answers the copies.",
     ),
-    "list_kernels": ToolDef(Phase.KERNELS, NoArgs, "Every kernel with its device and arguments.", Effect.READ),
+    "list_kernels": ToolDef(phases(Phase.KERNELS), NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "focus_kernel": ToolDef(
-        Phase.KERNELS,
+        phases(Phase.KERNELS),
         KernelName,
         "Scope your kernel work to one kernel: write_kernel and tune_kernel take only the kernel in focus.",
     ),
-    "read_kernel": ToolDef(Phase.KERNELS, KernelName, "A kernel's current source.", Effect.READ),
+    "read_kernel": ToolDef(phases(Phase.KERNELS), KernelName, "A kernel's current source.", Effect.READ),
     "write_kernel": ToolDef(
-        Phase.KERNELS,
+        phases(Phase.KERNELS),
         WriteKernel,
         "Replace a kernel's source; it is built, checked against the kernel's oracle and linked only when it matches "
         "(status unchecked: it has no oracle, so it is linked and the whole program checks it).",
         Effect.REPLACE,
     ),
-    "tune_kernel": ToolDef(Phase.CODEGEN, TuneKernel, "Sweep compilers and flags for one kernel."),
+    "tune_kernel": ToolDef(phases(Phase.KERNELS), TuneKernel, "Sweep compilers and flags for one kernel."),
     "get_performance": ToolDef(
-        Phase.ANY,
+        phases(Phase.ANY),
         NoArgs,
         "Measure the program as it stands: whole-program time, offloading (devices, transfers) and per-kernel times, "
         "with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's compiler "
@@ -391,7 +428,10 @@ TOOLS: dict[str, ToolDef] = {
         "the result.",
     ),
     "applied_moves": ToolDef(
-        Phase.ANY, NoArgs, "Every change this program holds, in order: moves, defaults, scopes, kernels.", Effect.READ
+        phases(Phase.ANY),
+        NoArgs,
+        "Every change this program holds, in order: moves, defaults, scopes, kernels.",
+        Effect.READ,
     ),
-    "finalize": ToolDef(Phase.ANY, NoArgs, "Build the program as one library in the bench C ABI."),
+    "finalize": ToolDef(phases(Phase.ANY), NoArgs, "Build the program as one library in the bench C ABI."),
 }

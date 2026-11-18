@@ -192,9 +192,10 @@ DaCe transformation behind each.
 
 ## Scopes and kernels (when your tool list has them)
 
-Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase gives what no scope covers
-its default scope and fixes the kernels. `next_phase` out of the last phase starts a new round: the moves reopen and
-the scopes and kernel code are dropped, so `score` first.
+The phases run in order: `structured`, `scopes`, `scoped`, `kernels`. `advance_phase` out of the scopes phase gives
+what no scope covers its default scope and places every kernel. `undo_phase` takes the current phase back completely
+and returns to the previous one as you left it; `return_to_phase` does that until the phase you name, after a `score`
+too.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
   a straight run of blocks; group doalls that pass an array between them. `unset_scope` undoes it until the kernels

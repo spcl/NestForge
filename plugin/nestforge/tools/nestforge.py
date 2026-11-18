@@ -4,12 +4,13 @@
 
 import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.wire import ROUTE, TOOLS, Effect, NoArgs
+from hpcagent_bench_plugins.nestforge.wire import AGENT_PHASES_ENV, ROUTE, TOOLS, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
 HINTS = {
@@ -28,22 +29,50 @@ def disabled_families() -> list[str]:
     return [name.strip() for name in os.environ.get(DISABLED_FAMILIES_ENV, "").split(",") if name.strip()]
 
 
+def agent_phases() -> list[str]:
+    """The packet's phases for the agent (``NESTFORGE_AGENT_PHASES``), which every call carries like the families."""
+    return [name.strip() for name in os.environ.get(AGENT_PHASES_ENV, "").split(",") if name.strip()]
+
+
 def poster(name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def run(payload: dict[str, Any]) -> dict[str, Any]:
         kernel = http_json.assigned_kernel(payload)
         return http_json.post_judge(
-            f"/{ROUTE}/{name}", {**payload, "kernel": kernel, "disabled_families": disabled_families()}
+            f"/{ROUTE}/{name}",
+            {**payload, "kernel": kernel, "disabled_families": disabled_families(), "agent_phases": agent_phases()},
         )
 
     return run
 
 
+#: The guides of the phases, one file each; a phase tool's answer carries the guide of the phase it reached.
+PHASE_GUIDES = Path(__file__).resolve().parents[1] / "prompt" / "phases"
+#: The tools that move between phases.
+PHASE_TOOLS = frozenset({"advance_phase", "undo_phase", "return_to_phase"})
+
+
+def guided(run: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """``run``, its answer with the guide of the phase it moved to."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        reply = run(payload)
+        result = reply.get("result")
+        if isinstance(result, dict) and result.get("status") == "moved":
+            guide = PHASE_GUIDES / f"{result.get('phase')}.md"
+            if guide.is_file():
+                return {**reply, "guide": guide.read_text()}
+        return reply
+
+    return answer
+
+
 for name, entry in TOOLS.items():
     spec = Spec(
-        f"[{entry.phase}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
+        f"[{entry.label}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
     )
+    run = guided(poster(name)) if name in PHASE_TOOLS else poster(name)
     # in blind mode no tool answers how the program does
-    tool(spec=spec, core=False, name=name, preview=name == "get_performance")(poster(name))
+    tool(spec=spec, core=False, name=name, preview=name == "get_performance")(run)
 
 
 def delivering(

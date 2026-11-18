@@ -24,7 +24,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.util import Finalize
@@ -40,13 +40,14 @@ from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
-from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
+from nestforge.session import Codegen, KernelOutcome, MoveResult, PhaseStep, PlaceResult, Session, Stage, Stopped
 from nestforge.stages.authored import AUTHORED_FAMILY
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
 from nestforge.stages.finalize import BenchTarget, Final
-from nestforge.stages.moves import MoveKind, move_kinds
+from nestforge.stages.moves import PERSISTENT_KERNEL, ROLLBACK, SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, MoveKind, move_kinds
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
+from nestforge.stages.phases import PhaseName
 
 if TYPE_CHECKING:
     from hpcagent_bench.harness.judge_scheduler import DeviceSlot
@@ -84,10 +85,8 @@ def is_placed(session: Session) -> bool:
     return session.unplaced is not None
 
 
-#: Why a move is refused: moves take the rows of the program before its scopes.
-MOVES_CLOSED = "the program has kernels: moves are closed; next_phase reaches a new round, which reopens them"
-#: Why a scope is refused: the agent's kernel work builds on the kernels placement fixed.
-SCOPES_FIXED = "the kernels are placed: scopes are fixed; next_phase reaches a new round, which reopens them"
+#: Why a scope is refused: the kernels are placed, and a scope changes which kernels there are.
+SCOPES_FIXED = "the kernels are placed: scopes are fixed; roll the placement back to change them"
 
 
 def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
@@ -110,19 +109,6 @@ def authored_kinds(session: Session) -> list[MoveKind]:
         MoveKind(kind=m.kind, rows=m.row_kinds(), runs=m.transformation.__name__, does=m.text)
         for m in session.authored.values()
     ]
-
-
-def unscoped_until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
-    """``call``, refused with ``why`` while ``closed`` holds of the session, unless it names a kernel ``scope``: a move
-    inside a kernel works on the kernel's body, which the closing leaves open."""
-
-    @functools.wraps(call)
-    def run(session: Session, **arguments: object) -> object:
-        if closed(session) and arguments.get("scope") is None:
-            raise ValueError(why)
-        return call(session, **arguments)
-
-    return run
 
 
 def focused(call: Callable[..., object]) -> Callable[..., object]:
@@ -155,12 +141,15 @@ CALLS: dict[str, Callable[..., object]] = {
         + authored_kinds(session)
     ),
     "list_moves": Session.list_moves,
-    "apply_move": unscoped_until(has_kernels, MOVES_CLOSED, Session.apply_move),
+    "apply_move": Session.apply_move,
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
     "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
     "list_scope_moves": Session.list_moves,
+    "advance_phase": Session.next_phase,
+    "undo_phase": Session.prev_phase,
+    "return_to_phase": Session.goto_phase,
     "apply_scope_move": Session.apply_move,
     "place": Session.place,
     "insert_copies": Session.insert_copies,
@@ -198,6 +187,9 @@ TAKES_DATA = frozenset({"tune_move"})
 #: tune_move as the move it kept, and a get_performance as the rollbacks that restored the fastest version.
 CHANGING = frozenset(
     {
+        "advance_phase",
+        "undo_phase",
+        "return_to_phase",
         "apply_move",
         "run_defaults",
         "set_scope",
@@ -256,6 +248,8 @@ class Setup:
     shared_root: str = ""
     #: The move families the run switches off (:mod:`nestforge.stages.families`), sorted.
     disabled_families: tuple[str, ...] = ()
+    #: The phases the agent runs (:mod:`nestforge.stages.phases`); empty: every phase.
+    agent_phases: tuple[str, ...] = ()
 
 
 class Reply(Record):
@@ -382,10 +376,12 @@ def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
         sizes=preset_sizes(kernel, size_rung(setup.preset)),
         codegen=codegen,
         disabled_families=setup.disabled_families,
+        agent_phases=setup.agent_phases,
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.shared_root = setup.shared_root
     session.canonicalize()
+    session.enter_first_phase()
     return session
 
 
@@ -466,6 +462,8 @@ def move_text(arguments: dict[str, Any]) -> str:
 def applied(reply: Reply) -> bool:
     """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
     result = reply.result
+    if isinstance(result, PhaseStep):
+        return not reply.error and result.status == "moved"
     status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
     return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK, KernelStatus.UNCHECKED)
 
@@ -499,6 +497,63 @@ def timed_call(
         return Reply(result=result)
 
 
+#: The phases each tool works in; a tool not here works in every phase. ``list_moves``, ``apply_move`` and
+#: ``tune_move`` take the program in the structured phase and a kernel (``scope``) in the scoped phase.
+TOOL_PHASES: dict[str, frozenset[PhaseName]] = {
+    "list_moves": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "apply_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "tune_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "run_defaults": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPES}),
+    "set_scope": frozenset({PhaseName.SCOPES}),
+    "unset_scope": frozenset({PhaseName.SCOPES}),
+    "list_scope_moves": frozenset({PhaseName.SCOPES}),
+    "apply_scope_move": frozenset({PhaseName.SCOPES}),
+    "place": frozenset({PhaseName.SCOPES}),
+    "insert_copies": frozenset({PhaseName.SCOPES}),
+    "list_kernels": frozenset({PhaseName.KERNELS}),
+    "focus_kernel": frozenset({PhaseName.KERNELS}),
+    "read_kernel": frozenset({PhaseName.KERNELS}),
+    "write_kernel": frozenset({PhaseName.KERNELS}),
+    "tune_kernel": frozenset({PhaseName.KERNELS}),
+}
+#: The ``run_defaults`` stages of each phase; ``round`` is ``return_to_phase`` now.
+STAGE_PHASES: dict[str, PhaseName] = {
+    "moves": PhaseName.STRUCTURED,
+    "finish": PhaseName.STRUCTURED,
+    "scopes": PhaseName.SCOPES,
+    "placement": PhaseName.SCOPES,
+}
+#: The move kinds of the scopes phase: where a kernel runs and how its doalls are scheduled. Every other move with a
+#: ``scope`` is the scoped phase's.
+SCOPES_PHASE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, PERSISTENT_KERNEL})
+
+
+def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> str | None:
+    """Why ``tool`` cannot run in the session's phase, or ``None``."""
+    phase = session.phase
+    allowed = TOOL_PHASES.get(tool)
+    if allowed is not None and phase not in allowed:
+        names = ", ".join(sorted(p.value for p in allowed))
+        return f"{tool} is a tool of the phase {names}; this kernel is in the phase {phase}: call advance_phase or undo_phase"
+    kind, scoped = str(arguments.get("kind") or ""), arguments.get("scope") is not None
+    if tool == "run_defaults":
+        stage = str(arguments.get("stage"))
+        if STAGE_PHASES.get(stage) is not phase:
+            return f"run_defaults {stage} is not a stage of the phase {phase}" + (
+                "; return_to_phase returns to an earlier phase" if stage == "round" else ""
+            )
+    if tool in ("list_moves", "apply_move", "tune_move"):
+        if phase is PhaseName.STRUCTURED and scoped:
+            return "moves inside a kernel (scope) belong to the phase scoped, after scopes"
+        if phase is PhaseName.SCOPED and not scoped and kind != ROLLBACK:
+            return "in the phase scoped every move names its kernel (scope); the whole program's are the phase structured's"
+        if phase is PhaseName.SCOPED and kind in SCOPES_PHASE_KINDS:
+            return f"{kind} belongs to the phase scopes"
+    if tool == "apply_scope_move" and kind not in SCOPES_PHASE_KINDS and kind != ROLLBACK:
+        return f"the phase scopes applies {sorted(SCOPES_PHASE_KINDS)}; {kind} belongs to the phase scoped"
+    return None
+
+
 def answer(
     session: Session,
     tool: str,
@@ -506,7 +561,12 @@ def answer(
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
     timed: bool = True,
 ) -> Reply:
-    """The reply to one call. A change stays only if its whole answer succeeds, and its error says so."""
+    """The reply to one call. A change stays only if its whole answer succeeds, and its error says so. A tool of
+    another phase is refused (:func:`phase_refusal`), unless the call is a rebuild's repeat (``timed`` false): it
+    passed the gate when the agent made it, and a journal from before the phases has no phase calls."""
+    refused = phase_refusal(session, tool, arguments) if timed else None
+    if refused is not None:
+        return Reply(error=refused)
     if tool not in CHANGING:
         try:
             return timed_call(session, tool, arguments, data, timed)
