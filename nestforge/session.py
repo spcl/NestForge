@@ -108,6 +108,9 @@ from nestforge.stages.layout import (
     layout_operation,
     layout_refusal,
     listed_operation,
+    local_operation,
+    locally_laid_out,
+    names_locals,
     physical_inputs,
     requests_of,
 )
@@ -254,6 +257,9 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
+#: How the reason of a relayout of internal arrays ends, which :meth:`Session.relayout_refusal` reads.
+LOCAL_MARK = "(internal)"
+
 FORCED_WARNING = (
     "forced: the compiler did not prove this move legal. If the iterations depend on each other, the program is "
     "wrong, and only a run on data shows it; rollback takes the move back."
@@ -1193,7 +1199,11 @@ class Session:
 
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
-        others = sorted({move.kind for move in self.applied if move.kind != RELAYOUT})
+        # an internal array's layout counts as another change: laying the arguments out again from the program before
+        # the first layout would drop it
+        others = sorted(
+            {move.kind for move in self.applied if move.kind != RELAYOUT or move.reason.endswith(LOCAL_MARK)}
+        )
         if others:
             return Refused(
                 f"lay the arguments out before any other change; {others} came first (roll them back, or keep the "
@@ -1202,10 +1212,33 @@ class Session:
             )
         return None
 
+    def relayout_local(self, operation: Mapping[str, object]) -> MoveResult:
+        """Lay out arrays the program makes itself by ``operation``, in place: no caller sees them, so nothing is
+        converted, the bench gets no request, and the move may come after any other."""
+        try:
+            op = local_operation(operation, self.sdfg)
+            laid = locally_laid_out(self.sdfg, op)
+        except ValueError as err:  # relayout's refusal, naming what it cannot lay out
+            reason = Refused(str(err), Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=reason)
+        with self.atomic():
+            self.sdfg = laid
+            self.unplaced = None
+            self.bump()
+            self.sdfg.validate()
+            reason = f"relayout {op.action.value} {LOCAL_MARK}"
+            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=reason)
+            self.applied.append(done)
+            self.remember()
+        return done
+
     def relayout(self, operation: Mapping[str, object]) -> MoveResult:
         """Lay one argument out by ``operation`` (one relayout operation, as the bench's ``requests`` take it): the
         program before its first relayout is laid out again with every operation so far and this one, so each names
-        the digits the ones before it left, as the harness reads the list."""
+        the digits the ones before it left, as the harness reads the list. An operation on arrays the program makes
+        itself lays them out in place instead, at any point (:meth:`relayout_local`)."""
+        if names_locals(operation, self.sdfg):
+            return self.relayout_local(operation)
         refused = self.relayout_refusal()
         if refused is not None:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=refused)

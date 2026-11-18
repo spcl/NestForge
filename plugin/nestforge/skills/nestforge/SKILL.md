@@ -168,7 +168,10 @@ DaCe transformation behind each.
   it (`{"action": "permute", "array": "A", "order": ["i1", "i0"]}`; also `block`, `split`, `pad`, `shuffle`). The
   harness lays it out outside the timing. Dimensions are named `i0`, `i1`, ... and keep their names through a permute.
   `list_moves` offers the transpose of the first 2D argument. A `cast` (`"to": "fp32"`) applies and times, but
-  `finalize` refuses it: roll it back before you submit.
+  `finalize` refuses it: roll it back before you submit. On an array the program makes itself (`Tmp1`), the same
+  operations apply at any point, in place, and so do `zip` (`{"action": "zip", "arrays": ["t", "u"], "into": "tu"}`,
+  an array of structs) and `unzip` (a struct of arrays). `linear_shuffle` is the XOR swizzle: a bit matrix over the
+  index bits.
 - `set-fp-mode` `[]` with `fp_mode` (`strict-ieee`, `contract-fma`, `fast-math`): every kernel is built in that
   mode; unset, `finalize`'s sweep picks the fastest correct one. `change-precision` `[]` with `container` and `dtype`
   (`float32`): an internal array is stored in that type, statements convert at the array; `list_moves` lists the

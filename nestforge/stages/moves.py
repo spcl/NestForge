@@ -1906,7 +1906,9 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "pad / unpad, shuffle, linear_shuffle, cast), and the operation goes to the bench as the submission's "
         "requests: the harness lays the argument out before the call and reads it back after it, outside the "
         "timing. Every operation so far is laid out again from the program before the first, so a later one names "
-        "the digits the earlier ones left. Lay arguments out first: refused after any other change.",
+        "the digits the earlier ones left. Lay arguments out first: refused after any other change. An array the "
+        "program makes itself is laid out in place at any point, zip and unzip included, with no request; "
+        "linear_shuffle is the XOR swizzle.",
     ),
     "stage-loads-shared": (
         "StageLoadsThroughSharedMemory (block: the thread block)",
