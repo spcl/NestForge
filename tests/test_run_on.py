@@ -12,6 +12,7 @@ from nestforge.records import MoveStatus
 from nestforge.session import CheckData, Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.performance import Reference
+from nestforge.stages.placement import has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 32
@@ -101,3 +102,14 @@ def test_kernels_with_a_doall_between_them_are_not_merged(tmp_path):
 
     assert done.status is MoveStatus.ILLEGAL and "no consecutive kernels" in str(done.reason)
     assert sut.describe() == tree and len(external_calls(sut.sdfg)) == 2
+
+
+def test_finalize_scope_places_what_no_move_placed_and_moves_the_gpu_copies_into_the_program(tmp_path):
+    sut, (first, second) = scoped(two_time_loops, tmp_path, gpu=True)
+    sut.apply_move("run-on-gpu", [first])
+
+    done = sut.finalize_scope()
+
+    assert done.status is MoveStatus.APPLIED and "get_performance" in done.reason
+    assert sut.devices() == {first: "gpu", second: "cpu"}, "the kernel no move placed keeps its default device"
+    assert has_device_memory(sut.sdfg), "the GPU kernel's copies are in the program, not in its call"

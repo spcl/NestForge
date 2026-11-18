@@ -69,7 +69,7 @@ env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NEST
 extends = "nestforge"
 name = "NestForge (all phases)"
 aliases = ["nestforge-two-stage"]
-tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "advance_phase", "undo_phase", "return_to_phase", "set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "insert_copies", "list_kernels", "focus_kernel", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "advance_phase", "undo_phase", "return_to_phase", "set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "finalize_scope", "list_kernels", "focus_kernel", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
 overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/phase-structured.yaml"]
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_AGENT_PHASES = "" }
 

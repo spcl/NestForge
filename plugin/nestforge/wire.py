@@ -401,11 +401,12 @@ TOOLS: dict[str, ToolDef] = {
         "A move of the scopes phase, as list_scope_moves listed it: run-on-* places kernels (rollback takes it back); "
         "a schedule or persistent run names its kernel (scope). A placed kernel is placed again with the change.",
     ),
-    "insert_copies": ToolDef(
+    "finalize_scope": ToolDef(
         phases(Phase.SCOPES),
         NoArgs,
-        "Move the GPU kernels' host/device copies out of the calls into the program, so a value that stays on the "
-        "GPU between kernels is copied once; answers the copies.",
+        "Finish the scopes: what no run-on move placed gets its default device, and the GPU kernels' host/device "
+        "copies move into the program, so a value that stays on the GPU between kernels is copied once. Answers each "
+        "kernel's device and the copies; measure (get_performance) after it, not before.",
     ),
     "list_kernels": ToolDef(phases(Phase.KERNELS), NoArgs, "Every kernel with its device and arguments.", Effect.READ),
     "focus_kernel": ToolDef(

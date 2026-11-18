@@ -90,7 +90,7 @@ from nestforge.stages.canonicalize import (
     skew_wavefronts,
     structural_cleanup,
 )
-from nestforge.stages.expand import implementations, set_default_implementations, settle
+from nestforge.stages.expand import implementations, in_doall, set_default_implementations, settle
 from nestforge.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
@@ -1346,10 +1346,12 @@ class Session:
         moves: list[Move] = []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
-                node = cast(nodes.LibraryNode, rows[labels[0]][0])
+                node, state = rows[labels[0]]
+                node = cast(nodes.LibraryNode, node)
+                inside = state is not None and in_doall(node, state)
                 moves += [
                     Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
-                    for name in implementations(node, self.targets.gpu)
+                    for name in implementations(node, self.targets.gpu, inside)
                 ]
             elif k == SINK_INVARIANT_CODE:
                 moves += [
@@ -1931,8 +1933,8 @@ class Session:
             container=container,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
-            node = cast(nodes.LibraryNode, rows[0][0])
-            offered = implementations(node, self.targets.gpu)
+            node, state = cast(nodes.LibraryNode, rows[0][0]), rows[0][1]
+            offered = implementations(node, self.targets.gpu, state is not None and in_doall(node, state))
             if implementation not in offered:
                 plan = Refused(
                     f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}.", Refusal.ARGUMENT
@@ -2334,6 +2336,17 @@ class Session:
             return tuple(transfers(self.kernel_graph(), devices))
         except UnsupportedProgram:
             return None
+
+    def finalize_scope(self) -> PlaceResult:
+        """The end of the scopes phase's work: what no run-on move placed gets its default device, and the GPU kernels'
+        host/device copies move into the program (:meth:`default_placement`). From here the program is the one the
+        later phases build, so a measurement is worth taking; the answer says so."""
+        done = self.default_placement()
+        result = done if done is not None else PlaceResult(status=MoveStatus.APPLIED, devices=self.devices())
+        if result.status is not MoveStatus.APPLIED:
+            return result
+        reason = "every kernel is placed and its copies are in the program: get_performance now measures what you built"
+        return result.model_copy(update={"reason": reason})
 
     def default_placement(self) -> PlaceResult | None:
         """Stage 4 default: :meth:`place` unless placed, then :meth:`insert_copies` while a GPU kernel copies inside

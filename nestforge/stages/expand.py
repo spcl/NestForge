@@ -37,10 +37,21 @@ def expansion(node: nodes.LibraryNode) -> str | None:
     return next((name for name in EXPANSIONS if name in node.implementations), None)
 
 
-def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
+def in_doall(node: nodes.Node, state: SDFGState) -> bool:
+    """Whether ``node`` runs inside a doall: a map of its state, or of a state holding a nested SDFG around it."""
+    while True:
+        if state.entry_node(node) is not None:
+            return True
+        parent = state.sdfg.parent_nsdfg_node
+        if parent is None or state.sdfg.parent is None:
+            return False
+        node, state = parent, state.sdfg.parent
+
+
+def implementations(node: nodes.LibraryNode, gpu: bool, inside_doall: bool = False) -> tuple[str, ...]:
     """The implementations ``node`` may be set to: the ones a kernel unit renders (loops, the host vendor library,
     with a GPU target the device library of this machine's GPU) whose libraries this host has, besides its current
-    one."""
+    one. Inside a doall (``inside_doall``), no device library call: each iteration cannot launch its own cuBLAS."""
     name = type(node).__name__
     offered = (
         *cpf.VENDOR_IMPLEMENTATIONS_HOST,
@@ -52,7 +63,10 @@ def implementations(node: nodes.LibraryNode, gpu: bool) -> tuple[str, ...]:
         dict.fromkeys(
             i
             for i in offered
-            if i in node.implementations and i != node.implementation and installed(node.implementations[i])
+            if i in node.implementations
+            and i != node.implementation
+            and installed(node.implementations[i])
+            and not (inside_doall and is_device_implementation(i))
         )
     )
 

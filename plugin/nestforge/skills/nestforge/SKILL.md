@@ -203,8 +203,8 @@ too.
 - `list_scope_moves scope=<kernel>` and `apply_scope_move scope=<kernel> ...` are `list_moves` and `apply_move` inside
   one kernel. `apply_scope_move kind=run-on-gpu labels=[<kernels>]` (or `run-on-cpu`) puts kernels on a device;
   `run-on-gpu-persistent labels=[k1, k2]` merges consecutive kernels into one persistent kernel (one launch, a grid
-  barrier between them); `rollback` takes a placement back. `insert_copies` moves the copies into the program, where
-  adjacent GPU kernels share them.
+  barrier between them); `rollback` takes a placement back. `finalize_scope` places the rest and moves the copies into
+  the program, where adjacent GPU kernels share them; measure after it.
 - `list_kernels` shows each kernel's device, arguments and producers. `focus_kernel name=...` picks the kernel that
   `write_kernel` and `tune_kernel` may change.
 - `read_kernel` gives the kernel's source. `write_kernel` takes a replacement with the same `extern "C"` entry, in
