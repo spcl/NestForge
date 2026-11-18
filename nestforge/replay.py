@@ -142,6 +142,14 @@ def move_matches(
     return set(reads) <= seen_reads and set(writes) <= seen_writes and (where is None or where(rows))
 
 
+def offer_text(rows: Sequence[Row], labels: Sequence[str]) -> str:
+    """A move's labels with what its rows read and write, as a failed pick lists it."""
+    containers = [row_containers(row) for row in rows]
+    reads = sorted(set().union(*(r for r, _ in containers)))
+    writes = sorted(set().union(*(w for _, w in containers)))
+    return f"{list(labels)} reads {reads} writes {writes}"
+
+
 @dataclass(slots=True)
 class Script:
     """What a solution script drives: a session's stage 2, by moves picked without labels."""
@@ -169,7 +177,7 @@ class Script:
         if len(hits) == 1:
             return hits[0]
         found = "no move" if not hits else f"{len(hits)} moves"
-        listing = ", ".join(str(list(m.labels)) for m in offered) or "none"
+        listing = "; ".join(offer_text([rows[label] for label in m.labels], m.labels) for m in offered) or "none"
         raise ReplayError(
             f"{found} of {kind} match (reads {sorted(reads)}, writes {sorted(writes)}); offered: {listing}\n"
             + self.session.describe()

@@ -101,6 +101,19 @@ def until(closed: Callable[[Session], bool], why: str, call: Callable[..., objec
     return run
 
 
+def unscoped_until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
+    """``call``, refused with ``why`` while ``closed`` holds of the session, unless it names a kernel ``scope``: a move
+    inside a kernel works on the kernel's body, which the closing leaves open."""
+
+    @functools.wraps(call)
+    def run(session: Session, **arguments: object) -> object:
+        if closed(session) and arguments.get("scope") is None:
+            raise ValueError(why)
+        return call(session, **arguments)
+
+    return run
+
+
 def focused(call: Callable[..., object]) -> Callable[..., object]:
     """``call`` on the kernel ``name``, refused unless :func:`Session.focus_kernel` scoped the kernel work to it."""
 
@@ -130,7 +143,7 @@ CALLS: dict[str, Callable[..., object]] = {
         kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None
     ],
     "list_moves": Session.list_moves,
-    "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
+    "apply_move": unscoped_until(has_kernels, MOVES_CLOSED, Session.apply_move),
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),

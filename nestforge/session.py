@@ -1063,18 +1063,20 @@ class Session:
             else:
                 sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
-        if kind in (None, SET_FP_MODE) and scope is None:
+        # moves on the whole program close with its first kernel, as the program's own rows do
+        program_wide = scope is None and not external_calls(self.sdfg)
+        if kind in (None, SET_FP_MODE) and program_wide:
             moves += [
                 Move(kind=SET_FP_MODE, labels=(), fp_mode=mode)
                 for mode in fp_modes(self.targets.gpu)
                 if mode != self.fp_mode
             ]
-        if kind in (None, CHANGE_PRECISION) and scope is None:
+        if kind in (None, CHANGE_PRECISION) and program_wide:
             moves += [
                 Move(kind=CHANGE_PRECISION, labels=(), container=name, dtype="float32")
                 for name in precision_candidates(self.sdfg)
             ]
-        if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
+        if kind in (None, RELAYOUT) and program_wide and self.relayout_refusal() is None:
             listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
             if listed is not None:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))

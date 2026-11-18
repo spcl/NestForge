@@ -114,6 +114,17 @@ def test_moves_close_with_the_first_kernel_and_their_defaults_with_them():
         CALLS["run_defaults"](session, stage="moves")
 
 
+def test_a_move_inside_a_kernel_stays_open_after_the_moves_close():
+    session = fresh()
+    CALLS["set_scope"](session, labels=[doalls(session)[0]])
+    (kernel,) = [info.name for info in session.list_kernels()]
+    move = session.list_moves("set-schedule-cpu", scope=kernel)[0]
+
+    done = CALLS["apply_move"](session, kind=move.kind, labels=move.labels, scope=kernel, schedule="dynamic")
+
+    assert done.status is MoveStatus.APPLIED
+
+
 def test_placement_fixes_the_scopes_until_a_new_round_reopens_them():
     session = fresh()
     labels = doalls(session)

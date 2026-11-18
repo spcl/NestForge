@@ -15,5 +15,5 @@ CONFIGS = (Context("cpu", 72, "M"),)
 def solve(s: Script, ctx: Context) -> None:
     if ctx.device == "cpu":
         s.apply(s.pick("inline-library", writes=["alpha_matmul_trans"]))
-        s.apply(s.pick("inline-library", writes=["scale__v2"]))
+        s.apply(s.pick("inline-library", reads=["alpha_1"], writes=["tmp1"]))  # sum(alpha) in the loop
     s.defaults()
