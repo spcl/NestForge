@@ -1291,7 +1291,8 @@ def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_th
 
     reason, detail = asyncio.run(run_anthropic.run_episode_async(args, usage))
 
-    first, _, _, started, listed, *_ = model.sent
+    # three advance_phase calls, the Task call, then the subagent's first request and the one after list_kernels
+    first, started, listed = model.sent[0], model.sent[4], model.sent[5]
     assert reason is runner_common.EndReason.FINISHED, detail
     assert started["system"] == subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text()).prompt
     offered = {tool["name"] for tool in first["tools"]}
