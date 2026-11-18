@@ -7,8 +7,9 @@ Status: steps 1 and 2 built (the tool, its checks, the record; clustering); auth
 Clustering (`scripts/cluster_requests.py <run folders> --out clusters.json`, `nestforge.stages.requests.cluster_requests`):
 two requests are one candidate when one of their example pairs is the same after canonicalization, up to the names of
 arrays and symbols (and the identifiers code generation derives from them, such as `a_idx`); candidates come out most
-asked first, by kernels, then episodes. Constants count: two requests whose examples share no pair stay apart even when
-they ask for one transformation, and the author merges those by reading. An example that does not build is listed with
+asked first, by kernels, then episodes. Floating-point constants are ignored (x / 2 and x / 8 are one pattern); integer
+literals count, since they are offsets and bounds. Requests whose examples differ in shape stay apart, and the author
+merges those by reading. An example that does not build is listed with
 its cluster and kept out of every key.
 
 An agent that finds no fitting move may name one with `request_transformation` (packet `nestforge-requests`; E1 runs

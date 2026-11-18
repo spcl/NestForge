@@ -10,7 +10,8 @@ nothing); and no example copies the task's reference source.
 
 Between rounds, :func:`cluster_requests` groups the recorded requests that ask for one transformation: requests share a
 cluster when one of their example pairs is the same after canonicalization, up to the names of arrays and symbols. Two
-requests for one transformation whose examples all differ stay apart; the author merges those by reading them."""
+requests for one transformation whose examples differ only in floating-point constants are one cluster too; examples
+that differ in shape stay apart, and the author merges those by reading them."""
 
 import copy
 import hashlib
@@ -146,6 +147,11 @@ def canonical_code(program: DaceProgram, targets: Targets) -> str:
     return "\n".join(line.strip() for line in sdfg.generate_code()[0].clean_code.splitlines() if line.strip())
 
 
+#: A floating-point literal of the generated code: the values of a pattern, which clustering ignores. Integer literals
+#: stay, since offsets and bounds (``a[i - 1]`` against ``a[i + 1]``) are the pattern's structure.
+FLOAT_LITERAL = re.compile(r"(?<![\w.])(?:\d+\.\d*|\.\d+|\d+(?=[eE]))(?:[eE][+-]?\d+)?[fFlL]?(?![\w.])")
+
+
 def named_code(program: DaceProgram, targets: Targets) -> tuple[str, list[str]]:
     """:func:`canonical_code` of ``program``, and the names of its data and symbols."""
     sdfg = program.to_sdfg(simplify=True)
@@ -158,7 +164,8 @@ def named_code(program: DaceProgram, targets: Targets) -> tuple[str, list[str]]:
 
 def pattern_key(example: Example, targets: Targets) -> str:
     """The pair as a pattern: the canonical code of ``before`` and of ``after``, with every array and symbol renamed
-    ``v<n>`` in the order the two codes first use them (in the identifiers derived from them too), hashed.
+    ``v<n>`` in the order the two codes first use them (in the identifiers derived from them too) and every
+    floating-point constant as ``<c>``, hashed.
 
     :raises ExampleError: A side does not define, build or run one program."""
     codes, names = [], []
@@ -172,7 +179,7 @@ def pattern_key(example: Example, targets: Targets) -> str:
     words = re.compile(rf"\b({alternatives})(?=\b|_[A-Za-z])")
     renamed: dict[str, str] = {}
     pattern = words.sub(lambda match: renamed.setdefault(match.group(0), f"v{len(renamed)}"), text)
-    return hashlib.sha256(pattern.encode()).hexdigest()
+    return hashlib.sha256(FLOAT_LITERAL.sub("<c>", pattern).encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

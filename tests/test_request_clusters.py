@@ -44,9 +44,9 @@ def asked(episode: str, kernel: str, name: str, examples: list[Example]) -> Aske
     return Asked(episode, kernel, Request(name=name, description=name, rows=("doall0",), examples=examples))
 
 
-def test_requests_whose_examples_differ_only_in_names_are_one_cluster_and_another_transformation_is_its_own():
+def test_requests_whose_examples_differ_in_names_and_constants_are_one_cluster_and_another_is_its_own():
     first = asked("e1", "jacobi_1d", "reciprocal", [reciprocal("a", "b", "N", 2.0), reciprocal("a", "b", "N", 4.0)])
-    renamed = asked("e2", "gemver", "times-inverse", [reciprocal("u", "v", "M", 4.0), reciprocal("u", "v", "M", 8.0)])
+    renamed = asked("e2", "gemver", "times-inverse", [reciprocal("u", "v", "M", 8.0), reciprocal("u", "v", "M", 16.0)])
     other = asked("e3", "jacobi_1d", "square", [squared("a", "b", "N", 1.0), squared("a", "b", "N", 2.0)])
 
     clusters = cluster_requests([first, other, renamed], Targets())
