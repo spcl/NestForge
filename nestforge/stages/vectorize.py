@@ -8,6 +8,7 @@ import copy
 from collections.abc import Sequence
 from typing import cast
 
+from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.passes.vectorization.config import VectorizeConfig
@@ -70,11 +71,26 @@ def vectorize_config(isa: str, tile_sizes: Sequence[int]) -> VectorizeConfig | s
     )
 
 
+def shorter_than_lanes(entry: nodes.MapEntry, lanes: int) -> int | None:
+    """The innermost dimension's trip count of ``entry`` when it is a constant below ``lanes``, else ``None``: such a
+    doall fills no vector."""
+    begin, end, step = entry.map.range[-1]
+    trips = symbolic.simplify((end - begin + step) // step)
+    return int(trips) if trips.is_number and int(trips) < lanes else None
+
+
 def vectorize_refusal(state: SDFGState, entry: nodes.MapEntry, config: VectorizeConfig) -> str | None:
     """Why :class:`VectorizeMap` cannot vectorize ``entry``, found on a copy of the whole program; None when it can."""
     if state.entry_node(entry) is not None:
         return Refused(
             f"{entry.map.label} is inside another doall; vectorize the outermost one around it.", Refusal.WRONG_ROW_KIND
+        )
+    lanes = config.widths[-1]
+    trips = shorter_than_lanes(entry, lanes)
+    if trips is not None:
+        return Refused(
+            f"{entry.map.label} runs {trips} iterations, fewer than {lanes} lanes: it fills no vector.",
+            Refusal.WRONG_ROW_KIND,
         )
     trial = copy.deepcopy(state.sdfg.root_sdfg)
     trial_state = cast(SDFGState, trial.cfg_list[state.parent_graph.cfg_id].node(state.block_id))
