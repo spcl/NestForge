@@ -6,12 +6,11 @@ openmp = "libomp"
 # The routes import the benchmark through hpcagent_bench.plugin_api only; `plugins check` enforces it.
 api = 1
 
-# The packages nestforge and nestforge_bench, installed editable from the repository into the judge's interpreter, so
-# REPO_ROOT stays the checkout and the reference column finds reference_solutions/; their dependencies are the
-# benchmark's own, at its pins.
+# The packages nestforge, nestforge_bench and reference_solutions, built from the repository into the judge's
+# interpreter; their dependencies are the benchmark's own, at its pins.
 [install]
 root = "../.."
-command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "--editable", "{root}"]
+command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
 
 # What HPCAgent-Bench's user-plugins CI runs: the stub agent through the packet's tools, the reference and default
 # columns, and the two-stage stub through every phase of the packet it walks.
