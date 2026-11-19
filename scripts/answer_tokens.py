@@ -91,8 +91,8 @@ def compact(value: Any, depth: int = 0) -> list[str]:
     if isinstance(value, float):
         return [pad + f"{value:.3g}"]
     if isinstance(value, list):
-        flat = all(not isinstance(item, (dict, list)) for item in value)
-        if flat:
+        scalars = all(not isinstance(item, (dict, list)) for item in value)
+        if scalars:
             return [pad + " ".join(compact(item)[0].strip() for item in value)]
         return [line for item in value for line in compact(item, depth)]
     if isinstance(value, dict):

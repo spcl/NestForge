@@ -107,6 +107,8 @@ def is_placed(session: Session) -> bool:
 
 #: Why a scope is refused: the kernels are placed, and a scope changes which kernels there are.
 SCOPES_FIXED = "the kernels are placed: scopes are fixed; roll the placement back to change them"
+#: Why run_defaults moves or finish is refused once kernels exist: their defaults run on the whole program.
+MOVES_CLOSED = "the program has kernels: the defaults of moves and finish are closed; undo_phase back to structured"
 
 
 def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:

@@ -58,7 +58,7 @@ class ChildCpus:
 
 
 #: Whether the OS lets a process set its CPU mask (Linux does; macOS has no such call).
-HAS_AFFINITY = hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity")
+HAS_AFFINITY = "sched_getaffinity" in vars(os) and "sched_setaffinity" in vars(os)
 
 
 def process_cpus() -> set[int]:
