@@ -5,10 +5,11 @@ of the program too and are bound nowhere else."""
 
 import dace
 import numpy as np
+import pytest
 from helpers import corpus_kernel
 
 from nestforge.corpus.bench import preset_sizes
-from nestforge.server import symbol_inputs
+from nestforge.server import Setup, session_data, started_session, symbol_inputs
 
 
 def test_a_fixed_loop_bound_is_a_size():
@@ -34,3 +35,17 @@ def test_an_integer_the_initializer_returns_binds_a_symbol_of_the_program():
     inputs = {"k": np.asarray(3), "a": np.zeros(4), "alpha": np.asarray(1.5), "N": np.asarray(4)}
 
     assert symbol_inputs(sdfg, inputs) == {"k": 3, "N": 4}
+
+
+@pytest.mark.integration
+def test_the_datas_count_wins_over_the_presets(tmp_path):
+    """bicgstab's preset names a nominal ``nnz``; the matrix the data holds has another, and the arrays are that size.
+    With the preset's count a GPU program copied part of ``A_data`` to the device and solved for a wrong ``x`` (#94)."""
+    setup = Setup("bicgstab", "S", "float64", False, str(tmp_path))
+    session = started_session(setup, codegen="first")
+    nominal = session.sizes["nnz"]
+
+    inputs, _ = session_data(setup, session)
+
+    assert int(inputs["nnz"]) != nominal, "the fixture must have a preset count the data differs from"
+    assert session.sizes["nnz"] == int(inputs["nnz"]) == inputs["A_data"].size

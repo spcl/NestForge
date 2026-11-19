@@ -414,7 +414,7 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     kernel = corpus_kernel(setup.kernel)
     assert kernel is not None, "the session started from it"
     inputs |= closure_inputs(kernel.program(), session.sdfg)
-    session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
+    session.sizes = session.sizes | symbol_inputs(session.sdfg, inputs)
     session.check_sizes = check_rung_sizes(setup, session)
     return inputs, reference
 
@@ -447,8 +447,8 @@ def check_rung_sizes(setup: Setup, session: Session) -> dict[str, SymbolValue]:
 def symbol_inputs(sdfg: dace.SDFG, inputs: dict[str, np.ndarray]) -> dict[str, SymbolValue]:
     """The numeric scalars ``initialize()`` returns that the program reads as symbols, not data (TSVC s162's integer
     ``k``, cp2k_density_matrix_trs4's float ``threshold``; canonicalization promotes both to symbols): only sizes
-    bind a symbol, so each becomes one, a float kept a float. A size the preset already gives keeps the preset's
-    value."""
+    bind a symbol, so each becomes one, a float kept a float. The data's value wins over the preset's: a preset may
+    name a nominal count the data does not have (bicgstab's ``nnz``), and the arrays are the data's size (#94)."""
     free = {str(s) for s in sdfg.free_symbols}
     return {
         name: value.item()
