@@ -2,7 +2,8 @@
 
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
-Status: design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
+Status: motion rules built (2026-11-19, `nestforge/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
+the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused; the rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
 ## Goal

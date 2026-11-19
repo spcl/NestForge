@@ -29,6 +29,7 @@ from dace.sdfg.state import (
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is_gpu_relevant_node
 
+from nestforge.ir.comm import CommClass, comm_class, crossing_refusal, in_flight, motion_refusal
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import is_call
 from nestforge.records import Refusal, Refused
@@ -73,7 +74,7 @@ def effect_refusal(state: SDFGState, node: nodes.CodeNode) -> str | None:
                 Refusal.EFFECTS,
             )
         return None
-    if node.has_side_effects(sdfg):
+    if node.has_side_effects(sdfg) and comm_class(node) is None:  # a communication row moves under its own rules
         return Refused(
             f"{node.label} ({type(node).__name__}) has side effects its memlets do not show (a barrier, a "
             "communication, a stateful call); it stays where it is.",
@@ -134,6 +135,9 @@ def effect_of(state: SDFGState, node: nodes.CodeNode) -> Effect:
         return Effect(touched, touched, frozenset(), device=True)
     reads = frozenset(str(e.data.data) for e in state.in_edges(node) if not e.data.is_empty())
     writes = frozenset(str(e.data.data) for e in state.out_edges(node) if not e.data.is_empty())
+    if comm_class(node) is CommClass.WAIT:  # R3: it reads what its starts send and writes what they receive
+        sent, received = in_flight(state.sdfg, state, node)
+        reads, writes = reads | sent, writes | received
     symbols = set(node.free_symbols)
     for edge in state.all_edges(node):
         symbols |= {str(s) for s in edge.data.free_symbols}
@@ -323,7 +327,7 @@ def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], objec
     node, state = row
     target = target_row[0]
     assert isinstance(state, SDFGState) and is_call(state, node), "a library call row"
-    why = effect_refusal(state, node)
+    why = effect_refusal(state, node) or motion_refusal(node, state, target, place)
     if why is not None:
         return why
     if target is state:
@@ -346,7 +350,7 @@ def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], objec
     # the target is crossed when the call lands on its far side
     crossed = span - {anchor} - ({target} if place == "into" or earlier == (place == "after") else set())
     for block in crossed:
-        why = why or crossed_refusal(block, effect)
+        why = why or crossing_refusal(node, block) or crossed_refusal(block, effect)
     for edge in region.edges():
         if edge.src in span and edge.dst in span:
             why = why or interstate_refusal(edge.data, effect, region.label)
