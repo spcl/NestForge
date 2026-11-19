@@ -20,7 +20,7 @@ from helpers import program_mismatch
 from nestforge import session as session_module
 from nestforge.records import MoveStatus
 from nestforge.session import Session
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK
+from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, RUN_ON_KINDS
 from nestforge.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
@@ -55,8 +55,9 @@ def random_place(session: Session, kind: str, rng: np.random.Generator) -> tuple
 
 
 def moves(session: Session, rng: np.random.Generator) -> Iterator[tuple[str, tuple[str, ...]]]:
-    """``ATTEMPTS`` random ``(kind, labels)``, skipping a kind that has no place in the program."""
-    kinds = list(MOVE_SHAPES)
+    """``ATTEMPTS`` random ``(kind, labels)``, skipping a kind that has no place in the program; the moves that place
+    kernels belong to the scopes phase and take kernels, not rows (``test_run_on``)."""
+    kinds = [kind for kind in MOVE_SHAPES if kind not in RUN_ON_KINDS]
     for _ in range(ATTEMPTS):
         kind = kinds[int(rng.integers(len(kinds)))]
         labels = random_place(session, kind, rng)
