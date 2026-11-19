@@ -26,6 +26,12 @@ FAMILIES: dict[str, frozenset[str]] = {
     "authored": frozenset(),
 }
 
+#: The move kinds no family holds, which every run keeps: ``rollback``, and the placement of kernels (the ``run-on-*``
+#: moves of the scopes phase), which a run without moves still makes.
+FAMILY_FREE: frozenset[str] = frozenset(
+    {"rollback", "run-on-cpu", "run-on-gpu", "run-on-cpu-persistent", "run-on-gpu-persistent"}
+)
+
 #: The name that stands for every family.
 ALL = "all"
 
