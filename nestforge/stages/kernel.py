@@ -20,8 +20,10 @@ from dace import dtypes
 from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.sdfg import nodes
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
 from dace.transformation.passes.megakernel.loops import MegakernelLoops
+from dace.transformation.passes.megakernel.megakernel import MegaKernelOptimization
 
 from nestforge.build.arena import (
     TIMED_REPS,
@@ -148,6 +150,10 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
     """The kernel copy the CUDA or HIP unit renders: offloaded whole, so its arrays arrive as device pointers, then
     finalized for the GPU."""
     sdfg = abi_ready_copy(boundary)
+    # placement offloaded the body already; DaCe's offloading takes only Default or CPU maps and derives them again
+    for node, _ in sdfg.all_nodes_recursive():
+        if isinstance(node, nodes.MapEntry) and node.map.schedule == dtypes.ScheduleType.GPU_Device:
+            node.map.schedule = dtypes.ScheduleType.Default
     offload_to_gpu(sdfg)
     return finalize_for_target(sdfg, "gpu")
 
@@ -293,6 +299,14 @@ def persistent_loops(sdfg: dace.SDFG, device: str, loops: AbstractSet[str]) -> i
     return MegakernelLoops(device_type, set(loops)).apply_pass(sdfg, {}) or 0
 
 
+def launches(sdfg: dace.SDFG) -> int:
+    """The GPU kernels ``sdfg`` launches: its ``GPU_Device`` doalls."""
+    return sum(
+        isinstance(node, nodes.MapEntry) and node.map.schedule == dtypes.ScheduleType.GPU_Device
+        for node, _ in sdfg.all_nodes_recursive()
+    )
+
+
 def schedule_kernel(
     ext: ExternalCall, boundary: Boundary, out_dir: Path, persistent: AbstractSet[str] = frozenset()
 ) -> KernelSource:
@@ -304,6 +318,9 @@ def schedule_kernel(
     sdfg = form.schedule(boundary)
     if persistent:
         persistent_loops(sdfg, device, persistent)
+    elif device == "gpu" and launches(sdfg) > 1:
+        # one scope is one kernel: its doalls (a branch of each, a run of them) launch as one persistent kernel
+        MegaKernelOptimization().apply_pass(sdfg, {})
     sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     with new_gpu_codegen():
         rendering = cpf.render(sdfg, language=form.language)

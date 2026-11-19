@@ -6,11 +6,29 @@ toolkit: a device unit with the ``__global__`` kernel and a host unit that launc
 import re
 from pathlib import Path
 
+import dace
 import pytest
+from dace.sdfg.state import ConditionalBlock
 from helpers import dace_gpu_backend
 from test_kernel_stage import gpu_lowered_kernel, lowered_kernel, vadd
 
-from nestforge.stages.kernel import kernel_text, schedule_kernel
+from nestforge.records import MoveStatus
+from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
+from nestforge.stages.kernel import kernel_text, launches, schedule_kernel
+
+N = dace.symbol("N", dtype=dace.int64)
+
+
+@dace.program
+def branchy(A: dace.float64[N], B: dace.float64[N], flag: dace.int64):
+    if flag > 0:
+        for i in dace.map[0:N]:
+            B[i] = A[i] * 2.0
+    else:
+        for i in dace.map[0:N]:
+            B[i] = A[i] + 1.0
+
 
 #: Per backend: the unit suffix, the runtime header and the launch call of its dialect.
 DIALECTS = {
@@ -35,6 +53,25 @@ def test_a_gpu_kernel_renders_a_global_kernel_and_its_launch_in_the_backends_dia
     assert launchers and all(re.search(rf"\bvoid {name}\(", device) for name in launchers), "the host calls a launcher"
     other_launch = next(call for other, (_, _, call) in DIALECTS.items() if other != api)
     assert other_launch not in device
+
+
+def test_a_gpu_scope_of_a_branch_over_two_doalls_launches_one_megakernel(tmp_path):
+    session = Session(branchy.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
+    session.canonicalize()
+    session.describe()
+    (branch,) = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, ConditionalBlock)]
+    name = str(session.set_scope([branch]).reason)
+    assert session.apply_move("run-on-gpu", [name]).status is MoveStatus.APPLIED
+    session.finalize_scope()
+    body = session.kernel(name).standalone_sdfg
+    assert body is not None and launches(body) == 2, "one scope, a doall per branch"
+
+    with dace_gpu_backend("cuda"):
+        src = session.default_kernel(name)
+
+    assert src.device_unit is not None
+    device = src.device_unit.read_text()
+    assert "cudaLaunchCooperativeKernel(" in device and "cudaLaunchKernel(" not in device
 
 
 def test_a_cpu_kernel_renders_no_device_code(tmp_path):
