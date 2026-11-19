@@ -42,10 +42,16 @@ __all__ = [
     "StubAgent",
     "TwoStageStub",
     "reference_solution",
+    "solution_paths",
 ]
 
 #: Where the reference solutions live, one ``<kernel>.py`` each: the installed package, wherever the install put it.
 SOLUTIONS = pathlib.Path(reference_solutions.__file__).parent
+
+
+def solution_paths() -> list[pathlib.Path]:
+    """Every reference solution, in name order; the package's own ``__init__.py`` is none."""
+    return sorted(path for path in SOLUTIONS.glob("*.py") if path.name != "__init__.py")
 
 
 def reference_solution(kernel: str) -> Solution | None:
