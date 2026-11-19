@@ -560,8 +560,12 @@ def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
 
 
 def scratch_arrays(sdfg: dace.SDFG) -> list[str]:
-    """Transient arrays the caller must pre-allocate; a transient scalar is a local instead."""
-    return sorted(name for name, desc in sdfg.arrays.items() if desc.transient and name not in names_of(sdfg).locals)
+    """Transient arrays the caller must pre-allocate; a transient scalar is a local instead, and a constant of the
+    program (cloudsc's ``zvqx``) is defined in the module with its value, as the kernel's C source fixes it."""
+    locals_, constants = names_of(sdfg).locals, sdfg.constants_prop.keys()
+    return sorted(
+        name for name, desc in sdfg.arrays.items() if desc.transient and name not in locals_ and name not in constants
+    )
 
 
 def index(subset: subsets.Subset) -> str:
@@ -1135,9 +1139,19 @@ def region_lines(scope: Scope, region: ControlFlowRegion, update: str | None) ->
     return lines
 
 
-def module(fn_name: str, args: list[str], body: list[str]) -> str:
-    """The standalone module defining ``fn_name(args)`` with ``body``; refuses code Python rejects."""
+def constant_line(name: str, value: object) -> str:
+    """``name = value`` for one program constant, an array with its element type."""
+    if isinstance(value, np.ndarray):
+        return f"{name} = np.array({value.tolist()!r}, dtype=np.{value.dtype.name})"
+    return f"{name} = {value!r}"
+
+
+def module(fn_name: str, args: list[str], body: list[str], constants: Mapping[str, object] | None = None) -> str:
+    """The standalone module defining ``fn_name(args)`` with ``body``, the program ``constants`` it reads defined
+    before it; refuses code Python rejects."""
     function = "\n".join([f"def {fn_name}({', '.join(args)}):", *indent(body)])
+    if constants:
+        function = "\n".join(constant_line(name, value) for name, value in constants.items()) + "\n\n\n" + function
     imports = "import math\n\nimport numpy as np\n" if re.search(r"\bmath\.", function) else "import numpy as np\n"
     # a half spectrum's extent is an integer division, which DaCe spells as a call
     imports += "from operator import floordiv as int_floor\n" if "int_floor(" in function else ""
@@ -1154,8 +1168,10 @@ def module(fn_name: str, args: list[str], body: list[str]) -> str:
 
 
 def render(fn_name: str, args: list[str], sdfg: dace.SDFG) -> str:
-    """The module defining ``fn_name(args)`` over a lowered ``sdfg``."""
-    return module(fn_name, args, region_lines(scope_of(sdfg), sdfg, None))
+    """The module defining ``fn_name(args)`` over a lowered ``sdfg``; a constant of the program it reads is defined
+    in the module with its value, as the kernel's C source fixes it, never taken as an argument."""
+    constants = {name: value for name, (_, value) in sdfg.constants_prop.items() if name not in args}
+    return module(fn_name, args, region_lines(scope_of(sdfg), sdfg, None), constants)
 
 
 def map_python(state: SDFGState, entry: nodes.MapEntry, body_only: bool = False) -> list[str]:
