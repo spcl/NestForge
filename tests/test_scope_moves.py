@@ -7,6 +7,7 @@ kernel or another kernel."""
 import dace
 import numpy as np
 import pytest
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.sdfg.nodes import MapEntry
 
 from nestforge.records import MoveStatus, Refusal
@@ -302,3 +303,28 @@ def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
 
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
     assert session.list_moves("set-schedule-gpu", scope=first) == []
+
+
+def test_a_staged_tile_moves_with_the_tma_unit_on_a_hopper_gpu(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
+
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="90"):
+        done = session.apply_move("copy-to-tma", only_move(session, "copy-to-tma", first), scope=first)
+
+    body = session.kernel(first).standalone_sdfg
+    copies = [n.implementation for n, _ in body.all_nodes_recursive() if isinstance(n, CopyLibraryNode)]
+    assert done.status is MoveStatus.APPLIED, done.reason
+    assert copies == ["MemoryEngineBulk"]  # the tile of a; b is not staged
+
+
+def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
+
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="90"):
+        kernel = only_move(session, "copy-to-tma", first)
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="80"):
+        done = session.apply_move("copy-to-tma", kernel, scope=first)
+
+    assert done.status is not MoveStatus.APPLIED and "compute capability 9.0" in done.reason

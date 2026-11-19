@@ -17,6 +17,7 @@ import test_inline_library
 import test_lib_motion_moves
 import test_move_soundness
 import test_persistent_kernel
+import test_pipeline_depth
 import test_run_on
 import test_scope_moves as scope_fixtures
 import test_session_moves
@@ -28,6 +29,7 @@ from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
 from nestforge.session import UNDONE_BY, Move, Session
+from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, VECTORIZE_DOALL, config_names
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
@@ -41,6 +43,8 @@ OWN_CASES = {
     "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
     "persistent-kernel": "test_rollback_after_a_persistent_kernel",
     "set-fp-mode": "test_rollback_after_set_fp_mode",
+    "copy-to-tma": "test_rollback_after_copy_to_tma",
+    "set-pipeline-depth": "test_rollback_after_set_pipeline_depth",
     "run-on-cpu": "test_rollback_after_a_placement_move",
     "run-on-gpu": "test_rollback_after_a_placement_move",
     "run-on-cpu-persistent": "test_rollback_after_a_placement_move",
@@ -308,4 +312,30 @@ def test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back(tmp
     differs = differs_after_rollback(session, lambda: session.apply_move(untile, pair))
 
     assert session.applied[-1].kind == tile, "the untile was a move of its own, and only it was taken back"
+    assert not differs, differs
+
+
+def test_rollback_after_copy_to_tma(tmp_path):
+    session, first, second = scope_fixtures.two_kernels(tmp_path, gpu=True)
+    session.place({first: "gpu", second: "gpu"})
+    session.insert_copies()
+    (staging,) = session.list_moves("stage-loads-shared", scope=first)
+    session.apply_move("stage-loads-shared", staging.labels, scope=first, block=[64])
+
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="90"):
+        (move,) = session.list_moves("copy-to-tma", scope=first)
+        differs = differs_after_rollback(session, lambda: session.apply_move("copy-to-tma", move.labels, scope=first))
+
+    assert not differs, differs
+
+
+def test_rollback_after_set_pipeline_depth(tmp_path):
+    session = Session(
+        test_pipeline_depth.tiled.to_sdfg(simplify=True), Targets(gpu=False), work_dir=str(tmp_path), sizes={"N": 16}
+    )
+    session.canonicalize()
+    (move,) = session.list_moves("set-pipeline-depth")
+
+    differs = differs_after_rollback(session, lambda: session.apply_move("set-pipeline-depth", move.labels, depth=3))
+
     assert not differs, differs

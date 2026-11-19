@@ -18,6 +18,8 @@ import dace
 import sympy
 from dace import dtypes
 from dace.data import Scalar
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
+from dace.libraries.standard.nodes.copy.common import memory_engine_bulk_reason
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
@@ -81,6 +83,7 @@ from dace.transformation.passes.loop_invariant_code_motion import (
     map_has_invariant_code,
 )
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
+from dace.transformation.passes.multiple_buffering.staging_analysis import find_staged_buffers
 from dace.transformation.passes.parallelization.wavefront.skew import WavefrontSkew
 from dace.transformation.passes.parallelization.wavefront.statements import occurrence_index
 from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
@@ -164,6 +167,12 @@ CPU_SCHEDULES = {
 }
 #: The move kind that sets the thread block of a GPU kernel, or how the block's threads share a doall inside it.
 SET_SCHEDULE_GPU = "set-schedule-gpu"
+#: The move kind that copies a staged kernel's tiles with the TMA unit.
+COPY_TO_TMA = "copy-to-tma"
+#: The move kind that pipelines a kernel loop's staged loads over ``depth`` buffers.
+SET_PIPELINE_DEPTH = "set-pipeline-depth"
+#: The stages ``set-pipeline-depth`` is listed with: two buffers, one loading while the other is read.
+PROBE_PIPELINE_DEPTH = 2
 #: The schedules ``set-schedule-gpu`` takes on a doall inside a kernel, as DaCe schedules; ``guided`` waits for DaCe.
 GPU_INNER_SCHEDULES = {
     "sequential": dtypes.ScheduleType.Sequential,
@@ -231,6 +240,8 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
+    COPY_TO_TMA: (nodes.MapEntry,),
+    SET_PIPELINE_DEPTH: (LoopRegion,),
     SKEW_WAVEFRONT: (LoopRegion,),
     FOR_TO_DOALL: (LoopRegion,),
     SET_SCHEDULE_CPU: (nodes.MapEntry,),
@@ -238,7 +249,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
-DEVICE_KINDS = frozenset({"stage-loads-shared"})
+DEVICE_KINDS = frozenset({"stage-loads-shared", COPY_TO_TMA})
 
 #: The ISA ``vectorize-doall`` vectorizes for when none is given: the best one the host runs.
 DEFAULT_ISA = "auto"
@@ -1009,6 +1020,50 @@ def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite
     return move
 
 
+def kernel_copies(state: SDFGState, entry: nodes.MapEntry) -> list[CopyLibraryNode]:
+    """The copy nodes inside the kernel ``entry``: the tiles ``stage-loads-shared`` loads into shared memory."""
+    return [n for n in state.scope_subgraph(entry).nodes() if isinstance(n, CopyLibraryNode)]
+
+
+def plan_copy_to_tma(row: Row) -> Rewrite | str:
+    """A staged GPU kernel copies its tiles between global and shared memory with the TMA unit (``MemoryEngineBulk``),
+    every copy the unit takes; the others keep their block-collective copy."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    copies = kernel_copies(state, entry)
+    reasons = [memory_engine_bulk_reason(node, state) for node in copies]
+    taken = [node for node, reason in zip(copies, reasons) if reason is None]
+    if not taken:
+        why = "; ".join(f"{node.label}: {reason}" for node, reason in zip(copies, reasons))
+        return Refused(
+            f"{entry.map.label} has no copy the TMA unit takes ({why or 'no staged tile: stage-loads-shared first'}).",
+            Refusal.DEPENDENCE,
+        )
+
+    def commit() -> None:
+        for node in taken:
+            node.implementation = "MemoryEngineBulk"
+
+    return Rewrite("MemoryEngineBulk", commit)
+
+
+def plan_set_pipeline_depth(row: Row, depth: int = PROBE_PIPELINE_DEPTH) -> Rewrite | str:
+    """A kernel loop whose iterations first copy a tile into a buffer runs as a pipeline of ``depth`` stages: the
+    buffer gets ``depth`` slots, and the copies of later iterations run while an earlier tile is read. Code generation
+    lowers it (DaCe's ``LowerMultipleBuffering``); the move sets the loop's ``pipeline_depth``."""
+    loop = cast(LoopRegion, row[0])
+    if depth < 2:
+        return Refused(f"pass depth, the stages of {loop.label}'s pipeline: 2 or more; not {depth}.", Refusal.ARGUMENT)
+    staged, rejected = find_staged_buffers(loop, loop.sdfg)
+    if not staged:
+        why = "; ".join(f"{name}: {reason}" for name, reason in rejected.items()) or "it copies no tile into a buffer"
+        return Refused(f"{loop.label} stages no buffer to pipeline ({why}).", Refusal.DEPENDENCE)
+
+    def commit() -> None:
+        loop.pipeline_depth = depth
+
+    return Rewrite("LowerMultipleBuffering", commit)
+
+
 def plan_snapshot_reads(row: Row) -> Rewrite | str:
     """A doall that reads a slice of an array another doall of its state writes copies the slice first, so the two
     stop touching one array and ``doall-fusion`` can merge them."""
@@ -1702,6 +1757,8 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
     PROPAGATE_CONFIG: plan_propagate_config,
     "stage-loads-shared": plan_stage_loads_shared,
+    COPY_TO_TMA: plan_copy_to_tma,
+    SET_PIPELINE_DEPTH: plan_set_pipeline_depth,
 }
 
 
@@ -1966,6 +2023,16 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "program makes itself is laid out in place at any point, zip and unzip included, with no request; "
         "linear_shuffle is the XOR swizzle.",
     ),
+    SET_PIPELINE_DEPTH: (
+        "LoopRegion.pipeline_depth, lowered by LowerMultipleBuffering (depth: the stages)",
+        "a loop in a GPU kernel whose iterations each copy a tile into a buffer first runs as a pipeline: the buffer "
+        "gets depth slots, and later iterations copy their tiles while an earlier tile is read.",
+    ),
+    COPY_TO_TMA: (
+        "CopyLibraryNode implementation MemoryEngineBulk",
+        "a GPU kernel whose loads stage-loads-shared staged copies each tile between global and shared memory with "
+        "the TMA unit (Hopper or newer, CUDA): one thread issues the copy and the block waits on a barrier.",
+    ),
     "stage-loads-shared": (
         "StageLoadsThroughSharedMemory (block: the thread block)",
         "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
@@ -2003,13 +2070,14 @@ def plan_move(
     chunk: int | None = None,
     threads: int | None = None,
     container: str | None = None,
+    depth: int = PROBE_PIPELINE_DEPTH,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
     is the device the wavefront's tiles are for, ``force`` goes to :data:`FOR_TO_DOALL`, and ``schedule``, ``chunk``
-    and ``threads`` go to :data:`SET_SCHEDULE_CPU`."""
+    and ``threads`` go to :data:`SET_SCHEDULE_CPU`, ``depth`` to :data:`SET_PIPELINE_DEPTH`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
@@ -2027,6 +2095,8 @@ def plan_move(
         return plan_for_to_doall(*rows, force=force)
     if kind == SINK_INVARIANT_CODE:
         return plan_sink_invariant_code(*rows, container=container)
+    if kind == SET_PIPELINE_DEPTH:
+        return plan_set_pipeline_depth(*rows, depth=depth)
     if kind == SET_SCHEDULE_CPU:
         return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
@@ -2222,6 +2292,10 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
+    COPY_TO_TMA: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e) and kernel_copies(st, e)),
+    SET_PIPELINE_DEPTH: lambda sdfg: (
+        row for row in for_rows(sdfg) if find_staged_buffers(row[0][0], row[0][0].sdfg)[0]
+    ),
     SKEW_WAVEFRONT: for_rows,
     FOR_TO_DOALL: for_rows,
     SET_SCHEDULE_CPU: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if not in_parallel_doall(st, e)),

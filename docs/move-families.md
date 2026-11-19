@@ -19,7 +19,7 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | `layout` | `relayout` |
 | `precision` | `set-fp-mode`, `change-precision` |
 | `vectorize` | `vectorize-doall` |
-| `schedule` | `set-schedule-cpu`, `set-schedule-gpu`, `stage-loads-shared`, `persistent-kernel` |
+| `schedule` | `set-schedule-cpu`, `set-schedule-gpu`, `stage-loads-shared`, `copy-to-tma`, `set-pipeline-depth`, `persistent-kernel` |
 | `wavefront` | `skew-wavefront` |
 
 `rollback` belongs to no family and is never switched off. A new move kind joins a family in the same change, or

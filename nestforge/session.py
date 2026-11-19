@@ -134,6 +134,7 @@ from nestforge.stages.moves import (
     INLINE_LIBRARY,
     MOVE_SHAPES,
     PERSISTENT_KERNEL,
+    PROBE_PIPELINE_DEPTH,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
     ROLLBACK,
@@ -1341,6 +1342,8 @@ class Session:
         found = [m for m in legal_moves(structured, kind, target) if m[0] not in DEVICE_KINDS] if built_in else []
         found += [m for k in sorted(DEVICE_KINDS) if kind in (None, k) for m in legal_moves(device, k, target)]
         rows = self.row_index() if scope is None else tree_rows(structured)
+        # a device move names rows of the body as placed, which staging gives rows of its own
+        device_rows = rows if scope is None else tree_rows(device)
         # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
         scoped: dict[str, str] = {} if scope is None else {"scope": scope}
         moves: list[Move] = []
@@ -1366,7 +1369,8 @@ class Session:
                     current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
                     moves.append(Move(kind=k, labels=labels, current=current, **scoped))
             else:
-                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
+                named = device_rows if k in DEVICE_KINDS else rows
+                sizes = probe_sizes(k, [named[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
                 moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
         if AUTHORED_FAMILY not in self.disabled_families:
             moves += [
@@ -1826,6 +1830,7 @@ class Session:
         container: str | None = None,
         fp_mode: str | None = None,
         dtype: str | None = None,
+        depth: int = PROBE_PIPELINE_DEPTH,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -1850,6 +1855,7 @@ class Session:
         :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
         :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
         :param container: For ``sink-invariant-code``, the temporary whose statements sink into the row.
+        :param depth: For ``set-pipeline-depth``, the stages of the loop's pipeline (2 or more).
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -1931,6 +1937,7 @@ class Session:
             chunk=chunk,
             threads=threads,
             container=container,
+            depth=depth,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node, state = cast(nodes.LibraryNode, rows[0][0]), rows[0][1]

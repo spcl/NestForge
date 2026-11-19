@@ -189,6 +189,10 @@ DaCe transformation behind each.
   it `schedule`: `sequential` (each thread runs it), `static` (one iteration per thread), `dynamic` (a queue).
 - `stage-loads-shared` `[doall]` with `block`, in a GPU kernel with its copies in: the tiles its threads reread go
   through shared memory. Last: placing again drops it.
+- `copy-to-tma` `[doall]`, on a kernel `stage-loads-shared` staged: its tiles move with the TMA unit (CUDA,
+  Hopper or newer); refused with the reason when no tile fits the unit.
+- `set-pipeline-depth` `[for]` with `depth`, on a kernel loop that copies a tile into a buffer each iteration:
+  the buffer gets `depth` slots and later tiles load while an earlier one is read (code generation lowers it).
 
 ## Scopes and kernels (when your tool list has them)
 
