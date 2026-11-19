@@ -65,7 +65,7 @@ override-dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["nestforge*"]
+include = ["nestforge*", "reference_solutions"]
 
 [tool.ruff]
 line-length = 120
