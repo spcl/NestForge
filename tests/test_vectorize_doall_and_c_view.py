@@ -275,3 +275,23 @@ def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path):
     x = np.linspace(-1.0, 1.0, SIZE)
     report = sut.performance({"x": x, "y": np.zeros(SIZE)}, Reference({"y": np.abs(x)}, 0.0, 0.0), codegen="first")
     assert report.structured.error == "" and report.structured.correct is True, report.structured
+
+
+@dace.program
+def five_species(out: dace.float64[5], x: dace.float64[5]):
+    for i in dace.map[0:5]:
+        out[i] = x[i] * 2.0
+
+
+def test_a_doall_shorter_than_a_vector_is_not_offered_and_is_refused(tmp_path):
+    """cloudsc's loop over its 5 species, kept by canonicalization: 5 iterations fill no vector of 8 lanes, so the
+    listing offers no vectorize-doall there and a vectorize-doall asked for anyway is refused, not attempted."""
+    sut = Session(five_species.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
+    sut.canonicalize()
+    (doall,) = doall_labels(sut)
+
+    offered = sut.list_moves(VECTORIZE_DOALL)
+    done = sut.apply_move(VECTORIZE_DOALL, [doall], lanes=[DEFAULT_LANES])
+
+    assert offered == []
+    assert done.status is MoveStatus.ILLEGAL and "fewer than 8 lanes" in str(done.reason)

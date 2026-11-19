@@ -109,7 +109,13 @@ from nestforge.stages.sinking import (
 )
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
-from nestforge.stages.vectorize import DEFAULT_LANES, VECTORIZE_DOALL, vectorize_config, vectorize_refusal
+from nestforge.stages.vectorize import (
+    DEFAULT_LANES,
+    VECTORIZE_DOALL,
+    shorter_than_lanes,
+    vectorize_config,
+    vectorize_refusal,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2206,7 +2212,11 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     ),
     HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
     SINK_INVARIANT_GUARD: loop_guards,
-    VECTORIZE_DOALL: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    VECTORIZE_DOALL: lambda sdfg: (
+        ((e, st),)
+        for st, e in map_rows(sdfg)
+        if st.entry_node(e) is None and shorter_than_lanes(e, DEFAULT_LANES) is None
+    ),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
