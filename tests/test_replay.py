@@ -31,8 +31,9 @@ from nestforge.server import Setup, start
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import ROLLBACK
+from nestforge_bench import solution_paths
 
-SOLUTIONS = sorted((REPO_ROOT / "reference_solutions").glob("*.py"))
+SOLUTIONS = solution_paths()
 S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"
 #: Where CI replays every solution: correctness only, so the smallest preset on one CPU thread.
 CI_CONTEXT = Context("cpu", 1, "S")
