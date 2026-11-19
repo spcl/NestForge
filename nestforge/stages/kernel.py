@@ -150,10 +150,10 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
     """The kernel copy the CUDA or HIP unit renders: offloaded whole, so its arrays arrive as device pointers, then
     finalized for the GPU."""
     sdfg = abi_ready_copy(boundary)
-    # placement offloaded the body already; DaCe's offloading takes only Default or CPU maps and derives them again
+    # placement offloaded the body already; DaCe's offloading takes only Default or CPU scopes and derives them again
     for node, _ in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.MapEntry) and node.map.schedule == dtypes.ScheduleType.GPU_Device:
-            node.map.schedule = dtypes.ScheduleType.Default
+        if isinstance(node, (nodes.MapEntry, nodes.LibraryNode)) and node.schedule == dtypes.ScheduleType.GPU_Device:
+            node.schedule = dtypes.ScheduleType.Default
     offload_to_gpu(sdfg)
     return finalize_for_target(sdfg, "gpu")
 
@@ -307,6 +307,15 @@ def launches(sdfg: dace.SDFG) -> int:
     )
 
 
+def thread_block_maps(sdfg: dace.SDFG) -> bool:
+    """Whether a doall of ``sdfg`` runs on a GPU kernel's thread block."""
+    return any(
+        isinstance(node, nodes.MapEntry)
+        and node.map.schedule in (dtypes.ScheduleType.GPU_ThreadBlock, dtypes.ScheduleType.GPU_ThreadBlock_Dynamic)
+        for node, _ in sdfg.all_nodes_recursive()
+    )
+
+
 def schedule_kernel(
     ext: ExternalCall, boundary: Boundary, out_dir: Path, persistent: AbstractSet[str] = frozenset()
 ) -> KernelSource:
@@ -318,8 +327,10 @@ def schedule_kernel(
     sdfg = form.schedule(boundary)
     if persistent:
         persistent_loops(sdfg, device, persistent)
-    elif device == "gpu" and launches(sdfg) > 1:
-        # one scope is one kernel: its doalls (a branch of each, a run of them) launch as one persistent kernel
+    elif device == "gpu" and launches(sdfg) > 1 and not thread_block_maps(sdfg):
+        # one scope is one kernel: its doalls (a branch of each, a run of them) launch as one persistent kernel.
+        # shortcut: DaCe's megakernel takes flat kernels only, so a body with thread-block maps (a block reduction)
+        # launches per doall; upgrade when MegaKernelOptimization keeps an inner block's size
         MegaKernelOptimization().apply_pass(sdfg, {})
     sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     with new_gpu_codegen():
