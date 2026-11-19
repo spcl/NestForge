@@ -1390,6 +1390,7 @@ def test_each_library_product_is_a_kernel_and_the_program_asks_for_its_scratch(l
 @pytest.mark.gpu
 def test_a_gpu_target_reports_its_offloading(loaded: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGUAGE", "cuda")
+    to_phase("episode-gpu", "scopes")
 
     placed = post("run_defaults", episode="episode-gpu", stage="placement")
     judge = post("get_performance", episode="episode-gpu")

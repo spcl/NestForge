@@ -331,7 +331,7 @@ def test_inserting_copies_before_any_placement_changes_nothing(tmp_path):
 
     result = session.insert_copies()
 
-    assert result.status is MoveStatus.ILLEGAL and "place first" in result.reason
+    assert result.status is MoveStatus.ILLEGAL and "run-on-gpu first" in result.reason
     assert session.sdfg.to_json() == before
 
 
