@@ -27,7 +27,7 @@ from hpcagent_bench.harness.sandbox import shared_dir
 from hpcagent_bench.harness.task import Task
 from hpcagent_bench.spec import resolve_preset
 
-from nestforge.paths import REPO_ROOT
+import reference_solutions
 from nestforge.plugin_record import SCHEMA, episode_record, keep_capped
 from nestforge.replay import Context, Script, Solution, baseline, load_solution
 from nestforge.records import KernelStatus, MoveStatus, spelled
@@ -44,8 +44,8 @@ __all__ = [
     "reference_solution",
 ]
 
-#: Where the reference solutions live, one ``<kernel>.py`` each.
-SOLUTIONS = REPO_ROOT / "reference_solutions"
+#: Where the reference solutions live, one ``<kernel>.py`` each: the installed package, wherever the install put it.
+SOLUTIONS = pathlib.Path(reference_solutions.__file__).parent
 
 
 def reference_solution(kernel: str) -> Solution | None:
