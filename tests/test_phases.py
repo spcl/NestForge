@@ -96,3 +96,19 @@ def test_a_tool_of_another_phase_is_refused_and_moves_inside_a_kernel_wait_for_t
     assert "phase scopes" in early_scope.error and "structured" in early_scope.error
     assert "scoped" in scoped_move.error
     assert "phase scoped, structured" in late_move.error and "in the phase scopes" in late_move.error
+
+
+def test_leaving_a_phase_summarizes_its_moves_and_the_kernels():
+    sut = fresh()
+    (move, *_) = sut.list_moves("doall-fusion")
+    sut.apply_move(move.kind, move.labels)
+
+    left_structured = sut.next_phase()
+    left_scopes = sut.next_phase()
+
+    assert left_structured.summary.splitlines()[:2] == [
+        "structured: 1 move(s) applied",
+        f"  doall-fusion {' '.join(move.labels)}",
+    ]
+    assert left_scopes.summary.startswith("scopes: 0 move(s) applied")
+    assert "kernels: " in left_scopes.summary and " on cpu" in left_scopes.summary

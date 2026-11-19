@@ -685,6 +685,9 @@ class PhaseStep(Record):
     reason: str = ""
     ran: tuple[str, ...] = ()
     undone: tuple[str, ...] = ()
+    #: What the phase just left holds (P3, context management): its moves and the kernels, for the agent to keep
+    #: instead of the answers it read there.
+    summary: str = ""
 
 
 @dataclass(slots=True)
@@ -761,6 +764,7 @@ class Session:
         "agent_phases",
         "phase",
         "phase_exits",
+        "phase_starts",
         "fastest",
         "requests",
     )
@@ -796,6 +800,8 @@ class Session:
         self.phase: PhaseName = self.agent_phases[0]
         #: The program as the agent left each phase it left, for :meth:`prev_phase`.
         self.phase_exits: dict[PhaseName, Checkpoint] = {}
+        #: Where each phase the agent entered starts in :attr:`applied`, for the summary of the phase it leaves.
+        self.phase_starts: dict[PhaseName, int] = {}
         #: The move families switched off for the whole run.
         self.disabled_families = checked_families(disabled_families)
         #: The authored moves this session offers, by kind (family ``authored``).
@@ -1233,6 +1239,7 @@ class Session:
             ran.append(self.phase_default(phase))
             ran += [closed] if (closed := self.close_phase(phase)) else []
         self.history.clear()
+        self.phase_starts[self.phase] = len(self.applied)
         return tuple(ran)
 
     def next_phase(self) -> PhaseStep:
@@ -1243,6 +1250,7 @@ class Session:
             reason = f"{self.phase} is the last phase: finalize and score, or return_to_phase to run a phase again."
             return PhaseStep(status="refused", phase=self.phase, reason=reason)
         target = self.agent_phases[position + 1]
+        moves = self.applied[self.phase_starts.get(self.phase, 0) :]
         exit_point = self.saved()
         ran: list[str] = []
         with self.atomic():
@@ -1250,10 +1258,24 @@ class Session:
             for phase in PHASE_ORDER[PHASE_ORDER.index(self.phase) + 1 : PHASE_ORDER.index(target)]:
                 ran.append(self.phase_default(phase))
                 ran += [closed] if (closed := self.close_phase(phase)) else []
+        summary = self.phase_summary(moves)
         self.phase_exits[self.phase] = exit_point
         self.phase, self.focus = target, None
         self.history.clear()  # rollback takes back changes of the phase the agent is in
-        return PhaseStep(status="moved", phase=target, ran=tuple(ran))
+        self.phase_starts[target] = len(self.applied)
+        return PhaseStep(status="moved", phase=target, ran=tuple(ran), summary=summary)
+
+    def phase_summary(self, moves: Sequence[MoveResult]) -> str:
+        """The phase the agent leaves, in a few lines: the ``moves`` it applied there, and the kernels with their
+        devices as leaving it made them."""
+        lines = [f"{self.phase}: {len(moves)} move(s) applied"]
+        lines += [
+            f"  {move.kind} {' '.join(move.labels)}" + (f" in {move.scope}" if move.scope else "") for move in moves
+        ]
+        devices = self.devices()
+        if devices:
+            lines.append("kernels: " + ", ".join(f"{name} on {device}" for name, device in devices.items()))
+        return "\n".join(lines)
 
     def prev_phase(self) -> PhaseStep:
         """Take the current phase back completely, with the defaults run on the way into it: the program is again as

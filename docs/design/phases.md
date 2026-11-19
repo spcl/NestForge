@@ -61,7 +61,8 @@ The names differ from the bench's own `next_phase` tool, which the agent's tool 
 - Each packet's prompt carries the guide of its agent's first phase (`prompt/phase-<phase>.yaml`); the phase tools'
   answers carry the guide of the phase they reach (`prompt/phases/<phase>.md`).
 
-## Later (P3)
+## Context management (P3)
 
-Context management: what the agent keeps of a phase it left. The exit checkpoints are the seam: a summary of each phase
-(the tree it left, its kernels) can be built from them.
+Leaving a phase (`advance_phase`) answers a `summary` of it: the moves the agent applied there (kind, labels, kernel)
+and the kernels with their devices as leaving made them, so the agent can keep the summary instead of the answers it
+read in that phase. The exit checkpoints stay the seam for anything more (which answers a harness drops).
