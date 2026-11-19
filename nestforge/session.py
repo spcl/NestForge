@@ -2223,8 +2223,10 @@ class Session:
             self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
         ext = self.kernel(name)
         assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
-        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only
-        connected = {data_name(conn) for conn in (*ext.in_connectors, *ext.out_connectors)}
+        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only; an argument
+        # carries its connector's name (``_out_x``, as the expansion copies the SDFG) or the data's (``x``)
+        connectors = {*ext.in_connectors, *ext.out_connectors}
+        connected = connectors | {data_name(conn) for conn in connectors}
         for array, desc in ext.standalone_sdfg.arrays.items():
             if array not in connected:
                 desc.transient = True

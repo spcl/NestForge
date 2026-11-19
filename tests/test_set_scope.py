@@ -13,9 +13,11 @@ import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
+from test_fusion_fuzz import load_program
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -357,3 +359,17 @@ def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
     assert not session.list_kernels()[0].parallel, "a loop kernel is sequential, so placement keeps it on the CPU"
     session.sdfg(x=x, out=out, N=SIZE)
     np.testing.assert_array_equal(out, [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0])
+
+
+def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path):
+    """Issue #97 (the fusion fuzz program of seed 1702): one doall scoped and unset again. The kernel's body is not
+    inlined; the nested SDFG that stays keeps its arguments, named as the connectors (``_out_...``), non-transient."""
+    program, _ = load_program(tmp_path, 1702)
+    session = Session(program.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path / "work"))
+    session.canonicalize()
+    session.describe()
+    doalls = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, nodes.MapEntry)]
+    kernel = session.set_scope(doalls[1:2]).reason
+
+    assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
+    session.sdfg.validate()
