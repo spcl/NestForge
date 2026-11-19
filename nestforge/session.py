@@ -473,6 +473,8 @@ class Move(Record):
     current: str | None = None
     #: For ``unroll-for`` and ``unroll-doall``, the cap it was checked at; the agent may pass its own.
     max_iterations: int = PROBE_UNROLL
+    #: For ``set-pipeline-depth``, the stages it was checked at; the agent may pass its own.
+    depth: int = PROBE_PIPELINE_DEPTH
     #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
     config_values: dict[str, int | float] = {}
     #: For ``relayout``, the operation it applies; listed with :func:`~nestforge.stages.layout.listed_operation`.
