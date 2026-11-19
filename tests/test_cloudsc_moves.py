@@ -108,7 +108,12 @@ def test_rolling_back_random_moves_gives_back_each_earlier_program(
     before: list[tuple[str, str]] = []
     for kind, labels in moves(session, rng):
         state = (session.sdfg.hash_sdfg(), session.describe())
-        if session.apply_move(kind, labels).status is MoveStatus.APPLIED:
+        if session.apply_move(kind, labels).status is not MoveStatus.APPLIED:
+            continue
+        if kind == ROLLBACK:  # an undo pops the change it undid; it is no change of its own to roll back
+            if before:
+                before.pop()
+        else:
             before.append(state)
 
     back = []
