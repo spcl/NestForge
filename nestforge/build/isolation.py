@@ -58,7 +58,7 @@ class ChildCpus:
 
 
 #: Whether the OS lets a process set its CPU mask (Linux does; macOS has no such call).
-HAS_AFFINITY = hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity")
+HAS_AFFINITY = "sched_getaffinity" in vars(os) and "sched_setaffinity" in vars(os)
 
 
 def process_cpus() -> set[int]:
@@ -173,7 +173,8 @@ def run_spawned[T: Result](target: Callable[[Any], T], payload: Any, timeout: fl
     and ``payload`` must pickle."""
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
-    child = context.Process(target=spawned_entry, args=(target, payload, sender))
+    # a spawned interpreter starts from this process's mask, which an initialized libomp may have narrowed
+    child = context.Process(target=spawned_entry, args=(target, payload, sender, set(CHILD_CPUS.cpus)))
     child.start()
     assert child.pid is not None, "a started process has a pid"
     sender.close()
@@ -203,10 +204,11 @@ def spawned_result(receiver: Any, child: Any, timeout: float) -> Any:
     return result
 
 
-def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any) -> None:
-    """The spawned child's body; a Python exception comes back as an error."""
+def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any, cpus: set[int]) -> None:
+    """The spawned child's body, on the CPUs NestForge chose (``cpus``); a Python exception comes back as an error."""
     faulthandler.disable()  # a child's segfault must not dump the parent's stack
     try:
+        pin_cpus(cpus)
         enter_seal()
         result = target(payload)
     except BaseException as e:

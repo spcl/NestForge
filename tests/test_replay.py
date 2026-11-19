@@ -10,9 +10,12 @@ import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
 
+from nestforge import session as session_module
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
 from nestforge.paths import REPO_ROOT
+from nestforge.records import MoveStatus
 from nestforge.replay import (
+    DATATYPE,
     Context,
     ReplayError,
     Script,
@@ -24,10 +27,13 @@ from nestforge.replay import (
     short,
     splice,
 )
+from nestforge.server import Setup, start
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
+from nestforge.stages.moves import ROLLBACK
+from nestforge_bench import solution_paths
 
-SOLUTIONS = sorted((REPO_ROOT / "reference_solutions").glob("*.py"))
+SOLUTIONS = solution_paths()
 S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"
 #: Where CI replays every solution: correctness only, so the smallest preset on one CPU thread.
 CI_CONTEXT = Context("cpu", 1, "S")
@@ -140,6 +146,31 @@ def test_every_solution_replays_correctly(path: Path) -> None:
     assert report.variants[0].speedup == pytest.approx(1.0)
     assert set(report.pins) == {"nestforge", "dace", "hpcagent_bench"}
     assert markdown([report]).count("| cpu, 1 thread(s), preset S |") == len(names)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
+def test_every_solution_rolls_back_to_the_canonical_program(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rolling back every change a reference solution made, one ``rollback`` at a time, gives back the canonical
+    program and its tree; halfway back, the program is a valid SDFG."""
+    solution = load_solution(path)
+    if solution.ci_skip:
+        pytest.skip(solution.ci_skip)
+    monkeypatch.setattr(session_module, "UNDO_DEPTH", 10_000)  # every change of the solution stays in reach
+    base, _, _ = start(Setup(solution.kernel, CI_CONTEXT.preset, DATATYPE, False), "first")
+    sut = base.trial()
+    canonical = (sut.sdfg.hash_sdfg(), sut.describe())
+    script = Script(sut)
+    solution.solve(script, CI_CONTEXT)
+    changes = len(sut.history)
+
+    halfway = [sut.apply_move(ROLLBACK, []) for _ in range(changes // 2)]
+    sut.sdfg.validate()
+    rest = [sut.apply_move(ROLLBACK, []) for _ in range(changes - changes // 2)]
+
+    assert all(result.status is MoveStatus.APPLIED for result in halfway + rest)
+    assert (sut.sdfg.hash_sdfg(), sut.describe()) == canonical
+    assert sut.history == []
 
 
 #: Solutions whose ``KERNEL`` is no bench kernel. cloudsc_nproma came with HPCAgent-Bench#124, which was reverted.

@@ -6,8 +6,8 @@ openmp = "libomp"
 # The routes import the benchmark through hpcagent_bench.plugin_api only; `plugins check` enforces it.
 api = 1
 
-# The packages nestforge and nestforge_bench, built from the repository into the judge's interpreter; their
-# dependencies are the benchmark's own, at its pins.
+# The packages nestforge, nestforge_bench and reference_solutions, built from the repository into the judge's
+# interpreter; their dependencies are the benchmark's own, at its pins.
 [install]
 root = "../.."
 command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]
@@ -26,80 +26,67 @@ kernels = ["jacobi_1d", "tsvc_2_s231"]
 language = "cpp"
 packets = { dace_cpu_canon_nestforge_two_stage = "nestforge-two-stage" }
 
-# The phases of a NestForge run, in order. A packet's `agent` names the phases the agent runs with the phase's tools;
-# every other phase is its summary in the prompt and its `default` call when the agent calls next_phase (none: finalize
-# builds it). Moves and scopes are the structured half; placement fixes the kernels for the unstructured half (kernels,
-# codegen), and round reopens the moves for the next pass. tests/test_bench_plugin.py keeps each phase's tools those of
-# its wire.py phase.
-[phases.moves]
-title = "Moves"
-summary = "NestForge applies its default moves: the wavefront skew, then fusion, each unless the run switches its family off."
-text = "prompt/phases/moves.md"
-tools = ["get_cpf", "view_tree", "list_move_kinds", "list_moves", "apply_move", "run_defaults"]
-default = { tool = "run_defaults", args = { stage = "moves" } }
-
-[phases.scopes]
-title = "Scopes"
-summary = "Each top-level doall, a library call included, is a kernel of its own."
-text = "prompt/phases/scopes.md"
-tools = ["set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "place", "insert_copies"]
-default = { tool = "run_defaults", args = { stage = "scopes" } }
-
-[phases.placement]
-title = "Placement"
-summary = "What no scope covers gets its default scope, which fixes the kernels; each runs on the CPU with threads, or on the GPU when the setup targets one."
-default = { tool = "run_defaults", args = { stage = "placement" } }
-
-[phases.kernels]
-title = "Kernel code"
-summary = "Each kernel is built from the source NestForge renders for it."
-text = "prompt/phases/kernels.md"
-tools = ["list_kernels", "focus_kernel", "read_kernel", "write_kernel"]
-
-[phases.codegen]
-title = "Compiler configuration"
-summary = "Each kernel is built with the fastest correct compiler configuration of NestForge's sweep."
-text = "prompt/phases/codegen.md"
-tools = ["tune_kernel"]
-
-[phases.round]
-title = "New round"
-summary = "The moves reopen on the program as they left it; its scopes and kernel code are dropped, so `score` first."
-default = { tool = "run_defaults", args = { stage = "round" } }
+# NestForge owns its phases (nestforge/stages/phases.py): structured, scopes, scoped, kernels. A packet names the
+# phases its agent runs in NESTFORGE_AGENT_PHASES (unset: every phase); NestForge runs the others' defaults and gates
+# each tool by phase. advance_phase, undo_phase and return_to_phase move between them.
 
 # The agent chooses the moves; scopes, placement, kernel code and compiler configuration run on their defaults. It
 # writes no code: build and language guidance are off, and NestForge's own texts say how to send and finish.
 [packets.nestforge]
 name = "NestForge"
 skills = ["nestforge"]
-agent = ["moves"]
-tools = ["get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
-overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/phase-structured.yaml"]
 # The judge takes only a library, and the agent has no shell or editor: what is graded is what the tools built.
-env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read" }
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_AGENT_PHASES = "structured" }
+
+# nestforge, and the agent may ask for a transformation no move offers (E6, round 1); E1 runs without requests.
+[packets.nestforge-requests]
+extends = "nestforge"
+name = "NestForge (move requests)"
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "get_performance", "applied_moves", "finalize", "profile", "score", "submit", "request_transformation"]
+
+# The baselines that choose compiler passes instead of moves (the paper's LLVM and MLIR agents): the same program,
+# entry and library as NestForge's, every kernel built through the agent's pipeline; no move, no written code.
+[packets.nestforge-llvm]
+extends = "nestforge"
+name = "LLVM passes (baseline)"
+tools = ["get_cpf", "view_tree", "set_llvm_passes", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/passes-llvm.yaml"]
+skills = []
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
+
+[packets.nestforge-mlir]
+extends = "nestforge"
+name = "MLIR passes (baseline)"
+tools = ["get_cpf", "view_tree", "set_mlir_passes", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/passes-mlir.yaml"]
+skills = []
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
 
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]
 extends = "nestforge"
 name = "NestForge (all phases)"
 aliases = ["nestforge-two-stage"]
-agent = ["moves", "scopes", "kernels", "codegen"]
-overlays = ["nestforge:prompt/overlay.yaml"]
+tools = ["get_cpf", "view_tree", "get_work_depth", "list_move_kinds", "list_moves", "apply_move", "apply_moves", "tune_move", "run_defaults", "advance_phase", "undo_phase", "return_to_phase", "set_scope", "unset_scope", "list_scope_moves", "apply_scope_move", "finalize_scope", "list_kernels", "focus_kernel", "read_kernel", "write_kernel", "tune_kernel", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/phase-structured.yaml"]
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_AGENT_PHASES = "" }
 
 # The study's ablation: nestforge-full with every move family off. The agent sets scopes, writes kernel code and tunes
 # builds on the canonical form's kernels; no listing offers a move, and the moves phase runs no default fusion.
 [packets.nestforge-full-no-moves]
 extends = "nestforge-full"
 name = "NestForge (all phases, no moves)"
-agent = ["scopes", "kernels", "codegen"]
-env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/phase-scopes.yaml"]
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all", NESTFORGE_AGENT_PHASES = "scopes,kernels" }
 
 # The kernels phase goes to one kernel-optimizer subagent per kernel, each with a context of its own.
 [packets.nestforge-subagents]
 extends = "nestforge-full"
 name = "NestForge (kernel subagents)"
 agents = ["kernel-optimizer"]
-overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/subagents.yaml"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/phase-structured.yaml", "nestforge:prompt/subagents.yaml"]
 
 # The column an agent's NestForge run is compared against: reference moves (reference_solutions/), else the default
 # moves, then the same automatic scopes, placement and code generation; no LLM.

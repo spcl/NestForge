@@ -11,6 +11,7 @@ import sys
 import pytest
 
 from nestforge.paths import REPO_ROOT
+from nestforge.stages.moves import journaled_arguments
 
 SCRIPT = REPO_ROOT / "scripts" / "attribute_moves.py"
 
@@ -40,3 +41,19 @@ def test_each_replayed_call_is_timed_and_named_by_family_up_to_the_first_written
     assert all(row["time_us"] > 0 and row["ratio"] > 0 for row in result["rows"])
     assert (result["replayed"], result["unreplayed"]) == (3, {"kernel code": 1})
     assert set(result["log_share_per_family"]) == {"fusion", "tiling"}
+
+
+def test_a_journal_from_before_the_renames_replays_under_the_current_names():
+    old = [
+        {"kind": "auto-vectorize-scope", "labels": ["doall3"], "tile_sizes": [8], "isa": "avx2"},
+        {"kind": "expand-library", "labels": ["lib_blas0"]},
+        {"kind": "tile-doall", "labels": ["doall1"], "tile_sizes": [32]},
+    ]
+
+    current = [journaled_arguments(arguments) for arguments in old]
+
+    assert current == [
+        {"kind": "vectorize-doall", "labels": ["doall3"], "lanes": [8], "isa": "avx2"},
+        {"kind": "inline-library", "labels": ["lib_blas0"]},
+        {"kind": "tile-doall", "labels": ["doall1"], "tile_sizes": [32]},
+    ]

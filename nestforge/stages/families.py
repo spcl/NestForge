@@ -7,30 +7,39 @@ from collections.abc import Iterable
 
 #: Every family and its move kinds. ``rollback`` belongs to none and is never switched off.
 FAMILIES: dict[str, frozenset[str]] = {
-    "fusion": frozenset({"for-fusion", "doall-fusion", "collapse-doalls"}),
+    "fusion": frozenset({"for-fusion", "doall-fusion", "snapshot-reads"}),
     "fission": frozenset({"for-fission", "doall-fission", "subgraph-fission"}),
-    "interchange": frozenset(
+    "interchange": frozenset({"interchange-doall-doall", "interchange-doall-for", "interchange-for-doall"}),
+    "shape": frozenset({"flatten-doalls", "unflatten-doall", "doall-to-for", "for-to-doall"}),
+    "tiling": frozenset({"tile-doall", "tile-for", "untile-doall", "untile-for"}),
+    "hoisting": frozenset(
+        {"hoist-invariant-code", "sink-invariant-code", "hoist-invariant-guard", "sink-invariant-guard"}
+    ),
+    "specialize": frozenset({"propagate-config", "unroll-for", "unroll-doall"}),
+    "library": frozenset({"lib-before", "lib-after", "lib-into", "inline-library", "set-library-implementation"}),
+    "layout": frozenset({"relayout"}),
+    "precision": frozenset({"set-fp-mode", "change-precision"}),
+    "vectorize": frozenset({"vectorize-doall"}),
+    "schedule": frozenset(
         {
-            "interchange-doall-doall",
-            "interchange-doall-for",
-            "interchange-for-doall",
-            "interchange-doall-if",
-            "interchange-for-if",
-            "interchange-if-for",
+            "set-schedule-cpu",
+            "set-schedule-gpu",
+            "stage-loads-shared",
+            "copy-to-tma",
+            "set-pipeline-depth",
+            "persistent-kernel",
         }
     ),
-    "tiling": frozenset(
-        {"tile-doall", "tile-for", "untile-doall", "untile-for", "unroll-doall", "unroll-for", "expand-doall"}
-    ),
-    "hoisting": frozenset(
-        {"hoist-invariant-doall", "hoist-invariant-for", "snapshot-reads", "stage-loads-shared", "propagate-config"}
-    ),
-    "library": frozenset({"lib-before", "lib-after", "lib-into", "expand-library", "set-library-implementation"}),
-    "layout": frozenset({"relayout"}),
-    "vectorize": frozenset({"auto-vectorize-scope"}),
-    "schedule": frozenset({"doall-to-for", "for-to-doall", "set-schedule-cpu", "set-schedule-gpu"}),
     "wavefront": frozenset({"skew-wavefront"}),
+    # the moves of the catalogue (``nestforge.stages.authored``): their kinds are known only when a session loads it
+    "authored": frozenset(),
 }
+
+#: The move kinds no family holds, which every run keeps: ``rollback``, and the placement of kernels (the ``run-on-*``
+#: moves of the scopes phase), which a run without moves still makes.
+FAMILY_FREE: frozenset[str] = frozenset(
+    {"rollback", "run-on-cpu", "run-on-gpu", "run-on-cpu-persistent", "run-on-gpu-persistent"}
+)
 
 #: The name that stands for every family.
 ALL = "all"

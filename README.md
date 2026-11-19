@@ -26,7 +26,10 @@ run the `nestforge` packet; it sets the library input mode itself (`finalize` ha
 `get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet (alias
 `nestforge-two-stage`) is structured, then unstructured: the agent settles moves and scopes, placement fixes the
 kernels, and the agent then writes and tunes them one at a time.
-`nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent.
+`nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent. `nestforge-requests` is `nestforge` with
+`request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
+`nestforge-llvm` and `nestforge-mlir` are the baselines that choose compiler passes instead of moves: the same program,
+entry and library, every kernel built through the agent's `opt -passes=` or `polygeist-opt --pass-pipeline=` pipeline.
 The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 
@@ -47,7 +50,7 @@ bench's: they take no code, and each sends the judge the library `finalize` buil
 library's scratch needs.
 
 Every library call has its implementation from the start, the fastest this host has for the target, shown in the tree;
-`pure` loops come only from `expand-library` or `set-library-implementation`, or where a call has nothing else.
+`pure` loops come only from `inline-library` or `set-library-implementation`, or where a call has nothing else.
 
 A call stops when its client leaves or after `TOOL_TIMEOUT_S`, and the session keeps what it built and measured, so
 repeating the call goes on from there. The route journals every change, and a session that dies is rebuilt from it.
@@ -83,26 +86,26 @@ def blur_steps(A: dace.float64[N], B: dace.float64[N], W: dace.float64[N, N], y:
 
 ```
 SDFG 'blur_steps'
-|- for0  _loop_it_0=0:T  num_states=4  work=3*T*(N - 2) depth=3*T
-|  `- state3  doalls=4  reads=['A', 'B'] writes=['A', 'B']  work=3*N - 6 depth=3
-`- state2  doalls=1  reads=['A', 'W'] writes=['y']  work=2*N**2 depth=Max(1, log(N)/log(2))
+|- for0  _loop_it_0=0:T  num_states=4
+|  `- state3  doalls=4  reads=['A', 'B'] writes=['A', 'B']
+`- state2  doalls=1  reads=['A', 'W'] writes=['y']
 ```
 
-and `view_tree expand=[state3] collapse=[doall5]` opens the time step's state with everything in it but `doall5`:
+and `view_tree expand=[state3, doall3, doall4]` opens the time step's state and two of its doalls; `doall5` stays closed:
 
 ```
 SDFG 'blur_steps'
-|- for0  _loop_it_0=0:T  num_states=4  work=3*T*(N - 2) depth=3*T
-|  `- state3  reads=['A', 'B'] writes=['A', 'B']  work=3*N - 6 depth=3
-|     |- doall3  [_loop_it_1=0:N - 2]  reads=['A'] writes=['A_slice_plus_A_slice']  num_states=1  work=N - 2 depth=1
+|- for0  _loop_it_0=0:T  num_states=4
+|  `- state3  reads=['A', 'B'] writes=['A', 'B']
+|     |- doall3  [_loop_it_1=0:N - 2]  reads=['A'] writes=['A_slice_plus_A_slice']  num_states=1
 |     |  : A_slice_plus_A_slice[_loop_it_1] = A[_loop_it_1] + A[_loop_it_1 + 1]
-|     |  `- state4  reads=['A'] writes=['A_slice_plus_A_slice']  work=1 depth=1
-|     |- doall4  [_loop_it_2=0:N - 2]  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']  num_states=1  work=N - 2 depth=1
+|     |  `- state4  reads=['A'] writes=['A_slice_plus_A_slice']
+|     |- doall4  [_loop_it_2=0:N - 2]  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']  num_states=1
 |     |  : A_slice_A_slice_plus_A_slice[_loop_it_2] = A_slice_plus_A_slice[_loop_it_2] + A[_loop_it_2 + 2]
-|     |  `- state5  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']  work=1 depth=1
-|     |- doall5  [_loop_it_3=0:N - 2]  reads=['A_slice_A_slice_plus_A_slice'] writes=['B']  num_states=1  work=N - 2 depth=1
+|     |  `- state5  reads=['A', 'A_slice_plus_A_slice'] writes=['A_slice_A_slice_plus_A_slice']
+|     |- doall5  [_loop_it_3=0:N - 2]  reads=['A_slice_A_slice_plus_A_slice'] writes=['B']  num_states=1
 |     `- lib_copy0  LIBNODE Copy [Auto]  reads=['B'] writes=['A']
-`- state2  doalls=1  reads=['A', 'W'] writes=['y']  work=2*N**2 depth=Max(1, log(N)/log(2))
+`- state2  doalls=1  reads=['A', 'W'] writes=['y']
 ```
 
 | row | is |
@@ -112,9 +115,9 @@ SDFG 'blur_steps'
 | `doall<n>  [i=lo:hi]` | a parallel loop (a map); `: ` lines are its body as Python, or as C after `view_tree c=[label]`; rows under it are the states of its body |
 | `lib_<family><n>  LIBNODE <Kind> [<implementation>]` | a library call (BLAS, FFT, reduce, copy, ...), a black-box doall |
 
-Rows carry what they read and write (a state leaves out its own temporaries), `work=` and `depth=` as formulas in
-the sizes, and `doalls=<k>` on a closed state. `expand` opens a state or doall with everything below it; `collapse`
-closes any open row, one inside an expanded row included. Labels stay on their rows until a move consumes them.
+Rows carry what they read and write (a state leaves out its own temporaries), and `doalls=<k>` on a closed state;
+`get_work_depth` gives a row's work and depth on request. `expand` opens a state (its doalls as rows) or a doall
+(its statements and body states); `collapse` closes any open row. Labels stay on their rows until a move consumes them.
 The [skill page](plugin/nestforge/skills/nestforge/SKILL.md) has the full vocabulary and the moves.
 
 ## Install and test

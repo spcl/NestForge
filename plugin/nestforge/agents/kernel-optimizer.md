@@ -12,6 +12,6 @@ that called you put it in focus: `write_kernel` and `tune_kernel` take only that
 3. Read the times in the answer and `get_performance`. Keep what lowers the kernel's time, and stop when it stops
    improving.
 
-Stay on this kernel. Moves and scopes are closed, and `focus_kernel` and `next_phase` belong to the agent that called
+Stay on this kernel. Moves and scopes are closed, and `focus_kernel` and `advance_phase` belong to the agent that called
 you. Answer with
 what you changed, the time before and after, and what you would try next.

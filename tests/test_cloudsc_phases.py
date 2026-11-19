@@ -36,23 +36,16 @@ def straight_pair(session: Session) -> tuple[str, str]:
 
 
 def applied_and_valid(base: Session, move: Move) -> MoveStatus:
-    """``move`` applied on a copy of ``base``, whose program must still validate. ``propagate-config`` is listed
-    without values, so it gets one preset size, as an agent passes it."""
+    """``move`` applied on a copy of ``base`` with every field the listing set, whose program must still validate.
+    ``propagate-config`` is listed without values, so it gets one preset size, as an agent passes it."""
     sut = base.trial()
     values = move.config_values
     if move.kind == PROPAGATE_CONFIG and not values:
         name = next(name for name in config_names(sut.sdfg) if name in sut.sizes)
         values = {name: sut.sizes[name]}
-    status = sut.apply_move(
-        move.kind,
-        move.labels,
-        move.tile_sizes,
-        move.implementation,
-        move.max_iterations,
-        values,
-        operation=move.operation,
-        isa=move.isa,
-    ).status
+    # every field the listing set, as an agent passes them back; the notes for the agent are no arguments
+    arguments = {k: v for k, v in move.model_dump().items() if k not in ("kind", "labels", "current")}
+    status = sut.apply_move(move.kind, move.labels, **{**arguments, "config_values": values}).status
     sut.sdfg.validate()
     return status
 

@@ -1,385 +1,223 @@
 ---
 name: nestforge
-description: "How to read the NestForge tree (for loops, doalls, library calls) and pick the moves that rewrite it: fusion, fission, interchange, tiling, library expansion and implementation; with the full tool set, also scopes and kernel code. Read it whenever NestForge tools are in your tool list, even if you only plan to call finalize."
+description: "How to read the NestForge tree (for and while loops, doalls, library calls) and pick the moves that rewrite it: fusion, fission, interchange, tiling, hoisting, library calls, layouts, vectorization, schedules; with the full tool set, also scopes and kernel code. Read it whenever NestForge tools are in your tool list, even if you only plan to call finalize."
 when: "you drive the NestForge tools: read this before your first view_tree or apply_move."
 applies: {explicit: true}
 ---
 
 ## The tree
 
-`get_cpf` and `view_tree` print the program as a tree headed by `SDFG '<name>'`.
+`get_cpf` and `view_tree` print the program as a tree headed by `SDFG '<name>'`. Each row has a label, its name in
+every later call.
 
 | row | is |
 |---|---|
-| `for<n>  t=lo:hi` | a sequential loop: its iterations run in order (a for or a while loop) |
+| `for<n>  i=lo:hi` | a loop over a known range; its iterations run in order |
+| `while<n>  <cond>` | a loop that runs until its condition fails; no tiling or unrolling applies |
 | `if<n>` | a branch; its arms print as `when <cond>` / `else` |
-| `state<n>  reads=[..] writes=[..]` | one step of the program, a dataflow graph; collapsed it also shows `doalls=<k>` (library calls counted), expanded its doalls |
-| `doall<n>  [i=lo:hi]  reads=[..] writes=[..]` | a do-all loop: its iterations are proven independent, so they may run in any order or at once; `: <stmt>` lines are its body |
-| `lib_<family><n>  LIBNODE <Kind> [<implementation>]  reads=[..] writes=[..]` | a library call: `lib_blas` (Gemm, Gemv, Dot, ...), `lib_fft`, `lib_linalg`, `lib_reduce`, `lib_scan`, ...; a black-box doall. `[..]` is its current implementation: by default the fastest this host has for the target (OpenBLAS, FFTW3, or the device library), never `pure` while another exists. Loops only when you choose them |
+| `state<n>` | one step of the program, a dataflow graph |
+| `doall<n>  [i=lo:hi]` | a loop whose iterations are proven independent: they may run in any order or at once |
+| `lib_<family><n>  LIBNODE <Kind> [<implementation>]` | a library call (`lib_blas`, `lib_fft`, `lib_reduce`, `lib_copy`, ...), a doall you cannot see into |
+| `: <statement>` | one statement of a doall's body |
 
-- A label is a row's name: it stays on the row while the row lives. Labels are names, not positions you compute.
-- `work=` counts operations, `depth=` the longest dependent chain, both as formulas in the sizes.
-- `view_tree expand=[labels]` opens a state or doall with everything below it: its doalls, nested doalls, leaf
-  bodies, and the states of a doall whose body is a small program (those states are where `subgraph-fission`
-  cuts). `collapse=[labels]` closes any open state or doall, also one inside a row you expanded; the row stays, its
-  content goes. Expanding the outer row again opens everything below it once more. The view lasts while the row
-  lives; a move keeps it on the rows it does not retire.
-- Bodies print as Python. `view_tree c=[labels]` prints the bodies under those rows as C instead (`python=[labels]`
-  goes back; a row inside keeps its own choice): C shows what Python cannot, the C++ of a vectorized body (its tile
-  loads, operations and stores) or of inline assembly, as written, with each operand the element it reads or writes.
-  `expand`, `collapse`, `c` and `python` only change what is shown, never the program.
-- A state row carries what a doall row carries: `reads=` and `writes=` (arguments, and arrays other states also
-  use; a temporary of the state alone is left out) and its `work=` and `depth=`. A state that touches no array is
-  its label alone.
-- A state is a dataflow graph: inside it, doalls are ordered only by the data they share and may run concurrently.
-  Going from one state to the next is a barrier: everything in the first state finishes, and its writes are
-  visible, before the next starts. Loops and branches only ever join states. So doalls in different states never
-  fuse (`doall-fusion` needs one state); fuse the for loops around them instead. Inside a doall body the barrier is
-  per iteration; `subgraph-fission` widens it to the whole doall, every iteration of the first part before any of
-  the second, with values passed between the parts becoming arrays.
-- A kernel is a scope, not a row: the part of the program NestForge compiles as one unit. By default every
-  top-level doall (with what it holds), a library call among them, is one kernel, run on the CPU with threads or on
-  the GPU. A top-level for loop stays a loop on the host that launches the kernels inside it.
-- A move retires the labels of the rows it took and names the rows it made afresh; every other row keeps its label.
-  A retired label is refused as unknown, so read the tree again after each move.
+| field | means |
+|---|---|
+| `reads=[..] writes=[..]` | the arrays a row reads and writes; a state leaves out a temporary only it uses |
+| `doalls=<k>` | on a closed state: its doalls and library calls |
+| `num_states=<k>` | the states under a loop or doall |
+| `accum=(y += over i)` | the doall adds into `y` across `i`; `accum=(y +=)`: each iteration adds into its own element |
+| `[<implementation>]` | how a library call is built: the fastest this host has (`OpenBLAS`, `FFTW3`, a device library), until you set another |
 
-## Moves
+- **Names.** Labels (`doall3`) are never reused: a move retires the labels of the rows it took and labels the rows it
+  made afresh; a retired label is refused as unknown. Arguments keep the program's names. Temporaries the compiler
+  made are `tmp<n>` (one element) and `Tmp<n>` (an array); a name means one container everywhere, in Python, in C and
+  in `container=`.
+- **What shows.** A closed state is one line. `view_tree expand=[labels]` opens a state (its doalls as rows) or a
+  doall (its statements, nested doalls, and the states of its body, where `subgraph-fission` cuts). `collapse=[labels]`
+  closes one. Bodies print as Python; `c=[labels]` prints them as C (vectorized tiles, inline assembly), `python=[labels]`
+  goes back. None of these changes the program, and a move keeps the view of every row it does not retire.
+- **Order.** Inside a state, doalls are ordered only by the data they share. Between two states everything in the
+  first finishes before the second starts, so doalls of different states never fuse: fuse the loops around them.
+  Loops and branches hold states.
+- **Kernels.** A kernel is a scope, not a row: by default each top-level doall (with what it holds) or library call
+  is one kernel, run on CPU threads or on the GPU; a top-level loop stays on the host and launches the kernels in it.
 
-`list_move_kinds` lists every kind, one per line, with the rows it takes in order (`[doall doall]`) and the DaCe
-transformation it runs. `list_moves` lists the moves legal right now, one per line: the kind, its labels, then each
-argument it was checked with as `name=value`, such as `tile_sizes=[32,32]` on a tiling move (the sizes it was checked
-at) or `implementation=MKL` on a library-implementation move. `apply_move` takes one back as listed (`kind`, `labels`
-and those arguments), or with your own `tile_sizes`. `applied_moves` lists the moves the program holds, one per
-line. An illegal move is refused with the reason and changes nothing, so a refusal costs one call, not a broken
-program. Every move keeps the program's results: it changes how the loops run, never what they compute.
-The move `rollback` (`apply_move` with `labels []`, always legal; with nothing to take back it changes nothing) takes
-the last move back (program, labels and `applied_moves` as before it), and again for the one before, up to 8. So
-trying a move costs two calls and a measurement, never the program.
+## Calls
 
-`apply_move` and `run_defaults` answer at once, without a time. `get_performance` measures the program as it stands:
-each kernel in one fixed compiler configuration, so two measurements compare (`finalize`'s sweep, what `score` and
-`submit` grade, is faster), and each kernel once until a move changes it. A kernel too slow for its oracle at the graded
-size is checked at a smaller one and timed at the graded size; the whole program is always checked at the graded size.
+| call | does | changes the program |
+|---|---|---|
+| `view_tree` | the tree, with `expand`, `collapse`, `c`, `python` | no |
+| `get_work_depth labels=[..]` | each row's work (operations) and depth (longest dependent chain) at this run's sizes; `formula=true` in the sizes | no |
+| `list_move_kinds` | every kind, one per line: the rows it takes in order (`[doall doall]`), the transformation it runs | no |
+| `list_moves [kind=..]` | the moves legal now, one per line: the kind, its labels, then each argument it was checked with as `name=value` (`tile_sizes=[32,32]`) | no |
+| `applied_moves` | the moves the program holds, one per line | no |
+| `get_performance` | each kernel's time and share, and ranked hints | no |
+| `apply_move kind labels [arguments]` | one move; answers `applied` or `illegal: <reason>` at once, without the tree | yes |
+| `apply_move rollback []` | takes the last move back, labels included; again for the one before, up to 8 | yes |
+| `tune_move kind labels values [scope]` | a tiling move, `vectorize-doall` or `set-schedule-gpu` at 1 to 4 sizes (tile sizes, lanes, block), each measured; keeps the fastest if it beats the program, else nothing | yes |
+| `run_defaults stage=moves` / `finish` | the default moves (wavefronts, then fusion) / the stages after your moves | yes |
+
+Arguments, each meaning one thing: `tile_sizes` (tile extents), `lanes` (vector lanes), `block` (a GPU thread block),
+`max_iterations`, `implementation`, `config_values`, `operation`, `container`, `isa`, `schedule`, `chunk`,
+`threads`, `force`, `fp_mode`, `dtype`, `scope`.
+
+`get_performance` times each kernel in one fixed build, so two measurements compare (`finalize`'s sweep, what `score`
+grades, is faster). Every move keeps the program's results: it changes how loops run, never what they compute.
 
 `score`, `get_performance` and `profile` answer as lines: the verdict first (`speedup=… correct=…`), the other fields
 as `name=value`, times with their unit (`1.35s`, `893ms`). A list of records (the graded cells, the kernels, the
 transfers) is a table under a `cells:`, `kernels:` or `transfers:` line, which states once the values every row shares.
 An error comes as it came.
 
-### Choosing a move
+## How to work
 
-1. `get_performance` first. Work on the kernel with the largest share; a move on a 2% kernel cannot pay.
-2. Read that kernel's rows and pick by what you see:
+1. `get_performance`; work on the kernel with the largest share (a move on a 2% kernel cannot pay).
+2. Open its rows and, if you need to rank loops, `get_work_depth` them.
+3. Pick a move below, `list_moves kind=...` for its labels, `apply_move`, then `get_performance`. A correct program
+   more than 3% slower than the fastest one measured is rolled back to it by `get_performance` itself, so measure
+   only after the moves that should pay together. To pick a tile size, `tune_move` instead of tiling, measuring and
+   untiling.
+4. Undo with `rollback`, never with an inverse move: an inverse makes new rows with new labels; `rollback` gives back
+   the very program. After a move, open only the rows you need; do not reprint the whole tree.
+5. Hints outrank this page, in their order: a `failed` or `wrong result` kernel first (`rollback`), then `bytes
+   spilled` (the body is too big: `doall-fission`), then `loop not vectorized` with the compiler's reason.
 
-| you see | try | because |
-|---|---|---|
-| two doalls of one state, the second reading an array the first writes | `doall-fusion` | the array becomes a scalar: one write and one read of it gone |
-| the same, in different states or loops | `for-fusion` of the loops around them, then `doall-fusion` | doalls fuse only inside one state |
-| `for t: doall i` with a short doall body | `interchange-for-doall` | one parallel region, not one per step |
-| a doall nest whose inner parameter is not the last subscript (`A[j, i]` with `j` inner) | `interchange-doall-doall` | the last subscript is the contiguous one: it belongs innermost |
-| a doall over an array far larger than the cache, read more than once | `tile-doall` | each block is reused while cached |
-| a sequential `for` whose iterations each read the one before along two axes (Gauss-Seidel, LU, dynamic programming: `a[i, j]` from `a[i - 1, j]` and `a[i, j - 1]`) | `skew-wavefront` | each diagonal runs in parallel; the program starts with these loops sequential |
-| a doall mixing a parallel computation with one that blocks a move | `doall-fission`, then move the pieces | each piece takes its own order |
-| a `lib_` row beside doalls on the same arrays | `expand-library`, then fuse | fusion reaches inside only once expanded |
-| a `doall-fusion` refused because one doall reads a slice (`path[:, k]`) of an array the other writes | `snapshot-reads`, then `doall-fusion` | the two stop touching one array |
-| a loop or doall of a few constant iterations (`for k in 0:3`) | `unroll-for`, `unroll-doall` | no loop left; each copy's indices are constants the compiler folds |
-| a statement in a loop or doall body that uses nothing the iterations change (`scale = a * b`, a load of `w[0]`) | `hoist-invariant-for`, `hoist-invariant-doall` | it runs once, not every iteration |
-| a bound or flag that is an argument you expect to take one value (`K`, a mode switch) | `propagate-config`, then move inside the specialized branch | its bounds become constants and the branches it decides drop |
-| a `lib_copy` (or other `lib_` call) inside a loop whose inputs the loop never changes, or one between two loops | `lib-before`, `lib-after`, `lib-into` | it runs once, not every iteration; the loops become adjacent for `for-fusion` |
-| a `lib_sync` waiting earlier than the host needs the device's results | `lib-after` past host work on other data | the host overlaps that work with the device |
-| a hot leaf doall over contiguous data whose hint says `loop not vectorized`, after the moves above | `auto-vectorize-scope` | its body runs as SIMD tiles; the compiler did not vectorize it |
-| a doall reading an argument with a stride (`A[j, i]` with `i` inner) whose order no move can change, or one swept in blocks | `relayout` (`permute`, `block`), before any other move | the harness passes the argument in the order the loops read it |
+| you see | try |
+|---|---|
+| two doalls of one state, the second reading what the first writes | `doall-fusion` |
+| the same in different states or loops | `for-fusion` of the loops, then `doall-fusion` |
+| `doall-fusion` refused: one doall reads a slice (`path[:, k]`) the other writes | `snapshot-reads`, then `doall-fusion` |
+| `for t: doall i` with a short body | `interchange-for-doall` |
+| `for t: doall i` over large rows, `t` carrying a recurrence (prefix sums, a time loop per column) | column slabs: `interchange-for-doall`, `tile-doall` the doall, `interchange-doall-for` the inner pair (`doall ii: for t: doall i`) |
+| a doall nest whose inner parameter is not the last subscript (`A[j, i]`, `j` inner) | `interchange-doall-doall` |
+| a doall over data far larger than the cache, reread | `tile-doall` (sizes: `tune_move`) |
+| a loop whose iterations each read the previous along two axes (Gauss-Seidel, LU) | `skew-wavefront` |
+| a doall mixing a parallel part with a part that blocks a move | `doall-fission` |
+| a `lib_` row beside doalls on the same arrays | `inline-library`, then fuse |
+| a statement that uses nothing the iterations change (`s = a * b`) | `hoist-invariant-code` |
+| an `if` inside a loop whose condition the loop never changes | `hoist-invariant-guard` |
+| a temporary computed before a loop that blocks a fusion | `sink-invariant-code` |
+| a loop or doall of a few constant iterations | `unroll-for`, `unroll-doall` |
+| an argument you expect to take one value (`K`, a mode flag) | `propagate-config` |
+| a `lib_copy` or other call in a loop that never changes its inputs, or between two loops | `lib-before`, `lib-after`, `lib-into` |
+| short doall ranges that leave threads idle | `flatten-doalls` |
+| iterations of uneven cost, in a CPU kernel | `set-schedule-cpu` with `dynamic` or `guided` |
+| a hot leaf doall whose hint says `loop not vectorized` | `vectorize-doall`, last (lanes: `tune_move`) |
+| an argument read with a stride no move can change (`trans[i, j]` with `i` inner, a matrix used transposed) | `relayout`, first |
 
-3. Apply one move, or the few that belong together, then `get_performance`. Faster: keep. Not faster: `rollback`.
-4. The hints of `get_performance` outrank this table, in the order it prints them: a kernel that `failed` or has a
-   `wrong result` first (`rollback` the move that caused it), then `bytes spilled` (the body is too big:
-   `doall-fission`), then `loop not vectorized` with the compiler's reason.
+## Moves
 
-Moves with a listed inverse: `tile-doall` / `untile-doall`, `tile-for` / `untile-for`, `collapse-doalls` /
-`expand-doall`, `interchange-for-doall` / `interchange-doall-for`, `interchange-if-for` / `interchange-for-if`, and
-`interchange-doall-doall` with itself, and `doall-to-for` / `for-to-doall`. Fusion, fission, unrolling, hoisting,
-`propagate-config`, `expand-library`, `snapshot-reads`, `auto-vectorize-scope`, `relayout` and `lib-before` / `lib-after` / `lib-into` (a call
-never moves back into a loop) have none: `rollback` is the way back.
+Each line: the rows it takes, its arguments, what it does, when it pays or is refused. `list_move_kinds` gives the
+DaCe transformation behind each.
 
-### A worked example
+**Fusion and fission**
+- `for-fusion` `[for, for]`: two adjacent loops over one range become one. Pays when the second reads what the first
+  wrote. Refused when an iteration would read a value a later iteration of the first loop writes.
+- `doall-fusion` `[doall, doall]` of one state: a producer and its consumer become one doall; the array between them
+  becomes a scalar (a stencil's window is recomputed). Two independent doalls over one range fuse side by side.
+- `snapshot-reads` `[doall]`: a doall reading a slice another doall of the state writes first copies the slice, so
+  the two stop sharing an array and fuse (Floyd-Warshall).
+- `for-fission` `[for]`, `doall-fission` `[doall]`: one loop or doall per independent group of statements; then fuse
+  the pieces with different neighbors.
+- `subgraph-fission` `[doall, state]`: a doall whose body is several states (open the doall) is cut after the named
+  state; values passed between the parts become arrays.
 
-`T[i] = (A[i-1] + A[i] + A[i+1]) / 3`, then `B[i] = 2 * T[i]`. Collapsed, the program is one state:
-```
-SDFG 'blur_scale'
-`- state2  doalls=2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
-```
-`view_tree expand=[state2]` opens it, its doalls and the one-state program each doall body is:
-```
-SDFG 'blur_scale'
-`- state2  reads=['A', 'T'] writes=['B', 'T']  work=4*N - 8 depth=4
-   |- doall0  [_loop_it_0=1:N - 1]  reads=['A'] writes=['T']  num_states=1  work=3*N - 6 depth=3
-   |  : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
-   |  : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
-   |  : T[_loop_it_0] = A_slice_A_slice_plus_A_slice / np.float64(3)
-   |  `- state3  reads=['A'] writes=['T']  work=3 depth=3
-   `- doall1  [_loop_it_1=1:N - 1]  reads=['T'] writes=['B']  num_states=1  work=N - 2 depth=1
-      : B[_loop_it_1] = np.float64(2) * T[_loop_it_1]
-      `- state4  reads=['T'] writes=['B']  work=1 depth=1
-```
-`view_tree collapse=[doall0]` would hide `doall0`'s body and keep the rest open. `doall1` reads the `T` that
-`doall0` writes, in one state. `list_moves kind=doall-fusion` lists `doall-fusion doall0 doall1`; `apply_move` answers
-`applied`, reason `MapFusionVertical`, and the tree is
-```
-SDFG 'blur_scale'
-`- state2  reads=['A'] writes=['B', 'T']  work=4*N - 8 depth=4
-   `- doall2  [_loop_it_0=1:N - 1]  reads=['A'] writes=['B', 'T']  num_states=3  work=4*N - 8 depth=4
-      : A_slice_plus_A_slice = A[_loop_it_0 - 1] + A[_loop_it_0]
-      : A_slice_A_slice_plus_A_slice = A_slice_plus_A_slice + A[_loop_it_0 + 1]
-      : __map_fusion_T = A_slice_A_slice_plus_A_slice / np.float64(3)
-      : _loop_it_1 = _loop_it_0
-      : B[_loop_it_1] = np.float64(2) * __map_fusion_T
-      : T[_loop_it_0] = __map_fusion_T
-      `- state5  reads=['A'] writes=['B', 'T']  work=4 depth=4
-```
-`doall0` and `doall1` are retired and `doall2` is new. `B` now takes `T`'s value from a scalar in the same
-iteration, so the state no longer reads `T` back; `T` is still written because it is an argument (a temporary
-array would be gone). `get_performance` then says whether it paid. If not, `rollback` answers
-`undid doall-fusion` and the tree holds `doall0` and `doall1` again.
+**Interchange**
+- `interchange-doall-doall` `[outer, inner]`: `doall i: doall j` becomes `doall j: doall i`; put the contiguous
+  index innermost. Also when the inner doall is the one map of the outer doall's body.
+- `interchange-for-doall` `[for, doall]`: `for t: doall i` becomes `doall i: for t`, one parallel region instead of
+  one per step; also for a loop of several doalls over one axis (fuse them first). Refused when an `i` reads another
+  `i`'s values across steps.
+- `interchange-doall-for` `[doall, for]`: `doall i: for t` becomes `for t: doall i`; the loop must be the whole body.
 
-Each move below: the rows it takes, the transformation, the program before and after, and when it pays.
+**Shape**
+- `flatten-doalls` `[outer, inner]`: `doall i: doall j` becomes `doall (i, j)`; `unflatten-doall` `[doall]` splits it back.
+- `doall-to-for` `[doall]`: the doall runs in order, the doalls inside stay parallel (to fuse with a loop over levels).
+- `for-to-doall` `[for]`: a loop DaCe proves independent becomes a doall. `force=true` waives the check of
+  conflicting writes, only when you know what DaCe cannot (`out[perm[i]]` with a permutation); the answer then warns.
 
-### Fusion: fewer loops, less memory traffic
+**Tiling** (`tile_sizes`)
+- `tile-doall` `[doall]`, one size per dimension (`[32, 32]`); `tile-for` `[for]`, one size. A size need not divide
+  the range; the innermost should fit the closest cache and be a multiple of the vector width. Find it with
+  `tune_move` (`values=[[32],[64],[128]]`).
+- `untile-doall` `[tile doall, point doall]`, `untile-for` `[for]`: the inverses, for an earlier tiling.
+- `skew-wavefront` `[for]`, optional `tile_sizes` (two extents): a nest whose iterations depend along a diagonal runs
+  diagonal by diagonal, each diagonal a doall. Refused, with the reason, where the diagonals are not independent.
 
-**`for-fusion`** `[for, for]`, LoopFusion. Two adjacent loops over the same range become one.
-```
-for i in 0:N: A[i] = f(X[i])          for i in 0:N:
-for i in 0:N: B[i] = g(A[i])    ->        A[i] = f(X[i]); B[i] = g(A[i])
-```
-Pays when the second loop reads what the first wrote: the value is still in a register or cache. Refused when an
-iteration of the fused loop would read a value a later iteration of the first loop writes.
+**Hoisting** (the row is a `for` or a `doall`)
+- `hoist-invariant-code`: what no iteration changes (an expression of arguments, a load of an element the loop never
+  writes) runs once, before the loop. Offered only where something hoists.
+- `sink-invariant-code` with `container`: the statements before the loop that compute that temporary move into it and
+  run every iteration, so the loop no longer depends on them (to fuse) and the temporary stops living across it.
+- `hoist-invariant-guard`: `for i: if c: B` becomes `if c: for i: B` for a `c` the loop never changes; a doall with
+  other work around the `if` splits into one doall per branch.
+- `sink-invariant-guard` `[if]`: `if c: for i: B` becomes `for i: if c: B`, so the loop can fuse with its neighbors.
 
-**`doall-fusion`** `[doall, doall]` of one state, MapFusionVertical / OTFMapFusion / MapFusionHorizontal.
-```
-doall i: T[i] = A[i] * 2               doall i:
-doall i: C[i] = T[i] + 1        ->         t = A[i] * 2; C[i] = t + 1     (T is gone)
-```
-A producer and its consumer: the intermediate array becomes a scalar (kept as the array when the producer updates it
-in place). A consumer reading a window of the producer (a stencil) recomputes those values on the fly. Two independent
-doalls over one range fuse side by side. Pays by removing a whole array's write and read; a recomputing fusion pays
-only while the recomputation is cheaper than the traffic.
+**Specialization**
+- `propagate-config` `[]` with `config_values` (`{"K": 3}`): the program becomes `if K == 3: <specialized> else:
+  <as it was>`; inside, bounds are constants, so the unrolls reach the loops. Results stay correct for any value.
+- `unroll-for` `[for]`, `unroll-doall` `[doall]` with `max_iterations` (`list_moves` checks 16): one copy of the body
+  per iteration; only a constant trip count. Pays on short loops.
 
-### Fission: split a loop, one piece per computation
+**Library calls**
+- `lib-before`, `lib-after` `[lib, block]`: the call moves to a new state just before or after the block, in its
+  region or a loop around it. `lib-into` `[lib, state]`: it joins that state instead. Hoist a call out of a loop that
+  never changes its inputs; take it from between two loops so they fuse. A `lib_sync` moves past host work on other
+  data. Refused when a crossed block touches what it touches, or a loop it leaves may run zero times.
+- `inline-library` `[lib]`: the call becomes the doalls that compute it, so the moves reach inside. Keep the call
+  when the vendor library is faster.
+- `set-library-implementation` `[lib]` with `implementation`: another build of the call (`pure`, a host or device
+  library); `list_moves` lists those this machine has, `current` the one now. A device library puts its kernel on the GPU.
 
-**`for-fission`** `[for]`, LoopFission. A loop of independent statement groups becomes one loop per group.
-```
-for i: A[i] = f(i); B[i] = g(i)   ->   for i: A[i] = f(i)
-                                       for i: B[i] = g(i)
-```
-Pays when the groups want different orders, or when one group is parallel and the other is not.
-
-**`doall-fission`** `[doall]`, MapFission. One doall per independent output group.
-```
-doall i: A[i] = f(i); B[i] = g(A[i])   ->   doall i: A[i] = f(i)
-                                            doall i: B[i] = g(A[i])
-```
-Usually followed by `doall-fusion` of the pieces that share data, with different neighbors.
-
-**`subgraph-fission`** `[doall, state]`, SubgraphFission. A doall whose body is a small program of states (expand
-the doall to see them) is cut after the named state: the states up to it in one doall, the rest in a second; values
-passed between the parts become arrays. Pays when the parts want different schedules.
-
-### Interchange: reorder two nested loops
-
-**`interchange-doall-doall`** `[outer doall, inner doall]`, MapInterchange. `doall i: doall j: B` becomes
-`doall j: doall i: B`. Pays when it puts the index that walks memory contiguously innermost. The inner doall may also be
-the one map in the nested body of the outer (`doall j: {nested: doall k}`): the body is inlined and its one-iteration
-maps dropped, then the maps swap; refused when the body holds anything beside that map (such as a copy). A
-one-iteration dimension of the inner map that reads the outer parameter (`jj in j:j`, what a fission leaves) is dropped
-first, and an inner map with one iteration only has nothing to swap.
-
-**`interchange-for-doall`** `[for, doall]`, MoveLoopIntoMap. `for t: doall i: B` becomes `doall i: for t: B`. One
-parallel region instead of one per step of `t`; refused when an iteration `i` reads another's values across steps. Also
-for a loop whose body is several doalls over one shared axis, in several states or behind ifs: `for t: { doall i: A;
-doall i: B }` becomes `doall i: for t: { A; B }` (the row names one of the doalls). Apply `doall-fusion` to the doalls
-that fuse first. One parallel region for all the doalls and steps, each column's data staying in cache across `t`. A
-time loop whose iterator indexes nothing only grows each column's working set, so judge it by timing.
-
-**`interchange-doall-for`** `[doall, for]`, MapLoopInterchange. `doall i: for t: B` becomes `for t: doall i: B`; the
-loop must be the doall's whole body. Brings the loop out, where it can fuse with a neighboring loop over `t`.
-
-**`interchange-if-for`** `[if, for]`, MoveIfIntoLoop. `if c: for i: B` becomes `for i: if c: B`, so the loop can
-fuse with its neighbors. **`interchange-for-if`** `[for, if]`, MoveLoopInvariantIfUp: the inverse, for a condition
-that does not change inside the loop; the test then runs once instead of once per iteration.
-**`interchange-doall-if`** `[doall]`, MoveMapInvariantIfUp: `doall i: if c: B` becomes `if c: doall i: B` for a condition
-that does not read `i`; the test runs once, and the doall can then be reordered with the loops inside the branch. A doall
-with other work around the `if` is split into one doall per branch. Only this doall's `if` moves; the guards of other
-doalls stay where they are.
-
-### Tiling: work in cache-sized blocks
-
-**`tile-doall`** `[doall]` with `tile_sizes` (one per dimension, `[32, 32]`), MapTiling.
-```
-doall i in 0:N: B   ->   doall i0 in 0:N step 32:
-                             doall i in i0:min(i0+32, N): B
-```
-**`skew-wavefront`** `[for]`, WavefrontSkew: the nest under a sequential loop whose iterations depend on each other along
-a diagonal becomes a sequential loop over diagonals (iterator `_skew_t_<n>`), each diagonal one doall, or a diagonal of
-tiles where the dependences allow. DaCe derives the skew; you pick the loop, and optionally `tile_sizes` (two
-extents, along the loop and along the diagonal; 64 each by default). It applies only where DaCe proves the diagonals
-independent, and the refusal says why a loop is no wavefront. The default moves apply it everywhere it applies.
-
-**`tile-for`** `[for]` with one size (`[64]`), LoopTiling: the same for a sequential loop, same iterations in the same
-order. A size need not divide the range. Pays when a tile's data fits
-the cache it is meant for: the innermost tile the closest cache, its innermost size a multiple of the machine's
-vector width. No tool reports the machine's caches: start from the size `list_moves` lists (32 per dimension), then
-try half and double, `rollback` between tries, and keep the size `get_performance` shows fastest.
-**`untile-doall`** `[tile doall, point doall]` and **`untile-for`** `[for]`, UntileLoops: the inverses.
-
-### Shape of a doall
-
-**`collapse-doalls`** `[outer doall, inner doall]`, MapCollapse: `doall i: doall j: B` becomes `doall (i, j): B`,
-one parallel space, so short ranges still give every thread work. **`expand-doall`** `[doall]`, MapExpansion: the
-inverse. **`doall-to-for`** `[doall]`, MapToForLoop: `doall k: doall j: B` becomes `for k: doall j: B`, the doalls
-inside staying parallel, so a pass over levels (`expand-doall` it first) can `for-fusion` with the level scan it
-feeds; its temporaries then become scalars when `doall-fusion` fuses the doalls of the merged body.
-**`for-to-doall`** `[for]`, LoopToMap: a for loop whose iterations DaCe proves independent becomes a doall, the way
-back from `doall-to-for`, or after a move removed the dependence. `force=true` waives DaCe's checks of conflicting
-writes and some of its checks of carried reads; a break, continue or return in the body, a communication call, and
-a read DaCe's memlet test ties to another iteration's write are refused either way. Force only when you know what
-DaCe cannot, such as an index array that is a permutation (`out[perm[i]] = ...`): the answer then says `forced` and
-warns, and a wrong program after it is yours. The judge's hidden inputs still grade it.
-**`set-schedule-cpu`** `[doall]` with `schedule` (`static`, `dynamic`, `guided`, or `default`: DaCe chooses, `guided`
-for uneven bodies) and optionally `chunk`
-and `threads`, only through `apply_scope_move` in a kernel on the CPU: the OpenMP schedule of an outermost doall.
-`list_scope_moves` shows each doall's schedule now as `current`. `dynamic` or `guided` pays when iterations differ in
-cost (a triangular nest, rows of a sparse matrix), `static` when they cost the same; a doall inside another runs in
-order on each thread, so it takes no schedule.
-**`set-schedule-gpu`**, only in a kernel on the GPU, follows OpenMP's model: the kernel doall is the parallel
-region and one thread block is its team. On the kernel doall, `tile_sizes` is the block (`[256]`, `[32, 8]`). On a
-doall directly inside it, `schedule` says how the block's threads share it: `sequential` (each thread runs it whole,
-the default), `static` (one iteration per thread: a constant extent of at most 1024, so tile first) or `dynamic`
-(the threads take iterations from a queue: uneven rows, as in CSR). The block comes from the kernel doall or from
-the doalls inside it, never both, and static and dynamic doalls do not share a kernel.
-**`snapshot-reads`** `[doall]`, a doall of its own per slice: a doall that reads a slice of an array (`path[:, k]`,
-`path[k, :]`: one index per dimension, either a map parameter or a value the doall does not change) which another doall of
-the state writes first copies the slice into a transient, so the two doalls stop touching one array and `doall-fusion`
-can merge them (Floyd-Warshall: the `outer` temporary disappears). The copy is a doall, not a plain copy, which the
-cleanup after every move would fold back into a read of the array. Offered only where a slice is read and written by
-different doalls of one state.
-
-### Loop-invariant code
-
-**`hoist-invariant-for`** `[for]` and **`hoist-invariant-doall`** `[doall]`, LoopInvariantCodeMotion on that one loop
-or doall: you name the loop, the pass picks what moves. A statement whose inputs no iteration changes (an expression of
-arguments, a load of an element the loop never writes), and for a loop a whole sub-block that uses neither the loop
-variable nor anything the loop writes, runs once, before the loop.
-```
-for i: t = a * b; C[i] = t * X[i]   ->   t = a * b; for i: C[i] = t * X[i]
-```
-A statement invariant only in an inner doall of a perfect doall nest stays, so the nest stays one parallel space.
-Offered only where the pass finds something to hoist.
-
-### Vectorization
-
-**`auto-vectorize-scope`** `[doall]` with `tile_sizes` and `isa`, VectorizeMap: the doall, not inside another, runs
-as tiles of `tile_sizes` lanes per vectorized dimension (innermost last, at most three; `list_moves` lists `[8]`),
-with a masked tile for the remainder; every other doall stays scalar. `isa` is `auto` (the best this machine runs),
-`avx512`, `avx2`, `sve`, `neon` or `scalar`; `sve` picks its own vector length and ignores `tile_sizes`.
-```
-doall i in 0:N: y[i] = 2*x[i] + y[i]   ->   doall i in 0:N:8: tile_load x, y; tile_binop; tile_store y
-                                            doall i in N/8*8:N:8: the same, masked to the lanes below N
-```
-Read the result with `view_tree c=[state]`. Vectorize last: the body is C++ afterwards, which no structured move
-takes apart and no NumPy oracle spells, so the kernel holding it is checked by the whole program, not on its own.
-Refused, with the reason, on a doall inside another doall (name the outermost one) and wherever DaCe's vectorizer
-raises on the doall; nothing changes then.
-
-### Argument layouts
-
-**`relayout`** `[]` (no row) with `operation`, one operation of the bench's `requests` on an array argument, as
-relayout reads it: `{"action": "permute", "array": "A", "order": ["i1", "i0"]}` stores `A` transposed,
-`{"action": "block", "array": "A", "digit": "i1", "factor": 8, "into": ["ib", "ii"]}` cuts dimension `i1` into
-blocks of 8, and `split`, `pad`, `shuffle`, `linear_shuffle` and their inverses work the same way. Digits are named
-`i0`, `i1`, ... and keep their names through a permute, so each operation names the digits the ones before it left.
-The program then works on the argument laid out, and the operations become your submission's `requests`: the
-harness lays the inputs out before the call and reads the outputs back after it, outside the timing. Lay arguments
-out first: `relayout` is refused after any other change. `list_moves` offers one operation, the transpose of the
-first argument with two or more dimensions; any other you pass yourself. A `cast` (`{"action": "cast", "array": "A", "to": "fp32"}`)
-applies and times, but `finalize` refuses it for now; roll it back before you submit.
-
-### Unrolling and specialization
-
-**`unroll-for`** `[for]` with `max_iterations`, LoopUnroll, and **`unroll-doall`** `[doall]`, not inside another
-doall of its state, with `max_iterations`, MapUnroll: one copy of the body per iteration, the loop gone.
-```
-for k in 0:3: B(k)   ->   B(0); B(1); B(2)
-```
-Only a constant trip count unrolls, and only up to `max_iterations` (the largest you accept; `list_moves` checks 16).
-Pays on short loops whose copies the compiler then folds and schedules together; a long one only grows the code.
-
-**`propagate-config`** `[]` (no row) with `config_values`, ConfigPropagation: the values you expect the scalar
-arguments and free symbols to take at run time (`{"K": 3}`). The program becomes
-```
-if K == 3: <program with K = 3>  else: <program as it was>
-```
-The specialized branch runs only when the arguments equal the values; any other draw runs the generic program, so
-results stay correct. Inside the specialized branch the bounds are constants, so `unroll-for` and `unroll-doall` reach
-its loops, and the moves above apply there too. Offered when the program has a scalar argument or a free symbol.
-
-### Library calls
-
-**`lib-before`** / **`lib-after`** `[lib_<family>, state|for|if]`: the call leaves its state for a new state just
-before (after) the named block, which is in the call's region or in a loop around it; never inside another block.
-Every copy between two arrays is a `lib_copy` row (`b[:] = a`; a one-element copy `b[0] = a[0]` prints `[tasklet]`), so this is how a copy moves.
-```
-for k: { b = a; doall: c += b * k }   --lib-before [lib_copy0, for0]-->   b = a; for k: doall: c += b * k
-```
-Only a call whose memlets are its whole effect moves; a communication or a kernel never does. A host barrier
-(`lib_sync`, a device or stream wait) moves too: it crosses no block that issues device work or touches what device
-work touches, and a barrier inside a kernel stays.
-Refused when a block it crosses writes what it reads or touches what it writes, when what it reads is computed (or
-what it writes is read) beside it in its state on the side it leaves, when it would leave a branch, and when a loop it
-leaves is not proven to run at least once (a constant trip count, or a bound the program's assumptions make positive).
-Hoist a call out of a loop that never changes its inputs; sink it after a loop that never reads its output; take it
-from between two loops so `for-fusion` can join them.
-
-**`lib-into`** `[lib_<family>, state]`: the same call joins an existing state of its region or of a loop around it
-instead of a new one, so no state is added between two others. It reads the array from the access node that state
-last writes it to, and runs after every access there that conflicts with it when it comes from a later point (before
-every one when it comes from an earlier point), ordered by empty edges. Refused for an accumulation into what it
-touches, two unordered writes of one array, a block that is not a state, and, for a `lib_sync`, a state whose device
-work it would run ahead of (a barrier joins only after a state's device work).
-
-**`expand-library`** `[lib_<family>]`, the library's own pure expansion, then canonicalization. The call becomes the
-doalls and statements that compute it (a gemm: a zero fill and a multiply doall with a `+` reduction), so the moves
-above reach inside it. A library call fuses with a doall only once expanded. Expand when fusing it with its neighbors
-saves memory traffic; keep it when the vendor call is faster. Offered only on calls with a vendor-free expansion.
-
-**`set-library-implementation`** `[lib_<family>]` with `implementation`. The row and its label stay; the call is
-built through loops (`pure`), the host vendor library (`OpenBLAS`, `FFTW3`) or, with a GPU target, the device one
-(`cuBLAS`, `hipBLAS`, ...). The tree prints each call's implementation; `list_moves` lists one move per other
-implementation the row may take whose library this machine has, with `current` the one it has. The default is already
-the fastest, so this move is for trying another. A host library keeps its kernel on the CPU, a device library puts it on the GPU.
+**Layout, vectorization, schedules**
+- `relayout` `[]` with `operation`, first, before any other move: an array argument is stored the way the loops read
+  it (`{"action": "permute", "array": "A", "order": ["i1", "i0"]}`; also `block`, `split`, `pad`, `shuffle`). The
+  harness lays it out outside the timing. Dimensions are named `i0`, `i1`, ... and keep their names through a permute.
+  `list_moves` offers the transpose of the first 2D argument. A `cast` (`"to": "fp32"`) applies and times, but
+  `finalize` refuses it: roll it back before you submit. On an array the program makes itself (`Tmp1`), the same
+  operations apply at any point, in place, and so do `zip` (`{"action": "zip", "arrays": ["t", "u"], "into": "tu"}`,
+  an array of structs) and `unzip` (a struct of arrays). `linear_shuffle` is the XOR swizzle: a bit matrix over the
+  index bits.
+- `set-fp-mode` `[]` with `scope` and `fp_mode` (`strict-ieee`, `contract-fma`, `fast-math`): that kernel is built in
+  that mode; unset, its sweep picks the fastest correct one. `change-precision` `[]` with `container` and `dtype`
+  (`float32`): an internal array is stored in that type, statements convert at the array; `list_moves` lists the
+  arrays it takes. Both change results within rounding: `get_performance` checks them, a wrong result is not kept.
+- `persistent-kernel` `[for|state|doall ...]` with `scope`: consecutive rows of one region of a kernel's body (for
+  loops, states; a doall stands for its state) run as one persistent kernel (on the GPU one launch with grid barriers,
+  behind a size test; on the CPU explicit barriers in one team). One run per kernel: roll back to change it. Pays when
+  launches and barriers cost more than the doalls; `list_moves` offers each loop and each longest run.
+- `vectorize-doall` `[doall]`, an outermost one, with `lanes` (`[8]`, innermost last) and `isa` (`auto`, `avx512`, `avx2`, `sve`, `neon`,
+  `scalar`): the doall runs as SIMD tiles, with a masked tail. Last: no move takes its body apart afterwards; read it
+  with `c=`.
+- `set-schedule-cpu` `[doall]`, in a CPU kernel (`apply_scope_move`), with `schedule` (`static`, `dynamic`, `guided`,
+  `default`) and optional `chunk` and `threads`: the OpenMP schedule of an outermost doall.
+- `set-schedule-gpu` `[doall]`, in a GPU kernel: on the kernel doall `block` (`[256]`, `[32, 8]`); on a doall inside
+  it `schedule`: `sequential` (each thread runs it), `static` (one iteration per thread), `dynamic` (a queue).
+- `stage-loads-shared` `[doall]` with `block`, in a GPU kernel with its copies in: the tiles its threads reread go
+  through shared memory. Last: placing again drops it.
+- `copy-to-tma` `[doall]`, on a kernel `stage-loads-shared` staged: its tiles move with the TMA unit (CUDA,
+  Hopper or newer); refused with the reason when no tile fits the unit.
+- `set-pipeline-depth` `[for]` with `depth`, on a kernel loop that copies a tile into a buffer each iteration:
+  the buffer gets `depth` slots and later tiles load while an earlier one is read (code generation lowers it).
 
 ## Scopes and kernels (when your tool list has them)
 
-Settle the moves first: they close at your first kernel. `next_phase` out of the scopes phase gives what no scope covers
-its default scope and fixes the kernels, so the source you write for a kernel stays until a new round. `next_phase`
-out of the last phase starts that round: the moves reopen and the scopes and kernel code are dropped, so `score` first.
+The phases run in order: `structured`, `scopes`, `scoped`, `kernels`. `advance_phase` out of the scopes phase gives
+what no scope covers its default scope and places every kernel. `undo_phase` takes the current phase back completely
+and returns to the previous one as you left it; `return_to_phase` does that until the phase you name, after a `score`
+too.
 
 - `set_scope labels=[...]` makes one kernel of several top-level doalls of one state (library calls among them) or of
-  a straight run of blocks. Group doalls that pass an array between them: inside one kernel you can keep that array in
-  registers or cache instead of memory. `unset_scope` undoes it while the kernels are not fixed.
-- `list_scope_moves scope=<kernel>` and `apply_scope_move scope=<kernel> kind=... labels=[...]` are `list_moves` and
-  `apply_move` inside one kernel's body (tile, fuse, interchange it alone). With a GPU target, `place devices={...}`
-  runs each kernel on `cpu` or `gpu` and fixes the scopes; a GPU kernel copies its arguments inside its call until
-  `insert_copies` moves the copies into the program, where adjacent GPU kernels share them (`next_phase` inserts them
-  otherwise). On a GPU kernel with its copies in, `stage-loads-shared` stages the tiles of the arrays its threads
-  reread (a stencil's input) in shared memory, one thread block of `tile_sizes` threads per tile; do it last, since
-  placing again drops it.
-- `list_kernels` shows each kernel's device, its arguments and which kernels produce them; start with the largest
-  share in `get_performance`.
-- `focus_kernel name=...` scopes your kernel work to one kernel: `write_kernel` and `tune_kernel` refuse every other
-  kernel until you focus it. Reads (`list_kernels`, `read_kernel`) take any kernel.
-- `read_kernel` gives the source NestForge rendered. `write_kernel` takes a replacement with the same entry
-  (`extern "C"` name and parameters, in order) in `cpp` for a CPU kernel or the dialect `read_kernel` showed (`cuda`,
-  `hip`) for a GPU one. It is built and run against the kernel's oracle, and linked only when it matches. A kernel
-  with no oracle to match answers `unchecked`: it is linked, and only the whole program's check in `performance` says
-  whether it is right.
-- `tune_kernel` sweeps compilers and flags for one kernel and links the fastest correct build; run it last, on the
-  source you keep.
+  a straight run of blocks; group doalls that pass an array between them. `unset_scope` undoes it until the kernels
+  are fixed.
+- `list_scope_moves scope=<kernel>` and `apply_scope_move scope=<kernel> ...` are `list_moves` and `apply_move` inside
+  one kernel. `run-on-cpu` and `run-on-gpu` (`apply_scope_move` with the kernels as labels) put kernels on a
+  device; `run-on-cpu-persistent` and `run-on-gpu-persistent` merge consecutive kernels into one persistent kernel
+  (one launch, a barrier between them); `rollback` takes a placement back. `finalize_scope` places the rest and moves the copies into
+  the program, where adjacent GPU kernels share them; measure after it.
+- `list_kernels` shows each kernel's device, arguments and producers. `focus_kernel name=...` picks the kernel that
+  `write_kernel` and `tune_kernel` may change.
+- `read_kernel` gives the kernel's source. `write_kernel` takes a replacement with the same `extern "C"` entry, in
+  `cpp` or the GPU dialect `read_kernel` showed; it is linked only when it matches the kernel's oracle (`unchecked`
+  when there is none: only the whole program's check says whether it is right).
+- `tune_kernel` sweeps compilers and flags for one kernel and links the fastest correct build; run it last.

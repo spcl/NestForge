@@ -25,7 +25,6 @@ from typing import Any
 
 import anthropic
 import dace
-import hpcagent_agent.tools.next_phase  # noqa: F401 -- registers a tool of the packet
 import numpy as np
 import pytest
 from anthropic.types import Message
@@ -45,7 +44,7 @@ from hpcagent_bench.harness.envelope import Submission
 from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from hpcagent_bench.harness.judge_wire import GradeAnswer, JudgeAnswer
 from hpcagent_bench.harness.plugin_records import FOLDER as RECORDS_FOLDER
-from hpcagent_bench.harness.routes import ROUTES, RouteRequest, next_phase
+from hpcagent_bench.harness.routes import ROUTES, RouteRequest
 from hpcagent_bench.harness.service import JUDGE_FAULT_CAUSE, JudgeHandler, ServiceConfig, make_server
 from hpcagent_bench.harness.task import Task
 from hpcagent_bench.skill_frontmatter import split_frontmatter
@@ -55,8 +54,8 @@ from stub_session import Stub, install
 import nestforge_bench
 from nestforge.paths import REPO_ROOT
 from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
-from nestforge.server import CALLS, STOP_GRACE_S, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import KernelOutcome, Move, MoveResult, Session
+from nestforge.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup
+from nestforge.session import KernelOutcome, Move, MoveResult, Restored, Session, TunedValue, TuneResult
 from nestforge.stages.families import FAMILIES
 from nestforge_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
@@ -65,6 +64,13 @@ PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
+#: Tools only one packet of its own serves, never nestforge-full: transformation requests (E6) and the LLVM and MLIR
+#: baselines, whose agents choose passes instead of moves.
+PACKET_OWN_TOOLS = {
+    "request_transformation": "nestforge-requests",
+    "set_llvm_passes": "nestforge-llvm",
+    "set_mlir_passes": "nestforge-mlir",
+}
 #: The device slot a fake judge hands out.
 SLOT = DeviceSlot("cpu", 3)
 #: Seconds a spawned judge has to import the bench and bind its port.
@@ -154,6 +160,7 @@ def test_every_phase_registers_its_tools(loaded: None) -> None:
 
 
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
+    to_phase("episode-scope", "scopes")
     rows = [
         line.lstrip("|`- ").split()[0]
         for line in post("get_cpf", episode="episode-scope").answer["result"].splitlines()[1:]
@@ -168,15 +175,29 @@ def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
 
 
-def test_each_manifest_phase_serves_the_tools_of_its_wire_phase(loaded: None) -> None:
+def test_nestforge_owns_its_phases_and_its_gate_matches_the_tools_phases(loaded: None) -> None:
+    from hpcagent_bench_plugins.nestforge.tools.nestforge import PHASE_TOOLS
     from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
 
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
+    gated = {tool: {p.value for p in phases} for tool, phases in TOOL_PHASES.items()}
+    labelled = {tool: {p.value for p in d.phases} for tool, d in TOOLS.items() if Phase.ANY not in d.phases}
 
-    for name, phase in manifest["phases"].items():
-        assert sorted(phase.get("tools", [])) == sorted(t for t, d in TOOLS.items() if d.phase == name), name
+    assert "phases" not in manifest, "the bench's phases are not NestForge's: NestForge gates its own tools"
+    assert gated == labelled, "the server's gate and the phases each tool says it works in"
     assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
-        (*(t for t, d in TOOLS.items() if d.phase == Phase.ANY), "profile", "score", "submit")
+        (
+            *(
+                t
+                for t, d in TOOLS.items()
+                if (Phase.ANY in d.phases or Phase.STRUCTURED in d.phases)
+                and t not in PACKET_OWN_TOOLS
+                and t not in PHASE_TOOLS
+            ),
+            "profile",
+            "score",
+            "submit",
+        )
     )
 
 
@@ -196,8 +217,8 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
 
     packet = PACKETS["nestforge"].tools
 
-    assert packet[-1] == plugins.NEXT_PHASE
-    assert {TOOLS[tool].phase for tool in packet[:-1] if tool in TOOLS} == {Phase.MOVES, Phase.ANY}
+    assert plugins.NEXT_PHASE not in packet, "NestForge's own phase tools, not the bench's"
+    assert all(Phase.ANY in TOOLS[t].phases or Phase.STRUCTURED in TOOLS[t].phases for t in packet if t in TOOLS)
     assert OVERRIDDEN <= registry.OVERRIDES.keys() and OVERRIDDEN <= set(packet)
     assert "set_scope" not in packet and "list_move_kinds" in packet
     assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
@@ -243,8 +264,10 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
     from hpcagent_bench_plugins.nestforge.wire import TOOLS
 
     packet = PACKETS["nestforge-full"].tools
+    own = {tool: PACKETS[name].tools for tool, name in PACKET_OWN_TOOLS.items()}
 
-    assert sorted(packet) == sorted((*TOOLS, *OVERRIDDEN, plugins.NEXT_PHASE))
+    assert sorted(packet) == sorted((*(t for t in TOOLS if t not in PACKET_OWN_TOOLS), *OVERRIDDEN))
+    assert all(tool in tools and tool not in packet for tool, tools in own.items())
     specs = {name: registry.REGISTRY[name].spec for name in TOOLS}
     hints = {name: spec.hints for name, spec in specs.items() if isinstance(spec, registry.Spec)}
     assert hints.keys() == TOOLS.keys()
@@ -256,8 +279,9 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "list_scope_moves",
         "list_kernels",
         "read_kernel",
-        "get_performance",
         "applied_moves",
+        "get_work_depth",
+        "request_transformation",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 
@@ -597,6 +621,39 @@ def test_a_written_kernel_and_a_sweep_are_journaled_as_their_unchecked_untimed_r
     ]
 
 
+def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(loaded: None) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    call = ("tune_move", {"kind": "tile-doall", "labels": ["doall8"], "values": [[32, 32], [64, 64]]})
+    now = TunedValue(status="now", time_us=30.0, correct=True)
+    kept = TuneResult(
+        kind="tile-doall",
+        labels=("doall8",),
+        values=[
+            now,
+            TunedValue(sizes=(32, 32), status="measured"),
+            TunedValue(sizes=(64, 64), status="kept"),
+        ],
+    )
+    none = TuneResult(
+        kind="tile-doall", labels=("doall8",), values=[now, TunedValue(sizes=(32, 32), status="measured")]
+    )
+
+    assert route.repeats_of(call, Reply(result=kept)) == [
+        ("apply_move", {"kind": "tile-doall", "labels": ["doall8"], "tile_sizes": [64, 64]})
+    ]
+    assert route.repeats_of(call, Reply(result=none)) == []
+
+
+def test_a_get_performance_that_restored_the_fastest_version_is_journaled_as_its_rollbacks(loaded: None) -> None:
+    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    call = ("get_performance", {})
+
+    restored = route.repeats_of(call, Reply(result=Restored(fastest_us=10.0, now_us=30.0, rolled_back=2)))
+
+    assert restored == [("apply_move", {"kind": "rollback", "labels": []})] * 2
+    assert route.repeats_of(call, Reply(result=None)) == []
+
+
 def test_a_read_that_rebuilds_a_written_kernel_takes_a_slot_measures_nothing_and_sees_its_client(stub: Stub) -> None:
     written_then_lost("episode-rebuild")
     before = len(stub.calls)
@@ -700,7 +757,6 @@ def test_the_two_stage_name_is_the_full_packet_and_only_that_packet_answers_to_i
     resolved = packets.resolve("nestforge-two-stage", "cpp")
 
     assert resolved == packets.resolve("nestforge-full", "cpp")
-    assert next_phase.phases_of("nestforge-two-stage") == PACKETS["nestforge-full"].phases
     assert PACKETS.canonical("nestforge-two-stage") == "nestforge-full"
     assert "nestforge-two-stage" not in PACKETS.entries, "an alias is no packet of its own"
 
@@ -722,29 +778,25 @@ def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optim
     assert shipped.name in subagents.task_description(offered)
 
 
-def walk(episode: str, monkeypatch: pytest.MonkeyPatch) -> Callable[[], dict[str, object]]:
-    """``next_phase`` of ``episode`` on the full packet."""
-    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge-full"].phases)
+def walk(episode: str) -> Callable[..., dict[str, object]]:
+    """A phase tool of ``episode``, through NestForge's route; its result."""
 
-    def step() -> dict[str, object]:
-        judge = FakeJudge()
-        next_phase.serve(judge, RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, episode))
+    def step(tool: str, **body: object) -> dict[str, object]:
+        judge = post(tool, episode=episode, **body)
         assert judge.code == HTTPStatus.OK, judge.answer
-        return judge.answer
+        return judge.answer["result"]
 
     return step
 
 
 @pytest.mark.integration
-def test_the_full_packet_goes_from_structured_to_each_kernel_and_a_new_round_reopens_the_moves(
-    loaded: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_full_packet_goes_from_structured_to_each_kernel_and_returns_to_the_moves_as_left(loaded: None) -> None:
     episode = "episode-walk"
-    step = walk(episode, monkeypatch)
+    step = walk(episode)
     moves = post("list_moves", episode=episode).answer["result"]
     assert moves
 
-    scopes, kernels = step(), step()
+    scopes, scoped, kernels = step("advance_phase"), step("advance_phase"), step("advance_phase")
     names = [kernel["name"] for kernel in post("list_kernels", episode=episode).answer["result"]]
     closed = post("set_scope", episode=episode, labels=["doall0"])
     written = []
@@ -752,56 +804,30 @@ def test_the_full_packet_goes_from_structured_to_each_kernel_and_a_new_round_reo
         post("focus_kernel", episode=episode, name=name)
         source = post("read_kernel", episode=episode, name=name).answer["result"]
         written.append(post("write_kernel", episode=episode, name=name, source=source, language="cpp"))
-    codegen = step()
     post("focus_kernel", episode=episode, name=names[0])
     tuned = post("tune_kernel", episode=episode, name=names[0], compilers=["gcc"])
-    again = step()
+    last = step("advance_phase")
+    back = step("return_to_phase", phase="structured")
 
-    assert (scopes["phase"], kernels["phase"], codegen["phase"]) == ("scopes", "kernels", "codegen")
-    assert names and closed.code == HTTPStatus.BAD_REQUEST and "scopes are fixed" in closed.answer["error"]
+    assert (scopes["phase"], scoped["phase"], kernels["phase"]) == ("scopes", "scoped", "kernels")
+    assert names and closed.code == HTTPStatus.BAD_REQUEST and "phase scopes" in closed.answer["error"]
     assert [answer.answer["result"]["status"] for answer in written] == ["ok"] * len(names)
     assert tuned.code == HTTPStatus.OK
-    assert (again["phase"], again["round"]) == ("moves", 2)
+    assert (last["status"], back["status"], back["phase"]) == ("refused", "moved", "structured")
     assert post("list_moves", episode=episode).answer["result"] == moves
 
 
-def test_next_phase_runs_the_default_scopes_and_placement_and_returns_to_the_moves(
-    stub: Stub, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
-    judge = FakeJudge()
-    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-round")
+def test_the_phase_tools_reach_the_session_and_are_journaled_as_changes(stub: Stub) -> None:
+    for tool in ("advance_phase", "undo_phase", "return_to_phase"):
+        body = {"phase": "structured"} if tool == "return_to_phase" else {}
+        post(tool, "episode-phases", **body)
 
-    next_phase.serve(judge, request)
-
-    assert judge.code == HTTPStatus.OK, judge.answer
-    assert (judge.answer["phase"], judge.answer["round"]) == ("moves", 2)
-    assert [(run["phase"], run["status"]) for run in judge.answer["ran"]] == [
-        ("scopes", 200),
-        ("placement", 200),
-        ("round", 200),
+    assert [call[0] for call in stub.calls if call[0].endswith("phase")] == [
+        "advance_phase",
+        "undo_phase",
+        "return_to_phase",
     ]
-    assert [call for call in stub.calls if call[0] == "run_defaults"] == [
-        ("run_defaults", {"stage": "scopes"}),
-        ("run_defaults", {"stage": "placement"}),
-        ("run_defaults", {"stage": "round"}),
-    ]
-
-
-@pytest.mark.integration
-def test_next_phase_keeps_the_doall_moves_and_finalize_still_gets_the_kernels(
-    loaded: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(next_phase, "run_phases", lambda: PACKETS["nestforge"].phases)
-    before = post("list_moves", "episode-stays").answer["result"]
-    judge = FakeJudge()
-    request = RouteRequest(HTTPMethod.POST, ["next_phase"], {}, {"kernel": KERNEL}, "episode-stays")
-
-    next_phase.serve(judge, request)
-
-    assert judge.code == HTTPStatus.OK, judge.answer
-    assert post("list_moves", "episode-stays").answer["result"] == before
-    assert post("finalize", "episode-stays").answer["result"]["kernels"]
+    assert {"advance_phase", "undo_phase", "return_to_phase"} <= CHANGING
 
 
 def test_a_tool_that_refuses_the_agents_call_is_still_a_bad_request(stub: Stub) -> None:
@@ -847,9 +873,18 @@ def test_the_structured_phase_returns_the_tree_and_get_performance_measures_a_mo
     assert post("get_performance").answer["performance"] == performance, "the unchanged program is measured once"
 
 
+def to_phase(episode: str, phase: str, kernel: str = KERNEL) -> None:
+    """``advance_phase`` on ``episode`` until it is in ``phase``; the phases passed run their defaults."""
+    for _ in range(4):
+        step = post("advance_phase", episode=episode, kernel=kernel).answer["result"]
+        if step["phase"] == phase:
+            return
+    raise AssertionError(f"{episode} never reached the phase {phase}")
+
+
 def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
-    """Default scopes on ``episode``, then the first kernel's name and source."""
-    assert post("run_defaults", episode=episode, kernel=kernel, stage="scopes").code == HTTPStatus.OK
+    """``episode`` in the kernels phase (every doall its default scope), then the first kernel's name and source."""
+    to_phase(episode, "kernels", kernel)
     name = post("list_kernels", episode=episode, kernel=kernel).answer["result"][0]["name"]
     assert post("focus_kernel", episode=episode, kernel=kernel, name=name).code == HTTPStatus.OK
     return name, post("read_kernel", episode=episode, kernel=kernel, name=name).answer["result"]
@@ -1228,8 +1263,9 @@ def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_th
     agent_plugins.stage_agents(home, os.environ)
     model = ScriptedModel(
         [
-            calls("next_phase"),
-            calls("next_phase"),
+            calls("advance_phase"),
+            calls("advance_phase"),
+            calls("advance_phase"),
             calls(subagents.TASK_TOOL, subagent_type="kernel-optimizer", prompt="Optimize the first kernel."),
             calls("list_kernels"),
             says("nothing to gain"),
@@ -1255,7 +1291,8 @@ def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_th
 
     reason, detail = asyncio.run(run_anthropic.run_episode_async(args, usage))
 
-    first, _, _, started, listed, *_ = model.sent
+    # three advance_phase calls, the Task call, then the subagent's first request and the one after list_kernels
+    first, started, listed = model.sent[0], model.sent[4], model.sent[5]
     assert reason is runner_common.EndReason.FINISHED, detail
     assert started["system"] == subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text()).prompt
     offered = {tool["name"] for tool in first["tools"]}
@@ -1353,6 +1390,7 @@ def test_each_library_product_is_a_kernel_and_the_program_asks_for_its_scratch(l
 @pytest.mark.gpu
 def test_a_gpu_target_reports_its_offloading(loaded: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGUAGE", "cuda")
+    to_phase("episode-gpu", "scopes")
 
     placed = post("run_defaults", episode="episode-gpu", stage="placement")
     judge = post("get_performance", episode="episode-gpu")

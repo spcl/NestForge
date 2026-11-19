@@ -19,7 +19,7 @@ from relayout.layout import IndexMap
 
 from nestforge.build.arena import US_PER_S, reps_within_budget, rewind
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
-from nestforge.build.sdfg import BuiltSDFG, compile_linked_program
+from nestforge.build.sdfg import BuiltSDFG, build_linked_program
 from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
@@ -188,11 +188,11 @@ def time_program(
     reps: int,
     gpu: bool,
 ) -> ProgramReport:
-    """Build ``sdfg`` linking its kernels' libraries (:func:`compile_linked_program`) and time it in an isolated
+    """Build ``sdfg`` linking its kernels' libraries (:func:`build_linked_program`, not loaded here) and time it in an isolated
     child: forked on the CPU, spawned once a GPU context is needed."""
     program = copy.deepcopy(sdfg)
     try:
-        so_path = compile_linked_program(program, out_dir).filename
+        so_path = str(build_linked_program(program, out_dir))
     except Exception as err:  # noqa: BLE001 -- a refused build is feedback, not a crash
         return ProgramReport(error=f"{type(err).__name__}: {err}")
     frame = out_dir / "src" / "cpu" / f"{program.name}.cpp"
@@ -238,10 +238,15 @@ def offload_report(
 
 
 def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The bytes of container ``name`` at ``sizes``; ``None`` for no container, or one the running program sizes
+    (gmres' ``m*(m + 1)``, ``m`` computed at run time)."""
     desc = sdfg.arrays.get(name)
     if desc is None:
         return None
-    return int(dace.symbolic.evaluate(desc.total_size, sizes)) * desc.dtype.bytes
+    total = dace.symbolic.pystr_to_symbolic(desc.total_size)
+    if any(str(symbol) not in sizes for symbol in total.free_symbols):
+        return None
+    return int(dace.symbolic.evaluate(total, sizes)) * desc.dtype.bytes
 
 
 def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[KernelReport]:

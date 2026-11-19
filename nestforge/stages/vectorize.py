@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``auto-vectorize-scope``: DaCe's vectorizer on one top-level doall (``VectorizeMap``), every other doall left
+"""``vectorize-doall``: DaCe's vectorizer on one top-level doall (``VectorizeMap``), every other doall left
 scalar. Its innermost maps become tiles of ``tile_sizes`` lanes for ``isa``; the body becomes tile loads, tile
 operations and tile stores, which the C view of the tree shows as the ISA's tile functions over its intrinsics."""
 
@@ -8,6 +8,7 @@ import copy
 from collections.abc import Sequence
 from typing import cast
 
+from dace import symbolic
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.passes.vectorization.config import VectorizeConfig
@@ -17,7 +18,7 @@ from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 from nestforge.records import CRASHES, Refusal, Refused
 
 __all__ = [
-    "AUTO_VECTORIZE",
+    "VECTORIZE_DOALL",
     "DEFAULT_LANES",
     "ISAS",
     "MAX_TILE_DIMS",
@@ -28,7 +29,7 @@ __all__ = [
 ]
 
 #: The move kind; it takes ``tile_sizes`` (lanes per vectorized dimension) and ``isa``.
-AUTO_VECTORIZE = "auto-vectorize-scope"
+VECTORIZE_DOALL = "vectorize-doall"
 #: The ISA names the move takes, by DaCe's tile-op ISA.
 ISAS: dict[str, ISA] = {
     "auto": ISA.AUTO,
@@ -52,7 +53,7 @@ def tile_lanes(isa: str, tile_sizes: Sequence[int]) -> tuple[int, ...] | str:
         return (DEFAULT_LANES,) * max(1, min(len(tile_sizes), MAX_TILE_DIMS))
     if not 1 <= len(tile_sizes) <= MAX_TILE_DIMS or any(size < 1 for size in tile_sizes):
         return Refused(
-            f"pass tile_sizes: the lanes of each vectorized dimension, innermost last, 1 to {MAX_TILE_DIMS} sizes "
+            f"pass lanes: the lanes of each vectorized dimension, innermost last, 1 to {MAX_TILE_DIMS} sizes "
             f"(e.g. [{DEFAULT_LANES}]); a scalable ISA ({sorted(SCALABLE)}) takes its own vector length instead.",
             Refusal.ARGUMENT,
         )
@@ -70,11 +71,26 @@ def vectorize_config(isa: str, tile_sizes: Sequence[int]) -> VectorizeConfig | s
     )
 
 
+def shorter_than_lanes(entry: nodes.MapEntry, lanes: int) -> int | None:
+    """The innermost dimension's trip count of ``entry`` when it is a constant below ``lanes``, else ``None``: such a
+    doall fills no vector."""
+    begin, end, step = entry.map.range[-1]
+    trips = symbolic.simplify((end - begin + step) // step)
+    return int(trips) if trips.is_number and int(trips) < lanes else None
+
+
 def vectorize_refusal(state: SDFGState, entry: nodes.MapEntry, config: VectorizeConfig) -> str | None:
     """Why :class:`VectorizeMap` cannot vectorize ``entry``, found on a copy of the whole program; None when it can."""
     if state.entry_node(entry) is not None:
         return Refused(
             f"{entry.map.label} is inside another doall; vectorize the outermost one around it.", Refusal.WRONG_ROW_KIND
+        )
+    lanes = config.widths[-1]
+    trips = shorter_than_lanes(entry, lanes)
+    if trips is not None:
+        return Refused(
+            f"{entry.map.label} runs {trips} iterations, fewer than {lanes} lanes: it fills no vector.",
+            Refusal.WRONG_ROW_KIND,
         )
     trial = copy.deepcopy(state.sdfg.root_sdfg)
     trial_state = cast(SDFGState, trial.cfg_list[state.parent_graph.cfg_id].node(state.block_id))

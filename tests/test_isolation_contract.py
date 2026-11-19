@@ -14,7 +14,9 @@ import threading
 import time
 import warnings
 from pathlib import Path
+from typing import Any
 
+import dace
 import pytest
 
 from nestforge.build import isolation
@@ -27,7 +29,9 @@ from nestforge.build.isolation import (
     Result,
     restrict_cpus,
     run_isolated,
+    run_spawned,
 )
+from nestforge.build.sdfg import build_linked_program
 
 #: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
 ISOLATION_WAIT_S = 5.0
@@ -227,6 +231,72 @@ def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one()
     assert len(full) >= 2, "one CPU: nothing for OpenMP to narrow"
     assert bound == full[:1]
     assert child == full
+
+
+def spawned_mask(payload: None) -> Mask:
+    """What a spawned child reports: its CPU mask."""
+    return Mask(cpus=sorted(os.sched_getaffinity(0)))
+
+
+def spawned_child_mask_after_openmp_bound_the_caller(answers: Any) -> None:
+    """As :func:`child_mask_after_openmp_bound_the_caller`, for a spawned child (a GPU session's program)."""
+    full = sorted(os.sched_getaffinity(0))
+    os.sched_setaffinity(0, {full[0]})  # what libomp's binding does to the thread that starts it
+    answers.put((full, run_spawned(spawned_mask, None)))
+
+
+def in_fresh_process(target, *arguments):
+    """``target(queue, *arguments)``'s one answer, from a spawned process that is no pool worker (a pool's
+    daemonic workers cannot spawn) and has loaded nothing of this one's."""
+    context = multiprocessing.get_context("spawn")
+    answers = context.Queue()
+    process = context.Process(target=target, args=(answers, *arguments))
+    process.start()
+    answer = answers.get(timeout=600)
+    process.join()
+    return answer
+
+
+@needs_affinity
+def test_a_spawned_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one():
+    """A spawned interpreter starts from its parent's mask; once libomp bound the parent to one core, a GPU
+    session's program would run its CPU parts there (NestForge#99)."""
+    full, child = in_fresh_process(spawned_child_mask_after_openmp_bound_the_caller)
+
+    assert len(full) >= 2, "one CPU: nothing for OpenMP to narrow"
+    assert child == Mask(cpus=full)
+
+
+N = dace.symbol("N")
+
+
+@dace.program
+def doubled(a: dace.float64[N], b: dace.float64[N]):
+    for i in dace.map[0:N]:
+        b[i] = 2.0 * a[i]
+
+
+def mapped_libraries() -> set[str]:
+    """The paths of the shared libraries mapped into this process."""
+    return {line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines() if ".so" in line}
+
+
+def build_and_report_mappings(answers: Any, folder: str) -> None:
+    """Build a program with an OpenMP map; report its library, and what the build newly mapped into this process."""
+    before = mapped_libraries()
+    library = build_linked_program(doubled.to_sdfg(simplify=True), Path(folder))
+    answers.put((library.is_file(), sorted(mapped_libraries() - before), str(library)))
+
+
+@needs_affinity
+def test_building_a_program_to_time_maps_neither_it_nor_an_openmp_runtime_into_the_caller(tmp_path: Path):
+    """Loading the program maps libomp here, which with OMP_PROC_BIND or OMP_PLACES binds this process to one core
+    and every child it forks with it (NestForge#99); only the timing child may load it."""
+    built, newly_mapped, library = in_fresh_process(build_and_report_mappings, str(tmp_path))
+
+    assert built
+    assert library not in newly_mapped
+    assert not [path for path in newly_mapped if "omp" in Path(path).name], newly_mapped
 
 
 def test_without_a_cpu_mask_call_a_child_runs_on_every_cpu_and_restricting_is_a_no_op(monkeypatch):

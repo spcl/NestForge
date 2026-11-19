@@ -104,7 +104,8 @@ def test_a_default_stage_that_fails_is_undone(tmp_path, monkeypatch, stage):
 
 def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_path, monkeypatch):
     sut = session(tmp_path)
-    sut.default_scopes()
+    for _ in range(3):  # to the kernels phase: leaving the scopes gives every doall its default scope
+        sut.next_phase()
     (kernel, *_) = sut.list_kernels()
     source = sut.kernel_source(kernel.name)
     sut.focus_kernel(kernel.name)

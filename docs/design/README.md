@@ -16,6 +16,9 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7 and 12 now |
 | [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | steps 1 and 2 now; `guided` on the GPU needs DaCe |
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
+| [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
+| [phases.md](phases.md) | NestForge's own phases: `advance_phase`, `undo_phase`, `return_to_phase`, the gate per phase | none | built |
+| [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | request, clustering and the authored catalogue built; authoring script and gate next |
 
 ## Where to start
 
@@ -31,6 +34,8 @@ Build in this order. Each step is one pull request with its tests, and each page
 7. **`comm-nodes`, packages 11 to 16,** the overlap.
 8. **`skew-wavefront`.** Built: DaCe extended `ef08de68e9` (D3), NestForge [stages.md](../stages.md). The bench's
    DaCe pin follows with HPCAgent-Bench #196.
+9. **Hoist and sink moves.** Built: `hoist-invariant-code`, `sink-invariant-code`, `hoist-invariant-guard` and
+   `sink-invariant-guard` replace five kinds (`nestforge/stages/sinking.py`, [stages.md](../stages.md)).
 
 ## What is verified and what is not
 

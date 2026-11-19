@@ -95,7 +95,7 @@ def test_an_expanded_kernel_row_carries_its_work_and_depth():
 
     assert session.expand([state.label]) == f"ok: expanded {state.label}"
 
-    (kernel,) = kernel_rows(session.describe())
+    (kernel,) = kernel_rows(session.describe(costs=True))
     assert kernel.endswith("  work=N depth=1"), kernel
 
 

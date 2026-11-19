@@ -30,7 +30,7 @@ dependencies = [
     # The tip of HPCAgent-Bench main, and the DaCe and relayout commits it pins (the bench owns them);
     # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
     # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
-    "dace @ git+https://github.com/spcl/dace.git@6ed7dc19e6750a012b78fba54189aad4c1bc4414",
+    "dace @ git+https://github.com/spcl/dace.git@d008a6ac6c029b55b4d3632947c9048aa95a616b",
     "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@2efd241fc147c01c27f9370d071a4364b8e27bc0",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
     "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@2efd241fc147c01c27f9370d071a4364b8e27bc0#subdirectory=agent",
@@ -47,6 +47,9 @@ dev = [
     "pytest-cov",
     "pytest-timeout",
     "pytest-xdist",
+    # scripts/answer_tokens.py counts answer tokens: OpenAI's encodings, and a model's own tokenizer.json.
+    "tiktoken",
+    "tokenizers",
     # Pinned to the pre-commit hook's rev: a new release widens the default rules.
     "ruff==0.15.10",
 ]
@@ -57,12 +60,12 @@ Repository = "https://github.com/spcl/NestForge"
 
 [tool.uv]
 override-dependencies = [
-    "dace @ git+https://github.com/spcl/dace.git@6ed7dc19e6750a012b78fba54189aad4c1bc4414",
+    "dace @ git+https://github.com/spcl/dace.git@d008a6ac6c029b55b4d3632947c9048aa95a616b",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@57c7a9ee533113843bf9a0426ada9378d3f26598",
 ]
 
 [tool.setuptools.packages.find]
-include = ["nestforge*"]
+include = ["nestforge*", "reference_solutions"]
 
 [tool.ruff]
 line-length = 120

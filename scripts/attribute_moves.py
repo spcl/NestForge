@@ -22,6 +22,7 @@ from typing import Any
 from nestforge.server import FEEDBACK_CODEGEN, Setup, answer, applied, start
 from nestforge.session import Session
 from nestforge.stages.families import family_of
+from nestforge.stages.moves import journaled_arguments
 from nestforge.stages.performance import Reference
 
 #: What the calls from the first ``write_kernel`` on are summed as.
@@ -74,6 +75,7 @@ def attribute(
     for index, (tool, arguments) in enumerate(journal):
         if tool == "write_kernel":
             break
+        arguments = journaled_arguments(arguments)
         reply = answer(session, tool, arguments, data, timed=False)
         if not applied(reply):
             raise RuntimeError(f"call {index} ({tool} {arguments}) does not replay: {reply.error or reply.result}")

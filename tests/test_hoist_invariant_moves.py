@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``hoist-invariant-for`` and ``hoist-invariant-doall``: the agent names a loop or a doall, LoopInvariantCodeMotion
+"""``hoist-invariant-code``: the agent names a loop or a doall, LoopInvariantCodeMotion
 picks the statements no iteration changes and runs them once, before it."""
 
 import pathlib
@@ -76,7 +76,8 @@ def product_runs_in(sdfg: dace.SDFG) -> str:
         if isinstance(node, nodes.Tasklet) and node.label.startswith("product"):
             if isinstance(graph, dace.SDFGState) and isinstance(graph.parent_graph, LoopRegion):
                 return "loop"
-            return "doall" if graph.entry_node(node) is not None else "outside"
+            in_body = graph.sdfg.parent_nsdfg_node is not None  # a doall's body nested as an SDFG
+            return "doall" if in_body or graph.entry_node(node) is not None else "outside"
     raise AssertionError("the product tasklet is gone")
 
 
@@ -90,13 +91,13 @@ def test_a_product_of_loop_invariant_inputs_runs_once_before_the_loop(tmp_path: 
     sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
     (loop,) = labels_of(sut, LoopRegion)
 
-    (move,) = sut.list_moves("hoist-invariant-for")
+    (move,) = sut.list_moves("hoist-invariant-code")
     result = sut.apply_move(move.kind, move.labels)
 
     assert move.labels == (loop,)
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopInvariantCodeMotion"), result
     assert product_runs_in(sut.sdfg) == "outside"
-    assert sut.list_moves("hoist-invariant-for") == [], "nothing invariant is left in the loop"
+    assert sut.list_moves("hoist-invariant-code") == [], "nothing invariant is left in the loop"
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
@@ -104,9 +105,9 @@ def test_a_loop_that_rewrites_an_input_of_the_product_keeps_it_and_refuses_the_h
     sut = Session(product_in_a_loop(rewrites_a=True), work_dir=str(tmp_path))
     (loop,) = labels_of(sut, LoopRegion)
 
-    refused = sut.apply_move("hoist-invariant-for", [loop])
+    refused = sut.apply_move("hoist-invariant-code", [loop])
 
-    assert sut.list_moves("hoist-invariant-for") == []
+    assert sut.list_moves("hoist-invariant-code") == []
     assert refused.status is MoveStatus.ILLEGAL and "loop-invariant" in refused.reason, refused
     assert product_runs_in(sut.sdfg) == "loop"
 
@@ -114,21 +115,59 @@ def test_a_loop_that_rewrites_an_input_of_the_product_keeps_it_and_refuses_the_h
 def test_a_product_of_doall_invariant_inputs_runs_once_before_the_doall(tmp_path: pathlib.Path):
     sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
 
-    (move,) = sut.list_moves("hoist-invariant-doall")
+    (move,) = sut.list_moves("hoist-invariant-code")
     result = sut.apply_move(move.kind, move.labels)
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "LoopInvariantCodeMotion"), result
     assert product_runs_in(sut.sdfg) == "outside"
-    assert sut.list_moves("hoist-invariant-doall") == []
+    assert sut.list_moves("hoist-invariant-code") == []
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
 def test_a_doall_without_invariant_statements_is_not_offered(tmp_path: pathlib.Path):
     sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
-    (move,) = sut.list_moves("hoist-invariant-doall")
+    (move,) = sut.list_moves("hoist-invariant-code")
     sut.apply_move(move.kind, move.labels)
     (doall,) = labels_of(sut, nodes.MapEntry)
 
-    refused = sut.apply_move("hoist-invariant-doall", [doall])
+    refused = sut.apply_move("hoist-invariant-code", [doall])
 
     assert refused.status is MoveStatus.ILLEGAL and "invariant" in refused.reason, refused
+
+
+def test_a_hoisted_product_sinks_back_into_the_loop_and_runs_every_iteration(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
+    (hoist,) = sut.list_moves("hoist-invariant-code")
+    sut.apply_move(hoist.kind, hoist.labels)
+    (move,) = sut.list_moves("sink-invariant-code")
+
+    result = sut.apply_move(move.kind, move.labels, container=move.container)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "sink_into_loop"), result
+    assert product_runs_in(sut.sdfg) == "loop"
+    np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
+
+
+def test_a_hoisted_product_sinks_back_into_the_doall(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
+    (hoist,) = sut.list_moves("hoist-invariant-code")
+    sut.apply_move(hoist.kind, hoist.labels)
+    (move,) = sut.list_moves("sink-invariant-code")
+
+    result = sut.apply_move(move.kind, move.labels, container=move.container)
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "sink_into_map"), result
+    assert product_runs_in(sut.sdfg) == "doall"
+    np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
+
+
+def test_sinking_without_a_container_or_with_an_argument_is_refused(tmp_path: pathlib.Path):
+    sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
+    (loop,) = labels_of(sut, LoopRegion)
+
+    unnamed = sut.apply_move("sink-invariant-code", [loop])
+    argument = sut.apply_move("sink-invariant-code", [loop], container="X")
+
+    assert unnamed.status is MoveStatus.ILLEGAL and "container=" in unnamed.reason, unnamed
+    assert argument.status is MoveStatus.ILLEGAL and "argument" in argument.reason, argument
+    assert product_runs_in(sut.sdfg) == "loop"
