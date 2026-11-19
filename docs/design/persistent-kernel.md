@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: built (2026-11-18) on DaCe extended `1f634e6833`, as `persistent-kernel` `[for|state|doall ...]` with
+Status: built (2026-11-18) on DaCe extended `f3352f1d0b`, as `persistent-kernel` `[for|state|doall ...]` with
 `scope` (owner's decision: a list in one move). The rows are consecutive blocks of one region of the kernel's body
 (for loops and states; a doall stands for its state; a block between them may hold no doall), and they run as one
 persistent kernel with a barrier where a launch or an implicit barrier was. The kernel's rendering runs
