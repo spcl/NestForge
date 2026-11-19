@@ -56,7 +56,7 @@ def test_a_mode_the_target_does_not_build_and_a_program_without_kernels_are_refu
 
     unscoped = sut.apply_move("set-fp-mode", [], fp_mode="fast-math")
     sut.default_scopes()
-    kernel = sorted(ext.name for ext in external_calls(sut.sdfg))[0]
+    kernel = min(ext.name for ext in external_calls(sut.sdfg))
     loose = sut.apply_move("set-fp-mode", [], fp_mode="loose", scope=kernel)
 
     assert sut.list_moves("set-fp-mode") == [], "set-fp-mode is offered inside a kernel only"

@@ -51,7 +51,7 @@ dev = [
     "tiktoken",
     "tokenizers",
     # Pinned to the pre-commit hook's rev: a new release widens the default rules.
-    "ruff==0.15.10",
+    "ruff==0.17.6",
 ]
 
 [project.urls]
