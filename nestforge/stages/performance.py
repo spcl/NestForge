@@ -238,10 +238,15 @@ def offload_report(
 
 
 def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
+    """The bytes of container ``name`` at ``sizes``; ``None`` for no container, or one the running program sizes
+    (gmres' ``m*(m + 1)``, ``m`` computed at run time)."""
     desc = sdfg.arrays.get(name)
     if desc is None:
         return None
-    return int(dace.symbolic.evaluate(desc.total_size, sizes)) * desc.dtype.bytes
+    total = dace.symbolic.pystr_to_symbolic(desc.total_size)
+    if any(str(symbol) not in sizes for symbol in total.free_symbols):
+        return None
+    return int(dace.symbolic.evaluate(total, sizes)) * desc.dtype.bytes
 
 
 def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[KernelReport]:
