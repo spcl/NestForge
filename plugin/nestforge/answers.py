@@ -37,6 +37,18 @@ SCORE_HEAD = ("speedup", "correct", "build_ok", "timed_out")
 PROTOCOL = ("grading_protocol", "seed_nonce", "timing_reduction")
 #: The ``score`` fields printed in their own places.
 SCORE_OWN = (*SCORE_HEAD, *PROTOCOL, "detail", "cells")
+#: Answer fields the agent does not need beside the text: the tool's own name, and ``ok`` when it is true.
+WRAPPER_DROP = ("tool",)
+#: Seconds per unit of a time field, by the suffix its name ends with.
+TIME_UNITS = {"_ns": 1e-9, "_us": 1e-6, "_ms": 1e-3}
+#: Fields that hold a map of times in a unit their name does not say.
+TIME_MAPS = {"baselines": 1e-9}
+#: The units a time is printed in, largest first: each with its size in seconds.
+PRINTED_UNITS = (("s", 1.0), ("ms", 1e-3), ("us", 1e-6), ("ns", 1e-9))
+#: ``score`` fields the agent already has: the task prompt names the kernel.
+GIVEN = ("kernel",)
+#: ``score``'s counts of hidden inputs, which say nothing when there were none.
+HIDDEN = ("hidden_correct", "hidden_passed", "hidden_total")
 
 
 def empty(value: object) -> bool:
@@ -87,10 +99,6 @@ def lines(answer: dict[str, Any], line: Callable[[Mapping[str, Any]], str]) -> d
     return {**wrapper(answer, ("result",)), "text": "\n".join(map(line, result)) if result else NONE}
 
 
-#: Answer fields the agent does not need beside the text: the tool's own name, and ``ok`` when it is true.
-WRAPPER_DROP = ("tool",)
-
-
 def wrapper(answer: Mapping[str, Any], rendered: Collection[str]) -> dict[str, Any]:
     """What of ``answer`` stays beside its text: every field that says something, but the ``rendered`` ones, the
     tool's name and a true ``ok``."""
@@ -119,14 +127,6 @@ def kinds_answer(answer: dict[str, Any]) -> dict[str, Any]:
 def unset(value: object) -> bool:
     """Whether a measured field says nothing: unset, or an empty string or collection. False and 0 are measurements."""
     return value is None or value in ("", [], {}, ())
-
-
-#: Seconds per unit of a time field, by the suffix its name ends with.
-TIME_UNITS = {"_ns": 1e-9, "_us": 1e-6, "_ms": 1e-3}
-#: Fields that hold a map of times in a unit their name does not say.
-TIME_MAPS = {"baselines": 1e-9}
-#: The units a time is printed in, largest first: each with its size in seconds.
-PRINTED_UNITS = (("s", 1.0), ("ms", 1e-3), ("us", 1e-6), ("ns", 1e-9))
 
 
 def number(value: float) -> str:
@@ -217,12 +217,6 @@ def failed(answer: Mapping[str, Any]) -> bool:
     return answer.get("ok") is False or ("error" in answer and not answer.get("text"))
 
 
-#: ``score`` fields the agent already has: the task prompt names the kernel.
-GIVEN = ("kernel",)
-#: ``score``'s counts of hidden inputs, which say nothing when there were none.
-HIDDEN = ("hidden_correct", "hidden_passed", "hidden_total")
-
-
 def score_skip(answer: Mapping[str, Any]) -> tuple[str, ...]:
     """The ``score`` fields its other-fields line leaves out."""
     hidden = HIDDEN if not answer.get("hidden_total") else ()
@@ -247,10 +241,8 @@ def score_answer(answer: dict[str, Any]) -> dict[str, Any]:
 
 
 def offloaded(offloading: Mapping[str, Any]) -> bool:
-    """Whether ``offloading`` says more than that every kernel runs on the CPU and nothing moves."""
-    devices = offloading.get("devices") or {}
-    moves = offloading.get("transfers") or offloading.get("transfer_bytes")
-    return bool(moves) or any(device != "cpu" for device in devices.values()) or offloading.get("transfers") is None
+    """Whether a kernel runs on the GPU: only then does data move between memories."""
+    return "gpu" in (offloading.get("devices") or {}).values()
 
 
 def offloading_lines(offloading: Mapping[str, Any]) -> list[str]:
