@@ -44,7 +44,9 @@ The names differ from the bench's own `next_phase` tool, which the agent's tool 
   below places them; no list says it twice.
 - `finalize_scope` (P7) ends the work of `scopes`: what no run-on move placed gets its default device and the GPU
   kernels' copies move into the program; the scopes guide asks for `get_performance` only after it. Inside a doall,
-  `set-library-implementation` offers no device library (P7b).
+  `set-library-implementation` offers no device library (P7b). `copy-to-tma` moves a staged kernel's tiles with the TMA unit
+  (DaCe's `MemoryEngineBulk`); `set-pipeline-depth` sets a kernel loop's
+  `pipeline_depth`, which code generation lowers (`LowerMultipleBuffering`), as it inserts the block syncs.
 
 ## Mechanism
 

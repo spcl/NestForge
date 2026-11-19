@@ -20,7 +20,16 @@ FAMILIES: dict[str, frozenset[str]] = {
     "layout": frozenset({"relayout"}),
     "precision": frozenset({"set-fp-mode", "change-precision"}),
     "vectorize": frozenset({"vectorize-doall"}),
-    "schedule": frozenset({"set-schedule-cpu", "set-schedule-gpu", "stage-loads-shared", "persistent-kernel"}),
+    "schedule": frozenset(
+        {
+            "set-schedule-cpu",
+            "set-schedule-gpu",
+            "stage-loads-shared",
+            "copy-to-tma",
+            "set-pipeline-depth",
+            "persistent-kernel",
+        }
+    ),
     "wavefront": frozenset({"skew-wavefront"}),
     # the moves of the catalogue (``nestforge.stages.authored``): their kinds are known only when a session loads it
     "authored": frozenset(),

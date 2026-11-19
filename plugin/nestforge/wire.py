@@ -140,6 +140,10 @@ class ApplyMove(Labeled):
     implementation: str | None = pydantic.Field(
         None, description="set-library-implementation: one implementation list_moves offered for the row."
     )
+    depth: int = pydantic.Field(
+        2,
+        description="set-pipeline-depth: the stages of the loop's pipeline, the buffers its tiles rotate through (2+).",
+    )
     max_iterations: int = pydantic.Field(
         16, description="unroll-for, unroll-doall: the largest trip count you accept to unroll; list_moves checks 16."
     )
