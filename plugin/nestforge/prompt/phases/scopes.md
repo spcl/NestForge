@@ -1,19 +1,9 @@
-This phase decides which code becomes a kernel and where each kernel runs. Moves close at the first kernel, so settle
-them first. `set_scope` makes one kernel of top-level doalls of one state (library calls among them) or of a straight
-run of blocks, named by the latest tree; `unset_scope` inlines one back. `list_scope_moves` and `apply_scope_move` run
-the moves inside one kernel's body.
-With a GPU target, `place devices={...}` runs each kernel on `cpu` or `gpu`. The first call gives what no scope covers
-its default scope, as `next_phase` would; kernels you leave out keep their default device, which `list_kernels` shows,
-and a later call starts again from the program before the first placement, so it can name those kernels too. Once
-placed, `set_scope` and `unset_scope` are refused until `unplace`, which drops the placement, its copies and any
-device move, and keeps the kernels and the moves inside them. A GPU kernel copies its arguments inside its call until
-`insert_copies` moves the copies into the program; `next_phase` inserts them otherwise. A structured move inside a
-placed kernel places it again on the same devices, copies where they were. `stage-loads-shared`, a device move on a
-GPU kernel, rewrites the body as placed, so every later `place`, `insert_copies`, `unplace` or structured move inside
-the kernel drops it. Without a GPU target every kernel runs on the CPU, and `place`, `insert_copies` and `unplace`
-change nothing and say so.
-`get_performance` reports, under `offloading`, the copies the timed program makes (`copies`, `copy_bytes`) and the GPU
-kernels still copying inside their call (`copies_in_call`). At `next_phase`, a program you did not place gets the
-default scope for what no scope covers and the default device for every kernel; a program you placed keeps your
-devices. Either way the copies a GPU kernel still makes inside its call are inserted. The kernels are then fixed until
-a new round, and `unplace` is refused once `focus_kernel` has run.
+## Phase: scopes
+Which parts of the program become kernels, and where they run. `set_scope` makes one kernel of doalls or blocks named
+by the latest tree; `unset_scope` inlines one back. `list_scope_moves` and `apply_scope_move` choose a kernel's
+schedule (`set-schedule-cpu`, `set-schedule-gpu`) and its persistent runs (`persistent-kernel`), and where kernels
+run: `run-on-cpu` and `run-on-gpu` with the kernels as labels, `run-on-cpu-persistent` and `run-on-gpu-persistent`
+to run them (consecutive ones merged into one) as one persistent kernel; `rollback` takes one back. `finalize_scope`
+places what you did not and moves the GPU kernels' host/device copies into the program. Ask for `get_performance`
+only after `finalize_scope`: before, it times a program that is not the one you are building. `advance_phase` places
+what you did not; `undo_phase` takes this phase back.

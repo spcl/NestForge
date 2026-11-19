@@ -250,6 +250,13 @@ def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
 
 
 @dace.program
+def doall_under_guard(a: dace.float64[N], b: dace.float64[N]):
+    if K > 0:
+        for i in dace.map[0:N]:
+            b[i] = a[i] * 2.0 + 1.0
+
+
+@dace.program
 def guarded_map(a: dace.float64[N], b: dace.float64[N]):
     for i in dace.map[0:N]:
         if K > 0:
@@ -838,13 +845,13 @@ def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-# if-loop interchange
+# sink-invariant-guard
 
 
 def test_a_guard_moves_into_the_loop_it_guards():
     sut, reference = session_and_reference(guarded_loop)
 
-    result = apply_listed(sut, "interchange-if-for")
+    result = apply_listed(sut, "sink-invariant-guard")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveIfIntoLoop")
     assert [type(block) for block in sut.sdfg.nodes()] == [LoopRegion]
@@ -852,10 +859,24 @@ def test_a_guard_moves_into_the_loop_it_guards():
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
 
 
+@pytest.mark.parametrize("k", [0, 3])
+def test_a_guard_over_a_doall_moves_into_its_body(k):
+    sut, reference = session_and_reference(doall_under_guard)
+
+    result = apply_listed(sut, "sink-invariant-guard")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "push_if_into_maps"), result
+    assert not any(isinstance(block, ConditionalBlock) for block in sut.sdfg.nodes())
+    (state,) = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
+    assert state.sdfg is sut.sdfg, "the doall stays at the top"
+    a, b = random_arrays(a=(SIZE,))["a"], np.full(SIZE, -1.0)
+    assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
+
+
 def test_a_loop_invariant_guard_moves_out_of_its_loop():
     sut, reference = session_and_reference(loop_guard)
 
-    result = apply_listed(sut, "interchange-for-if")
+    result = apply_listed(sut, "hoist-invariant-guard")
 
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "MoveLoopInvariantIfUp")
     assert [type(block) for block in sut.sdfg.nodes()] == [ConditionalBlock]
@@ -865,23 +886,23 @@ def test_a_loop_invariant_guard_moves_out_of_its_loop():
 
 def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
     sut = Session(loop_variant_guard.to_sdfg(simplify=True))
-    (loop,), (cond,) = loops(sut.sdfg), conditionals(sut.sdfg)
+    (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("interchange-for-if", [loop.label, cond.label])
+    result = sut.apply_move("hoist-invariant-guard", [loop.label])
 
     assert result.status is MoveStatus.ILLEGAL and "MoveLoopInvariantIfUp" in result.reason, result
     assert digest(sut.sdfg) == before
-    assert sut.list_moves("interchange-for-if") == []
+    assert sut.list_moves("hoist-invariant-guard") == []
 
 
-# interchange-doall-if
+# hoist-invariant-guard on a doall
 
 
 @pytest.mark.parametrize("k", [0, 3])
 def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k):
     sut, reference = session_and_reference(guarded_map)
-    (move,) = sut.list_moves("interchange-doall-if")
+    (move,) = sut.list_moves("hoist-invariant-guard")
 
     result = sut.apply_move(move.kind, move.labels)
 
@@ -897,7 +918,7 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
     sut, reference = session_and_reference(two_guarded_maps)
 
     for applied in (1, 2):
-        moves = sut.list_moves("interchange-doall-if")
+        moves = sut.list_moves("hoist-invariant-guard")
         assert len(moves) == 3 - applied
         result = sut.apply_move(moves[0].kind, moves[0].labels)
 
@@ -906,7 +927,7 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
         states = [st for n, st in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
         assert sum(isinstance(st.parent_graph.parent_graph, ConditionalBlock) for st in states) == applied
 
-    assert sut.list_moves("interchange-doall-if") == []
+    assert sut.list_moves("hoist-invariant-guard") == []
     for k in (0, 3):
         arrays = random_arrays(a=(SIZE,)) | {"b": np.zeros(SIZE), "c": np.zeros(SIZE)}
         assert_same_values(reference, sut.sdfg, arrays, N=SIZE, K=k)
@@ -914,11 +935,11 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
 
 def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
     sut = Session(parameter_guarded_map.to_sdfg(simplify=True))
-    labels = [m.labels for m in sut.list_moves("interchange-doall-if")]
+    labels = [m.labels for m in sut.list_moves("hoist-invariant-guard")]
     (entry,) = [n for n, _ in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
     before = digest(sut.sdfg)
 
-    result = sut.apply_move("interchange-doall-if", [entry.map.label])
+    result = sut.apply_move("hoist-invariant-guard", [entry.map.label])
 
     assert labels == []
     assert result.status is MoveStatus.ILLEGAL and "MoveMapInvariantIfUp" in result.reason, result
@@ -1121,7 +1142,7 @@ def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float
 
 def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one():
     sut, reference = session_and_reference(level_pass)
-    assert apply_listed(sut, "expand-doall").status is MoveStatus.APPLIED
+    assert apply_listed(sut, "unflatten-doall").status is MoveStatus.APPLIED
 
     result = apply_listed(sut, "doall-to-for")
 
@@ -1151,21 +1172,37 @@ def strip_labels(tree: str) -> str:
     return re.sub(r"\b([a-z]+)\d+\b", r"\1", tree)
 
 
-def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_the_doall_nest():
+def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
     sut, reference = session_and_reference(level_pass)
-    apply_listed(sut, "expand-doall")
+    apply_listed(sut, "unflatten-doall")
     nest = sut.describe()
     apply_listed(sut, "doall-to-for")
 
     result = apply_listed(sut, "for-to-doall")
 
+    assert result.status is MoveStatus.APPLIED and result.reason.startswith("rollback:"), result
+    assert loops(sut.sdfg) == []
+    assert sut.describe() == nest, "the very nest, labels included"
+    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+
+
+def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_a_later_move():
+    sut, reference = session_and_reference(two_level_passes)
+    apply_listed_first(sut, "unflatten-doall")
+    apply_listed_first(sut, "unflatten-doall")
+    first, second = (move.labels for move in sut.list_moves("doall-to-for")[:2])
+    sut.apply_move("doall-to-for", first)
+    (loop,) = loops(sut.sdfg)
+    sut.apply_move("doall-to-for", second)
+
+    result = sut.apply_move("for-to-doall", [loop.label])
+
     assert (result.status, result.reason, result.forced, result.warning) == (
         MoveStatus.APPLIED, "LoopToMap", False, None
     )  # fmt: skip
-    assert loops(sut.sdfg) == []
-    assert len(top_level_maps(sut.sdfg)) == 1, "one outer doall, its inner doall under it"
-    assert strip_labels(sut.describe()) == strip_labels(nest)
-    assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
+    assert len(loops(sut.sdfg)) == 1, "the other nest's loop stays"
+    arrays = random_arrays(A=(SIZE, SIZE)) | {"B": np.zeros((SIZE, SIZE)), "C": np.zeros((SIZE, SIZE))}
+    assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
 def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason():
@@ -1258,7 +1295,7 @@ def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states
     the parallelism, and the merged body is one state holding both doalls."""
     sut, reference = session_and_reference(two_level_passes)
     for _ in range(2):
-        apply_listed_first(sut, "expand-doall")
+        apply_listed_first(sut, "unflatten-doall")
         apply_listed_first(sut, "doall-to-for")
 
     result = apply_listed(sut, "for-fusion")

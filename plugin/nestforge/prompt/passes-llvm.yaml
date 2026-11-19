@@ -1,0 +1,8 @@
+# The llvm baseline: the agent chooses the llvm pass pipeline, not NestForge's moves; this text replaces NestForge's.
+agent:
+  set:
+    nestforge: {text: "file:passes/llvm.md"}
+    end_to_end: {enabled: false}
+task:
+  set:
+    nestforge: {text: "file:passes/llvm.md"}

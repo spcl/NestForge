@@ -36,8 +36,8 @@ walks the order; NestForge owns what each step does to the session.
 | Half | Phase | Runs | Session state afterwards |
 |---|---|---|---|
 | structured | `moves` | agent, tools `apply_move`, `run_defaults`, ... | the program, reshaped |
-| structured | `scopes` ("Scopes and placement") | agent in `nestforge-full`, else default | some kernels, maybe placed; moves close at the first one |
-| fixed point | `placement` | always default | on an unplaced program, what no scope covers gets its default scope and every kernel its default device (a first `place` does the same scoping); a placed one keeps its devices; copies inserted; kernels are fixed |
+| structured | `scopes` | agent in `nestforge-full`, else default | some kernels; moves close at the first one |
+| fixed point | `placement` | always default | what no scope covers gets its default scope; kernels are fixed |
 | unstructured | `kernels` | agent in `nestforge-full`, else nothing | each kernel's source, one kernel in focus at a time |
 | unstructured | `codegen` | agent in `nestforge-full`, else nothing | each kernel's compiler configuration |
 | | `round` | always default | back to the program as the moves left it |
@@ -47,8 +47,7 @@ Four rules follow, and `nestforge/server.py` enforces all but the last:
 - **Moves close at the first kernel.** A move takes rows of the program before its scopes. `apply_move` and
   `run_defaults` with `moves` or `finish` answer 400 once the program has a kernel.
 - **Scopes are fixed from placement on.** `set_scope` and `unset_scope` answer 400 once the kernels are placed, so the
-  kernel work has a stable set of kernels. `unplace` drops the placement and reopens them until `focus_kernel` starts
-  the kernel work; from then on only a new round does.
+  kernel work has a stable set of kernels.
 - **Kernel work is scoped.** `write_kernel` and `tune_kernel` answer 400 for any kernel but the one `focus_kernel`
   named last; reads take any kernel. The focus is journaled like a change, so a rebuilt session keeps it.
 - **A new round reopens both.** `Session.rewind` restores the program kept before the first kernel, with its row labels.
@@ -62,6 +61,8 @@ The packets:
 | `nestforge` | `moves` | Structured only. The agent writes no code. |
 | `nestforge-full`, also `nestforge-two-stage` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
 | `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
+| `nestforge-requests` | `moves` | As `nestforge`, and the agent may ask for a transformation no move offers (`request_transformation`). |
+| `nestforge-llvm`, `nestforge-mlir` | none | Baselines: no move, no written code; every kernel built through the agent's LLVM (`set_llvm_passes`) or MLIR (`set_mlir_passes`) pass pipeline, from the canonical form with every move family off. |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
 every caller of the route. The agent focuses each kernel before it starts that kernel's subagent; a

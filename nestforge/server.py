@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import functools
 import hashlib
 import importlib
@@ -24,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.util import Finalize
@@ -39,13 +40,34 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from nestforge.build.isolation import CHILD_CPUS, SEAL_KEEP_ENV, restrict_cpus
 from nestforge.build.toolchain import SymbolValue
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record, Refusal, Refused
-from nestforge.session import Codegen, KernelOutcome, MoveResult, PlaceResult, Session, Stage, Stopped
+from nestforge.records import CRASHES, KernelStatus, MoveStatus, Record
+from nestforge.session import (
+    BatchResult,
+    CheckData,
+    Codegen,
+    KernelOutcome,
+    MoveResult,
+    PhaseStep,
+    PlaceResult,
+    Session,
+    Stage,
+    Stopped,
+)
+from nestforge.stages.authored import AUTHORED_FAMILY
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.families import switched_off
 from nestforge.stages.finalize import BenchTarget, Final
-from nestforge.stages.moves import move_kinds
+from nestforge.stages.moves import (
+    PERSISTENT_KERNEL,
+    ROLLBACK,
+    RUN_ON_KINDS,
+    SET_SCHEDULE_CPU,
+    SET_SCHEDULE_GPU,
+    MoveKind,
+    move_kinds,
+)
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE, Performance, Reference
+from nestforge.stages.phases import PhaseName
 
 if TYPE_CHECKING:
     from hpcagent_bench.harness.judge_scheduler import DeviceSlot
@@ -83,74 +105,32 @@ def is_placed(session: Session) -> bool:
     return session.unplaced is not None
 
 
-#: Why a move is refused: moves take the rows of the program before its scopes.
-MOVES_CLOSED = "the program has kernels: moves are closed; next_phase reaches a new round, which reopens them"
-#: Why a scope is refused: the agent's kernel work builds on the kernels placement fixed.
-SCOPES_FIXED = (
-    "the kernels are placed: scopes are fixed; unplace drops the placement and reopens them, as a new round does"
-)
-#: Why a scope is refused on a CPU-only session, where placement has no tool to undo it.
-SCOPES_FIXED_ON_CPU = "the kernels are placed: scopes are fixed; next_phase reaches a new round, which reopens them"
-#: Why unplace is refused: the kernel work builds on the kernels placement fixed.
-KERNEL_WORK_STARTED = (
-    "kernel work has started (focus_kernel): the placement stays; next_phase reaches a new round, which reopens it"
-)
-#: What a placement tool answers on a session without a GPU target: there is no device to choose (design D21 (c)).
-NO_DEVICE_CHOICE = (
-    "this setup has no GPU: every kernel runs on the CPU, so there is nothing to place, copy or unplace, and nothing "
-    "changed; set_scope and unset_scope decide the kernels, and next_phase fixes them"
-)
+#: Why a scope is refused: the kernels are placed, and a scope changes which kernels there are.
+SCOPES_FIXED = "the kernels are placed: scopes are fixed; roll the placement back to change them"
+#: Why run_defaults moves or finish is refused once kernels exist: their defaults run on the whole program.
+MOVES_CLOSED = "the program has kernels: the defaults of moves and finish are closed; undo_phase back to structured"
 
 
-def in_kernel_work(session: Session) -> bool:
-    return session.focus is not None
-
-
-def has_device_choice(session: Session) -> bool:
-    """Whether placement chooses anything on ``session``: only a GPU target offers a second device."""
-    return session.targets.gpu
-
-
-def scopes_fixed(session: Session) -> str:
-    """Why a scope call is refused on a placed ``session``: on a GPU target unplace reopens the scopes."""
-    return SCOPES_FIXED if has_device_choice(session) else SCOPES_FIXED_ON_CPU
-
-
-def until(
-    closed: Callable[[Session], bool], why: str | Callable[[Session], str], call: Callable[..., object]
-) -> Callable[..., object]:
-    """``call``, refused with ``why`` (or what it says of the session) while ``closed`` holds of the session."""
+def until(closed: Callable[[Session], bool], why: str, call: Callable[..., object]) -> Callable[..., object]:
+    """``call``, refused with ``why`` while ``closed`` holds of the session."""
 
     @functools.wraps(call)
     def run(session: Session, **arguments: object) -> object:
         if closed(session):
-            raise ValueError(why if isinstance(why, str) else why(session))
+            raise ValueError(why)
         return call(session, **arguments)
 
     return run
 
 
-def nothing_to_place() -> PlaceResult:
-    return PlaceResult(status=MoveStatus.ILLEGAL, reason=NO_DEVICE_CHOICE)
-
-
-def nothing_to_unplace() -> MoveResult:
-    reason = Refused(NO_DEVICE_CHOICE, Refusal.ARGUMENT)
-    return MoveResult(status=MoveStatus.ILLEGAL, kind="unplace", labels=(), reason=reason)
-
-
-def with_device_choice(call: Callable[..., object], refused: Callable[[], object]) -> Callable[..., object]:
-    """``call`` on a session with a GPU target; on a CPU-only one, ``refused()``, and the program is left as it was.
-    The session's own placement (``next_phase``'s default, a measurement's trial) still runs there: only the agent's
-    tool has nothing to choose."""
-
-    @functools.wraps(call)
-    def run(session: Session, **arguments: object) -> object:
-        if not has_device_choice(session):
-            return refused()
-        return call(session, **arguments)
-
-    return run
+def authored_kinds(session: Session) -> list[MoveKind]:
+    """The catalogue's moves as ``list_move_kinds`` names them; none when the family ``authored`` is off."""
+    if AUTHORED_FAMILY in session.disabled_families:
+        return []
+    return [
+        MoveKind(kind=m.kind, rows=m.row_kinds(), runs=m.transformation.__name__, does=m.text)
+        for m in session.authored.values()
+    ]
 
 
 def focused(call: Callable[..., object]) -> Callable[..., object]:
@@ -177,26 +157,40 @@ def run_defaults(session: Session, stage: Stage) -> object:
 CALLS: dict[str, Callable[..., object]] = {
     "get_cpf": Session.describe,
     "view_tree": Session.view,
-    "list_move_kinds": lambda session: [
-        kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None
-    ],
+    "get_work_depth": Session.work_depth,
+    "list_move_kinds": lambda session: (
+        [kind for kind in move_kinds() if switched_off(kind.kind, session.disabled_families) is None]
+        + authored_kinds(session)
+    ),
     "list_moves": Session.list_moves,
-    "apply_move": until(has_kernels, MOVES_CLOSED, Session.apply_move),
+    "apply_move": Session.apply_move,
+    "apply_moves": Session.apply_moves,
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
-    "set_scope": until(is_placed, scopes_fixed, Session.set_scope),
-    "unset_scope": until(is_placed, scopes_fixed, Session.unset_scope),
-    "list_scope_moves": Session.list_moves,
+    "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),
+    "unset_scope": until(is_placed, SCOPES_FIXED, Session.unset_scope),
+    "list_scope_moves": Session.list_scope_moves,
+    "advance_phase": Session.next_phase,
+    "undo_phase": Session.prev_phase,
+    "return_to_phase": Session.goto_phase,
     "apply_scope_move": Session.apply_move,
-    "place": with_device_choice(Session.place, nothing_to_place),
-    "insert_copies": with_device_choice(Session.insert_copies, nothing_to_place),
-    "unplace": until(in_kernel_work, KERNEL_WORK_STARTED, with_device_choice(Session.unplace, nothing_to_unplace)),
+    "finalize_scope": Session.finalize_scope,
     "list_kernels": Session.list_kernels,
     "focus_kernel": Session.focus_kernel,
     "read_kernel": Session.kernel_source,
     "write_kernel": focused(Session.set_kernel_source),
     "tune_kernel": focused(Session.sweep),
     "get_performance": lambda session: None,
+    "tune_move": Session.tune_move,
+    "set_llvm_passes": lambda session, passes: session.set_pipeline("llvm", passes),
+    "set_mlir_passes": lambda session, pipeline: session.set_pipeline("mlir", pipeline),
+    "request_transformation": lambda session, name, description, rows, examples: session.request_transformation(
+        name,
+        description,
+        rows,
+        examples,
+        reference=reference_source(session.bench.kernel) if session.bench is not None else "",
+    ),
     "finalize": finalize,
 }
 
@@ -205,23 +199,33 @@ TIMED = frozenset({"write_kernel", "tune_kernel", "get_performance"})
 
 #: Tools that build or run code, so they hold a device slot and need the bench's data. Everything else is Python on
 #: the session's program: a read or a move takes a fraction of a second and no device.
-MEASURING = TIMED | {"finalize"}
+MEASURING = TIMED | {"finalize", "tune_move", "apply_moves"}
+
+#: Tools that measure inside the call itself, so they take the bench's data as arguments.
+TAKES_DATA = frozenset({"tune_move"})
 
 #: Tools whose calls change the session's program; one that fails, its timed answer included, leaves it as it was.
-#: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel.
+#: A fresh session repeats them to be the program the agent left: a sweep too, finalize sweeps no written kernel, and a
+#: tune_move as the move it kept, and a get_performance as the rollbacks that restored the fastest version.
 CHANGING = frozenset(
     {
+        "advance_phase",
+        "undo_phase",
+        "return_to_phase",
         "apply_move",
+        "apply_moves",
         "run_defaults",
         "set_scope",
         "unset_scope",
         "apply_scope_move",
-        "place",
-        "insert_copies",
-        "unplace",
+        "finalize_scope",
         "focus_kernel",
         "write_kernel",
         "tune_kernel",
+        "tune_move",
+        "get_performance",
+        "set_llvm_passes",
+        "set_mlir_passes",
     }
 )
 
@@ -266,6 +270,8 @@ class Setup:
     shared_root: str = ""
     #: The move families the run switches off (:mod:`nestforge.stages.families`), sorted.
     disabled_families: tuple[str, ...] = ()
+    #: The phases the agent runs (:mod:`nestforge.stages.phases`); empty: every phase.
+    agent_phases: tuple[str, ...] = ()
 
 
 class Reply(Record):
@@ -326,6 +332,16 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
     return inputs, Reference({renames.get(k, k): v for k, v in expected.items()}, rtol, atol, source)
 
 
+def reference_source(kernel_name: str) -> str:
+    """The text of the kernel's NumPy reference (``<module>_numpy.py``), which no example of a request may copy;
+    empty when the kernel has none."""
+    from hpcagent_bench.spec import numpy_reference_path
+
+    kernel = corpus_kernel(kernel_name)
+    path = None if kernel is None else numpy_reference_path(kernel.spec.relative_path, kernel.spec.module_name)
+    return "" if path is None else path.read_text()
+
+
 def numpy_outputs(spec: Any, data: dict[str, Any]) -> dict[str, np.ndarray]:
     """The outputs of the kernel's own NumPy function (``<module>_numpy.py`` of the bench) on a copy of ``data``,
     by output name. Raises ``ReferenceUnavailable`` when the kernel has none or it does not run on ``data``."""
@@ -382,10 +398,12 @@ def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
         sizes=preset_sizes(kernel, size_rung(setup.preset)),
         codegen=codegen,
         disabled_families=setup.disabled_families,
+        agent_phases=setup.agent_phases,
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
     session.shared_root = setup.shared_root
     session.canonicalize()
+    session.enter_first_phase()
     return session
 
 
@@ -399,6 +417,17 @@ def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray],
     session.sizes = symbol_inputs(session.sdfg, inputs) | session.sizes
     session.check_sizes = check_rung_sizes(setup, session)
     return inputs, reference
+
+
+def check_data(setup: Setup, session: Session) -> CheckData:
+    """What ``apply_moves`` checks each move on: the bench's data at :data:`CHECK_RUNG`, and the sizes it binds."""
+    small = dataclasses.replace(setup, preset=CHECK_RUNG)
+    inputs, reference = bench_data(small)
+    kernel = corpus_kernel(setup.kernel)
+    assert kernel is not None, "the session started from it"
+    inputs |= closure_inputs(kernel.program(), session.sdfg)
+    sizes = session.sizes | preset_sizes(kernel, CHECK_RUNG) | symbol_inputs(session.sdfg, inputs)
+    return CheckData(inputs, reference, sizes)
 
 
 def check_rung_sizes(setup: Setup, session: Session) -> dict[str, SymbolValue]:
@@ -466,6 +495,10 @@ def move_text(arguments: dict[str, Any]) -> str:
 def applied(reply: Reply) -> bool:
     """Whether a change's answer changed the program: a refused move or kernel is an answer and changes nothing."""
     result = reply.result
+    if isinstance(result, PhaseStep):
+        return not reply.error and result.status == "moved"
+    if isinstance(result, BatchResult):
+        return not reply.error and result.status == "applied"
     status = result.status if isinstance(result, (MoveResult, PlaceResult, KernelOutcome)) else MoveStatus.APPLIED
     return not reply.error and status in (MoveStatus.APPLIED, KernelStatus.OK, KernelStatus.UNCHECKED)
 
@@ -481,16 +514,87 @@ def timed_call(
     undo the tool: its result stands, without the feedback.
 
     :param timed: False for a rebuild's repeat: nobody reads its performance."""
+    if tool in TAKES_DATA:
+        assert data is not None, "a tool that measures has its data loaded"
+        arguments = {**arguments, "inputs": data[0], "reference": data[1], "codegen": FEEDBACK_CODEGEN}
     result = CALLS[tool](session, **arguments)
     if tool not in TIMED or not timed:
         return Reply(result=result)
     assert data is not None, "a timed tool measures, so its data was loaded"
     try:
-        return Reply(result=result, performance=session.performance(*data, codegen=FEEDBACK_CODEGEN))
+        performance = session.performance(*data, codegen=FEEDBACK_CODEGEN)
+        if tool == "get_performance":
+            result = session.keep_fastest(performance.structured)
+        return Reply(result=result, performance=performance)
     except Stopped:
         if tool == "get_performance":
             raise
         return Reply(result=result)
+
+
+#: The phases each tool works in; a tool not here works in every phase. ``list_moves``, ``apply_move`` and
+#: ``tune_move`` take the program in the structured phase and a kernel (``scope``) in the scoped phase.
+TOOL_PHASES: dict[str, frozenset[PhaseName]] = {
+    "list_moves": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "apply_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "apply_moves": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "tune_move": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPED}),
+    "run_defaults": frozenset({PhaseName.STRUCTURED, PhaseName.SCOPES}),
+    "set_scope": frozenset({PhaseName.SCOPES}),
+    "unset_scope": frozenset({PhaseName.SCOPES}),
+    "list_scope_moves": frozenset({PhaseName.SCOPES}),
+    "apply_scope_move": frozenset({PhaseName.SCOPES}),
+    "finalize_scope": frozenset({PhaseName.SCOPES}),
+    "list_kernels": frozenset({PhaseName.KERNELS}),
+    "focus_kernel": frozenset({PhaseName.KERNELS}),
+    "read_kernel": frozenset({PhaseName.KERNELS}),
+    "write_kernel": frozenset({PhaseName.KERNELS}),
+    "tune_kernel": frozenset({PhaseName.KERNELS}),
+}
+#: The ``run_defaults`` stages of each phase; ``round`` is ``return_to_phase`` now.
+STAGE_PHASES: dict[str, PhaseName] = {
+    "moves": PhaseName.STRUCTURED,
+    "finish": PhaseName.STRUCTURED,
+    "scopes": PhaseName.SCOPES,
+    "placement": PhaseName.SCOPES,
+}
+#: The move kinds of the scopes phase: where kernels run (``run-on-*``) and how their doalls are scheduled. Every other move with a
+#: ``scope`` is the scoped phase's.
+SCOPES_PHASE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU, PERSISTENT_KERNEL, *RUN_ON_KINDS})
+
+
+def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> str | None:
+    """Why ``tool`` cannot run in the session's phase, or ``None``."""
+    phase = session.phase
+    allowed = TOOL_PHASES.get(tool)
+    if allowed is not None and phase not in allowed:
+        names = ", ".join(sorted(p.value for p in allowed))
+        return f"{tool} is a tool of the phase {names}; this kernel is in the phase {phase}: call advance_phase or undo_phase"
+    if tool == "apply_moves":
+        moves = arguments.get("moves")
+        refusals = (
+            (phase_refusal(session, "apply_move", move) for move in moves if isinstance(move, Mapping))
+            if isinstance(moves, list)
+            else ()
+        )
+        return next((f"move {i}: {why}" for i, why in enumerate(refusals) if why), None)
+    kind, scoped = str(arguments.get("kind") or ""), arguments.get("scope") is not None
+    if tool == "run_defaults":
+        stage = str(arguments.get("stage"))
+        if STAGE_PHASES.get(stage) is not phase:
+            return f"run_defaults {stage} is not a stage of the phase {phase}" + (
+                "; return_to_phase returns to an earlier phase" if stage == "round" else ""
+            )
+    if tool in ("list_moves", "apply_move", "tune_move"):
+        if phase is PhaseName.STRUCTURED and scoped:
+            return "moves inside a kernel (scope) belong to the phase scoped, after scopes"
+        if phase is PhaseName.SCOPED and not scoped and kind != ROLLBACK:
+            return "in the phase scoped every move names its kernel (scope); the whole program's are the phase structured's"
+        if phase is PhaseName.SCOPED and kind in SCOPES_PHASE_KINDS:
+            return f"{kind} belongs to the phase scopes"
+    if tool == "apply_scope_move" and kind not in SCOPES_PHASE_KINDS and kind != ROLLBACK:
+        return f"the phase scopes applies {sorted(SCOPES_PHASE_KINDS)}; {kind} belongs to the phase scoped"
+    return None
 
 
 def answer(
@@ -500,7 +604,12 @@ def answer(
     data: tuple[dict[str, np.ndarray], Reference | None] | None,
     timed: bool = True,
 ) -> Reply:
-    """The reply to one call. A change stays only if its whole answer succeeds, and its error says so."""
+    """The reply to one call. A change stays only if its whole answer succeeds, and its error says so. A tool of
+    another phase is refused (:func:`phase_refusal`), unless the call is a rebuild's repeat (``timed`` false): it
+    passed the gate when the agent made it, and a journal from before the phases has no phase calls."""
+    refused = phase_refusal(session, tool, arguments) if timed else None
+    if refused is not None:
+        return Reply(error=refused)
     if tool not in CHANGING:
         try:
             return timed_call(session, tool, arguments, data, timed)
@@ -551,6 +660,7 @@ def serve(connection: Connection, setup: Setup) -> None:
     signal.signal(STOP_SIGNAL, lambda signum, frame: session.stopper.ask())
     connection.send(Reply())
     data: tuple[dict[str, np.ndarray], Reference | None] | None = None
+    check: CheckData | None = None
     # the session's own mask, not the current one: libomp may have bound this thread to one CPU already
     cores, environment = set(CHILD_CPUS.cpus), dict(os.environ)
     while True:
@@ -566,6 +676,11 @@ def serve(connection: Connection, setup: Setup) -> None:
             if data is None and tool in MEASURING:
                 with session.stopper.armed():
                     data = session_data(setup, session)
+            if tool == "apply_moves" and timed:
+                if check is None:
+                    with session.stopper.armed():
+                        check = check_data(setup, session)
+                arguments = {**arguments, "check": check}
             connection.send(answer(session, tool, arguments, data, timed))
         except Stopped:
             connection.send(Reply(stopped=True))

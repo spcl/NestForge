@@ -10,6 +10,6 @@ CONFIGS = (Context("cpu", 72, "M"),)
 
 
 def solve(s: Script, ctx: Context) -> None:
-    s.session.default_moves()
+    s.session.run_defaults("moves")
     s.apply(s.pick("doall-fusion"))
     s.finish()

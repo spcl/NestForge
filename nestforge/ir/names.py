@@ -27,6 +27,7 @@ from dace.sdfg.state import (
 )
 from dace.transformation.interstate.expand_nested_sdfg_inputs import ExpandNestedSDFGInputs
 from dace.transformation.interstate.multistate_inline import InlineMultistateSDFG
+from dace.transformation.passes.analysis import loop_analysis
 from dace.utils import find_new_name
 
 
@@ -114,11 +115,19 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
 # canonical labels
 
 
+def counted(loop: LoopRegion) -> bool:
+    """Whether ``loop`` runs over a range it knows up front (a ``for``), not until a condition fails (a ``while``)."""
+    return bool(loop.loop_variable) and all(
+        part is not None for part in (loop_analysis.get_init_assignment(loop), loop_analysis.get_loop_end(loop))
+    )
+
+
 def block_kind(block: ControlFlowBlock) -> str:
-    """The tree keyword of a block: every sequential loop (for or while) is a ``for``; a parallel map is a ``doall``
-    (:func:`relabel_state`), a loop proven to have independent iterations. A kernel is a scope, not a row."""
+    """The tree keyword of a block: a sequential loop over a known range is a ``for``, one that runs until its
+    condition fails a ``while``; a parallel map is a ``doall`` (:func:`relabel_state`), a loop proven to have
+    independent iterations. A kernel is a scope, not a row."""
     if isinstance(block, LoopRegion):
-        return "for"
+        return "for" if counted(block) else "while"
     if isinstance(block, ConditionalBlock):
         return "if"
     if isinstance(block, ContinueBlock):
@@ -171,8 +180,110 @@ def normalize_labels(sdfg: dace.SDFG, namer: Namer | None = None) -> None:
     """Name every block ``<kind><n>``, every map ``doall<n>`` and every library call ``lib_<family><n>`` (``namer``,
     a fresh one by default), keeping the names ``namer`` gave before. A kernel NestForge built (``ExternalCall``)
     keeps its label unless an earlier one holds it."""
-    relabel_cfg(sdfg, namer if namer is not None else Namer(), set())
+    namer = namer if namer is not None else Namer()
+    relabel_cfg(sdfg, namer, set())
     unique_library_labels(sdfg)
+    shorten_temporaries(sdfg, namer)
+
+
+#: A container name DaCe made up (the frontend's ``__tmp3``, ``A_slice``, ``A_slice_plus_A_slice``, a fusion's
+#: ``__map_fusion_T``, a reduction's ``_wcr_priv__Add____out``), as opposed to one the program itself chose.
+GENERATED = re.compile(r"^_|__|_slice")
+#: The kinds of the names :func:`shorten_temporaries` gives: ``tmp<n>`` for a scalar, ``Tmp<n>`` for an array.
+SCALAR_TEMPORARY = "tmp"
+ARRAY_TEMPORARY = "Tmp"
+
+
+def scalar_like(desc: dace.data.Data) -> bool:
+    """Whether ``desc`` holds one element: a scalar, or an array of one element."""
+    return isinstance(desc, dace.data.Scalar) or all(str(extent) == "1" for extent in desc.shape)
+
+
+def shorten_temporaries(sdfg: dace.SDFG, namer: Namer) -> None:
+    """Rename every generated temporary in the program itself, so the tree, the kernel source and a move's
+    ``container`` all say one short name: a scalar ``tmp<n>``, an array ``Tmp<n>``, and the frontend's read of an
+    index array (``<program>_A_index``) ``A_index`` while no other container holds that name. A name is renamed in every program it is declared in, a nested
+    program's connector of that name with it; an argument of the program keeps its name, and no name is handed out
+    twice."""
+    declared: set[str] = set()
+    shapes: dict[str, bool] = {}
+    arguments = {name for name, desc in sdfg.arrays.items() if not desc.transient}
+    for sd in sdfg.all_sdfgs_recursive():
+        declared |= sd.arrays.keys() | sd.symbols.keys()
+        for name, desc in sd.arrays.items():
+            shapes[name] = shapes.get(name, True) and scalar_like(desc)
+    renames: dict[str, str] = {}
+    for name in sorted(declared - arguments - sdfg.symbols.keys()):
+        if name not in shapes:
+            continue
+        index_of = next((a for a in sorted(arguments) if name.endswith(f"_{a}_index") and name != f"{a}_index"), None)
+        if index_of is not None and f"{index_of}_index" not in declared:
+            renames[name] = f"{index_of}_index"
+            declared.add(renames[name])
+            continue
+        if index_of is None and not GENERATED.search(name):
+            continue
+        kind = SCALAR_TEMPORARY if shapes[name] else ARRAY_TEMPORARY
+        fresh = namer.name(kind, "", set())
+        while fresh in declared:
+            fresh = namer.name(kind, "", set())
+        renames[name] = fresh
+    for node, state in list(sdfg.all_nodes_recursive()):
+        if isinstance(node, nodes.NestedSDFG):
+            rename_connectors(state, node, renames)
+    for sd in list(sdfg.all_sdfgs_recursive()):
+        own = {name: new for name, new in renames.items() if name in sd.arrays}
+        if own:
+            sd.replace_dict(own)
+    unshadow_connectors(sdfg)
+
+
+def unshadow_connectors(sdfg: dace.SDFG) -> None:
+    """Give a nested program's connector the name of the container it is bound to when its own name is a different
+    container of an enclosing program (after a fusion, a nest's ``T`` holds the temporary while the program's ``T``
+    is an argument): one name, one container, in every view."""
+    for node, state in list(sdfg.all_nodes_recursive()):
+        if not isinstance(node, nodes.NestedSDFG):
+            continue
+        enclosing: set[str] = set()
+        outer: dace.SDFG | None = state.sdfg
+        while outer is not None:
+            enclosing |= outer.arrays.keys()
+            outer = outer.parent_sdfg
+        bound: dict[str, set[str]] = {}
+        for edge in state.in_edges(node):
+            if edge.dst_conn and edge.data.data:
+                bound.setdefault(edge.dst_conn, set()).add(edge.data.data)
+        for edge in state.out_edges(node):
+            if edge.src_conn and edge.data.data:
+                bound.setdefault(edge.src_conn, set()).add(edge.data.data)
+        inner = node.sdfg
+        taken = inner.arrays.keys() | inner.symbols.keys()
+        renames = {
+            conn: next(iter(data))
+            for conn, data in bound.items()
+            if len(data) == 1 and conn in enclosing and conn not in data and next(iter(data)) not in taken
+        }
+        if renames:
+            rename_connectors(state, node, renames)
+            inner.replace_dict(renames)
+
+
+def rename_connectors(state: SDFGState, node: nodes.NestedSDFG, renames: dict[str, str]) -> None:
+    """The connectors of ``node`` named in ``renames``, and the edges that end at them, under their new names."""
+    for old, new in renames.items():
+        if old in node.in_connectors:
+            node.add_in_connector(new, node.in_connectors[old], force=True)
+            node.remove_in_connector(old)
+            for edge in state.in_edges(node):
+                if edge.dst_conn == old:
+                    edge.dst_conn = new
+        if old in node.out_connectors:
+            node.add_out_connector(new, node.out_connectors[old], force=True)
+            node.remove_out_connector(old)
+            for edge in state.out_edges(node):
+                if edge.src_conn == old:
+                    edge.src_conn = new
 
 
 def unique_library_labels(sdfg: dace.SDFG) -> None:

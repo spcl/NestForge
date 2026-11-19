@@ -21,12 +21,16 @@ from relayout.requests import parse_operation, requests_json
 
 __all__ = [
     "LAYOUT_ACTIONS",
+    "LOCAL_ACTIONS",
     "RELAYOUT",
     "argument_layouts",
     "laid_out",
     "layout_operation",
     "layout_refusal",
     "listed_operation",
+    "local_operation",
+    "locally_laid_out",
+    "names_locals",
     "logical_outputs",
     "physical_inputs",
     "requests_of",
@@ -49,6 +53,62 @@ LAYOUT_ACTIONS: tuple[Action, ...] = (
     Action.SHUFFLE,
     Action.LINEAR_SHUFFLE,
 )
+
+
+#: The operations the move takes on an array the program makes itself: every digit operation, and ``zip`` / ``unzip``
+#: (array of structs, struct of arrays), which change no argument list there. A local's type changes with
+#: ``change-precision``, so ``cast`` stays the arguments'.
+LOCAL_ACTIONS: tuple[Action, ...] = (
+    *(action for action in LAYOUT_ACTIONS if action is not Action.CAST),
+    Action.ZIP,
+    Action.UNZIP,
+)
+
+
+def locals_of(program: dace.SDFG) -> dict[str, data.Array]:
+    """The arrays the program makes itself (transients, not views), by name."""
+    return {
+        name: desc
+        for name, desc in program.arrays.items()
+        if isinstance(desc, data.Array) and not isinstance(desc, data.View) and desc.transient
+    }
+
+
+def names_locals(raw: Mapping[str, object], program: dace.SDFG) -> bool:
+    """Whether the operation ``raw`` names only arrays ``program`` makes itself (else it lays out arguments)."""
+    try:
+        op = parse_operation(dict(raw), "operation")
+    except ValueError:
+        return False
+    existing = Requests(operations=(op,)).named() & set(program.arrays)
+    return bool(existing) and existing <= set(locals_of(program))
+
+
+def local_operation(raw: Mapping[str, object], program: dace.SDFG) -> Operation:
+    """``raw`` as an operation on arrays ``program`` makes itself.
+
+    :raises ValueError: ``raw`` is no such operation, with the reason."""
+    op = parse_operation(dict(raw), "operation")
+    if op.action not in LOCAL_ACTIONS:
+        raise ValueError(
+            f"relayout takes one of {[a.value for a in LOCAL_ACTIONS]} on an internal array; not {op.action.value!r} "
+            "(an internal array's type changes with change-precision)."
+        )
+    return op
+
+
+def locally_laid_out(program: dace.SDFG, op: Operation) -> dace.SDFG:
+    """A copy of ``program`` with its own array(s) ``op`` names laid out in place: nothing is converted, since no
+    caller sees them.
+
+    :raises ValueError: relayout refuses ``op`` on ``program``, with the reason."""
+    requests = Requests(operations=(op,))
+    refusal = unapplied(requests)
+    if refusal is not None:
+        raise ValueError(refusal)
+    laid = copy.deepcopy(program)
+    apply_requests(laid, requests, convert=False)
+    return laid
 
 
 def arguments(program: dace.SDFG) -> dict[str, data.Array]:

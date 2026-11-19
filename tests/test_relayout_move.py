@@ -94,7 +94,7 @@ def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(t
 def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path):
     sut = session(tmp_path)
     assert [(m.labels, m.operation) for m in sut.list_moves(RELAYOUT)] == [((), PERMUTE_A)]
-    (other, *_) = sut.list_moves("expand-doall")
+    (other, *_) = sut.list_moves("unflatten-doall")
     sut.apply_move(other.kind, other.labels)
 
     refused = sut.apply_move(RELAYOUT, [], operation=PERMUTE_A)

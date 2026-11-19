@@ -26,7 +26,7 @@ import os
 import resource
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -115,6 +115,7 @@ class AppliedMove(Record):
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
+    container: str | None = None
 
 
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
@@ -139,6 +140,14 @@ def move_matches(
         seen_reads |= row_reads
         seen_writes |= row_writes
     return set(reads) <= seen_reads and set(writes) <= seen_writes and (where is None or where(rows))
+
+
+def offer_text(rows: Sequence[Row], labels: Sequence[str]) -> str:
+    """A move's labels with what its rows read and write, as a failed pick lists it."""
+    containers = [row_containers(row) for row in rows]
+    reads = sorted(set().union(*(r for r, _ in containers)))
+    writes = sorted(set().union(*(w for _, w in containers)))
+    return f"{list(labels)} reads {reads} writes {writes}"
 
 
 @dataclass(slots=True)
@@ -168,7 +177,7 @@ class Script:
         if len(hits) == 1:
             return hits[0]
         found = "no move" if not hits else f"{len(hits)} moves"
-        listing = ", ".join(str(list(m.labels)) for m in offered) or "none"
+        listing = "; ".join(offer_text([rows[label] for label in m.labels], m.labels) for m in offered) or "none"
         raise ReplayError(
             f"{found} of {kind} match (reads {sorted(reads)}, writes {sorted(writes)}); offered: {listing}\n"
             + self.session.describe()
@@ -191,6 +200,7 @@ class Script:
             schedule=move.schedule,
             chunk=move.chunk,
             threads=move.threads,
+            container=move.container,
         )
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -208,6 +218,7 @@ class Script:
             schedule=move.schedule,
             chunk=move.chunk,
             threads=move.threads,
+            container=move.container,
         )
         self.applied.append(done)
         return done
@@ -242,50 +253,15 @@ class Script:
         self.applied.append(done)
         return done
 
-    def place(self, devices: Mapping[str, str] | None = None) -> AppliedMove:
-        """Stage 4: run each kernel on its device of ``devices``, the rest on the default (:meth:`Session.place`). The
-        first placement gives what no scope covers its default scope, so a later call can name those kernels too.
-
-        :param devices: Kernel name -> ``cpu`` or ``gpu``, as :meth:`Session.list_kernels` names them.
-        :raises ReplayError: The placement was refused.
-        """
-        result = self.session.place(dict(devices or {}))
-        return self.placed("place", result.status, result.reason, dict(result.devices))
-
-    def insert_copies(self) -> AppliedMove:
-        """Stage 4: move the GPU kernels' host/device copies from their calls into the program
-        (:meth:`Session.insert_copies`).
-
-        :raises ReplayError: Nothing is placed yet.
-        """
-        result = self.session.insert_copies()
-        return self.placed("insert-copies", result.status, result.reason, dict(result.devices))
-
-    def unplace(self) -> AppliedMove:
-        """Back to the program before placement, kernels and the moves inside them kept (:meth:`Session.unplace`).
-
-        :raises ReplayError: Nothing is placed.
-        """
-        result = self.session.unplace()
-        return self.placed("unplace", result.status, result.reason, {})
-
-    def placed(self, kind: str, status: MoveStatus, reason: str, devices: Mapping[str, str]) -> AppliedMove:
-        """A placement call's record, its devices as ``kernel=device`` in ``reason``; raises unless it applied."""
-        if status is not MoveStatus.APPLIED:
-            raise ReplayError(f"{kind}: {status.name.lower()}: {reason}")
-        spelled_devices = ", ".join(f"{name}={device}" for name, device in sorted(devices.items()))
-        done = AppliedMove(kind=kind, labels=(), reason=spelled_devices or reason)
-        self.applied.append(done)
-        return done
-
     def finish(self) -> None:
-        """Close stage 2 after hand-picked moves (:meth:`Session.finish_moves`)."""
-        self.session.finish_moves()
+        """Close stage 2 after hand-picked moves, as the agent's ``run_defaults`` does (a change ``rollback`` takes
+        back)."""
+        self.session.run_defaults("finish")
         self.finished = True
 
     def defaults(self) -> None:
-        """Close stage 2 with its default (:meth:`Session.default_moves`), as the baseline does."""
-        self.session.default_moves()
+        """Close stage 2 with its default, as the agent's ``run_defaults`` does and the baseline does."""
+        self.session.run_defaults("moves")
         self.finished = True
 
 

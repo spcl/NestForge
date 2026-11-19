@@ -9,6 +9,7 @@ import copy
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from math import prod
 from pathlib import Path
 from typing import Any, cast
@@ -17,11 +18,14 @@ import dace
 import sympy
 from dace import dtypes
 from dace.data import Scalar
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
+from dace.libraries.standard.nodes.copy.common import memory_engine_bulk_reason
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
+from dace.sdfg.scope import is_devicelevel_gpu
 from dace.sdfg.state import (
     BreakBlock,
     ConditionalBlock,
@@ -80,6 +84,7 @@ from dace.transformation.passes.loop_invariant_code_motion import (
     map_has_invariant_code,
 )
 from dace.transformation.passes.move_if_into_loop import MoveIfIntoLoop, match_guard
+from dace.transformation.passes.multiple_buffering.staging_analysis import find_staged_buffers
 from dace.transformation.passes.parallelization.wavefront.skew import WavefrontSkew
 from dace.transformation.passes.parallelization.wavefront.statements import occurrence_index
 from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
@@ -92,9 +97,29 @@ from nestforge.records import CRASHES, Record, Refusal, Refused
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.layout import RELAYOUT
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
+from nestforge.stages.sinking import (
+    SinkPlan,
+    match_if_over_maps,
+    predecessor_state,
+    push_if_into_maps,
+    sink_into_loop,
+    sink_into_map,
+)
+from nestforge.stages.sinking import (
+    plan_loop as plan_sink_loop,
+)
+from nestforge.stages.sinking import (
+    plan_map as plan_sink_map,
+)
 from nestforge.stages.snapshot import REFUSED as SNAPSHOT_REFUSED
 from nestforge.stages.snapshot import reads_another_doalls_write, snapshot, snapshot_applies
-from nestforge.stages.vectorize import AUTO_VECTORIZE, DEFAULT_LANES, vectorize_config, vectorize_refusal
+from nestforge.stages.vectorize import (
+    DEFAULT_LANES,
+    VECTORIZE_DOALL,
+    shorter_than_lanes,
+    vectorize_config,
+    vectorize_refusal,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +131,26 @@ class Rewrite:
 
 
 #: The move kind that turns a library call into maps, which the session then canonicalizes.
-EXPAND_LIBRARY = "expand-library"
+INLINE_LIBRARY = "inline-library"
 #: The move kind that picks a library call's implementation; it takes ``implementation``.
 SET_IMPLEMENTATION = "set-library-implementation"
 #: The move kind, on no row, that specializes the program for argument values; it takes ``config_values``.
 PROPAGATE_CONFIG = "propagate-config"
+#: The move, on no row, that fixes the program's floating-point mode; it takes ``fp_mode``.
+SET_FP_MODE = "set-fp-mode"
+#: The move that runs consecutive rows of kernel ``scope`` (for loops, states, doalls for their states) as one
+#: persistent kernel; it takes one row or more.
+PERSISTENT_KERNEL = "persistent-kernel"
+#: The moves of the scopes phase that place kernels, named by their labels: on the CPU or the GPU, and the persistent
+#: forms, which run the kernels named (consecutive ones merged into one) as one persistent kernel there.
+RUN_ON_CPU = "run-on-cpu"
+RUN_ON_GPU = "run-on-gpu"
+RUN_ON_CPU_PERSISTENT = "run-on-cpu-persistent"
+RUN_ON_GPU_PERSISTENT = "run-on-gpu-persistent"
+RUN_ON_KINDS = frozenset({RUN_ON_CPU, RUN_ON_GPU, RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT})
+#: The move, on no row, that stores one internal array in another floating-point type; it takes ``container`` and
+#: ``dtype``.
+CHANGE_PRECISION = "change-precision"
 #: The move kind, on no row, that takes the last change back; the session keeps the programs it returns to.
 ROLLBACK = "rollback"
 #: The move kind that turns a sequential loop into a doall; it takes ``force``.
@@ -128,6 +168,12 @@ CPU_SCHEDULES = {
 }
 #: The move kind that sets the thread block of a GPU kernel, or how the block's threads share a doall inside it.
 SET_SCHEDULE_GPU = "set-schedule-gpu"
+#: The move kind that copies a staged kernel's tiles with the TMA unit.
+COPY_TO_TMA = "copy-to-tma"
+#: The move kind that pipelines a kernel loop's staged loads over ``depth`` buffers.
+SET_PIPELINE_DEPTH = "set-pipeline-depth"
+#: The stages ``set-pipeline-depth`` is listed with: two buffers, one loading while the other is read.
+PROBE_PIPELINE_DEPTH = 2
 #: The schedules ``set-schedule-gpu`` takes on a doall inside a kernel, as DaCe schedules; ``guided`` waits for DaCe.
 GPU_INNER_SCHEDULES = {
     "sequential": dtypes.ScheduleType.Sequential,
@@ -140,9 +186,22 @@ MAX_BLOCK_THREADS = 1024
 SCOPE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU})
 #: The move kind that skews a loop nest into a wavefront: a sequential diagonal loop over a doall per diagonal.
 SKEW_WAVEFRONT = "skew-wavefront"
+#: The move kind that runs the loop-invariant statements of a for loop or a doall once, before it.
+HOIST_INVARIANT_CODE = "hoist-invariant-code"
+#: The move kind that moves a for loop's or a doall's invariant guard above it: ``if c`` then runs once.
+HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
+#: The move kind that moves an if into the for loop or doalls it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
+SINK_INVARIANT_GUARD = "sink-invariant-guard"
+#: The move kind that moves the statements computing one temporary into the for loop or doall that reads it, the
+#: inverse of :data:`HOIST_INVARIANT_CODE`; it takes ``container``.
+SINK_INVARIANT_CODE = "sink-invariant-code"
+#: A row a move takes as either a for loop or a doall.
+LOOP_ROW = (LoopRegion, nodes.MapEntry)
+#: A row of a persistent run: a for loop, a state, or a doall standing for its state.
+RUN_ROW = (LoopRegion, SDFGState, nodes.MapEntry)
 
 #: Every move kind, with the tree rows it takes in order.
-MOVE_SHAPES: dict[str, tuple[type, ...]] = {
+MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "for-fusion": (LoopRegion, LoopRegion),
     "for-fission": (LoopRegion,),
     "doall-fusion": (nodes.MapEntry, nodes.MapEntry),
@@ -151,31 +210,39 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
     "interchange-for-doall": (LoopRegion, nodes.MapEntry),
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
     "interchange-doall-doall": (nodes.MapEntry, nodes.MapEntry),
-    "interchange-if-for": (ConditionalBlock, LoopRegion),
-    "interchange-doall-if": (nodes.MapEntry,),
-    "interchange-for-if": (LoopRegion, ConditionalBlock),
-    EXPAND_LIBRARY: (nodes.LibraryNode,),
+    INLINE_LIBRARY: (nodes.LibraryNode,),
     SET_IMPLEMENTATION: (nodes.LibraryNode,),
     "tile-doall": (nodes.MapEntry,),
     "untile-doall": (nodes.MapEntry, nodes.MapEntry),
-    "collapse-doalls": (nodes.MapEntry, nodes.MapEntry),
-    "expand-doall": (nodes.MapEntry,),
+    "flatten-doalls": (nodes.MapEntry, nodes.MapEntry),
+    "unflatten-doall": (nodes.MapEntry,),
     "doall-to-for": (nodes.MapEntry,),
     "snapshot-reads": (nodes.MapEntry,),
     "tile-for": (LoopRegion,),
     "untile-for": (LoopRegion,),
     "unroll-for": (LoopRegion,),
     "unroll-doall": (nodes.MapEntry,),
-    "hoist-invariant-for": (LoopRegion,),
-    "hoist-invariant-doall": (nodes.MapEntry,),
-    AUTO_VECTORIZE: (nodes.MapEntry,),
+    HOIST_INVARIANT_CODE: (LOOP_ROW,),
+    SINK_INVARIANT_CODE: (LOOP_ROW,),
+    HOIST_INVARIANT_GUARD: (LOOP_ROW,),
+    SINK_INVARIANT_GUARD: (ConditionalBlock,),
+    VECTORIZE_DOALL: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
     LIB_INTO: (nodes.CodeNode, SDFGState),
     PROPAGATE_CONFIG: (),
+    SET_FP_MODE: (),
+    CHANGE_PRECISION: (),
+    PERSISTENT_KERNEL: (RUN_ROW,),
+    RUN_ON_CPU: (),
+    RUN_ON_GPU: (),
+    RUN_ON_CPU_PERSISTENT: (),
+    RUN_ON_GPU_PERSISTENT: (),
     RELAYOUT: (),
     ROLLBACK: (),
     "stage-loads-shared": (nodes.MapEntry,),
+    COPY_TO_TMA: (nodes.MapEntry,),
+    SET_PIPELINE_DEPTH: (LoopRegion,),
     SKEW_WAVEFRONT: (LoopRegion,),
     FOR_TO_DOALL: (LoopRegion,),
     SET_SCHEDULE_CPU: (nodes.MapEntry,),
@@ -183,18 +250,65 @@ MOVE_SHAPES: dict[str, tuple[type, ...]] = {
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
-DEVICE_KINDS = frozenset({"stage-loads-shared"})
+DEVICE_KINDS = frozenset({"stage-loads-shared", COPY_TO_TMA, SET_PIPELINE_DEPTH})
 
-#: The ISA ``auto-vectorize-scope`` vectorizes for when none is given: the best one the host runs.
+#: The ISA ``vectorize-doall`` vectorizes for when none is given: the best one the host runs.
 DEFAULT_ISA = "auto"
 
-#: The move kinds that take ``tile_sizes``: one positive size per dimension of the kernel, in its order (for
+#: The move kinds listed with probe sizes: one positive size per dimension of the kernel, in its order (for
 #: ``stage-loads-shared``, the thread block: one size per dimension, at most three).
 SIZED = frozenset({"tile-doall", "tile-for", "stage-loads-shared"})
 #: The size a sized move is checked at when it is listed; the agent passes its own to apply it.
 PROBE_TILE = 32
 #: How many tile extents ``skew-wavefront`` takes: along the skewed loop, and along the diagonal.
 SKEW_TILE_DIMS = 2
+#: The move kinds whose sizes are vector lanes (``lanes``), and those whose sizes are a GPU thread block (``block``);
+#: every other sized kind takes ``tile_sizes``. One argument name, one meaning.
+LANED = frozenset({VECTORIZE_DOALL})
+BLOCKED = frozenset({"stage-loads-shared", SET_SCHEDULE_GPU})
+
+
+def size_argument(kind: str) -> str:
+    """The name of the sizes argument ``kind`` takes: ``lanes``, ``block`` or ``tile_sizes``."""
+    return "lanes" if kind in LANED else "block" if kind in BLOCKED else "tile_sizes"
+
+
+def chosen_sizes(
+    kind: str, tile_sizes: Sequence[int], lanes: Sequence[int], block: Sequence[int]
+) -> tuple[int, ...] | Refused:
+    """The sizes ``kind`` was given, from the one argument it takes; refused when another one carries sizes."""
+    given = {"tile_sizes": tuple(tile_sizes), "lanes": tuple(lanes), "block": tuple(block)}
+    wanted = size_argument(kind)
+    wrong = [name for name, sizes in given.items() if sizes and name != wanted]
+    if wrong:
+        return Refused(f"{kind} takes its sizes as {wanted}, not {', '.join(wrong)}.", Refusal.ARGUMENT)
+    return given[wanted]
+
+
+#: Move kinds renamed since runs were journaled: old name -> current one.
+RENAMED_KINDS = {
+    "collapse-doalls": "flatten-doalls",
+    "expand-doall": "unflatten-doall",
+    "expand-library": "inline-library",
+    "auto-vectorize-scope": "vectorize-doall",
+    "hoist-invariant-for": "hoist-invariant-code",
+    "hoist-invariant-doall": "hoist-invariant-code",
+}
+
+
+def journaled_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """A journaled move's arguments in today's names: a renamed kind, and sizes under the argument the kind takes."""
+    kind = arguments.get("kind")
+    if not isinstance(kind, str):
+        return arguments
+    current = RENAMED_KINDS.get(kind, kind)
+    upgraded = {**arguments, "kind": current}
+    wanted = size_argument(current)
+    if wanted != "tile_sizes" and upgraded.get("tile_sizes"):
+        upgraded[wanted] = upgraded.pop("tile_sizes")
+    return upgraded
+
+
 #: The move kinds that take ``max_iterations``: the largest trip count the agent accepts to unroll.
 UNROLLS = frozenset({"unroll-for", "unroll-doall"})
 #: The cap an unroll is checked at when it is listed; the agent passes its own to apply it.
@@ -203,8 +317,8 @@ PROBE_UNROLL = 16
 
 def probe_sizes(kind: str, rows: Sequence[Row]) -> tuple[int, ...]:
     """The tile sizes :func:`legal_moves` checks a sized move with: :data:`PROBE_TILE` in every dimension; the lanes
-    ``auto-vectorize-scope`` is listed with."""
-    if kind == AUTO_VECTORIZE:
+    ``vectorize-doall`` is listed with."""
+    if kind == VECTORIZE_DOALL:
         return (DEFAULT_LANES,)
     if kind not in SIZED:
         return ()
@@ -243,8 +357,8 @@ LOOP_INTO_MAP_REFUSED = Refused(
     Refusal.DEPENDENCE,
 )
 IF_INTO_LOOP_REFUSED = Refused(
-    "blocked by MoveIfIntoLoop: the branch is not a single no-else guard whose body ends in this loop, or the "
-    "condition or its prep reads what the loop writes.",
+    "blocked: the branch is not a single no-else guard whose body ends in one for loop (MoveIfIntoLoop) or is one "
+    "state of doalls (push_if_into_maps), or the condition or its prep reads what the loop or doalls write.",
     Refusal.DEPENDENCE,
 )
 IF_OUT_OF_LOOP_REFUSED = Refused(
@@ -781,25 +895,40 @@ def plan_nested_map_loop(state: SDFGState, entry: nodes.MapEntry) -> Rewrite | s
     return Rewrite("MapLoopInterchange", commit)
 
 
-def plan_if_loop(cond_row: Row, loop_row: Row) -> Rewrite | str:
-    """``if c: for i: B`` -> ``for i: if c: B``."""
-    cond, loop = cond_row[0], loop_row[0]
+def plan_sink_invariant_guard(cond_row: Row) -> Rewrite | str:
+    """``if c: for i: B`` -> ``for i: if c: B``, for the one loop the branch ends in; ``if c: doall i: B`` ->
+    ``doall i: if c: B``, for every doall of the branch's one state."""
+    cond = cast(ConditionalBlock, cond_row[0])
+    if ends_in_one_loop(cond):
+        return region_rewrite("MoveIfIntoLoop", cond.sdfg, lambda: MoveIfIntoLoop.push(cond))
+    if match_if_over_maps(cond) is not None:
+        return region_rewrite("push_if_into_maps", cond.sdfg, lambda: push_if_into_maps(cond))
+    return IF_INTO_LOOP_REFUSED
+
+
+def ends_in_one_loop(cond: ConditionalBlock) -> bool:
+    """Whether ``cond`` is a guard MoveIfIntoLoop takes: one branch that ends in one for loop."""
     match = match_guard(cond)
-    if match is None or loop.parent_graph is not match[2] or match[2].out_degree(loop):
-        return IF_INTO_LOOP_REFUSED
-    return region_rewrite("MoveIfIntoLoop", loop.sdfg, lambda: MoveIfIntoLoop.push(cond))
+    sinks = match[2].sink_nodes() if match is not None else []
+    return len(sinks) == 1 and isinstance(sinks[0], LoopRegion)
 
 
-def plan_loop_if(loop_row: Row, cond_row: Row) -> Rewrite | str:
+def plan_hoist_invariant_guard(row: Row) -> Rewrite | str:
+    """The invariant guard of the for loop or doall ``row`` names moves above it."""
+    if isinstance(row[0], LoopRegion):
+        return plan_loop_if(row)
+    return plan_map_if(row)
+
+
+def plan_loop_if(loop_row: Row) -> Rewrite | str:
     """``for i: if c: B`` -> ``if c: for i: B``, for a loop-invariant guard."""
-    loop, cond = loop_row[0], cond_row[0]
-    match = match_loop(loop.sdfg, loop)
-    if match is None or match[1] is not cond:
+    loop = loop_row[0]
+    if match_loop(loop.sdfg, loop) is None:
         return IF_OUT_OF_LOOP_REFUSED
     return region_rewrite("MoveLoopInvariantIfUp", loop.sdfg, lambda: MoveLoopInvariantIfUp.hoist(loop))
 
 
-def plan_expand_library(row: Row) -> Rewrite | str:
+def plan_inline_library(row: Row) -> Rewrite | str:
     node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
     if isinstance(node, ExternalCall):
         return Refused(
@@ -877,7 +1006,7 @@ def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite
     dims = min(len(entry.map.params), 3)
     if len(tile_sizes) != dims or any(size < 1 for size in tile_sizes):
         return Refused(
-            f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass tile_sizes, the "
+            f"{entry.map.label} has {len(entry.map.params)} dimension(s) {entry.map.params}: pass block, the "
             f"thread block, {dims} positive size(s).",
             Refusal.ARGUMENT,
         )
@@ -890,6 +1019,67 @@ def plan_stage_loads_shared(row: Row, tile_sizes: Sequence[int] = ()) -> Rewrite
             Refusal.DEPENDENCE,
         )
     return move
+
+
+def kernel_copies(state: SDFGState, entry: nodes.MapEntry) -> list[CopyLibraryNode]:
+    """The copy nodes inside the kernel ``entry``: the tiles ``stage-loads-shared`` loads into shared memory."""
+    return [n for n in state.scope_subgraph(entry).nodes() if isinstance(n, CopyLibraryNode)]
+
+
+def plan_copy_to_tma(row: Row) -> Rewrite | str:
+    """A staged GPU kernel copies its tiles between global and shared memory with the TMA unit (``MemoryEngineBulk``),
+    every copy the unit takes; the others keep their block-collective copy."""
+    entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
+    copies = kernel_copies(state, entry)
+    reasons = [memory_engine_bulk_reason(node, state) for node in copies]
+    taken = [node for node, reason in zip(copies, reasons) if reason is None]
+    if not taken:
+        why = "; ".join(f"{node.label}: {reason}" for node, reason in zip(copies, reasons))
+        return Refused(
+            f"{entry.map.label} has no copy the TMA unit takes ({why or 'no staged tile: stage-loads-shared first'}).",
+            Refusal.DEPENDENCE,
+        )
+
+    def commit() -> None:
+        for node in taken:
+            node.implementation = "MemoryEngineBulk"
+
+    return Rewrite("MemoryEngineBulk", commit)
+
+
+def in_gpu_kernel(loop: LoopRegion) -> bool:
+    """Whether ``loop`` runs inside a GPU kernel: a nested SDFG holding it sits in GPU device code."""
+    sdfg = loop.sdfg
+    while sdfg.parent_nsdfg_node is not None:
+        state = sdfg.parent
+        if is_devicelevel_gpu(state.sdfg, state, sdfg.parent_nsdfg_node):
+            return True
+        sdfg = state.sdfg
+    return False
+
+
+def plan_set_pipeline_depth(row: Row, depth: int = PROBE_PIPELINE_DEPTH) -> Rewrite | str:
+    """A kernel loop whose iterations first copy a tile into a buffer runs as a pipeline of ``depth`` stages: the
+    buffer gets ``depth`` slots, and the copies of later iterations run while an earlier tile is read. Code generation
+    lowers it (DaCe's ``LowerMultipleBuffering``); the move sets the loop's ``pipeline_depth``."""
+    loop = cast(LoopRegion, row[0])
+    if depth < 2:
+        return Refused(f"pass depth, the stages of {loop.label}'s pipeline: 2 or more; not {depth}.", Refusal.ARGUMENT)
+    if not in_gpu_kernel(loop):
+        return Refused(
+            f"{loop.label} runs on the host: only a loop inside a GPU kernel pipelines its loads (place its scope on "
+            "the GPU first).",
+            Refusal.DEPENDENCE,
+        )
+    staged, rejected = find_staged_buffers(loop, loop.sdfg)
+    if not staged:
+        why = "; ".join(f"{name}: {reason}" for name, reason in rejected.items()) or "it copies no tile into a buffer"
+        return Refused(f"{loop.label} stages no buffer to pipeline ({why}).", Refusal.DEPENDENCE)
+
+    def commit() -> None:
+        loop.pipeline_depth = depth
+
+    return Rewrite("LowerMultipleBuffering", commit)
 
 
 def plan_snapshot_reads(row: Row) -> Rewrite | str:
@@ -932,7 +1122,7 @@ def plan_untile_doall(outer_row: Row, inner_row: Row) -> Rewrite | str:
     return Rewrite("untile_map_pair", commit)
 
 
-def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
+def plan_flatten_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     outer, inner, state = outer_row[0], inner_row[0], node_state(outer_row)
     if node_state(inner_row) is not state or state.entry_node(inner) is not outer:
         return Refused(
@@ -946,7 +1136,7 @@ def plan_collapse_doalls(outer_row: Row, inner_row: Row) -> Rewrite | str:
     )
 
 
-def plan_expand_doall(row: Row) -> Rewrite | str:
+def plan_unflatten_doall(row: Row) -> Rewrite | str:
     entry, state = cast(nodes.MapEntry, row[0]), node_state(row)
     if len(entry.map.params) < 2:
         return Refused(f"{entry.map.label} has one dimension; there is nothing to expand.", Refusal.WRONG_ROW_KIND)
@@ -1000,7 +1190,8 @@ def plan_doall_to_for(row: Row) -> Rewrite | str:
         )
     if len(entry.map.params) != 1:
         return Refused(
-            f"{entry.map.label} has {len(entry.map.params)} dimensions; expand-doall it first.", Refusal.WRONG_ROW_KIND
+            f"{entry.map.label} has {len(entry.map.params)} dimensions; unflatten-doall it first.",
+            Refusal.WRONG_ROW_KIND,
         )
     if not holds_a_doall(state, entry):
         return Refused(
@@ -1403,7 +1594,7 @@ def plan_set_schedule_gpu(
         ]
         if schedule is not None:
             return Refused(
-                f"{label} is the kernel doall: it takes block (tile_sizes), the threads of one block; schedule goes "
+                f"{label} is the kernel doall: it takes block, the threads of one block; schedule goes "
                 "on a doall inside it.",
                 Refusal.ARGUMENT,
             )
@@ -1486,6 +1677,53 @@ def set_gpu_choices(sdfg: dace.SDFG, choices: Mapping[str, Mapping[str, GpuChoic
                     node.map.schedule = GPU_INNER_SCHEDULES[choice.schedule]
 
 
+def plan_hoist_invariant_code(row: Row) -> Rewrite | str:
+    """LoopInvariantCodeMotion on the one for loop or doall ``row`` names."""
+    if isinstance(row[0], LoopRegion):
+        return plan_hoist_invariant_for(row)
+    return plan_hoist_invariant_doall(row)
+
+
+def plan_sink_invariant_code(row: Row, container: str | None) -> Rewrite | str:
+    """The statements before the for loop or doall ``row`` names that compute ``container`` move into it."""
+    obj = row[0]
+    if container is None:
+        return Refused(
+            f"{SINK_INVARIANT_CODE} takes container=, the temporary whose statements sink; list_moves names them.",
+            Refusal.ARGUMENT,
+        )
+    sdfg = obj.sdfg if isinstance(obj, LoopRegion) else node_state(row).sdfg
+    desc = sdfg.arrays.get(container)
+    if desc is None or not desc.transient:
+        what = "no container" if desc is None else "an argument, not a temporary"
+        return Refused(f"{container} is {what} of {sdfg.label}; only a temporary sinks.", Refusal.ARGUMENT)
+    if isinstance(obj, LoopRegion):
+        loop = obj
+        planned = plan_sink_loop(loop, container)
+        rewrite = region_rewrite("sink_into_loop", sdfg, lambda: sink_into_loop(loop, container))
+    else:
+        entry, state = cast(nodes.MapEntry, obj), node_state(row)
+        planned = plan_sink_map(state, entry, container)
+        rewrite = region_rewrite("sink_into_map", sdfg, lambda: sink_into_map(state, entry, container))
+    if isinstance(planned, str):
+        return Refused(planned, Refusal.DEPENDENCE)
+    return rewrite
+
+
+def sinkable_containers(row: Row) -> list[str]:
+    """The temporaries whose statements can sink into the for loop or doall ``row`` names, sorted."""
+    obj = row[0]
+    if isinstance(obj, LoopRegion):
+        source = predecessor_state(obj)
+        if source is None:
+            return []
+        names = {n.data for n in source.data_nodes() if source.in_degree(n) > 0}
+        return [name for name in sorted(names) if isinstance(plan_sink_loop(obj, name), SinkPlan)]
+    entry, state = cast(nodes.MapEntry, obj), node_state(row)
+    names = {e.data.data for e in state.in_edges(entry) if e.data.data is not None}
+    return [name for name in sorted(names) if isinstance(plan_sink_map(state, entry, name), SinkPlan)]
+
+
 def plan_hoist_invariant_for(row: Row) -> Rewrite | str:
     loop = cast(LoopRegion, row[0])
     if not loop_has_invariant_code(loop):
@@ -1517,28 +1755,28 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "interchange-for-doall": plan_loop_map,
     "interchange-doall-for": plan_map_loop,
     "interchange-doall-doall": plan_map_map,
-    "interchange-if-for": plan_if_loop,
-    "interchange-doall-if": plan_map_if,
-    "interchange-for-if": plan_loop_if,
-    EXPAND_LIBRARY: plan_expand_library,
+    INLINE_LIBRARY: plan_inline_library,
     SET_IMPLEMENTATION: plan_set_implementation,
     "tile-doall": plan_tile_doall,
     "untile-doall": plan_untile_doall,
-    "collapse-doalls": plan_collapse_doalls,
-    "expand-doall": plan_expand_doall,
+    "flatten-doalls": plan_flatten_doalls,
+    "unflatten-doall": plan_unflatten_doall,
     "doall-to-for": plan_doall_to_for,
     "snapshot-reads": plan_snapshot_reads,
     "tile-for": plan_tile_for,
     "untile-for": plan_untile_for,
     "unroll-for": plan_unroll_for,
     "unroll-doall": plan_unroll_doall,
-    "hoist-invariant-for": plan_hoist_invariant_for,
-    "hoist-invariant-doall": plan_hoist_invariant_doall,
+    HOIST_INVARIANT_CODE: plan_hoist_invariant_code,
+    HOIST_INVARIANT_GUARD: plan_hoist_invariant_guard,
+    SINK_INVARIANT_GUARD: plan_sink_invariant_guard,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
     PROPAGATE_CONFIG: plan_propagate_config,
     "stage-loads-shared": plan_stage_loads_shared,
+    COPY_TO_TMA: plan_copy_to_tma,
+    SET_PIPELINE_DEPTH: plan_set_pipeline_depth,
 }
 
 
@@ -1553,7 +1791,7 @@ class MoveKind(Record):
 
 
 #: The tree keyword of each row type a move takes.
-ROW_KEYWORDS: dict[type, str] = {
+ROW_KEYWORDS: dict[type | tuple[type, ...], str] = {
     LoopRegion: "for",
     nodes.MapEntry: "doall",
     ControlFlowBlock: "state",
@@ -1562,7 +1800,11 @@ ROW_KEYWORDS: dict[type, str] = {
     nodes.LibraryNode: "lib_<family>",
     # a library call, or a one-element copy as the tasklet DaCe makes it (``names.is_call``)
     nodes.CodeNode: "lib_<family>",
+    LOOP_ROW: "for|doall",
+    RUN_ROW: "for|state|doall",
 }
+#: The kinds that take one row or more, each of their shape's one row kind.
+VARIADIC = frozenset({PERSISTENT_KERNEL, *RUN_ON_KINDS})
 
 #: Kind -> (transformation, what it does); a test keeps the keys those of :data:`MOVE_SHAPES`.
 MOVE_TEXT: dict[str, tuple[str, str]] = {
@@ -1599,14 +1841,7 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
         "inlined and its one-iteration maps dropped first).",
     ),
-    "interchange-if-for": ("MoveIfIntoLoop", "if c: for i: B becomes for i: if c: B."),
-    "interchange-for-if": ("MoveLoopInvariantIfUp", "for i: if c: B becomes if c: for i: B, c loop-invariant."),
-    "interchange-doall-if": (
-        "MoveMapInvariantIfUp.apply_to_map (tried on a copy; lifts this doall's if only)",
-        "doall i: if c: B becomes if c: doall i: B, c not reading i. A doall that also holds work outside the if is "
-        "unswitched: if c: doall i: {A; B} else: doall i: A.",
-    ),
-    EXPAND_LIBRARY: (
+    INLINE_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
         "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
         "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
@@ -1624,8 +1859,8 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "cache or a thread block. A size need not divide the range.",
     ),
     "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
-    "collapse-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
-    "expand-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
+    "flatten-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
+    "unflatten-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
     "doall-to-for": (
         "MapToForLoop",
         "doall k: doall j: B becomes for k: doall j: B: the outer doall runs in order and the doalls inside stay "
@@ -1681,16 +1916,34 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
         "iteration, the doall gone.",
     ),
-    "hoist-invariant-for": (
-        "LoopInvariantCodeMotion on this loop",
-        "the loop's loop-invariant statements (an expression or load whose inputs no iteration changes) and whole "
-        "sub-blocks that use neither the loop variable nor what the loop writes run once, before the loop. The "
-        "pass picks them; the loop stays.",
+    HOIST_INVARIANT_GUARD: (
+        "MoveLoopInvariantIfUp on a for loop; MoveMapInvariantIfUp.apply_to_map on a doall (tried on a copy; lifts "
+        "this doall's if only)",
+        "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
+        "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
+        "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A.",
     ),
-    "hoist-invariant-doall": (
-        "LoopInvariantCodeMotion on this doall",
-        "the same for a doall: a statement no parameter of the doall nest changes runs once, before the nest. A "
-        "statement invariant only in an inner doall of a perfect nest stays, so the nest stays whole.",
+    SINK_INVARIANT_GUARD: (
+        "MoveIfIntoLoop on a branch that ends in one for loop; push_if_into_maps on a branch that is one state of "
+        "doalls",
+        "if c: for i: B becomes for i: if c: B, and if c: doall i: B becomes doall i: if c: B (each doall of the "
+        "branch takes a copy of the test), the inverse of hoist-invariant-guard: the test runs every iteration, and "
+        "the loop or doall can fuse with its neighbors.",
+    ),
+    SINK_INVARIANT_CODE: (
+        "sink_into_loop or sink_into_map (container, the temporary to sink)",
+        "the inverse of hoist-invariant-code for one temporary: t = a * b; for i: ... t ... becomes for i: {t = a * b; "
+        "... t ...}. The statements run every iteration instead of once, t no longer lives across the loop, and a "
+        "doall no longer has an input that ties it to the statements before it. Only plain statements sink, from "
+        "the state just before the loop or doall (or above the doall in its state); t must be used nowhere else, and "
+        "the loop must not write what the statements read.",
+    ),
+    HOIST_INVARIANT_CODE: (
+        "LoopInvariantCodeMotion on this for loop or doall",
+        "the loop's invariant statements (an expression or load whose inputs no iteration changes) run once, before "
+        "the loop; for a for loop also whole sub-blocks that use neither the loop variable nor what the loop writes. "
+        "The pass picks them; the loop stays. In a perfect doall nest, a statement invariant only in an inner doall "
+        "stays, so the nest stays whole.",
     ),
     LIB_BEFORE: (
         "a state of its own, checked against the read and write sets of every block it crosses",
@@ -1727,12 +1980,56 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
         "(unroll-for, unroll-doall).",
     ),
-    AUTO_VECTORIZE: (
-        "VectorizeMap (tile_sizes: lanes per vectorized dimension, innermost last; isa)",
-        "the doall's innermost maps run as tiles of tile_sizes lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
-        "sve takes its own vector length, so its tile_sizes is ignored), with a masked tile for the remainder; the "
+    VECTORIZE_DOALL: (
+        "VectorizeMap (lanes: per vectorized dimension, innermost last; isa)",
+        "the doall's innermost maps run as tiles of lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
+        "sve takes its own vector length, so its lanes are ignored), with a masked tile for the remainder; the "
         "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
         "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
+    ),
+    SET_FP_MODE: (
+        "the compiler's floating-point flags of one kernel (scope; fp_mode: strict-ieee, contract-fma, fast-math)",
+        "the kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
+        "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
+        "assumes no NaN or infinity. Unset, the kernel's sweep picks the fastest correct mode. The result is checked "
+        "against the reference at get_performance, not proven.",
+    ),
+    PERSISTENT_KERNEL: (
+        "MegakernelLoops (consecutive rows inside scope, the kernel)",
+        "the rows (for loops, states, doalls for their states), consecutive in one region of the kernel's body, run as "
+        "one persistent kernel with a barrier where a launch or an implicit barrier was: on the GPU one launch, "
+        "behind a runtime test that the largest doall fits the resident threads (else the rows launch as before); on "
+        "the CPU the doalls share one OpenMP team and synchronize explicitly. Pays when launches and barriers cost "
+        "more than the doalls. A kernel holds one persistent run: to change it, roll back and apply a longer list.",
+    ),
+    RUN_ON_CPU: (
+        "the placement of kernels (labels: kernel names)",
+        "the kernels run on the CPU, as OpenMP code; every other kernel keeps its device. Rollback takes it back.",
+    ),
+    RUN_ON_GPU: (
+        "the placement of kernels (labels: kernel names)",
+        "the kernels run on the GPU: their arguments are copied to the device at their boundary until the scopes "
+        "phase ends, whose copies then move into the program between the kernels. Every other kernel keeps its "
+        "device. Rollback takes it back.",
+    ),
+    RUN_ON_CPU_PERSISTENT: (
+        "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
+        "one kernel runs its longest run of loops and states with doalls as one persistent kernel on the CPU (one "
+        "OpenMP team, explicit barriers); several kernels named are first merged into one kernel, with a barrier "
+        "where one kernel ended and the next began. Refused when the kernels are not consecutive or MegakernelLoops "
+        "fuses nothing of them.",
+    ),
+    RUN_ON_GPU_PERSISTENT: (
+        "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
+        "as run-on-cpu-persistent, on the GPU: one launch with a grid barrier where a launch was, behind a runtime "
+        "test that the largest doall fits the resident threads (else the kernels launch as before).",
+    ),
+    CHANGE_PRECISION: (
+        "a new element type of one internal array (container; dtype: float32, float64)",
+        "the array is stored, read and written in dtype; every statement converts at the array, so the arithmetic "
+        "around it is unchanged. Only an array the program makes itself, read and written by statements alone. The "
+        "result is checked against the reference at get_performance, not proven; an argument's type changes with "
+        "relayout cast.",
     ),
     RELAYOUT: (
         "relayout's apply_requests (operation: one operation of the bench's requests on an array argument)",
@@ -1740,10 +2037,22 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "pad / unpad, shuffle, linear_shuffle, cast), and the operation goes to the bench as the submission's "
         "requests: the harness lays the argument out before the call and reads it back after it, outside the "
         "timing. Every operation so far is laid out again from the program before the first, so a later one names "
-        "the digits the earlier ones left. Lay arguments out first: refused after any other change.",
+        "the digits the earlier ones left. Lay arguments out first: refused after any other change. An array the "
+        "program makes itself is laid out in place at any point, zip and unzip included, with no request; "
+        "linear_shuffle is the XOR swizzle.",
+    ),
+    SET_PIPELINE_DEPTH: (
+        "LoopRegion.pipeline_depth, lowered by LowerMultipleBuffering (depth: the stages)",
+        "a loop in a GPU kernel whose iterations each copy a tile into a buffer first runs as a pipeline: the buffer "
+        "gets depth slots, and later iterations copy their tiles while an earlier tile is read.",
+    ),
+    COPY_TO_TMA: (
+        "CopyLibraryNode implementation MemoryEngineBulk",
+        "a GPU kernel whose loads stage-loads-shared staged copies each tile between global and shared memory with "
+        "the TMA unit (Hopper or newer, CUDA): one thread issues the copy and the block waits on a barrier.",
     ),
     "stage-loads-shared": (
-        "StageLoadsThroughSharedMemory (tile_sizes, the thread block)",
+        "StageLoadsThroughSharedMemory (block: the thread block)",
         "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
         "included) of every array it only reads and reuses into shared memory, so global memory is read once.",
     ),
@@ -1754,7 +2063,10 @@ def move_kinds() -> list[MoveKind]:
     """Every move kind, in :data:`MOVE_SHAPES` order."""
     return [
         MoveKind(
-            kind=kind, rows=tuple(ROW_KEYWORDS[t] for t in shape), runs=MOVE_TEXT[kind][0], does=MOVE_TEXT[kind][1]
+            kind=kind,
+            rows=tuple(ROW_KEYWORDS[t] for t in shape) + (("...",) if kind in VARIADIC else ()),
+            runs=MOVE_TEXT[kind][0],
+            does=MOVE_TEXT[kind][1],
         )
         for kind, shape in MOVE_SHAPES.items()
     ]
@@ -1775,28 +2087,34 @@ def plan_move(
     schedule: str | None = None,
     chunk: int | None = None,
     threads: int | None = None,
+    container: str | None = None,
+    depth: int = PROBE_PIPELINE_DEPTH,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
     is the device the wavefront's tiles are for, ``force`` goes to :data:`FOR_TO_DOALL`, and ``schedule``, ``chunk``
-    and ``threads`` go to :data:`SET_SCHEDULE_CPU`."""
+    and ``threads`` go to :data:`SET_SCHEDULE_CPU`, ``depth`` to :data:`SET_PIPELINE_DEPTH`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
     for (obj, _), wanted in zip(rows, MOVE_SHAPES[kind]):
         if not isinstance(obj, wanted):
-            expected = ", ".join(t.__name__ for t in MOVE_SHAPES[kind])
+            expected = ", ".join(ROW_KEYWORDS[t] for t in MOVE_SHAPES[kind])
             return Refused(
                 f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
             )
-    if kind == AUTO_VECTORIZE:
+    if kind == VECTORIZE_DOALL:
         return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
     if kind == SKEW_WAVEFRONT:
         return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
     if kind == FOR_TO_DOALL:
         return plan_for_to_doall(*rows, force=force)
+    if kind == SINK_INVARIANT_CODE:
+        return plan_sink_invariant_code(*rows, container=container)
+    if kind == SET_PIPELINE_DEPTH:
+        return plan_set_pipeline_depth(*rows, depth=depth)
     if kind == SET_SCHEDULE_CPU:
         return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
@@ -1938,16 +2256,19 @@ def interchange_map_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     yield from body_map_pairs(sdfg)
 
 
-def guard_loop_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+def loop_guards(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The ifs whose first branch ends in one for loop, or is one state of doalls."""
     for cond in every_region_block(sdfg, ConditionalBlock):
         sinks = cond.branches[0][1].sink_nodes() if cond.branches else []
-        if len(sinks) == 1 and isinstance(sinks[0], LoopRegion):
-            yield (cond, None), (sinks[0], None)
+        if len(sinks) == 1 and isinstance(sinks[0], LoopRegion) or match_if_over_maps(cond) is not None:
+            yield ((cond, None),)
 
 
-def loop_guard_pairs(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The for loops that hold a conditional as one of their top-level blocks."""
     for loop in every_region_block(sdfg, LoopRegion):
-        yield from (((loop, None), (cond, None)) for cond in loop.nodes() if isinstance(cond, ConditionalBlock))
+        if any(isinstance(block, ConditionalBlock) for block in loop.nodes()):
+            yield ((loop, None),)
 
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
@@ -1959,15 +2280,12 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "interchange-for-doall": loop_map_pairs,
     "interchange-doall-for": map_loop_pairs,
     "interchange-doall-doall": interchange_map_pairs,
-    "interchange-if-for": guard_loop_pairs,
-    "interchange-doall-if": guarded_doalls,
-    "interchange-for-if": loop_guard_pairs,
-    EXPAND_LIBRARY: library_rows,
+    INLINE_LIBRARY: library_rows,
     SET_IMPLEMENTATION: library_rows,
     "tile-doall": doall_rows,
     "untile-doall": tile_pair_rows,
-    "collapse-doalls": nested_map_pairs,
-    "expand-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
+    "flatten-doalls": nested_map_pairs,
+    "unflatten-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) > 1),
     "doall-to-for": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if len(e.map.params) == 1),
     "snapshot-reads": lambda sdfg: (
         ((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None and reads_another_doalls_write(st, e)
@@ -1976,14 +2294,26 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "untile-for": tile_loops,
     "unroll-for": for_rows,
     "unroll-doall": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
-    "hoist-invariant-for": for_rows,
-    "hoist-invariant-doall": doall_rows,
-    AUTO_VECTORIZE: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if st.entry_node(e) is None),
+    HOIST_INVARIANT_CODE: lambda sdfg: chain(for_rows(sdfg), doall_rows(sdfg)),
+    SINK_INVARIANT_CODE: lambda sdfg: (
+        rows for rows in chain(for_rows(sdfg), doall_rows(sdfg)) if sinkable_containers(rows[0])
+    ),
+    HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
+    SINK_INVARIANT_GUARD: loop_guards,
+    VECTORIZE_DOALL: lambda sdfg: (
+        ((e, st),)
+        for st, e in map_rows(sdfg)
+        if st.entry_node(e) is None and shorter_than_lanes(e, DEFAULT_LANES) is None
+    ),
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
+    COPY_TO_TMA: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e) and kernel_copies(st, e)),
+    SET_PIPELINE_DEPTH: lambda sdfg: (
+        row for row in for_rows(sdfg) if in_gpu_kernel(row[0][0]) and find_staged_buffers(row[0][0], row[0][0].sdfg)[0]
+    ),
     SKEW_WAVEFRONT: for_rows,
     FOR_TO_DOALL: for_rows,
     SET_SCHEDULE_CPU: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if not in_parallel_doall(st, e)),
@@ -2005,10 +2335,11 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
             labels = tuple(tree_label(obj) for obj, _ in rows)
             if name in (
                 PROPAGATE_CONFIG,
-                AUTO_VECTORIZE,
+                VECTORIZE_DOALL,
                 SET_SCHEDULE_CPU,
                 SET_SCHEDULE_GPU,
-            ):  # no values to probe with, or too costly: judged when applied
+                SINK_INVARIANT_CODE,
+            ):  # no values to probe with, or too costly, or probed by its candidates: judged when applied
                 found[(name, labels)] = None
                 continue
             try:

@@ -28,10 +28,13 @@ import numpy as np
 import pydantic
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion, SDFGState
+from dace.sdfg.performance_evaluation.helpers import get_uuid
+from dace.sdfg.state import ControlFlowBlock, LoopRegion, SDFGState
+from dace.transformation.passes.megakernel.discovery import linear_chain
 from relayout.ops import Operation
 
 from nestforge.build.arena import TIMED_REPS
+from nestforge.build.pipelines import build_llvm_pipeline, build_mlir_pipeline, pipeline_syntax_error
 from nestforge.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from nestforge.build.toolchain import SymbolValue, parse_params, raw_signature
 from nestforge.corpus.translate import Prepared, prepare
@@ -45,6 +48,7 @@ from nestforge.ir.introspect import (
     Language,
     Row,
     WorkDepth,
+    cost_text,
     describe_graph,
     enclosing_rows,
     guarded_work_depth,
@@ -67,6 +71,14 @@ from nestforge.records import (
     spelled,
 )
 from nestforge.stages import feedback
+from nestforge.stages.authored import (
+    AUTHORED_FAMILY,
+    AuthoredMove,
+    apply_authored,
+    catalogue_dir,
+    load_catalogue,
+    matches,
+)
 from nestforge.stages.canonicalize import (
     Targets,
     canonicalize,
@@ -78,7 +90,7 @@ from nestforge.stages.canonicalize import (
     skew_wavefronts,
     structural_cleanup,
 )
-from nestforge.stages.expand import implementations, set_default_implementations, settle
+from nestforge.stages.expand import implementations, in_doall, set_default_implementations, settle
 from nestforge.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
@@ -89,11 +101,13 @@ from nestforge.stages.kernel import (
     bounded_probe,
     build_kernel_library,
     computed_symbols_reason,
+    cpu_runtime_libraries,
     full_probe,
     kernel_form,
     kernel_runtime_libraries,
     kernel_text,
     measure_kernel,
+    persistent_loops,
     schedule_kernel,
     split_kernel_text,
     unchecked_verdict,
@@ -106,26 +120,41 @@ from nestforge.stages.layout import (
     layout_operation,
     layout_refusal,
     listed_operation,
+    local_operation,
+    locally_laid_out,
+    names_locals,
     physical_inputs,
     requests_of,
 )
 from nestforge.stages.moves import (
+    CHANGE_PRECISION,
     DEFAULT_ISA,
     DEVICE_KINDS,
-    EXPAND_LIBRARY,
     FORCED_LOOP_TO_MAP,
+    INLINE_LIBRARY,
     MOVE_SHAPES,
+    PERSISTENT_KERNEL,
+    PROBE_PIPELINE_DEPTH,
     PROBE_UNROLL,
     PROPAGATE_CONFIG,
     ROLLBACK,
+    RUN_ON_CPU,
+    RUN_ON_CPU_PERSISTENT,
+    RUN_ON_GPU,
+    RUN_ON_GPU_PERSISTENT,
+    RUN_ON_KINDS,
     SCOPE_KINDS,
+    SET_FP_MODE,
     SET_IMPLEMENTATION,
     SET_SCHEDULE_CPU,
     SET_SCHEDULE_GPU,
+    SINK_INVARIANT_CODE,
     SIZED,
+    VARIADIC,
     GpuChoice,
     Rewrite,
     check_kind,
+    chosen_sizes,
     legal_moves,
     plan_move,
     plan_set_schedule_gpu,
@@ -134,12 +163,22 @@ from nestforge.stages.moves import (
     scope_metrics,
     sdfg_metrics,
     set_gpu_choices,
+    sinkable_containers,
+    size_argument,
+    tree_label,
 )
-from nestforge.stages.performance import Performance, Reference, kernel_reports, offload_report, time_program
+from nestforge.stages.performance import (
+    Performance,
+    ProgramReport,
+    Reference,
+    kernel_reports,
+    offload_report,
+    time_program,
+)
+from nestforge.stages.phases import PHASE_ORDER, PhaseName, checked_phases
 from nestforge.stages.placement import (
     Placement,
     Transfer,
-    check_device_names,
     check_devices,
     copies_in_call,
     default_devices,
@@ -150,6 +189,15 @@ from nestforge.stages.placement import (
     place,
     transfers,
 )
+from nestforge.stages.precision import (
+    PRECISION_WARNING,
+    fp_modes,
+    precision_candidates,
+    precision_refusal,
+    set_precision,
+)
+from nestforge.stages.requests import Example, Request, RequestResult, example_refusal
+from nestforge.stages.requests import refused as request_refused
 from nestforge.stages.scopes import (
     is_parallel_kernel,
     lower_default_scopes,
@@ -157,13 +205,31 @@ from nestforge.stages.scopes import (
     node_boundary,
 )
 from nestforge.stages.variants import Variant, VariantCell, device_variants, select_variant
-from nestforge.stages.vectorize import AUTO_VECTORIZE
+from nestforge.stages.vectorize import VECTORIZE_DOALL
 
 #: Characters of a failed build's error text a caller gets back.
 ERROR_TAIL = 1500
 
 #: How many of the last moves and default move stages :meth:`Session.undo` can take back, each a copy of the program.
 UNDO_DEPTH = 8
+
+#: Move kind -> the kind that takes it back exactly and takes no arguments. Sent right after the move, on rows that
+#: move made, the inverse is answered by :meth:`Session.undo`: the program and its labels come back, no new rows.
+#: Left out: a tile after an untile (its size makes another program) and hoist-invariant-code after a sink (it hoists
+#: every invariant statement, not only the one sunk).
+UNDONE_BY = {
+    "tile-doall": "untile-doall",
+    "tile-for": "untile-for",
+    "flatten-doalls": "unflatten-doall",
+    "unflatten-doall": "flatten-doalls",
+    "interchange-for-doall": "interchange-doall-for",
+    "interchange-doall-for": "interchange-for-doall",
+    "interchange-doall-doall": "interchange-doall-doall",
+    "doall-to-for": "for-to-doall",
+    "for-to-doall": "doall-to-for",
+    "hoist-invariant-guard": "sink-invariant-guard",
+    "sink-invariant-guard": "hoist-invariant-guard",
+}
 
 
 #: The kernel source language each device's kernels are written in.
@@ -214,16 +280,153 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
 
 
 #: What a forced move tells the agent.
+def holds_doall(block: ControlFlowBlock) -> bool:
+    return any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
+
+
+def persistent_runs(body: dace.SDFG) -> list[tuple[str, ...]]:
+    """What ``persistent-kernel`` is offered on in a kernel's ``body``: each for loop holding doalls, and each longest
+    run of two or more blocks holding doalls in a region whose blocks follow one another; blocks without doalls between
+    them are glue MegakernelLoops runs inside the persistent kernel."""
+    runs: list[tuple[str, ...]] = []
+    for region in body.all_control_flow_regions(recursive=True):
+        runs += [(b.label,) for b in region.nodes() if isinstance(b, LoopRegion) and b.loop_variable and holds_doall(b)]
+        with_doalls = [block.label for block in linear_chain(region) or [] if holds_doall(block)]
+        if len(with_doalls) > 1:
+            runs.append(tuple(with_doalls))
+    return runs
+
+
+def external_calls_in(block: ControlFlowBlock) -> list[ExternalCall]:
+    """The kernels ``block`` holds, at any depth."""
+    return [n for n, _ in block.all_nodes_recursive() if isinstance(n, ExternalCall)]
+
+
+def megakernel_refusal(ext: ExternalCall, device: str, blocks: Sequence[str]) -> Refused | None:
+    """Why MegakernelLoops runs none of ``blocks`` of kernel ``ext`` as one persistent kernel on ``device``, or
+    ``None``: tried on the kernel's scheduled body."""
+    trial = kernel_form(device).schedule(node_boundary(ext))
+    if persistent_loops(trial, device, set(blocks)) > 0:
+        return None
+    return Refused(
+        f"blocked by MegakernelLoops: {', '.join(blocks)} are not consecutive blocks of one region whose doalls run "
+        "together (control flow reading only grid-uniform values), or, on the GPU, no bound of their doalls' work is "
+        "known.",
+        Refusal.WRONG_ROW_KIND,
+    )
+
+
+def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
+    """The labels of the blocks ``rows`` name, in program order without repeats: a for loop or a state itself, a doall
+    its state; or why they are no persistent run: a row of another kind, blocks of two regions, or a block between
+    them that holds doalls."""
+    found: list[ControlFlowBlock] = []
+    for obj, state in rows:
+        if isinstance(obj, nodes.MapEntry) and state is not None:
+            block = state
+        elif isinstance(obj, SDFGState) or (isinstance(obj, LoopRegion) and obj.loop_variable):
+            block = obj
+        else:
+            return Refused(
+                f"persistent-kernel takes for loops, states and doalls; {tree_label(obj)!r} is a {type(obj).__name__}.",
+                Refusal.WRONG_ROW_KIND,
+            )
+        if block not in found:
+            found.append(block)
+    region = found[0].parent_graph
+    order = linear_chain(region) or [found[0]]
+    if any(b.parent_graph is not region or b not in order for b in found):
+        return Refused(
+            f"persistent-kernel takes rows of one region that follow one another; {[b.label for b in found]} are not.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    held = sorted(order.index(b) for b in found)
+    if any(holds_doall(b) for b in order[held[0] : held[-1] + 1] if b not in found):
+        return Refused(
+            f"persistent-kernel takes consecutive rows; a block between {[b.label for b in found]} holds doalls.",
+            Refusal.WRONG_ROW_KIND,
+        )
+    return [b.label for b in sorted(found, key=order.index)]
+
+
+def marked_persistent(tree: str, loops: frozenset[tuple[str, str]]) -> str:
+    """``tree`` with each kernel row marked ``persistent: <blocks>``: those blocks of its body run as one persistent
+    kernel, with a barrier where a launch or an implicit barrier was."""
+    if not loops:
+        return tree
+    held: dict[str, list[str]] = {}
+    for kernel, loop in sorted(loops):
+        held.setdefault(kernel, []).append(loop)
+
+    def marked(line: str) -> str:
+        for kernel, names in held.items():
+            if f"{kernel}  LIBNODE ExternalCall" in line:
+                return f"{line}  persistent: {', '.join(names)}"
+        return line
+
+    return "\n".join(marked(line) for line in tree.splitlines())
+
+
+#: The pass pipelines :meth:`Session.apply_pipeline` builds through, by the IR they run on.
+PIPELINES = {"llvm": build_llvm_pipeline, "mlir": build_mlir_pipeline}
+#: The compiler of a pipeline build: its IR is LLVM's, so it is clang.
+PIPELINE_COMPILER = "clang++"
+#: The FP mode a pipeline build is checked at: its passes decide the rounding, so the gate is the strict one.
+PIPELINE_FP_MODE = "strict-ieee"
+
+#: How the reason of a relayout of internal arrays ends, which :meth:`Session.relayout_refusal` reads.
+LOCAL_MARK = "(internal)"
+
 FORCED_WARNING = (
     "forced: the compiler did not prove this move legal. If the iterations depend on each other, the program is "
     "wrong, and only a run on data shows it; rollback takes the move back."
 )
 #: The kind a default stage records in ``Session.applied``, before the stage's name.
 DEFAULTS_PREFIX = "defaults-"
-#: Why a scope is refused on a placed program: scoping the lowered program would drop the one placement starts from.
-PLACED = Refused(
-    "the kernels are placed: call unplace first, which keeps the scopes and drops the placement.", Refusal.ARGUMENT
-)
+
+
+#: The move kinds :meth:`Session.tune_move` tries several values of, and the most values one call tries.
+#: The moves :meth:`Session.tune_move` tries at several sizes, each in the sizes argument it takes
+#: (:func:`~nestforge.stages.moves.size_argument`): tile sizes, vector lanes, a GPU thread block.
+TUNABLE = frozenset({"tile-doall", "tile-for", VECTORIZE_DOALL, SET_SCHEDULE_GPU})
+MAX_TUNED_VALUES = 4
+
+
+class TunedValue(Record):
+    """One value :meth:`Session.tune_move` tried: the program's time with the move at it, or why it did not apply.
+    ``sizes`` are the move's sizes argument (tile sizes, lanes or a block); empty: the program as it stands."""
+
+    sizes: tuple[int, ...] = ()
+    status: str
+    time_us: float | None = None
+    correct: bool | None = None
+    reason: str = ""
+
+
+def fastest_beating(tried: Sequence[TunedValue]) -> int | None:
+    """The index of the fastest correct measured value that is faster than the program as it stands (``tried[0]``),
+    or ``None``: an incorrect or failed program never wins, and neither does a tie."""
+    now = tried[0]
+    if now.time_us is None or now.correct is not True:
+        return None
+    timed = [
+        (value.time_us, index)
+        for index, value in enumerate(tried)
+        if value.status == "measured" and value.correct is True and value.time_us is not None
+    ]
+    if not timed:
+        return None
+    time_us, index = min(timed)
+    return index if time_us < now.time_us else None
+
+
+class TuneResult(Record):
+    """What :meth:`Session.tune_move` measured. The value marked ``kept`` is applied; with none, the program is as it
+    was before the call."""
+
+    kind: str
+    labels: tuple[str, ...]
+    values: list[TunedValue]
 
 
 class MoveResult(Record):
@@ -259,19 +462,25 @@ class Move(Record):
 
     kind: str
     labels: tuple[str, ...]
-    #: For a sized kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
+    #: For a tiling kind (``tile-doall``, ``tile-for``), the sizes it was checked at; the agent may pass its own.
     tile_sizes: tuple[int, ...] = ()
+    #: For ``vectorize-doall``, the lanes per vectorized dimension it was checked at.
+    lanes: tuple[int, ...] = ()
+    #: For ``stage-loads-shared`` and ``set-schedule-gpu``, the thread block.
+    block: tuple[int, ...] = ()
     #: For ``set-library-implementation``, the implementation it sets, and the one the call has now; for
     #: ``set-schedule-cpu``, ``current`` is the doall's schedule now (``dynamic,16 threads=8``).
     implementation: str | None = None
     current: str | None = None
     #: For ``unroll-for`` and ``unroll-doall``, the cap it was checked at; the agent may pass its own.
     max_iterations: int = PROBE_UNROLL
+    #: For ``set-pipeline-depth``, the stages it was checked at; the agent may pass its own.
+    depth: int = PROBE_PIPELINE_DEPTH
     #: For ``propagate-config``, the values it specializes for; listed without any, the agent passes them.
     config_values: dict[str, int | float] = {}
     #: For ``relayout``, the operation it applies; listed with :func:`~nestforge.stages.layout.listed_operation`.
     operation: dict[str, object] = {}
-    #: For ``auto-vectorize-scope``, the ISA its tiles are for; ``tile_sizes`` holds their lanes.
+    #: For ``vectorize-doall``, the ISA its tiles are for.
     isa: str = DEFAULT_ISA
     #: For ``for-to-doall``, whether it applies past a refused dependence check; a listed move never does.
     force: bool = False
@@ -280,6 +489,12 @@ class Move(Record):
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
+    #: For ``sink-invariant-code``, the temporary whose statements sink; for ``change-precision``, the array.
+    container: str | None = None
+    #: For ``set-fp-mode``, the floating-point mode every kernel is built in.
+    fp_mode: str | None = None
+    #: For ``change-precision``, the element type the array takes.
+    dtype: str | None = None
     #: The kernel whose body the move rewrites; ``None`` for the program.
     scope: str | None = None
 
@@ -386,8 +601,8 @@ Codegen = Literal["first", "sweep"]
 Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 #: A measurement and what it was of: the inputs, the reference, the repetitions and the codegen.
 Measured = tuple[dict[str, np.ndarray], Reference | None, int, Codegen, Performance]
-#: A sweep winner's identity: the kernel, the text of its units, and the sizes it was timed at.
-SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...]]
+#: A sweep winner's identity: the kernel, the text of its units, the sizes it was timed at, and the FP mode.
+SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...], str | None]
 
 
 def kept(build: KernelBuild, folder: Path) -> KernelBuild:
@@ -424,6 +639,58 @@ def undone_on_failure[**Params, Answer](
     return guarded
 
 
+#: How much slower than the fastest version a measured program must be before ``get_performance`` restores that
+#: version: a margin over the timing noise, so a tie never undoes the agent's work.
+GUARD_MARGIN = 1.03
+
+
+class Restored(Record):
+    """What ``get_performance`` did about a program slower than the fastest version it measured: ``rolled_back``
+    changes taken back to reach that version (0: out of reach of :data:`UNDO_DEPTH` rollbacks, nothing changed)."""
+
+    fastest_us: float
+    now_us: float
+    rolled_back: int
+
+
+class BatchResult(Record):
+    """What ``apply_moves`` did: every move ``applied``, each checked; or ``refused``, the program as before the batch.
+    A refusal names the move (``failed_at``, from 0), the substep that failed (``apply``: the move was refused or
+    crashed; ``check``: the program it left computes wrong at the small check sizes) and why. ``unchecked`` says why no
+    numerical check ran (the bench has no reference)."""
+
+    status: Literal["applied", "refused"]
+    results: tuple[MoveResult, ...] = ()
+    failed_at: int | None = None
+    substep: Literal["apply", "check"] | None = None
+    reason: str = ""
+    unchecked: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckData:
+    """What a numerical check runs on: the bench's inputs and reference at the small check sizes, and those sizes."""
+
+    inputs: dict[str, np.ndarray]
+    reference: Reference | None
+    sizes: dict[str, SymbolValue]
+
+
+class PhaseStep(Record):
+    """What a phase tool did: ``moved`` into ``phase``, or ``refused`` with the reason and the phase unchanged. ``ran``
+    names the defaults of the phases passed on the way (each with what it reported); ``undone``, the phases taken
+    back."""
+
+    status: Literal["moved", "refused"]
+    phase: str
+    reason: str = ""
+    ran: tuple[str, ...] = ()
+    undone: tuple[str, ...] = ()
+    #: What the phase just left holds (P3, context management): its moves and the kernels, for the agent to keep
+    #: instead of the answers it read there.
+    summary: str = ""
+
+
 @dataclass(slots=True)
 class Checkpoint:
     """What a change to the program can touch: :meth:`Session.atomic` puts it back when the change fails."""
@@ -444,6 +711,9 @@ class Checkpoint:
     prepared: dict[str, Prepared]
     measured: Measured | None
     gpu_choices: dict[str, dict[str, GpuChoice]]
+    kernel_modes: frozenset[tuple[str, str]]
+    pipeline: tuple[str, str] | None
+    persistent: frozenset[tuple[str, str]]
 
 
 class Session:
@@ -480,6 +750,10 @@ class Session:
         "oracles_out_of_time",
         "measured",
         "gpu_choices",
+        "kernel_modes",
+        "pipeline",
+        "persistent",
+        "made_by_last",
         "bench",
         "stopper",
         "in_atomic",
@@ -487,6 +761,13 @@ class Session:
         "history",
         "focus",
         "disabled_families",
+        "authored",
+        "agent_phases",
+        "phase",
+        "phase_exits",
+        "phase_starts",
+        "fastest",
+        "requests",
     )
 
     def __init__(
@@ -499,6 +780,8 @@ class Session:
         codegen: Codegen = "first",
         namer: Namer | None = None,
         disabled_families: Iterable[str] = (),
+        catalogue: Mapping[str, AuthoredMove] | None = None,
+        agent_phases: Iterable[str] = (),
     ) -> None:
         """:param sizes: Value of every symbol, used to validate and time kernels (stages 5 to 7).
         :param codegen: How a kernel without a build of its own is built when the program is timed or finalized:
@@ -506,9 +789,26 @@ class Session:
         :param namer: The row names ``sdfg`` already carries (a copy of another session's); fresh by default.
         :param disabled_families: Move families (:data:`~nestforge.stages.families.FAMILIES`, or ``all``) this run
             switches off: no listing offers their kinds, no call applies one, and no default runs one.
-        :raises ValueError: A name in ``disabled_families`` is no family."""
+        :param catalogue: The authored moves by kind (:mod:`~nestforge.stages.authored`); the catalogue folder's by
+            default.
+        :param agent_phases: The phases the agent runs (:mod:`~nestforge.stages.phases`); none named: every phase.
+            Every other phase runs its default when the agent passes it.
+        :raises ValueError: A name in ``disabled_families`` is no family or in ``agent_phases`` no phase, or a
+            catalogue entry does not load."""
+        #: The phases the agent runs, in order; the session starts in the first (:meth:`enter_first_phase`).
+        self.agent_phases = checked_phases(agent_phases)
+        #: The phase the agent is in.
+        self.phase: PhaseName = self.agent_phases[0]
+        #: The program as the agent left each phase it left, for :meth:`prev_phase`.
+        self.phase_exits: dict[PhaseName, Checkpoint] = {}
+        #: Where each phase the agent entered starts in :attr:`applied`, for the summary of the phase it leaves.
+        self.phase_starts: dict[PhaseName, int] = {}
         #: The move families switched off for the whole run.
         self.disabled_families = checked_families(disabled_families)
+        #: The authored moves this session offers, by kind (family ``authored``).
+        self.authored: Mapping[str, AuthoredMove] = (
+            catalogue if catalogue is not None else load_catalogue(catalogue_dir())
+        )
         self.sdfg = sdfg
         self.targets = targets if targets is not None else Targets()
         self.name = name or sdfg.label
@@ -557,6 +857,13 @@ class Session:
         self.measured: Measured | None = None
         #: Per GPU kernel, what set-schedule-gpu chose for its doalls, by label; set again after every placement.
         self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
+        #: ``(kernel, mode)``: the floating-point mode a kernel is built in (``set-fp-mode``); a kernel not here is
+        #: built in the mode its sweep picks.
+        self.kernel_modes: frozenset[tuple[str, str]] = frozenset()
+        #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
+        self.pipeline: tuple[str, str] | None = None
+        #: ``(kernel, block)``: the blocks of each kernel's body that run as its one persistent kernel.
+        self.persistent: frozenset[tuple[str, str]] = frozenset()
         # the bench task :meth:`finalize` assembles for; set by whoever started the session from a bench kernel
         self.bench: BenchTarget | None = None
         self.stopper = Stopper()
@@ -565,8 +872,14 @@ class Session:
         # the program before the change :meth:`atomic` is running, and before each of the last changes kept for undo
         self.checkpoint: Checkpoint | None = None
         self.history: list[Checkpoint] = []
+        #: The rows the last applied move made, with that move's index in :attr:`applied`; any later change voids it.
+        self.made_by_last: tuple[int, frozenset[str]] = (-1, frozenset())
         #: The kernel the agent's kernel work is scoped to (:meth:`focus_kernel`); ``None`` before the first.
         self.focus: str | None = None
+        #: The fastest correct program ``get_performance`` measured: its time and the changes that made it.
+        self.fastest: tuple[float, list[MoveResult]] | None = None
+        #: The transformations the agent asked for (:meth:`request_transformation`), recorded in order.
+        self.requests: list[Request] = []
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -575,7 +888,7 @@ class Session:
         if self.in_atomic:
             yield
             return
-        saved = self.snapshot()
+        saved = self.saved()
         kept = len(self.history)
         self.in_atomic, self.checkpoint = True, saved
         try:
@@ -587,8 +900,8 @@ class Session:
         finally:
             self.in_atomic, self.checkpoint = False, None
 
-    def snapshot(self) -> Checkpoint:
-        """The session's program as it is now, for :meth:`restore`."""
+    def saved(self) -> Checkpoint:
+        """The program and everything a change can touch, copied so that :meth:`restore` brings it back."""
         return Checkpoint(
             copy.deepcopy(self.sdfg),
             copy.deepcopy(self.unplaced),
@@ -606,6 +919,9 @@ class Session:
             dict(self.prepared),
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
+            self.kernel_modes,
+            self.pipeline,
+            self.persistent,
         )
 
     def restore(self, saved: Checkpoint) -> None:
@@ -620,6 +936,9 @@ class Session:
         self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
         self.measured = saved.measured
         self.gpu_choices = saved.gpu_choices
+        self.kernel_modes = saved.kernel_modes
+        self.pipeline = saved.pipeline
+        self.persistent = saved.persistent
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -637,10 +956,56 @@ class Session:
             reason = f"nothing to roll back: no change was made, or the last {UNDO_DEPTH} are taken back; unchanged."
             return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=(), reason=reason)
         saved, counters = self.history.pop(), self.namer.counters
+        self.made_by_last = (-1, frozenset())
         undone = self.applied[min(len(saved.applied), len(self.applied) - 1)]
         self.restore(saved)
         self.namer.counters = {kind: max(n, saved.namer.counters.get(kind, 0)) for kind, n in counters.items()}
         return MoveResult(status=MoveStatus.APPLIED, kind=ROLLBACK, labels=undone.labels, reason=f"undid {undone.kind}")
+
+    def request_transformation(
+        self,
+        name: str,
+        description: str,
+        rows: Sequence[str],
+        examples: Sequence[Example | Mapping[str, str]],
+        reference: str = "",
+    ) -> RequestResult:
+        """Record a transformation no move offers, for the authoring step between rounds; the program is unchanged.
+        Refused, with the reason, when a row is unknown or an example fails a check of
+        :mod:`nestforge.stages.requests` (``reference``: the task's reference source, which no example may copy)."""
+        pairs = [Example.model_validate(example) for example in examples]
+        unknown = [row for row in rows if row not in self.row_index()]
+        if unknown:
+            return request_refused(name, rows, f"no tree row is labeled {', '.join(unknown)}.", Refusal.UNKNOWN_LABEL)
+        reason = example_refusal(pairs, self.targets, reference)
+        if reason:
+            return request_refused(name, rows, reason, Refusal.ARGUMENT)
+        self.requests.append(Request(name=name, description=description, rows=tuple(rows), examples=pairs))
+        return RequestResult(status="recorded", name=name, rows=tuple(rows))
+
+    def keep_fastest(self, report: ProgramReport) -> Restored | None:
+        """After ``get_performance`` measured ``report``: a correct program faster than every one before becomes the
+        fastest version; one slower by more than :data:`GUARD_MARGIN` is rolled back to it, when rollbacks reach it.
+        One rule, no argument: no measured program is ever lost to a slower one."""
+        if report.correct is not True or report.time_us is None:
+            return None
+        if self.fastest is None or report.time_us < self.fastest[0]:
+            self.fastest = (report.time_us, list(self.applied))
+            return None
+        fastest_us, made = self.fastest
+        if report.time_us <= fastest_us * GUARD_MARGIN or self.applied == made:
+            return None
+        depth = next(
+            (
+                len(self.history) - index
+                for index in reversed(range(len(self.history)))
+                if self.history[index].applied == made
+            ),
+            0,
+        )
+        for _ in range(depth):
+            self.undo()
+        return Restored(fastest_us=fastest_us, now_us=report.time_us, rolled_back=depth)
 
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
@@ -703,24 +1068,51 @@ class Session:
 
     # Stage 2: moves
 
-    def describe(self, bodies: bool = False, deps: bool = False) -> str:
+    def describe(self, bodies: bool = False, deps: bool = False, costs: bool = False) -> str:
         """The program as a text tree; rows are named by the labels the labeled calls take.
-        Every loop and state is a row, loop and map rows carry work and depth, and a state shows its kernels only
-        once :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row."""
-        if self.costs is None:
+        Every loop and state is a row with what it reads and writes, and a state shows its kernels only once
+        :meth:`expand` opened it. ``deps`` puts each kernel's :meth:`kernel_graph` line under its row. ``costs`` adds
+        each loop and map row's work and depth; without it they are :meth:`work_depth`'s, on request."""
+        if costs and self.costs is None:
             self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
         tree = describe_graph(
             self.sdfg,
             bodies=bodies,
             notes=self.deps_line if deps else None,
             expanded=self.expanded,
-            costs=self.costs,
+            costs=(self.costs or {}) if costs else {},
             languages=self.languages,
         )
-        if self.costs_skipped is None:
+        tree = marked_persistent(tree, self.persistent)
+        if not costs or self.costs_skipped is None:
             return tree
         header, _, rows = tree.partition("\n")
         return f"{header}\n(no work= or depth=: {self.costs_skipped})\n{rows}"
+
+    def work_depth(self, labels: Sequence[str] = (), formula: bool = False) -> str:
+        """The work and depth of the rows ``labels`` name (every row with a cost when empty), one line each: under the
+        program's facts, and at the session's sizes unless ``formula``; DaCe's work-depth analysis, run once per
+        program and kept until it changes."""
+        rows = self.row_index()
+        named = self.named_rows("get_work_depth", tuple(labels)) if labels else list(rows.values())
+        if isinstance(named, MoveResult):
+            return f"{spelled(named.status)}: {named.reason}"
+        if self.costs is None:
+            self.costs, self.costs_skipped = guarded_work_depth(self.sdfg)
+        if self.costs_skipped is not None:
+            return f"no work or depth: {self.costs_skipped}"
+        facts = self.sdfg.facts()
+        lines = []
+        for label, (obj, state) in zip(labels or rows, named):
+            found = self.costs.get(get_uuid(obj, state) if state is not None else get_uuid(obj))
+            if found is not None:
+                work, depth = (cost_text(expr, facts, {} if formula else self.sizes) for expr in found)
+                lines.append(f"{label}  work={work} depth={depth}")
+            elif labels:
+                lines.append(f"{label}  no work or depth (DaCe's analysis gives none for this row)")
+        sizes = ", ".join(f"{name}={value}" for name, value in sorted(self.sizes.items()))
+        note = "formulas in the sizes" if formula or not sizes else f"at {sizes}; formula=true for the formulas"
+        return "\n".join([f"work and depth ({note})", *lines])
 
     def expand(self, labels: Sequence[str]) -> str:
         """Show everything below the states and maps ``labels`` name (kernels, nested maps and leaf bodies, a map's
@@ -775,6 +1167,150 @@ class Session:
             self.languages[label] = language
         return f"ok: {', '.join(labels)} print bodies in {language}"
 
+    def check_numerics(self, check: CheckData) -> str:
+        """Why the program computes wrong at the check sizes, or ``""``: built on a trial (the session is untouched)
+        with stage 5's first configuration and run once against the reference."""
+        trial = self.trial()
+        trial.sizes, trial.codegen = dict(check.sizes), "first"
+        try:
+            report = trial.measure(check.inputs, check.reference, 1).structured
+        finally:
+            shutil.rmtree(trial.work_dir, ignore_errors=True)
+        if report.error:
+            return f"the program does not build or run: {report.error}"
+        if report.correct is False:
+            return f"the outputs {report.mismatched} differ from the reference"
+        return ""
+
+    def apply_moves(self, moves: Sequence[Mapping[str, Any]], check: CheckData | None = None) -> BatchResult:
+        """Apply ``moves`` (each the arguments of :meth:`apply_move`) in order, checking the program numerically after
+        each at the check sizes (``check``; none: no check). All or nothing: the first move refused, crashed or found
+        wrong takes the whole batch back, and the answer names it. Each applied move stays its own change, so
+        ``rollback`` takes back the last."""
+        saved, kept = self.saved(), len(self.history)
+        results: list[MoveResult] = []
+        unchecked = "" if check is not None and check.reference is not None else "the bench has no reference here"
+
+        def refused(index: int, substep: Literal["apply", "check"], reason: str) -> BatchResult:
+            self.restore(saved)
+            del self.history[kept:]
+            return BatchResult(status="refused", failed_at=index, substep=substep, reason=reason, unchecked=unchecked)
+
+        for index, arguments in enumerate(moves):
+            try:
+                result = self.apply_move(**arguments)
+            except (*CRASHES, TypeError) as err:
+                return refused(index, "apply", f"{type(err).__name__}: {err}")
+            if result.status is not MoveStatus.APPLIED:
+                return refused(index, "apply", str(result.reason) or result.status.name.lower())
+            results.append(result)
+            if check is not None and check.reference is not None:
+                wrong = self.check_numerics(check)
+                if wrong:
+                    return refused(index, "check", wrong)
+        return BatchResult(status="applied", results=tuple(results), unchecked=unchecked)
+
+    # Phases (``nestforge.stages.phases``)
+
+    def phase_default(self, phase: PhaseName) -> str:
+        """Run the default of ``phase``, which the agent does not run, and say what it did."""
+        match phase:
+            case PhaseName.STRUCTURED:
+                self.run_defaults("moves")
+                return f"{phase}: the default moves"
+            case PhaseName.SCOPES:
+                kernels = self.default_scopes()
+                return f"{phase}: {len(kernels)} default scopes"
+        if phase is PhaseName.KERNELS:
+            return f"{phase}: nothing now (finalize builds every kernel)"
+        return f"{phase}: no move inside the kernels"
+
+    def close_phase(self, phase: PhaseName) -> str | None:
+        """What leaving ``phase`` does: leaving the scopes places every kernel (what no scope covers gets its default
+        scope first)."""
+        if phase is PhaseName.SCOPES:
+            self.run_defaults("placement")
+            return "placement: every kernel placed"
+        return None
+
+    def enter_first_phase(self) -> tuple[str, ...]:
+        """Run the defaults of the phases before the agent's first; what they did. Called once, after canonicalization."""
+        ran: list[str] = []
+        for phase in PHASE_ORDER[: PHASE_ORDER.index(self.phase)]:
+            ran.append(self.phase_default(phase))
+            ran += [closed] if (closed := self.close_phase(phase)) else []
+        self.history.clear()
+        self.phase_starts[self.phase] = len(self.applied)
+        return tuple(ran)
+
+    def next_phase(self) -> PhaseStep:
+        """Leave the current phase for the agent's next one: the phases between run their defaults. Refused in the
+        agent's last phase: ``finalize`` and ``score`` follow, and ``goto_phase`` returns to an earlier phase."""
+        position = self.agent_phases.index(self.phase)
+        if position == len(self.agent_phases) - 1:
+            reason = f"{self.phase} is the last phase: finalize and score, or return_to_phase to run a phase again."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        target = self.agent_phases[position + 1]
+        moves = self.applied[self.phase_starts.get(self.phase, 0) :]
+        exit_point = self.saved()
+        ran: list[str] = []
+        with self.atomic():
+            ran += [closed] if (closed := self.close_phase(self.phase)) else []
+            for phase in PHASE_ORDER[PHASE_ORDER.index(self.phase) + 1 : PHASE_ORDER.index(target)]:
+                ran.append(self.phase_default(phase))
+                ran += [closed] if (closed := self.close_phase(phase)) else []
+        summary = self.phase_summary(moves)
+        self.phase_exits[self.phase] = exit_point
+        self.phase, self.focus = target, None
+        self.history.clear()  # rollback takes back changes of the phase the agent is in
+        self.phase_starts[target] = len(self.applied)
+        return PhaseStep(status="moved", phase=target, ran=tuple(ran), summary=summary)
+
+    def phase_summary(self, moves: Sequence[MoveResult]) -> str:
+        """The phase the agent leaves, in a few lines: the ``moves`` it applied there, and the kernels with their
+        devices as leaving it made them."""
+        lines = [f"{self.phase}: {len(moves)} move(s) applied"]
+        lines += [
+            f"  {move.kind} {' '.join(move.labels)}" + (f" in {move.scope}" if move.scope else "") for move in moves
+        ]
+        devices = self.devices()
+        if devices:
+            lines.append("kernels: " + ", ".join(f"{name} on {device}" for name, device in devices.items()))
+        return "\n".join(lines)
+
+    def prev_phase(self) -> PhaseStep:
+        """Take the current phase back completely, with the defaults run on the way into it: the program is again as
+        the agent left the previous phase, and the agent is in it. Refused in the agent's first phase: the canonical
+        parallel form runs once."""
+        position = self.agent_phases.index(self.phase)
+        if position == 0:
+            reason = f"{self.phase} is the first phase; the canonical parallel form before it runs once."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        target = self.agent_phases[position - 1]
+        undone = self.phase
+        self.restore(self.phase_exits.pop(target))
+        self.phase, self.focus = target, None
+        self.history.clear()
+        return PhaseStep(status="moved", phase=target, undone=(undone,))
+
+    def goto_phase(self, phase: str) -> PhaseStep:
+        """Back to the earlier phase ``phase``, every phase after it taken back (:meth:`prev_phase` until there); for
+        a later phase, ``advance_phase``."""
+        try:
+            (wanted,) = checked_phases([phase])
+        except ValueError as err:
+            return PhaseStep(status="refused", phase=self.phase, reason=str(err))
+        if wanted not in self.agent_phases or self.agent_phases.index(wanted) >= self.agent_phases.index(self.phase):
+            reason = f"return_to_phase returns to an earlier phase the agent runs, one of {self.earlier_phases()}."
+            return PhaseStep(status="refused", phase=self.phase, reason=reason)
+        undone: list[str] = []
+        while self.phase is not wanted:
+            undone += self.prev_phase().undone
+        return PhaseStep(status="moved", phase=wanted, undone=tuple(undone))
+
+    def earlier_phases(self) -> list[str]:
+        return [p.value for p in self.agent_phases[: self.agent_phases.index(self.phase)]]
+
     @undone_on_failure
     def run_defaults(self, stage: Stage) -> object:
         """Finish ``stage`` with its default: :meth:`default_moves`, :meth:`finish_moves`, :meth:`default_scopes`,
@@ -827,18 +1363,28 @@ class Session:
         """Every legal move right now, of ``kind`` or of every kind, in the program or inside the kernel ``scope``."""
         structured, device = self.move_programs(scope)
         target = self.targets.canon_target
-        found = [move for move in legal_moves(structured, kind, target) if move[0] not in DEVICE_KINDS]
-        found += [move for k in sorted(DEVICE_KINDS) if kind in (None, k) for move in legal_moves(device, k, target)]
+        built_in = kind is None or kind not in self.authored  # an authored kind is no kind legal_moves knows
+        found = [m for m in legal_moves(structured, kind, target) if m[0] not in DEVICE_KINDS] if built_in else []
+        found += [m for k in sorted(DEVICE_KINDS) if kind in (None, k) for m in legal_moves(device, k, target)]
         rows = self.row_index() if scope is None else tree_rows(structured)
+        # a device move names rows of the body as placed, which staging gives rows of its own
+        device_rows = rows if scope is None else tree_rows(device)
         # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
         scoped: dict[str, str] = {} if scope is None else {"scope": scope}
         moves: list[Move] = []
         for k, labels in found:
             if k == SET_IMPLEMENTATION:
-                node = cast(nodes.LibraryNode, rows[labels[0]][0])
+                node, state = rows[labels[0]]
+                node = cast(nodes.LibraryNode, node)
+                inside = state is not None and in_doall(node, state)
                 moves += [
                     Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
-                    for name in implementations(node, self.targets.gpu)
+                    for name in implementations(node, self.targets.gpu, inside)
+                ]
+            elif k == SINK_INVARIANT_CODE:
+                moves += [
+                    Move(kind=k, labels=labels, container=name, **scoped)
+                    for name in sinkable_containers(rows[labels[0]])
                 ]
             elif k in SCOPE_KINDS:
                 if self.scope_refusal(k, scope) is None:
@@ -848,9 +1394,32 @@ class Session:
                     current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
                     moves.append(Move(kind=k, labels=labels, current=current, **scoped))
             else:
-                sizes = probe_sizes(k, [rows[label] for label in labels]) if k in SIZED or k == AUTO_VECTORIZE else ()
-                moves.append(Move(kind=k, labels=labels, tile_sizes=sizes, **scoped))
-        if kind in (None, RELAYOUT) and scope is None and self.relayout_refusal() is None:
+                named = device_rows if k in DEVICE_KINDS else rows
+                sizes = probe_sizes(k, [named[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
+                moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
+        if AUTHORED_FAMILY not in self.disabled_families:
+            moves += [
+                Move(kind=move.kind, labels=tuple(tree_label(obj) for obj in found), **scoped)
+                for move in self.authored.values()
+                if kind in (None, move.kind)
+                for found in matches(structured, move)
+            ]
+        if kind in (None, PERSISTENT_KERNEL) and scope is not None and all(k != scope for k, _ in self.persistent):
+            moves += [Move(kind=PERSISTENT_KERNEL, labels=run, scope=scope) for run in persistent_runs(structured)]
+        # moves on the whole program close with its first kernel, as the program's own rows do
+        program_wide = scope is None and not external_calls(self.sdfg)
+        if kind in (None, SET_FP_MODE) and scope is not None:
+            moves += [
+                Move(kind=SET_FP_MODE, labels=(), fp_mode=mode, scope=scope)
+                for mode in fp_modes(self.targets.gpu)
+                if mode != self.mode_of(scope)
+            ]
+        if kind in (None, CHANGE_PRECISION) and program_wide:
+            moves += [
+                Move(kind=CHANGE_PRECISION, labels=(), container=name, dtype="float32")
+                for name in precision_candidates(self.sdfg)
+            ]
+        if kind in (None, RELAYOUT) and program_wide and self.relayout_refusal() is None:
             listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
             if listed is not None:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
@@ -878,7 +1447,8 @@ class Session:
             return Refused(f"{scope} runs on the GPU; set-schedule-cpu sets OpenMP schedules.", Refusal.ARGUMENT)
         if kind == SET_SCHEDULE_GPU and device != "gpu":
             return Refused(
-                f"{scope} runs on the CPU; set-schedule-gpu takes a kernel placed on the GPU (place).", Refusal.ARGUMENT
+                f"{scope} runs on the CPU; set-schedule-gpu takes a kernel placed on the GPU (run-on-gpu).",
+                Refusal.ARGUMENT,
             )
         return None
 
@@ -948,9 +1518,267 @@ class Session:
             self.remember()
         return done
 
+    def program_change(
+        self, kind: str, reason: str, change: Callable[[], None], warning: str | None = None
+    ) -> MoveResult:
+        """Apply ``change``, a setting of the whole program, as one change of ``kind``, undone by ``rollback``: every
+        kernel is rendered and built again. ``warning``: what the answer tells the agent besides."""
+        with self.atomic():
+            change()
+            self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=warning)
+            self.applied.append(done)
+            self.remember()
+        return done
+
+    def apply_authored_move(self, move: AuthoredMove, names: tuple[str, ...], scope: str | None) -> MoveResult:
+        """Apply the authored ``move`` on the rows ``names`` (of kernel ``scope``'s body, or the program); refused,
+        with nothing changed, when its family is off, a label is unknown, or the transformation does not apply."""
+        if AUTHORED_FAMILY in self.disabled_families:
+            reason = Refused(
+                f"{move.kind} belongs to the family {AUTHORED_FAMILY}, which this run has switched off.",
+                Refusal.FAMILY_OFF,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
+        if len(names) != len(move.rows):
+            raise ValueError(f"{move.kind} takes {len(move.rows)} label(s); got {len(names)}")
+        program = self.move_programs(scope)[0]
+        rows = self.named_rows(move.kind, names, None if scope is None else tree_rows(program))
+        if isinstance(rows, MoveResult):
+            return rows
+        refused: list[str] = []
+
+        def change() -> None:
+            why = apply_authored(program, move, [obj for obj, _ in rows])
+            if why is not None:
+                refused.append(why)
+                return
+            self.bump()
+            program.validate()
+
+        with self.atomic():
+            change()
+            if refused:
+                reason = Refused(refused[0], Refusal.WRONG_ROW_KIND)
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
+            self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
+            done = MoveResult(status=MoveStatus.APPLIED, kind=move.kind, labels=names, reason=move.text)
+            self.applied.append(done)
+            self.remember()
+        return done
+
+    def make_persistent(self, names: tuple[str, ...], scope: str | None) -> MoveResult:
+        """Run the rows ``names`` of kernel ``scope`` (for loops, states, doalls for their states; consecutive in one
+        region) as one persistent kernel from now on; refused, before anything changes, when MegakernelLoops fuses
+        nothing of them in the scheduled body, or the kernel holds a persistent run already."""
+        kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
+        if scope not in kernels:
+            reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        held = sorted(block for kernel, block in self.persistent if kernel == scope)
+        if held:
+            reason = Refused(
+                f"{scope} runs {held} as one persistent kernel already; roll it back and apply a longer list.",
+                Refusal.ARGUMENT,
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+        rows = self.named_rows(PERSISTENT_KERNEL, names, tree_rows(self.move_programs(scope)[0]))
+        if isinstance(rows, MoveResult):
+            return rows
+        blocks = run_blocks(rows)
+        if isinstance(blocks, Refused):
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocks)
+        ext = kernels[scope]
+        blocked = megakernel_refusal(ext, kernel_device(ext), blocks)
+        if blocked is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocked)
+
+        def change() -> None:
+            self.persistent = self.persistent | {(scope, block) for block in blocks}
+
+        reason = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
+        return self.program_change(PERSISTENT_KERNEL, reason, change)
+
+    def list_scope_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
+        """The moves of the scopes phase legal now, of ``kind`` or every kind: where kernels run (``run-on-*``, every
+        kernel and every run of consecutive kernels), and with ``scope`` the schedules and persistent runs inside it."""
+        inside = (
+            [m for m in self.list_moves(kind, scope) if m.kind in {*SCOPE_KINDS, PERSISTENT_KERNEL}] if scope else []
+        )
+        devices = self.devices()
+        targets = (
+            RUN_ON_CPU,
+            RUN_ON_CPU_PERSISTENT,
+            *((RUN_ON_GPU, RUN_ON_GPU_PERSISTENT) if self.targets.gpu else ()),
+        )
+        groups = [(name,) for name in devices if scope in (None, name)] + [
+            run for run in self.consecutive_kernels() if scope is None or scope in run
+        ]
+        offered = [
+            Move(kind=k, labels=group, current=",".join(devices[name] for name in group))
+            for group in groups
+            for k in targets
+            if kind in (None, k)
+            and (len(group) == 1 or k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT))
+            and not (
+                k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT) and len(group) == 1 and not self.runs_of(group[0])
+            )
+        ]
+        return inside + offered
+
+    def runs_of(self, name: str) -> list[tuple[str, ...]]:
+        """What kernel ``name`` could run as one persistent kernel: none once it does."""
+        if any(k == name for k, _ in self.persistent):
+            return []
+        return persistent_runs(self.move_programs(name)[0])
+
+    def consecutive_kernels(self) -> list[tuple[str, ...]]:
+        """Every longest run of two or more kernels in consecutive blocks of one region, each block holding one kernel
+        and no other work: what a ``-persistent`` run-on move merges."""
+        runs: list[tuple[str, ...]] = []
+        for region in self.sdfg.all_control_flow_regions(recursive=True):
+            current: list[str] = []
+            for block in [*(linear_chain(region) or []), None]:
+                held = external_calls_in(block) if block is not None else []
+                if isinstance(block, SDFGState) and len(held) == 1 and not holds_doall(block):
+                    current.append(held[0].name)
+                    continue
+                if len(current) > 1:
+                    runs.append(tuple(current))
+                current = []
+        return runs
+
+    def run_on(self, kind: str, names: tuple[str, ...]) -> MoveResult:
+        """Place the kernels ``names`` on the device ``kind`` names, every other kernel keeping its device; a
+        ``-persistent`` kind first merges them into one kernel (when several) and runs its longest run of blocks with
+        doalls as one persistent kernel. One change for ``rollback``; refused, with nothing changed, when a name is no
+        kernel, the GPU is no target, or the kernels cannot run as one."""
+        device = "gpu" if kind in (RUN_ON_GPU, RUN_ON_GPU_PERSISTENT) else "cpu"
+        kernels = {ext.name for ext in external_calls(self.sdfg)}
+        unknown = sorted(set(names) - kernels)
+        if unknown:
+            reason = Refused(
+                f"{', '.join(unknown)} are no kernels; kernels are {sorted(kernels)}.", Refusal.UNKNOWN_LABEL
+            )
+            return MoveResult(status=MoveStatus.NOT_FOUND, kind=kind, labels=names, reason=reason)
+        if device == "gpu" and not self.targets.gpu:
+            reason = Refused(f"{kind}: this run has no GPU target.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+        saved = self.saved()
+        with self.atomic():
+            outcome = self.placed_on(kind, device, names)
+            if isinstance(outcome, Refused):
+                self.restore(saved)
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=outcome)
+            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=outcome)
+            self.applied = [*saved.applied, done]
+            self.remember()
+        return done
+
+    def placed_on(self, kind: str, device: str, names: tuple[str, ...]) -> str | Refused:
+        """:meth:`run_on`'s change, without its bookkeeping: what it did, or why it refuses."""
+        placed = self.devices() if self.unplaced is not None else {}
+        if kind in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT):
+            if self.unplaced is not None:
+                self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+            merged = self.merge_kernels(names) if len(names) > 1 else names[0]
+            if isinstance(merged, Refused):
+                return merged
+            if any(k == merged for k, _ in self.persistent):
+                return Refused(f"{merged} runs as a persistent kernel already.", Refusal.ARGUMENT)
+            runs = persistent_runs(self.move_programs(merged)[0])
+            if not runs:
+                return Refused(
+                    f"{merged} holds no for loop or run of blocks with doalls to run as one.", Refusal.ARGUMENT
+                )
+            run = max(runs, key=len)
+            blocked = megakernel_refusal(self.kernel(merged), device, run)
+            if blocked is not None:
+                return blocked
+            self.persistent = self.persistent | {(merged, block) for block in run}
+            names = (merged,)
+        kernels = {ext.name for ext in external_calls(self.sdfg)}
+        devices = {k: d for k, d in placed.items() if k in kernels} | dict.fromkeys(names, device)
+        result = self.place(devices)
+        if result.status is not MoveStatus.APPLIED:
+            return Refused(str(result.reason), Refusal.ARGUMENT)
+        persistent = sorted(block for k, block in self.persistent if k in names)
+        return f"{', '.join(names)} on the {device.upper()}" + (
+            f", {', '.join(persistent)} persistent" if persistent else ""
+        )
+
+    def merge_kernels(self, names: tuple[str, ...]) -> str | Refused:
+        """The kernels ``names`` inlined and scoped again as one kernel, its name; or why not: they sit in different
+        regions, a block between them holds a doall or another kernel, or their states hold work besides them."""
+        homes = [find_state_of_node(self.sdfg, self.kernel(name)) for name in names]
+        region = homes[0].parent_graph
+        order = linear_chain(region) if all(home.parent_graph is region for home in homes) else None
+        if order is None or not all(home in order for home in homes):
+            return Refused(f"{', '.join(names)} are not kernels of one straight run of blocks.", Refusal.WRONG_ROW_KIND)
+        span = order[min(map(order.index, homes)) : max(map(order.index, homes)) + 1]
+        busy = [
+            block.label for block in span if holds_doall(block) or len(external_calls_in(block)) != (block in homes)
+        ]
+        if busy:
+            return Refused(
+                f"{', '.join(busy)} hold work besides the kernels {', '.join(names)}: they are no consecutive kernels.",
+                Refusal.WRONG_ROW_KIND,
+            )
+        before = set(region.nodes())
+        for name in names:
+            unset = self.unset_scope(name)
+            if unset.status is not MoveStatus.APPLIED:
+                return Refused(str(unset.reason), Refusal.WRONG_ROW_KIND)
+        after = linear_chain(region) or []
+        members = [i for i, block in enumerate(after) if block not in before or block in homes]
+        labels = [block.label for block in after[members[0] : members[-1] + 1]]
+        self.describe()  # the rows of the inlined blocks get their labels
+        scoped = self.set_scope(labels)
+        if scoped.status is not MoveStatus.APPLIED:
+            return Refused(str(scoped.reason), Refusal.WRONG_ROW_KIND)
+        return str(scoped.reason)
+
+    def set_fp_mode(self, scope: str | None, fp_mode: str | None) -> MoveResult:
+        """Build kernel ``scope`` in ``fp_mode`` only, from now on; refused for an unknown kernel or a mode the target
+        has no build of."""
+        kernels = sorted(ext.name for ext in external_calls(self.sdfg))
+        offered = fp_modes(self.targets.gpu)
+        if scope not in kernels:
+            reason = Refused(f"set-fp-mode takes scope, one of the kernels {kernels}.", Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
+        if fp_mode not in offered:
+            reason = Refused(
+                f"set-fp-mode takes one of {list(offered)} on this target; not {fp_mode!r}.", Refusal.ARGUMENT
+            )
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
+
+        def change() -> None:
+            self.kernel_modes = frozenset((k, m) for k, m in self.kernel_modes if k != scope) | {(scope, fp_mode)}
+
+        return self.program_change(SET_FP_MODE, f"{scope} builds in {fp_mode}", change, PRECISION_WARNING)
+
+    def change_precision(self, container: str | None, dtype: str | None) -> MoveResult:
+        """Store the internal array ``container`` as ``dtype``; refused with the reason
+        :func:`~nestforge.stages.precision.precision_refusal` gives."""
+        refused = precision_refusal(self.sdfg, container, dtype)
+        if refused is not None:
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=CHANGE_PRECISION, labels=(), reason=refused)
+        assert container is not None and dtype is not None, "precision_refusal requires both"
+
+        def change() -> None:
+            set_precision(self.sdfg, container, dtype)
+            self.bump()
+            self.sdfg.validate()
+
+        return self.program_change(CHANGE_PRECISION, f"{container} stored as {dtype}", change, PRECISION_WARNING)
+
     def relayout_refusal(self) -> str | None:
         """Why no argument can be laid out now, or None: the layouts come first, before every other change."""
-        others = sorted({move.kind for move in self.applied if move.kind != RELAYOUT})
+        # an internal array's layout counts as another change: laying the arguments out again from the program before
+        # the first layout would drop it
+        others = sorted(
+            {move.kind for move in self.applied if move.kind != RELAYOUT or move.reason.endswith(LOCAL_MARK)}
+        )
         if others:
             return Refused(
                 f"lay the arguments out before any other change; {others} came first (roll them back, or keep the "
@@ -959,10 +1787,33 @@ class Session:
             )
         return None
 
+    def relayout_local(self, operation: Mapping[str, object]) -> MoveResult:
+        """Lay out arrays the program makes itself by ``operation``, in place: no caller sees them, so nothing is
+        converted, the bench gets no request, and the move may come after any other."""
+        try:
+            op = local_operation(operation, self.sdfg)
+            laid = locally_laid_out(self.sdfg, op)
+        except ValueError as err:  # relayout's refusal, naming what it cannot lay out
+            reason = Refused(str(err), Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=reason)
+        with self.atomic():
+            self.sdfg = laid
+            self.unplaced = None
+            self.bump()
+            self.sdfg.validate()
+            reason = f"relayout {op.action.value} {LOCAL_MARK}"
+            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=reason)
+            self.applied.append(done)
+            self.remember()
+        return done
+
     def relayout(self, operation: Mapping[str, object]) -> MoveResult:
         """Lay one argument out by ``operation`` (one relayout operation, as the bench's ``requests`` take it): the
         program before its first relayout is laid out again with every operation so far and this one, so each names
-        the digits the ones before it left, as the harness reads the list."""
+        the digits the ones before it left, as the harness reads the list. An operation on arrays the program makes
+        itself lays them out in place instead, at any point (:meth:`relayout_local`)."""
+        if names_locals(operation, self.sdfg):
+            return self.relayout_local(operation)
         refused = self.relayout_refusal()
         if refused is not None:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=refused)
@@ -991,6 +1842,8 @@ class Session:
         tile_sizes: Sequence[int] = (),
         implementation: str | None = None,
         max_iterations: int = PROBE_UNROLL,
+        lanes: Sequence[int] = (),
+        block: Sequence[int] = (),
         config_values: Mapping[str, int | float] | None = None,
         scope: str | None = None,
         operation: Mapping[str, object] | None = None,
@@ -999,6 +1852,10 @@ class Session:
         schedule: str | None = None,
         chunk: int | None = None,
         threads: int | None = None,
+        container: str | None = None,
+        fp_mode: str | None = None,
+        dtype: str | None = None,
+        depth: int = PROBE_PIPELINE_DEPTH,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -1009,22 +1866,31 @@ class Session:
         :param labels: Tree labels in the order the kind takes them: first then second for a fusion, outer then inner
             for an interchange, the map then the body block to cut after for ``subgraph-fission``.
         :param tile_sizes: For ``tile-doall``, one positive size per dimension of the kernel; for ``tile-for``, one; for
-            ``stage-loads-shared``, the thread block, one per dimension of the kernel (at most three).
+            ``skew-wavefront``, two extents.
         :param implementation: For ``set-library-implementation``, one :meth:`list_moves` offers for the row.
         :param max_iterations: For ``unroll-for`` and ``unroll-doall``, the largest trip count to unroll.
         :param config_values: For ``propagate-config``, the run-time values of scalar arguments and free symbols;
             the program becomes a dispatch between the program specialized for them and the program as it was.
         :param scope: The kernel whose body holds the rows, as :meth:`list_kernels` names it; ``None``: the program.
         :param operation: For ``relayout``, one relayout operation on an argument (:meth:`relayout`).
-        :param isa: For ``auto-vectorize-scope``, the ISA the tiles are for (``tile_sizes``: their lanes).
+        :param lanes: For ``vectorize-doall``, the lanes per vectorized dimension, innermost last.
+        :param block: For ``stage-loads-shared`` and ``set-schedule-gpu`` on a kernel doall, the thread block, one size
+            per dimension (at most three).
+        :param isa: For ``vectorize-doall``, the ISA the tiles are for.
         :param force: For ``for-to-doall``, apply past a refused dependence check: the caller vouches for the arrays.
         :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
+        :param container: For ``sink-invariant-code``, the temporary whose statements sink into the row.
+        :param depth: For ``set-pipeline-depth``, the stages of the loop's pipeline (2 or more).
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
         names = tuple(labels)
+        if kind in self.authored:
+            return self.apply_authored_move(self.authored[kind], names, scope)
         shape = MOVE_SHAPES[check_kind(kind)]
-        if len(names) != len(shape):
+        if kind in VARIADIC and not names:
+            raise ValueError(f"{kind} takes one label or more; got none")
+        if kind not in VARIADIC and len(names) != len(shape):
             raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
         family = switched_off(kind, self.disabled_families)
         if family is not None:
@@ -1034,6 +1900,26 @@ class Session:
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
         if kind == ROLLBACK:
             return self.undo()
+        if kind in RUN_ON_KINDS:
+            return self.run_on(kind, names)
+        sizes = chosen_sizes(kind, tile_sizes, lanes, block)
+        if isinstance(sizes, Refused):
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=sizes)
+        tile_sizes = sizes
+        undone = self.inverse_of_last(kind, names, scope, force)
+        if undone is not None:
+            return undone
+        if kind == PERSISTENT_KERNEL:
+            return self.make_persistent(names, scope)
+        if kind == SET_FP_MODE:
+            return self.set_fp_mode(scope, fp_mode)
+        if kind == CHANGE_PRECISION:
+            if scope is not None:
+                reason = Refused(
+                    f"{kind} changes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
+                )
+                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+            return self.change_precision(container, dtype)
         if kind == RELAYOUT:
             if scope is not None:
                 reason = Refused(
@@ -1075,19 +1961,22 @@ class Session:
             schedule=schedule,
             chunk=chunk,
             threads=threads,
+            container=container,
+            depth=depth,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
-            node = cast(nodes.LibraryNode, rows[0][0])
-            offered = implementations(node, self.targets.gpu)
+            node, state = cast(nodes.LibraryNode, rows[0][0]), rows[0][1]
+            offered = implementations(node, self.targets.gpu, state is not None and in_doall(node, state))
             if implementation not in offered:
                 plan = Refused(
                     f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}.", Refusal.ARGUMENT
                 )
         if not isinstance(plan, Rewrite):
             return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
+        labels_now = self.labels_in(scope, target)
         with self.atomic():
             made = plan.commit()
-            if kind == EXPAND_LIBRARY:
+            if kind == INLINE_LIBRARY:
                 # the expansion's maps join the program in canonical form, as rows the other moves take
                 settle(cast(list[nodes.NestedSDFG], made), self.targets)
             if kind == PROPAGATE_CONFIG:
@@ -1130,7 +2019,74 @@ class Session:
             )
             self.applied.append(done)
             self.remember()
+        self.made_by_last = (len(self.applied) - 1, frozenset(self.labels_in(scope, target) - labels_now))
         return done
+
+    def tune_move(
+        self,
+        kind: str,
+        labels: Sequence[str],
+        values: Sequence[Sequence[int]],
+        inputs: dict[str, np.ndarray],
+        reference: Reference | None,
+        codegen: Codegen = "first",
+        scope: str | None = None,
+    ) -> TuneResult:
+        """Measure the program with the move ``kind`` on ``labels`` (in kernel ``scope``, as :meth:`apply_move`) at
+        each of ``values`` (the sizes argument the kind takes: tile sizes, lanes, or a block), and as it
+        stands: each value is applied, measured as :meth:`performance` measures, and rolled back. The fastest correct
+        value that beats the program as it stands is then applied again and marked ``kept``; with none, the program
+        and its labels end as they were. One rule, no argument: the agent reads what was kept."""
+        names = tuple(labels)
+        if kind not in TUNABLE or not 1 <= len(values) <= MAX_TUNED_VALUES:
+            reason = f"tune_move takes one of {sorted(TUNABLE)} and 1 to {MAX_TUNED_VALUES} values of its sizes"
+            return TuneResult(kind=kind, labels=names, values=[TunedValue(status="illegal", reason=reason)])
+        now = self.performance(inputs, reference, codegen=codegen).structured
+        tried = [TunedValue(status="now", time_us=now.time_us, correct=now.correct, reason=now.error)]
+        for sizes in values:
+            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): sizes})
+            if result.status is not MoveStatus.APPLIED:
+                tried.append(TunedValue(sizes=tuple(sizes), status=result.status.name.lower(), reason=result.reason))
+                continue
+            try:
+                report = self.performance(inputs, reference, codegen=codegen).structured
+            finally:
+                self.undo()
+            tried.append(
+                TunedValue(
+                    sizes=tuple(sizes),
+                    status="measured" if not report.error else "failed",
+                    time_us=report.time_us,
+                    correct=report.correct,
+                    reason=report.error,
+                )
+            )
+        best = fastest_beating(tried)
+        if best is not None:
+            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): tried[best].sizes})
+            assert result.status is MoveStatus.APPLIED, "a size that applied and was rolled back applies again"
+            tried[best] = tried[best].model_copy(update={"status": "kept"})
+        return TuneResult(kind=kind, labels=names, values=tried)
+
+    def labels_in(self, scope: str | None, target: dace.SDFG) -> set[str]:
+        """The row labels of the program, or of the kernel body ``target`` a scope move rewrites."""
+        return set(self.row_index()) if scope is None else set(tree_rows(target))
+
+    def inverse_of_last(self, kind: str, names: tuple[str, ...], scope: str | None, force: bool) -> MoveResult | None:
+        """``kind`` on ``names`` answered by :meth:`undo`, when it exactly takes back the last change: the inverse
+        (:data:`UNDONE_BY`) of the last applied move, in its scope, on rows that move made; else ``None``."""
+        index, made = self.made_by_last
+        if force or not self.history or index != len(self.applied) - 1 or not set(names) <= made:
+            return None
+        last = self.applied[index]
+        if UNDONE_BY.get(last.kind) != kind or last.scope != scope:
+            return None
+        self.undo()
+        self.made_by_last = (-1, frozenset())
+        reason = (
+            f"rollback: {kind} on the rows {last.kind} made takes it back; the program and its labels are as before it"
+        )
+        return MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=reason, scope=scope)
 
     def metrics(self, label: str) -> str:
         """Symbolic work and depth of a top-level map, a top-level loop or a kernel, by DaCe's analyses."""
@@ -1253,8 +2209,6 @@ class Session:
         :returns: ``applied`` with the new kernel's name as ``reason``, or why nothing changed.
         """
         names = tuple(labels)
-        if self.unplaced is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=PLACED)
         self.end_moves()
         rows = self.named_rows("define-scope", names)
         if isinstance(rows, MoveResult):
@@ -1274,8 +2228,8 @@ class Session:
 
     @undone_on_failure
     def unset_scope(self, name: str) -> MoveResult:
-        """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`; its kernel source and
-        tuning are dropped with the kernel. Refused on a placed program, as :meth:`set_scope` is: :meth:`unplace` first.
+        """Inline the kernel ``name`` back into the program: the inverse of :meth:`set_scope`. A placement is
+        dropped first, as a new :meth:`place` would; its kernel source and tuning are dropped with the kernel.
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
         """
@@ -1289,12 +2243,13 @@ class Session:
             reason = Refused(f"{name} keeps no SDFG of its nest to inline.", Refusal.WRONG_ROW_KIND)
             return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
         if self.unplaced is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=PLACED)
+            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
         ext = self.kernel(name)
         assert ext.standalone_sdfg is not None, "placement keeps every kernel's nest"
-        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only; the
-        # expansion copies that SDFG, so its arrays carry the connectors' names, prefix included
-        connected = {*ext.in_connectors, *ext.out_connectors}
+        # a container the kernel keeps to itself (no connector) is an argument of its standalone SDFG only; an argument
+        # carries its connector's name (``_out_x``, as the expansion copies the SDFG) or the data's (``x``)
+        connectors = {*ext.in_connectors, *ext.out_connectors}
+        connected = connectors | {data_name(conn) for conn in connectors}
         for array, desc in ext.standalone_sdfg.arrays.items():
             if array not in connected:
                 desc.transient = True
@@ -1344,30 +2299,18 @@ class Session:
 
     @undone_on_failure
     def place(self, devices: dict[str, str] | None = None) -> PlaceResult:
-        """Run each kernel on a device. The first placement gives what no scope covers its default scope first, as
-        :meth:`run_defaults` with ``placement`` does, so a placed program has the kernel set the default would give.
-        Kernels ``devices`` leaves out keep the default: parallel kernels on the GPU when it is a target, the rest on
-        the CPU. A GPU kernel is offloaded inside its call, copying its arguments at its own boundary;
-        :meth:`insert_copies` moves those copies into the program. A later call starts again from the program before
-        the first placement.
+        """Run each kernel on a device. Kernels ``devices`` leaves out keep the default: parallel kernels on the GPU
+        when it is a target, the rest on the CPU. A GPU kernel is offloaded inside its call, copying its arguments at
+        its own boundary; :meth:`insert_copies` moves those copies into the program. A later call starts again from
+        the program before the first placement.
 
-        :param devices: Kernel name -> ``cpu`` or ``gpu``; a kernel the default scopes make has its name only after
-            them, so it keeps its default device unless a later call names it.
+        :param devices: Kernel name -> ``cpu`` or ``gpu``.
         """
-        refusal = check_device_names(self.targets, devices or {})
-        if refusal is not None:
-            return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
-        # a kernel's name is known only once it is scoped, so a refused name takes the default scopes back
-        before = self.snapshot() if devices and self.unplaced is None else None
-        scoped: list[KernelScope] = []
         if self.unplaced is None:
-            self.keep_unscoped()
-            scoped = self.default_scopes()
+            self.end_moves()
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
-            if before is not None and scoped:
-                self.restore(before)
             return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
         interfaces, builds = kernel_interfaces(self.sdfg), self.builds
         if self.unplaced is not None:
@@ -1382,31 +2325,14 @@ class Session:
         """DaCe's offloading of the placed program: the GPU kernels' operands move to device memory and the host/device
         copies sit at the kernels' boundaries in the program, so adjacent GPU kernels share them."""
         if self.unplaced is None:
-            return PlaceResult(status=MoveStatus.ILLEGAL, reason="no kernel is placed yet; call place first.")
+            return PlaceResult(
+                status=MoveStatus.ILLEGAL, reason="no kernel is placed yet; run-on-cpu or run-on-gpu first."
+            )
         devices = self.devices()
         moves = self.transfers(devices)
         interfaces, builds = kernel_interfaces(self.sdfg), self.builds
         self.sdfg = copy.deepcopy(self.unplaced)
         return self.placed(insert_copies(self.sdfg, devices), moves, interfaces, builds)
-
-    @undone_on_failure
-    def unplace(self) -> MoveResult:
-        """Back to the program before placement, its kernels kept: the inverse of :meth:`place` and
-        :meth:`insert_copies`, so :meth:`set_scope` and :meth:`unset_scope` apply again. Structured moves inside a
-        kernel stay, as they rewrote its body before placement; a device move (``stage-loads-shared``) and the
-        kernels' code go with the placement.
-
-        :returns: ``applied``, or why nothing changed.
-        """
-        if self.unplaced is None:
-            reason = Refused("no kernel is placed; there is no placement to undo.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="unplace", labels=(), reason=reason)
-        # a copy: a failure puts the kept program back through :meth:`atomic`
-        self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
-        self.bump()
-        done = MoveResult(status=MoveStatus.APPLIED, kind="unplace", labels=(), reason=", ".join(self.devices()))
-        self.applied.append(done)
-        return done
 
     def placed(
         self,
@@ -1445,6 +2371,17 @@ class Session:
         except UnsupportedProgram:
             return None
 
+    def finalize_scope(self) -> PlaceResult:
+        """The end of the scopes phase's work: what no run-on move placed gets its default device, and the GPU kernels'
+        host/device copies move into the program (:meth:`default_placement`). From here the program is the one the
+        later phases build, so a measurement is worth taking; the answer says so."""
+        done = self.default_placement()
+        result = done if done is not None else PlaceResult(status=MoveStatus.APPLIED, devices=self.devices())
+        if result.status is not MoveStatus.APPLIED:
+            return result
+        reason = "every kernel is placed and its copies are in the program: get_performance now measures what you built"
+        return result.model_copy(update={"reason": reason})
+
     def default_placement(self) -> PlaceResult | None:
         """Stage 4 default: :meth:`place` unless placed, then :meth:`insert_copies` while a GPU kernel copies inside
         its call; ``None`` when both are done."""
@@ -1459,11 +2396,23 @@ class Session:
         """The kernel's CPF unit for its device, rendered once per change of the program."""
         if name not in self.sources:
             ext = self.kernel(name)
-            self.sources[name] = schedule_kernel(ext, node_boundary(ext), self.work_dir / name / "kernel")
+            out = self.work_dir / name / "kernel"
+            self.sources[name] = schedule_kernel(
+                ext, node_boundary(ext), out, persistent={loop for kernel, loop in self.persistent if kernel == name}
+            )
         return self.sources[name]
 
-    def first_variant(self, device: str) -> Variant:
-        variants = device_variants(device)
+    def mode_of(self, name: str) -> str | None:
+        """The floating-point mode ``set-fp-mode`` fixed for kernel ``name``, or ``None``: its sweep picks one."""
+        return next((mode for kernel, mode in self.kernel_modes if kernel == name), None)
+
+    def mode_variants(self, variants: Sequence[Variant], name: str) -> list[Variant]:
+        """``variants`` in kernel ``name``'s floating-point mode (``set-fp-mode``), all of them when it is unset."""
+        mode = self.mode_of(name)
+        return [v for v in variants if mode is None or v.fp_mode == mode]
+
+    def first_variant(self, device: str, name: str) -> Variant:
+        variants = self.mode_variants(device_variants(device), name)
         if not variants:
             raise LookupError(f"no {device} toolchain on this machine")
         return variants[0]
@@ -1481,9 +2430,21 @@ class Session:
 
     def optimize_kernel(self, name: str) -> KernelLibrary:
         """Stage 5 default: render the kernel's CPF unit, build it with the first configuration stage 6 sweeps for
-        its device, and link it into the kernel's ``ExternalCall``."""
+        its device, or through the agent's pass pipeline when one is set, and link it into the kernel's
+        ``ExternalCall``."""
         src = self.default_kernel(name)
-        variant = self.first_variant(src.device)
+        if self.pipeline is not None and src.device == "cpu":
+            variant, archive = self.pipeline_build(name, src)
+            self.bind(name, KernelBuild(src, variant, archive))
+            return KernelLibrary(
+                kernel=name,
+                symbol=src.symbol,
+                abi_order=tuple(src.abi_order),
+                unit=src.unit,
+                library=archive,
+                variant=variant.label,
+            )
+        variant = self.first_variant(src.device, name)
         with self.stopper.armed():
             archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
         self.bind(name, KernelBuild(src, variant, archive))
@@ -1495,6 +2456,22 @@ class Session:
             library=archive,
             variant=variant.label,
         )
+
+    def pipeline_build(self, name: str, src: KernelSource) -> tuple[Variant, Path]:
+        """The kernel's unit built through the session's pass pipeline, in a folder of its own.
+
+        :raises PipelineError: A step of the pipeline failed, with its output."""
+        assert self.pipeline is not None, "a pipeline is set"
+        ir, pipeline = self.pipeline
+        compiler = shutil.which(PIPELINE_COMPILER) or PIPELINE_COMPILER
+        out = self.work_dir / name / f"{ir}{len(list((self.work_dir / name).glob(f'{ir}*')))}"
+        out.mkdir(parents=True)
+        unit = out / src.unit.name
+        shutil.copy(src.unit, unit)
+        archive = out / f"lib{name}.a"
+        with self.stopper.armed():
+            PIPELINES[ir]([unit], compiler, pipeline, archive, [*src.link, *cpu_runtime_libraries(compiler)])
+        return Variant(compiler, PIPELINE_FP_MODE, ir, (pipeline,), f"{ir}-pipeline"), archive
 
     def focus_kernel(self, name: str) -> str:
         """Scope the kernel work to the kernel ``name``; returns it."""
@@ -1552,7 +2529,7 @@ class Session:
         src = KernelSource(
             name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)
         )
-        variant = self.first_variant(src.device)
+        variant = self.first_variant(src.device, name)
         with self.stopper.armed():
             try:
                 archive = build_kernel_library(src, variant.compiler, list(variant.flags), attempt)
@@ -1571,6 +2548,29 @@ class Session:
         if verdict.unchecked:
             return KernelOutcome(kernel=name, status=KernelStatus.UNCHECKED, reason=verdict.unchecked)
         return KernelOutcome(kernel=name, status=KernelStatus.OK, time_us=verdict.time_us)
+
+    def set_pipeline(self, ir: str, pipeline: str) -> MoveResult:
+        """Build every kernel through the agent's own pass ``pipeline`` from now on (``ir``: ``llvm`` for ``opt
+        -passes``, ``mlir`` for ``polygeist-opt --pass-pipeline``): the LLVM and MLIR agents' one setting, undone by
+        ``rollback``. The pipeline's syntax is checked now; each build is checked by the reference at
+        ``get_performance``, not proven."""
+        kind = f"{ir}-pipeline"
+        compiler = shutil.which(PIPELINE_COMPILER)
+        reason = (
+            f"ir is one of {sorted(PIPELINES)}"
+            if ir not in PIPELINES
+            else f"no {PIPELINE_COMPILER} on this machine"
+            if compiler is None
+            else pipeline_syntax_error(ir, compiler, pipeline)
+        )
+        if reason:
+            refused = Refused(reason, Refusal.ARGUMENT)
+            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=(), reason=refused)
+
+        def change() -> None:
+            self.pipeline = (ir, pipeline)
+
+        return self.program_change(kind, f"every kernel builds through {pipeline}", change)
 
     def kernel_verdict(self, name: str, src: KernelSource, archive: Path, reps: int, fp_mode: str) -> KernelVerdict:
         """``archive`` against the kernel's oracle, unchecked when the oracle has no value for a symbol it takes."""
@@ -1644,7 +2644,7 @@ class Session:
         unspelled = self.prepare_kernel(name).unspelled
         if unspelled:
             raise ValueError(f"{name}: {unspelled}, so it cannot be swept. finalize builds its first configuration.")
-        variants = device_variants(src.device, compilers)
+        variants = self.mode_variants(device_variants(src.device, compilers), name)
         key = self.sweep_key(name, src)
         cells = self.sweep_cells.setdefault(key, {})
         out_dir = self.swept_dir / f"{name}_cells_{list(self.sweep_cells).index(key)}"
@@ -1683,14 +2683,14 @@ class Session:
 
     def sweep_key(self, name: str, src: KernelSource) -> SweepKey:
         units = tuple(unit.read_text() for unit in src.units)
-        return name, units, tuple(sorted(self.kernel_sizes(name).items()))
+        return name, units, tuple(sorted(self.kernel_sizes(name).items())), self.mode_of(name)
 
     def default_build(self, name: str) -> None:
         """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
         a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
         only the running program computes: its oracle has no value for it)."""
-        if self.codegen == "first":
+        if self.codegen == "first" or self.pipeline is not None:
             self.first_build(name)
             return
         src = self.default_kernel(name)
@@ -1708,7 +2708,7 @@ class Session:
         kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
         ext = self.kernel(name)
         body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
-        key = name, body, tuple(sorted(self.kernel_sizes(name).items()))
+        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.mode_of(name), self.pipeline
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)
@@ -1785,6 +2785,8 @@ class Session:
             sizes=self.sizes,
             codegen=self.codegen,
             namer=copy.deepcopy(self.namer),
+            catalogue=self.authored,
+            agent_phases=self.agent_phases,
             disabled_families=self.disabled_families,
         )
         # shared: a winner the trial sweeps serves this session's finalize too, kept in this session's folder
@@ -1794,6 +2796,7 @@ class Session:
         copied.stopper = self.stopper
         copied.unplaced = copy.deepcopy(self.unplaced)
         copied.unlaid, copied.layout = self.unlaid, self.layout
+        copied.kernel_modes, copied.pipeline, copied.persistent = self.kernel_modes, self.pipeline, self.persistent
         # the copied kernels link this session's libraries, so the trial measures them instead of rebuilding defaults
         copied.sources, copied.builds = dict(self.sources), dict(self.builds)
         return copied
@@ -1831,9 +2834,7 @@ class Session:
         """The feedback of :meth:`performance` on this session, a self."""
         if not external_calls(self.sdfg):
             self.default_scopes()
-        unplaced_program = self.sdfg
-        assert unplaced_program is not None, "a session holds its program"
-        in_call = copies_in_call(unplaced_program)  # before the default placement inserts their copies
+        in_call = copies_in_call(self.sdfg)  # before the default placement inserts their copies
         # as finalize: placing a CPU program changes nothing but drops its kernels' builds
         if self.targets.gpu:
             self.default_placement()
@@ -1848,14 +2849,12 @@ class Session:
             inputs = physical_inputs(inputs, layouts, sizes)
             if reference is not None:
                 reference = dataclasses.replace(reference, layouts=layouts, sizes=sizes)
-        timed = self.sdfg
-        assert timed is not None, "a session holds its program"
         program = time_program(
-            timed, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
+            self.sdfg, self.work_dir / "program", inputs, reference, self.sizes, reps, "gpu" in devices.values()
         )
         return Performance(
             structured=program,
-            offloading=offload_report(timed, devices, moves, self.sizes, in_call),
+            offloading=offload_report(self.sdfg, devices, moves, self.sizes, in_call),
             kernels=kernel_reports(evidence, devices),
             hints=feedback.report(evidence),
         )

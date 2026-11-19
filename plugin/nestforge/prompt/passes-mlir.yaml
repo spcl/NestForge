@@ -1,0 +1,8 @@
+# The mlir baseline: the agent chooses the mlir pass pipeline, not NestForge's moves; this text replaces NestForge's.
+agent:
+  set:
+    nestforge: {text: "file:passes/mlir.md"}
+    end_to_end: {enabled: false}
+task:
+  set:
+    nestforge: {text: "file:passes/mlir.md"}

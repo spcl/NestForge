@@ -13,9 +13,11 @@ import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
+from test_fusion_fuzz import load_program
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
+from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -422,3 +424,17 @@ def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the
     scoped(A=A.copy(), B=B.copy(), C=actual, N=SIZE)
     np.testing.assert_allclose(actual, expected, rtol=1e-12)
     np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
+
+
+def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path):
+    """Issue #97 (the fusion fuzz program of seed 1702): one doall scoped and unset again. The kernel's body is not
+    inlined; the nested SDFG that stays keeps its arguments, named as the connectors (``_out_...``), non-transient."""
+    program, _ = load_program(tmp_path, 1702)
+    session = Session(program.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path / "work"))
+    session.canonicalize()
+    session.describe()
+    doalls = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, nodes.MapEntry)]
+    kernel = session.set_scope(doalls[1:2]).reason
+
+    assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
+    session.sdfg.validate()

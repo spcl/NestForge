@@ -49,7 +49,7 @@ def test_a_doall_offers_tiling_and_expansion(tmp_path):
 
     kinds = {move.kind for move in sut.list_moves() if move.labels[:1] == (doall,)}
 
-    assert {"tile-doall", "expand-doall"} <= kinds
+    assert {"tile-doall", "unflatten-doall"} <= kinds
 
 
 def test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall(tmp_path):
@@ -105,13 +105,13 @@ def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path):
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
-    expanded = sut.apply_move("expand-doall", [doall])
+    expanded = sut.apply_move("unflatten-doall", [doall])
 
     assert expanded.status is MoveStatus.APPLIED, expanded
     assert sorted(len(params) for params in maps(sut)) == [1, 1]
     computes_scale_add(sut)
-    (pair,) = sut.list_moves("collapse-doalls")
-    collapsed = sut.apply_move("collapse-doalls", list(pair.labels))
+    (pair,) = sut.list_moves("flatten-doalls")
+    collapsed = sut.apply_move("flatten-doalls", list(pair.labels))
     assert collapsed.status is MoveStatus.APPLIED, collapsed
     assert [len(params) for params in maps(sut)] == [2]
     computes_scale_add(sut)

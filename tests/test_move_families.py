@@ -13,7 +13,7 @@ from dace.sdfg import nodes
 from nestforge.records import MoveStatus, Refusal
 from nestforge.server import CALLS
 from nestforge.session import Session
-from nestforge.stages.families import ALL, FAMILIES, checked_families, family_of
+from nestforge.stages.families import ALL, FAMILIES, FAMILY_FREE, checked_families, family_of
 from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, MoveKind, move_kinds
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -39,12 +39,12 @@ def doalls(sut: Session) -> int:
     return sum(isinstance(node, nodes.MapEntry) for node, _ in sut.sdfg.all_nodes_recursive())
 
 
-def test_every_move_kind_but_rollback_is_in_exactly_one_family() -> None:
+def test_every_move_kind_but_the_family_free_ones_is_in_exactly_one_family() -> None:
     placed = {kind: [name for name, kinds in FAMILIES.items() if kind in kinds] for kind in MOVE_SHAPES}
 
-    assert {kind: names for kind, names in placed.items() if len(names) != (kind != ROLLBACK)} == {}
+    assert {kind: names for kind, names in placed.items() if len(names) != (kind not in FAMILY_FREE)} == {}
     assert set().union(*FAMILIES.values()) <= set(MOVE_SHAPES), "a family names a kind that does not exist"
-    assert family_of(ROLLBACK) is None
+    assert FAMILY_FREE <= set(MOVE_SHAPES) and family_of(ROLLBACK) is None
 
 
 def test_all_stands_for_every_family_and_an_unknown_name_refuses_the_session() -> None:
@@ -83,9 +83,9 @@ def test_a_trial_copy_keeps_the_families_switched_off() -> None:
     assert sut.trial().disabled_families == frozenset({"fusion", "tiling"})
 
 
-def test_with_every_family_off_only_rollback_stays_listed() -> None:
+def test_with_every_family_off_only_the_family_free_kinds_stay_listed() -> None:
     sut = canonical((ALL,))
 
-    assert {move.kind for move in sut.list_moves()} <= {ROLLBACK}
-    assert [kind.kind for kind in cast(list[MoveKind], CALLS["list_move_kinds"](sut))] == [ROLLBACK]
-    assert [kind.kind for kind in move_kinds() if family_of(kind.kind) is None] == [ROLLBACK]
+    assert {move.kind for move in sut.list_moves()} <= FAMILY_FREE
+    assert {kind.kind for kind in cast(list[MoveKind], CALLS["list_move_kinds"](sut))} == FAMILY_FREE
+    assert {kind.kind for kind in move_kinds() if family_of(kind.kind) is None} == FAMILY_FREE

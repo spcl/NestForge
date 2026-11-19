@@ -1,0 +1,6 @@
+# The guide of the agent's first phase, scopes; advance_phase, undo_phase and return_to_phase answer with the guide of the phase
+# they reach.
+agent:
+  insert:
+    - after: nestforge
+      block: {id: nestforge_phase, text: "file:phases/scopes.md"}

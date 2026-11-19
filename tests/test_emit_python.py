@@ -914,7 +914,7 @@ def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held():
 
 
 def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held():
-    """#80: gramschmidt's ``expand-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
+    """#80: gramschmidt's ``inline-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
     with the same WCR the outer edge has; the emitter refused it as ``writes through a write-conflict resolution``."""
     sdfg = dace.SDFG("dot_rows")
     sdfg.add_array("x", [M, N], dace.float64)
@@ -955,12 +955,12 @@ def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N,
 
 
 def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration():
-    """#80, gramschmidt after ``expand-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
+    """#80, gramschmidt after ``inline-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
     WCR, and nothing else writes ``nrm``. Reading it first raised ``UnboundLocalError`` in the oracle, and would carry the
     last column's norm into the next."""
     session = Session(gramschmidt.to_sdfg(simplify=True))
     session.canonicalize()
-    assert session.apply_move("expand-library", ("lib_blas0",)).status.name == "APPLIED"
+    assert session.apply_move("inline-library", ("lib_blas0",)).status.name == "APPLIED"
     A = np.random.default_rng(5).random((6, 4))
 
     call, source = emit_and_run(session.sdfg, {"A": A.copy()}, {"M": 6, "N": 4})

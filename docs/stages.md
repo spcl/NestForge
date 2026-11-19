@@ -33,7 +33,7 @@ Stage 2 shapes the loop nests. The agent reads the structure tree and asks for m
 Every move is an existing DaCe transformation, checked for legality before it applies.
 
 `describe()` prints the structure tree, the IR the agent reads. [ir.md](ir.md) is its contract: the rows, their fields
-(`reads=`, `writes=`, `work=`, `depth=`), the labels, the body languages and the view calls (`expand`, `collapse`,
+(`reads=`, `writes=`, `accum=`; work and depth through `get_work_depth`), the labels, the body languages and the view calls (`expand`, `collapse`,
 `set_language`), none of which changes the program. `list_moves(kind)` returns the legal moves as `{kind, labels}`. Map
 fusions list data-linked pairs and each map with the next map of its scope, never every pair (CloudSC would list 20k),
 while `apply_move` still takes any pair. `apply_move(kind, labels)` returns a `MoveResult` whose status is `applied`,
@@ -55,28 +55,29 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; also a loop whose body is several doalls over one shared axis, in several states or behind ifs (the row names one of them): the loop goes inside one doall over that axis, `cfg_body` + `lane_axis` (DaCe's lane analysis). `doall-fusion` the ones that fuse first |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
-| `interchange-if-for` | if, loop | `MoveIfIntoLoop` |
-| `interchange-for-if` | loop, its if | `MoveLoopInvariantIfUp` |
-| `interchange-doall-if` | doall whose body holds an if | `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
+| `sink-invariant-guard` | if whose branch ends in one for loop, or is one state of doalls | `MoveIfIntoLoop` for the loop; `push_if_into_maps` (`nestforge/stages/sinking.py`) for the doalls: each doall's body becomes a nested SDFG under a copy of the condition |
+| `hoist-invariant-guard` | for loop whose only statement is an invariant if, or doall whose body holds an if | for loop: `MoveLoopInvariantIfUp`; doall: `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
 | `tile-doall` | doall (+ `tile_sizes`, one per dimension) | `MapTiling` (`divides_evenly=False`) |
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
-| `collapse-doalls` | doall, doall inside it | `MapCollapse` |
-| `expand-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
+| `flatten-doalls` | doall, doall inside it | `MapCollapse` |
+| `unflatten-doall` | doall of two or more dimensions | `MapExpansion`, each nested doall keeping the schedule |
 | `doall-to-for` | one-dimensional outermost doall that holds a doall | `MapToForLoop`: the outer doall becomes a loop, the doalls inside stay parallel; empty states it leaves are dropped |
 | `for-to-doall` | for loop (+ `force`) | `LoopToMap`; with `force`, its permissive check, which waives conflicting writes and some carried-read checks, but not a read its memlet test ties to another iteration's write, a range the body changes, or a symbol one iteration hands the next; NestForge refuses, before DaCe, a body with its own break, continue or return and a loop holding a call with an ordered side effect (communication); the answer of a forced move carries `forced` and a warning |
 | `set-schedule-cpu` | outermost doall of a kernel on the CPU, only in a scope (+ `schedule`, `chunk`, `threads`) | sets the map's `omp_schedule`, `omp_chunk_size` and `omp_num_threads`, which the CPU code generator emits as `schedule(...)` and `num_threads(...)`; `list_scope_moves` gives each doall's schedule now as `current` |
-| `set-schedule-gpu` | in a scope placed on the GPU: the kernel doall (+ `tile_sizes`, its block), or a doall directly inside it (+ `schedule`: `sequential`, `static`, `dynamic`) | the session keeps the choice per kernel and sets it on the placed body after every placement (offloading resets schedules): `gpu_block_size` on the kernel doall, `GPU_ThreadBlock` (static: a constant extent of at most 1024) or `GPU_ThreadBlock_Dynamic` (dynamic: one dimension) inside; the block comes from one place, as DaCe's GPU code generator requires; `guided` is refused until DaCe has it |
+| `set-schedule-gpu` | in a scope placed on the GPU: the kernel doall (+ `block`), or a doall directly inside it (+ `schedule`: `sequential`, `static`, `dynamic`) | the session keeps the choice per kernel and sets it on the placed body after every placement (offloading resets schedules): `gpu_block_size` on the kernel doall, `GPU_ThreadBlock` (static: a constant extent of at most 1024) or `GPU_ThreadBlock_Dynamic` (dynamic: one dimension) inside; the block comes from one place, as DaCe's GPU code generator requires; `guided` is refused until DaCe has it |
 | `snapshot-reads` | doall that reads a slice (one index per dimension: a map parameter or a value the doall does not change) of an array another doall of its state writes | a doall per slice copies it into a transient and the doall reads the transient, so `doall-fusion` can merge the two doalls; the copy is a doall because a plain copy is folded back by the cleanup |
-| `hoist-invariant-for` | for loop holding a loop-invariant statement or sub-block | `hoist_loop_region` of `LoopInvariantCodeMotion` on that loop |
-| `hoist-invariant-doall` | doall holding a statement no parameter of its nest changes | `hoist_map_scope` of `LoopInvariantCodeMotion`, judged against the outermost doall of a perfect nest |
-| `auto-vectorize-scope` | top-level doall (+ `tile_sizes`, lanes per vectorized dimension, innermost last; + `isa`: `auto`, `avx512`, `avx2`, `sve`, `neon`, `scalar`) | `VectorizeMap`: the doall alone is nested and `VectorizeCPUMultiDim` tiles its innermost maps, a masked tile for the remainder, tile nodes expanded into the ISA's tile functions; every other doall stays scalar. `sve` takes its own vector length, so its `tile_sizes` is ignored. Judged when applied, on a copy first. A kernel holding the result has no NumPy oracle (its body is C++), so its builds are `unchecked` and the whole program checks them |
+| `hoist-invariant-code` | for loop holding a loop-invariant statement or sub-block, or doall holding a statement no parameter of its nest changes | `LoopInvariantCodeMotion` on that one row: `hoist_loop_region` for a for loop, `hoist_map_scope` for a doall, judged against the outermost doall of a perfect nest |
+| `sink-invariant-code` | for loop or doall (+ `container`, a temporary it reads) | `sink_into_loop` / `sink_into_map` (`nestforge/stages/sinking.py`): the tasklets that compute the temporary, in the state just before the row (or above the doall in its state), move to the start of the loop body or into the doall's body as its first state; refused where the temporary is used anywhere else, a statement has a side effect, or the row writes what the statements read |
+| `vectorize-doall` | top-level doall (+ `lanes`, per vectorized dimension, innermost last; + `isa`: `auto`, `avx512`, `avx2`, `sve`, `neon`, `scalar`) | `VectorizeMap`: the doall alone is nested and `VectorizeCPUMultiDim` tiles its innermost maps, a masked tile for the remainder, tile nodes expanded into the ISA's tile functions; every other doall stays scalar. `sve` takes its own vector length, so its `lanes` are ignored. Judged when applied, on a copy first. A kernel holding the result has no NumPy oracle (its body is C++), so its builds are `unchecked` and the whole program checks them |
 | `relayout` | none (+ `operation`, one operation of the bench's `requests` on an array argument; listed as a transpose of the two innermost dimensions of the first argument that has two) | relayout's `apply_requests` without conversion: the program works on the argument as `permute`, `block` / `unblock`, `split` / `unsplit`, `pad` / `unpad`, `shuffle`, `linear_shuffle` or `cast` lays it out; every operation so far is laid out again from the program before the first. Only before any other change. The operations are the submission's `requests` (`Final.requests`): the harness lays the arguments out before the call and back after it, and NestForge times the program the same way (`stages/layout.py`). `finalize` refuses a `cast` until the bench's entry takes per-argument precisions |
 | `skew-wavefront` | for loop whose nest is a wavefront (+ `tile_sizes`, optional: two extents, along the loop and along the diagonal) | `WavefrontSkew`: DaCe derives the skew from the dependences and rewrites the nest into a sequential loop over diagonals (iterator `_skew_t_<n>`) holding a doall per diagonal, or a diagonal of tiles where the dependences allow (64 by 64 by default). A loop that is no wavefront is refused with `WavefrontSkew.plan_or_reason`'s sentence, class `dependence` |
 | `tile-for` | for loop (+ `tile_sizes`, one size) | `LoopTiling`: a tile loop holding a clamped point loop |
 | `untile-for` | tile for loop | `UntileLoops.untile_loop` |
 | `set-library-implementation` | library call (+ `implementation`, one `list_moves` offered) | `LibraryNode.implementation`, pinned (`auto_select_implementation` off) so neither finalization nor the kernel's CPF unit picks another |
-| `stage-loads-shared` | GPU kernel inside a GPU scope with its copies inserted (`list_moves(scope=...)` only) | `StageLoadsThroughSharedMemory` on that kernel: it is tiled into thread blocks of `tile_sizes` threads (`AddThreadBlockMap`; listed with 32 per dimension, at most three) and each array it only reads and reuses, with a constant footprint per thread, gets a `GPU_Shared` tile (halo included) filled by one block-collective copy and one barrier |
-| `expand-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
+| `stage-loads-shared` | GPU kernel inside a GPU scope with its copies inserted (`list_moves(scope=...)` only) | `StageLoadsThroughSharedMemory` on that kernel: it is tiled into thread blocks of `block` threads (the move's argument) (`AddThreadBlockMap`; listed with 32 per dimension, at most three) and each array it only reads and reuses, with a constant footprint per thread, gets a `GPU_Shared` tile (halo included) filled by one block-collective copy and one barrier |
+| `copy-to-tma` | GPU kernel `stage-loads-shared` staged | each staged tile copy the TMA unit takes (`memory_engine_bulk_reason` is `None`: CUDA, compute capability 9.0+, a static shared tile, a supported layout) gets the `MemoryEngineBulk` implementation; the others keep theirs |
+| `set-pipeline-depth` | loop inside a GPU kernel (`list_moves(scope=...)` only) whose iterations each copy a tile into a buffer first (`find_staged_buffers`); a host loop is refused | sets the loop's `pipeline_depth` to `depth` (2 or more); code generation's `LowerMultipleBuffering` gives the buffer `depth` slots and loads later tiles while an earlier one is read |
+| `inline-library` | library call (`lib_<family>`) | `LibraryNode.expand` (`pure`, else `specialize`, until no library call is left), then canonicalization; what canonicalization lifts back (a gemm's maps into an einsum) is expanded once more |
 
 | | |
 |---|---|
@@ -89,12 +90,10 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 A scope is the atomic unit later stages optimize. Each scope is outlined into a standalone SDFG and replaced by an
 `ExternalCall` library node (`extcall_<row>`) that carries the kernel's Python oracle and boundary, and a `parallel`
 flag. `unset_scope(name)` inlines a kernel back (its standalone SDFG, kernel-local containers transient again),
-dropping any placement first. The first placement, `place` or `run_defaults("placement")`, gives what no scope covers
-its default scope (a block holding a kernel is never taken whole, since no kernel nests another), so a placed program
-always has every unit in a kernel; on a placed program `run_defaults("placement")` keeps the devices and only inserts
-the copies a GPU kernel still makes inside its call. The session keeps the program from before its first
+dropping any placement first. `run_defaults("placement")` first gives what no scope covers its default scope; a block
+holding a kernel is never taken whole, since no kernel nests another. The session keeps the program from before its first
 kernel, and `run_defaults("round")` (`rewind`) goes back to it. Through the bench plugin, moves close at the first
-kernel, scopes are fixed from placement on until `unplace` or a new round reopens them ([phases](README.md#the-phases)).
+kernel, scopes are fixed from placement on, and a new round reopens both ([phases](README.md#the-phases)).
 
 `persist_temporaries(min_bytes)` is an option, not a scope: the program's heap transients of at least `min_bytes`
 (1 MiB by default, at `sizes`) are allocated once at init instead of on every call, which saves the page faults of fresh
@@ -157,18 +156,13 @@ devices. It passes host memory, so a GPU kernel copies its arguments at its own 
 `insert_copies()` runs `OffloadToAccelerator` on the program first: the GPU kernels' operands move to device memory,
 the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
 bodies are lowered over device memory; it returns the copies. Both start from the program before the first placement.
-`unplace()` goes back to that program, the kernels and the moves inside them kept, so `set_scope` and `unset_scope`
-apply again; `set_scope` on a placed program is refused instead of scoping the lowered one.
 The default runs `place()` when nothing is placed, then `insert_copies()` when a GPU kernel still copies inside its
 call; stage 5 builds GPU kernels over device pointers, so the copies are in before it.
-Without a GPU target there is no device to choose: the `place`, `insert_copies` and `unplace` tools answer `illegal`
-with that reason and change nothing, a CPU setup's agent reads as much in their descriptions, and the default still
-places every kernel on the CPU (design D21: one packet for both targets, since a packet's phases fix its tools).
 
 | | |
 |---|---|
 | default | `place()`, then `insert_copies()` |
-| agent | `place(devices)`, `insert_copies()`, `unplace()` |
+| agent | `place(devices)`, `insert_copies()` |
 | code | `nestforge/stages/placement.py` |
 
 ## Stage 5: Kernels
@@ -236,7 +230,7 @@ keeps its build and verdict; `finalize` keeps the sweep:
   grading tolerance, when the plugin has one);
 - `offloading`: each kernel's device and every transfer between memories, with bytes; the host/device copies of the
   timed program with their bytes per execution (`copies`, `copy_bytes`), and the GPU kernels that still copy inside
-  their own call in the session's program (`copies_in_call`: placed, `insert_copies` not run; the timed program had
+  their own call in the session's program (`copies_in_call`: placed, `finalize_scope` not run; the timed program had
   the default insert their copies);
 - `kernels`: each kernel's correctness, time and share, and the hints above. A compared kernel also carries
   `max_rel_error`, its largest relative difference to its oracle, and the `tolerance` it was judged at: a kernel is

@@ -144,7 +144,7 @@ def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
 
 def copies_in_call(sdfg: dace.SDFG) -> list[str]:
     """The GPU kernels that copy at their own boundary: placed, with an operand still in host memory, which
-    :func:`insert_copies` moves to device memory."""
+    ``finalize_scope`` (:func:`insert_copies`) moves to device memory."""
     return [
         ext.name
         for ext, state in sdfg.all_nodes_recursive()
@@ -166,23 +166,18 @@ def has_host_operand(ext: ExternalCall, state: dace.SDFGState) -> bool:
     )
 
 
-def check_device_names(targets: Targets, devices: dict[str, str]) -> str | None:
-    """Why ``devices`` names something that is no device of this session, or ``None``; it reads no program."""
-    bad = [f"{name}={device}" for name, device in devices.items() if device not in DEVICES]
-    if bad:
-        return f"{', '.join(bad)}: a device is 'cpu' or 'gpu'."
-    if not targets.gpu and "gpu" in devices.values():
-        return "the GPU is not a target of this session; every kernel runs on the CPU."
-    return None
-
-
 def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) -> str | None:
     """Why ``devices`` is not a placement of every kernel of ``sdfg``, or ``None``."""
     names = [ext.name for ext in external_calls(sdfg)]
     unknown = [name for name in devices if name not in names]
     if unknown:
         return f"no kernel is named {', '.join(unknown)}; kernels are {', '.join(names)}."
-    return check_device_names(targets, devices)
+    bad = [f"{name}={device}" for name, device in devices.items() if device not in DEVICES]
+    if bad:
+        return f"{', '.join(bad)}: a device is 'cpu' or 'gpu'."
+    if not targets.gpu and "gpu" in devices.values():
+        return "the GPU is not a target of this session; every kernel runs on the CPU."
+    return None
 
 
 def offload_kernel_bodies(sdfg: dace.SDFG) -> None:

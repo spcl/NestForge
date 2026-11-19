@@ -2,7 +2,8 @@
 
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
-Status: design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
+Status: motion rules built (2026-11-19, `nestforge/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
+the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused; the rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
 ## Goal
@@ -184,9 +185,9 @@ The skeleton decides every case with one comparison.
 | `for-fusion` of the exchange's loop with a compute loop of the same range | same | applies, if I2 holds |
 | `for-fission` that leaves all communication rows in one of the two loops | same | applies, if I2 holds |
 | `for-fission` that separates communication rows of one loop | two loops where one was | refused |
-| `interchange-*`, `tile-for`, `untile-for`, `unroll-for` on a loop that holds a row | nesting, range, or count differs | refused |
-| a move that turns such a `for` into a doall, `collapse-doalls`, vectorization of it | kind differs | refused (also I3) |
-| `hoist-invariant-*` of a row other than `QUERY` | the row's region differs | refused |
+| `interchange-*`, `hoist-invariant-guard`, `sink-invariant-guard`, `tile-for`, `untile-for`, `unroll-for` on a loop that holds a row | nesting, range, or count differs | refused |
+| a move that turns such a `for` into a doall, `flatten-doalls`, vectorization of it | kind differs | refused (also I3) |
+| `hoist-invariant-code` of a row other than `QUERY` | the row's region differs | refused |
 | two `START` or `BLOCKING` rows change places | order differs | refused (R1) |
 | a `WAIT` changes places with another row | same | applies, if I2 holds |
 
@@ -198,7 +199,7 @@ The invariants are the safety net, and they are cheap: one walk over the control
 still check what they can before they rewrite, so that `list_moves` offers no move the invariants would undo: a move
 kind whose region holds a communication row is listed only when the table above says it can apply.
 
-Two moves are refused on a communication row by name. `expand-library` is refused, since code generation expands the
+Two moves are refused on a communication row by name. `inline-library` is refused, since code generation expands the
 row at finalize. `set-library-implementation` lists `MPI` only.
 
 ### 5. Scopes, kernels, and placement

@@ -10,6 +10,7 @@ import dataclasses
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
+from dace.transformation.passes.megakernel.loops import MegakernelLoops
 
 from nestforge.build.arena import (
     TIMED_REPS,
@@ -283,12 +285,25 @@ def kernel_form(device: str) -> KernelForm:
     return CPU_FORM if device == "cpu" else GPU_FORMS[get_gpu_backend()]
 
 
-def schedule_kernel(ext: ExternalCall, boundary: Boundary, out_dir: Path) -> KernelSource:
+def persistent_loops(sdfg: dace.SDFG, device: str, loops: AbstractSet[str]) -> int:
+    """Run the sequential loops of kernels labeled ``loops`` in the scheduled kernel ``sdfg`` as one persistent kernel
+    each (DaCe's ``MegakernelLoops``: on the GPU behind a runtime test that every kernel's work fits the resident threads, with the
+    per-launch loop as the fallback; on the CPU as one OpenMP team). The number of loops it fused, 0 for none."""
+    device_type = dtypes.DeviceType.GPU if device == "gpu" else dtypes.DeviceType.CPU
+    return MegakernelLoops(device_type, set(loops)).apply_pass(sdfg, {}) or 0
+
+
+def schedule_kernel(
+    ext: ExternalCall, boundary: Boundary, out_dir: Path, persistent: AbstractSet[str] = frozenset()
+) -> KernelSource:
     """The kernel for the device stage 4 placed ``ext`` on, rendered by CPF into ``<out_dir>/<kernel>.cpp``,
-    ``.cu`` or ``.hip``, whose one entry is ``ext``'s symbol."""
+    ``.cu`` or ``.hip``, whose one entry is ``ext``'s symbol; the loops labeled ``persistent`` run as one persistent
+    kernel each (:func:`persistent_loops`)."""
     device = kernel_device(ext)
     form = kernel_form(device)
     sdfg = form.schedule(boundary)
+    if persistent:
+        persistent_loops(sdfg, device, persistent)
     sdfg.name = ext.name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
     with new_gpu_codegen():
         rendering = cpf.render(sdfg, language=form.language)

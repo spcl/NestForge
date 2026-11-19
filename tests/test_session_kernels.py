@@ -207,7 +207,7 @@ def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_
 
     build = session.builds[kernel.name]
     assert "m" in build.source.boundary.symbols
-    assert build.variant == session.first_variant(build.source.device)
+    assert build.variant == session.first_variant(build.source.device, build.source.name)
     assert build.verdict is None, "no sweep timed it"
 
 
@@ -251,7 +251,7 @@ def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configurati
     session.default_build(name)
 
     build = session.builds[name]
-    assert build.variant == session.first_variant(build.source.device)
+    assert build.variant == session.first_variant(build.source.device, build.source.name)
     assert build.verdict is None, "no sweep timed it"
 
 

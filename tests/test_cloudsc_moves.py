@@ -7,7 +7,8 @@ The program is the bench's Python cloudsc_monolith, canonicalized once up to fus
 starts it. Each seed walks a copy of it. A move draws its kind first, since doall-fusion is almost every legal
 candidate, then its place: either a move ``list_moves`` offers or any rows of the kind's shape. Applied moves are
 checked in batches, as one codegen and build costs over a minute while a run costs milliseconds. A failure names the
-seed and the moves since the last passing check.
+seed and the moves since the last passing check. Rolling the applied moves back, one at a time, gives back each
+program before them, the canonical one at the end.
 """
 
 from collections.abc import Iterator
@@ -16,9 +17,10 @@ import numpy as np
 import pytest
 from helpers import program_mismatch
 
+from nestforge import session as session_module
 from nestforge.records import MoveStatus
 from nestforge.session import Session
-from nestforge.stages.moves import MOVE_SHAPES
+from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, RUN_ON_KINDS
 from nestforge.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
@@ -53,8 +55,9 @@ def random_place(session: Session, kind: str, rng: np.random.Generator) -> tuple
 
 
 def moves(session: Session, rng: np.random.Generator) -> Iterator[tuple[str, tuple[str, ...]]]:
-    """``ATTEMPTS`` random ``(kind, labels)``, skipping a kind that has no place in the program."""
-    kinds = list(MOVE_SHAPES)
+    """``ATTEMPTS`` random ``(kind, labels)``, skipping a kind that has no place in the program; the moves that place
+    kernels belong to the scopes phase and take kernels, not rows (``test_run_on``)."""
+    kinds = [kind for kind in MOVE_SHAPES if kind not in RUN_ON_KINDS]
     for _ in range(ATTEMPTS):
         kind = kinds[int(rng.integers(len(kinds)))]
         labels = random_place(session, kind, rng)
@@ -92,3 +95,32 @@ def test_a_random_move_keeps_the_program_correct_or_is_refused(canonical: Progra
         assert not why, f"seed={seed}: wrong after\n  " + "\n  ".join(pending) + f"\n{why}"
     print(f"seed={seed}: {applied} applied, {refused} refused")
     assert applied > 0, f"seed={seed}: no move applied ({refused} refused), so nothing was checked"
+
+
+@pytest.mark.parametrize("seed", range(NSEEDS))
+def test_rolling_back_random_moves_gives_back_each_earlier_program(
+    canonical: Program, seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, inputs, reference = canonical
+    monkeypatch.setattr(session_module, "UNDO_DEPTH", ATTEMPTS)  # every applied move stays in reach
+    session = base.trial()
+    rng = np.random.default_rng(seed)
+    before: list[tuple[str, str]] = []
+    for kind, labels in moves(session, rng):
+        state = (session.sdfg.hash_sdfg(), session.describe())
+        if session.apply_move(kind, labels).status is not MoveStatus.APPLIED:
+            continue
+        if kind == ROLLBACK:  # an undo pops the change it undid; it is no change of its own to roll back
+            if before:
+                before.pop()
+        else:
+            before.append(state)
+
+    back = []
+    for _ in before:
+        session.apply_move(ROLLBACK, [])
+        back.append((session.sdfg.hash_sdfg(), session.describe()))
+
+    assert before, f"seed={seed}: no move applied, so nothing was rolled back"
+    assert back == before[::-1], f"seed={seed}: a rollback did not give back the program before its move"
+    assert not (why := program_mismatch(session, inputs, reference)), f"seed={seed}: wrong after rollback: {why}"

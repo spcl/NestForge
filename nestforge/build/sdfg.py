@@ -415,9 +415,14 @@ def short_program_name(name: str) -> str:
     return f"{name[: MAX_PROGRAM_NAME - NAME_DIGEST_LENGTH - 1]}_{digest}"
 
 
-def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
-    """Compile a program that links kernel libraries, with libomp as its one OpenMP runtime; the CMake
-    setting holds for this compile only. A name too long for CMake's file names is shortened on ``sdfg`` itself."""
+def build_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Path:
+    """Build a program that links kernel libraries, with libomp as its one OpenMP runtime, and return the library's
+    path without loading it; the CMake setting holds for this build only. A name too long for CMake's file names is
+    shortened on ``sdfg`` itself.
+
+    Loading maps libomp into this process, and with ``OMP_PROC_BIND`` or ``OMP_PLACES`` set an initialized libomp
+    binds this process to one core and keeps that binding in every child it forks, which then runs the whole team
+    on that core (NestForge#99). A timing therefore loads the library only in its child."""
     extra = [dace.config.Config.get("compiler", "extra_cmake_args"), *libomp_cmake_args(program_compiler())]
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]
@@ -429,7 +434,16 @@ def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
         dace.config.set_temporary("compiler", "extra_cmake_args", value=" ".join(arg for arg in extra if arg)),
     ):
         with dace.config.set_temporary("compiler", "linker", "args", value=" ".join(arg for arg in linker_args if arg)):
-            return sdfg.compile()
+            sdfg.compile(return_program_handle=False)
+    folder_mode = dace_compiler.get_folder_mode(sdfg.build_folder, probe=True)
+    return dace_compiler.get_binary_name(sdfg.build_folder, sdfg.name, folder_mode=folder_mode)
+
+
+def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:
+    """:func:`build_linked_program`, then the program loaded into this process: for a caller that runs it here and
+    sets no OpenMP binding."""
+    build_linked_program(sdfg, build_folder)
+    return dace_compiler.load_precompiled_sdfg(sdfg.build_folder, sdfg)
 
 
 @dataclass(slots=True)

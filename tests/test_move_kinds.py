@@ -11,7 +11,24 @@ from nestforge.stages.moves import MOVE_SHAPES, move_kinds
 PAGE = REPO_ROOT / "plugin" / "nestforge" / "skills" / "nestforge" / "SKILL.md"
 #: A backticked kebab-case token with one of these parts reads as a move name (``kernel-optimizer`` does not).
 MOVE_WORDS = frozenset(
-    {"for", "doall", "doalls", "if", "fusion", "fission", "interchange", "tile", "untile", "peel", "expand", "copy"}
+    {
+        "for",
+        "while",
+        "doall",
+        "doalls",
+        "if",
+        "fusion",
+        "fission",
+        "interchange",
+        "tile",
+        "untile",
+        "peel",
+        "expand",
+        "copy",
+        "flatten",
+        "unflatten",
+        "inline",
+    }
 )
 
 

@@ -7,12 +7,13 @@ kernel or another kernel."""
 import dace
 import numpy as np
 import pytest
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.sdfg.nodes import MapEntry
 
 from nestforge.records import MoveStatus, Refusal
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import has_device_memory, insert_copies
+from nestforge.stages.placement import has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -94,7 +95,7 @@ def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path)
     program, other = session.sdfg.to_json(), session.kernel(second).standalone_sdfg.hash_sdfg()
 
     done = session.apply_move(
-        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
+        "stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first
     )
 
     body = session.kernel(first).standalone_sdfg
@@ -118,35 +119,25 @@ def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_pat
 
     done = session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), scope=first)
 
-    assert done.status is not MoveStatus.APPLIED and "pass tile_sizes, the thread block" in done.reason
+    assert done.status is not MoveStatus.APPLIED and "pass block, the thread block" in done.reason
     assert session.kernel(first).standalone_sdfg.hash_sdfg() == before
 
 
 def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_path):
     session, first, second = two_kernels(tmp_path, gpu=True)
     assert session.unset_scope(first).status is MoveStatus.APPLIED
-    # the stage itself: Session.place scopes the unscoped doall first, so only a direct caller meets one
-    sdfg = session.sdfg
-    assert sdfg is not None
-    insert_copies(sdfg, {second: "gpu"})
+    session.place({second: "gpu"})
+
+    session.insert_copies()
 
     top = [
         n.map.schedule
-        for n, st in sdfg.all_nodes_recursive()
-        if isinstance(n, MapEntry) and st.sdfg is sdfg and st.entry_node(n) is None
+        for n, st in session.sdfg.all_nodes_recursive()
+        if isinstance(n, MapEntry) and st.sdfg is session.sdfg and st.entry_node(n) is None
     ]
     assert len(top) == 1 and top[0] != dace.ScheduleType.GPU_Device  # the unscoped doall
     assert session.devices() == {second: "gpu"}
-    sdfg.validate()
-
-
-def test_placing_through_the_session_scopes_the_unscoped_doall_first(tmp_path):
-    session, first, second = two_kernels(tmp_path, gpu=True)
-    assert session.unset_scope(first).status is MoveStatus.APPLIED
-
-    session.place({second: "gpu"})
-
-    assert len(session.devices()) == 2 and session.devices()[second] == "gpu"
+    session.sdfg.validate()
 
 
 def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
@@ -161,9 +152,7 @@ def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
 @pytest.mark.gpu
 def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy_computes(tmp_path):
     session, first, _ = placed_on_gpu(tmp_path)
-    session.apply_move(
-        "stage-loads-shared", only_move(session, "stage-loads-shared", first), tile_sizes=(64,), scope=first
-    )
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
     rng = np.random.default_rng(0)
     a, b, c = rng.random(1000), rng.random(1000), np.zeros(1000)
 
@@ -258,7 +247,7 @@ def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
     assert listed.current == "sequential"
 
-    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[128])
+    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, block=[128])
     session.apply_move("tile-doall", only_move(session, "tile-doall", second), tile_sizes=[32], scope=second)
 
     assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule block=[128]"), done
@@ -271,7 +260,7 @@ def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_
     session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
 
     done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="dynamic")
-    blocked = session.apply_move("set-schedule-gpu", [kernel], scope=first, tile_sizes=[64])
+    blocked = session.apply_move("set-schedule-gpu", [kernel], scope=first, block=[64])
 
     assert done.status is MoveStatus.APPLIED, done
     maps = placed_maps(session, first)
@@ -300,7 +289,7 @@ def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path):
     session, first, _ = placed_on_gpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
 
-    result = session.apply_move("set-schedule-gpu", listed.labels, scope=first, tile_sizes=[1, 1, 128])
+    result = session.apply_move("set-schedule-gpu", listed.labels, scope=first, block=[1, 1, 128])
 
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
     assert placed_maps(session, first)[listed.labels[0]].gpu_block_size != [1, 1, 128]
@@ -310,7 +299,32 @@ def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
     session, first, _ = placed_on_cpu(tmp_path)
     (label,) = only_move(session, "set-schedule-cpu", first)
 
-    result = session.apply_move("set-schedule-gpu", [label], scope=first, tile_sizes=[128])
+    result = session.apply_move("set-schedule-gpu", [label], scope=first, block=[128])
 
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), result
     assert session.list_moves("set-schedule-gpu", scope=first) == []
+
+
+def test_a_staged_tile_moves_with_the_tma_unit_on_a_hopper_gpu(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
+
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="90"):
+        done = session.apply_move("copy-to-tma", only_move(session, "copy-to-tma", first), scope=first)
+
+    body = session.kernel(first).standalone_sdfg
+    copies = [n.implementation for n, _ in body.all_nodes_recursive() if isinstance(n, CopyLibraryNode)]
+    assert done.status is MoveStatus.APPLIED, done.reason
+    assert copies == ["MemoryEngineBulk"]  # the tile of a; b is not staged
+
+
+def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path):
+    session, first, _ = placed_on_gpu(tmp_path)
+    session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
+
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="90"):
+        kernel = only_move(session, "copy-to-tma", first)
+    with dace.config.set_temporary("compiler", "cuda", "cuda_arch", value="80"):
+        done = session.apply_move("copy-to-tma", kernel, scope=first)
+
+    assert done.status is not MoveStatus.APPLIED and "compute capability 9.0" in done.reason

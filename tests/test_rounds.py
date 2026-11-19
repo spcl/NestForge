@@ -13,7 +13,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
 from nestforge.records import MoveStatus
-from nestforge.server import CALLS, Setup, start
+from nestforge.server import CALLS, Setup, answer, start
 from nestforge.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -102,16 +102,27 @@ def test_a_loop_holding_a_kernel_stays_in_the_program():
     assert any(isinstance(block, LoopRegion) for block in session.sdfg.all_control_flow_regions())
 
 
-def test_moves_close_with_the_first_kernel_and_their_defaults_with_them():
+def test_moves_on_the_program_and_their_defaults_are_refused_in_the_scopes_phase():
     session = fresh()
     move = session.list_moves()[0]
-    first = doalls(session)[0]
-    CALLS["set_scope"](session, labels=[first])
+    session.next_phase()
 
-    with pytest.raises(ValueError, match="moves are closed"):
-        CALLS["apply_move"](session, kind=move.kind, labels=move.labels)
-    with pytest.raises(ValueError, match="moves are closed"):
-        CALLS["run_defaults"](session, stage="moves")
+    applied = answer(session, "apply_move", {"kind": move.kind, "labels": list(move.labels)}, None)
+    defaults = answer(session, "run_defaults", {"stage": "moves"}, None)
+
+    assert "phase scoped, structured" in applied.error
+    assert "not a stage of the phase scopes" in defaults.error
+
+
+def test_a_move_inside_a_kernel_stays_open_after_the_moves_close():
+    session = fresh()
+    CALLS["set_scope"](session, labels=[doalls(session)[0]])
+    (kernel,) = [info.name for info in session.list_kernels()]
+    move = session.list_moves("set-schedule-cpu", scope=kernel)[0]
+
+    done = CALLS["apply_move"](session, kind=move.kind, labels=move.labels, scope=kernel, schedule="dynamic")
+
+    assert done.status is MoveStatus.APPLIED
 
 
 def test_placement_fixes_the_scopes_until_a_new_round_reopens_them():

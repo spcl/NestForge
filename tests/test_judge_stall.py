@@ -261,9 +261,9 @@ def test_an_unchanged_kernel_keeps_its_build_without_a_render(tmp_path, monkeypa
     rendered: list[str] = []
     render = session_module.schedule_kernel
 
-    def counted(ext: ExternalCall, *args: object) -> object:
+    def counted(ext: ExternalCall, *args: object, **kwargs: object) -> object:
         rendered.append(ext.name)
-        return render(ext, *args)
+        return render(ext, *args, **kwargs)
 
     monkeypatch.setattr(session_module, "schedule_kernel", counted)
     names = [ext.name for ext in external_calls(sut.sdfg)]
@@ -460,16 +460,17 @@ def states(session: Session) -> list[str]:
 def test_a_default_after_a_placement_is_not_undone_by_the_next_placement(tmp_path):
     sut = session_of(two_nests, tmp_path)
     separate = sut.view(states(sut)).count("doall")
-    sut.run_defaults("moves")  # fuse first: the first placement scopes what no scope covers, which moves cannot fuse
-    assert sut.view(states(sut)).count("doall") < separate, "the fixture's maps fuse"
-    sut.place()
-    placed = sut.sdfg.hash_sdfg() if sut.sdfg is not None else ""
+    sut.place()  # the placement itself: run_defaults would also make kernels, which default moves cannot fuse
+    sut.run_defaults("moves")
+    assert sut.unplaced is None
+    fused = sut.view(states(sut)).count("doall")
+    assert fused < separate, "the fixture's maps fuse"
 
     sut.run_defaults("finish")
     assert sut.unplaced is None
 
     assert sut.place().status is MoveStatus.APPLIED
-    assert sut.sdfg is not None and sut.sdfg.hash_sdfg() == placed, "the placement started from the fused program"
+    assert sut.view(states(sut)).count("doall") == fused, "the placement started from the fused program"
 
 
 def test_the_session_lists_every_change_the_program_holds_and_no_refused_one(tmp_path):
