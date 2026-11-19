@@ -29,7 +29,6 @@ from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
 from nestforge.session import UNDONE_BY, Move, Session
-from nestforge.stages.canonicalize import Targets
 from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, VECTORIZE_DOALL, config_names
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
@@ -330,12 +329,11 @@ def test_rollback_after_copy_to_tma(tmp_path):
 
 
 def test_rollback_after_set_pipeline_depth(tmp_path):
-    session = Session(
-        test_pipeline_depth.tiled.to_sdfg(simplify=True), Targets(gpu=False), work_dir=str(tmp_path), sizes={"N": 16}
-    )
-    session.canonicalize()
-    (move,) = session.list_moves("set-pipeline-depth")
+    session, kernel = test_pipeline_depth.kernel_on(tmp_path, gpu=True)
+    (move,) = session.list_moves("set-pipeline-depth", scope=kernel)
 
-    differs = differs_after_rollback(session, lambda: session.apply_move("set-pipeline-depth", move.labels, depth=3))
+    differs = differs_after_rollback(
+        session, lambda: session.apply_move("set-pipeline-depth", move.labels, scope=kernel, depth=3)
+    )
 
     assert not differs, differs

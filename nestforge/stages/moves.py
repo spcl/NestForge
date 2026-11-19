@@ -25,6 +25,7 @@ from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
 from dace.sdfg.propagation import propagate_memlets_sdfg
+from dace.sdfg.scope import is_devicelevel_gpu
 from dace.sdfg.state import (
     BreakBlock,
     ConditionalBlock,
@@ -249,7 +250,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
 }
 
 #: The move kinds that rewrite a GPU kernel's offloaded body, inside a scope placed on the GPU.
-DEVICE_KINDS = frozenset({"stage-loads-shared", COPY_TO_TMA})
+DEVICE_KINDS = frozenset({"stage-loads-shared", COPY_TO_TMA, SET_PIPELINE_DEPTH})
 
 #: The ISA ``vectorize-doall`` vectorizes for when none is given: the best one the host runs.
 DEFAULT_ISA = "auto"
@@ -1046,6 +1047,17 @@ def plan_copy_to_tma(row: Row) -> Rewrite | str:
     return Rewrite("MemoryEngineBulk", commit)
 
 
+def in_gpu_kernel(loop: LoopRegion) -> bool:
+    """Whether ``loop`` runs inside a GPU kernel: a nested SDFG holding it sits in GPU device code."""
+    sdfg = loop.sdfg
+    while sdfg.parent_nsdfg_node is not None:
+        state = sdfg.parent
+        if is_devicelevel_gpu(state.sdfg, state, sdfg.parent_nsdfg_node):
+            return True
+        sdfg = state.sdfg
+    return False
+
+
 def plan_set_pipeline_depth(row: Row, depth: int = PROBE_PIPELINE_DEPTH) -> Rewrite | str:
     """A kernel loop whose iterations first copy a tile into a buffer runs as a pipeline of ``depth`` stages: the
     buffer gets ``depth`` slots, and the copies of later iterations run while an earlier tile is read. Code generation
@@ -1053,6 +1065,12 @@ def plan_set_pipeline_depth(row: Row, depth: int = PROBE_PIPELINE_DEPTH) -> Rewr
     loop = cast(LoopRegion, row[0])
     if depth < 2:
         return Refused(f"pass depth, the stages of {loop.label}'s pipeline: 2 or more; not {depth}.", Refusal.ARGUMENT)
+    if not in_gpu_kernel(loop):
+        return Refused(
+            f"{loop.label} runs on the host: only a loop inside a GPU kernel pipelines its loads (place its scope on "
+            "the GPU first).",
+            Refusal.DEPENDENCE,
+        )
     staged, rejected = find_staged_buffers(loop, loop.sdfg)
     if not staged:
         why = "; ".join(f"{name}: {reason}" for name, reason in rejected.items()) or "it copies no tile into a buffer"
@@ -2294,7 +2312,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
     COPY_TO_TMA: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e) and kernel_copies(st, e)),
     SET_PIPELINE_DEPTH: lambda sdfg: (
-        row for row in for_rows(sdfg) if find_staged_buffers(row[0][0], row[0][0].sdfg)[0]
+        row for row in for_rows(sdfg) if in_gpu_kernel(row[0][0]) and find_staged_buffers(row[0][0], row[0][0].sdfg)[0]
     ),
     SKEW_WAVEFRONT: for_rows,
     FOR_TO_DOALL: for_rows,
