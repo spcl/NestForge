@@ -4,6 +4,8 @@
 move sets the loop's depth, and code generation lowers it as DaCe's ``LowerMultipleBuffering``. A loop on the host is
 refused."""
 
+from pathlib import Path
+
 import dace
 from dace.sdfg.state import LoopRegion
 
@@ -17,7 +19,7 @@ TILE = 4
 
 
 @dace.program
-def rows(A: dace.float64[M, N], S: dace.float64[M, TILE]):
+def rows(A: dace.float64[M, N], S: dace.float64[M, TILE]) -> None:
     """Per row, a recurrence over tiles: each iteration copies its tile into ``buf`` and folds it into ``S``."""
     for i in dace.map[0:M]:
         buf = dace.define_local([TILE], dace.float64, storage=dace.StorageType.Register)
@@ -26,7 +28,7 @@ def rows(A: dace.float64[M, N], S: dace.float64[M, TILE]):
             S[i, :] = 0.5 * S[i, :] + buf
 
 
-def kernel_on(tmp_path, gpu: bool) -> tuple[Session, str]:
+def kernel_on(tmp_path: Path, gpu: bool) -> tuple[Session, str]:
     session = Session(rows.to_sdfg(simplify=True), Targets(gpu=gpu), work_dir=str(tmp_path), sizes={"M": 8, "N": 16})
     session.canonicalize()
     (kernel,) = (k.name for k in session.default_scopes())
@@ -42,7 +44,7 @@ def staged_loop(session: Session, kernel: str) -> LoopRegion:
     return loop
 
 
-def test_a_gpu_kernel_loop_staging_a_tile_is_pipelined_at_the_depth_passed(tmp_path):
+def test_a_gpu_kernel_loop_staging_a_tile_is_pipelined_at_the_depth_passed(tmp_path: Path) -> None:
     session, kernel = kernel_on(tmp_path, gpu=True)
     (move,) = session.list_moves(SET_PIPELINE_DEPTH, scope=kernel)
 
@@ -52,7 +54,7 @@ def test_a_gpu_kernel_loop_staging_a_tile_is_pipelined_at_the_depth_passed(tmp_p
     assert staged_loop(session, kernel).pipeline_depth == 3
 
 
-def test_a_host_loop_or_a_depth_below_two_is_refused(tmp_path):
+def test_a_host_loop_or_a_depth_below_two_is_refused(tmp_path: Path) -> None:
     host, kernel = kernel_on(tmp_path, gpu=False)
     gpu, gpu_kernel = kernel_on(tmp_path / "gpu", gpu=True)
 

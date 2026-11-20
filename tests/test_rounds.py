@@ -14,13 +14,13 @@ from dace.sdfg.state import LoopRegion
 
 from nestforge.records import MoveStatus
 from nestforge.server import CALLS, Setup, answer, start
-from nestforge.session import Session
+from nestforge.session import KernelOutcome, MoveResult, Session, Stage
 
 N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def three_stages(A: dace.float64[N], C: dace.float64[N]):
+def three_stages(A: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     U = np.empty_like(A)
     for i in dace.map[0:N]:
@@ -32,7 +32,7 @@ def three_stages(A: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def sweeps(A: dace.float64[N]):
+def sweeps(A: dace.float64[N]) -> None:
     for _ in range(3):
         for i in dace.map[0:N]:
             A[i] = A[i] + 1.0
@@ -48,7 +48,7 @@ def doalls(session: Session) -> list[str]:
     return [label for label, (obj, _) in session.row_index().items() if isinstance(obj, nodes.MapEntry)]
 
 
-def test_a_new_round_gives_the_moves_back_on_the_same_rows():
+def test_a_new_round_gives_the_moves_back_on_the_same_rows() -> None:
     session = fresh()
     moves, tree = session.list_moves(), session.describe()
     session.run_defaults("scopes")
@@ -61,7 +61,7 @@ def test_a_new_round_gives_the_moves_back_on_the_same_rows():
     assert session.list_moves() == moves and session.describe() == tree
 
 
-def test_a_new_round_keeps_the_moves_made_before_it():
+def test_a_new_round_keeps_the_moves_made_before_it() -> None:
     session = fresh()
     move = session.list_moves()[0]
     session.apply_move(move.kind, move.labels)
@@ -73,14 +73,14 @@ def test_a_new_round_keeps_the_moves_made_before_it():
     assert session.describe() == tree and [done.kind for done in session.applied] == [move.kind]
 
 
-def test_a_new_round_without_kernels_changes_nothing():
+def test_a_new_round_without_kernels_changes_nothing() -> None:
     session = fresh()
     tree = session.describe()
 
     assert session.run_defaults("round") == tree
 
 
-def test_placement_gives_what_no_scope_covers_its_default_scope():
+def test_placement_gives_what_no_scope_covers_its_default_scope() -> None:
     session = fresh()
     first, *rest = doalls(session)
     chosen = session.set_scope([first]).reason
@@ -91,7 +91,7 @@ def test_placement_gives_what_no_scope_covers_its_default_scope():
     assert chosen in names and len(names) == 1 + len(rest)
 
 
-def test_a_loop_holding_a_kernel_stays_in_the_program():
+def test_a_loop_holding_a_kernel_stays_in_the_program() -> None:
     session = Session(sweeps.to_sdfg(simplify=True))
     (doall,) = doalls(session)
     chosen = session.set_scope([doall]).reason
@@ -102,7 +102,7 @@ def test_a_loop_holding_a_kernel_stays_in_the_program():
     assert any(isinstance(block, LoopRegion) for block in session.sdfg.all_control_flow_regions())
 
 
-def test_moves_on_the_program_and_their_defaults_are_refused_in_the_scopes_phase():
+def test_moves_on_the_program_and_their_defaults_are_refused_in_the_scopes_phase() -> None:
     session = fresh()
     move = session.list_moves()[0]
     session.next_phase()
@@ -114,7 +114,7 @@ def test_moves_on_the_program_and_their_defaults_are_refused_in_the_scopes_phase
     assert "not a stage of the phase scopes" in defaults.error
 
 
-def test_a_move_inside_a_kernel_stays_open_after_the_moves_close():
+def test_a_move_inside_a_kernel_stays_open_after_the_moves_close() -> None:
     session = fresh()
     CALLS["set_scope"](session, labels=[doalls(session)[0]])
     (kernel,) = [info.name for info in session.list_kernels()]
@@ -122,10 +122,10 @@ def test_a_move_inside_a_kernel_stays_open_after_the_moves_close():
 
     done = CALLS["apply_move"](session, kind=move.kind, labels=move.labels, scope=kernel, schedule="dynamic")
 
-    assert done.status is MoveStatus.APPLIED
+    assert isinstance(done, MoveResult) and done.status is MoveStatus.APPLIED
 
 
-def test_placement_fixes_the_scopes_until_a_new_round_reopens_them():
+def test_placement_fixes_the_scopes_until_a_new_round_reopens_them() -> None:
     session = fresh()
     labels = doalls(session)
     CALLS["run_defaults"](session, stage="placement")
@@ -138,10 +138,11 @@ def test_placement_fixes_the_scopes_until_a_new_round_reopens_them():
 
     CALLS["run_defaults"](session, stage="round")
 
-    assert CALLS["set_scope"](session, labels=labels[:1]).status is MoveStatus.APPLIED
+    scoped = CALLS["set_scope"](session, labels=labels[:1])
+    assert isinstance(scoped, MoveResult) and scoped.status is MoveStatus.APPLIED
 
 
-def test_a_kernel_change_takes_only_the_kernel_in_focus():
+def test_a_kernel_change_takes_only_the_kernel_in_focus() -> None:
     session = fresh()
     CALLS["run_defaults"](session, stage="placement")
     first, second, *_ = [ext.name for ext in external_calls(session.sdfg)]
@@ -152,10 +153,11 @@ def test_a_kernel_change_takes_only_the_kernel_in_focus():
     with pytest.raises(ValueError, match=rf"{second} is not the kernel in focus \({first}\)"):
         CALLS["tune_kernel"](session, name=second)
 
-    assert CALLS["write_kernel"](session, name=first, source="x", language="cpp").kernel == first
+    written = CALLS["write_kernel"](session, name=first, source="x", language="cpp")
+    assert isinstance(written, KernelOutcome) and written.kernel == first
 
 
-def test_a_focus_names_a_kernel():
+def test_a_focus_names_a_kernel() -> None:
     session = fresh()
     CALLS["run_defaults"](session, stage="placement")
 
@@ -165,7 +167,7 @@ def test_a_focus_names_a_kernel():
     assert session.focus is None
 
 
-def test_a_new_round_drops_the_focus_with_the_kernels():
+def test_a_new_round_drops_the_focus_with_the_kernels() -> None:
     session = fresh()
     CALLS["run_defaults"](session, stage="placement")
     CALLS["focus_kernel"](session, name=external_calls(session.sdfg)[0].name)
@@ -175,7 +177,7 @@ def test_a_new_round_drops_the_focus_with_the_kernels():
     assert session.focus is None
 
 
-def test_default_kernels_keep_their_row_names_through_placement_and_a_new_round():
+def test_default_kernels_keep_their_row_names_through_placement_and_a_new_round() -> None:
     session = fresh()
     chosen, *others = doalls(session)
     session.set_scope([chosen])
@@ -191,7 +193,7 @@ def test_default_kernels_keep_their_row_names_through_placement_and_a_new_round(
     assert {ext.name for ext in external_calls(session.sdfg)} == {f"extcall_{label}" for label in [chosen, *others]}
 
 
-def test_each_default_that_changed_the_program_is_on_applied_until_a_round_drops_it():
+def test_each_default_that_changed_the_program_is_on_applied_until_a_round_drops_it() -> None:
     session = fresh()
     session.run_defaults("scopes")
     session.run_defaults("placement")
@@ -203,7 +205,9 @@ def test_each_default_that_changed_the_program_is_on_applied_until_a_round_drops
 
 
 @pytest.mark.parametrize("stage", ["placement", "round"])
-def test_a_default_that_fails_halfway_leaves_the_session_as_it_was(stage: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_default_that_fails_halfway_leaves_the_session_as_it_was(
+    stage: Stage, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session = fresh()
     if stage == "round":
         session.run_defaults("placement")

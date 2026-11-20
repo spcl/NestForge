@@ -68,8 +68,8 @@ class Refused(str):
         made.refusal = refusal
         return made
 
-    def __getnewargs__(self) -> tuple[str, Refusal]:  # pickling passes the class too
-        return str(self), self.refusal
+    def __reduce__(self) -> tuple[type[Self], tuple[str, Refusal]]:  # pickling passes the class too
+        return type(self), (str(self), self.refusal)
 
 
 class UnclassedRefusal(UserWarning):

@@ -3,6 +3,8 @@
 """The LLVM and MLIR baselines: every kernel built through the agent's own pass pipeline, with NestForge's entry,
 library and oracle check; the pipeline's syntax is checked when it is set, and rollback takes it back."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 import pytest
@@ -18,12 +20,12 @@ SIZE = 64
 
 
 @dace.program
-def doubled(a: dace.float64[N], b: dace.float64[N]):
+def doubled(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = 2.0 * a[i] + 1.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(doubled.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -43,7 +45,7 @@ def built(sut: Session) -> list[str]:
     return [sut.builds[name].variant.toolchain for name in names]
 
 
-def test_every_kernel_builds_through_the_llvm_pipeline_and_the_program_stays_correct(tmp_path):
+def test_every_kernel_builds_through_the_llvm_pipeline_and_the_program_stays_correct(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     done = sut.set_pipeline("llvm", "default<O2>")
@@ -54,7 +56,7 @@ def test_every_kernel_builds_through_the_llvm_pipeline_and_the_program_stays_cor
     assert report.correct is True and report.time_us is not None
 
 
-def test_a_pipeline_opt_cannot_parse_is_refused_with_opts_message(tmp_path):
+def test_a_pipeline_opt_cannot_parse_is_refused_with_opts_message(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     refused = sut.set_pipeline("llvm", "loop-unroll,no-such-pass")
@@ -64,7 +66,7 @@ def test_a_pipeline_opt_cannot_parse_is_refused_with_opts_message(tmp_path):
     assert sut.pipeline is None
 
 
-def test_rollback_takes_the_pipeline_back_to_nestforges_build(tmp_path):
+def test_rollback_takes_the_pipeline_back_to_nestforges_build(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.set_pipeline("llvm", "default<O1>")
 
@@ -75,7 +77,7 @@ def test_rollback_takes_the_pipeline_back_to_nestforges_build(tmp_path):
 
 
 @pytest.mark.vendor  # Polygeist (cgeist, polygeist-opt) is in the AMD judge image, not on CI
-def test_the_mlir_pipeline_builds_a_correct_kernel_through_polygeist(tmp_path):
+def test_the_mlir_pipeline_builds_a_correct_kernel_through_polygeist(tmp_path: Path) -> None:
     sut = session(tmp_path)
     assert pipeline_syntax_error("mlir", "clang++", "builtin.module(canonicalize)") == ""
 

@@ -12,7 +12,9 @@ from nestforge.server import SessionProcess, Setup
 SETUP = Setup(kernel="none", preset="S", datatype="float64", gpu=True)
 
 
-def test_a_gpu_session_sees_only_its_slots_gpu_on_a_gpu_slot_and_every_gpu_on_a_cpu_slot(monkeypatch):
+def test_a_gpu_session_sees_only_its_slots_gpu_on_a_gpu_slot_and_every_gpu_on_a_cpu_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6")
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)

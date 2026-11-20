@@ -377,7 +377,7 @@ def size_rung(preset: str) -> str:
     sizes around a rung, and a session measures on that rung."""
     from hpcagent_bench.spec import parse_preset
 
-    return parse_preset(preset).anchor.text
+    return str(parse_preset(preset).anchor.text)
 
 
 def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
@@ -756,7 +756,8 @@ class SessionProcess:
 
     def receive(self) -> Reply:
         try:
-            return self.connection.recv()
+            reply: Reply = self.connection.recv()
+            return reply
         except (EOFError, ConnectionResetError):
             self.process.join(CLOSE_TIMEOUT_S)
             return Reply(error=f"the session process died (exit code {self.process.exitcode})")

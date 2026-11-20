@@ -3,6 +3,7 @@
 """Python and C emission of an extracted nest, run and compared with NumPy."""
 
 import subprocess
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -10,24 +11,25 @@ from helpers import bench_kernel, c_argtypes, emit_sources, extract_nest_to_sdfg
 
 from nestforge.build.arena import call_native
 from nestforge.ir.emit_python import load_emitted
+from nestforge.ir.extract import Boundary
 from nestforge.stages.scopes import parallel_top_level_maps
 
 N = dace.symbol("N")
 
 
 @dace.program
-def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         C[i] = A[i] + B[i]
 
 
-def boundary():
+def boundary() -> Boundary:
     sdfg = vadd.to_sdfg(simplify=True)
     psdfg, node = parallel_top_level_maps(sdfg)[0]
     return extract_nest_to_sdfg(psdfg, node, name="vadd_nest")
 
 
-def test_the_python_oracle_runs():
+def test_the_python_oracle_runs() -> None:
     b = boundary()
     src = nest_to_python(b, fn_name="vadd")
     mod = load_emitted(src, "vadd")
@@ -38,7 +40,7 @@ def test_the_python_oracle_runs():
     np.testing.assert_array_equal(C, A + B)
 
 
-def test_the_translated_c_kernel_computes_what_numpy_computes(tmp_path):
+def test_the_translated_c_kernel_computes_what_numpy_computes(tmp_path: Path) -> None:
     b = boundary()
     prep = bench_kernel(b, "vadd", tmp_path / "kern")
     assert prep.numpy_path.exists() and prep.yaml_path.exists()
@@ -60,7 +62,7 @@ def test_the_translated_c_kernel_computes_what_numpy_computes(tmp_path):
 
 
 @dace.program
-def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
+def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     for k in dace.map[0:N]:
         T[k] = A[idx[k]]
@@ -68,7 +70,7 @@ def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]):
         C[k] = T[k] * 2.0
 
 
-def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out():
+def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out() -> None:
     """MapFusion's size-1 intermediate is transient outside the nested SDFG and not inside, which decides its
     spelling; run, not grepped, since what matters is that the value survives."""
     from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish

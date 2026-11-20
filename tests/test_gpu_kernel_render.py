@@ -21,7 +21,7 @@ N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def branchy(A: dace.float64[N], B: dace.float64[N], flag: dace.int64):
+def branchy(A: dace.float64[N], B: dace.float64[N], flag: dace.int64) -> None:
     if flag > 0:
         for i in dace.map[0:N]:
             B[i] = A[i] * 2.0
@@ -38,7 +38,7 @@ DIALECTS = {
 
 
 @pytest.mark.parametrize("api", sorted(DIALECTS))
-def test_a_gpu_kernel_renders_a_global_kernel_and_its_launch_in_the_backends_dialect(tmp_path, api):
+def test_a_gpu_kernel_renders_a_global_kernel_and_its_launch_in_the_backends_dialect(tmp_path: Path, api: str) -> None:
     suffix, header, launch = DIALECTS[api]
     with dace_gpu_backend(api):
         _, ext, boundary = gpu_lowered_kernel(vadd)
@@ -55,7 +55,7 @@ def test_a_gpu_kernel_renders_a_global_kernel_and_its_launch_in_the_backends_dia
     assert other_launch not in device
 
 
-def test_a_gpu_scope_of_a_branch_over_two_doalls_launches_one_megakernel(tmp_path):
+def test_a_gpu_scope_of_a_branch_over_two_doalls_launches_one_megakernel(tmp_path: Path) -> None:
     session = Session(branchy.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
     session.canonicalize()
     session.describe()
@@ -74,7 +74,7 @@ def test_a_gpu_scope_of_a_branch_over_two_doalls_launches_one_megakernel(tmp_pat
     assert "cudaLaunchCooperativeKernel(" in device and "cudaLaunchKernel(" not in device
 
 
-def test_a_cpu_kernel_renders_no_device_code(tmp_path):
+def test_a_cpu_kernel_renders_no_device_code(tmp_path: Path) -> None:
     _, ext, boundary = lowered_kernel(vadd)
 
     src = schedule_kernel(ext, boundary, tmp_path)

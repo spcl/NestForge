@@ -4,6 +4,7 @@
 computes the same."""
 
 import re
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -18,12 +19,12 @@ SIZE = 21  # not a multiple of the tile, so the last tile is partial
 
 
 @dace.program
-def running_sum(a: dace.float64[N], b: dace.float64[N]):
+def running_sum(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i - 1] + b[i]
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     return Session(running_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
 
 
@@ -42,7 +43,7 @@ def computes_running_sum(sut: Session) -> None:
     np.testing.assert_allclose(a, expected, rtol=0, atol=0)
 
 
-def test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop_back(tmp_path):
+def test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop_back(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (loop,) = loop_labels(sut)
 
@@ -59,13 +60,13 @@ def test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop
 
 
 @dace.program
-def column_steps(a: dace.float64[N, N], b: dace.float64[N, N]):
+def column_steps(a: dace.float64[N, N], b: dace.float64[N, N]) -> None:
     for j in range(1, N):
         for i in dace.map[0:N]:
             a[j, i] = a[j - 1, i] + b[j, i]
 
 
-def test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_still_builds(tmp_path):
+def test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_still_builds(tmp_path: Path) -> None:
     sut = Session(column_steps.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     sut.default_scopes()
@@ -88,7 +89,7 @@ def test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_
     assert ext.name in sut.builds
 
 
-def test_a_for_tile_is_one_size_of_at_least_two(tmp_path):
+def test_a_for_tile_is_one_size_of_at_least_two(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (loop,) = loop_labels(sut)
 
@@ -98,7 +99,7 @@ def test_a_for_tile_is_one_size_of_at_least_two(tmp_path):
     assert "one size of at least 2" in result.reason
 
 
-def test_an_untiled_for_loop_offers_no_untiling(tmp_path):
+def test_an_untiled_for_loop_offers_no_untiling(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     assert sut.list_moves("untile-for") == []

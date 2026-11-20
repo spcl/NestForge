@@ -83,8 +83,9 @@ def buffers(state: SDFGState, node: nodes.Node) -> tuple[frozenset[str], frozens
 def requests_of(state: SDFGState, node: nodes.Node, written: bool) -> frozenset[str]:
     """The request containers ``node`` writes (a start) or reads (a wait)."""
     edges = state.out_edges(node) if written else state.in_edges(node)
-    connector = (lambda e: e.src_conn) if written else (lambda e: e.dst_conn)
-    return frozenset(str(e.data.data) for e in edges if connector(e) == REQUEST and not e.data.is_empty())
+    return frozenset(
+        str(e.data.data) for e in edges if (e.src_conn if written else e.dst_conn) == REQUEST and not e.data.is_empty()
+    )
 
 
 def starts_of(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> list[tuple[SDFGState, nodes.Node]]:

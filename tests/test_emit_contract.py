@@ -15,18 +15,18 @@ from nestforge.ir.extract import Boundary
 N = dace.symbol("N")
 
 
-def run(src, fn, **buffers):
+def run(src: str, fn: str, **buffers: np.ndarray | int) -> None:
     vars(load_emitted(src, fn))[fn](**buffers)
 
 
 @dace.program
-def dot_scale(x: dace.float64[N], y: dace.float64[N], z: dace.float64[N], out: dace.float64[N]):
+def dot_scale(x: dace.float64[N], y: dace.float64[N], z: dace.float64[N], out: dace.float64[N]) -> None:
     s = np.dot(x, y)
     for i in dace.map[0:N]:
         out[i] = z[i] * s
 
 
-def test_scalar_transient_consistent_between_libnode_and_tasklet():
+def test_scalar_transient_consistent_between_libnode_and_tasklet() -> None:
     # Dot writes a scalar transient `s`; the map tasklet reads it. Both must name it identically.
     src, _ = sdfg_to_python(dot_scale.to_sdfg(simplify=True), "k")
     n = 6
@@ -37,11 +37,11 @@ def test_scalar_transient_consistent_between_libnode_and_tasklet():
 
 
 @dace.program
-def matvec_return(A: dace.float64[N, N], v: dace.float64[N]):
+def matvec_return(A: dace.float64[N, N], v: dace.float64[N]) -> dace.float64[N]:
     return A @ v
 
 
-def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
+def test_return_and_scratch_are_inplace_buffer_params_no_allocation() -> None:
     sdfg = matvec_return.to_sdfg(simplify=True)
     src, _ = sdfg_to_python(sdfg, "k")
     assert "np.empty" not in src and "np.zeros" not in src, "C-style: caller pre-allocates, kernel must not"
@@ -57,7 +57,7 @@ def test_return_and_scratch_are_inplace_buffer_params_no_allocation():
     np.testing.assert_allclose(ret, A @ v, rtol=1e-12, atol=0)
 
 
-def nested_map_sdfg():
+def nested_map_sdfg() -> dace.SDFG:
     sdfg = dace.SDFG("nested")
     sdfg.add_array("A", [N, N], dace.float64)
     sdfg.add_array("B", [N, N], dace.float64)
@@ -71,7 +71,7 @@ def nested_map_sdfg():
     return sdfg
 
 
-def test_nested_map_in_map_emits_nested_for_loops():
+def test_nested_map_in_map_emits_nested_for_loops() -> None:
     """A map nested inside a map (the multi-nest kernels s2275 / s152 need this) is emitted as nested ``for``
     loops with the inner body at the deeper indent, neither dropped nor refused."""
     src, _ = sdfg_to_python(nested_map_sdfg(), "k")
@@ -86,12 +86,12 @@ def test_nested_map_in_map_emits_nested_for_loops():
 
 
 @dace.program
-def gather(a: dace.float64[N], b: dace.int64[N], out: dace.float64[N]):
+def gather(a: dace.float64[N], b: dace.int64[N], out: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         out[i] = a[b[i]]
 
 
-def test_indirect_gather_stages_map_entry_read():
+def test_indirect_gather_stages_map_entry_read() -> None:
     """``a[b[i]]`` is staged as ``<sym> = b[i]`` fed by the map entry; without that load the gather names an
     undefined symbol."""
     sdfg = gather.to_sdfg(simplify=True)
@@ -104,7 +104,7 @@ def test_indirect_gather_stages_map_entry_read():
     np.testing.assert_array_equal(out, a[b])
 
 
-def loop_scratch_boundary():
+def loop_scratch_boundary() -> Boundary:
     """A nest with a scratch transient shaped by the loop variable (``tmp[loop_i + 1]``) -- the shape the
     emitter widens to its largest value, ``N``, so the buffer stays a caller-allocated parameter."""
     # A dedicated symbol name: ``i`` is a common loop variable, and dace's symbol registry rejects a
@@ -122,7 +122,7 @@ def loop_scratch_boundary():
     return Boundary(inputs=["a"], outputs=["a"], symbols=["N"], nsdfg_node=None, state=None, standalone_sdfg=sdfg)
 
 
-def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
+def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it() -> None:
     """make_inputs sized scratch from the raw descriptor while the emitted kernel is written against the
     widened one, so the caller handed the kernel a buffer smaller than it indexes -- a write past the end
     of the allocation across the ABI (heap corruption in the forked child)."""
@@ -138,19 +138,19 @@ def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it():
     assert got.shape == (sizes["N"],), "scratch allocated from the raw (smaller) shape, not the emitted one"
 
 
-def test_the_emitted_signature_takes_the_scratch_buffer_the_caller_allocates():
+def test_the_emitted_signature_takes_the_scratch_buffer_the_caller_allocates() -> None:
     boundary = loop_scratch_boundary()
     assert "\ndef k(a, tmp, N):\n" in nest_to_python(boundary, "k")
 
 
 @dace.program
-def rows_two_statements(dqdt: dace.float64[6, N], sx: dace.float64[6, N], sink: dace.float64[6, N]):
+def rows_two_statements(dqdt: dace.float64[6, N], sx: dace.float64[6, N], sink: dace.float64[6, N]) -> None:
     for i in range(6):
         dqdt[i, :] = dqdt[i, :] + sx[i, :]
         dqdt[i, :] = dqdt[i, :] - sink[i, :]
 
 
-def test_the_scratch_of_a_nest_left_inside_a_map_is_the_callers_to_allocate():
+def test_the_scratch_of_a_nest_left_inside_a_map_is_the_callers_to_allocate() -> None:
     """Issue #15: a multi-state loop body stays a nest inside the map after lower(); its transient arrays were
     written by the oracle but neither passed nor allocated, so it raised NameError."""
     sdfg = rows_two_statements.to_sdfg(simplify=True)

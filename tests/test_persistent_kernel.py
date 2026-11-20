@@ -5,6 +5,7 @@ GPU that is one launch instead of one per doall and step; on the CPU, where code
 one OpenMP team, its doalls share the work without an implicit barrier each and synchronize explicitly."""
 
 import re
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -20,7 +21,7 @@ SIZE, STEPS = 64, 5
 
 
 @dace.program
-def steps(a: dace.float64[N], b: dace.float64[N]):
+def steps(a: dace.float64[N], b: dace.float64[N]) -> None:
     for _ in range(T):
         for i in dace.map[1 : N - 1]:
             b[i] = (a[i - 1] + a[i] + a[i + 1]) / 3.0
@@ -29,7 +30,7 @@ def steps(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def two_loops(a: dace.float64[N], b: dace.float64[N]):
+def two_loops(a: dace.float64[N], b: dace.float64[N]) -> None:
     for _ in range(T):
         for i in dace.map[1 : N - 1]:
             b[i] = (a[i - 1] + a[i] + a[i + 1]) / 3.0
@@ -47,7 +48,7 @@ def offered(sut: Session, kernel: str) -> list[tuple[str, ...]]:
     return [move.labels for move in sut.list_moves("persistent-kernel", scope=kernel)]
 
 
-def two_loops_scoped(tmp_path) -> tuple[Session, str, str, str]:
+def two_loops_scoped(tmp_path: Path) -> tuple[Session, str, str, str]:
     """``two_loops`` with both time loops in one kernel: the session, the kernel, the first and the second loop."""
     sut = Session(two_loops.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
     sut.canonicalize()
@@ -68,7 +69,7 @@ def two_loops_data() -> tuple[dict[str, np.ndarray], Reference]:
     return {"a": a, "b": np.zeros(SIZE)}, Reference({"a": want}, 1e-12, 1e-12)
 
 
-def scoped(tmp_path) -> tuple[Session, str]:
+def scoped(tmp_path: Path) -> tuple[Session, str]:
     """The program with its time loop as one kernel."""
     sut = Session(steps.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
     sut.canonicalize()
@@ -92,7 +93,7 @@ def data() -> tuple[dict[str, np.ndarray], Reference]:
     return {"a": a, "b": np.zeros(SIZE)}, Reference({"a": want}, 1e-12, 1e-12)
 
 
-def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_path):
+def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_path: Path) -> None:
     sut, kernel = scoped(tmp_path)
     before = sut.default_kernel(kernel).unit.read_text()
 
@@ -113,7 +114,7 @@ def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_pat
     assert sut.persistent == frozenset()
 
 
-def test_only_the_named_loop_runs_persistent(tmp_path):
+def test_only_the_named_loop_runs_persistent(tmp_path: Path) -> None:
     sut, kernel, first, second = two_loops_scoped(tmp_path)
     assert (first, second) in offered(sut, kernel), "the two consecutive loops are offered as one run"
 
@@ -125,7 +126,7 @@ def test_only_the_named_loop_runs_persistent(tmp_path):
     assert source.count("nowait") == 2, "only the second loop's two doalls share work without an implicit barrier"
 
 
-def test_two_consecutive_loops_run_as_one_persistent_kernel_and_compute_the_same(tmp_path):
+def test_two_consecutive_loops_run_as_one_persistent_kernel_and_compute_the_same(tmp_path: Path) -> None:
     sut, kernel, first, second = two_loops_scoped(tmp_path)
 
     done = sut.apply_move("persistent-kernel", [first, second], scope=kernel)
@@ -137,7 +138,7 @@ def test_two_consecutive_loops_run_as_one_persistent_kernel_and_compute_the_same
     assert sut.performance(*two_loops_data()).structured.correct is True
 
 
-def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_path):
+def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_path: Path) -> None:
     sut, kernel, first, second = two_loops_scoped(tmp_path)
     body = sut.kernel(kernel).standalone_sdfg
     inner = next(

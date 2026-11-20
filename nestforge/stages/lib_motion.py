@@ -163,8 +163,8 @@ def in_state_refusal(state: SDFGState, node: nodes.CodeNode, effect: Effect, ear
     nothing waiting for it, stays behind, and every other access that conflicts with it stays on the same side."""
     ordered = state.in_edges(node) if earlier else state.out_edges(node)
     if any(e.data.is_empty() for e in ordered):
-        side = "after" if earlier else "before"
-        return Refused(f"{node.label} is ordered {side} other nodes of {state.label} by empty edges.", Refusal.EFFECTS)
+        order = "after" if earlier else "before"
+        return Refused(f"{node.label} is ordered {order} other nodes of {state.label} by empty edges.", Refusal.EFFECTS)
     inputs = [e.src for e in state.in_edges(node) if not e.data.is_empty()]
     outputs = [e.dst for e in state.out_edges(node) if not e.data.is_empty()]
     if any(state.in_degree(n) != 1 for n in outputs):
@@ -191,7 +191,7 @@ def accessed_beside(state: SDFGState, node: nodes.CodeNode, names: frozenset[str
     for other in state.data_nodes():
         edges = state.in_edges(other) if writes else state.out_edges(other)
         if other.data in names and other not in outputs and any(not e.data.is_empty() for e in edges):
-            return other.data
+            return str(other.data)
     return None
 
 

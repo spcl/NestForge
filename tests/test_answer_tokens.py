@@ -6,8 +6,10 @@ import importlib.util
 import json
 import sys
 from types import ModuleType
+from typing import Any
 
 import pytest
+from hpcagent_agent.plugins import Plugin
 
 from nestforge.paths import REPO_ROOT
 from nestforge.server import Reply
@@ -23,11 +25,11 @@ def script() -> ModuleType:
     return module
 
 
-def assistant(*blocks: dict) -> str:
+def assistant(*blocks: dict[str, Any]) -> str:
     return json.dumps({"type": "assistant", "message": {"content": list(blocks)}})
 
 
-def test_a_transcript_gives_its_nestforge_calls_in_order_once_each():
+def test_a_transcript_gives_its_nestforge_calls_in_order_once_each() -> None:
     sut = script()
     lines = [
         assistant({"type": "tool_use", "id": "a", "name": "mcp__hpcagent__view_tree", "input": {"expand": ["s1"]}}),
@@ -44,14 +46,14 @@ def test_a_transcript_gives_its_nestforge_calls_in_order_once_each():
     assert calls == [("view_tree", {"expand": ["s1"]}), ("apply_move", {"kind": "tile-for", "labels": ["f"]})]
 
 
-def test_every_answer_is_re_sent_once_per_later_call():
+def test_every_answer_is_re_sent_once_per_later_call() -> None:
     sut = script()
 
     assert sut.resend_cost([10, 20, 30]) == 10 * 2 + 20 * 1
     assert sut.resend_cost([]) == 0
 
 
-def test_the_v1_answer_is_the_bench_mcp_text_of_the_route_answer():
+def test_the_v1_answer_is_the_bench_mcp_text_of_the_route_answer() -> None:
     sut = script()
 
     ok = sut.rendered_v1("list_moves", Reply(result=[{"kind": "tile-for", "labels": ["for3"]}]))
@@ -66,12 +68,12 @@ def test_the_v1_answer_is_the_bench_mcp_text_of_the_route_answer():
     assert json.loads(failed) == {"ok": False, "error": "apply_move: no row for9"}
 
 
-def test_counting_skips_timed_tools_unless_measured_and_counts_each_format():
+def test_counting_skips_timed_tools_unless_measured_and_counts_each_format() -> None:
     sut = script()
     calls = [("view_tree", {}), ("get_performance", {}), ("apply_move", {"kind": "rollback", "labels": []})]
     ran: list[str] = []
 
-    def run(tool: str, arguments: dict) -> Reply:
+    def run(tool: str, arguments: dict[str, Any]) -> Reply:
         ran.append(tool)
         return Reply(result=tool)
 
@@ -82,18 +84,18 @@ def test_counting_skips_timed_tools_unless_measured_and_counts_each_format():
     assert counted[1].call_tokens == len('{"name": "apply_move", "input": {"kind": "rollback", "labels": []}}')
 
 
-def test_the_scripts_answer_record_has_the_routes_fields(nestforge_plugin):
+def test_the_scripts_answer_record_has_the_routes_fields(nestforge_plugin: tuple[Plugin, ...]) -> None:
     sut = script()
     (route,) = [m for name, m in sys.modules.items() if name.endswith("routes.nestforge") and "ToolAnswer" in vars(m)]
 
     assert sut.ToolAnswer.model_fields.keys() == vars(route)["ToolAnswer"].model_fields.keys()
 
 
-def user(*blocks: dict) -> str:
+def user(*blocks: dict[str, Any]) -> str:
     return json.dumps({"type": "user", "message": {"content": list(blocks)}})
 
 
-def test_a_recorded_transcript_counts_every_tool_call_with_the_result_the_agent_read():
+def test_a_recorded_transcript_counts_every_tool_call_with_the_result_the_agent_read() -> None:
     sut = script()
     lines = [
         assistant({"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "sed -n 1,40p kernel.cpp"}}),
@@ -120,7 +122,7 @@ def test_a_recorded_transcript_counts_every_tool_call_with_the_result_the_agent_
     assert counted[0].call_tokens == len('{"name": "Bash", "input": {"command": "sed -n 1,40p kernel.cpp"}}')
 
 
-def test_shell_commands_count_as_read_edit_build_or_run():
+def test_shell_commands_count_as_read_edit_build_or_run() -> None:
     sut = script()
     kinds = {
         "cat kernel.cpp | head -50": "read",
@@ -136,14 +138,14 @@ def test_shell_commands_count_as_read_edit_build_or_run():
     assert {command: sut.shell_kind(command) for command in kinds} == kinds
 
 
-def test_an_unknown_tokenizer_name_is_refused_by_name():
+def test_an_unknown_tokenizer_name_is_refused_by_name() -> None:
     sut = script()
 
     with pytest.raises(ValueError, match="unknown tokenizer 'o200k'"):
         sut.token_counter("o200k")
 
 
-def test_o200k_base_counts_special_token_text_as_plain_text():
+def test_o200k_base_counts_special_token_text_as_plain_text() -> None:
     sut = script()
     tokens_of = sut.token_counter("o200k_base")
 
@@ -151,7 +153,7 @@ def test_o200k_base_counts_special_token_text_as_plain_text():
     assert tokens_of("<|endoftext|>") > 1
 
 
-def test_a_wrapped_command_counts_as_the_command_it_wraps():
+def test_a_wrapped_command_counts_as_the_command_it_wraps() -> None:
     sut = script()
 
     assert sut.shell_kind("nice -n 5 timeout 600 make -j4") == "build"

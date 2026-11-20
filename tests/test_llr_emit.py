@@ -6,6 +6,7 @@ references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose W
 
 import re
 import runpy
+from typing import Any
 
 import dace
 import numpy as np
@@ -13,10 +14,10 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg, run_emitted, sdfg_to_python
 
-from nestforge.stages.scopes import top_level_map_entries
+from nestforge.ir.names import top_level_map_entries
 
 
-def top_level_nest(sdfg: dace.SDFG):
+def top_level_nest(sdfg: dace.SDFG) -> tuple[dace.SDFG, LoopRegion | dace.nodes.MapEntry]:
     """The SDFG's first top-level compute unit (a loop region or a map) -- independent of stage 3's
     parallel-only scope policy, since this file exercises extraction/emission, not scope selection."""
     for block in sdfg.nodes():
@@ -29,7 +30,7 @@ def top_level_nest(sdfg: dace.SDFG):
     raise AssertionError(f"{sdfg.label}: no top-level compute nest found")
 
 
-def emit_and_call(key: str, sizes: dict, inputs: dict):
+def emit_and_call(key: str, sizes: dict[str, int], inputs: dict[str, np.ndarray | float]) -> tuple[dict[str, Any], str]:
     """Canonicalize + extract + emit ``key``, allocate every buffer C-style from the emitted signature,
     run it, return the call dict (buffers hold the results in place)."""
     kernel = corpus_kernel(key)
@@ -42,7 +43,7 @@ def emit_and_call(key: str, sizes: dict, inputs: dict):
     return call, src
 
 
-def test_ext_break_find_first_emits_break_and_stops():
+def test_ext_break_find_first_emits_break_and_stops() -> None:
     """BreakBlock -> ``break``: a[i] += b[i]*c[i] until the first d[i] < 0."""
     n = 40
     rng = np.random.default_rng(3)
@@ -63,7 +64,7 @@ def test_ext_break_find_first_emits_break_and_stops():
     np.testing.assert_allclose(call["a"][17:], a[17:], rtol=1e-12, atol=1e-12)  # untouched after
 
 
-def test_cond_reduce_sym_scalar_read_and_wcr():
+def test_cond_reduce_sym_scalar_read_and_wcr() -> None:
     """Size-1 buffer read as ``x[0]`` and WCR copy accumulates: out = sum of a[i] where a[i] > K."""
     n = 96
     kernel = corpus_kernel("cond_reduce_sym")
@@ -74,7 +75,7 @@ def test_cond_reduce_sym_scalar_read_and_wcr():
     np.testing.assert_allclose(float(np.ravel(acc)[0]), a[a > k_value].sum(), rtol=1e-12, atol=1e-12)
 
 
-def test_s318_strided_argmax_indexes_by_its_stride_and_matches_the_oracle():
+def test_s318_strided_argmax_indexes_by_its_stride_and_matches_the_oracle() -> None:
     """s318's ``a[k]`` with ``k += inc`` canonicalizes to an arg-reduction over ``a[0::inc]``; its expansion indexes
     ``a`` by the stride ``inc``, which stays an argument."""
     kernel = corpus_kernel("tsvc_2_s318")

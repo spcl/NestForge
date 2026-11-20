@@ -10,7 +10,7 @@ import inspect
 import re
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +19,7 @@ from typing import Any
 import dace
 import numpy as np
 import yaml
-from dace import symbolic
+from dace import SDFG, symbolic
 from dace.libraries.standard.nodes.external_call import ExpandExternCall, ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
@@ -71,7 +71,7 @@ def corpus_kernel(name: str) -> CorpusKernel:
     return kernel
 
 
-def run(sdfg, inputs: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
+def run(sdfg: SDFG, inputs: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
     """Run ``sdfg`` on copies of ``inputs`` with ``N=n``; returns the buffers after the call."""
     bufs = {k: v.copy() for k, v in inputs.items()}
     sdfg(**bufs, N=n)
@@ -95,7 +95,7 @@ def signature_order(text: str, symbol: str, lang: str = "c") -> list[str]:
     return [p.strip().split()[-1].lstrip("*") for p in params.split(",") if p.strip() and p.strip() != "void"]
 
 
-def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData]:
+def scalar_ctype(sdfg: dace.SDFG, name: str) -> type[ctypes._SimpleCData[Any]]:
     """ctype of a by-value argument: a float is ``c_double``, any integer ``int64_t`` whatever its SDFG width,
     since a narrower c_int leaves the upper register half undefined."""
     if name in sdfg.symbols and np.dtype(sdfg.symbols[name].type).kind == "f":
@@ -126,12 +126,14 @@ def sdfg_to_python(sdfg: dace.SDFG, fn_name: str = "kernel") -> tuple[str, dace.
     return render(fn_name, args, lowered), lowered
 
 
-def run_emitted(source: str, fn_name: str, lowered: dace.SDFG, inputs: dict, sizes: dict[str, int]) -> dict:
+def run_emitted(
+    source: str, fn_name: str, lowered: dace.SDFG, inputs: Mapping[str, np.ndarray | float], sizes: dict[str, int]
+) -> dict[str, Any]:
     """Call an emitted kernel C-style: every buffer its signature names is allocated here, from ``inputs`` (cast and
     reshaped to the descriptor; a scalar is a 1-element buffer) or zeroed; returns the buffers after the call."""
     kernel = vars(load_emitted(source, fn_name))[fn_name]
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
-    call = {}
+    call: dict[str, Any] = {}
     for name in inspect.signature(kernel).parameters:
         if name in sizes or name not in lowered.arrays:  # a symbol, by value
             call[name] = sizes[name] if name in sizes else inputs[name]

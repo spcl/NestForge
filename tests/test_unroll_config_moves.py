@@ -5,9 +5,11 @@
 
 import pathlib
 import tempfile
+from pathlib import Path
 
 import dace
 import numpy as np
+from dace.frontend.python.parser import DaceProgram
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
@@ -22,43 +24,43 @@ SIZE = 6
 
 
 @dace.program
-def short_scan(a: dace.float64[8]):
+def short_scan(a: dace.float64[8]) -> None:
     for k in range(1, 4):
         a[k] = a[k - 1] + a[k]
 
 
 @dace.program
-def long_scan(a: dace.float64[24]):
+def long_scan(a: dace.float64[24]) -> None:
     for k in range(1, 20):
         a[k] = a[k - 1] + a[k]
 
 
 @dace.program
-def sized_scan(a: dace.float64[N]):
+def sized_scan(a: dace.float64[N]) -> None:
     for k in range(1, N):
         a[k] = a[k - 1] + a[k]
 
 
 @dace.program
-def short_scale(a: dace.float64[4], b: dace.float64[4]):
+def short_scale(a: dace.float64[4], b: dace.float64[4]) -> None:
     for i in dace.map[0:4]:
         b[i] = 2.0 * a[i]
 
 
 @dace.program
-def long_scale(a: dace.float64[20], b: dace.float64[20]):
+def long_scale(a: dace.float64[20], b: dace.float64[20]) -> None:
     for i in dace.map[0:20]:
         b[i] = 2.0 * a[i]
 
 
 @dace.program
-def sized_scale(a: dace.float64[N], b: dace.float64[N]):
+def sized_scale(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = 2.0 * a[i]
 
 
 @dace.program
-def scale_then_shift(a: dace.float64[4], b: dace.float64[4]):
+def scale_then_shift(a: dace.float64[4], b: dace.float64[4]) -> None:
     tmp = np.empty_like(a)
     for i in dace.map[0:4]:
         tmp[i] = 2.0 * a[i]
@@ -67,13 +69,13 @@ def scale_then_shift(a: dace.float64[4], b: dace.float64[4]):
 
 
 @dace.program
-def repeat(a: dace.float64[N]):
+def repeat(a: dace.float64[N]) -> None:
     for k in range(K):
         for i in dace.map[0:N]:
             a[i] = a[i] * 0.5 + 1.0
 
 
-def session(program, tmp_path: pathlib.Path) -> Session:
+def session(program: DaceProgram, tmp_path: pathlib.Path) -> Session:
     return Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path))
 
 
@@ -107,7 +109,7 @@ def repeated(a: np.ndarray, steps: int) -> np.ndarray:
 # unroll-for
 
 
-def test_a_constant_loop_unrolls_into_one_body_copy_per_iteration(tmp_path):
+def test_a_constant_loop_unrolls_into_one_body_copy_per_iteration(tmp_path: Path) -> None:
     sut = session(short_scan, tmp_path)
     body = statements(sut.sdfg)
     (loop,) = labels_of(sut, LoopRegion)
@@ -124,7 +126,7 @@ def test_a_constant_loop_unrolls_into_one_body_copy_per_iteration(tmp_path):
     np.testing.assert_allclose(a, expected, rtol=1e-14)
 
 
-def test_a_loop_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(tmp_path):
+def test_a_loop_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(tmp_path: Path) -> None:
     sut = session(long_scan, tmp_path)
     (loop,) = labels_of(sut, LoopRegion)
 
@@ -136,7 +138,7 @@ def test_a_loop_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(tm
     assert loops(sut.sdfg) == []
 
 
-def test_a_loop_of_symbolic_trip_count_is_refused(tmp_path):
+def test_a_loop_of_symbolic_trip_count_is_refused(tmp_path: Path) -> None:
     sut = session(sized_scan, tmp_path)
     (loop,) = labels_of(sut, LoopRegion)
 
@@ -149,7 +151,7 @@ def test_a_loop_of_symbolic_trip_count_is_refused(tmp_path):
 # unroll-doall
 
 
-def test_a_constant_doall_unrolls_into_one_body_copy_per_iteration(tmp_path):
+def test_a_constant_doall_unrolls_into_one_body_copy_per_iteration(tmp_path: Path) -> None:
     sut = session(short_scale, tmp_path)
     tasklets = count(sut.sdfg, nodes.Tasklet)
     (doall,) = labels_of(sut, nodes.MapEntry)
@@ -164,7 +166,7 @@ def test_a_constant_doall_unrolls_into_one_body_copy_per_iteration(tmp_path):
     np.testing.assert_allclose(b, 2.0 * a, rtol=0, atol=0)
 
 
-def test_a_doall_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(tmp_path):
+def test_a_doall_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(tmp_path: Path) -> None:
     sut = session(long_scale, tmp_path)
     (doall,) = labels_of(sut, nodes.MapEntry)
 
@@ -176,7 +178,7 @@ def test_a_doall_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap(t
     assert count(sut.sdfg, nodes.MapEntry) == 0
 
 
-def test_a_doall_of_symbolic_range_is_refused(tmp_path):
+def test_a_doall_of_symbolic_range_is_refused(tmp_path: Path) -> None:
     sut = session(sized_scale, tmp_path)
     (doall,) = labels_of(sut, nodes.MapEntry)
 
@@ -186,7 +188,7 @@ def test_a_doall_of_symbolic_range_is_refused(tmp_path):
     assert count(sut.sdfg, nodes.MapEntry) == 1
 
 
-def test_a_doall_linked_to_another_computation_of_its_state_is_refused(tmp_path):
+def test_a_doall_linked_to_another_computation_of_its_state_is_refused(tmp_path: Path) -> None:
     sut = session(scale_then_shift, tmp_path)
     first, _ = labels_of(sut, nodes.MapEntry)
 
@@ -199,7 +201,7 @@ def test_a_doall_linked_to_another_computation_of_its_state_is_refused(tmp_path)
 # propagate-config
 
 
-def test_propagate_config_is_offered_on_no_row_only_when_there_is_a_value_to_give(tmp_path):
+def test_propagate_config_is_offered_on_no_row_only_when_there_is_a_value_to_give(tmp_path: Path) -> None:
     offered = session(repeat, tmp_path / "a").list_moves("propagate-config")
     fixed = session(short_scan, tmp_path / "b").list_moves("propagate-config")
 
@@ -207,7 +209,7 @@ def test_propagate_config_is_offered_on_no_row_only_when_there_is_a_value_to_giv
     assert fixed == []
 
 
-def test_propagate_config_dispatches_to_a_specialized_body_whose_constant_loop_then_unrolls(tmp_path):
+def test_propagate_config_dispatches_to_a_specialized_body_whose_constant_loop_then_unrolls(tmp_path: Path) -> None:
     sut = session(repeat, tmp_path)
 
     result = sut.apply_move("propagate-config", [], config_values={"K": 3})
@@ -227,7 +229,7 @@ def test_propagate_config_dispatches_to_a_specialized_body_whose_constant_loop_t
         np.testing.assert_allclose(b, repeated(a, steps), rtol=1e-14, err_msg=f"K={steps}")
 
 
-def test_propagate_config_keeps_the_signature_and_the_codegen_flags(tmp_path):
+def test_propagate_config_keeps_the_signature_and_the_codegen_flags(tmp_path: Path) -> None:
     sut = session(repeat, tmp_path)
     sut.canonicalize()
     names, reductions = list(sut.sdfg.arg_names), sut.sdfg.openmp_array_reductions
@@ -238,10 +240,10 @@ def test_propagate_config_keeps_the_signature_and_the_codegen_flags(tmp_path):
     assert (sut.sdfg.arg_names, sut.sdfg.openmp_array_reductions) == (names, reductions)
 
 
-def test_propagate_config_without_values_with_unknown_names_or_values_dace_refuses_is_illegal(tmp_path):
+def test_propagate_config_without_values_with_unknown_names_or_values_dace_refuses_is_illegal(tmp_path: Path) -> None:
     sut = session(repeat, tmp_path)
 
-    cases = {
+    cases: dict[str, dict[str, int | float]] = {
         "pass config_values": {},
         "['Q'] name no argument": {"Q": 1},
         "blocked by ConfigPropagation": {"a": 1.0},  # an array the program writes
@@ -253,7 +255,7 @@ def test_propagate_config_without_values_with_unknown_names_or_values_dace_refus
     assert conditionals(sut.sdfg) == []
 
 
-def test_propagate_config_is_closed_once_the_program_has_kernels(tmp_path):
+def test_propagate_config_is_closed_once_the_program_has_kernels(tmp_path: Path) -> None:
     sut = session(repeat, tmp_path)
     sut.run_defaults("scopes")
 
@@ -263,7 +265,7 @@ def test_propagate_config_is_closed_once_the_program_has_kernels(tmp_path):
     assert sut.list_moves("propagate-config") == []
 
 
-def test_undo_takes_propagate_config_back_to_the_program_before_it(tmp_path):
+def test_undo_takes_propagate_config_back_to_the_program_before_it(tmp_path: Path) -> None:
     sut = session(repeat, tmp_path)
     sut.apply_move("propagate-config", [], config_values={"K": 3})
     assert len(conditionals(sut.sdfg)) == 1
@@ -273,7 +275,7 @@ def test_undo_takes_propagate_config_back_to_the_program_before_it(tmp_path):
     assert conditionals(sut.sdfg) == [] and len(loops(sut.sdfg)) == 1
 
 
-def test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it(tmp_path):
+def test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it(tmp_path: Path) -> None:
     sut = Script(session(long_scan, tmp_path))
     (label,) = labels_of(sut.session, LoopRegion)
 

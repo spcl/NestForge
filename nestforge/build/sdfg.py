@@ -146,7 +146,10 @@ CUDA_CODEGEN = "experimental"
 
 def new_gpu_codegen() -> AbstractContextManager[object]:
     """Pin :data:`CUDA_CODEGEN`, whatever the environment or the config file chose."""
-    return dace.config.set_temporary("compiler", "cuda", "implementation", value=CUDA_CODEGEN)
+    pinned: AbstractContextManager[object] = dace.config.set_temporary(
+        "compiler", "cuda", "implementation", value=CUDA_CODEGEN
+    )
+    return pinned
 
 
 def kernel_sdfgs(sdfg: dace.SDFG) -> Iterator[dace.SDFG]:
@@ -187,7 +190,7 @@ def array_bytes(desc: Array, sizes: Mapping[str, SymbolValue]) -> int | None:
             count *= int(dace.symbolic.evaluate(extent, values))
         except (TypeError, ValueError, KeyError):
             return None
-    return count * desc.dtype.bytes
+    return count * int(desc.dtype.bytes)
 
 
 def persistent_candidates(
@@ -235,7 +238,7 @@ def force_register_arrays(sdfg: dace.SDFG, kernels: bool = True) -> int:
     constant size are pinned to ``Register(force=True)``, so they stay on the stack; a host array whose size names a
     symbol is a heap allocation, never a variable-length array of the problem's size (CloudSC's kernels held
     megabytes of them). Returns how many."""
-    pinned = force_map_scoped_registers(sdfg)
+    pinned: int = force_map_scoped_registers(sdfg)
     for owned, scope_default in [
         *((s, False) for s in sdfg.all_sdfgs_recursive()),
         *((s, True) for s in (kernel_sdfgs(sdfg) if kernels else ())),
@@ -436,7 +439,7 @@ def build_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Path:
         with dace.config.set_temporary("compiler", "linker", "args", value=" ".join(arg for arg in linker_args if arg)):
             sdfg.compile(return_program_handle=False)
     folder_mode = dace_compiler.get_folder_mode(sdfg.build_folder, probe=True)
-    return dace_compiler.get_binary_name(sdfg.build_folder, sdfg.name, folder_mode=folder_mode)
+    return Path(dace_compiler.get_binary_name(sdfg.build_folder, sdfg.name, folder_mode=folder_mode))
 
 
 def compile_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Any:

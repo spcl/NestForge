@@ -5,6 +5,7 @@ bound with its value: ``symbol_inputs`` keeps it, and the built program receives
 integer (spcl/NestForge#61)."""
 
 import ctypes
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -37,7 +38,7 @@ def scale_by_symbol() -> dace.SDFG:
     return sdfg
 
 
-def test_a_float_scalar_input_that_is_a_symbol_binds_it():
+def test_a_float_scalar_input_that_is_a_symbol_binds_it() -> None:
     sdfg = scale_by_symbol()
     inputs = {"thr": np.asarray(THRESHOLD), "a": np.zeros(N), "N": np.asarray(N)}
 
@@ -47,13 +48,15 @@ def test_a_float_scalar_input_that_is_a_symbol_binds_it():
     assert type(sizes["thr"]) is float and type(sizes["N"]) is int
 
 
-def test_a_symbol_is_passed_in_its_own_c_type():
-    assert symbol_argument(ctypes.c_double, THRESHOLD).value == THRESHOLD
-    assert symbol_argument(ctypes.c_int64, 3).value == 3
-    assert bind_argument("thr", ctypes.c_double, {}, {"thr": THRESHOLD}).value == THRESHOLD
+def test_a_symbol_is_passed_in_its_own_c_type() -> None:
+    as_double, as_int = symbol_argument(ctypes.c_double, THRESHOLD), symbol_argument(ctypes.c_int64, 3)
+    bound = bind_argument("thr", ctypes.c_double, {}, {"thr": THRESHOLD})
+    assert isinstance(as_double, ctypes.c_double) and as_double.value == THRESHOLD
+    assert isinstance(as_int, ctypes.c_int64) and as_int.value == 3
+    assert isinstance(bound, ctypes.c_double) and bound.value == THRESHOLD
 
 
-def test_the_built_program_receives_the_float_symbol(tmp_path):
+def test_the_built_program_receives_the_float_symbol(tmp_path: Path) -> None:
     built = build_sdfg(scale_by_symbol(), tmp_path)
     params = {p.name: p.ctype for p in built.prog_params}
     a = np.arange(N, dtype=np.float64)

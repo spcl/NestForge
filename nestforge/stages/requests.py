@@ -109,7 +109,8 @@ def runnable(program: DaceProgram, namespace: dict[str, Any]) -> Callable[..., A
     for name, value in list(namespace.items()):
         if isinstance(value, dace.symbolic.symbol):
             namespace[name] = EXAMPLE_SIZE
-    return program.f
+    function: Callable[..., Any] = program.f
+    return function
 
 
 def outputs_match(

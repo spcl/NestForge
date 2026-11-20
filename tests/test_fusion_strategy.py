@@ -7,17 +7,17 @@ agent's move-by-move policy agree.
 
 import dace
 import numpy as np
+from dace import SDFG
 from dace.sdfg import nodes
 from helpers import fission_to_fixpoint, fusion_moves
 
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 
 N = dace.symbol("N")
-f64 = dace.float64
 
 
 @dace.program
-def producer_consumer_maps(a: f64[N], b: f64[N]):
+def producer_consumer_maps(a: dace.float64[N], b: dace.float64[N]) -> None:
     tmp = np.empty_like(a)
     for i in dace.map[0:N]:
         tmp[i] = a[i] * 2.0
@@ -26,20 +26,20 @@ def producer_consumer_maps(a: f64[N], b: f64[N]):
 
 
 @dace.program
-def sibling_maps(a: f64[N], b: f64[N], c: f64[N]):
+def sibling_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = a[i] * 2.0
     for i in dace.map[0:N]:
         c[i] = a[i] + 1.0
 
 
-def map_count(sdfg):
+def map_count(sdfg: SDFG) -> int:
     return sum(
         isinstance(n, nodes.MapEntry) for sd in sdfg.all_sdfgs_recursive() for st in sd.states() for n in st.nodes()
     )
 
 
-def test_fuse_and_finish_folds_the_vertical_pair_canonicalize_left_to_it():
+def test_fuse_and_finish_folds_the_vertical_pair_canonicalize_left_to_it() -> None:
     """canonicalize stops before fusion, so a vertical producer/consumer pair stays two maps; fuse_and_finish folds it
     to one map with no legal fuse move remaining."""
     raw = producer_consumer_maps.to_sdfg(simplify=False)
@@ -54,7 +54,7 @@ def test_fuse_and_finish_folds_the_vertical_pair_canonicalize_left_to_it():
     assert fusion_moves(sdfg) == []
 
 
-def test_fuse_and_finish_redrains_legal_fusions_after_fission():
+def test_fuse_and_finish_redrains_legal_fusions_after_fission() -> None:
     """Fissioning a fused horizontal pair back apart reopens a legal move that fuse_and_finish re-drains."""
     sdfg = sibling_maps.to_sdfg(simplify=False)
     targets = Targets()
@@ -72,7 +72,7 @@ def test_fuse_and_finish_redrains_legal_fusions_after_fission():
     assert fusion_moves(sdfg) == []
 
 
-def test_fuse_and_finish_is_value_preserving():
+def test_fuse_and_finish_is_value_preserving() -> None:
     """Fusing must not change the vertical pair's numeric result."""
     rng = np.random.default_rng(0)
     inputs = {k: rng.random(48) for k in ("a", "b")}

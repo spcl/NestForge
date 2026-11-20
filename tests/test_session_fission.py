@@ -74,7 +74,7 @@ def enclosing_map(state: dace.SDFGState, node: nodes.Node) -> nodes.Node | None:
     return scope
 
 
-def test_two_statement_map_starts_as_one_map_two_statements():
+def test_two_statement_map_starts_as_one_map_two_statements() -> None:
     sdfg, state, me = two_statement_map()
     assert len(all_map_entries(sdfg)) == 1
     scope = state.scope_dict()
@@ -82,13 +82,13 @@ def test_two_statement_map_starts_as_one_map_two_statements():
     assert scope[tasklets["one"]] is me and scope[tasklets["two"]] is me
 
 
-def test_map_fission_is_listed_for_the_multi_output_map():
+def test_map_fission_is_listed_for_the_multi_output_map() -> None:
     session = Session(multi_statement_map_sdfg())
     (move,) = session.list_moves("doall-fission")
     assert move.labels == (all_map_entries(session.sdfg)[0].map.label,)
 
 
-def test_map_fission_splits_the_map_by_statement_and_retires_its_label_and_matches_numpy():
+def test_map_fission_splits_the_map_by_statement_and_retires_its_label_and_matches_numpy() -> None:
     session = Session(multi_statement_map_sdfg())
     assert len(all_map_entries(session.sdfg)) == 1
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from itertools import chain
 from math import prod
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import dace
 import sympy
@@ -273,6 +273,23 @@ def size_argument(kind: str) -> str:
     return "lanes" if kind in LANED else "block" if kind in BLOCKED else "tile_sizes"
 
 
+class SizeArguments(TypedDict, total=False):
+    """The one sizes keyword argument a move takes (:func:`size_argument`), for ``apply_move(**...)``."""
+
+    tile_sizes: tuple[int, ...]
+    lanes: tuple[int, ...]
+    block: tuple[int, ...]
+
+
+def size_arguments(kind: str, sizes: Sequence[int]) -> SizeArguments:
+    """``sizes`` as the keyword argument ``kind`` takes."""
+    if kind in LANED:
+        return {"lanes": tuple(sizes)}
+    if kind in BLOCKED:
+        return {"block": tuple(sizes)}
+    return {"tile_sizes": tuple(sizes)}
+
+
 def chosen_sizes(
     kind: str, tile_sizes: Sequence[int], lanes: Sequence[int], block: Sequence[int]
 ) -> tuple[int, ...] | Refused:
@@ -379,7 +396,7 @@ MAP_IF_REFUSED = (
 
 def tree_label(obj: Any) -> str:
     """The label a tree row prints for ``obj``."""
-    return obj.map.label if isinstance(obj, (nodes.MapEntry, nodes.MapExit)) else obj.label
+    return str(obj.map.label if isinstance(obj, (nodes.MapEntry, nodes.MapExit)) else obj.label)
 
 
 def check_kind(kind: str) -> str:
@@ -648,10 +665,16 @@ def plan_map_fission(row: Row) -> Rewrite | str:
         return Refused("the map body is one computation; there is nothing to split.", Refusal.WRONG_ROW_KIND)
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
-        move = pattern(MapFission, state.sdfg, where, expr_index=1)
-        if move is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
+        nested = pattern(MapFission, state.sdfg, where, expr_index=1)
+        if nested is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
             return MAP_FISSION_REFUSED
-        return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
+        nested_body = body.sdfg
+
+        def split() -> None:
+            group_statements(nested_body)
+            nested.commit()
+
+        return Rewrite(nested.name, split)
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
     move = pattern(MapFission, state.sdfg, {"map_entry": entry}, expr_index=0) if len(outputs) > 1 else None
     return move or MAP_FISSION_REFUSED
@@ -1450,7 +1473,7 @@ def ordered_side_effect_in(region: ControlFlowRegion) -> str | None:
     for node, parent in region.all_nodes_recursive():
         if isinstance(node, nodes.CodeNode) and isinstance(parent, SDFGState):
             if node.has_ordered_side_effects(parent.sdfg):
-                return node.label
+                return str(node.label)
     return None
 
 
@@ -2182,17 +2205,17 @@ def plan_move(
                 f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
             )
     if kind == VECTORIZE_DOALL:
-        return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
+        return plan_auto_vectorize(rows[0], tile_sizes=tile_sizes, isa=isa)
     if kind == SKEW_WAVEFRONT:
-        return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
+        return plan_skew_wavefront(rows[0], tile_sizes=tile_sizes, target=target)
     if kind == FOR_TO_DOALL:
-        return plan_for_to_doall(*rows, force=force)
+        return plan_for_to_doall(rows[0], force=force)
     if kind == SINK_INVARIANT_CODE:
-        return plan_sink_invariant_code(*rows, container=container)
+        return plan_sink_invariant_code(rows[0], container=container)
     if kind == SET_PIPELINE_DEPTH:
-        return plan_set_pipeline_depth(*rows, depth=depth)
+        return plan_set_pipeline_depth(rows[0], depth=depth)
     if kind == SET_SCHEDULE_CPU:
-        return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
+        return plan_set_schedule_cpu(rows[0], schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:

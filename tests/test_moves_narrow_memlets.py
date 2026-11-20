@@ -16,7 +16,7 @@ SIZE = 16
 
 
 @dace.program
-def row_recurrence(p0: dace.float64[N], p: dace.float64[N, N]):
+def row_recurrence(p0: dace.float64[N], p: dace.float64[N, N]) -> None:
     for i in range(N):
         p[i, 0] = p0[i]
     for j in range(1, N):
@@ -41,7 +41,7 @@ def assert_per_iteration(memlets: list[tuple[str, str]]) -> None:
     assert all(subset.startswith(f"{param}, ") for param, subset in memlets), memlets
 
 
-def test_the_nest_an_interchange_builds_gets_per_iteration_memlets():
+def test_the_nest_an_interchange_builds_gets_per_iteration_memlets() -> None:
     s = Session(row_recurrence.to_sdfg(simplify=True), targets=Targets(gpu=False), sizes={"N": SIZE})
     s.canonicalize()
     (move,) = s.list_moves("interchange-for-doall")

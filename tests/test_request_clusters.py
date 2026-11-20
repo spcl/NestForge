@@ -44,7 +44,7 @@ def asked(episode: str, kernel: str, name: str, examples: list[Example]) -> Aske
     return Asked(episode, kernel, Request(name=name, description=name, rows=("doall0",), examples=examples))
 
 
-def test_requests_whose_examples_differ_in_names_and_constants_are_one_cluster_and_another_is_its_own():
+def test_requests_whose_examples_differ_in_names_and_constants_are_one_cluster_and_another_is_its_own() -> None:
     first = asked("e1", "jacobi_1d", "reciprocal", [reciprocal("a", "b", "N", 2.0), reciprocal("a", "b", "N", 4.0)])
     renamed = asked("e2", "gemver", "times-inverse", [reciprocal("u", "v", "M", 8.0), reciprocal("u", "v", "M", 16.0)])
     other = asked("e3", "jacobi_1d", "square", [squared("a", "b", "N", 1.0), squared("a", "b", "N", 2.0)])
@@ -55,7 +55,7 @@ def test_requests_whose_examples_differ_in_names_and_constants_are_one_cluster_a
     assert clusters[0].kernels == {"jacobi_1d", "gemver"} and clusters[0].failed == []
 
 
-def test_the_script_reads_request_files_and_reports_a_broken_example(tmp_path: Path):
+def test_the_script_reads_request_files_and_reports_a_broken_example(tmp_path: Path) -> None:
     broken = Example(before="this is not python", after="neither")
     calls = [
         {

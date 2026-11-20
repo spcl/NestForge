@@ -3,6 +3,9 @@
 """``tune_move``: a tiling move tried at several sizes in one call, each measured; the fastest size that beats the
 program is kept, and with none the program stays, so the agent never tiles, untiles and tiles again."""
 
+from pathlib import Path
+from typing import Any
+
 import dace
 import numpy as np
 import pytest
@@ -16,12 +19,12 @@ SIZE = 64
 
 
 @dace.program
-def doubled(a: dace.float64[N], b: dace.float64[N]):
+def doubled(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = 2.0 * a[i] + 1.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(doubled.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -49,7 +52,7 @@ def timed_by_tile_size(monkeypatch: pytest.MonkeyPatch, times_us: dict[int, floa
     (0: untiled), read from the program's map steps, so which size wins does not depend on this machine."""
     measured = Session.performance
 
-    def performance(self: Session, *args, **kwargs) -> Performance:
+    def performance(self: Session, *args: Any, **kwargs: Any) -> Performance:
         report = measured(self, *args, **kwargs)
         time_us = times_us[tile_size(self.sdfg)]
         return report.model_copy(update={"structured": report.structured.model_copy(update={"time_us": time_us})})
@@ -57,7 +60,9 @@ def timed_by_tile_size(monkeypatch: pytest.MonkeyPatch, times_us: dict[int, floa
     monkeypatch.setattr(Session, "performance", performance)
 
 
-def test_without_a_faster_size_every_try_is_measured_and_the_program_stays(tmp_path, monkeypatch):
+def test_without_a_faster_size_every_try_is_measured_and_the_program_stays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     (move,) = sut.list_moves("tile-doall")
     tree, applied = sut.describe(), len(sut.applied)
@@ -74,7 +79,9 @@ def test_without_a_faster_size_every_try_is_measured_and_the_program_stays(tmp_p
     assert sut.describe() == tree and len(sut.applied) == applied, "a tie keeps the program"
 
 
-def test_the_fastest_size_that_beats_the_program_is_kept_and_rollback_takes_it_back(tmp_path, monkeypatch):
+def test_the_fastest_size_that_beats_the_program_is_kept_and_rollback_takes_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     (move,) = sut.list_moves("tile-doall")
     tree = sut.describe()
@@ -88,7 +95,7 @@ def test_the_fastest_size_that_beats_the_program_is_kept_and_rollback_takes_it_b
     assert sut.describe() == tree
 
 
-def test_only_a_correct_measured_size_faster_than_a_correct_program_wins():
+def test_only_a_correct_measured_size_faster_than_a_correct_program_wins() -> None:
     now = TunedValue(status="now", time_us=10.0, correct=True)
 
     assert fastest_beating([now, TunedValue(sizes=(8,), status="measured", time_us=5.0, correct=True)]) == 1
@@ -105,7 +112,7 @@ def test_only_a_correct_measured_size_faster_than_a_correct_program_wins():
     )
 
 
-def test_a_refused_size_is_reported_and_the_others_still_run(tmp_path, monkeypatch):
+def test_a_refused_size_is_reported_and_the_others_still_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sut = session(tmp_path)
     (move,) = sut.list_moves("tile-doall")
     timed_by_tile_size(monkeypatch, {0: 10.0, 8: 20.0})
@@ -116,7 +123,7 @@ def test_a_refused_size_is_reported_and_the_others_still_run(tmp_path, monkeypat
     assert result.values[1].reason
 
 
-def test_another_kind_or_too_many_sizes_is_refused_without_measuring(tmp_path):
+def test_another_kind_or_too_many_sizes_is_refused_without_measuring(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (move,) = sut.list_moves("tile-doall")
     many = [[2**k] for k in range(MAX_TUNED_VALUES + 1)]
@@ -127,7 +134,9 @@ def test_another_kind_or_too_many_sizes_is_refused_without_measuring(tmp_path):
     assert [v.status for v in other.values] == ["illegal"] and [v.status for v in too_many.values] == ["illegal"]
 
 
-def test_lanes_of_vectorize_doall_are_tried_in_the_argument_that_move_takes(tmp_path, monkeypatch):
+def test_lanes_of_vectorize_doall_are_tried_in_the_argument_that_move_takes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     (move,) = sut.list_moves("vectorize-doall")
     timed_by_tile_size(monkeypatch, {0: 10.0, 4: 20.0, 8: 20.0})  # a vector body steps by its lanes

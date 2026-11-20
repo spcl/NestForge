@@ -3,45 +3,48 @@
 """Lowering a nest to an ``ExternalCall`` and running it through the ``DaceReference`` expansion. The linked-library
 expansion is covered by ``test_variants_stage.py``."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 import pytest
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from helpers import bench_kernel, bench_manifest
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.corpus.translate import prepare
+from nestforge.corpus.translate import Prepared, prepare
 from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
 
 N = dace.symbol("N")
 
 
 @dace.program
-def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vadd(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         C[i] = A[i] + B[i]
 
 
 @dace.program
-def overwrite(A: dace.float64[N], B: dace.float64[N], X: dace.float64[N], C: dace.float64[N]):
+def overwrite(A: dace.float64[N], B: dace.float64[N], X: dace.float64[N], C: dace.float64[N]) -> None:
     X[:] = A + 1
     X[:] = B + 2
     C[:] = X * 3
 
 
 @dace.program
-def scale_in_place(A: dace.float64[N], B: dace.float64[N]):
+def scale_in_place(A: dace.float64[N], B: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         A[i] = A[i] * 2.0 + B[i]
 
 
-def reference_outputs(n):
+def reference_outputs(n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     A = np.random.default_rng(0).random(n)
     B = np.random.default_rng(1).random(n)
     return A, B, A + B
 
 
-def test_lower_inserts_external_call():
+def test_lower_inserts_external_call() -> None:
     sdfg = vadd.to_sdfg(simplify=True)
     lowered = lower_nests_to_external_call(sdfg)
     assert len(lowered) == 1
@@ -52,14 +55,16 @@ def test_lower_inserts_external_call():
     assert "def " in ext.numpy_source
 
 
-def test_an_ordering_edge_into_a_lowered_nest_gains_no_connector():
+def test_an_ordering_edge_into_a_lowered_nest_gains_no_connector() -> None:
     sdfg = overwrite.to_sdfg(simplify=True)
 
     lowered = lower_nests_to_external_call(sdfg)
 
+    assert all(boundary.state is not None for _, boundary in lowered), "a lowered kernel sits in a state"
     connectors = [
         conn
         for call, boundary in lowered
+        if boundary.state is not None
         for conn in (
             *call.in_connectors,
             *call.out_connectors,
@@ -71,6 +76,7 @@ def test_an_ordering_edge_into_a_lowered_nest_gains_no_connector():
     ordering = [
         (edge.src.data, call.label, edge.dst_conn)
         for call, boundary in lowered
+        if boundary.state is not None
         for edge in boundary.state.in_edges(call)
         if edge.data.is_empty()
     ]
@@ -78,7 +84,7 @@ def test_an_ordering_edge_into_a_lowered_nest_gains_no_connector():
 
 
 @pytest.mark.parametrize("program", [vadd, scale_in_place], ids=["plain", "in_place"])
-def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_from(program):
+def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_from(program: DaceProgram) -> None:
     sdfg = program.to_sdfg(simplify=True)
     ((ext, boundary),) = lower_nests_to_external_call(sdfg)
 
@@ -90,7 +96,7 @@ def test_a_kernel_node_alone_rebuilds_the_boundary_its_manifest_and_oracle_came_
     assert source == ext.numpy_source
 
 
-def test_dace_reference_runs_correctly():
+def test_dace_reference_runs_correctly() -> None:
     sdfg = vadd.to_sdfg(simplify=True)
     lower_nests_to_external_call(sdfg)  # default impl = DaceReference
     sdfg.expand_library_nodes()
@@ -103,11 +109,11 @@ def test_dace_reference_runs_correctly():
 
 
 @dace.program
-def scaley(A: dace.float64[N]):
+def scaley(A: dace.float64[N]) -> dace.float64[N]:
     return A * 2.0
 
 
-def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
+def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path: Path) -> None:
     sdfg = scaley.to_sdfg(simplify=True)
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert boundary.outputs == ["__return"]
@@ -125,18 +131,19 @@ def test_returning_kernel_survives_arena_oracle_and_manifest_matches(tmp_path):
     assert "__return" in prep.manifest["input_args"]
     sizes = {"N": 16}
     inputs = make_inputs(boundary, sizes)
-    out = run_oracle(prep, boundary, inputs, sizes)
+    oracle = Prepared(name=prep.name, numpy_source=prep.numpy_source, args=tuple(prep.manifest["input_args"]))
+    out = run_oracle(oracle, boundary, inputs, sizes)
     np.testing.assert_array_equal(out["__return"], inputs["A"] * 2.0)
 
 
-def inplace_lowered():
+def inplace_lowered() -> tuple[dace.SDFG, ExternalCall]:
     sdfg = scale_in_place.to_sdfg(simplify=True)
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
     assert "A" in boundary.inputs and "A" in boundary.outputs, "A must be read+written for this to test anything"
     return sdfg, ext
 
 
-def test_inplace_nest_reference_sdfg_declares_every_connector():
+def test_inplace_nest_reference_sdfg_declares_every_connector() -> None:
     """An array both read and written gets ``_in_`` and ``_out_`` connectors, and the reference expansion must
     declare both or nested-SDFG validation rejects it."""
     sdfg, ext = inplace_lowered()
@@ -148,7 +155,7 @@ def test_inplace_nest_reference_sdfg_declares_every_connector():
 
 
 @pytest.mark.integration  # compiles + runs the DaceReference expansion
-def test_inplace_nest_reference_expansion_is_value_preserving():
+def test_inplace_nest_reference_expansion_is_value_preserving() -> None:
     """The reference expansion must not just validate, it must still compute: the body works on ``_out_A``
     (the one pointer connector_for also hands the extern call for an in-place arg), which the parent aliases
     to the same AccessNode as ``_in_A``, so it carries the input values on entry."""
@@ -163,7 +170,7 @@ def test_inplace_nest_reference_expansion_is_value_preserving():
     np.testing.assert_allclose(got, expected, rtol=0, atol=0)
 
 
-def test_a_second_lowering_names_its_kernels_after_the_first():
+def test_a_second_lowering_names_its_kernels_after_the_first() -> None:
     """A kernel's name keys its library and work directory, so a map lowered later must not reuse one."""
     sdfg = vadd.to_sdfg(simplify=True)
     ((first, _),) = lower_nests_to_external_call(sdfg)

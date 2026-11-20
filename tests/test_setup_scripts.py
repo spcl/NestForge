@@ -18,7 +18,7 @@ SH_SCRIPTS = ["setup_apt.sh"]
 
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)
-def test_script_is_executable_and_syntactically_valid(name):
+def test_script_is_executable_and_syntactically_valid(name: str) -> None:
     p = SCRIPTS / name
     assert p.exists(), f"{name} is missing"
     assert p.stat().st_mode & 0o111, f"{name} is not executable"
@@ -27,20 +27,20 @@ def test_script_is_executable_and_syntactically_valid(name):
 
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)
-def test_script_help_exits_zero(name):
+def test_script_help_exits_zero(name: str) -> None:
     r = subprocess.run(["bash", str(SCRIPTS / name), "--help"], capture_output=True, text=True)
     assert r.returncode == 0, f"{name} --help exited {r.returncode}"
     assert r.stdout.strip(), f"{name} --help printed nothing"
 
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)
-def test_script_rejects_unknown_flag(name):
+def test_script_rejects_unknown_flag(name: str) -> None:
     r = subprocess.run(["bash", str(SCRIPTS / name), "--not-a-real-flag"], capture_output=True, text=True)
     assert r.returncode != 0, f"{name} accepted an unknown flag"
 
 
 @pytest.mark.parametrize("check", [["format", "--check"], ["check"]], ids=["format", "lint"])
-def test_committed_tree_is_ruff_clean(check):
+def test_committed_tree_is_ruff_clean(check: list[str]) -> None:
     """The pre-commit ruff hooks would leave the tree unchanged: formatted and lint-clean."""
     r = subprocess.run([sys.executable, "-m", "ruff", *check, str(REPO_ROOT)], capture_output=True, text=True)
     assert r.returncode == 0, f"ruff {' '.join(check)} failed -- run pre-commit run --all-files\n{r.stdout}{r.stderr}"
