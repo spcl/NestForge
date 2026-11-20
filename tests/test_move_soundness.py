@@ -3,12 +3,15 @@
 """A move that answers ``applied`` leaves a program that computes the same and still builds; one that cannot, is not
 offered."""
 
+from pathlib import Path
+from typing import Any
+
 import dace
 import numpy as np
 import pytest
+from dace.sdfg.performance_evaluation import work_depth
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.ir import introspect
 from nestforge.ir.introspect import guarded_work_depth
 from nestforge.ir.names import top_level_nsdfgs
 from nestforge.records import MoveStatus
@@ -20,7 +23,7 @@ SIZE = 12
 
 
 @dace.program
-def fission_then_overwrite(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N], d: dace.float64[N]):
+def fission_then_overwrite(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N], d: dace.float64[N]) -> None:
     for i in dace.map[1 : N - 1]:
         b[i] = c[i] * d[i]
         a[i] = c[i] + d[i]
@@ -28,7 +31,7 @@ def fission_then_overwrite(a: dace.float64[N], b: dace.float64[N], c: dace.float
 
 
 @dace.program
-def stops_early(a: dace.float64[N], b: dace.float64[N]):
+def stops_early(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = np.sin(a[i - 1]) + b[i]
         if a[i] > 1.2:
@@ -37,7 +40,7 @@ def stops_early(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def stencil_of_a_local(a: dace.float64[N], b: dace.float64[N]):
+def stencil_of_a_local(a: dace.float64[N], b: dace.float64[N]) -> None:
     w = np.zeros(N)
     for i in dace.map[0:N]:
         w[i] = a[i] * a[i]
@@ -46,7 +49,7 @@ def stencil_of_a_local(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def while_in_a_carried_loop(a: dace.float64[N], b: dace.int64[N]):
+def while_in_a_carried_loop(a: dace.float64[N], b: dace.int64[N]) -> None:
     for i in range(1, N):
         j = 0
         while j < i and a[j] < a[i - 1]:
@@ -55,7 +58,7 @@ def while_in_a_carried_loop(a: dace.float64[N], b: dace.int64[N]):
 
 
 @dace.program
-def two_sums(a: dace.float64[N], b: dace.float64[N], d: dace.float64[N]):
+def two_sums(a: dace.float64[N], b: dace.float64[N], d: dace.float64[N]) -> None:
     s = 0.0
     for i in dace.map[0:N]:
         s += a[i]
@@ -89,25 +92,25 @@ def largest_negative() -> dace.SDFG:
 
 
 @dace.program
-def stencil(a: dace.float64[N], b: dace.float64[N]):
+def stencil(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[1 : N - 1]:
         b[i] = a[i - 1] + a[i + 1]
 
 
 @dace.program
-def carried_rows(P: dace.float64[N, N], Q: dace.float64[N, N]):
+def carried_rows(P: dace.float64[N, N], Q: dace.float64[N, N]) -> None:
     for i in range(1, N - 1):
         for j in dace.map[1 : N - 1]:
             Q[i, j] = np.sin(Q[i - 1, j]) + P[i, j]
 
 
-def session(program: dace.frontend.python.parser.DaceProgram, tmp_path) -> Session:
+def session(program: dace.frontend.python.parser.DaceProgram, tmp_path: Path) -> Session:
     sut = Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
 
 
-def test_two_reduction_kernels_each_start_from_nothing_not_from_the_stack(tmp_path):
+def test_two_reduction_kernels_each_start_from_nothing_not_from_the_stack(tmp_path: Path) -> None:
     sut = session(two_sums, tmp_path)
     a, zero = np.arange(1.0, SIZE + 1), np.zeros(SIZE)
     expected = {"b": np.array([a.sum(), *zero[1:]]), "d": np.array([a.sum(), *zero[1:]])}
@@ -117,7 +120,7 @@ def test_two_reduction_kernels_each_start_from_nothing_not_from_the_stack(tmp_pa
     assert report.structured.error == "" and report.structured.correct is True, report.structured
 
 
-def test_a_max_kernel_of_negative_values_starts_below_them(tmp_path):
+def test_a_max_kernel_of_negative_values_starts_below_them(tmp_path: Path) -> None:
     sut = Session(largest_negative(), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     a, zero = -np.arange(1.0, SIZE + 1), np.zeros(SIZE)
@@ -128,7 +131,7 @@ def test_a_max_kernel_of_negative_values_starts_below_them(tmp_path):
     assert report.structured.error == "" and report.structured.correct is True, report.structured
 
 
-def test_doall_fission_leaves_no_nest_at_the_top_and_the_overwriting_map_runs_once(tmp_path):
+def test_doall_fission_leaves_no_nest_at_the_top_and_the_overwriting_map_runs_once(tmp_path: Path) -> None:
     sut = session(fission_then_overwrite, tmp_path)
     (move,) = sut.list_moves("doall-fission")
 
@@ -144,7 +147,7 @@ def test_doall_fission_leaves_no_nest_at_the_top_and_the_overwriting_map_runs_on
     np.testing.assert_array_equal(d, expected[0] + expected[1])
 
 
-def test_a_loop_with_a_break_is_not_offered_tile_for_and_refuses_it(tmp_path):
+def test_a_loop_with_a_break_is_not_offered_tile_for_and_refuses_it(tmp_path: Path) -> None:
     sut = session(stops_early, tmp_path)
     (loop,) = (row for row in sut.row_index() if row.startswith("for"))
 
@@ -152,7 +155,9 @@ def test_a_loop_with_a_break_is_not_offered_tile_for_and_refuses_it(tmp_path):
     assert sut.apply_move("tile-for", [loop], tile_sizes=[4]).status is MoveStatus.ILLEGAL
 
 
-def test_doall_fission_refuses_a_body_bound_to_an_expression_of_the_map_but_subgraph_fission_stays(tmp_path):
+def test_doall_fission_refuses_a_body_bound_to_an_expression_of_the_map_but_subgraph_fission_stays(
+    tmp_path: Path,
+) -> None:
     sut = session(stencil_of_a_local, tmp_path)
     (fusion,) = sut.list_moves("doall-fusion")
     assert sut.apply_move("doall-fusion", fusion.labels).reason == "OTFMapFusion"
@@ -162,7 +167,7 @@ def test_doall_fission_refuses_a_body_bound_to_an_expression_of_the_map_but_subg
     sut.sdfg.validate()
 
 
-def test_a_while_loop_inside_a_loop_gets_a_tree_without_costs_and_the_reason(tmp_path):
+def test_a_while_loop_inside_a_loop_gets_a_tree_without_costs_and_the_reason(tmp_path: Path) -> None:
     sut = session(while_in_a_carried_loop, tmp_path)
 
     tree = sut.describe(costs=True)
@@ -172,7 +177,7 @@ def test_a_while_loop_inside_a_loop_gets_a_tree_without_costs_and_the_reason(tmp
     assert "no work= or depth=" in tree
 
 
-def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path):
+def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path: Path) -> None:
     sut = session(stencil, tmp_path)
     for size in (4, 2):
         sut.apply_move("tile-doall", sut.list_moves("tile-doall")[-1].labels, tile_sizes=[size])
@@ -185,7 +190,7 @@ def test_a_doall_tiled_twice_keeps_list_moves_costs_and_the_result(tmp_path):
     np.testing.assert_array_equal(b[1:-1], a[:-2] + a[2:])
 
 
-def test_a_tiled_loop_over_a_map_is_not_offered_the_interchange_that_would_raise(tmp_path):
+def test_a_tiled_loop_over_a_map_is_not_offered_the_interchange_that_would_raise(tmp_path: Path) -> None:
     sut = session(carried_rows, tmp_path)
     assert sut.list_moves("interchange-for-doall")
     (tile,) = sut.list_moves("tile-for")[:1]
@@ -195,7 +200,7 @@ def test_a_tiled_loop_over_a_map_is_not_offered_the_interchange_that_would_raise
 
 
 @pytest.mark.parametrize(("name", "calls"), [("fission_dep_const_offset", 1)])
-def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls, tmp_path):
+def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name: str, calls: int, tmp_path: Path) -> None:
     kernel = corpus_kernel(name)
     assert kernel is not None
     sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
@@ -208,7 +213,7 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name, calls
     assert "no work= or depth=" in sut.describe(costs=True)
 
 
-def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
+def test_durbin_with_every_library_call_expanded_is_costed(tmp_path: Path) -> None:
     """A removed copy's WCR no longer lands on an ordering edge, which work-depth analysis failed on (DaCe
     5f57d89143): the whole tree carries costs."""
     kernel = corpus_kernel("durbin")
@@ -224,7 +229,7 @@ def test_durbin_with_every_library_call_expanded_is_costed(tmp_path):
     assert "work=" in tree and "depth=" in tree
 
 
-def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_path):
+def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_path: Path) -> None:
     kernel = corpus_kernel("gesummv")
     assert kernel is not None
     sut = Session(kernel.to_sdfg(), work_dir=str(tmp_path), sizes=preset_sizes(kernel, "S"))
@@ -236,12 +241,14 @@ def test_gesummv_fused_whole_is_not_offered_the_fission_that_would_raise(tmp_pat
         assert sut.apply_move("doall-fission", move.labels).status is MoveStatus.APPLIED
 
 
-def test_a_stop_iteration_out_of_sympys_sum_simplification_leaves_a_tree(tmp_path, monkeypatch):
-    def sum_add_failure(*args: object) -> None:
+def test_a_stop_iteration_out_of_sympys_sum_simplification_leaves_a_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def sum_add_failure(*args: Any) -> None:
         raise StopIteration  # sympy/simplify/simplify.py sum_add, on warpx_boris_push after tile-for
 
     sut = session(stencil, tmp_path)
-    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", sum_add_failure)
+    monkeypatch.setattr(work_depth, "analyze_sdfg", sum_add_failure)
     sut.bump()
 
     assert "no work= or depth=" in sut.describe(costs=True)

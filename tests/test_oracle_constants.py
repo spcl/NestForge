@@ -3,6 +3,8 @@
 """A kernel reading a constant of the program (cloudsc's ``zvqx``, read in its loop over the species) is checked
 against an oracle that knows the constant's value: the kernel's C source fixes it, so it is no argument of either."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 
@@ -33,7 +35,7 @@ def falling_species() -> dace.SDFG:
     return sdfg
 
 
-def test_a_kernel_reading_a_program_constant_matches_its_oracle(tmp_path):
+def test_a_kernel_reading_a_program_constant_matches_its_oracle(tmp_path: Path) -> None:
     sut = Session(falling_species(), Targets(gpu=False), work_dir=str(tmp_path), sizes={"N": 5})
     sut.canonicalize()
     sut.default_scopes()

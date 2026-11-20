@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -76,7 +77,7 @@ OMP_SONAMES = ("libgomp", "libomp", "libiomp5")
 COMPILERS = ("gcc", "clang", "icx")
 
 
-def linked_openmp_runtimes(so):
+def linked_openmp_runtimes(so: Path) -> set[str]:
     """The OpenMP runtimes in ``so``'s DT_NEEDED, as soname stems; libiomp5 may resolve to libomp."""
     out = subprocess.run(["readelf", "-d", str(so)], capture_output=True, text=True, check=True).stdout
     return {name for name in OMP_SONAMES if f"[{name}.so" in out}
@@ -87,19 +88,19 @@ def linked_openmp_runtimes(so):
 OMP_FORK_SYMBOLS = ("kmpc_fork", "GOMP_parallel")
 
 
-def emits_parallel_region(so):
+def emits_parallel_region(so: Path) -> bool:
     """Whether ``so`` calls into an OpenMP runtime: ``clang -fopenmp=libgomp`` links libgomp yet emits only
     ``__kmpc_*`` calls, which libgomp lacks, and runs serially with correct results."""
     out = subprocess.run(["nm", "-u", str(so)], capture_output=True, text=True, check=True).stdout
     return any(sym in out for sym in OMP_FORK_SYMBOLS)
 
 
-def available_compilers():
+def available_compilers() -> list[str]:
     """The C compilers present here. Never empty: the CI runner has gcc and clang."""
     return [cc for cc in COMPILERS if shutil.which(cc)]
 
 
-def build_cell(tmp_path, compiler, src=OMP_SRC, tag="k"):
+def build_cell(tmp_path: Path, compiler: str, src: str = OMP_SRC, tag: str = "k") -> Path:
     """Link one nest the way the owned build does: the OpenMP compile flags before the source, the libomp link
     flags after the object."""
     assert lib_linkable(LIBOMP, compiler), f"libomp is not linkable by {compiler} (setup_apt.sh installs libomp-dev)"
@@ -116,7 +117,7 @@ def build_cell(tmp_path, compiler, src=OMP_SRC, tag="k"):
     return so
 
 
-def test_every_compiler_links_the_same_single_runtime(tmp_path):
+def test_every_compiler_links_the_same_single_runtime(tmp_path: Path) -> None:
     """Across every available compiler, a cell links exactly one OpenMP runtime, the same for all: a bare -fopenmp
     links libgomp under gcc and libomp under clang. The global runtime is libomp, which the owned build resolves
     for gcc, clang and icx."""
@@ -131,7 +132,7 @@ def test_every_compiler_links_the_same_single_runtime(tmp_path):
     assert distinct == {"libomp"}, f"the single runtime must be libomp for every compiler: {seen}"
 
 
-def test_two_different_nests_from_two_compilers_share_one_runtime(tmp_path):
+def test_two_different_nests_from_two_compilers_share_one_runtime(tmp_path: Path) -> None:
     """Two unrelated nests (elementwise map + reduction), each built by a different compiler, as they would be
     when linked into one program. The union over the pair must still be one runtime."""
     compilers = available_compilers()
@@ -170,7 +171,7 @@ print(json.dumps({"a": a.tolist(), "total": float(total), "runtimes": mapped(), 
 """
 
 
-def run_both_in_a_clean_process(tmp_path, so_a, so_b, n):
+def run_both_in_a_clean_process(tmp_path: Path, so_a: Path, so_b: Path, n: int) -> dict[str, Any]:
     """Run both nests in a fresh interpreter and return its report (see :data:`RUN_BOTH_SRC`)."""
     script = tmp_path / "run_both.py"
     script.write_text(RUN_BOTH_SRC)
@@ -178,10 +179,11 @@ def run_both_in_a_clean_process(tmp_path, so_a, so_b, n):
         [sys.executable, str(script), str(so_a), str(so_b), str(n)], capture_output=True, text=True, timeout=120
     )
     assert proc.returncode == 0, f"running both nests together failed:\n{proc.stderr[-1500:]}"
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    report: dict[str, Any] = json.loads(proc.stdout.strip().splitlines()[-1])
+    return report
 
 
-def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_path):
+def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_path: Path) -> None:
     """One nest built by gcc and a different nest built by clang, loaded into one process and run -- sharing
     a single OpenMP runtime, and computing the right answer."""
     assert shutil.which("gcc") and shutil.which("clang"), (
@@ -203,7 +205,7 @@ def test_two_compilers_nests_run_together_on_one_runtime_and_match_numpy(tmp_pat
     np.testing.assert_allclose(res["total"], float(np.sum(expect_a * 2.0)), rtol=1e-12)
 
 
-def test_a_kmpc_compiler_on_libgomp_would_be_caught_not_silently_serialized(tmp_path):
+def test_a_kmpc_compiler_on_libgomp_would_be_caught_not_silently_serialized(tmp_path: Path) -> None:
     """The trap itself: clang emitting kmpc, linked against gomp-only libgomp, and emits_parallel_region
     sees the serialization. If this ever emits a fork call, libgomp gained a kmpc layer and the prune can
     be revisited -- deliberately."""
@@ -224,13 +226,13 @@ def test_a_kmpc_compiler_on_libgomp_would_be_caught_not_silently_serialized(tmp_
     )
 
 
-def symbol_names(command):
+def symbol_names(command: list[str]) -> set[str]:
     """The symbol names ``nm`` prints, without a symbol version suffix."""
     out = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     return {line.split()[-1].split("@")[0] for line in out.splitlines() if line.strip()}
 
 
-def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
+def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path: Path) -> None:
     """libomp serves g++ code through its GOMP compatibility layer. An entry a newer GCC emits that libomp lacks
     would fail at load time, so every OpenMP symbol the object leaves undefined must be a libomp export."""
     assert shutil.which("g++"), "no g++ on PATH (setup_apt.sh installs it)"
@@ -250,7 +252,7 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path):
     )
 
 
-def test_every_link_search_path_is_paired_with_an_rpath():
+def test_every_link_search_path_is_paired_with_an_rpath() -> None:
     """A ``-L`` without its ``-Wl,-rpath`` links, but the library then fails to load without LD_LIBRARY_PATH."""
     package = Path(nestforge.__file__).parent
     offenders = []

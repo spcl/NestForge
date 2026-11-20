@@ -137,6 +137,7 @@ def copy_slice(state: SDFGState, entry: nodes.MapEntry, read: SliceRead) -> str:
     sdfg = state.sdfg
     ranges = dict(zip(entry.map.params, entry.map.range.ranges, strict=True))
     sizes = [symbolic.simplify(ranges[param][1] - ranges[param][0] + 1) for _, param in read.walked]
+    name: str
     name, _ = sdfg.add_transient(read.data + SNAPSHOT_SUFFIX, sizes, sdfg.arrays[read.data].dtype, find_new_name=True)
     params = {f"{COPY_PARAM}{i}": f"0:{size}" for i, size in enumerate(sizes)}
     source: list[str] = [""] * len(sdfg.arrays[read.data].shape)

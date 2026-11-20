@@ -10,12 +10,13 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from typing import Any
 
 import dace
 import numpy as np
 import pytest
+from dace.codegen import compiler as dace_compiler
 
-import nestforge.build.sdfg as build_sdfg
 from nestforge.build import flags, toolchain
 from nestforge.build.arena import dtype_floor
 from nestforge.build.sdfg import BuiltSDFG, generate_program_folder, make_persistent
@@ -113,7 +114,7 @@ class CountingCDLL(ctypes.CDLL):
 
     lookups = 0
 
-    def __getitem__(self, name: str) -> object:
+    def __getitem__(self, name: str) -> Any:  # noqa: ANN401 -- CDLL's own entry type
         self.lookups += 1
         return super().__getitem__(name)
 
@@ -205,6 +206,6 @@ def test_a_missing_frame_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         (Path(out) / "src" / "cpu" / "other.cpp").write_text("// not the program\n")
         return out
 
-    monkeypatch.setattr(build_sdfg.dace_compiler, "generate_program_folder", other_frame)
+    monkeypatch.setattr(dace_compiler, "generate_program_folder", other_frame)
     with pytest.raises(FileNotFoundError, match=f"{sdfg.name}.cpp"):
         generate_program_folder(sdfg, tmp_path / "out")

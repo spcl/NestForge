@@ -34,8 +34,8 @@ def test_cudart_is_found_past_a_versioned_soname_by_a_probe_spelled_for_nvcc(tmp
 
 @pytest.mark.parametrize("api", sorted(RUNTIMES))
 def test_a_gpu_kernel_links_its_device_runtime_from_one_directory_it_finds_again_as_a_runpath(
-    tmp_path, monkeypatch, api
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api: str
+) -> None:
     monkeypatch.setattr(kernel_stage, "cudart_dir", lambda nvcc: RUNTIME_DIR)
     monkeypatch.setattr(kernel_stage, "hip_runtime_dir", lambda hipcc: RUNTIME_DIR)
     compiler, runtime = RUNTIMES[api]

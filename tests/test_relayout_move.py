@@ -3,6 +3,8 @@
 """``relayout``: the agent lays an argument out with one operation of the bench's requests; the program works on it
 laid out, is timed on data laid out as the harness lays it out, and hands the operations to the bench."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 
@@ -18,12 +20,12 @@ PERMUTE_A = {"action": "permute", "array": "A", "order": ["i1", "i0"]}
 
 
 @dace.program
-def scaled_transpose(A: dace.float64[N, M], B: dace.float64[M, N]):  # noqa: N803
+def scaled_transpose(A: dace.float64[N, M], B: dace.float64[M, N]) -> None:  # noqa: N803
     for i, j in dace.map[0:M, 0:N]:
         B[i, j] = 2.0 * A[j, i]
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(scaled_transpose.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes=SIZES)
     sut.canonicalize()
     return sut
@@ -41,7 +43,7 @@ def correct(sut: Session) -> bool:
     return report.structured.correct is True
 
 
-def test_a_permuted_argument_is_taken_laid_out_and_the_program_stays_correct(tmp_path):
+def test_a_permuted_argument_is_taken_laid_out_and_the_program_stays_correct(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     result = sut.apply_move(RELAYOUT, [], operation=PERMUTE_A)
@@ -52,7 +54,7 @@ def test_a_permuted_argument_is_taken_laid_out_and_the_program_stays_correct(tmp
     assert correct(sut)
 
 
-def test_a_laid_out_output_is_read_back_into_its_logical_shape(tmp_path):
+def test_a_laid_out_output_is_read_back_into_its_logical_shape(tmp_path: Path) -> None:
     sut = session(tmp_path)
     pad = {"action": "pad", "array": "B", "digit": "i1", "amount": 3}
 
@@ -63,7 +65,7 @@ def test_a_laid_out_output_is_read_back_into_its_logical_shape(tmp_path):
     assert correct(sut)
 
 
-def test_a_block_after_the_permute_names_the_digits_the_permute_left(tmp_path):
+def test_a_block_after_the_permute_names_the_digits_the_permute_left(tmp_path: Path) -> None:
     sut = session(tmp_path)
     block = {"action": "block", "array": "A", "digit": "i0", "factor": 4, "into": ["ib", "ii"]}
 
@@ -77,7 +79,7 @@ def test_a_block_after_the_permute_names_the_digits_the_permute_left(tmp_path):
     assert correct(sut)
 
 
-def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(tmp_path):
+def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(tmp_path: Path) -> None:
     sut = session(tmp_path)
     cast = {"action": "cast", "array": "A", "to": "fp32"}
 
@@ -88,10 +90,11 @@ def test_a_cast_argument_is_taken_at_its_new_precision_and_refused_at_finalize(t
     a = np.arange(30.0).reshape(6, 5)
     report = sut.performance({"A": a, "B": np.zeros((5, 6))}, Reference({"B": 2.0 * a.T}, 1e-6, 0.0), codegen="first")
     assert report.structured.error == "" and report.structured.correct is True, report.structured
-    assert layout_refusal(sut.layout) is not None and "cast" in layout_refusal(sut.layout)
+    refusal = layout_refusal(sut.layout)
+    assert refusal is not None and "cast" in refusal
 
 
-def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path):
+def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path: Path) -> None:
     sut = session(tmp_path)
     assert [(m.labels, m.operation) for m in sut.list_moves(RELAYOUT)] == [((), PERMUTE_A)]
     (other, *_) = sut.list_moves("unflatten-doall")
@@ -104,7 +107,7 @@ def test_relayout_is_listed_until_another_move_and_refused_after_it(tmp_path):
     assert sut.layout == ()
 
 
-def test_an_operation_on_no_argument_is_refused_with_the_arguments(tmp_path):
+def test_an_operation_on_no_argument_is_refused_with_the_arguments(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     refused = sut.apply_move(RELAYOUT, [], operation={"action": "permute", "array": "T", "order": ["i1", "i0"]})
@@ -113,7 +116,7 @@ def test_an_operation_on_no_argument_is_refused_with_the_arguments(tmp_path):
     assert sut.layout == () and sut.unlaid is None
 
 
-def test_rollback_takes_the_layout_back_with_the_program(tmp_path):
+def test_rollback_takes_the_layout_back_with_the_program(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.apply_move(RELAYOUT, [], operation=PERMUTE_A)
 
@@ -125,12 +128,14 @@ def test_rollback_takes_the_layout_back_with_the_program(tmp_path):
 
 
 @dace.program
-def scale(x: dace.float64[N], y: dace.float64[N]):
+def scale(x: dace.float64[N], y: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         y[i] = 2.0 * x[i]
 
 
-def test_the_listed_relayout_applies_as_listed_and_none_is_listed_without_a_two_dimensional_argument(tmp_path):
+def test_the_listed_relayout_applies_as_listed_and_none_is_listed_without_a_two_dimensional_argument(
+    tmp_path: Path,
+) -> None:
     sut = session(tmp_path)
     flat = Session(scale.to_sdfg(simplify=True), work_dir=str(tmp_path / "flat"), sizes=SIZES)
     flat.canonicalize()

@@ -12,16 +12,16 @@ from collections import Counter
 import dace
 import numpy as np
 import pytest
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.blas import Dot
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge.ir.names import normalize_labels
+from nestforge.ir.names import normalize_labels, top_level_map_entries
 from nestforge.records import MoveStatus, Refusal
 from nestforge.session import MoveResult, Session
-from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)
@@ -31,13 +31,13 @@ STEPS = 5
 
 
 @dace.program
-def recur(x: dace.float64[N], out: dace.float64[N]):
+def recur(x: dace.float64[N], out: dace.float64[N]) -> None:
     for i in range(1, N):
         out[i] = out[i - 1] + x[i]
 
 
 @dace.program
-def calls_then_loops(a: dace.float64[N], b: dace.float64[N], oa: dace.float64[N], ob: dace.float64[N]):
+def calls_then_loops(a: dace.float64[N], b: dace.float64[N], oa: dace.float64[N], ob: dace.float64[N]) -> None:
     recur(a, oa)
     recur(b, ob)
     for i in range(1, N):
@@ -47,7 +47,7 @@ def calls_then_loops(a: dace.float64[N], b: dace.float64[N], oa: dace.float64[N]
 
 
 @dace.program
-def two_loops(a: dace.float64[N], b: dace.float64[N]):
+def two_loops(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i - 1] + 1.0
     for i in range(1, N):
@@ -55,7 +55,7 @@ def two_loops(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def read_ahead(a: dace.float64[N], b: dace.float64[N]):
+def read_ahead(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N - 1):
         a[i] = a[i - 1] + 1.0
     for i in range(1, N - 1):
@@ -63,7 +63,7 @@ def read_ahead(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     tmp = np.empty_like(A)
     for i in dace.map[0:N]:
         tmp[i] = A[i] + B[i]
@@ -72,7 +72,7 @@ def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def two_indep(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
+def two_indep(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         C[i] = A[i] * 2.0
     for i in dace.map[0:N]:
@@ -80,48 +80,48 @@ def two_indep(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dac
 
 
 @dace.program
-def one_statement(a: dace.float64[N], b: dace.float64[N]):
+def one_statement(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
-def two_statements(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def two_statements(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = a[i] + 1.0
         c[i] = a[i] * 2.0
 
 
 @dace.program
-def nested(A: dace.float64[N, N], B: dace.float64[N, N]):
+def nested(A: dace.float64[N, N], B: dace.float64[N, N]) -> None:
     for i in dace.map[0:N]:
         for j in dace.map[0:N]:
             B[i, j] = A[i, j] * 2.0
 
 
 @dace.program
-def triangle(A: dace.float64[N, N], B: dace.float64[N, N]):
+def triangle(A: dace.float64[N, N], B: dace.float64[N, N]) -> None:
     for i in dace.map[0:N]:
         for j in dace.map[i:N]:
             B[i, j] = A[i, j] * 2.0
 
 
 @dace.program
-def sweep(A: dace.float64[T, N]):
+def sweep(A: dace.float64[T, N]) -> None:
     for t in range(1, T):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + 1.0
 
 
 @dace.program
-def lane_cross(A: dace.float64[T, N]):
+def lane_cross(A: dace.float64[T, N]) -> None:
     for t in range(1, T):
         for i in dace.map[1:N]:
             A[t, i] = A[t - 1, i - 1] + 1.0
 
 
 @dace.program
-def sweep_two_maps(A: dace.float64[T, N], B: dace.float64[T, N]):
+def sweep_two_maps(A: dace.float64[T, N], B: dace.float64[T, N]) -> None:
     for t in range(1, T):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + 1.0
@@ -130,7 +130,7 @@ def sweep_two_maps(A: dace.float64[T, N], B: dace.float64[T, N]):
 
 
 @dace.program
-def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]):
+def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]) -> None:
     for t in range(1, T):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + 1.0
@@ -139,14 +139,14 @@ def sweep_two_maps_crossing(A: dace.float64[T, N], B: dace.float64[T, N]):
 
 
 @dace.program
-def column_with_one_iteration(A: dace.float64[N, N], B: dace.float64[N, N]):
+def column_with_one_iteration(A: dace.float64[N, N], B: dace.float64[N, N]) -> None:
     for j in dace.map[0:N]:
         for k, jj in dace.map[0:N, j : j + 1]:
             B[k, jj] = A[k, jj] * 2.0
 
 
 @dace.program
-def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
+def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]) -> None:
     for t in range(1, T):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + 1.0
@@ -155,21 +155,21 @@ def sweep_then_scale(A: dace.float64[T, N], B: dace.float64[N]):
 
 
 @dace.program
-def two_recurrences(a: dace.float64[N], b: dace.float64[N]):
+def two_recurrences(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i - 1] + 1.0
         b[i] = b[i - 1] * 0.5
 
 
 @dace.program
-def coupled_recurrences(a: dace.float64[N], b: dace.float64[N]):
+def coupled_recurrences(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i - 1] + b[i - 1]
         b[i] = a[i] * 0.5
 
 
 @dace.program
-def long_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def long_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         t = a[i] * 2.0
         for k in range(3):
@@ -179,42 +179,42 @@ def long_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
 
 
 @dace.program
-def map_loop(A: dace.float64[T, N]):
+def map_loop(A: dace.float64[T, N]) -> None:
     for i in dace.map[0:N]:
         for t in range(1, T):
             A[t, i] = A[t - 1, i] + 1.0
 
 
 @dace.program
-def map_triangle_loop(A: dace.float64[N, N]):
+def map_triangle_loop(A: dace.float64[N, N]) -> None:
     for i in dace.map[0:N]:
         for t in range(i + 1, N):
             A[t, i] = A[t - 1, i] + 1.0
 
 
 @dace.program
-def guarded_loop(a: dace.float64[N]):
+def guarded_loop(a: dace.float64[N]) -> None:
     if K > 0:
         for i in range(1, N):
             a[i] = a[i - 1] + 1.0
 
 
 @dace.program
-def loop_guard(a: dace.float64[N]):
+def loop_guard(a: dace.float64[N]) -> None:
     for i in range(1, N):
         if K > 0:
             a[i] = a[i - 1] + 1.0
 
 
 @dace.program
-def loop_variant_guard(a: dace.float64[N]):
+def loop_variant_guard(a: dace.float64[N]) -> None:
     for i in range(1, N):
         if i > K:
             a[i] = a[i - 1] + 1.0
 
 
 @dace.program
-def steps_inside_a_map(A: dace.float64[N, T], C: dace.float64[N, T]):
+def steps_inside_a_map(A: dace.float64[N, T], C: dace.float64[N, T]) -> None:
     for i in dace.map[0:N]:
         for t in range(1, T):
             tmp = np.empty(T, dace.float64)
@@ -225,7 +225,7 @@ def steps_inside_a_map(A: dace.float64[N, T], C: dace.float64[N, T]):
 
 
 @dace.program
-def scale_in_place_then_read(A: dace.float64[N], B: dace.float64[N]):
+def scale_in_place_then_read(A: dace.float64[N], B: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         A[i] = A[i] * 2
     for i in dace.map[0:N]:
@@ -233,7 +233,7 @@ def scale_in_place_then_read(A: dace.float64[N], B: dace.float64[N]):
 
 
 @dace.program
-def scale_then_neighbors(A: dace.float64[N], B: dace.float64[N]):
+def scale_then_neighbors(A: dace.float64[N], B: dace.float64[N]) -> None:
     t = np.empty(N, dace.float64)
     for i in dace.map[0:N]:
         t[i] = A[i] * 2
@@ -242,7 +242,7 @@ def scale_then_neighbors(A: dace.float64[N], B: dace.float64[N]):
 
 
 @dace.program
-def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
+def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]) -> None:
     for i in dace.map[0:N]:
         S[0] += A[i] * 2
     for i in dace.map[0:N]:
@@ -250,21 +250,21 @@ def two_sums(A: dace.float64[N], S: dace.float64[1], R: dace.float64[1]):
 
 
 @dace.program
-def doall_under_guard(a: dace.float64[N], b: dace.float64[N]):
+def doall_under_guard(a: dace.float64[N], b: dace.float64[N]) -> None:
     if K > 0:
         for i in dace.map[0:N]:
             b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
-def guarded_map(a: dace.float64[N], b: dace.float64[N]):
+def guarded_map(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         if K > 0:
             b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
-def two_guarded_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def two_guarded_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         if K > 0:
             b[i] = a[i] * 2.0 + 1.0
@@ -274,7 +274,7 @@ def two_guarded_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N])
 
 
 @dace.program
-def parameter_guarded_map(a: dace.float64[N], b: dace.float64[N]):
+def parameter_guarded_map(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         if i > 2:
             b[i] = a[i] * 2.0 + 1.0
@@ -324,7 +324,7 @@ def map_writes(sdfg: dace.SDFG) -> list[list[str]]:
     )
 
 
-def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
+def session_and_reference(program: DaceProgram, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
     # one build folder per xdist worker: two workers compiling one program name race on it
     sdfg.name = f"{sdfg.name}_{os.getpid()}"
@@ -355,7 +355,7 @@ def assert_same_values(reference: dace.SDFG, moved: dace.SDFG, arrays: dict[str,
 # labels
 
 
-def test_a_helper_called_twice_repeats_labels_that_the_session_makes_unique():
+def test_a_helper_called_twice_repeats_labels_that_the_session_makes_unique() -> None:
     sdfg = calls_then_loops.to_sdfg(simplify=False)
     repeated = duplicate_labels(sdfg)
     assert "init" in repeated and any(label.startswith("for_") for label in repeated), repeated
@@ -365,7 +365,7 @@ def test_a_helper_called_twice_repeats_labels_that_the_session_makes_unique():
     assert duplicate_labels(sdfg) == {}
 
 
-def test_labels_stay_unique_after_a_fusion_move():
+def test_labels_stay_unique_after_a_fusion_move() -> None:
     sut, reference = session_and_reference(calls_then_loops, simplify=False)
     loop_count = len(loops(sut.sdfg))
 
@@ -377,7 +377,7 @@ def test_labels_stay_unique_after_a_fusion_move():
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), oa=(SIZE,), ob=(SIZE,)), N=SIZE)
 
 
-def test_a_session_keeps_the_labels_normalize_labels_already_gave():
+def test_a_session_keeps_the_labels_normalize_labels_already_gave() -> None:
     sdfg = sweep_then_scale.to_sdfg(simplify=True)
     normalize_labels(sdfg)
     labels = tree_labels(sdfg)
@@ -387,7 +387,7 @@ def test_a_session_keeps_the_labels_normalize_labels_already_gave():
     assert tree_labels(sdfg) == labels
 
 
-def test_library_calls_get_unique_kernel_family_labels_and_keep_name_equal_to_label():
+def test_library_calls_get_unique_kernel_family_labels_and_keep_name_equal_to_label() -> None:
     sdfg = dace.SDFG("two_dots")
     state = sdfg.add_state()
     first, second = Dot("dot"), Dot("dot")
@@ -402,12 +402,12 @@ def test_library_calls_get_unique_kernel_family_labels_and_keep_name_equal_to_la
     assert (first.name, second.name) == (first.label, second.label)
 
 
-def test_the_tree_names_its_program_on_the_first_line():
+def test_the_tree_names_its_program_on_the_first_line() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     assert sut.describe().splitlines()[0] == f"SDFG '{sut.sdfg.label}'"
 
 
-def test_listed_moves_name_rows_of_the_current_tree():
+def test_listed_moves_name_rows_of_the_current_tree() -> None:
     sut = Session(sweep_then_scale.to_sdfg(simplify=True))
     sut.expand([label for label, (obj, _) in sut.row_index().items() if isinstance(obj, SDFGState)])
     tree = sut.describe()
@@ -422,7 +422,7 @@ def test_listed_moves_name_rows_of_the_current_tree():
 # loop fusion
 
 
-def test_loop_fusion_merges_two_loops_into_one_that_writes_both_arrays():
+def test_loop_fusion_merges_two_loops_into_one_that_writes_both_arrays() -> None:
     sut, reference = session_and_reference(two_loops)
 
     result = apply_listed(sut, "for-fusion")
@@ -433,7 +433,7 @@ def test_loop_fusion_merges_two_loops_into_one_that_writes_both_arrays():
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,)), N=SIZE)
 
 
-def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing():
+def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing() -> None:
     sut = Session(read_ahead.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
@@ -447,7 +447,7 @@ def test_loop_fusion_that_would_read_ahead_is_illegal_and_changes_nothing():
 # map fusion
 
 
-def test_map_fusion_through_a_transient_is_vertical_and_leaves_one_map():
+def test_map_fusion_through_a_transient_is_vertical_and_leaves_one_map() -> None:
     sut, reference = session_and_reference(vertical_pair)
 
     result = apply_listed(sut, "doall-fusion")
@@ -457,7 +457,7 @@ def test_map_fusion_through_a_transient_is_vertical_and_leaves_one_map():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE,), B=(SIZE,), C=(SIZE,)), N=SIZE)
 
 
-def test_map_fusion_of_independent_siblings_is_horizontal_and_leaves_one_map():
+def test_map_fusion_of_independent_siblings_is_horizontal_and_leaves_one_map() -> None:
     sut, reference = session_and_reference(two_indep)
 
     result = apply_listed(sut, "doall-fusion")
@@ -468,7 +468,7 @@ def test_map_fusion_of_independent_siblings_is_horizontal_and_leaves_one_map():
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
-def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies():
+def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies() -> None:
     """``apply_move`` reaches rows in nested SDFGs, so ``list_moves`` must offer the moves found there too."""
     sut, reference = session_and_reference(steps_inside_a_map)
 
@@ -486,7 +486,9 @@ def test_a_map_fusion_inside_a_nested_sdfg_is_listed_and_applies():
         (two_sums, "MapFusionHorizontal"),
     ],
 )
-def test_map_fusion_fuses_in_place_on_the_fly_and_two_reductions_into_one_map(program, fusion):
+def test_map_fusion_fuses_in_place_on_the_fly_and_two_reductions_into_one_map(
+    program: DaceProgram, fusion: str
+) -> None:
     """In place: the first map updates the array the second reads. On the fly: the second reads a window of the
     first's output, recomputed per element. Two reductions: two nested bodies, each leaving through ``-wcr->``."""
     sut, reference = session_and_reference(program)
@@ -500,7 +502,7 @@ def test_map_fusion_fuses_in_place_on_the_fly_and_two_reductions_into_one_map(pr
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
-def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier():
+def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier() -> None:
     sut = Session(two_indep.to_sdfg(simplify=False))
     labels = [entry.label for entry in top_level_maps(sut.sdfg)]
     before = digest(sut.sdfg)
@@ -514,7 +516,7 @@ def test_map_fusion_across_states_is_illegal_and_names_the_state_barrier():
 # map fission
 
 
-def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_array():
+def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_array() -> None:
     sut, reference = session_and_reference(two_statements, simplify=False)
     assert map_writes(sut.sdfg) == [["b", "c"]]
 
@@ -528,7 +530,7 @@ def test_map_fission_splits_a_two_statement_map_into_maps_that_each_write_one_ar
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
 
 
-def test_map_fission_splits_a_flat_two_statement_map_by_its_outputs():
+def test_map_fission_splits_a_flat_two_statement_map_by_its_outputs() -> None:
     sut, reference = session_and_reference(two_statements)
     (entry,) = top_level_maps(sut.sdfg)
 
@@ -539,7 +541,7 @@ def test_map_fission_splits_a_flat_two_statement_map_by_its_outputs():
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
 
 
-def test_map_fission_of_a_flat_map_writing_one_array_is_illegal():
+def test_map_fission_of_a_flat_map_writing_one_array_is_illegal() -> None:
     sut = Session(one_statement.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
     before = digest(sut.sdfg)
@@ -550,7 +552,7 @@ def test_map_fission_of_a_flat_map_writing_one_array_is_illegal():
     assert digest(sut.sdfg) == before
 
 
-def test_map_fission_of_a_nested_body_of_one_computation_is_illegal():
+def test_map_fission_of_a_nested_body_of_one_computation_is_illegal() -> None:
     sut = Session(one_statement.to_sdfg(simplify=True))
     sut.canonicalize()
     (entry,) = top_level_maps(sut.sdfg)
@@ -560,7 +562,7 @@ def test_map_fission_of_a_nested_body_of_one_computation_is_illegal():
     assert result.status is MoveStatus.ILLEGAL and "one computation" in result.reason, result
 
 
-def test_canonicalization_leaves_every_map_body_one_nested_sdfg_and_a_reduction_outside_it():
+def test_canonicalization_leaves_every_map_body_one_nested_sdfg_and_a_reduction_outside_it() -> None:
     """``map { nested SDFG } -> access node -wcr->``: no tasklet beside the body, no reduction inside it."""
     sut = Session(two_sums.to_sdfg(simplify=True))
 
@@ -580,7 +582,7 @@ def test_canonicalization_leaves_every_map_body_one_nested_sdfg_and_a_reduction_
 # interchange
 
 
-def test_map_map_interchange_puts_the_inner_parameter_outside():
+def test_map_map_interchange_puts_the_inner_parameter_outside() -> None:
     sut, reference = session_and_reference(nested)
 
     result = apply_listed(sut, "interchange-doall-doall")
@@ -593,7 +595,7 @@ def test_map_map_interchange_puts_the_inner_parameter_outside():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def test_map_map_interchange_of_a_triangular_nest_is_illegal():
+def test_map_map_interchange_of_a_triangular_nest_is_illegal() -> None:
     sut = Session(triangle.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
@@ -603,7 +605,7 @@ def test_map_map_interchange_of_a_triangular_nest_is_illegal():
     assert digest(sut.sdfg) == before
 
 
-def test_naming_the_inner_map_first_is_illegal():
+def test_naming_the_inner_map_first_is_illegal() -> None:
     sut = Session(nested.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
@@ -613,7 +615,7 @@ def test_naming_the_inner_map_first_is_illegal():
     assert digest(sut.sdfg) == before
 
 
-def test_map_map_interchange_drops_the_one_iteration_dimension_that_reads_the_outer_parameter():
+def test_map_map_interchange_drops_the_one_iteration_dimension_that_reads_the_outer_parameter() -> None:
     sut, reference = session_and_reference(column_with_one_iteration)
     (outer,) = top_level_maps(sut.sdfg)
     state = next(st for st in sut.sdfg.states() if outer in st.nodes())
@@ -630,7 +632,7 @@ def test_map_map_interchange_drops_the_one_iteration_dimension_that_reads_the_ou
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def nested_in_body(program) -> tuple[Session, dace.SDFG]:
+def nested_in_body(program: DaceProgram) -> tuple[Session, dace.SDFG]:
     """A session on ``program`` whose inner map is wrapped in a nested SDFG of its own, and the program as it was."""
     sdfg = program.to_sdfg(simplify=True)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"
@@ -645,7 +647,7 @@ def nested_in_body(program) -> tuple[Session, dace.SDFG]:
     return Session(sdfg), reference
 
 
-def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map():
+def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map() -> None:
     sut, reference = nested_in_body(nested)
 
     result = apply_listed(sut, "interchange-doall-doall")
@@ -659,7 +661,7 @@ def test_map_map_interchange_reaches_the_map_in_the_nested_body_of_a_map():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def test_map_map_interchange_reaches_a_body_map_that_keeps_one_full_dimension_beside_a_one_iteration_one():
+def test_map_map_interchange_reaches_a_body_map_that_keeps_one_full_dimension_beside_a_one_iteration_one() -> None:
     sut, reference = nested_in_body(column_with_one_iteration)
 
     result = apply_listed(sut, "interchange-doall-doall")
@@ -672,7 +674,7 @@ def test_map_map_interchange_reaches_a_body_map_that_keeps_one_full_dimension_be
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal():
+def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal() -> None:
     sut, _ = nested_in_body(triangle)
     before = digest(sut.sdfg)
 
@@ -683,7 +685,7 @@ def test_map_map_interchange_into_a_nested_body_of_a_triangular_nest_is_illegal(
     assert sut.list_moves("interchange-doall-doall") == []
 
 
-def test_map_map_interchange_with_a_map_outside_the_body_names_the_body():
+def test_map_map_interchange_with_a_map_outside_the_body_names_the_body() -> None:
     sut, _ = nested_in_body(nested)
     before = digest(sut.sdfg)
 
@@ -693,7 +695,7 @@ def test_map_map_interchange_with_a_map_outside_the_body_names_the_body():
     assert digest(sut.sdfg) == before
 
 
-def test_loop_map_interchange_moves_the_loop_inside_the_map():
+def test_loop_map_interchange_moves_the_loop_inside_the_map() -> None:
     sut, reference = session_and_reference(sweep)
 
     result = apply_listed(sut, "interchange-for-doall")
@@ -707,7 +709,7 @@ def test_loop_map_interchange_moves_the_loop_inside_the_map():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal():
+def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal() -> None:
     sut = Session(lane_cross.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
@@ -717,7 +719,7 @@ def test_loop_map_interchange_that_would_cross_map_iterations_is_illegal():
     assert digest(sut.sdfg) == before
 
 
-def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
+def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal() -> None:
     sut = Session(sweep_then_scale.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     (outside,) = [n for n in top_level_maps(sut.sdfg) if all(n not in s.nodes() for s in loop.states())]
@@ -732,7 +734,7 @@ def test_loop_map_interchange_with_a_map_outside_the_loop_is_illegal():
 # loop fission
 
 
-def test_loop_fission_splits_independent_recurrences_into_one_loop_each():
+def test_loop_fission_splits_independent_recurrences_into_one_loop_each() -> None:
     sut, reference = session_and_reference(two_recurrences)
 
     result = apply_listed(sut, "for-fission")
@@ -743,7 +745,7 @@ def test_loop_fission_splits_independent_recurrences_into_one_loop_each():
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,)), N=SIZE)
 
 
-def test_loop_fission_of_coupled_recurrences_is_illegal_and_changes_nothing():
+def test_loop_fission_of_coupled_recurrences_is_illegal_and_changes_nothing() -> None:
     sut = Session(coupled_recurrences.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
@@ -759,7 +761,7 @@ def test_loop_fission_of_coupled_recurrences_is_illegal_and_changes_nothing():
 
 
 @pytest.mark.parametrize("cut", [0, 1])
-def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut):
+def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut: int) -> None:
     """The body is ``t = 2a; loop: t += a; b = t; c = b + t``: either cut hands ``t`` across, so it has to become
     one element per map iteration."""
     sut, reference = session_and_reference(long_body)
@@ -774,7 +776,7 @@ def test_subgraph_fission_splits_a_map_body_into_two_maps_at_the_named_block(cut
     assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,), b=(SIZE,), c=(SIZE,)), N=SIZE)
 
 
-def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing():
+def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing() -> None:
     sut = Session(long_body.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
     state = next(s for s in sut.sdfg.states() if entry in s.nodes())
@@ -791,7 +793,7 @@ def test_subgraph_fission_after_the_last_block_is_illegal_and_changes_nothing():
 # map-loop interchange
 
 
-def test_map_loop_interchange_puts_the_loop_outside_the_map():
+def test_map_loop_interchange_puts_the_loop_outside_the_map() -> None:
     sut, reference = session_and_reference(map_loop)
 
     result = apply_listed(sut, "interchange-doall-for")
@@ -803,7 +805,7 @@ def test_map_loop_interchange_puts_the_loop_outside_the_map():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-def test_map_loop_interchange_undoes_loop_map_interchange():
+def test_map_loop_interchange_undoes_loop_map_interchange() -> None:
     sut, reference = session_and_reference(sweep)
     apply_listed(sut, "interchange-for-doall")
 
@@ -814,7 +816,7 @@ def test_map_loop_interchange_undoes_loop_map_interchange():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_illegal():
+def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_illegal() -> None:
     """Each map iteration would run a different trip count, which one loop outside the map cannot express."""
     sut = Session(map_triangle_loop.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
@@ -827,7 +829,7 @@ def test_map_loop_interchange_of_a_loop_whose_bound_reads_the_map_parameter_is_i
     assert digest(sut.sdfg) == before
 
 
-def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile_map():
+def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile_map() -> None:
     """A tile's point map sits inside the tile map, so MapLoopInterchange cannot split its state; the move nests the
     point map first. Result: tile doall, then the loop, then the point doall (tsvc_2_s233, fuse_physics_into_scan)."""
     sut, reference = session_and_reference(map_loop)
@@ -848,7 +850,7 @@ def test_the_loop_moves_out_of_the_point_map_of_a_tile_and_stays_inside_the_tile
 # sink-invariant-guard
 
 
-def test_a_guard_moves_into_the_loop_it_guards():
+def test_a_guard_moves_into_the_loop_it_guards() -> None:
     sut, reference = session_and_reference(guarded_loop)
 
     result = apply_listed(sut, "sink-invariant-guard")
@@ -860,7 +862,7 @@ def test_a_guard_moves_into_the_loop_it_guards():
 
 
 @pytest.mark.parametrize("k", [0, 3])
-def test_a_guard_over_a_doall_moves_into_its_body(k):
+def test_a_guard_over_a_doall_moves_into_its_body(k: int) -> None:
     sut, reference = session_and_reference(doall_under_guard)
 
     result = apply_listed(sut, "sink-invariant-guard")
@@ -873,7 +875,7 @@ def test_a_guard_over_a_doall_moves_into_its_body(k):
     assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
 
 
-def test_a_loop_invariant_guard_moves_out_of_its_loop():
+def test_a_loop_invariant_guard_moves_out_of_its_loop() -> None:
     sut, reference = session_and_reference(loop_guard)
 
     result = apply_listed(sut, "hoist-invariant-guard")
@@ -884,7 +886,7 @@ def test_a_loop_invariant_guard_moves_out_of_its_loop():
         assert_same_values(reference, sut.sdfg, random_arrays(a=(SIZE,)), N=SIZE, K=k)
 
 
-def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
+def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop() -> None:
     sut = Session(loop_variant_guard.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
@@ -900,7 +902,7 @@ def test_a_guard_that_reads_the_loop_variable_cannot_leave_the_loop():
 
 
 @pytest.mark.parametrize("k", [0, 3])
-def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k):
+def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k: int) -> None:
     sut, reference = session_and_reference(guarded_map)
     (move,) = sut.list_moves("hoist-invariant-guard")
 
@@ -914,7 +916,7 @@ def test_a_guard_that_does_not_read_the_doall_parameter_moves_above_the_doall(k)
     assert_same_values(reference, sut.sdfg, {"a": a, "b": b}, N=SIZE, K=k)
 
 
-def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
+def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone() -> None:
     sut, reference = session_and_reference(two_guarded_maps)
 
     for applied in (1, 2):
@@ -933,7 +935,7 @@ def test_each_of_two_guarded_doalls_moves_above_its_own_guard_alone():
         assert_same_values(reference, sut.sdfg, arrays, N=SIZE, K=k)
 
 
-def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
+def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it() -> None:
     sut = Session(parameter_guarded_map.to_sdfg(simplify=True))
     labels = [m.labels for m in sut.list_moves("hoist-invariant-guard")]
     (entry,) = [n for n, _ in sut.sdfg.all_nodes_recursive() if isinstance(n, nodes.MapEntry)]
@@ -949,7 +951,7 @@ def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it():
 # refusals that never touch the graph
 
 
-def test_an_unknown_label_is_not_found_and_changes_nothing():
+def test_an_unknown_label_is_not_found_and_changes_nothing() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     before = digest(sut.sdfg)
 
@@ -959,7 +961,7 @@ def test_an_unknown_label_is_not_found_and_changes_nothing():
     assert digest(sut.sdfg) == before
 
 
-def test_labels_a_move_retired_are_refused_and_change_nothing():
+def test_labels_a_move_retired_are_refused_and_change_nothing() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     (move,) = sut.list_moves("doall-fusion")
     sut.apply_move(move.kind, move.labels)
@@ -971,7 +973,7 @@ def test_labels_a_move_retired_are_refused_and_change_nothing():
     assert digest(sut.sdfg) == after_move
 
 
-def test_an_unknown_kind_is_a_malformed_call():
+def test_an_unknown_kind_is_a_malformed_call() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     with pytest.raises(ValueError, match="unknown move kind"):
         sut.apply_move("loop-tiling", ["for0"])
@@ -979,13 +981,13 @@ def test_an_unknown_kind_is_a_malformed_call():
         sut.list_moves("loop-tiling")
 
 
-def test_a_wrong_label_count_is_a_malformed_call():
+def test_a_wrong_label_count_is_a_malformed_call() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     with pytest.raises(ValueError, match="takes 2 label"):
         sut.apply_move("doall-fusion", ["doall1"])
 
 
-def test_a_move_read_on_a_session_applies_to_its_trial_and_leaves_the_session_alone():
+def test_a_move_read_on_a_session_applies_to_its_trial_and_leaves_the_session_alone() -> None:
     """``performance`` and the agent's what-ifs run on a trial; the labels must carry over."""
     session, _ = session_and_reference(two_indep)
     session.bump()  # a session past its first change, as after canonicalization
@@ -1002,7 +1004,7 @@ NLEV, NSPEC = (dace.symbol(name, dtype=dace.int64) for name in ("NLEV", "NSPEC")
 
 
 @dace.program
-def species_sedimentation(q: dace.float64[NLEV, N, NSPEC], pr: dace.float64[N]):
+def species_sedimentation(q: dace.float64[NLEV, N, NSPEC], pr: dace.float64[N]) -> None:
     for jl in dace.map[0:N]:
         pr[jl] = q[0, jl, 0] * 0.5
         for js in range(NSPEC):
@@ -1010,7 +1012,7 @@ def species_sedimentation(q: dace.float64[NLEV, N, NSPEC], pr: dace.float64[N]):
                 q[jk, jl, js] = q[jk, jl, js] + 0.1 * q[jk - 1, jl, js]
 
 
-def test_a_cut_leaves_both_maps_in_one_state_each_with_its_own_nested_body():
+def test_a_cut_leaves_both_maps_in_one_state_each_with_its_own_nested_body() -> None:
     """The cleanup after a move fuses the states the cut made, and keeps every map body one nested SDFG with no
     write-conflict resolution inside it."""
     sut, _ = session_and_reference(species_sedimentation)
@@ -1028,7 +1030,7 @@ def test_a_cut_leaves_both_maps_in_one_state_each_with_its_own_nested_body():
     assert not any(e.data.wcr for n in nested for inner in n.sdfg.states() for e in inner.edges())
 
 
-def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it():
+def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it() -> None:
     """#29: the level loop under the column map stayed innermost. Cut the map body around the loop, then the
     loop-map interchange applies (DaCe had called a scalar the canonical form reads twice loop-carried)."""
     sut, reference = session_and_reference(species_sedimentation)
@@ -1047,7 +1049,7 @@ def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it
 
 
 @dace.program
-def sweep_doalls_behind_an_if(A: dace.float64[T, N], B: dace.float64[T, N]):
+def sweep_doalls_behind_an_if(A: dace.float64[T, N], B: dace.float64[T, N]) -> None:
     for t in range(1, T):
         if K == 0:
             for i in dace.map[0:N]:
@@ -1059,7 +1061,7 @@ def sweep_doalls_behind_an_if(A: dace.float64[T, N], B: dace.float64[T, N]):
             B[t, i] = A[t, i] * 2.0 + B[t - 1, i]
 
 
-def test_the_loop_over_two_doalls_takes_doall_fusion_then_interchange_for_doall():
+def test_the_loop_over_two_doalls_takes_doall_fusion_then_interchange_for_doall() -> None:
     sut, reference = session_and_reference(sweep_two_maps)
 
     fused = apply_listed(sut, "doall-fusion")
@@ -1071,7 +1073,7 @@ def test_the_loop_over_two_doalls_takes_doall_fusion_then_interchange_for_doall(
     assert_same_values(reference, sut.sdfg, random_arrays(A=(STEPS, SIZE), B=(STEPS, SIZE)), N=SIZE, T=STEPS)
 
 
-def test_the_loop_over_two_doalls_moves_inside_one_doall_without_fusing_them_first():
+def test_the_loop_over_two_doalls_moves_inside_one_doall_without_fusing_them_first() -> None:
     sut, reference = session_and_reference(sweep_two_maps)
 
     result = apply_listed(sut, "interchange-for-doall")
@@ -1082,7 +1084,7 @@ def test_the_loop_over_two_doalls_moves_inside_one_doall_without_fusing_them_fir
 
 
 @pytest.mark.parametrize("branch", [0, 1])
-def test_doalls_in_separate_branches_and_states_move_inside_one_doall(branch):
+def test_doalls_in_separate_branches_and_states_move_inside_one_doall(branch: int) -> None:
     sut, reference = session_and_reference(sweep_doalls_behind_an_if)
     assert sut.list_moves("doall-fusion") == []
 
@@ -1094,7 +1096,7 @@ def test_doalls_in_separate_branches_and_states_move_inside_one_doall(branch):
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE, T=STEPS, K=branch)
 
 
-def test_doalls_whose_columns_cross_are_not_offered_and_nothing_changes():
+def test_doalls_whose_columns_cross_are_not_offered_and_nothing_changes() -> None:
     sut = Session(sweep_two_maps_crossing.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     first, _ = top_level_maps(sut.sdfg)
@@ -1107,7 +1109,7 @@ def test_doalls_whose_columns_cross_are_not_offered_and_nothing_changes():
     assert digest(sut.sdfg) == before
 
 
-def test_a_map_that_is_not_inside_the_loop_is_not_a_target():
+def test_a_map_that_is_not_inside_the_loop_is_not_a_target() -> None:
     sut = Session(sweep_two_maps.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
 
@@ -1121,26 +1123,26 @@ def test_a_map_that_is_not_inside_the_loop_is_not_a_target():
 
 
 @dace.program
-def level_pass(A: dace.float64[N, N], B: dace.float64[N, N]):
+def level_pass(A: dace.float64[N, N], B: dace.float64[N, N]) -> None:
     for k, j in dace.map[0:N, 0:N]:
         B[k, j] = A[k, j] * 2.0
 
 
 @dace.program
-def flat_pass(A: dace.float64[N], B: dace.float64[N]):
+def flat_pass(A: dace.float64[N], B: dace.float64[N]) -> None:
     for j in dace.map[0:N]:
         B[j] = A[j] * 2.0
 
 
 @dace.program
-def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+def two_level_passes(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]) -> None:
     for k, j in dace.map[0:N, 0:N]:
         B[k, j] = A[k, j] * 2.0
     for k, j in dace.map[0:N, 0:N]:
         C[k, j] = A[k, j] + 1.0
 
 
-def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one():
+def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_inner_one() -> None:
     sut, reference = session_and_reference(level_pass)
     assert apply_listed(sut, "unflatten-doall").status is MoveStatus.APPLIED
 
@@ -1155,7 +1157,7 @@ def test_doall_to_for_turns_the_outer_doall_of_a_nest_into_a_loop_and_keeps_the_
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside():
+def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside() -> None:
     sut = Session(flat_pass.to_sdfg(simplify=True))
     (entry,) = top_level_maps(sut.sdfg)
     before = digest(sut.sdfg)
@@ -1172,7 +1174,7 @@ def strip_labels(tree: str) -> str:
     return re.sub(r"\b([a-z]+)\d+\b", r"\1", tree)
 
 
-def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
+def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels() -> None:
     sut, reference = session_and_reference(level_pass)
     apply_listed(sut, "unflatten-doall")
     nest = sut.describe()
@@ -1186,7 +1188,7 @@ def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels():
     assert_same_values(reference, sut.sdfg, random_arrays(A=(SIZE, SIZE), B=(SIZE, SIZE)), N=SIZE)
 
 
-def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_a_later_move():
+def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_a_later_move() -> None:
     sut, reference = session_and_reference(two_level_passes)
     apply_listed_first(sut, "unflatten-doall")
     apply_listed_first(sut, "unflatten-doall")
@@ -1205,7 +1207,7 @@ def test_for_to_doall_turns_a_loop_made_by_doall_to_for_back_into_a_doall_after_
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
-def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason():
+def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason() -> None:
     sut = Session(recur.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
@@ -1218,12 +1220,12 @@ def test_for_to_doall_on_a_recurrence_is_refused_with_the_compilers_reason():
 
 
 @dace.program
-def scatter(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]):
+def scatter(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]) -> None:
     for i in range(N):
         out[perm[i]] = x[i] * 2.0
 
 
-def test_forced_for_to_doall_makes_a_scatter_through_a_permutation_a_doall_and_warns():
+def test_forced_for_to_doall_makes_a_scatter_through_a_permutation_a_doall_and_warns() -> None:
     """The compiler cannot prove ``perm`` a permutation; the agent may know it is one."""
     sut, reference = session_and_reference(scatter)
     (loop,) = loops(sut.sdfg)
@@ -1241,7 +1243,7 @@ def test_forced_for_to_doall_makes_a_scatter_through_a_permutation_a_doall_and_w
     assert_same_values(reference, sut.sdfg, arrays, N=SIZE)
 
 
-def test_force_does_not_waive_a_read_of_what_an_earlier_iteration_wrote():
+def test_force_does_not_waive_a_read_of_what_an_earlier_iteration_wrote() -> None:
     sut = Session(recur.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
     before = digest(sut.sdfg)
@@ -1254,14 +1256,14 @@ def test_force_does_not_waive_a_read_of_what_an_earlier_iteration_wrote():
 
 
 @dace.program
-def scatter_until_negative(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]):
+def scatter_until_negative(perm: dace.int64[N], x: dace.float64[N], out: dace.float64[N]) -> None:
     for i in range(N):
         if x[i] < 0.0:
             break
         out[perm[i]] = x[i]
 
 
-def test_forced_for_to_doall_keeps_a_loop_that_breaks_early():
+def test_forced_for_to_doall_keeps_a_loop_that_breaks_early() -> None:
     """DaCe's permissive mode would map it; a map has no break."""
     sut = Session(scatter_until_negative.to_sdfg(simplify=True))
     (loop,) = loops(sut.sdfg)
@@ -1274,7 +1276,7 @@ def test_forced_for_to_doall_keeps_a_loop_that_breaks_early():
     assert digest(sut.sdfg) == before
 
 
-def test_forced_for_to_doall_keeps_a_loop_whose_call_has_an_ordered_side_effect():
+def test_forced_for_to_doall_keeps_a_loop_whose_call_has_an_ordered_side_effect() -> None:
     sdfg = scatter.to_sdfg(simplify=True)  # force lifts it without the side effect
     tasklets = [node for node, _ in sdfg.all_nodes_recursive() if isinstance(node, nodes.Tasklet)]
     for tasklet in tasklets:
@@ -1290,7 +1292,7 @@ def test_forced_for_to_doall_keeps_a_loop_whose_call_has_an_ordered_side_effect(
     assert digest(sut.sdfg) == before
 
 
-def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states():
+def test_for_fusion_fuses_two_loops_made_by_doall_to_for_and_merges_their_states() -> None:
     """LoopFusion by itself leaves a parallel loop to LoopToMap; here each loop holds a doall, so fusing them keeps
     the parallelism, and the merged body is one state holding both doalls."""
     sut, reference = session_and_reference(two_level_passes)
@@ -1365,7 +1367,7 @@ def fuse_through(session: Session, name: str) -> None:
     raise AssertionError(f"no doall-fusion through {name} is listed")
 
 
-def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into():
+def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into() -> None:
     """Each fusion keeps ``tmp`` while another map still reads a row of it; once its last reader is fused, nothing reads
     it and its stores go, so the fused map writes only ``B``."""
     reference = one_temporary_two_states("one_temporary_reference")
@@ -1384,7 +1386,7 @@ def test_doall_fusion_drops_the_stores_of_a_temporary_its_last_reader_fused_into
 
 
 @dace.program
-def shortest_paths(path: dace.int32[N, N]):
+def shortest_paths(path: dace.int32[N, N]) -> None:
     outer = np.empty_like(path)
     for k in range(N):
         outer[:, :] = path[:, k][:, None] + path[k, :][None, :]
@@ -1401,7 +1403,7 @@ def snapshot_session() -> tuple[Session, dace.SDFG]:
     return sut, reference
 
 
-def test_snapshot_reads_copies_the_slices_so_doall_fusion_applies_and_values_stay():
+def test_snapshot_reads_copies_the_slices_so_doall_fusion_applies_and_values_stay() -> None:
     sut, reference = snapshot_session()
     assert sut.list_moves("doall-fusion") == [], "the reader and the writer share path: the fusion is illegal"
     (move,) = sut.list_moves("snapshot-reads")
@@ -1417,7 +1419,7 @@ def test_snapshot_reads_copies_the_slices_so_doall_fusion_applies_and_values_sta
     assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
 
 
-def test_snapshot_reads_then_the_default_fuses_the_pass_into_one_doall():
+def test_snapshot_reads_then_the_default_fuses_the_pass_into_one_doall() -> None:
     sut, reference = snapshot_session()
     apply_listed(sut, "snapshot-reads")
 
@@ -1428,7 +1430,7 @@ def test_snapshot_reads_then_the_default_fuses_the_pass_into_one_doall():
     assert_same_values(reference, sut.sdfg, positive_paths(), N=SIZE)
 
 
-def test_snapshot_reads_is_not_offered_when_no_other_doall_writes_what_the_doall_reads():
+def test_snapshot_reads_is_not_offered_when_no_other_doall_writes_what_the_doall_reads() -> None:
     sut, _ = session_and_reference(two_indep)
     sut.canonicalize()
 

@@ -8,11 +8,12 @@ dimension, so an index or transpose bug changes the values. Each case runs in a 
 """
 
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import pytest
-from dace import symbolic
+from dace import SDFG, symbolic
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import (
     bench_kernel,
@@ -26,6 +27,7 @@ from helpers import (
 
 from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import BuildOptions
+from nestforge.corpus.bench import CorpusKernel
 
 ATOL = 1e-8
 
@@ -106,9 +108,13 @@ SC_L2 = [
 LLR_L2 = ["tsvc_2_s000"]
 COMPILERS = {"c": ["gcc", "clang"], "fortran": ["gfortran"]}
 
+#: How a case builds its SDFG, at which sizes, and the offset its random inputs are centered on.
+Builder = tuple[Callable[[], SDFG], dict[str, int], float]
+Buffers = dict[str, np.ndarray]
+
 
 # helpers
-def rand_buffer(shape, dt, rng, center):
+def rand_buffer(shape: tuple[int, ...], dt: np.dtype, rng: np.random.Generator, center: float) -> np.ndarray:
     if np.issubdtype(dt, np.complexfloating):
         return (rng.random(shape) + 1j * rng.random(shape)).astype(dt)
     if np.issubdtype(dt, np.floating):
@@ -126,23 +132,23 @@ class MaxDiff(Result):
     md: float
 
 
-def dace_sizes(kernel, base=6):
+def dace_sizes(kernel: CorpusKernel, base: int = 6) -> dict[str, int]:
     merged = kernel.spec.parameters.get("S") or next(iter(kernel.spec.parameters.values()))
     preset = {k: v for k, v in merged.items() if k not in kernel.spec.config_names}  # knobs are data, not sizes
     ranks = {v: i for i, v in enumerate(sorted(set(preset.values())))}
     return {k: base + ranks[v] for k, v in preset.items()}
 
 
-def make_dace(short):
+def make_dace(short: str) -> Builder:
     kernel = corpus_kernel(short)
     base = SMALL.get(short, 6)
     return (lambda: kernel.to_sdfg(simplify=True)), dace_sizes(kernel, base), 0.0  # linear algebra: inputs in [0,1)
 
 
-def make_llr(key):
+def make_llr(key: str) -> Builder:
     kernel = corpus_kernel(key)
 
-    def build():
+    def build() -> SDFG:
         sdfg = kernel.to_sdfg(simplify=True)
         canonicalize(sdfg, target="cpu")
         return sdfg
@@ -151,10 +157,10 @@ def make_llr(key):
     return build, sizes, 0.5  # centered: exercise sign branches
 
 
-def base_inputs(sdfg, sizes, center, seed=0):
+def base_inputs(sdfg: SDFG, sizes: dict[str, int], center: float, seed: int = 0) -> Buffers:
     env = {symbolic.symbol(k): v for k, v in sizes.items()}
     rng = np.random.default_rng(seed)
-    base = {}
+    base: Buffers = {}
     for name, desc in sdfg.arrays.items():
         if desc.transient:
             continue
@@ -163,7 +169,7 @@ def base_inputs(sdfg, sizes, center, seed=0):
     return base
 
 
-def run_oracle_nest(make_sdfg, sizes, base, tmp):
+def run_oracle_nest(make_sdfg: Callable[[], SDFG], sizes: dict[str, int], base: Buffers, tmp: Path) -> Buffers:
     """Build the SDFG through nest-forge (no dace.compile) and run it; returns the mutated buffers."""
     built = build_sdfg(make_sdfg(), tmp / "oracle", BuildOptions(compiler="g++"))
     out = {k: v.copy() for k, v in base.items()}
@@ -172,12 +178,12 @@ def run_oracle_nest(make_sdfg, sizes, base, tmp):
     return out
 
 
-def run_emitted_python(make_sdfg, sizes, base):
+def run_emitted_python(make_sdfg: Callable[[], SDFG], sizes: dict[str, int], base: Buffers) -> Buffers:
     src, lowered = sdfg_to_python(make_sdfg(), "k")
     return run_emitted(src, "k", lowered, {k: v.copy() for k, v in base.items()}, sizes)
 
 
-def max_abs_diff(oracle, cand):
+def max_abs_diff(oracle: Buffers, cand: Buffers) -> float:
     worst = 0.0
     for name, want in oracle.items():
         got = np.asarray(cand[name]).ravel()
@@ -201,11 +207,11 @@ def max_abs_diff(oracle, cand):
     return worst
 
 
-def builder_for(kind, short):
+def builder_for(kind: str, short: str) -> Builder:
     return make_dace(short) if kind == "scientific_computing" else make_llr(short)
 
 
-def test_maxdiff_scores_nan_mismatch_as_divergence():
+def test_maxdiff_scores_nan_mismatch_as_divergence() -> None:
     """A kernel emitting NaN where the SDFG is finite must fail the gate, not be scored on the rest."""
     oracle = {"x": np.array([1.0, 2.0, 3.0])}
     assert max_abs_diff(oracle, {"x": np.array([1.0, np.nan, 3.0])}) == np.inf
@@ -220,9 +226,9 @@ def test_maxdiff_scores_nan_mismatch_as_divergence():
 @pytest.mark.parametrize(
     "kind,short", [("scientific_computing", s) for s in SC_L1] + [("loop_level_reasoning", s) for s in LLR_L1]
 )
-def test_emitted_python_matches_sdfg(kind, short):
+def test_emitted_python_matches_sdfg(kind: str, short: str) -> None:
 
-    def work():
+    def work() -> MaxDiff:
         make_sdfg, sizes, center = builder_for(kind, short)
         with tempfile.TemporaryDirectory() as td:
             base = base_inputs(make_sdfg(), sizes, center)
@@ -241,13 +247,13 @@ def test_emitted_python_matches_sdfg(kind, short):
     [("scientific_computing", s, lang, cc) for s in SC_L2 for lang, ccs in COMPILERS.items() for cc in ccs]
     + [("loop_level_reasoning", s, lang, cc) for s in LLR_L2 for lang, ccs in COMPILERS.items() for cc in ccs],
 )
-def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler):
+def test_emit_compiled_matches_sdfg_across_compilers(kind: str, short: str, lang: str, compiler: str) -> None:
     import shutil
 
     tool = compiler if lang == "c" else "gfortran"
     assert shutil.which(tool) is not None, f"compiler {tool} not on PATH (setup_apt.sh installs gcc/clang/gfortran)"
 
-    def work():
+    def work() -> MaxDiff:
         import subprocess
 
         from helpers import emit_sources
@@ -281,6 +287,7 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind, short, lang, compiler
                 order = signature_order(src.read_text(), f"{name}_fp64", "fortran" if lang == "fortran" else "c")
                 argtypes = c_argtypes(order, b)
                 outs, _ = call_native(so, f"{name}_fp64", order, argtypes, b, dict(inp), nsizes, 1, copy_inputs=False)
+                assert outs is not None, f"{name}: the compiled nest returned no outputs"
                 # ``__sym_out_*`` are extraction sentinels (a nest's loop-exit index / carried scalar), not
                 # real kernel data -- DaCe's nest codegen and numpyto legitimately differ on them at the
                 # artificial nest boundary. Whole-kernel correctness (incl. loop-carried logic) is covered by

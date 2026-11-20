@@ -4,6 +4,8 @@
 evaluated when the program is parsed and becomes a closure array, an argument of the SDFG that the bench's inputs do
 not name: ``closure_inputs`` binds its value, so the whole program does not run on zeros."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 from helpers import build_sdfg
@@ -16,11 +18,11 @@ N = 3
 
 
 @dace.program
-def add_offsets(a: dace.int64[N], b: dace.int64[N, N]):
+def add_offsets(a: dace.int64[N], b: dace.int64[N, N]) -> None:
     b[:] = a[:, None] + np.arange(3, dtype=np.int64)[None, :]
 
 
-def test_a_constant_the_program_computed_at_parse_time_is_bound_with_its_value():
+def test_a_constant_the_program_computed_at_parse_time_is_bound_with_its_value() -> None:
     sdfg = add_offsets.to_sdfg()
 
     closure = closure_inputs(add_offsets, sdfg)
@@ -31,7 +33,7 @@ def test_a_constant_the_program_computed_at_parse_time_is_bound_with_its_value()
     np.testing.assert_array_equal(value, np.arange(N)[None, :])
 
 
-def test_the_whole_program_runs_on_the_closure_value_not_zeros(tmp_path):
+def test_the_whole_program_runs_on_the_closure_value_not_zeros(tmp_path: Path) -> None:
     sdfg = add_offsets.to_sdfg()
     a = np.array([10, 20, 30], dtype=np.int64)
     buffers = program_buffers(sdfg, {"a": a} | closure_inputs(add_offsets, sdfg), {})

@@ -9,7 +9,7 @@ import dace
 import numpy as np
 import pytest
 from dace.codegen.common import get_gpu_backend
-from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.transformation.helpers import nest_state_subgraph
@@ -17,7 +17,7 @@ from dace.transformation.helpers import nest_state_subgraph
 from nestforge import session as session_module
 from nestforge.build import flags
 from nestforge.records import KernelStatus
-from nestforge.session import Session, external_calls
+from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget
 from nestforge.stages.scopes import kernel_arguments, node_boundary
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.e2e
 
 
 @dace.program
-def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         c[i] = 2.0 * a[i] + b[i]
 
@@ -38,7 +38,7 @@ def boundary_order(kernel: ExternalCall) -> list[str]:
     return [*inputs, *outputs, *symbols]
 
 
-def one_kernel_session(tmp_path, n: int = 256) -> tuple:
+def one_kernel_session(tmp_path: Path, n: int = 256) -> tuple[Session, str]:
     session = Session(scaled_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": n})
     kernels = session.default_scopes()
     assert len(kernels) == 1
@@ -52,7 +52,7 @@ def assert_program_computes(sdfg: dace.SDFG) -> None:
     np.testing.assert_allclose(c, 2.0 * a + b, rtol=1e-15, atol=0)
 
 
-def test_optimize_kernel_writes_one_c_entry_with_the_boundary_arguments(tmp_path):
+def test_optimize_kernel_writes_one_c_entry_with_the_boundary_arguments(tmp_path: Path) -> None:
     """The optimized kernel exposes one extern C symbol whose arguments are the boundary's names."""
     session, name = one_kernel_session(tmp_path)
     info = session.optimize_kernel(name)
@@ -64,7 +64,7 @@ def test_optimize_kernel_writes_one_c_entry_with_the_boundary_arguments(tmp_path
     assert sorted(info.abi_order) == sorted(boundary_order(session.kernel(name)))
 
 
-def test_optimize_kernel_binds_its_default_library_and_the_program_still_computes(tmp_path):
+def test_optimize_kernel_binds_its_default_library_and_the_program_still_computes(tmp_path: Path) -> None:
     """Stage 5 alone links a library: the kernel calls the archive it built, with its runtimes, and 2a + b holds."""
     session, name = one_kernel_session(tmp_path)
 
@@ -77,7 +77,7 @@ def test_optimize_kernel_binds_its_default_library_and_the_program_still_compute
     assert_program_computes(session.sdfg)
 
 
-def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tmp_path):
+def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tmp_path: Path) -> None:
     sdfg = scaled_sum.to_sdfg(simplify=True)
     Session(sdfg, work_dir=str(tmp_path / "lowering")).default_scopes()
     fresh = Session(sdfg, work_dir=str(tmp_path / "fresh"))
@@ -91,7 +91,7 @@ def test_a_kernel_another_session_lowered_can_be_optimized_by_a_fresh_session(tm
     assert_program_computes(sdfg)
 
 
-def test_a_kernel_without_its_standalone_sdfg_is_refused_before_it_is_scheduled(tmp_path):
+def test_a_kernel_without_its_standalone_sdfg_is_refused_before_it_is_scheduled(tmp_path: Path) -> None:
     session, name = one_kernel_session(tmp_path)
     session.kernel(name).standalone_sdfg = None
 
@@ -99,7 +99,7 @@ def test_a_kernel_without_its_standalone_sdfg_is_refused_before_it_is_scheduled(
         session.optimize_kernel(name)
 
 
-def test_a_kernel_source_that_matches_the_oracle_is_linked_and_the_program_computes_with_it(tmp_path):
+def test_a_kernel_source_that_matches_the_oracle_is_linked_and_the_program_computes_with_it(tmp_path: Path) -> None:
     session, name = one_kernel_session(tmp_path)
     session.optimize_kernel(name)
     original = session.kernel_source(name)
@@ -107,13 +107,13 @@ def test_a_kernel_source_that_matches_the_oracle_is_linked_and_the_program_compu
 
     outcome = session.set_kernel_source(name, edited, "cpp", reps=1)
 
-    assert outcome.status is KernelStatus.OK and outcome.time_us > 0.0, outcome
+    assert outcome.status is KernelStatus.OK and outcome.time_us is not None and outcome.time_us > 0.0, outcome
     assert session.kernel_source(name) == edited
     assert "agent" in session.kernel(name).lib_path
     assert_program_computes(session.sdfg)
 
 
-def test_a_kernel_source_with_a_wrong_result_is_refused_and_the_old_library_stays(tmp_path):
+def test_a_kernel_source_with_a_wrong_result_is_refused_and_the_old_library_stays(tmp_path: Path) -> None:
     session, name = one_kernel_session(tmp_path)
     before = str(session.optimize_kernel(name).library)
     wrong = session.kernel_source(name).replace("2.0", "3.0")
@@ -132,7 +132,9 @@ def test_a_kernel_source_with_a_wrong_result_is_refused_and_the_old_library_stay
         ("#pragma omp parallel for", "#pragma omp parallel for\nsyntax error;", "cpp", KernelStatus.BUILD_FAILED),
     ],
 )
-def test_a_kernel_source_that_cannot_stand_in_is_not_linked(tmp_path, old, new, language, status):
+def test_a_kernel_source_that_cannot_stand_in_is_not_linked(
+    tmp_path: Path, old: str, new: str, language: str, status: KernelStatus
+) -> None:
     session, name = one_kernel_session(tmp_path)
     before = str(session.optimize_kernel(name).library)
 
@@ -142,13 +144,14 @@ def test_a_kernel_source_that_cannot_stand_in_is_not_linked(tmp_path, old, new, 
     assert session.kernel(name).lib_path == before
 
 
-def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
+def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path: Path) -> None:
     """After the sweep the kernel calls the winning archive, and the program still computes 2a + b."""
     session, name = one_kernel_session(tmp_path)
     result = session.sweep(name, reps=2, compilers=["gcc"])
     assert result.winner is not None
     assert result.cells >= 1
     config = result.config
+    assert config is not None
     assert config.compiler == "g++"
     assert result.winner == f"g++:{config.fp_mode}:{config.cost_model}"
     assert "-O3" in config.flags and config.time_us > 0.0
@@ -158,7 +161,7 @@ def test_sweep_links_the_fastest_correct_variant_into_the_program(tmp_path):
     assert_program_computes(session.sdfg)
 
 
-def test_a_sweeping_session_relinks_the_winner_its_trial_swept_after_the_trial_is_gone(tmp_path):
+def test_a_sweeping_session_relinks_the_winner_its_trial_swept_after_the_trial_is_gone(tmp_path: Path) -> None:
     """Under ``codegen="sweep"`` an unbuilt kernel gets the sweep's winner; the session relinks the winner a trial
     swept (as :meth:`Session.performance` does, which removes the trial's folder after measuring) instead of sweeping
     again, and the program still computes 2a + b."""
@@ -197,7 +200,9 @@ def computed_bound_sdfg() -> dace.SDFG:
     return sdfg
 
 
-def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_5s_configuration(tmp_path):
+def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_5s_configuration(
+    tmp_path: Path,
+) -> None:
     """The sweep's oracle has no value for a symbol the program computes (CloudSC's ``jmelt``), so such a kernel
     gets the first configuration instead of a sweep."""
     session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64}, codegen="sweep")
@@ -211,7 +216,7 @@ def test_a_sweeping_session_builds_a_kernel_taking_a_computed_symbol_with_stage_
     assert build.verdict is None, "no sweep timed it"
 
 
-def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_named(tmp_path):
+def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_named(tmp_path: Path) -> None:
     session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
     (kernel,) = session.default_scopes()
 
@@ -221,7 +226,9 @@ def test_tuning_a_kernel_taking_a_computed_symbol_is_refused_with_the_symbol_nam
     assert kernel.name not in session.builds
 
 
-def test_a_kernel_taking_a_computed_symbol_written_back_unchanged_is_linked_for_the_whole_program_to_check(tmp_path):
+def test_a_kernel_taking_a_computed_symbol_written_back_unchanged_is_linked_for_the_whole_program_to_check(
+    tmp_path: Path,
+) -> None:
     session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
     (kernel,) = session.default_scopes()
     source = session.kernel_source(kernel.name)
@@ -235,7 +242,9 @@ def test_a_kernel_taking_a_computed_symbol_written_back_unchanged_is_linked_for_
     assert session.applied[-1].kind == "write-kernel"
 
 
-def test_a_kernel_taking_a_computed_symbol_that_does_not_compile_is_a_failed_build_not_unchecked(tmp_path):
+def test_a_kernel_taking_a_computed_symbol_that_does_not_compile_is_a_failed_build_not_unchecked(
+    tmp_path: Path,
+) -> None:
     session = Session(computed_bound_sdfg(), work_dir=str(tmp_path), sizes={"N": 64})
     (kernel,) = session.default_scopes()
     source = session.kernel_source(kernel.name) + "\nsyntax error;"
@@ -245,7 +254,7 @@ def test_a_kernel_taking_a_computed_symbol_that_does_not_compile_is_a_failed_bui
     assert outcome.status is KernelStatus.BUILD_FAILED, outcome
 
 
-def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path):
+def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configuration(tmp_path: Path) -> None:
     session, name = one_kernel_session(tmp_path)
 
     session.default_build(name)
@@ -255,7 +264,7 @@ def test_a_first_configuration_session_builds_a_kernel_with_stage_5s_configurati
     assert build.verdict is None, "no sweep timed it"
 
 
-def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
+def test_sweep_without_matching_compilers_reports_no_winner(tmp_path: Path) -> None:
     """A compiler filter that matches nothing leaves the kernel on its DaCe reference expansion."""
     session, name = one_kernel_session(tmp_path, 64)
     result = session.sweep(name, reps=1, compilers=["no-such-compiler"])
@@ -265,7 +274,7 @@ def test_sweep_without_matching_compilers_reports_no_winner(tmp_path):
 
 
 @pytest.mark.gpu
-def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_model(tmp_path):
+def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_model(tmp_path: Path) -> None:
     sdfg = scaled_sum.to_sdfg(simplify=True)
     session = Session(sdfg, targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 256})
     session.default_scopes()
@@ -276,6 +285,7 @@ def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_mo
 
     assert result.winner is not None
     config = result.config
+    assert config is not None, "a sweep with a winner has its config"
     compiler, fp_modes, arch = {
         "cuda": ("nvcc-", flags.CUDA_FP, "-arch=native"),
         "hip": ("hipcc-", flags.HIP_FP, "--offload-arch=native"),
@@ -287,7 +297,7 @@ def test_a_gpu_sweep_reports_its_device_compiler_configuration_without_a_cost_mo
 
 
 @dace.program
-def pair_sum(x: dace.float64[1], y: dace.float64[1]):
+def pair_sum(x: dace.float64[1], y: dace.float64[1]) -> None:
     t = np.empty(2, dtype=np.float64)
     t[0] = 2.0 * x[0]
     t[1] = x[0] + 1.0
@@ -295,18 +305,18 @@ def pair_sum(x: dace.float64[1], y: dace.float64[1]):
 
 
 @dace.program
-def calls_pair_sum(x: dace.float64[1], y: dace.float64[1]):
+def calls_pair_sum(x: dace.float64[1], y: dace.float64[1]) -> None:
     for _ in dace.map[0:1]:
         pair_sum(x, y)
 
 
 @dace.program
-def nested_scratch(a: dace.float64[N], b: dace.float64[N]):
+def nested_scratch(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         calls_pair_sum(a[i : i + 1], b[i : i + 1])
 
 
-def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(tmp_path):
+def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(tmp_path: Path) -> None:
     """The oracle allocates the scratch it lifts out of a nest two levels down; the kernel allocates its own, so the
     scratch is neither an argument of the kernel nor mistaken for one of its symbols (issue #20)."""
     session = Session(nested_scratch.to_sdfg(simplify=False), work_dir=str(tmp_path), sizes={"N": 5})
@@ -331,7 +341,7 @@ def scaled_sum_nest_mapping_unused(symbol: str) -> dace.SDFG:
 
 
 @pytest.mark.filterwarnings("ignore:.*maps to unused symbol")  # the unused mapping is the arrangement
-def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path):
+def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_unused_symbol(tmp_path: Path) -> None:
     """The map's body is a nest that maps ``M`` without reading it, so ``M`` is among the kernel's source symbols.
     The built entry drops it, binding drops it from the node, and the oracle prepared after that bind must still take
     every symbol validation passes from the source."""
@@ -349,13 +359,15 @@ def test_the_oracle_takes_what_the_kernel_source_took_after_the_entry_drops_an_u
 
 
 @dace.program
-def running_sum(a: dace.float64[N], b: dace.float64[N]):
+def running_sum(a: dace.float64[N], b: dace.float64[N]) -> None:
     b[0] = a[0]
     for i in range(1, N):
         b[i] = b[i - 1] + a[i]
 
 
-def test_finalize_on_a_gpu_target_keeps_a_written_kernel_placement_leaves_on_the_cpu(tmp_path, monkeypatch):
+def test_finalize_on_a_gpu_target_keeps_a_written_kernel_placement_leaves_on_the_cpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """finalize places a never-placed GPU program; a kernel that stays on the CPU keeps the source the agent wrote."""
     session = Session(running_sum.to_sdfg(simplify=True), Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": 64})
     session.bench = BenchTarget("running_sum", "float64", True)

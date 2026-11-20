@@ -17,7 +17,7 @@ from nestforge.build.toolchain import SymbolValue
 HALF = 2
 
 #: A loop bound as DaCe hands it out: an expression, or the string it was parsed from.
-SymbolicBound = dace.symbolic.SymbolicType | str
+type SymbolicBound = dace.symbolic.SymbolicType | str
 
 
 def enclosing_loops(state: SDFGState) -> list[LoopRegion]:

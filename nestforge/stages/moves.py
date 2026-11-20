@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from itertools import chain
 from math import prod
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import dace
 import sympy
@@ -273,6 +273,23 @@ def size_argument(kind: str) -> str:
     return "lanes" if kind in LANED else "block" if kind in BLOCKED else "tile_sizes"
 
 
+class SizeArguments(TypedDict, total=False):
+    """The one sizes keyword argument a move takes (:func:`size_argument`), for ``apply_move(**...)``."""
+
+    tile_sizes: tuple[int, ...]
+    lanes: tuple[int, ...]
+    block: tuple[int, ...]
+
+
+def size_arguments(kind: str, sizes: Sequence[int]) -> SizeArguments:
+    """``sizes`` as the keyword argument ``kind`` takes."""
+    if kind in LANED:
+        return {"lanes": tuple(sizes)}
+    if kind in BLOCKED:
+        return {"block": tuple(sizes)}
+    return {"tile_sizes": tuple(sizes)}
+
+
 def chosen_sizes(
     kind: str, tile_sizes: Sequence[int], lanes: Sequence[int], block: Sequence[int]
 ) -> tuple[int, ...] | Refused:
@@ -379,7 +396,7 @@ MAP_IF_REFUSED = (
 
 def tree_label(obj: Any) -> str:
     """The label a tree row prints for ``obj``."""
-    return obj.map.label if isinstance(obj, (nodes.MapEntry, nodes.MapExit)) else obj.label
+    return str(obj.map.label if isinstance(obj, (nodes.MapEntry, nodes.MapExit)) else obj.label)
 
 
 def check_kind(kind: str) -> str:
@@ -648,10 +665,16 @@ def plan_map_fission(row: Row) -> Rewrite | str:
         return Refused("the map body is one computation; there is nothing to split.", Refusal.WRONG_ROW_KIND)
     if body is not None:
         where = {"map_entry": entry, "nested_sdfg": body}
-        move = pattern(MapFission, state.sdfg, where, expr_index=1)
-        if move is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
+        nested = pattern(MapFission, state.sdfg, where, expr_index=1)
+        if nested is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
             return MAP_FISSION_REFUSED
-        return Rewrite(move.name, lambda: (group_statements(body.sdfg), move.commit()))
+        nested_body = body.sdfg
+
+        def split() -> None:
+            group_statements(nested_body)
+            nested.commit()
+
+        return Rewrite(nested.name, split)
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
     move = pattern(MapFission, state.sdfg, {"map_entry": entry}, expr_index=0) if len(outputs) > 1 else None
     return move or MAP_FISSION_REFUSED
@@ -1450,7 +1473,7 @@ def ordered_side_effect_in(region: ControlFlowRegion) -> str | None:
     for node, parent in region.all_nodes_recursive():
         if isinstance(node, nodes.CodeNode) and isinstance(parent, SDFGState):
             if node.has_ordered_side_effects(parent.sdfg):
-                return node.label
+                return str(node.label)
     return None
 
 
@@ -1812,25 +1835,33 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "for-fission": ("LoopFission", "a loop of independent statement groups becomes one loop per group."),
     "doall-fusion": (
         "MapFusionVertical / OTFMapFusion / MapFusionHorizontal",
-        "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar, "
-        "or stays the array when the producer updates it in place), a consumer that recomputes the producer's "
-        "values it reads on the fly (a stencil), or two independent maps over the same range.",
+        (
+            "two maps of one state become one: a producer and its consumer (their intermediate array becomes a scalar, "
+            "or stays the array when the producer updates it in place), a consumer that recomputes the producer's "
+            "values it reads on the fly (a stencil), or two independent maps over the same range."
+        ),
     ),
     "doall-fission": (
         "MapFission",
-        "split per computation: one map per independent output group. The pieces often want doall-fusion afterwards: "
-        "fuse back the ones that share data.",
+        (
+            "split per computation: one map per independent output group. The pieces often want doall-fusion afterwards: "
+            "fuse back the ones that share data."
+        ),
     ),
     "subgraph-fission": (
         "SubgraphFission",
-        "split per state: the map's body is a program of states (expand the doall row to see them); the map is cut "
-        "after the named state, the states up to it in one map and the rest in a second.",
+        (
+            "split per state: the map's body is a program of states (expand the doall row to see them); the map is cut "
+            "after the named state, the states up to it in one map and the rest in a second."
+        ),
     ),
     "interchange-for-doall": (
         "MoveLoopIntoMap",
-        "for t: doall i: B becomes doall i: for t: B (the doall goes outside). A body of several doalls over one shared "
-        "axis, in several states or behind ifs, becomes doall i: for t: { A; B; ... } when no column touches another's "
-        "elements; the row names one of the doalls. doall-fusion the ones that fuse first.",
+        (
+            "for t: doall i: B becomes doall i: for t: B (the doall goes outside). A body of several doalls over one shared "
+            "axis, in several states or behind ifs, becomes doall i: for t: { A; B; ... } when no column touches another's "
+            "elements; the row names one of the doalls. doall-fusion the ones that fuse first."
+        ),
     ),
     "interchange-doall-for": (
         "MapLoopInterchange",
@@ -1838,68 +1869,88 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     ),
     "interchange-doall-doall": (
         "MapInterchange",
-        "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
-        "inlined and its one-iteration maps dropped first).",
+        (
+            "swap a map with the map directly inside it; also the one map in the nested body of a map (the body is "
+            "inlined and its one-iteration maps dropped first)."
+        ),
     ),
     INLINE_LIBRARY: (
         "LibraryNode.expand (pure, else specialize), then canonicalization",
-        "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
-        "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
-        "unexpanded, it stays a vendor or library call built on its own.",
+        (
+            "a library call (lib_blas, lib_fft, lib_reduce, lib_scan, ...) becomes the plain maps and "
+            "tasklets that compute it, in canonical parallel form, so fusion, fission and interchange reach inside it; "
+            "unexpanded, it stays a vendor or library call built on its own."
+        ),
     ),
     SET_IMPLEMENTATION: (
         "LibraryNode.implementation (implementation, one list_moves offers)",
-        "a library call, a black-box doall, keeps its row and is built through the named implementation: loops "
-        "(pure), the host vendor library (OpenBLAS, FFTW3) or, with a GPU target, the device one (cuBLAS, hipBLAS, "
-        "...), which also decides the device its kernel runs on.",
+        (
+            "a library call, a black-box doall, keeps its row and is built through the named implementation: loops "
+            "(pure), the host vendor library (OpenBLAS, FFTW3) or, with a GPU target, the device one (cuBLAS, hipBLAS, "
+            "...), which also decides the device its kernel runs on."
+        ),
     ),
     "tile-doall": (
         "MapTiling (tile_sizes, one per dimension)",
-        "doall i: B becomes doall i0 (step = tile size): doall i (one tile): B; each tile's working set fits a "
-        "cache or a thread block. A size need not divide the range.",
+        (
+            "doall i: B becomes doall i0 (step = tile size): doall i (one tile): B; each tile's working set fits a "
+            "cache or a thread block. A size need not divide the range."
+        ),
     ),
     "untile-doall": ("UntileLoops (map tile pairs)", "the inverse: a tile doall and its point doall become one."),
     "flatten-doalls": ("MapCollapse", "doall i: doall j: B becomes doall (i, j): B, one parallel space."),
     "unflatten-doall": ("MapExpansion", "the inverse: doall (i, j): B becomes doall i: doall j: B."),
     "doall-to-for": (
         "MapToForLoop",
-        "doall k: doall j: B becomes for k: doall j: B: the outer doall runs in order and the doalls inside stay "
-        "parallel, so its body can for-fusion with a sequential loop over the same range (a physics pass into the "
-        "level scan it feeds).",
+        (
+            "doall k: doall j: B becomes for k: doall j: B: the outer doall runs in order and the doalls inside stay "
+            "parallel, so its body can for-fusion with a sequential loop over the same range (a physics pass into the "
+            "level scan it feeds)."
+        ),
     ),
     FOR_TO_DOALL: (
         "LoopToMap (force, optional)",
-        "for i: B becomes doall i: B where DaCe proves that no iteration reads or writes what another writes. With "
-        "force, you vouch for the arrays: DaCe's checks of conflicting writes are waived, and some of its checks of "
-        "carried reads, so a wrong program is yours to find. Force only what you can argue (an index array that is a "
-        "permutation); bounds, a break, continue or return in the body, calls with ordered side effects and scalars "
-        "carried between iterations are refused either way, and DaCe still refuses a read its memlet test ties to "
-        "another iteration's write.",
+        (
+            "for i: B becomes doall i: B where DaCe proves that no iteration reads or writes what another writes. With "
+            "force, you vouch for the arrays: DaCe's checks of conflicting writes are waived, and some of its checks of "
+            "carried reads, so a wrong program is yours to find. Force only what you can argue (an index array that is a "
+            "permutation); bounds, a break, continue or return in the body, calls with ordered side effects and scalars "
+            "carried between iterations are refused either way, and DaCe still refuses a read its memlet test ties to "
+            "another iteration's write."
+        ),
     ),
     SET_SCHEDULE_CPU: (
         "the map's OpenMP schedule (schedule, chunk and threads; in a CPU kernel only)",
-        "doall i: B keeps what it computes and runs under schedule(static|dynamic|guided[, chunk]) num_threads(t). "
-        "Dynamic or guided pays when iterations differ in cost (triangular nests, sparse rows). Only an outermost "
-        "doall of a kernel takes one.",
+        (
+            "doall i: B keeps what it computes and runs under schedule(static|dynamic|guided[, chunk]) num_threads(t). "
+            "Dynamic or guided pays when iterations differ in cost (triangular nests, sparse rows). Only an outermost "
+            "doall of a kernel takes one."
+        ),
     ),
     SET_SCHEDULE_GPU: (
         "the kernel's thread block (gpu_block_size), or the schedule of a doall inside it (in a GPU kernel only)",
-        "on the kernel doall, block=[bx, by] sets the threads of one block. On a doall directly inside it: sequential "
-        "(each thread runs it whole), static (one iteration per thread of the block, GPU_ThreadBlock) or dynamic "
-        "(the block's threads take iterations from a shared queue, GPU_ThreadBlock_Dynamic). The block comes from "
-        "one place only: the kernel doall, or the doalls inside it.",
+        (
+            "on the kernel doall, block=[bx, by] sets the threads of one block. On a doall directly inside it: sequential "
+            "(each thread runs it whole), static (one iteration per thread of the block, GPU_ThreadBlock) or dynamic "
+            "(the block's threads take iterations from a shared queue, GPU_ThreadBlock_Dynamic). The block comes from "
+            "one place only: the kernel doall, or the doalls inside it."
+        ),
     ),
     "snapshot-reads": (
         "a doall of its own that copies each slice (SnapshotReads)",
-        "a doall that reads a slice of an array (path[:, k], path[k, :]: one index per dimension, a map parameter or a "
-        "value the doall does not change) which another doall of the state writes copies the slice into a transient "
-        "first, so the two doalls no longer touch one array and doall-fusion can merge them.",
+        (
+            "a doall that reads a slice of an array (path[:, k], path[k, :]: one index per dimension, a map parameter or a "
+            "value the doall does not change) which another doall of the state writes copies the slice into a transient "
+            "first, so the two doalls no longer touch one array and doall-fusion can merge them."
+        ),
     ),
     SKEW_WAVEFRONT: (
         "WavefrontSkew (tile_sizes, optional: the extents along the loop and along the diagonal)",
-        "a sequential loop whose iterations depend on each other along a diagonal (Gauss-Seidel, LU, dynamic "
-        "programming) becomes a sequential loop over diagonals, each run as a parallel doall, or a diagonal of tiles "
-        "where the dependences allow. It applies only where DaCe proves the diagonals independent; DaCe picks the skew.",
+        (
+            "a sequential loop whose iterations depend on each other along a diagonal (Gauss-Seidel, LU, dynamic "
+            "programming) becomes a sequential loop over diagonals, each run as a parallel doall, or a diagonal of tiles "
+            "where the dependences allow. It applies only where DaCe proves the diagonals independent; DaCe picks the skew."
+        ),
     ),
     "tile-for": (
         "LoopTiling (tile_sizes, one size)",
@@ -1908,99 +1959,131 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     "untile-for": ("UntileLoops", "the inverse: a loop over tiles and its loop over one tile's points become one."),
     "unroll-for": (
         "LoopUnroll (max_iterations, the largest trip count you accept)",
-        "for i in 0:3: B becomes B(0); B(1); B(2): one copy of the body per iteration, the loop gone. Only a loop "
-        "with a constant trip count unrolls (propagate-config can give its bounds values).",
+        (
+            "for i in 0:3: B becomes B(0); B(1); B(2): one copy of the body per iteration, the loop gone. Only a loop "
+            "with a constant trip count unrolls (propagate-config can give its bounds values)."
+        ),
     ),
     "unroll-doall": (
         "MapUnroll (max_iterations, the largest trip count you accept)",
-        "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
-        "iteration, the doall gone.",
+        (
+            "a doall with a constant range, not inside another doall of its state, becomes one copy of its body per "
+            "iteration, the doall gone."
+        ),
     ),
     HOIST_INVARIANT_GUARD: (
-        "MoveLoopInvariantIfUp on a for loop; MoveMapInvariantIfUp.apply_to_map on a doall (tried on a copy; lifts "
-        "this doall's if only)",
-        "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
-        "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
-        "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A.",
+        (
+            "MoveLoopInvariantIfUp on a for loop; MoveMapInvariantIfUp.apply_to_map on a doall (tried on a copy; lifts "
+            "this doall's if only)"
+        ),
+        (
+            "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
+            "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
+            "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A."
+        ),
     ),
     SINK_INVARIANT_GUARD: (
-        "MoveIfIntoLoop on a branch that ends in one for loop; push_if_into_maps on a branch that is one state of "
-        "doalls",
-        "if c: for i: B becomes for i: if c: B, and if c: doall i: B becomes doall i: if c: B (each doall of the "
-        "branch takes a copy of the test), the inverse of hoist-invariant-guard: the test runs every iteration, and "
-        "the loop or doall can fuse with its neighbors.",
+        (
+            "MoveIfIntoLoop on a branch that ends in one for loop; push_if_into_maps on a branch that is one state of "
+            "doalls"
+        ),
+        (
+            "if c: for i: B becomes for i: if c: B, and if c: doall i: B becomes doall i: if c: B (each doall of the "
+            "branch takes a copy of the test), the inverse of hoist-invariant-guard: the test runs every iteration, and "
+            "the loop or doall can fuse with its neighbors."
+        ),
     ),
     SINK_INVARIANT_CODE: (
         "sink_into_loop or sink_into_map (container, the temporary to sink)",
-        "the inverse of hoist-invariant-code for one temporary: t = a * b; for i: ... t ... becomes for i: {t = a * b; "
-        "... t ...}. The statements run every iteration instead of once, t no longer lives across the loop, and a "
-        "doall no longer has an input that ties it to the statements before it. Only plain statements sink, from "
-        "the state just before the loop or doall (or above the doall in its state); t must be used nowhere else, and "
-        "the loop must not write what the statements read.",
+        (
+            "the inverse of hoist-invariant-code for one temporary: t = a * b; for i: ... t ... becomes for i: {t = a * b; "
+            "... t ...}. The statements run every iteration instead of once, t no longer lives across the loop, and a "
+            "doall no longer has an input that ties it to the statements before it. Only plain statements sink, from "
+            "the state just before the loop or doall (or above the doall in its state); t must be used nowhere else, and "
+            "the loop must not write what the statements read."
+        ),
     ),
     HOIST_INVARIANT_CODE: (
         "LoopInvariantCodeMotion on this for loop or doall",
-        "the loop's invariant statements (an expression or load whose inputs no iteration changes) run once, before "
-        "the loop; for a for loop also whole sub-blocks that use neither the loop variable nor what the loop writes. "
-        "The pass picks them; the loop stays. In a perfect doall nest, a statement invariant only in an inner doall "
-        "stays, so the nest stays whole.",
+        (
+            "the loop's invariant statements (an expression or load whose inputs no iteration changes) run once, before "
+            "the loop; for a for loop also whole sub-blocks that use neither the loop variable nor what the loop writes. "
+            "The pass picks them; the loop stays. In a perfect doall nest, a statement invariant only in an inner doall "
+            "stays, so the nest stays whole."
+        ),
     ),
     LIB_BEFORE: (
         "a state of its own, checked against the read and write sets of every block it crosses",
-        "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a "
-        "communication or a kernel), or a host lib_sync (a device or stream barrier, which crosses no block that "
-        "issues device work or touches what device work touches), leaves its state for a new state just before the named block, of the call's "
-        "region or of a loop around it. Hoist a copy or call whose inputs a loop never changes out of it (it then "
-        "runs once, not every iteration), or take one from between two loops so they become adjacent for "
-        "for-fusion. Refused when a crossed block writes what the call touches or reads what it writes, when a loop "
-        "it leaves is not proven to run at least once, or when it would leave a branch or enter a block.",
+        (
+            "a library call whose memlets are its whole effect (lib_copy, lib_reduce, lib_blas, ...; not a "
+            "communication or a kernel), or a host lib_sync (a device or stream barrier, which crosses no block that "
+            "issues device work or touches what device work touches), leaves its state for a new state just before the named block, of the call's "
+            "region or of a loop around it. Hoist a copy or call whose inputs a loop never changes out of it (it then "
+            "runs once, not every iteration), or take one from between two loops so they become adjacent for "
+            "for-fusion. Refused when a crossed block writes what the call touches or reads what it writes, when a loop "
+            "it leaves is not proven to run at least once, or when it would leave a branch or enter a block."
+        ),
     ),
     LIB_AFTER: (
         "a state of its own, checked against the read and write sets of every block it crosses",
-        "the same, into a new state just after the named block: sink a call to its consumer, or out of a loop "
-        "when nothing in the loop reads what it writes.",
+        (
+            "the same, into a new state just after the named block: sink a call to its consumer, or out of a loop "
+            "when nothing in the loop reads what it writes."
+        ),
     ),
     LIB_INTO: (
         "the named state, ordered there by its access nodes and empty edges",
-        "the same call joins an existing state of its region or of a loop around it instead of a new one: it reads "
-        "the array from the access node that state last writes it to (or writes the access node that state reads), "
-        "and runs after (when it comes from a later point) or before every other access there that conflicts with "
-        "it. Refused for an accumulation there, two unordered writes of one array, a cycle, and, for a lib_sync, a "
-        "state whose device work it would run ahead of.",
+        (
+            "the same call joins an existing state of its region or of a loop around it instead of a new one: it reads "
+            "the array from the access node that state last writes it to (or writes the access node that state reads), "
+            "and runs after (when it comes from a later point) or before every other access there that conflicts with "
+            "it. Refused for an accumulation there, two unordered writes of one array, a cycle, and, for a lib_sync, a "
+            "state whose device work it would run ahead of."
+        ),
     ),
     ROLLBACK: (
         "the session's history (the last 8 changes)",
-        "back to the program before the last move or default stage: its tree labels and applied_moves too; a label "
-        "handed out since is never reused. Apply it again for the change before.",
+        (
+            "back to the program before the last move or default stage: its tree labels and applied_moves too; a label "
+            "handed out since is never reused. Apply it again for the change before."
+        ),
     ),
     PROPAGATE_CONFIG: (
         "ConfigPropagation (config_values: the scalar arguments and free symbols you expect at run time)",
-        "the program becomes if (arguments == values): the program specialized for them, else: the program as it "
-        "was. The specialized branch runs only when the arguments equal the values; any other draw runs the generic "
-        "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
-        "(unroll-for, unroll-doall).",
+        (
+            "the program becomes if (arguments == values): the program specialized for them, else: the program as it "
+            "was. The specialized branch runs only when the arguments equal the values; any other draw runs the generic "
+            "program, so results stay correct. The moves reach inside the specialized branch, where bounds are constant "
+            "(unroll-for, unroll-doall)."
+        ),
     ),
     VECTORIZE_DOALL: (
         "VectorizeMap (lanes: per vectorized dimension, innermost last; isa)",
-        "the doall's innermost maps run as tiles of lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
-        "sve takes its own vector length, so its lanes are ignored), with a masked tile for the remainder; the "
-        "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
-        "shows the body as the ISA's tile functions; judged when applied, on a copy first.",
+        (
+            "the doall's innermost maps run as tiles of lanes for isa (auto, avx512, avx2, sve, neon, scalar; "
+            "sve takes its own vector length, so its lanes are ignored), with a masked tile for the remainder; the "
+            "body becomes tile loads, tile operations and tile stores. Every other doall stays scalar. view_tree with c "
+            "shows the body as the ISA's tile functions; judged when applied, on a copy first."
+        ),
     ),
     SET_FP_MODE: (
         "the compiler's floating-point flags of one kernel (scope; fp_mode: strict-ieee, contract-fma, fast-math)",
-        "the kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
-        "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
-        "assumes no NaN or infinity. Unset, the kernel's sweep picks the fastest correct mode. The result is checked "
-        "against the reference at get_performance, not proven.",
+        (
+            "the kernel is built in that mode only: get_performance measures it and finalize's sweep keeps to it. "
+            "strict-ieee keeps every rounding, contract-fma fuses multiply-adds, fast-math also reassociates and "
+            "assumes no NaN or infinity. Unset, the kernel's sweep picks the fastest correct mode. The result is checked "
+            "against the reference at get_performance, not proven."
+        ),
     ),
     PERSISTENT_KERNEL: (
         "MegakernelLoops (consecutive rows inside scope, the kernel)",
-        "the rows (for loops, states, doalls for their states), consecutive in one region of the kernel's body, run as "
-        "one persistent kernel with a barrier where a launch or an implicit barrier was: on the GPU one launch, "
-        "behind a runtime test that the largest doall fits the resident threads (else the rows launch as before); on "
-        "the CPU the doalls share one OpenMP team and synchronize explicitly. Pays when launches and barriers cost "
-        "more than the doalls. A kernel holds one persistent run: to change it, roll back and apply a longer list.",
+        (
+            "the rows (for loops, states, doalls for their states), consecutive in one region of the kernel's body, run as "
+            "one persistent kernel with a barrier where a launch or an implicit barrier was: on the GPU one launch, "
+            "behind a runtime test that the largest doall fits the resident threads (else the rows launch as before); on "
+            "the CPU the doalls share one OpenMP team and synchronize explicitly. Pays when launches and barriers cost "
+            "more than the doalls. A kernel holds one persistent run: to change it, roll back and apply a longer list."
+        ),
     ),
     RUN_ON_CPU: (
         "the placement of kernels (labels: kernel names)",
@@ -2008,53 +2091,69 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
     ),
     RUN_ON_GPU: (
         "the placement of kernels (labels: kernel names)",
-        "the kernels run on the GPU: their arguments are copied to the device at their boundary until the scopes "
-        "phase ends, whose copies then move into the program between the kernels. Every other kernel keeps its "
-        "device. Rollback takes it back.",
+        (
+            "the kernels run on the GPU: their arguments are copied to the device at their boundary until the scopes "
+            "phase ends, whose copies then move into the program between the kernels. Every other kernel keeps its "
+            "device. Rollback takes it back."
+        ),
     ),
     RUN_ON_CPU_PERSISTENT: (
         "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
-        "one kernel runs its longest run of loops and states with doalls as one persistent kernel on the CPU (one "
-        "OpenMP team, explicit barriers); several kernels named are first merged into one kernel, with a barrier "
-        "where one kernel ended and the next began. Refused when the kernels are not consecutive or MegakernelLoops "
-        "fuses nothing of them.",
+        (
+            "one kernel runs its longest run of loops and states with doalls as one persistent kernel on the CPU (one "
+            "OpenMP team, explicit barriers); several kernels named are first merged into one kernel, with a barrier "
+            "where one kernel ended and the next began. Refused when the kernels are not consecutive or MegakernelLoops "
+            "fuses nothing of them."
+        ),
     ),
     RUN_ON_GPU_PERSISTENT: (
         "MegakernelLoops over kernels (labels: kernel names, consecutive in one region)",
-        "as run-on-cpu-persistent, on the GPU: one launch with a grid barrier where a launch was, behind a runtime "
-        "test that the largest doall fits the resident threads (else the kernels launch as before).",
+        (
+            "as run-on-cpu-persistent, on the GPU: one launch with a grid barrier where a launch was, behind a runtime "
+            "test that the largest doall fits the resident threads (else the kernels launch as before)."
+        ),
     ),
     CHANGE_PRECISION: (
         "a new element type of one internal array (container; dtype: float32, float64)",
-        "the array is stored, read and written in dtype; every statement converts at the array, so the arithmetic "
-        "around it is unchanged. Only an array the program makes itself, read and written by statements alone. The "
-        "result is checked against the reference at get_performance, not proven; an argument's type changes with "
-        "relayout cast.",
+        (
+            "the array is stored, read and written in dtype; every statement converts at the array, so the arithmetic "
+            "around it is unchanged. Only an array the program makes itself, read and written by statements alone. The "
+            "result is checked against the reference at get_performance, not proven; an argument's type changes with "
+            "relayout cast."
+        ),
     ),
     RELAYOUT: (
         "relayout's apply_requests (operation: one operation of the bench's requests on an array argument)",
-        "the program works on the argument as the operation lays it out (permute, block / unblock, split / unsplit, "
-        "pad / unpad, shuffle, linear_shuffle, cast), and the operation goes to the bench as the submission's "
-        "requests: the harness lays the argument out before the call and reads it back after it, outside the "
-        "timing. Every operation so far is laid out again from the program before the first, so a later one names "
-        "the digits the earlier ones left. Lay arguments out first: refused after any other change. An array the "
-        "program makes itself is laid out in place at any point, zip and unzip included, with no request; "
-        "linear_shuffle is the XOR swizzle.",
+        (
+            "the program works on the argument as the operation lays it out (permute, block / unblock, split / unsplit, "
+            "pad / unpad, shuffle, linear_shuffle, cast), and the operation goes to the bench as the submission's "
+            "requests: the harness lays the argument out before the call and reads it back after it, outside the "
+            "timing. Every operation so far is laid out again from the program before the first, so a later one names "
+            "the digits the earlier ones left. Lay arguments out first: refused after any other change. An array the "
+            "program makes itself is laid out in place at any point, zip and unzip included, with no request; "
+            "linear_shuffle is the XOR swizzle."
+        ),
     ),
     SET_PIPELINE_DEPTH: (
         "LoopRegion.pipeline_depth, lowered by LowerMultipleBuffering (depth: the stages)",
-        "a loop in a GPU kernel whose iterations each copy a tile into a buffer first runs as a pipeline: the buffer "
-        "gets depth slots, and later iterations copy their tiles while an earlier tile is read.",
+        (
+            "a loop in a GPU kernel whose iterations each copy a tile into a buffer first runs as a pipeline: the buffer "
+            "gets depth slots, and later iterations copy their tiles while an earlier tile is read."
+        ),
     ),
     COPY_TO_TMA: (
         "CopyLibraryNode implementation MemoryEngineBulk",
-        "a GPU kernel whose loads stage-loads-shared staged copies each tile between global and shared memory with "
-        "the TMA unit (Hopper or newer, CUDA): one thread issues the copy and the block waits on a barrier.",
+        (
+            "a GPU kernel whose loads stage-loads-shared staged copies each tile between global and shared memory with "
+            "the TMA unit (Hopper or newer, CUDA): one thread issues the copy and the block waits on a barrier."
+        ),
     ),
     "stage-loads-shared": (
         "StageLoadsThroughSharedMemory (block: the thread block)",
-        "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
-        "included) of every array it only reads and reuses into shared memory, so global memory is read once.",
+        (
+            "a GPU kernel inside a GPU scope runs one thread block per tile, and each block first copies the tile (halo "
+            "included) of every array it only reads and reuses into shared memory, so global memory is read once."
+        ),
     ),
 }
 
@@ -2106,17 +2205,17 @@ def plan_move(
                 f"{kind} takes ({expected}); {tree_label(obj)!r} is a {type(obj).__name__}.", Refusal.WRONG_ROW_KIND
             )
     if kind == VECTORIZE_DOALL:
-        return plan_auto_vectorize(*rows, tile_sizes=tile_sizes, isa=isa)
+        return plan_auto_vectorize(rows[0], tile_sizes=tile_sizes, isa=isa)
     if kind == SKEW_WAVEFRONT:
-        return plan_skew_wavefront(*rows, tile_sizes=tile_sizes, target=target)
+        return plan_skew_wavefront(rows[0], tile_sizes=tile_sizes, target=target)
     if kind == FOR_TO_DOALL:
-        return plan_for_to_doall(*rows, force=force)
+        return plan_for_to_doall(rows[0], force=force)
     if kind == SINK_INVARIANT_CODE:
-        return plan_sink_invariant_code(*rows, container=container)
+        return plan_sink_invariant_code(rows[0], container=container)
     if kind == SET_PIPELINE_DEPTH:
-        return plan_set_pipeline_depth(*rows, depth=depth)
+        return plan_set_pipeline_depth(rows[0], depth=depth)
     if kind == SET_SCHEDULE_CPU:
-        return plan_set_schedule_cpu(*rows, schedule=schedule, chunk=chunk, threads=threads)
+        return plan_set_schedule_cpu(rows[0], schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:

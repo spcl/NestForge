@@ -15,6 +15,7 @@ import subprocess
 import sys
 import textwrap
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 
 import dace
@@ -32,7 +33,7 @@ import helpers
 from helpers import build_sdfg, corpus_kernel
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.sdfg import BuildOptions, dace_runtime_include, new_gpu_codegen
+from nestforge.build.sdfg import BuildOptions, BuiltSDFG, dace_runtime_include, new_gpu_codegen
 from nestforge.build.toolchain import (
     C_PTR,
     NEW_DTAGS,
@@ -44,17 +45,20 @@ from nestforge.build.toolchain import (
     parse_params,
 )
 from nestforge.corpus.translate import prepare
+from nestforge.ir.extract import Boundary
 from nestforge.paths import REPO_ROOT
 from nestforge.stages.scopes import parallel_top_level_maps
 
 
-def first_nest(short):
+def first_nest(short: str) -> Boundary:
     sdfg = corpus_kernel(short).to_sdfg(simplify=True)
     parent, node = parallel_top_level_maps(sdfg)[0]
     return extract_nest_to_sdfg(parent, node, name="nest")
 
 
-def prepared(short, size, seed, out_dir):
+def prepared(
+    short: str, size: int, seed: int, out_dir: Path
+) -> tuple[Boundary, dict[str, int], dict[str, np.ndarray], dict[str, np.ndarray]]:
     """The first nest of ``short``, its sizes (shape symbols at ``size``, the rest 0), inputs and NumPy oracle."""
     boundary = first_nest(short)
     shape_syms = {
@@ -66,7 +70,9 @@ def prepared(short, size, seed, out_dir):
     return boundary, sizes, inputs, oracle
 
 
-def owned_build_matches_oracle(tmp_path, short, size=48, opts=None):
+def owned_build_matches_oracle(
+    tmp_path: Path, short: str, size: int = 48, opts: BuildOptions | None = None
+) -> BuiltSDFG:
     boundary, sizes, inputs, oracle = prepared(short, size, 0, tmp_path)
     built = build_sdfg(boundary.standalone_sdfg, tmp_path / "build", opts)
     buf = {k: v.copy() for k, v in inputs.items()}
@@ -76,26 +82,26 @@ def owned_build_matches_oracle(tmp_path, short, size=48, opts=None):
     return built
 
 
-def test_dace_runtime_include_exists():
+def test_dace_runtime_include_exists() -> None:
     assert (dace_runtime_include() / "dace" / "dace.h").exists()
 
 
-def test_owned_build_gemm_matches_oracle(tmp_path):
+def test_owned_build_gemm_matches_oracle(tmp_path: Path) -> None:
     """gemm: int64_t size symbols + a Scalar (alpha/beta) passed by value through the owned build."""
     owned_build_matches_oracle(tmp_path, "scientific_computing/dense_linear_algebra/gemm/gemm")
 
 
-def test_owned_build_jacobi_matches_oracle(tmp_path):
+def test_owned_build_jacobi_matches_oracle(tmp_path: Path) -> None:
     """jacobi_1d: an ``int`` (not int64_t) size symbol -- guards the per-parameter ctype marshaling."""
     owned_build_matches_oracle(tmp_path, "scientific_computing/structured_grids/jacobi_1d/jacobi_1d")
 
 
-def without_search_paths(flags):
+def without_search_paths(flags: list[str]) -> list[str]:
     """``flags`` without ``-L`` and ``-Wl,-rpath,`` entries: which runtime, not where it was found."""
     return [f for f in flags if not f.startswith(("-L", "-Wl,-rpath", NEW_DTAGS))]
 
 
-def test_openmp_flags_select_libomp_for_every_compiler_family():
+def test_openmp_flags_select_libomp_for_every_compiler_family() -> None:
     """An LLVM compiler selects libomp by name; gcc compiles its GOMP calls and links libomp explicitly, never
     the libgomp a bare -fopenmp would pull in, so mixed-compiler builds share one runtime."""
     assert compiler_family("gfortran") == "gnu" and compiler_family("flang") == "llvm"
@@ -107,7 +113,7 @@ def test_openmp_flags_select_libomp_for_every_compiler_family():
     assert without_search_paths(openmp_link_flags("clang++")) == ["-fopenmp=libomp"]
 
 
-def test_gcc_compiled_kernel_links_against_libomp(tmp_path):
+def test_gcc_compiled_kernel_links_against_libomp(tmp_path: Path) -> None:
     """A g++-compiled kernel (GOMP_* calls under -fopenmp) links + runs against libomp via its GOMP-compat
     ABI -- proof a GCC node library can share the same libomp a clang/flang node library uses."""
     assert ctypes.util.find_library("omp") is not None, "libomp not installed (setup_apt.sh: libomp-dev)"
@@ -119,7 +125,7 @@ def test_gcc_compiled_kernel_links_against_libomp(tmp_path):
     )
 
 
-def parallel_axpy_sdfg(name="paxpy"):
+def parallel_axpy_sdfg(name: str = "paxpy") -> dace.SDFG:
     """A minimal SDFG with one genuinely parallel map (``CPU_Multicore`` -> ``#pragma omp parallel for``):
     ``Z[i] = X[i] + Y[i]``. Hermetic, so the OpenMP link matrix tests a guaranteed-parallel loop."""
     N = dace.symbol("N", dace.int64)
@@ -135,7 +141,9 @@ def parallel_axpy_sdfg(name="paxpy"):
     return sdfg
 
 
-def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(tmp_path, monkeypatch, cold_lookup_caches):
+def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cold_lookup_caches: None
+) -> None:
     """The linker and the loader search different places, so "installed" does not imply "-l<soname>
     resolves": Ubuntu's libomp-dev moves the library off the default linker path across releases."""
     (tmp_path / "libfakeomp.so").write_bytes(b"")  # a linkable lib, deliberately off the default path
@@ -146,7 +154,9 @@ def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(tmp_path, 
     assert lib_linkable("fakeomp", "g++")
 
 
-def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(tmp_path, cold_lookup_caches):
+def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(
+    tmp_path: Path, cold_lookup_caches: None
+) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (tmp_path / "libfakeomp.so").write_bytes(b"")
@@ -154,7 +164,7 @@ def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime
     assert library_flags("fakeomp", str(bin_dir / "fake-g++")) == ["-lfakeomp"]
 
 
-def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path):
+def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path: Path) -> None:
     """``libomp.so`` IS a symlink (-> ``libomp.so.5``) and the two can live in different directories, so the
     answer needs normalising without following it: ``resolve()`` would follow the symlink to a directory
     with no ``libomp.so``, so lexical normalisation is used instead.
@@ -174,7 +184,7 @@ def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp
     assert got.parent == link_dir, "the -L must be the symlink's own dir, never its target's"
 
 
-def test_parallel_map_emits_omp_pragma(tmp_path):
+def test_parallel_map_emits_omp_pragma(tmp_path: Path) -> None:
     """The sanity nest is actually parallel: DaCe lowers ``CPU_Multicore`` to an OpenMP pragma in the
     generated C++ (so the cross-compiler tests below really exercise the runtime link)."""
     from nestforge.build.sdfg import generate_program_folder
@@ -194,7 +204,7 @@ def test_parallel_map_emits_omp_pragma(tmp_path):
         pytest.param("icpx", marks=pytest.mark.vendor),  # vendor compiler: absent on the CI runner
     ],
 )
-def test_parallel_loop_links_openmp_across_compilers(tmp_path, compiler):
+def test_parallel_loop_links_openmp_across_compilers(tmp_path: Path, compiler: str) -> None:
     assert shutil.which(compiler) is not None, f"{compiler} not on PATH"
     assert lib_linkable("omp", compiler), f"libomp is not linkable by {compiler} (setup_apt.sh installs libomp)"
     n = 256
@@ -209,14 +219,14 @@ def test_parallel_loop_links_openmp_across_compilers(tmp_path, compiler):
     np.testing.assert_allclose(buf["Z"], x + y, rtol=1e-12, atol=1e-12)
 
 
-def test_build_tracks_optimization_and_compile_time(tmp_path):
+def test_build_tracks_optimization_and_compile_time(tmp_path: Path) -> None:
     """Every owned build records both the codegen (optimization) time and the compile (toolchain) time."""
     built = build_sdfg(parallel_axpy_sdfg(), tmp_path / "nf_time")
     assert built.codegen_seconds > 0.0
     assert built.compile_seconds > 0.0
 
 
-def test_unload_after_close_is_a_noop(tmp_path):
+def test_unload_after_close_is_a_noop(tmp_path: Path) -> None:
     """The documented lifecycle -- ``run()`` (init -> program -> close) then ``unload()`` once the sweep is
     done with a kernel -- must not raise: by the time ``unload()`` runs, ``close()`` has already dropped the
     handle, so there is nothing left for ``unload`` to reconcile."""
@@ -229,7 +239,7 @@ def test_unload_after_close_is_a_noop(tmp_path):
     assert built.lib is None
 
 
-def test_close_after_unload_raises_when_a_handle_is_still_open(tmp_path):
+def test_close_after_unload_raises_when_a_handle_is_still_open(tmp_path: Path) -> None:
     """Misuse case: unloading the library while a handle from ``init()`` is still open leaves nothing able
     to run ``__dace_exit`` on that handle. This must fail loudly rather than silently leak the handle or
     crash on a null CDLL lookup."""
@@ -240,7 +250,7 @@ def test_close_after_unload_raises_when_a_handle_is_still_open(tmp_path):
         built.close()
 
 
-def test_external_linking_build_is_correct(tmp_path):
+def test_external_linking_build_is_correct(tmp_path: Path) -> None:
     """A nest built as a separate static ``.a`` (link_external) and linked into the ``.so`` runs identically
     to the monolithic build -- external linking is correct, not merely timeable."""
     built = owned_build_matches_oracle(
@@ -250,7 +260,7 @@ def test_external_linking_build_is_correct(tmp_path):
     assert (built.so_path.parent / f"lib{built.name}_nest.a").exists()  # the static node lib was produced
 
 
-def test_parse_params_strips_the_const_qualifier_only_as_a_word():
+def test_parse_params_strips_the_const_qualifier_only_as_a_word() -> None:
     """``const`` is a qualifier, not a substring: params literally named ``constant``/``const_term`` must
     keep their name, or the ctypes bind looks them up under a mangled key."""
     params = parse_params("k_state_t *__state, const double * __restrict__ constant, const int const_term")
@@ -258,21 +268,21 @@ def test_parse_params_strips_the_const_qualifier_only_as_a_word():
     assert [p.ctype for p in params] == [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
 
 
-def test_parse_params_refuses_an_unmapped_by_value_scalar_type():
+def test_parse_params_refuses_an_unmapped_by_value_scalar_type() -> None:
     """An unmapped by-value type must fail loud: defaulting to int64 puts a float in a GP register (SysV
     ABI), so the callee reads garbage with no ctypes error."""
     with pytest.raises(ValueError, match="custom_t"):
         parse_params("k_state_t *__state, custom_t n")
 
 
-def test_parse_params_refuses_an_unmapped_pointer_base_type():
+def test_parse_params_refuses_an_unmapped_pointer_base_type() -> None:
     """An unmapped pointer base type must fail loud too, the same as the scalar branch: silently defaulting
     to ``double*`` marshals a differently-sized element through the ABI with no ctypes error."""
     with pytest.raises(ValueError, match="custom_t"):
         parse_params("k_state_t *__state, custom_t *n")
 
 
-def test_int_and_complex_pointers_bind_by_address():
+def test_int_and_complex_pointers_bind_by_address() -> None:
     """xsbench's entry takes ``int*`` and scattering_self_energies' ``dace::complex128*``. A pointer carries only
     the buffer address, so each binds as a pointer to its element (or complex component) type."""
     params = parse_params("const int * __restrict__ index_grid, dace::complex128 * __restrict__ D, int64_t N")
@@ -283,7 +293,7 @@ def test_int_and_complex_pointers_bind_by_address():
     ]
 
 
-def test_owned_build_reusable_handle_program(tmp_path):
+def test_owned_build_reusable_handle_program(tmp_path: Path) -> None:
     """After one init, __program can be called repeatedly in place (the timing path) on one handle, and
     every call still computes the right answer (this nest's output does not read its own prior value, so
     repeating the call is idempotent and one oracle run covers every rep)."""
@@ -300,7 +310,7 @@ def test_owned_build_reusable_handle_program(tmp_path):
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
 
 
-def test_toolchain_is_importable_without_dace():
+def test_toolchain_is_importable_without_dace() -> None:
     """Asking which OpenMP runtime a compiler links must not load the DaCe code generator."""
     # a fresh interpreter: this one imported dace long ago
     path = REPO_ROOT / "nestforge" / "build" / "toolchain.py"
@@ -319,7 +329,7 @@ def test_toolchain_is_importable_without_dace():
 
 
 # compiler diagnostics on the DaCe-generated C++
-def test_resolved_flags_guarantee_the_standard_and_warnings_without_forcing_them():
+def test_resolved_flags_guarantee_the_standard_and_warnings_without_forcing_them() -> None:
     """Both are filled IN, not appended blindly: nearly every caller passes its own ``flags`` for one axis
     (an -O level, an FP mode) and would otherwise lose them. ``-Werror`` is deliberately absent -- this
     compiles generated C++ we do not own, so a warning is a codegen signal, not a failed measurement."""
@@ -331,7 +341,7 @@ def test_resolved_flags_guarantee_the_standard_and_warnings_without_forcing_them
     assert not any(f.startswith("-Werror") for f in BuildOptions().resolved_flags())
 
 
-def test_a_succeeding_compile_surfaces_its_warnings(tmp_path):
+def test_a_succeeding_compile_surfaces_its_warnings(tmp_path: Path) -> None:
     """-Wall is inert unless the diagnostics are read: toolchain.run captured stderr and dropped it on
     success, so every warning from the generated C++ went to /dev/null."""
     src = tmp_path / "warn.cpp"
@@ -352,7 +362,7 @@ def llvm_build_under_warnings_as_errors(source: str, tmp_path: Path) -> None:
         )
 
 
-def test_a_loop_the_optimizer_leaves_unvectorized_builds_under_warnings_as_errors(tmp_path):
+def test_a_loop_the_optimizer_leaves_unvectorized_builds_under_warnings_as_errors(tmp_path: Path) -> None:
     """A kernel's ``omp simd`` is a request. A call the vectorizer cannot see into, or a sweep cell that turns the
     vectorizer off, leaves the loop as it was: that is a slower cell, which the sweep times, not a broken kernel."""
     source = 'extern "C" double opaque(double);\nextern "C" void kernel(long n, double* a) {\n'
@@ -363,14 +373,14 @@ def test_a_loop_the_optimizer_leaves_unvectorized_builds_under_warnings_as_error
     assert (tmp_path / "libkernel.a").is_file()
 
 
-def test_a_real_warning_of_an_llvm_build_stays_an_error_under_warnings_as_errors(tmp_path):
+def test_a_real_warning_of_an_llvm_build_stays_an_error_under_warnings_as_errors(tmp_path: Path) -> None:
     source = 'extern "C" int kernel(int n) {\n  int unused_variable = n;\n  return 0;\n}\n'
 
     with pytest.raises(UserWarning, match="unused_variable"):
         llvm_build_under_warnings_as_errors(source, tmp_path)
 
 
-def test_a_clean_compile_warns_about_nothing(tmp_path):
+def test_a_clean_compile_warns_about_nothing(tmp_path: Path) -> None:
     """The sweep compiles thousands of cells; a run that warned unconditionally would bury the real ones."""
     src = tmp_path / "clean.cpp"
     src.write_text("int main() { return 0; }\n")
@@ -379,7 +389,7 @@ def test_a_clean_compile_warns_about_nothing(tmp_path):
         toolchain_mod.run(["g++", "-Wall", "-c", str(src), "-o", str(tmp_path / "clean.o")])
 
 
-def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path, monkeypatch):
+def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """DaCe emits ``#pragma omp parallel for`` for every multicore map; a build without an OpenMP flag drops the
     pragma and runs serially, silently, so a build that names no runtime gets the resolved one."""
     seen = []
@@ -395,14 +405,14 @@ def test_a_cpu_build_links_an_openmp_runtime_by_default(tmp_path, monkeypatch):
     assert "-fopenmp" in issued and "omp" in issued.replace("-fopenmp", ""), issued
 
 
-def test_the_runtime_is_named_never_a_bare_fopenmp():
+def test_the_runtime_is_named_never_a_bare_fopenmp() -> None:
     """A bare -fopenmp lets each family link its own default (gcc->libgomp, clang->libomp), so a sweep spanning
     compilers ends up with two thread pools in one process."""
     assert openmp_link_flags("g++") != ["-fopenmp"] and "-fopenmp" not in openmp_link_flags("g++")
     assert openmp_link_flags("clang++")[0] == "-fopenmp=libomp"
 
 
-def test_compiler_warnings_are_reported_but_bounded():
+def test_compiler_warnings_are_reported_but_bounded() -> None:
     """-Wall fires on nearly every generated cell, each with its own paths, so warnings dedup by kind and stop
     past a budget of kinds."""
     toolchain_mod.WARNED.clear()
@@ -431,7 +441,7 @@ def write_tool(bin_dir: Path, name: str, answer: str) -> None:
 
 
 @pytest.fixture
-def cold_lookup_caches():
+def cold_lookup_caches() -> Iterator[None]:
     """Runtime lookups are cached per name; a fake PATH must neither read nor leave a cached answer."""
     caches = (toolchain_mod.driver_lib_path, toolchain_mod.runtime_library)
     for cache in caches:
@@ -441,7 +451,7 @@ def cold_lookup_caches():
         cache.cache_clear()
 
 
-def isolate_lookup(tmp_path: Path, monkeypatch) -> Path:
+def isolate_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A PATH holding only the fake drivers a test writes, and no library path in the environment."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -460,8 +470,13 @@ def isolate_lookup(tmp_path: Path, monkeypatch) -> Path:
     ids=["the_compiler_first", "then_an_llvm_driver", "then_llvm_config_with_only_a_versioned_so"],
 )
 def test_libomp_lookup_asks_the_compiler_then_an_llvm_driver_then_llvm_config(
-    tmp_path, monkeypatch, cold_lookup_caches, gxx_answers, clang_answers, found_by
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cold_lookup_caches: None,
+    gxx_answers: bool,
+    clang_answers: bool,
+    found_by: str,
+) -> None:
     """Ubuntu installs libomp under the LLVM prefix, where g++ does not search: the lookup must reach it through
     clang or llvm-config, in that order, and accept libomp.so.5 when the unversioned symlink is missing."""
     bin_dir = isolate_lookup(tmp_path, monkeypatch)
@@ -481,7 +496,9 @@ def test_libomp_lookup_asks_the_compiler_then_an_llvm_driver_then_llvm_config(
     assert runtime_library("omp", "g++") == expected
 
 
-def test_a_libomp_on_library_path_alone_serves_the_program_build(tmp_path, monkeypatch, cold_lookup_caches):
+def test_a_libomp_on_library_path_alone_serves_the_program_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cold_lookup_caches: None
+) -> None:
     """An HPC uenv has no apt libomp: the library path is the only place it can be named."""
     bin_dir = isolate_lookup(tmp_path, monkeypatch)
     write_tool(bin_dir, "g++", "libomp.so")
@@ -493,7 +510,9 @@ def test_a_libomp_on_library_path_alone_serves_the_program_build(tmp_path, monke
     assert args == ["-DOpenMP_CXX_LIB_NAMES=omp", f"-DOpenMP_omp_LIBRARY={tmp_path}/libomp.so"]
 
 
-def test_a_missing_libomp_error_names_where_to_put_it(tmp_path, monkeypatch, cold_lookup_caches):
+def test_a_missing_libomp_error_names_where_to_put_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cold_lookup_caches: None
+) -> None:
     bin_dir = isolate_lookup(tmp_path, monkeypatch)
     write_tool(bin_dir, "g++", "libomp.so")
 
@@ -520,8 +539,8 @@ print(lib.kern(values, n))
 
 @pytest.mark.e2e
 def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
-    tmp_path, monkeypatch, cold_lookup_caches
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cold_lookup_caches: None
+) -> None:
     """The CI layout, rebuilt in a temp dir: libomp only as libomp.so.5 under an LLVM prefix g++ does not search.
     The discovered directory serves the link (-L, -l:libomp.so.5) and the load (rpath), with nothing on the
     loader path."""
@@ -555,17 +574,17 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
     assert float(loaded.stdout) == 999 * 1000 / 2
 
 
-def test_a_gpu_build_uses_the_new_cuda_codegen_whatever_the_config_says():
+def test_a_gpu_build_uses_the_new_cuda_codegen_whatever_the_config_says() -> None:
     with dace.config.set_temporary("compiler", "cuda", "implementation", value="legacy"), new_gpu_codegen():
         assert dace.config.Config.get("compiler", "cuda", "implementation") == "experimental"
 
 
-def test_c_ptr_binds_narrow_integer_buffers():
+def test_c_ptr_binds_narrow_integer_buffers() -> None:
     """An int8 buffer (comet_int4_gemm's packed codes) binds as a pointer, like the wider integers."""
     assert C_PTR["int8_t"] is ctypes.c_int8 and C_PTR["uint8_t"] is ctypes.c_uint8
 
 
-def test_a_std_complex_pointer_binds_as_its_component():
+def test_a_std_complex_pointer_binds_as_its_component() -> None:
     """scattering_self_energies' entry, once built, takes ``std::complex<double>*``: the C++ spelling of
     ``dace::complex128``, bound the same way."""
     params = parse_params("std::complex<double> * __restrict__ D, std::complex<float> * E, int64_t N")

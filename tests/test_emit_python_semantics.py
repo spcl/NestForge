@@ -34,7 +34,7 @@ def assert_oracle_matches_dace(sdfg: dace.SDFG, inputs: dict[str, np.ndarray], s
     return source
 
 
-def test_a_dynamic_wcr_write_the_tasklet_skips_combines_nothing():
+def test_a_dynamic_wcr_write_the_tasklet_skips_combines_nothing() -> None:
     sdfg = dace.SDFG("sem_dynamic_wcr")
     sdfg.add_array("A", [N], dace.float64)
     sdfg.add_array("B", [1], dace.float64)
@@ -48,7 +48,7 @@ def test_a_dynamic_wcr_write_the_tasklet_skips_combines_nothing():
     assert_oracle_matches_dace(sdfg, {"A": np.array([1.0, -1.0, 2.0, -5.0]), "B": np.full(1, 10.0)}, {"N": 4})
 
 
-def test_a_ranged_wcr_write_combines_each_element_once():
+def test_a_ranged_wcr_write_combines_each_element_once() -> None:
     sdfg = dace.SDFG("sem_ranged_wcr")
     sdfg.add_array("A", [N], dace.float64)
     sdfg.add_array("B", [2], dace.float64)
@@ -62,7 +62,7 @@ def test_a_ranged_wcr_write_combines_each_element_once():
     assert_oracle_matches_dace(sdfg, {"A": np.array([1.0, 2.0, 3.0]), "B": np.array([10.0, 20.0])}, {"N": 3})
 
 
-def test_a_reduce_without_identity_accumulates_into_its_output():
+def test_a_reduce_without_identity_accumulates_into_its_output() -> None:
     sdfg = dace.SDFG("sem_reduce_no_identity")
     sdfg.add_array("A", [4], dace.float64)
     sdfg.add_array("B", [1], dace.float64)
@@ -77,7 +77,7 @@ def test_a_reduce_without_identity_accumulates_into_its_output():
     assert "B[0] = B[0] + np.add.reduce(" in source
 
 
-def test_a_library_subset_spelled_with_min_is_python():
+def test_a_library_subset_spelled_with_min_is_python() -> None:
     sdfg = dace.SDFG("sem_library_min")
     sdfg.add_array("A", [N], dace.float64)
     sdfg.add_array("B", [1], dace.float64)
@@ -92,7 +92,7 @@ def test_a_library_subset_spelled_with_min_is_python():
     assert "Min(" not in source
 
 
-def test_an_offset_array_is_indexed_from_its_offset():
+def test_an_offset_array_is_indexed_from_its_offset() -> None:
     sdfg = dace.SDFG("sem_offset")
     sdfg.add_array("A", [3], dace.float64, offset=[-1])
     sdfg.add_array("B", [3], dace.float64, offset=[-1])
@@ -116,19 +116,19 @@ def integer_tasklet(name: str, code: str) -> dace.SDFG:
     return sdfg
 
 
-def test_tasklet_modulo_truncates_as_in_c():
+def test_tasklet_modulo_truncates_as_in_c() -> None:
     sdfg = integer_tasklet("sem_c_mod", "b = a % 3")
 
     assert_oracle_matches_dace(sdfg, {"A": np.array([-4]), "B": np.zeros(1, np.int64)}, {})
 
 
-def test_tasklet_integer_division_truncates_as_in_c():
+def test_tasklet_integer_division_truncates_as_in_c() -> None:
     sdfg = integer_tasklet("sem_c_div", "b = (a / 2) * 2")
 
     assert_oracle_matches_dace(sdfg, {"A": np.array([-7]), "B": np.zeros(1, np.int64)}, {})
 
 
-def test_a_transient_scalar_holds_its_own_dtype():
+def test_a_transient_scalar_holds_its_own_dtype() -> None:
     sdfg = dace.SDFG("sem_local_dtype")
     sdfg.add_array("A", [1], dace.int64)
     sdfg.add_array("B", [1], dace.float64)
@@ -160,13 +160,13 @@ def rounding_map(name: str, code: str, dtype: type[np.generic]) -> dace.SDFG:
 HALVES = np.array([0.5, 1.5, 2.5, -2.5, 0.49999999999999994])
 
 
-def test_round_rounds_halves_away_from_zero_as_std_round():
+def test_round_rounds_halves_away_from_zero_as_std_round() -> None:
     sdfg = rounding_map("sem_round", "b = round(a)", dace.float64)
 
     assert_oracle_matches_dace(sdfg, {"A": HALVES, "B": np.zeros(5)}, {})
 
 
-def test_iround_rounds_halves_away_from_zero_to_an_integer():
+def test_iround_rounds_halves_away_from_zero_to_an_integer() -> None:
     sdfg = rounding_map("sem_iround", "b = iround(a)", dace.int32)
 
     assert_oracle_matches_dace(sdfg, {"A": HALVES, "B": np.zeros(5, np.int32)}, {})
@@ -208,7 +208,7 @@ def nest_per_element(name: str, inner: dace.SDFG, out: dace.Memlet) -> tuple[dac
     return outer, state
 
 
-def test_a_nested_scratch_never_shares_a_kernel_argument_of_its_name():
+def test_a_nested_scratch_never_shares_a_kernel_argument_of_its_name() -> None:
     inner = two_state_nest("sem_scratch_inner", "o = p + q", dace.Memlet("y[i]"))
     outer, state = nest_per_element("sem_scratch", inner, dace.Memlet("b[0:N]"))
     outer.add_array("t", [2], dace.float64)  # the caller's, same name, dtype and shape as the nest's scratch
@@ -223,7 +223,7 @@ def test_a_nested_scratch_never_shares_a_kernel_argument_of_its_name():
     assert_oracle_matches_dace(outer, {"a": a, "b": np.zeros(3), "t": np.array([5.0, 7.0]), "c": np.zeros(1)}, {"N": 3})
 
 
-def test_a_nest_that_repeats_its_max_wcr_inside_is_inlined_with_the_bound_name():
+def test_a_nest_that_repeats_its_max_wcr_inside_is_inlined_with_the_bound_name() -> None:
     write = dace.Memlet("y[0]", wcr="lambda x, y: max(x, y)")
     inner = two_state_nest("sem_max_inner", "o = p + q", write)
     outer, _ = nest_per_element("sem_max", inner, dace.Memlet("b[0:N]", wcr="lambda x, y: max(x, y)"))
@@ -232,9 +232,9 @@ def test_a_nest_that_repeats_its_max_wcr_inside_is_inlined_with_the_bound_name()
     assert_oracle_matches_dace(outer, {"a": a, "b": np.full(3, -100.0)}, {"N": 3})
 
 
-def test_a_symbol_a_later_loop_derives_from_an_earlier_loop_is_typed_from_it():
+def test_a_symbol_a_later_loop_derives_from_an_earlier_loop_is_typed_from_it() -> None:
     sdfg = dace.SDFG("sem_block_dtypes")
-    loops = []
+    loops: list[LoopRegion] = []
     for name, assignment in (("first", {"s": "1.5"}), ("second", {"u": "s * 2"})):
         loop = LoopRegion(name, f"{name}_i < 3", f"{name}_i", f"{name}_i = 0", f"{name}_i = {name}_i + 1")
         sdfg.add_node(loop, is_start_block=not loops)

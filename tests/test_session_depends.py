@@ -16,7 +16,7 @@ N = dace.symbol("N")
 
 
 @dace.program
-def chain(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def chain(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
@@ -30,7 +30,7 @@ def scoped_session(sdfg: dace.SDFG, work_dir: Path) -> Session:
     return session
 
 
-def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path):
+def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path: Path) -> None:
     session = Session(chain.to_sdfg(simplify=True), work_dir=str(tmp_path))
     before = session.kernel_graph()
     assert session.kernel_graph() is before
@@ -42,7 +42,7 @@ def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path):
     assert (before.kernels, after.kernels) == ((), ("extcall_doall0", "extcall_doall1"))
 
 
-def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
+def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path: Path) -> None:
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
 
     kernels = session.list_kernels()
@@ -71,7 +71,7 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path):
     ]
 
 
-def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path):
+def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path: Path) -> None:
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
 
     session.place()
@@ -79,9 +79,11 @@ def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path)
     assert [kernel.device for kernel in session.list_kernels()] == ["cpu", "cpu"]
 
 
-def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
+def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path: Path) -> None:
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-    session.expand([session.row_index()["extcall_doall1"][1].label])
+    state = session.row_index()["extcall_doall1"][1]
+    assert state is not None
+    session.expand([state.label])
 
     lines = session.describe(deps=True).splitlines()
 
@@ -90,7 +92,7 @@ def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path):
     assert "extcall_doall1: T <- extcall_doall0.T" not in session.describe()
 
 
-def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path):
+def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path: Path) -> None:
     sdfg = chain.to_sdfg(simplify=True)
     sdfg.add_reference("R", [N], dace.float64)
     session = Session(sdfg, work_dir=str(tmp_path))

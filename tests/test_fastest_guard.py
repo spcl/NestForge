@@ -3,6 +3,8 @@
 """``get_performance`` never loses a measured program to a slower one: a correct program more than
 :data:`GUARD_MARGIN` slower than the fastest version measured is rolled back to that version."""
 
+from pathlib import Path
+
 import dace
 
 from nestforge.session import GUARD_MARGIN, Restored, Session
@@ -12,12 +14,12 @@ N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def doubled(a: dace.float64[N], b: dace.float64[N]):
+def doubled(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = 2.0 * a[i] + 1.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(doubled.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 64})
     sut.canonicalize()
     return sut
@@ -32,7 +34,7 @@ def tiled(sut: Session) -> None:
     sut.apply_move("tile-doall", move.labels, tile_sizes=[8])
 
 
-def test_a_slower_program_is_rolled_back_to_the_fastest_version_with_its_labels(tmp_path):
+def test_a_slower_program_is_rolled_back_to_the_fastest_version_with_its_labels(tmp_path: Path) -> None:
     sut = session(tmp_path)
     before = sut.describe()
     sut.keep_fastest(measured(10.0))
@@ -45,7 +47,7 @@ def test_a_slower_program_is_rolled_back_to_the_fastest_version_with_its_labels(
     assert sut.describe() == before
 
 
-def test_a_faster_program_becomes_the_fastest_version_and_stays(tmp_path):
+def test_a_faster_program_becomes_the_fastest_version_and_stays(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.keep_fastest(measured(30.0))
     tiled(sut)
@@ -55,7 +57,7 @@ def test_a_faster_program_becomes_the_fastest_version_and_stays(tmp_path):
     assert sut.describe() == after and sut.fastest is not None and sut.fastest[0] == 10.0
 
 
-def test_a_tie_within_the_margin_or_a_wrong_result_changes_nothing(tmp_path):
+def test_a_tie_within_the_margin_or_a_wrong_result_changes_nothing(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.keep_fastest(measured(10.0))
     tiled(sut)

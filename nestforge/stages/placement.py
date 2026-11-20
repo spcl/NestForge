@@ -153,8 +153,14 @@ def offload_kernel_bodies(sdfg: dace.SDFG) -> None:
         bound = [(e.dst_conn, e.data.data) for e in state.in_edges(ext)]
         bound += [(e.src_conn, e.data.data) for e in state.out_edges(ext)]
         for conn, data in bound:
-            if conn is not None and data is not None:
-                body.arrays[conn].storage = state.sdfg.arrays[data].storage
+            if conn is None or data is None:
+                continue
+            storage, desc = state.sdfg.arrays[data].storage, body.arrays[conn]
+            if isinstance(desc, dace.data.Scalar) and storage in GPU_RESIDENT_STORAGES:
+                # DaCe's offloading sees host reads of a device length-1 array, never of a device Scalar (#93)
+                body.arrays[conn] = dace.data.Array(desc.dtype, (1,), storage=storage)
+            else:
+                desc.storage = storage
         OffloadToAccelerator().apply_pass(body, {})
 
 

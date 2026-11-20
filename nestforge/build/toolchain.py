@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-C_SCALAR: dict[str, type[ctypes._SimpleCData]] = {
+C_SCALAR: dict[str, type[ctypes._SimpleCData[Any]]] = {
     "int8_t": ctypes.c_int8,
     "uint8_t": ctypes.c_uint8,
     "int16_t": ctypes.c_int16,
@@ -39,7 +39,7 @@ C_SCALAR: dict[str, type[ctypes._SimpleCData]] = {
 }
 
 #: Pointer element types; a complex buffer binds as a pointer to its component type.
-C_PTR: dict[str, type[ctypes._SimpleCData]] = {
+C_PTR: dict[str, type[ctypes._SimpleCData[Any]]] = {
     **C_SCALAR,
     "dace::complex64": ctypes.c_float,
     "dace::complex128": ctypes.c_double,
@@ -175,7 +175,7 @@ def support_rpath_flags(compiler: str) -> tuple[str, ...]:
 
 
 #: The two ctypes shapes a kernel parameter can take: a scalar type, or a pointer to one.
-CType = type[ctypes._SimpleCData] | type[ctypes._Pointer]
+type CType = type[ctypes._SimpleCData[Any] | ctypes._Pointer[Any]]
 
 #: ctypes' metaclass of every ``POINTER(T)``: tells a by-pointer parameter from a by-value one.
 POINTER_TYPE = type(ctypes.POINTER(ctypes.c_double))

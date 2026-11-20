@@ -6,6 +6,7 @@ it a value."""
 
 import copy
 import os
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -25,13 +26,13 @@ SIZES = {"T": 6, "N": 5}
 
 
 @dace.program
-def carried_sweep(A: dace.float64[T, N], B: dace.float64[T, N]):
+def carried_sweep(A: dace.float64[T, N], B: dace.float64[T, N]) -> None:
     for t in range(1, T):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + B[t, i]
 
 
-def scoped_session(tmp_path) -> Session:
+def scoped_session(tmp_path: Path) -> Session:
     sdfg = carried_sweep.to_sdfg(simplify=True)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
     session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=SIZES)
@@ -46,7 +47,7 @@ def iterator_of(session: Session) -> str:
     return iterator
 
 
-def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_loop(tmp_path):
+def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_loop(tmp_path: Path) -> None:
     session = scoped_session(tmp_path)
 
     iterator = iterator_of(session)
@@ -57,7 +58,7 @@ def test_the_iterator_of_the_loop_around_a_kernel_stays_a_scope_symbol_of_the_lo
     assert iterator in state.symbols_defined_at(ext)
 
 
-def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win_over_it(tmp_path):
+def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win_over_it(tmp_path: Path) -> None:
     session = scoped_session(tmp_path)
     iterator = iterator_of(session)
     (ext,) = [session.kernel(k.name) for k in session.list_kernels()]
@@ -71,7 +72,7 @@ def test_a_kernel_inside_a_loop_gets_the_middle_iterator_value_and_the_sizes_win
 
 
 @pytest.mark.e2e
-def test_the_program_with_the_loop_outside_the_kernel_builds_sweeps_and_matches_numpy(tmp_path):
+def test_the_program_with_the_loop_outside_the_kernel_builds_sweeps_and_matches_numpy(tmp_path: Path) -> None:
     session = scoped_session(tmp_path)
     session.place()
     (kernel,) = session.list_kernels()
@@ -97,7 +98,7 @@ def counted_loop(label: str, iterator: str) -> LoopRegion:
     return LoopRegion(label, f"{iterator} < 4", iterator, f"{iterator} = 0", f"{iterator} = {iterator} + 1")
 
 
-def test_the_loops_outside_a_nested_sdfg_enclose_a_state_inside_it_outermost_first():
+def test_the_loops_outside_a_nested_sdfg_enclose_a_state_inside_it_outermost_first() -> None:
     outer = dace.SDFG("outer_of_nested_loops")
     outer_loop = counted_loop("outer_loop", "i")
     outer.add_node(outer_loop, is_start_block=True)
@@ -113,14 +114,14 @@ def test_the_loops_outside_a_nested_sdfg_enclose_a_state_inside_it_outermost_fir
 
 
 @dace.program
-def runtime_bound_sweep(A: dace.float64[T, N], B: dace.float64[T, N], K: dace.int64[1]):
+def runtime_bound_sweep(A: dace.float64[T, N], B: dace.float64[T, N], K: dace.int64[1]) -> None:
     steps = K[0]
     for t in range(1, steps):
         for i in dace.map[0:N]:
             A[t, i] = A[t - 1, i] + B[t, i]
 
 
-def test_a_loop_bounded_by_a_symbol_the_program_computes_leaves_its_iterator_without_a_value(tmp_path):
+def test_a_loop_bounded_by_a_symbol_the_program_computes_leaves_its_iterator_without_a_value(tmp_path: Path) -> None:
     sdfg = runtime_bound_sweep.to_sdfg(simplify=True)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"
     session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=SIZES)
@@ -141,7 +142,7 @@ def loop_bound(loop: LoopRegion) -> str:
     return str(loop_analysis.get_loop_end(loop))
 
 
-def test_a_loop_inside_a_loop_without_a_value_gets_none_while_one_outside_keeps_its_value():
+def test_a_loop_inside_a_loop_without_a_value_gets_none_while_one_outside_keeps_its_value() -> None:
     graph = dace.SDFG("loops_without_values")
     known = LoopRegion("known", "i < 8", "i", "i = 0", "i = i + 1")
     graph.add_node(known, is_start_block=True)

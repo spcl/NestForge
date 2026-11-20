@@ -7,7 +7,7 @@ import dace
 from nestforge.stages.performance import array_bytes
 
 
-def test_a_container_sized_by_the_running_program_has_no_bytes_and_one_sized_by_the_sizes_has():
+def test_a_container_sized_by_the_running_program_has_no_bytes_and_one_sized_by_the_sizes_has() -> None:
     sdfg = dace.SDFG("sizes")
     sdfg.add_array("h", ["m*(m + 1)"], dace.float64)
     sdfg.add_array("x", ["n"], dace.float64)

@@ -17,20 +17,20 @@ TSTEPS = dace.symbol("TSTEPS")
 
 
 @dace.program
-def vector_add(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vector_add(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         C[i] = A[i] + B[i]
 
 
 @dace.program
-def stencil_sweeps(A: dace.float64[N], B: dace.float64[N]):
+def stencil_sweeps(A: dace.float64[N], B: dace.float64[N]) -> None:
     for t in range(TSTEPS):
         for i in dace.map[1 : N - 1]:
             B[i] = A[i - 1] + A[i] + A[i + 1]
 
 
 @dace.program
-def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
@@ -38,7 +38,7 @@ def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
         C[i] = T[i] * 2.0
 
 
-def top_level_maps(sdfg: dace.SDFG):
+def top_level_maps(sdfg: dace.SDFG) -> list[dace.nodes.MapEntry]:
     return [entry for state in sdfg.states() for entry in top_level_map_entries(state)]
 
 
@@ -46,7 +46,7 @@ def assert_symbolic(actual: sympy.Expr, expected: sympy.Expr) -> None:
     assert dace.symbolic.equal(actual, expected) is True, f"{actual} != {expected}"
 
 
-def test_a_vector_add_does_one_operation_per_element_at_depth_one():
+def test_a_vector_add_does_one_operation_per_element_at_depth_one() -> None:
     sdfg = vector_add.to_sdfg(simplify=True)
     (entry,) = top_level_maps(sdfg)
     metrics = scope_metrics(sdfg, entry)
@@ -55,7 +55,7 @@ def test_a_vector_add_does_one_operation_per_element_at_depth_one():
     assert_symbolic(metrics.depth, 1)
 
 
-def test_a_loop_around_a_stencil_map_scales_work_and_depth_by_the_sweeps():
+def test_a_loop_around_a_stencil_map_scales_work_and_depth_by_the_sweeps() -> None:
     sdfg = stencil_sweeps.to_sdfg(simplify=True)
     (loop,) = [block for block in sdfg.nodes() if isinstance(block, LoopRegion)]
     (entry,) = top_level_maps(sdfg)
@@ -68,7 +68,7 @@ def test_a_loop_around_a_stencil_map_scales_work_and_depth_by_the_sweeps():
     assert_symbolic(in_loop.depth, 2 * TSTEPS)
 
 
-def test_scope_metrics_leaves_the_program_untouched():
+def test_scope_metrics_leaves_the_program_untouched() -> None:
     sdfg = stencil_sweeps.to_sdfg(simplify=True)
     before = sdfg.to_json()
     (loop,) = [block for block in sdfg.nodes() if isinstance(block, LoopRegion)]
@@ -88,7 +88,7 @@ def kernel_rows(tree: str) -> list[str]:
     return [line for line in tree.splitlines() if "reads=" in line and not line.lstrip("|`- ").startswith("state")]
 
 
-def test_an_expanded_kernel_row_carries_its_work_and_depth():
+def test_an_expanded_kernel_row_carries_its_work_and_depth() -> None:
     session = Session(vector_add.to_sdfg(simplify=True))
     state = session.row_index()[kernel_state(session)][1]
     assert state is not None
@@ -99,7 +99,7 @@ def test_an_expanded_kernel_row_carries_its_work_and_depth():
     assert kernel.endswith("  work=N depth=1"), kernel
 
 
-def test_an_expansion_stays_open_while_its_row_lives_and_closes_when_a_change_retires_it():
+def test_an_expansion_stays_open_while_its_row_lives_and_closes_when_a_change_retires_it() -> None:
     session = Session(vector_add.to_sdfg(simplify=True))
     state = session.row_index()[kernel_state(session)][1]
     assert state is not None

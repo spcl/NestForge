@@ -19,7 +19,7 @@ TEMP_BYTES = SIZE * 8
 
 
 @dace.program
-def through_temporary(A: dace.float64[N], B: dace.float64[N]):
+def through_temporary(A: dace.float64[N], B: dace.float64[N]) -> None:
     tmp = dace.define_local([N], dace.float64)
     for i in dace.map[0:N]:
         tmp[i] = A[i] * 2.0

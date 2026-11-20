@@ -10,18 +10,23 @@ of magnitude from the strict sequential result while strict-ieee stays close.
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import numpy as np
 
-gcc = shutil.which("gcc")
-assert gcc is not None, "gcc not on PATH (setup_apt.sh installs it)"
+found_gcc = shutil.which("gcc")
+assert found_gcc is not None, "gcc not on PATH (setup_apt.sh installs it)"
+gcc: str = found_gcc
 
 from dace import symbolic
 from dace.libraries.blas.nodes import Dot
 from dace.sdfg.state import LoopRegion
-from helpers import bench_kernel, c_argtypes, corpus_kernel, emit_sources, extract_nest_to_sdfg
+from helpers import BenchKernel, bench_kernel, c_argtypes, corpus_kernel, emit_sources, extract_nest_to_sdfg
 
 from nestforge.build.toolchain import bind_argument, entry
+from nestforge.ir.extract import Boundary
+
+Buffers = dict[str, np.ndarray]
 
 # a fixed ISA with FMA, so the contraction modes differ on any CI host
 GCC_BASE_FLAGS = ["-O3", "-march=x86-64-v3", "-fPIC", "-shared"]
@@ -36,7 +41,7 @@ FP_MODES = {
 CONTRACTION_ULPS = 4
 
 
-def make_A(M, N, conditioning, seed=0):
+def make_A(M: int, N: int, conditioning: str, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     if conditioning == "well":
         return rng.standard_normal((M, N))
@@ -51,7 +56,7 @@ def computes_nrm_reduction(loop: LoopRegion) -> bool:
     return any(isinstance(n, Dot) for state in loop.states() for n in state.nodes())
 
 
-def prepare_compute_nest():
+def prepare_compute_nest() -> Boundary:
     sdfg = corpus_kernel("scientific_computing/dense_linear_algebra/gramschmidt/gramschmidt").to_sdfg(simplify=True)
     # Select by content, not by stage-3 scope policy: the loop region whose body computes the nrm
     # dot-product reduction. `parallel_top_level_maps` offers one candidate per parallel top-level map and
@@ -61,22 +66,33 @@ def prepare_compute_nest():
     return extract_nest_to_sdfg(sdfg, loops[0], name="gs_compute")
 
 
-def emit(boundary, tmp_path):
+def emit(boundary: Boundary, tmp_path: Path) -> tuple[BenchKernel, Path, list[str]]:
     prep = bench_kernel(boundary, "gs_compute", tmp_path / "kern")
     csrc = next(p for p in emit_sources(prep, tmp_path / "gen") if p.suffix == ".c" and "pluto" not in p.name)
     ctext = csrc.read_text()
     # ABI order is whatever the translator emits (it reorders vs the manifest), so read it back.
-    sig = re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", ctext, re.DOTALL).group(1)
+    found = re.search(r"void\s+gs_compute_fp64\s*\((.*?)\)\s*\{", ctext, re.DOTALL)
+    assert found is not None, "the emitted C has no gs_compute_fp64 definition"
+    sig = found.group(1)
     order = [p.strip().split()[-1].lstrip("*") for p in sig.split(",")]
     return prep, csrc, order
 
 
-def run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
+def run(
+    csrc: Path,
+    order: list[str],
+    boundary: Boundary,
+    flags: list[str],
+    A: np.ndarray,
+    sizes: dict[str, int],
+    tmp_path: Path,
+    tag: str,
+) -> Buffers:
     bsdfg = boundary.standalone_sdfg
     # `k` is a boundary symbol too (the whole k-loop is one nest): a scratch buffer sized "N - k - 1"
     # is allocated at the caller-supplied k (0, its value on entry), its largest extent over the loop.
     env = {symbolic.symbol("M"): sizes["M"], symbolic.symbol("N"): sizes["N"], symbolic.symbol("k"): sizes["k"]}
-    buffers = {}
+    buffers: Buffers = {}
     for a in order:
         if a in bsdfg.arrays:
             d = bsdfg.arrays[a]
@@ -92,13 +108,13 @@ def run(csrc, order, boundary, flags, A, sizes, tmp_path, tag):
     return {o: buffers[o].copy() for o in ("Q", "R")}
 
 
-def relerr(got, ref):
+def relerr(got: Buffers, ref: Buffers) -> float:
     num = max(float(np.max(np.abs(got[k] - ref[k]))) for k in got)
     den = max(float(np.max(np.abs(ref[k]))) for k in got) or 1.0
     return num / den
 
 
-def sweep(conditioning, tmp_path):
+def sweep(conditioning: str, tmp_path: Path) -> dict[str, float]:
     boundary = prepare_compute_nest()
     prep, csrc, order = emit(boundary, tmp_path)
     # nrm is a local scalar inside the extracted loop (never crosses the boundary), so the reduction
@@ -114,7 +130,7 @@ def sweep(conditioning, tmp_path):
     return {m: relerr(outs[m], ref) for m in FP_MODES}
 
 
-def test_fma_contraction_alone_stays_at_machine_epsilon(tmp_path):
+def test_fma_contraction_alone_stays_at_machine_epsilon(tmp_path: Path) -> None:
     """FMA contraction (``-ffp-contract=fast``, no reassociation) rounds a multiply-add once instead of twice, so it
     may move the last bit but stays within a few ulps of ieee-strict -- so the divergence below is due to
     reassociation, not FMA. Refines "FMA is the danger" to "reassociation is the danger"."""
@@ -122,13 +138,13 @@ def test_fma_contraction_alone_stays_at_machine_epsilon(tmp_path):
     assert err["contract-fast"] <= CONTRACTION_ULPS * np.finfo(np.float64).eps
 
 
-def test_fastmath_is_stable_when_well_conditioned(tmp_path):
+def test_fastmath_is_stable_when_well_conditioned(tmp_path: Path) -> None:
     """Well-conditioned: reassociation only shuffles O(n*eps) benign noise (kappa~1) -- stable."""
     err = sweep("well", tmp_path)
     assert err["fast-math"] < 1e-12  # ~machine epsilon, not exploding
 
 
-def test_fastmath_diverges_when_ill_conditioned(tmp_path):
+def test_fastmath_diverges_when_ill_conditioned(tmp_path: Path) -> None:
     """Ill-conditioned (cond~1e14): the near-zero pivot amplifies the reassociated-dot difference.
     Same kernel, same flag -- the danger appears only because the input is ill-conditioned. This is
     the empirical evidence for weighting reduction-reassociation risk by condition number."""

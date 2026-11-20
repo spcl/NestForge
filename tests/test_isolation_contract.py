@@ -13,8 +13,9 @@ import signal
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Never, cast
 
 import dace
 import pytest
@@ -64,43 +65,44 @@ class Opaque(Result):
     array: object
 
 
-def test_a_result_comes_back_from_the_child_unchanged():
+def test_a_result_comes_back_from_the_child_unchanged() -> None:
     assert run_isolated(lambda: Answer(value=41 + 1, name="ok"), Answer, timeout=60) == Answer(value=42, name="ok")
 
 
-def test_an_answer_of_another_shape_is_a_failure_not_a_coerced_result():
-    sut = run_isolated(lambda: Answer(value=42, name="ok"), Pid, timeout=60)
+def test_an_answer_of_another_shape_is_a_failure_not_a_coerced_result() -> None:
+    # the child's answer is deliberately of another record type than the one asked for
+    sut = run_isolated(cast(Callable[[], Pid], lambda: Answer(value=42, name="ok")), Pid, timeout=60)
 
     assert sut == Failure(error="child produced malformed result (crashed mid-write)")
 
 
-def test_an_exception_in_the_child_returns_an_error_instead_of_killing_the_sweep():
+def test_an_exception_in_the_child_returns_an_error_instead_of_killing_the_sweep() -> None:
     """A kernel that raises during marshalling must not take the parent with it: the sweep records
     the reason and moves to the next cell."""
 
-    def boom():
+    def boom() -> Never:
         raise ValueError("bad argument shape")
 
     result = run_isolated(boom, Done, timeout=60)
     assert isinstance(result, Failure) and result.error.startswith("ValueError: bad argument shape")
 
 
-def test_the_error_text_is_truncated_so_one_bad_kernel_cannot_flood_the_report():
+def test_the_error_text_is_truncated_so_one_bad_kernel_cannot_flood_the_report() -> None:
     """A C++ template error pasted into an exception can run to megabytes; the record is a table
     cell, not a log."""
 
-    def verbose():
+    def verbose() -> Never:
         raise RuntimeError("x" * (ERROR_CHARS * 3))
 
     result = run_isolated(verbose, Done, timeout=60)
     assert isinstance(result, Failure) and len(result.error) <= ERROR_CHARS + len("RuntimeError: ")
 
 
-def test_a_segfault_is_reported_as_a_signal_and_the_parent_survives():
+def test_a_segfault_is_reported_as_a_signal_and_the_parent_survives() -> None:
     """the case the fork exists for: freshly-compiled code faults. The signal number is kept because
     it distinguishes a genuine memory fault from a kernel the runtime aborted."""
 
-    def crash():
+    def crash() -> Done:
         os.kill(os.getpid(), signal.SIGSEGV)
         return Done(ok=False)
 
@@ -109,16 +111,16 @@ def test_a_segfault_is_reported_as_a_signal_and_the_parent_survives():
     assert run_isolated(lambda: Done(ok=True), Done, timeout=60) == Done(ok=True)  # the sweep moves on
 
 
-def test_a_child_that_exits_without_writing_is_an_error_not_an_empty_success():
+def test_a_child_that_exits_without_writing_is_an_error_not_an_empty_success() -> None:
     """An empty pipe must not decode as "no differences found" -- an absent result is a failure."""
 
-    def vanish():
+    def vanish() -> None:
         os._exit(0)
 
-    assert run_isolated(vanish, Done, timeout=60) == Failure(error="child produced no result")
+    assert run_isolated(cast(Callable[[], Done], vanish), Done, timeout=60) == Failure(error="child produced no result")
 
 
-def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep(monkeypatch: pytest.MonkeyPatch):
+def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     """The timeout guards an infinite loop in generated code. It must also reap: a sweep that leaks a
     zombie per runaway kernel exhausts the process table long before it finishes."""
     forked: list[int] = []
@@ -130,7 +132,7 @@ def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep(mo
             forked.append(pid)
         return pid
 
-    def runaway():
+    def runaway() -> Done:
         time.sleep(120)
         return Done(ok=False)
 
@@ -146,14 +148,14 @@ def test_a_runaway_child_is_killed_and_reported_rather_than_hanging_the_sweep(mo
         os.waitpid(child, os.WNOHANG)
 
 
-def test_a_child_returning_something_unserialisable_reports_the_reason():
+def test_a_child_returning_something_unserialisable_reports_the_reason() -> None:
     """``work_fn`` promises a JSON-able model. Breaking that promise is the author's bug, and it comes
     back named rather than as a silent empty result."""
     result = run_isolated(lambda: Opaque(array=object()), Opaque, timeout=60)
     assert isinstance(result, Failure) and result.error.startswith("PydanticSerializationError:")
 
 
-def test_isolation_warns_nothing_when_openmp_is_loaded():
+def test_isolation_warns_nothing_when_openmp_is_loaded() -> None:
     """A loaded, initialized libomp is paused once and the fork is deliberate, so neither warns."""
     libomp = ctypes.CDLL("libomp.so.5")  # RTLD_LOCAL: later tests must not bind GOMP_* to it
     libomp.omp_get_max_threads()  # initialize the runtime
@@ -164,7 +166,7 @@ def test_isolation_warns_nothing_when_openmp_is_loaded():
         assert run_isolated(lambda: Done(ok=True), Done) == Done(ok=True)
 
 
-def test_a_child_using_libomp_leaves_no_registration_behind():
+def test_a_child_using_libomp_leaves_no_registration_behind() -> None:
     """libomp registers every process in shared memory and unregisters only at a normal exit; the isolated child
     leaves through ``os._exit``, so the parent removes what it left."""
 
@@ -211,7 +213,7 @@ def child_mask_after_openmp_bound_the_caller() -> tuple[list[int], list[int], li
 
 
 @needs_affinity
-def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
+def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized() -> None:
     """libomp's fork handler puts a child on the mask it first saw, so a slot's pin would not reach it. In a spawned
     process: this one must not initialize libomp, nor narrow its mask."""
     with multiprocessing.get_context("spawn").Pool(1) as pool:
@@ -221,7 +223,7 @@ def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized():
 
 
 @needs_affinity
-def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one():
+def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one() -> None:
     """libomp binds the thread that starts it to the first place, often one CPU; a child given that mask would run
     its whole team on one core and time the program tens of times slower (NestForge#75). In a spawned process, as
     above."""
@@ -245,7 +247,7 @@ def spawned_child_mask_after_openmp_bound_the_caller(answers: Any) -> None:
     answers.put((full, run_spawned(spawned_mask, None)))
 
 
-def in_fresh_process(target, *arguments):
+def in_fresh_process(target: Callable[..., None], *arguments: object) -> Any:  # noqa: ANN401 -- what target put
     """``target(queue, *arguments)``'s one answer, from a spawned process that is no pool worker (a pool's
     daemonic workers cannot spawn) and has loaded nothing of this one's."""
     context = multiprocessing.get_context("spawn")
@@ -258,7 +260,7 @@ def in_fresh_process(target, *arguments):
 
 
 @needs_affinity
-def test_a_spawned_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one():
+def test_a_spawned_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one() -> None:
     """A spawned interpreter starts from its parent's mask; once libomp bound the parent to one core, a GPU
     session's program would run its CPU parts there (NestForge#99)."""
     full, child = in_fresh_process(spawned_child_mask_after_openmp_bound_the_caller)
@@ -271,7 +273,7 @@ N = dace.symbol("N")
 
 
 @dace.program
-def doubled(a: dace.float64[N], b: dace.float64[N]):
+def doubled(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = 2.0 * a[i]
 
@@ -289,7 +291,7 @@ def build_and_report_mappings(answers: Any, folder: str) -> None:
 
 
 @needs_affinity
-def test_building_a_program_to_time_maps_neither_it_nor_an_openmp_runtime_into_the_caller(tmp_path: Path):
+def test_building_a_program_to_time_maps_neither_it_nor_an_openmp_runtime_into_the_caller(tmp_path: Path) -> None:
     """Loading the program maps libomp here, which with OMP_PROC_BIND or OMP_PLACES binds this process to one core
     and every child it forks with it (NestForge#99); only the timing child may load it."""
     built, newly_mapped, library = in_fresh_process(build_and_report_mappings, str(tmp_path))
@@ -299,7 +301,9 @@ def test_building_a_program_to_time_maps_neither_it_nor_an_openmp_runtime_into_t
     assert not [path for path in newly_mapped if "omp" in Path(path).name], newly_mapped
 
 
-def test_without_a_cpu_mask_call_a_child_runs_on_every_cpu_and_restricting_is_a_no_op(monkeypatch):
+def test_without_a_cpu_mask_call_a_child_runs_on_every_cpu_and_restricting_is_a_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """On an OS with no CPU-mask call (macOS) the import must not fail: a child gets every CPU, and narrowing only
     records the set."""
     monkeypatch.setattr(isolation, "HAS_AFFINITY", False)

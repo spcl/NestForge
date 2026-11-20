@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -24,13 +25,13 @@ MAP_LINE = re.compile(r"^\S+  \[\w+=[^\]]+\]  reads=")
 LOOP_LINE = re.compile(r"^\S+  \w+=\S*:\S+(  |$)")
 
 
-def nest_kinds(tree: str) -> dict:
+def nest_kinds(tree: str) -> dict[str, int]:
     """How many map nests and loop nests a saved structure tree shows."""
     texts = [TREE_GUIDE.sub("", line) for line in tree.splitlines()[1:]]
     return {"maps": sum(bool(MAP_LINE.match(t)) for t in texts), "loops": sum(bool(LOOP_LINE.match(t)) for t in texts)}
 
 
-def lib_paths(node):
+def lib_paths(node: object) -> Iterator[str]:
     """Every non-empty ``lib_path`` a saved SDFG records, at any depth."""
     if isinstance(node, dict):
         yield from ([node["lib_path"]] if node.get("lib_path") else [])
@@ -42,7 +43,7 @@ def lib_paths(node):
 
 
 @pytest.fixture(scope="module")
-def quickstart_run(tmp_path_factory) -> tuple[Path, str]:
+def quickstart_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     """The CPU quick start, run once for every test here: its output folder and what it printed."""
     out = tmp_path_factory.mktemp("quickstart")
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
@@ -52,7 +53,7 @@ def quickstart_run(tmp_path_factory) -> tuple[Path, str]:
     return out, run.stdout
 
 
-def test_cpu_quickstart_prints_one_line_per_stage_and_saves_every_artifact(quickstart_run):
+def test_cpu_quickstart_prints_one_line_per_stage_and_saves_every_artifact(quickstart_run: tuple[Path, str]) -> None:
     out, stdout = quickstart_run
 
     stages = [line.split()[0] for line in stdout.splitlines() if line[:1].isdigit()]
@@ -80,7 +81,7 @@ def test_cpu_quickstart_prints_one_line_per_stage_and_saves_every_artifact(quick
     assert feedback[0].startswith("kernel times: extcall_doall0 ") and 2 <= len(feedback) <= 9
 
 
-def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_run):
+def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_run: tuple[Path, str]) -> None:
     out, stdout = quickstart_run
 
     lines = (out / "kernel_deps.txt").read_text().splitlines()
@@ -89,7 +90,9 @@ def test_cpu_quickstart_prints_and_saves_the_kernel_dependency_lines(quickstart_
     assert all(f"  {line}" in stdout.splitlines() for line in lines)
 
 
-def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_trees(quickstart_run):
+def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_trees(
+    quickstart_run: tuple[Path, str],
+) -> None:
     out, stdout = quickstart_run
 
     trees = {label: (out / "trees" / f"{label}.txt").read_text() for label in ("0-input", "1-canonical", "2-moved")}
@@ -101,7 +104,7 @@ def test_cpu_quickstart_shows_four_loop_nests_becoming_one_map_in_its_saved_tree
 
 
 @pytest.fixture(scope="module")
-def jacobi_run(tmp_path_factory) -> tuple[Path, str]:
+def jacobi_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
     """The CPU quick start on jacobi_1d, whose canonical form keeps two maps in its time loop."""
     out = tmp_path_factory.mktemp("quickstart_jacobi")
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": os.pathsep.join([str(REPO_ROOT), *sys.path])}
@@ -115,7 +118,7 @@ def jacobi_run(tmp_path_factory) -> tuple[Path, str]:
     return out, run.stdout
 
 
-def test_jacobi_keeps_two_maps_in_its_time_loop(jacobi_run):
+def test_jacobi_keeps_two_maps_in_its_time_loop(jacobi_run: tuple[Path, str]) -> None:
     out, _ = jacobi_run
 
     shaped = (out / "trees" / "2-moved.txt").read_text()
@@ -123,7 +126,7 @@ def test_jacobi_keeps_two_maps_in_its_time_loop(jacobi_run):
     assert nest_kinds(shaped) == {"maps": 2, "loops": 1}
 
 
-def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
+def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run: tuple[Path, str]) -> None:
     """The second kernel's A reaches the first only through the time loop's back edge."""
     out, _ = jacobi_run
 
@@ -136,7 +139,7 @@ def test_jacobi_dependency_lines_carry_a_across_the_time_loop(jacobi_run):
     ]
 
 
-def test_jacobi_builds_and_sweeps_both_kernels(jacobi_run):
+def test_jacobi_builds_and_sweeps_both_kernels(jacobi_run: tuple[Path, str]) -> None:
     out, _ = jacobi_run
 
     config = json.loads((out / "6-variants.json").read_text())

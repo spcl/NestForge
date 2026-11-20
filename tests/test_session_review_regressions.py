@@ -5,6 +5,7 @@
 import sys
 from http import HTTPStatus
 from pathlib import Path
+from typing import Never
 
 import dace
 import numpy as np
@@ -34,7 +35,7 @@ SIZE = 64
 
 
 @dace.program
-def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         c[i] = 2.0 * a[i] + b[i]
 
@@ -52,7 +53,7 @@ def scaled_sum_data() -> tuple[dict[str, np.ndarray], np.ndarray]:
 
 
 @pytest.mark.e2e
-def test_measuring_a_cpu_program_keeps_the_kernel_build_it_was_given(tmp_path):
+def test_measuring_a_cpu_program_keeps_the_kernel_build_it_was_given(tmp_path: Path) -> None:
     """A CPU program is not placed to be measured: placing would drop the written or tuned build for the default."""
     session, name = one_kernel_session(tmp_path)
     session.optimize_kernel(name)
@@ -67,7 +68,7 @@ def test_measuring_a_cpu_program_keeps_the_kernel_build_it_was_given(tmp_path):
 
 
 @pytest.mark.e2e
-def test_each_sweep_winner_is_kept_in_a_folder_of_its_own(tmp_path):
+def test_each_sweep_winner_is_kept_in_a_folder_of_its_own(tmp_path: Path) -> None:
     """Sweeping one source again keeps the count of winners; the folder named by it overwrote a linked winner."""
     session, name = one_kernel_session(tmp_path)
 
@@ -81,7 +82,7 @@ def test_each_sweep_winner_is_kept_in_a_folder_of_its_own(tmp_path):
 
 
 @pytest.mark.e2e
-def test_performance_measures_again_for_other_arguments(tmp_path):
+def test_performance_measures_again_for_other_arguments(tmp_path: Path) -> None:
     session, _ = one_kernel_session(tmp_path)
     inputs, expected = scaled_sum_data()
     right, wrong = Reference({"c": expected}, 0.0, 0.0), Reference({"c": expected + 1.0}, 0.0, 0.0)
@@ -93,7 +94,7 @@ def test_performance_measures_again_for_other_arguments(tmp_path):
     assert session.performance(inputs, wrong, reps=1, codegen="first") is second, "the same arguments reuse it"
 
 
-def test_the_numpy_reference_is_called_by_the_specs_function_name():
+def test_the_numpy_reference_is_called_by_the_specs_function_name() -> None:
     """tsvc_2_s000's module is ``tsvc_2_s000`` and its function ``s000``."""
     from hpcagent_bench.categories import Preset
     from hpcagent_bench.frameworks.benchmark import Benchmark
@@ -107,7 +108,7 @@ def test_the_numpy_reference_is_called_by_the_specs_function_name():
     assert set(outputs) == set(kernel.spec.output_args) and all(v.size for v in outputs.values())
 
 
-def test_a_complex_scalar_of_the_bench_reaches_the_program(monkeypatch):
+def test_a_complex_scalar_of_the_bench_reaches_the_program(monkeypatch: pytest.MonkeyPatch) -> None:
     from hpcagent_bench.frameworks.benchmark import Benchmark
 
     drawn = Benchmark.get_data
@@ -120,7 +121,7 @@ def test_a_complex_scalar_of_the_bench_reaches_the_program(monkeypatch):
     assert inputs["shift"] == 1.0 + 2.0j
 
 
-def test_a_stale_generated_program_is_regenerated():
+def test_a_stale_generated_program_is_regenerated() -> None:
     kernel = corpus_kernel("tsvc_2_s1112")
     fresh = kernel.dace_file.read_text()
     try:
@@ -131,7 +132,7 @@ def test_a_stale_generated_program_is_regenerated():
         kernel.dace_file.write_text(fresh)
 
 
-def test_a_module_that_fails_to_import_is_not_cached(tmp_path):
+def test_a_module_that_fails_to_import_is_not_cached(tmp_path: Path) -> None:
     broken = tmp_path / "broken_dace.py"
     broken.write_text("raise RuntimeError('half-run')\n")
     kernel = CorpusKernel("broken", "nestforge_test_broken_dace", broken, corpus_kernel("tsvc_2_s000").spec)
@@ -142,10 +143,10 @@ def test_a_module_that_fails_to_import_is_not_cached(tmp_path):
     assert kernel.module_path not in sys.modules
 
 
-def test_a_variant_that_raises_is_recorded_and_the_replay_goes_on(tmp_path):
+def test_a_variant_that_raises_is_recorded_and_the_replay_goes_on(tmp_path: Path) -> None:
     session, _ = one_kernel_session(tmp_path)
 
-    def broken(script, ctx):
+    def broken(script: object, ctx: object) -> Never:
         raise ValueError("no such schedule")
 
     record = run_variant(session, Context("cpu", 1, "S"), "broken", broken, ({}, None), 1)

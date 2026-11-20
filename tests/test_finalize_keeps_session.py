@@ -3,12 +3,14 @@
 """``finalize`` builds a copy: score and submit call it first, and the agent keeps working on the session after."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from dace.libraries.standard.nodes.external_call import external_calls
 
 from nestforge import session as session_module
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.session import Session, external_calls
+from nestforge.session import Codegen, Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget
 
@@ -18,7 +20,7 @@ KERNEL = "jacobi_1d"
 PRESET = "S"
 
 
-def bench_session(codegen: str) -> Session:
+def bench_session(codegen: Codegen) -> Session:
     kernel = corpus_kernel(KERNEL)
     assert kernel is not None, f"{KERNEL} is in the corpus"
     session = Session(kernel.to_sdfg(), Targets(gpu=False), sizes=preset_sizes(kernel, PRESET), codegen=codegen)
@@ -38,6 +40,7 @@ def test_finalize_leaves_the_moves_tree_and_run_defaults_scopes_after_it_works(t
     assert session.describe() == tree
     assert session.list_moves() == moves
     kernels = session.run_defaults("scopes")
+    assert isinstance(kernels, list)
     assert sorted(kernel.name for kernel in kernels) == sorted(final.kernels)
     assert all(ext.implementation != "ExternCall" for ext in external_calls(session.sdfg)), "built on the copy"
 
@@ -48,7 +51,7 @@ def test_a_second_finalize_relinks_the_swept_winners(tmp_path: Path, monkeypatch
     swept = dict(session.swept)
     assert swept
 
-    def refuse(*args: object, **kwargs: object) -> None:
+    def refuse(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("an unchanged program is not swept again")
 
     monkeypatch.setattr(session_module, "select_variant", refuse)

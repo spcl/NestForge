@@ -2,8 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bench_data: the bench's inputs and reference outputs, named as the generated program names them."""
 
+from typing import Never
+
 import hpcagent_bench.numerical_oracle as oracle_mod
 import numpy as np
+import pytest
 from helpers import corpus_kernel
 from hpcagent_bench.harness.grading import ReferenceUnavailable
 
@@ -12,7 +15,7 @@ from nestforge.server import KERNELBENCH_DIR_VAR, Setup, bench_data, numpy_outpu
 from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE
 
 
-def test_a_renamed_argument_reaches_the_program_by_its_new_name():
+def test_a_renamed_argument_reaches_the_program_by_its_new_name() -> None:
     """graupel_substep_sedimentation's generator renames ``frac`` to ``__frac``; under the old name the program ran
     on zeros."""
     assert corpus_kernel("graupel_substep_sedimentation").renames() == {"frac": "__frac"}
@@ -22,15 +25,17 @@ def test_a_renamed_argument_reaches_the_program_by_its_new_name():
     assert reference is not None and set(reference.outputs) == {"G", "fl", "prec", "q"}
 
 
-def test_a_kernel_without_renames_keeps_its_names():
+def test_a_kernel_without_renames_keeps_its_names() -> None:
     assert corpus_kernel("tsvc_2_s231").renames() == {}
 
 
-def test_a_missing_kernelbench_reference_names_the_setting_that_points_at_one(monkeypatch, capsys):
-    def no_submodule(spec, data):
+def test_a_missing_kernelbench_reference_names_the_setting_that_points_at_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_submodule(spec: object, data: object) -> Never:
         raise ReferenceUnavailable("torch reference: not in the KernelBench submodule at /site-packages")
 
-    def no_function(spec, data):
+    def no_function(spec: object, data: object) -> Never:
         raise ReferenceUnavailable("no NumPy function")
 
     monkeypatch.setattr(oracle_mod, "compiled_reference", no_submodule)
@@ -42,10 +47,12 @@ def test_a_missing_kernelbench_reference_names_the_setting_that_points_at_one(mo
     assert KERNELBENCH_DIR_VAR in capsys.readouterr().err
 
 
-def test_a_kernel_the_bench_cannot_grade_is_graded_against_its_numpy_function(monkeypatch, capsys):
+def test_a_kernel_the_bench_cannot_grade_is_graded_against_its_numpy_function(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """#85: with the KernelBench submodule missing, the kernel's own NumPy function stands in, and says so."""
 
-    def no_submodule(spec, data):
+    def no_submodule(spec: object, data: object) -> Never:
         raise ReferenceUnavailable("torch reference: not in the KernelBench submodule at /site-packages")
 
     monkeypatch.setattr(oracle_mod, "compiled_reference", no_submodule)
@@ -58,7 +65,7 @@ def test_a_kernel_the_bench_cannot_grade_is_graded_against_its_numpy_function(mo
     assert "graded against the kernel's NumPy function" in capsys.readouterr().err
 
 
-def test_the_numpy_function_leaves_the_inputs_it_was_given_as_drawn():
+def test_the_numpy_function_leaves_the_inputs_it_was_given_as_drawn() -> None:
     from hpcagent_bench.categories import Preset
     from hpcagent_bench.frameworks.benchmark import Benchmark
 
@@ -73,6 +80,6 @@ def test_the_numpy_function_leaves_the_inputs_it_was_given_as_drawn():
     assert np.array_equal(first["out"], second["out"])
 
 
-def test_a_fuzzed_token_runs_a_session_on_its_rung():
+def test_a_fuzzed_token_runs_a_session_on_its_rung() -> None:
     """A judge on ``XL+fuzz`` hands the token to the reference flavor and ``fuzzed`` to the agent's route."""
     assert [size_rung(token) for token in ("S", "M+fuzz", "XL+fuzz", "fuzzed")] == ["S", "M", "XL", "XL"]

@@ -4,6 +4,9 @@
 check sizes against the reference; the first move refused or found wrong takes the whole batch back, and the answer
 names it, the substep and why. Each applied move stays its own change for ``rollback``."""
 
+from pathlib import Path
+from typing import Any
+
 import dace
 import numpy as np
 from dace.sdfg import nodes
@@ -16,7 +19,7 @@ SIZE = 16
 
 
 @dace.program
-def three_stages(A: dace.float64[N], C: dace.float64[N]):
+def three_stages(A: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     U = np.empty_like(A)
     for i in dace.map[0:N]:
@@ -27,7 +30,7 @@ def three_stages(A: dace.float64[N], C: dace.float64[N]):
         C[i] = U[i] - 3.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(three_stages.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -40,7 +43,7 @@ def check(offset: float = 0.0) -> CheckData:
     return CheckData({"A": a, "C": np.zeros(SIZE)}, Reference({"C": want}, 1e-12, 1e-12), {"N": SIZE})
 
 
-def fusions(sut: Session) -> list[dict[str, object]]:
+def fusions(sut: Session) -> list[dict[str, Any]]:
     """The first fusion offered, as an agent passes it to apply_moves."""
     first = sut.list_moves("doall-fusion")[0]
     return [{"kind": first.kind, "labels": list(first.labels)}]
@@ -50,7 +53,7 @@ def doalls(sut: Session) -> int:
     return sum(isinstance(n, nodes.MapEntry) for n, _ in sut.sdfg.all_nodes_recursive())
 
 
-def test_a_batch_applies_every_move_checks_each_and_rollback_takes_back_the_last(tmp_path):
+def test_a_batch_applies_every_move_checks_each_and_rollback_takes_back_the_last(tmp_path: Path) -> None:
     sut = session(tmp_path)
     before = doalls(sut)
     (fusion,) = fusions(sut)
@@ -65,7 +68,7 @@ def test_a_batch_applies_every_move_checks_each_and_rollback_takes_back_the_last
     assert doalls(sut) == before - 1, "rollback takes back the tile only"
 
 
-def test_a_refused_move_names_its_index_and_takes_the_whole_batch_back(tmp_path):
+def test_a_refused_move_names_its_index_and_takes_the_whole_batch_back(tmp_path: Path) -> None:
     sut = session(tmp_path)
     tree = sut.describe()
     (fusion,) = fusions(sut)
@@ -77,7 +80,7 @@ def test_a_refused_move_names_its_index_and_takes_the_whole_batch_back(tmp_path)
     assert sut.describe() == tree and sut.applied == []
 
 
-def test_a_move_that_leaves_wrong_numbers_is_named_and_taken_back(tmp_path):
+def test_a_move_that_leaves_wrong_numbers_is_named_and_taken_back(tmp_path: Path) -> None:
     sut = session(tmp_path)
     tree = sut.describe()
 
@@ -88,7 +91,7 @@ def test_a_move_that_leaves_wrong_numbers_is_named_and_taken_back(tmp_path):
     assert sut.describe() == tree
 
 
-def test_without_a_reference_the_batch_applies_and_says_it_went_unchecked(tmp_path):
+def test_without_a_reference_the_batch_applies_and_says_it_went_unchecked(tmp_path: Path) -> None:
     sut = session(tmp_path)
     data = check()
 

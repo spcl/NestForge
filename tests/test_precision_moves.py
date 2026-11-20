@@ -3,6 +3,8 @@
 """The ``precision`` family: ``set-fp-mode`` fixes the floating-point flags of one kernel's build, and
 ``change-precision`` stores an internal array in another floating-point type. Both are undone by ``rollback``."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
@@ -15,7 +17,7 @@ SIZE = 64
 
 
 @dace.program
-def staged(a: dace.float64[N], b: dace.float64[N]):
+def staged(a: dace.float64[N], b: dace.float64[N]) -> None:
     t = np.empty_like(a)
     for i in dace.map[0:N]:
         t[i] = a[i] * 3.0
@@ -23,7 +25,7 @@ def staged(a: dace.float64[N], b: dace.float64[N]):
         b[i] = t[i] + 1.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(staged.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -31,10 +33,10 @@ def session(tmp_path) -> Session:
 
 def internal(sut: Session) -> str:
     (name,) = [name for name, desc in sut.sdfg.arrays.items() if desc.transient and isinstance(desc, dace.data.Array)]
-    return name
+    return str(name)
 
 
-def test_set_fp_mode_builds_one_kernel_in_that_mode_until_rollback(tmp_path):
+def test_set_fp_mode_builds_one_kernel_in_that_mode_until_rollback(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.default_scopes()
     first, second = sorted(ext.name for ext in external_calls(sut.sdfg))
@@ -51,12 +53,12 @@ def test_set_fp_mode_builds_one_kernel_in_that_mode_until_rollback(tmp_path):
     assert sut.kernel_modes == frozenset()
 
 
-def test_a_mode_the_target_does_not_build_and_a_program_without_kernels_are_refused(tmp_path):
+def test_a_mode_the_target_does_not_build_and_a_program_without_kernels_are_refused(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     unscoped = sut.apply_move("set-fp-mode", [], fp_mode="fast-math")
     sut.default_scopes()
-    kernel = sorted(ext.name for ext in external_calls(sut.sdfg))[0]
+    kernel = min(ext.name for ext in external_calls(sut.sdfg))
     loose = sut.apply_move("set-fp-mode", [], fp_mode="loose", scope=kernel)
 
     assert sut.list_moves("set-fp-mode") == [], "set-fp-mode is offered inside a kernel only"
@@ -65,7 +67,7 @@ def test_a_mode_the_target_does_not_build_and_a_program_without_kernels_are_refu
     assert sut.kernel_modes == frozenset()
 
 
-def test_change_precision_stores_an_internal_array_in_float32_and_the_program_computes_in_it(tmp_path):
+def test_change_precision_stores_an_internal_array_in_float32_and_the_program_computes_in_it(tmp_path: Path) -> None:
     sut = session(tmp_path)
     name = internal(sut)
     listed = [(move.container, move.dtype) for move in sut.list_moves("change-precision")]
@@ -83,7 +85,7 @@ def test_change_precision_stores_an_internal_array_in_float32_and_the_program_co
     assert sut.sdfg.arrays[name].dtype == dace.float64
 
 
-def test_change_precision_refuses_an_argument_an_unknown_array_and_a_second_change(tmp_path):
+def test_change_precision_refuses_an_argument_an_unknown_array_and_a_second_change(tmp_path: Path) -> None:
     sut = session(tmp_path)
     name = internal(sut)
     sut.apply_move("change-precision", [], container=name, dtype="float32")
@@ -97,7 +99,7 @@ def test_change_precision_refuses_an_argument_an_unknown_array_and_a_second_chan
 
 
 @dace.program
-def copied(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def copied(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     t = np.empty_like(a)
     for i in dace.map[0:N]:
         t[i] = a[i] * 3.0
@@ -106,7 +108,7 @@ def copied(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
         c[i] = t[i] + 1.0
 
 
-def test_an_array_copied_to_another_array_keeps_its_type(tmp_path):
+def test_an_array_copied_to_another_array_keeps_its_type(tmp_path: Path) -> None:
     sut = Session(copied.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     (name,) = [n for n, d in sut.sdfg.arrays.items() if d.transient and isinstance(d, dace.data.Array)]
