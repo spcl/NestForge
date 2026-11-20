@@ -226,6 +226,9 @@ def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     if all(isinstance(obj, nodes.MapEntry) or (state is not None and is_call(state, obj)) for obj, state in rows):
         extract = map_group(sdfg, rows)
     elif all(isinstance(obj, ControlFlowBlock) for obj, _ in rows):
+        if all(isinstance(obj, SDFGState) and obj.number_of_nodes() == 0 for obj, _ in rows):
+            # an inlined kernel leaves its state behind empty; DaCe cannot nest an empty subgraph
+            return "the blocks named are empty states: there is no work to make a kernel of."
         extract = block_group(sdfg, [obj for obj, _ in rows])
     else:
         return "name only top-level doalls (maps, library calls) or only control-flow blocks."

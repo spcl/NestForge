@@ -16,6 +16,8 @@ from dace.libraries.standard.nodes.external_call import ExternalCall, external_c
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 from test_fusion_fuzz import load_program
+from test_placement import chain
+from test_rollback_equivalence import content_of
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
@@ -440,3 +442,22 @@ def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_p
 
     assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
     session.sdfg.validate()
+
+
+def test_naming_an_empty_state_is_refused_and_changes_nothing(tmp_path: Path) -> None:
+    """Inlining a kernel leaves its state empty, and the tree still names it; scoping it crashed in DaCe's
+    ``nest_state_subgraph`` with ``KeyError: -1`` (the placement sequence fuzz, seed 1)."""
+    session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path))
+    session.canonicalize()
+    for kernel in session.default_scopes():
+        assert session.unset_scope(kernel.name).status is MoveStatus.APPLIED
+    session.describe()
+    empty = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, SDFGState) and not obj.nodes()]
+    assert empty, "the fixture must leave an empty state, else it tests nothing"
+    before = content_of(session.sdfg)
+
+    result = session.set_scope(empty[:1])
+
+    assert result.status is MoveStatus.ILLEGAL, result
+    assert "empty" in str(result.reason)
+    assert content_of(session.sdfg) == before and not external_calls(session.sdfg)
