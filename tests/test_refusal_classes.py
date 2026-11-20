@@ -12,13 +12,13 @@ from nestforge.session import Session
 from nestforge.stages.moves import (
     CANDIDATES,
     PROPAGATE_CONFIG,
-    VECTORIZE_DOALL,
     Rewrite,
     plan_move,
     probe_implementation,
     probe_sizes,
     tree_label,
 )
+from nestforge.stages.vectorize import VECTORIZE_DOALL
 
 #: Corpus programs whose canonical forms offer loops, doalls, guards, and library calls to every kind.
 KERNELS = ("jacobi_1d", "tsvc_2_s231", "loop_level_reasoning/fuse_diamond/fuse_diamond", "gramschmidt")

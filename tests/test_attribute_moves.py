@@ -7,6 +7,7 @@ import json
 import pathlib
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -43,8 +44,8 @@ def test_each_replayed_call_is_timed_and_named_by_family_up_to_the_first_written
     assert set(result["log_share_per_family"]) == {"fusion", "tiling"}
 
 
-def test_a_journal_from_before_the_renames_replays_under_the_current_names():
-    old = [
+def test_a_journal_from_before_the_renames_replays_under_the_current_names() -> None:
+    old: list[dict[str, Any]] = [
         {"kind": "auto-vectorize-scope", "labels": ["doall3"], "tile_sizes": [8], "isa": "avx2"},
         {"kind": "expand-library", "labels": ["lib_blas0"]},
         {"kind": "tile-doall", "labels": ["doall1"], "tile_sizes": [32]},

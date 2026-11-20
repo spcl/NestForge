@@ -639,8 +639,8 @@ def block_line(block: ControlFlowBlock, defs: dict[str, str]) -> str:
     """One control-flow block's line: its canonical label, plus its domain or condition."""
     if isinstance(block, LoopRegion):
         domain = loop_domain(block, defs)
-        return f"{block.label}  {domain}" if domain else block.label
-    return block.label
+        return f"{block.label}  {domain}" if domain else str(block.label)
+    return str(block.label)
 
 
 def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.CodeNode) -> str:

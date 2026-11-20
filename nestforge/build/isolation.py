@@ -91,7 +91,7 @@ def sealed_argv(argv: list[str]) -> list[str]:
         return argv
     from hpcagent_bench import seal
 
-    return seal.wrap(seal.grading_plan([keep]), argv)
+    return list(seal.wrap(seal.grading_plan([keep]), argv))
 
 
 def enter_seal() -> None:
@@ -179,7 +179,8 @@ def run_spawned[T: Result](target: Callable[[Any], T], payload: Any, timeout: fl
     assert child.pid is not None, "a started process has a pid"
     sender.close()
     try:
-        return spawned_result(receiver, child, timeout)
+        result: T | Failure = spawned_result(receiver, child, timeout)
+        return result
     except BaseException:  # the caller was stopped: its child must not stay on the device
         child.kill()
         child.join()

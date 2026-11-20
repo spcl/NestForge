@@ -92,6 +92,7 @@ from nestforge.stages.canonicalize import (
 )
 from nestforge.stages.expand import implementations, in_doall, set_default_implementations, settle
 from nestforge.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
+from nestforge.stages.feedback import Evidence
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -165,6 +166,7 @@ from nestforge.stages.moves import (
     set_gpu_choices,
     sinkable_containers,
     size_argument,
+    size_arguments,
     tree_label,
 )
 from nestforge.stages.performance import (
@@ -603,6 +605,8 @@ Stage = Literal["moves", "finish", "scopes", "placement", "round"]
 Measured = tuple[dict[str, np.ndarray], Reference | None, int, Codegen, Performance]
 #: A sweep winner's identity: the kernel, the text of its units, the sizes it was timed at, and the FP mode.
 SweepKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...], str | None]
+#: A first build's identity: the kernel, its device and body, its sizes, its FP mode, and the CPU pipeline.
+FirstBuildKey = tuple[str, tuple[str, ...], tuple[tuple[str, SymbolValue], ...], str | None, tuple[str, str] | None]
 
 
 def kept(build: KernelBuild, folder: Path) -> KernelBuild:
@@ -632,7 +636,7 @@ def undone_on_failure[**Params, Answer](
     """``change``, a :class:`Session` method, under :meth:`Session.atomic`."""
 
     @wraps(change)
-    def guarded(session: Session, *args: Params.args, **kwargs: Params.kwargs) -> Answer:
+    def guarded(session: Session, /, *args: Params.args, **kwargs: Params.kwargs) -> Answer:
         with session.atomic():
             return change(session, *args, **kwargs)
 
@@ -846,7 +850,7 @@ class Session:
         # where a cached winner's units and archive are kept, so they outlive the trial that swept them
         self.swept_dir = self.work_dir / "swept"
         # first-configuration builds by the same key, with their verdicts: a move rebuilds only the kernels it changed
-        self.first_builds: dict[SweepKey, KernelBuild] = {}
+        self.first_builds: dict[FirstBuildKey, KernelBuild] = {}
         # the cells of a stopped sweep, by the same key
         self.sweep_cells: dict[SweepKey, dict[Variant, VariantCell]] = {}
         # the sizes a kernel's oracle falls back to when it cannot finish at ``sizes``; None: no bound on the oracle
@@ -1378,12 +1382,14 @@ class Session:
                 node = cast(nodes.LibraryNode, node)
                 inside = state is not None and in_doall(node, state)
                 moves += [
-                    Move(kind=k, labels=labels, implementation=name, current=node.implementation, **scoped)
+                    Move.model_validate(
+                        {"kind": k, "labels": labels, "implementation": name, "current": node.implementation, **scoped}
+                    )
                     for name in implementations(node, self.targets.gpu, inside)
                 ]
             elif k == SINK_INVARIANT_CODE:
                 moves += [
-                    Move(kind=k, labels=labels, container=name, **scoped)
+                    Move.model_validate({"kind": k, "labels": labels, "container": name, **scoped})
                     for name in sinkable_containers(rows[labels[0]])
                 ]
             elif k in SCOPE_KINDS:
@@ -1392,14 +1398,14 @@ class Session:
                     entry = cast(nodes.MapEntry, rows[labels[0]][0])
                     held = self.gpu_choices.get(scope, {}).get(labels[0], GpuChoice())
                     current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
-                    moves.append(Move(kind=k, labels=labels, current=current, **scoped))
+                    moves.append(Move.model_validate({"kind": k, "labels": labels, "current": current, **scoped}))
             else:
                 named = device_rows if k in DEVICE_KINDS else rows
                 sizes = probe_sizes(k, [named[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
-                moves.append(Move(kind=k, labels=labels, **{size_argument(k): sizes}, **scoped))
+                moves.append(Move.model_validate({"kind": k, "labels": labels, size_argument(k): sizes, **scoped}))
         if AUTHORED_FAMILY not in self.disabled_families:
             moves += [
-                Move(kind=move.kind, labels=tuple(tree_label(obj) for obj in found), **scoped)
+                Move.model_validate({"kind": move.kind, "labels": tuple(tree_label(obj) for obj in found), **scoped})
                 for move in self.authored.values()
                 if kind in (None, move.kind)
                 for found in matches(structured, move)
@@ -1572,7 +1578,7 @@ class Session:
         region) as one persistent kernel from now on; refused, before anything changes, when MegakernelLoops fuses
         nothing of them in the scheduled body, or the kernel holds a persistent run already."""
         kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
-        if scope not in kernels:
+        if scope is None or scope not in kernels:
             reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
             return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
         held = sorted(block for kernel, block in self.persistent if kernel == scope)
@@ -1596,8 +1602,8 @@ class Session:
         def change() -> None:
             self.persistent = self.persistent | {(scope, block) for block in blocks}
 
-        reason = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
-        return self.program_change(PERSISTENT_KERNEL, reason, change)
+        done = f"{', '.join(blocks)} of {scope} run as one persistent kernel"
+        return self.program_change(PERSISTENT_KERNEL, done, change)
 
     def list_scope_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
         """The moves of the scopes phase legal now, of ``kind`` or every kind: where kernels run (``run-on-*``, every
@@ -1743,10 +1749,10 @@ class Session:
         has no build of."""
         kernels = sorted(ext.name for ext in external_calls(self.sdfg))
         offered = fp_modes(self.targets.gpu)
-        if scope not in kernels:
+        if scope is None or scope not in kernels:
             reason = Refused(f"set-fp-mode takes scope, one of the kernels {kernels}.", Refusal.ARGUMENT)
             return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
-        if fp_mode not in offered:
+        if fp_mode is None or fp_mode not in offered:
             reason = Refused(
                 f"set-fp-mode takes one of {list(offered)} on this target; not {fp_mode!r}.", Refusal.ARGUMENT
             )
@@ -1801,8 +1807,9 @@ class Session:
             self.unplaced = None
             self.bump()
             self.sdfg.validate()
-            reason = f"relayout {op.action.value} {LOCAL_MARK}"
-            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=reason)
+            done = MoveResult(
+                status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=f"relayout {op.action.value} {LOCAL_MARK}"
+            )
             self.applied.append(done)
             self.remember()
         return done
@@ -1829,8 +1836,7 @@ class Session:
             self.unplaced = None
             self.bump()
             self.sdfg.validate()
-            reason = f"relayout {op.action.value}"
-            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=reason)
+            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=f"relayout {op.action.value}")
             self.applied.append(done)
             self.remember()
         return done
@@ -2044,7 +2050,7 @@ class Session:
         now = self.performance(inputs, reference, codegen=codegen).structured
         tried = [TunedValue(status="now", time_us=now.time_us, correct=now.correct, reason=now.error)]
         for sizes in values:
-            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): sizes})
+            result = self.apply_move(kind, names, scope=scope, **size_arguments(kind, sizes))
             if result.status is not MoveStatus.APPLIED:
                 tried.append(TunedValue(sizes=tuple(sizes), status=result.status.name.lower(), reason=result.reason))
                 continue
@@ -2063,7 +2069,7 @@ class Session:
             )
         best = fastest_beating(tried)
         if best is not None:
-            result = self.apply_move(kind, names, scope=scope, **{size_argument(kind): tried[best].sizes})
+            result = self.apply_move(kind, names, scope=scope, **size_arguments(kind, tried[best].sizes))
             assert result.status is MoveStatus.APPLIED, "a size that applied and was rolled back applies again"
             tried[best] = tried[best].model_copy(update={"status": "kept"})
         return TuneResult(kind=kind, labels=names, values=tried)
@@ -2658,15 +2664,15 @@ class Session:
             self.bind(name, self.swept[key])
         if winner is None:
             return Sweep(kernel=name, cells=len(result.cells), winner=None, config=None)
-        variant = winner.variant
+        won = winner.variant
         config = Config(
-            compiler=variant.toolchain,
-            fp_mode=variant.fp_mode,
-            cost_model=variant.cost_model,
-            flags=tuple(variant.flags),
+            compiler=won.toolchain,
+            fp_mode=won.fp_mode,
+            cost_model=won.cost_model,
+            flags=tuple(won.flags),
             time_us=winner.verdict.time_us,
         )
-        return Sweep(kernel=name, cells=len(result.cells), winner=variant.label, config=config)
+        return Sweep(kernel=name, cells=len(result.cells), winner=won.label, config=config)
 
     def link_variant(self, name: str, src: KernelSource, label: str, compilers: list[str] | None) -> Sweep:
         """The sweep winner ``label`` of ``src``, built and linked again unchecked: it won, correct, when it was swept."""
@@ -2708,7 +2714,13 @@ class Session:
         kernels, and rendering is most of a kernel's cost, so the key needs no rendering."""
         ext = self.kernel(name)
         body = (kernel_device(ext), ext.standalone_sdfg.hash_sdfg(), *strings(ext.abi_order))
-        key = name, body, tuple(sorted(self.kernel_sizes(name).items())), self.mode_of(name), self.pipeline
+        key: FirstBuildKey = (
+            name,
+            body,
+            tuple(sorted(self.kernel_sizes(name).items())),
+            self.mode_of(name),
+            self.pipeline,
+        )
         known = self.first_builds.get(key)
         if known is None:
             self.optimize_kernel(name)
@@ -2723,9 +2735,9 @@ class Session:
         its validation and time, and the compiler's vectorizer or register remarks."""
         return feedback.report(self.kernel_evidence(reps))
 
-    def kernel_evidence(self, reps: int = TIMED_REPS) -> list[feedback.Evidence]:
+    def kernel_evidence(self, reps: int = TIMED_REPS) -> list[Evidence]:
         """Every kernel's validation, time and compiler remarks, building the default library where none is bound."""
-        evidence: list[feedback.Evidence] = []
+        evidence: list[Evidence] = []
         for ext in external_calls(self.sdfg):
             if ext.name not in self.builds:
                 self.default_build(ext.name)
@@ -2738,7 +2750,7 @@ class Session:
             if build.remarks is None:
                 variant = build.variant
                 build.remarks = feedback.compiler_remarks(build.source, variant.compiler, list(variant.flags))
-            evidence.append(feedback.Evidence(ext.name, build.verdict, build.remarks))
+            evidence.append(Evidence(ext.name, build.verdict, build.remarks))
         return evidence
 
     # Assembly

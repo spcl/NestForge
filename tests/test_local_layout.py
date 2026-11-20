@@ -3,8 +3,11 @@
 """``relayout`` on arrays the program makes itself: laid out in place, at any point, without a bench request; ``zip``
 and ``unzip`` (array of structs, struct of arrays) too, since no argument list changes."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
+from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
@@ -14,7 +17,7 @@ SIZE = 16
 
 
 @dace.program
-def transposed(a: dace.float64[N, N], b: dace.float64[N, N]):
+def transposed(a: dace.float64[N, N], b: dace.float64[N, N]) -> None:
     t = np.empty_like(a)
     for i, j in dace.map[0:N, 0:N]:
         t[i, j] = a[i, j] * 2.0
@@ -23,7 +26,7 @@ def transposed(a: dace.float64[N, N], b: dace.float64[N, N]):
 
 
 @dace.program
-def paired(a: dace.float64[N], b: dace.float64[N]):
+def paired(a: dace.float64[N], b: dace.float64[N]) -> None:
     t = np.empty_like(a)
     u = np.empty_like(a)
     for i in dace.map[0:N]:
@@ -34,7 +37,7 @@ def paired(a: dace.float64[N], b: dace.float64[N]):
         b[i] = t[i] * u[i]
 
 
-def session(program, tmp_path) -> Session:
+def session(program: DaceProgram, tmp_path: Path) -> Session:
     sut = Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -44,7 +47,7 @@ def locals_of(sut: Session) -> list[str]:
     return sorted(n for n, d in sut.sdfg.arrays.items() if d.transient and isinstance(d, dace.data.Array))
 
 
-def test_an_internal_array_is_permuted_in_place_and_the_program_computes_the_same(tmp_path):
+def test_an_internal_array_is_permuted_in_place_and_the_program_computes_the_same(tmp_path: Path) -> None:
     sut = session(transposed, tmp_path)
     (t,) = locals_of(sut)
     a = np.arange(SIZE * SIZE, dtype=np.float64).reshape(SIZE, SIZE).copy()
@@ -58,7 +61,7 @@ def test_an_internal_array_is_permuted_in_place_and_the_program_computes_the_sam
     assert np.array_equal(b, a.T * 2.0 + 1.0)
 
 
-def test_two_internal_arrays_zip_into_an_array_of_structs_and_rollback_takes_it_back(tmp_path):
+def test_two_internal_arrays_zip_into_an_array_of_structs_and_rollback_takes_it_back(tmp_path: Path) -> None:
     sut = session(paired, tmp_path)
     t, u = locals_of(sut)
     before = sut.describe()
@@ -75,7 +78,7 @@ def test_two_internal_arrays_zip_into_an_array_of_structs_and_rollback_takes_it_
     assert sut.describe() == before
 
 
-def test_an_argument_layout_after_an_internal_one_is_refused(tmp_path):
+def test_an_argument_layout_after_an_internal_one_is_refused(tmp_path: Path) -> None:
     sut = session(transposed, tmp_path)
     (t,) = locals_of(sut)
     sut.apply_move("relayout", [], operation={"action": "permute", "array": t, "order": ["i1", "i0"]})

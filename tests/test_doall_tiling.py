@@ -4,6 +4,7 @@
 parallel space and expand it again; each leaves a program that computes the same."""
 
 import re
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -17,12 +18,12 @@ SIZE = 40  # not a multiple of the tile, so the last tile is partial
 
 
 @dace.program
-def scale_add(a: dace.float64[N, N], b: dace.float64[N, N]):
+def scale_add(a: dace.float64[N, N], b: dace.float64[N, N]) -> None:
     for i, j in dace.map[0:N, 0:N]:
         b[i, j] = 2.0 * a[i, j] + 1.0
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     return Session(scale_add.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
 
 
@@ -43,7 +44,7 @@ def computes_scale_add(sut: Session) -> None:
     np.testing.assert_allclose(b, 2.0 * a + 1.0, rtol=0, atol=0)
 
 
-def test_a_doall_offers_tiling_and_expansion(tmp_path):
+def test_a_doall_offers_tiling_and_expansion(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
@@ -52,7 +53,7 @@ def test_a_doall_offers_tiling_and_expansion(tmp_path):
     assert {"tile-doall", "unflatten-doall"} <= kinds
 
 
-def test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall(tmp_path):
+def test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
@@ -68,7 +69,7 @@ def test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall(tmp_path
     computes_scale_add(sut)
 
 
-def test_tile_sizes_must_name_every_dimension(tmp_path):
+def test_tile_sizes_must_name_every_dimension(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
@@ -78,7 +79,7 @@ def test_tile_sizes_must_name_every_dimension(tmp_path):
     assert "one positive size each" in result.reason
 
 
-def test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused(tmp_path):
+def test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 
@@ -88,7 +89,7 @@ def test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused(tmp_path):
     assert len(maps(sut)) == 1
 
 
-def test_a_listed_tiling_applies_as_listed(tmp_path):
+def test_a_listed_tiling_applies_as_listed(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
     (move,) = [m for m in sut.list_moves("tile-doall") if m.labels == (doall,)]
@@ -101,7 +102,7 @@ def test_a_listed_tiling_applies_as_listed(tmp_path):
     computes_scale_add(sut)
 
 
-def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path):
+def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path: Path) -> None:
     sut = session(tmp_path)
     (doall,) = doall_labels(sut)
 

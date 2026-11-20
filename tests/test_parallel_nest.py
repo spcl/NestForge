@@ -9,6 +9,7 @@ FMA) emit as nested ``for`` loops instead of raising. Both are pure/emit-level -
 
 import dace
 import numpy as np
+from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg, sdfg_to_python
@@ -17,14 +18,14 @@ from nestforge.ir.emit_python import load_emitted
 from nestforge.stages.scopes import is_parallel_nest, parallel_top_level_maps
 
 
-def nest_refs(key):
+def nest_refs(key: str) -> tuple[dace.SDFG, list[tuple[dace.SDFG, nodes.MapEntry]]]:
     sdfg = corpus_kernel(key).to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     return sdfg, parallel_top_level_maps(sdfg)
 
 
 # is_parallel_nest
-def test_map_schedule_drives_parallel_classification():
+def test_map_schedule_drives_parallel_classification() -> None:
     sdfg = dace.SDFG("t")
     sdfg.add_array("a", [10], dace.float64)
     state = sdfg.add_state()
@@ -35,19 +36,19 @@ def test_map_schedule_drives_parallel_classification():
     assert is_parallel_nest(entry)
 
 
-def test_loop_region_is_sequential():
+def test_loop_region_is_sequential() -> None:
     # A LoopRegion is a loop LoopToMap refused (a recurrence) -> sequential.
     assert not is_parallel_nest(LoopRegion("l"))
 
 
-def test_real_parallel_map_kernel_is_parallel():
+def test_real_parallel_map_kernel_is_parallel() -> None:
     _, refs = nest_refs("tsvc_2_s2275")
     assert refs
     assert any(is_parallel_nest(node) for _, node in refs)
 
 
 # nested-map emission (map_lines recursion)
-def test_s2275_nested_map_emits_and_computes():
+def test_s2275_nested_map_emits_and_computes() -> None:
     # tsvc_2_s2275 baseline = an i-loop with an inner j-loop (2-D aa FMA) + an i-level 1-D statement.
     # Canonicalization legally distributes the two (the yaml puzzle: interchange for the matrix update
     # is legal only once the vector statement is out of the i loop), so stage 3 sees two top-level
@@ -72,11 +73,11 @@ N = dace.symbol("N")
 
 
 @dace.program
-def single_map(A: dace.float64[N], B: dace.float64[N]):
+def single_map(A: dace.float64[N], B: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         B[i] = A[i] * 2.0
 
 
-def test_a_single_map_program_has_one_parallel_top_level_map():
+def test_a_single_map_program_has_one_parallel_top_level_map() -> None:
     ((_, node),) = parallel_top_level_maps(single_map.to_sdfg(simplify=True))
     assert isinstance(node, dace.sdfg.nodes.MapEntry)

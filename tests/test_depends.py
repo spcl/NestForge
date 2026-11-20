@@ -4,10 +4,11 @@
 by stage 3 and on hand-built SDFGs where the frontend cannot express the case. Structural only; nothing compiles."""
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import dace
 import pytest
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, out_conn
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
@@ -21,13 +22,13 @@ STEPS = dace.symbol("STEPS")
 
 
 @dace.program
-def chain(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def chain(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     T = A + B
     C[:] = T * 2
 
 
 @dace.program
-def diamond(A: dace.float64[N], D: dace.float64[N]):
+def diamond(A: dace.float64[N], D: dace.float64[N]) -> None:
     T = A + 1
     U = T * 2
     V = T + 3
@@ -35,26 +36,26 @@ def diamond(A: dace.float64[N], D: dace.float64[N]):
 
 
 @dace.program
-def gather(A: dace.float64[N], idx: dace.int64[N], B: dace.float64[N]):
+def gather(A: dace.float64[N], idx: dace.int64[N], B: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         B[i] = A[idx[i]]
 
 
 @dace.program
-def scale_by_body_symbol(A: dace.float64[N], B: dace.float64[N]):
+def scale_by_body_symbol(A: dace.float64[N], B: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         B[i] = A[i] * K
 
 
 @dace.program
-def overwrite(A: dace.float64[N], B: dace.float64[N], X: dace.float64[N], C: dace.float64[N]):
+def overwrite(A: dace.float64[N], B: dace.float64[N], X: dace.float64[N], C: dace.float64[N]) -> None:
     X[:] = A + 1
     X[:] = B + 2
     C[:] = X * 3
 
 
 @dace.program
-def if_without_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.int64):
+def if_without_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.int64) -> None:
     if c > 0:
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -63,7 +64,7 @@ def if_without_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], 
 
 
 @dace.program
-def if_with_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.int64):
+def if_with_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.int64) -> None:
     if c > 0:
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -75,7 +76,7 @@ def if_with_else(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: 
 
 
 @dace.program
-def relax_steps(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def relax_steps(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     for t in range(STEPS):
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -86,7 +87,7 @@ def relax_steps(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def relax_three(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def relax_three(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     for t in range(3):
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -97,7 +98,7 @@ def relax_three(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def relax_until_negative(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]):
+def relax_until_negative(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]) -> None:
     for t in range(3):
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -110,7 +111,7 @@ def relax_until_negative(A: dace.float64[N], B: dace.float64[N], C: dace.float64
 
 
 @dace.program
-def copy_between(A: dace.float64[N], T: dace.float64[N], U: dace.float64[N], C: dace.float64[N]):
+def copy_between(A: dace.float64[N], T: dace.float64[N], U: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         T[i] = A[i] + 1
     U[:] = T
@@ -119,7 +120,7 @@ def copy_between(A: dace.float64[N], T: dace.float64[N], U: dace.float64[N], C: 
 
 
 @dace.program
-def relax_or_skip(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]):
+def relax_or_skip(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]) -> None:
     for t in range(3):
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -132,7 +133,7 @@ def relax_or_skip(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c:
 
 
 @dace.program
-def relax_or_return(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]):
+def relax_or_return(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], c: dace.float64[N]) -> None:
     for t in range(3):
         for i in dace.map[0:N]:
             B[i] = A[i] + 1
@@ -144,7 +145,7 @@ def relax_or_return(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], 
         C[i] = A[i] * 3
 
 
-def lowered(program) -> tuple[dace.SDFG, dict[str, list[str]]]:
+def lowered(program: DaceProgram) -> tuple[dace.SDFG, dict[str, list[str]]]:
     """``program`` through stage 3, with the arguments each kernel writes (read off its out-connectors)."""
     sdfg = program.to_sdfg(simplify=True)
     kernels = lower_nests_to_external_call(sdfg)
@@ -162,7 +163,7 @@ def carried(graph: KernelGraph) -> dict[tuple[str, str], list[str]]:
 
 def loop_label(sdfg: dace.SDFG) -> str:
     (loop,) = [region for region in sdfg.all_control_flow_regions() if isinstance(region, LoopRegion)]
-    return loop.label
+    return str(loop.label)
 
 
 def hand_kernel(
@@ -204,15 +205,19 @@ def arrays_with_view(label: str, views: Sequence[str]) -> dace.SDFG:
     return sdfg
 
 
-def bind_viewed_to_view(sdfg: dace.SDFG, state: dace.SDFGState, view: nodes.AccessNode, viewed: nodes.AccessNode):
+def bind_viewed_to_view(
+    sdfg: dace.SDFG, state: dace.SDFGState, view: nodes.AccessNode, viewed: nodes.AccessNode
+) -> None:
     state.add_edge(viewed, None, view, "views", whole(sdfg, "A"))
 
 
-def bind_view_to_viewed(sdfg: dace.SDFG, state: dace.SDFGState, view: nodes.AccessNode, viewed: nodes.AccessNode):
+def bind_view_to_viewed(
+    sdfg: dace.SDFG, state: dace.SDFGState, view: nodes.AccessNode, viewed: nodes.AccessNode
+) -> None:
     state.add_edge(view, "views", viewed, None, whole(sdfg, "A"))
 
 
-def test_chain_feeds_the_first_kernels_temporary_to_the_second():
+def test_chain_feeds_the_first_kernels_temporary_to_the_second() -> None:
     sdfg, writes = lowered(chain)
     assert writes == {"extcall_0": ["T"], "extcall_1": ["C"]}
 
@@ -233,7 +238,7 @@ def test_chain_feeds_the_first_kernels_temporary_to_the_second():
     ]
 
 
-def test_chain_lines_list_every_argument_per_kernel_then_the_exit():
+def test_chain_lines_list_every_argument_per_kernel_then_the_exit() -> None:
     sdfg, _ = lowered(chain)
 
     lines = kernel_dependencies(sdfg).lines()
@@ -245,7 +250,7 @@ def test_chain_lines_list_every_argument_per_kernel_then_the_exit():
     ]
 
 
-def test_diamond_kernel_zero_feeds_both_middle_kernels():
+def test_diamond_kernel_zero_feeds_both_middle_kernels() -> None:
     sdfg, writes = lowered(diamond)
     assert writes == {"extcall_0": ["T"], "extcall_1": ["U"], "extcall_2": ["V"], "extcall_3": ["D"]}
 
@@ -271,7 +276,7 @@ def test_diamond_kernel_zero_feeds_both_middle_kernels():
     assert sorted(fed) == ["extcall_1", "extcall_2"]
 
 
-def test_an_index_array_argument_comes_from_the_program():
+def test_an_index_array_argument_comes_from_the_program() -> None:
     sdfg, writes = lowered(gather)
     assert writes == {"extcall_0": ["B"]}
 
@@ -285,7 +290,7 @@ def test_an_index_array_argument_comes_from_the_program():
     }
 
 
-def test_a_symbol_read_only_in_the_kernel_body_is_a_kernel_argument():
+def test_a_symbol_read_only_in_the_kernel_body_is_a_kernel_argument() -> None:
     sdfg, writes = lowered(scale_by_body_symbol)
     assert writes == {"extcall_0": ["B"]}
 
@@ -294,7 +299,7 @@ def test_a_symbol_read_only_in_the_kernel_body_is_a_kernel_argument():
     assert ArgEdge("extcall_0", "K", "symbol", (Producer("program"),)) in graph.edges
 
 
-def test_a_second_write_kills_the_first_writer():
+def test_a_second_write_kills_the_first_writer() -> None:
     sdfg, writes = lowered(overwrite)
     assert writes == {"extcall_0": ["X"], "extcall_1": ["X"], "extcall_2": ["C"]}
 
@@ -312,7 +317,7 @@ def test_a_second_write_kills_the_first_writer():
     }
 
 
-def test_a_kernel_under_if_without_else_joins_the_program_value():
+def test_a_kernel_under_if_without_else_joins_the_program_value() -> None:
     sdfg, writes = lowered(if_without_else)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["C"]}
 
@@ -328,7 +333,7 @@ def test_a_kernel_under_if_without_else_joins_the_program_value():
     }
 
 
-def test_kernels_in_both_branches_replace_the_program_value():
+def test_kernels_in_both_branches_replace_the_program_value() -> None:
     sdfg, writes = lowered(if_with_else)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["B"], "extcall_2": ["C"]}
 
@@ -346,7 +351,7 @@ def test_kernels_in_both_branches_replace_the_program_value():
     }
 
 
-def test_a_loop_carries_the_last_kernels_output_back_to_the_first():
+def test_a_loop_carries_the_last_kernels_output_back_to_the_first() -> None:
     sdfg, writes = lowered(relax_steps)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
     loop = loop_label(sdfg)
@@ -370,7 +375,7 @@ def test_a_loop_carries_the_last_kernels_output_back_to_the_first():
     }
 
 
-def test_a_loop_proven_to_run_drops_the_value_it_was_entered_with():
+def test_a_loop_proven_to_run_drops_the_value_it_was_entered_with() -> None:
     sdfg, writes = lowered(relax_three)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
     loop = loop_label(sdfg)
@@ -391,7 +396,7 @@ def test_a_loop_proven_to_run_drops_the_value_it_was_entered_with():
     }
 
 
-def test_a_break_before_the_second_kernel_leaves_with_the_value_the_loop_had():
+def test_a_break_before_the_second_kernel_leaves_with_the_value_the_loop_had() -> None:
     sdfg, writes = lowered(relax_until_negative)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
     loop = loop_label(sdfg)
@@ -402,7 +407,7 @@ def test_a_break_before_the_second_kernel_leaves_with_the_value_the_loop_had():
     assert carried(graph)[("extcall_2", "A")] == [loop]
 
 
-def test_a_continue_lets_the_loop_entry_value_reach_past_the_loop():
+def test_a_continue_lets_the_loop_entry_value_reach_past_the_loop() -> None:
     """A continue skips the second kernel on the back edge, so even a loop proven to run may never write ``A``."""
     sdfg, writes = lowered(relax_or_skip)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
@@ -412,7 +417,7 @@ def test_a_continue_lets_the_loop_entry_value_reach_past_the_loop():
     assert "program" in after_loop and "extcall_1.A" in after_loop, after_loop
 
 
-def test_a_return_inside_the_loop_reaches_the_exit_without_the_last_kernel():
+def test_a_return_inside_the_loop_reaches_the_exit_without_the_last_kernel() -> None:
     sdfg, writes = lowered(relax_or_return)
     assert writes == {"extcall_0": ["B"], "extcall_1": ["A"], "extcall_2": ["C"]}
 
@@ -421,7 +426,7 @@ def test_a_return_inside_the_loop_reaches_the_exit_without_the_last_kernel():
     assert set(at_exit) == {"extcall_2.C", "program"}, at_exit
 
 
-def test_an_external_call_without_an_argument_list_is_refused():
+def test_an_external_call_without_an_argument_list_is_refused() -> None:
     sdfg = dace.SDFG("no_abi_order")
     sdfg.add_array("x", [8], dace.float64)
     sdfg.add_array("y", [8], dace.float64)
@@ -433,7 +438,7 @@ def test_an_external_call_without_an_argument_list_is_refused():
         kernel_dependencies(sdfg)
 
 
-def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel():
+def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel() -> None:
     sdfg = dace.SDFG("symbol_from_output")
     for name in ("x", "y", "z"):
         sdfg.add_array(name, [8], dace.float64)
@@ -453,7 +458,7 @@ def test_a_symbol_assigned_from_a_kernel_output_names_that_kernel():
     )
 
 
-def test_a_host_writer_is_named_by_its_state():
+def test_a_host_writer_is_named_by_its_state() -> None:
     sdfg = dace.SDFG("host_writer")
     sdfg.add_array("x", [8], dace.float64)
     sdfg.add_array("y", [8], dace.float64)
@@ -468,7 +473,7 @@ def test_a_host_writer_is_named_by_its_state():
     assert reaching(graph)[("extcall_0", "x")] == ("host:fill",)
 
 
-def test_a_host_copy_between_kernels_forwards_the_copied_producer():
+def test_a_host_copy_between_kernels_forwards_the_copied_producer() -> None:
     sdfg, writes = lowered(copy_between)
     assert writes == {"extcall_0": ["T"], "extcall_1": ["C"]}
 
@@ -485,7 +490,7 @@ def test_a_host_copy_between_kernels_forwards_the_copied_producer():
     }
 
 
-def test_a_reference_container_is_refused():
+def test_a_reference_container_is_refused() -> None:
     sdfg = dace.SDFG("with_reference")
     sdfg.add_array("A", [8], dace.float64)
     sdfg.add_reference("R", [8], dace.float64)
@@ -495,7 +500,7 @@ def test_a_reference_container_is_refused():
         kernel_dependencies(sdfg)
 
 
-def test_a_kernel_inside_a_nested_sdfg_is_refused():
+def test_a_kernel_inside_a_nested_sdfg_is_refused() -> None:
     inner = dace.SDFG("inner")
     inner.add_array("a", [8], dace.float64)
     inner.add_array("b", [8], dace.float64)
@@ -512,7 +517,7 @@ def test_a_kernel_inside_a_nested_sdfg_is_refused():
         kernel_dependencies(outer)
 
 
-def test_a_kernel_writing_through_a_view_writes_the_viewed_array():
+def test_a_kernel_writing_through_a_view_writes_the_viewed_array() -> None:
     sdfg = arrays_with_view("write_through_view", ["Av"])
     state = sdfg.add_state("compute", is_start_block=True)
     producer, consumer = bare_kernel("extcall_0", ["x"], ["A"]), bare_kernel("extcall_1", ["A"], ["y"])
@@ -535,7 +540,7 @@ def test_a_kernel_writing_through_a_view_writes_the_viewed_array():
     }
 
 
-def test_a_write_through_a_chain_of_views_reaches_the_root_array():
+def test_a_write_through_a_chain_of_views_reaches_the_root_array() -> None:
     sdfg = arrays_with_view("write_through_view_chain", ["Aouter", "Ainner"])
     state = sdfg.add_state("compute", is_start_block=True)
     producer, consumer = bare_kernel("extcall_0", ["x"], ["A"]), bare_kernel("extcall_1", ["A"], ["y"])
@@ -560,7 +565,9 @@ def test_a_write_through_a_chain_of_views_reaches_the_root_array():
 
 
 @pytest.mark.parametrize("bind", [bind_viewed_to_view, bind_view_to_viewed])
-def test_a_kernel_reading_through_a_view_reads_the_viewed_array(bind):
+def test_a_kernel_reading_through_a_view_reads_the_viewed_array(
+    bind: Callable[[dace.SDFG, dace.SDFGState, nodes.AccessNode, nodes.AccessNode], None],
+) -> None:
     sdfg = arrays_with_view("read_through_view", ["Av"])
     fill = sdfg.add_state("fill", is_start_block=True)
     hand_kernel(sdfg, fill, "extcall_0", ["x"], ["A"])
@@ -583,7 +590,7 @@ def test_a_kernel_reading_through_a_view_reads_the_viewed_array(bind):
     }
 
 
-def test_a_view_bound_to_no_container_is_refused():
+def test_a_view_bound_to_no_container_is_refused() -> None:
     sdfg = arrays_with_view("unbound_view", ["Av"])
     state = sdfg.add_state("compute", is_start_block=True)
     producer = bare_kernel("extcall_0", ["x"], ["A"])
@@ -595,7 +602,7 @@ def test_a_view_bound_to_no_container_is_refused():
         kernel_dependencies(sdfg)
 
 
-def test_two_runs_on_copies_give_the_same_graph():
+def test_two_runs_on_copies_give_the_same_graph() -> None:
     sdfg, _ = lowered(relax_steps)
 
     first = kernel_dependencies(copy.deepcopy(sdfg))

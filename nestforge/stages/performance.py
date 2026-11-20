@@ -297,7 +297,7 @@ def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) ->
     total = dace.symbolic.pystr_to_symbolic(desc.total_size)
     if any(str(symbol) not in sizes for symbol in total.free_symbols):
         return None
-    return int(dace.symbolic.evaluate(total, sizes)) * desc.dtype.bytes
+    return int(dace.symbolic.evaluate(total, sizes)) * int(desc.dtype.bytes)
 
 
 def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[KernelReport]:

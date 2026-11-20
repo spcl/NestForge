@@ -87,7 +87,7 @@ def run(sdfg: dace.SDFG) -> np.ndarray:
     return c
 
 
-def test_a_product_of_loop_invariant_inputs_runs_once_before_the_loop(tmp_path: pathlib.Path):
+def test_a_product_of_loop_invariant_inputs_runs_once_before_the_loop(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
     (loop,) = labels_of(sut, LoopRegion)
 
@@ -101,7 +101,7 @@ def test_a_product_of_loop_invariant_inputs_runs_once_before_the_loop(tmp_path: 
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
-def test_a_loop_that_rewrites_an_input_of_the_product_keeps_it_and_refuses_the_hoist(tmp_path: pathlib.Path):
+def test_a_loop_that_rewrites_an_input_of_the_product_keeps_it_and_refuses_the_hoist(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_loop(rewrites_a=True), work_dir=str(tmp_path))
     (loop,) = labels_of(sut, LoopRegion)
 
@@ -112,7 +112,7 @@ def test_a_loop_that_rewrites_an_input_of_the_product_keeps_it_and_refuses_the_h
     assert product_runs_in(sut.sdfg) == "loop"
 
 
-def test_a_product_of_doall_invariant_inputs_runs_once_before_the_doall(tmp_path: pathlib.Path):
+def test_a_product_of_doall_invariant_inputs_runs_once_before_the_doall(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
 
     (move,) = sut.list_moves("hoist-invariant-code")
@@ -124,7 +124,7 @@ def test_a_product_of_doall_invariant_inputs_runs_once_before_the_doall(tmp_path
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
-def test_a_doall_without_invariant_statements_is_not_offered(tmp_path: pathlib.Path):
+def test_a_doall_without_invariant_statements_is_not_offered(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
     (move,) = sut.list_moves("hoist-invariant-code")
     sut.apply_move(move.kind, move.labels)
@@ -135,7 +135,7 @@ def test_a_doall_without_invariant_statements_is_not_offered(tmp_path: pathlib.P
     assert refused.status is MoveStatus.ILLEGAL and "invariant" in refused.reason, refused
 
 
-def test_a_hoisted_product_sinks_back_into_the_loop_and_runs_every_iteration(tmp_path: pathlib.Path):
+def test_a_hoisted_product_sinks_back_into_the_loop_and_runs_every_iteration(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
     (hoist,) = sut.list_moves("hoist-invariant-code")
     sut.apply_move(hoist.kind, hoist.labels)
@@ -148,7 +148,7 @@ def test_a_hoisted_product_sinks_back_into_the_loop_and_runs_every_iteration(tmp
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
-def test_a_hoisted_product_sinks_back_into_the_doall(tmp_path: pathlib.Path):
+def test_a_hoisted_product_sinks_back_into_the_doall(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_doall(), work_dir=str(tmp_path))
     (hoist,) = sut.list_moves("hoist-invariant-code")
     sut.apply_move(hoist.kind, hoist.labels)
@@ -161,7 +161,7 @@ def test_a_hoisted_product_sinks_back_into_the_doall(tmp_path: pathlib.Path):
     np.testing.assert_allclose(run(sut.sdfg), -3.0 * np.arange(1.0, SIZE + 1), rtol=1e-15)
 
 
-def test_sinking_without_a_container_or_with_an_argument_is_refused(tmp_path: pathlib.Path):
+def test_sinking_without_a_container_or_with_an_argument_is_refused(tmp_path: pathlib.Path) -> None:
     sut = Session(product_in_a_loop(rewrites_a=False), work_dir=str(tmp_path))
     (loop,) = labels_of(sut, LoopRegion)
 

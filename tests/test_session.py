@@ -4,9 +4,14 @@
 stages have their own tests."""
 
 import time
+from pathlib import Path
+from typing import Never
 
 import dace
 import numpy as np
+import pytest
+from dace import SDFG
+from dace.sdfg.performance_evaluation import work_depth
 
 from nestforge.ir import introspect
 from nestforge.ir.names import top_level_map_entries
@@ -19,7 +24,7 @@ N = dace.symbol("N")
 
 
 @dace.program
-def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)  # transient -> the two maps fuse vertically
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
@@ -28,7 +33,7 @@ def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.float64[N], C: dace.float64[N]):
+def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)  # transient producer output
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
@@ -38,7 +43,7 @@ def live_and_transient(A: dace.float64[N], B: dace.float64[N], live_out: dace.fl
 
 
 @dace.program
-def three_maps(A: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
+def three_maps(A: dace.float64[N], C: dace.float64[N], D: dace.float64[N]) -> None:
     T = np.empty_like(A)
     for i in dace.map[0:N]:
         T[i] = A[i] + 1.0
@@ -52,15 +57,15 @@ def map_labels(session: Session) -> list[str]:
     return [label for label, (obj, _) in session.row_index().items() if isinstance(obj, dace.nodes.MapEntry)]
 
 
-def make_session(tmp_path=None) -> Session:
+def make_session(tmp_path: Path | None = None) -> Session:
     return Session(vertical_pair.to_sdfg(simplify=True), work_dir=str(tmp_path) if tmp_path else None)
 
 
-def top_level_map_count(sdfg) -> int:
+def top_level_map_count(sdfg: SDFG) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.states())
 
 
-def test_a_move_retires_the_labels_it_took_and_names_the_fused_row_afresh():
+def test_a_move_retires_the_labels_it_took_and_names_the_fused_row_afresh() -> None:
     s = make_session()
     (move,) = s.list_moves("doall-fusion")
 
@@ -76,7 +81,7 @@ def test_a_move_retires_the_labels_it_took_and_names_the_fused_row_afresh():
     assert fused not in move.labels
 
 
-def test_a_row_no_move_touched_keeps_its_label():
+def test_a_row_no_move_touched_keeps_its_label() -> None:
     s = Session(three_maps.to_sdfg(simplify=True))
     first, second, third = map_labels(s)
 
@@ -85,7 +90,7 @@ def test_a_row_no_move_touched_keeps_its_label():
     assert third in map_labels(s)
 
 
-def test_default_scopes_names_kernels_with_their_boundary_sets():
+def test_default_scopes_names_kernels_with_their_boundary_sets() -> None:
     s = make_session()
     labels = map_labels(s)
     kernels = s.default_scopes()
@@ -94,7 +99,7 @@ def test_default_scopes_names_kernels_with_their_boundary_sets():
     assert producer.reads == ("A", "B") and producer.symbols == ("N",) and producer.parallel
 
 
-def test_a_move_that_drops_a_kernel_leaves_the_next_kernels_name():
+def test_a_move_that_drops_a_kernel_leaves_the_next_kernels_name() -> None:
     """The build cache keys on the name, which a positional name would change for every kernel behind the move."""
     untouched, moved = Session(three_maps.to_sdfg(simplify=True)), Session(three_maps.to_sdfg(simplify=True))
     first, second, third = map_labels(moved)
@@ -106,7 +111,7 @@ def test_a_move_that_drops_a_kernel_leaves_the_next_kernels_name():
     assert f"extcall_{third}" in after and len(after) == len(before) - 1
 
 
-def test_rows_sharing_a_label_get_kernel_names_of_their_own():
+def test_rows_sharing_a_label_get_kernel_names_of_their_own() -> None:
     sdfg = dace.SDFG("split")
     sdfg.add_array("A", (4,), dace.float64)
     sdfg.add_array("B", (4,), dace.float64)
@@ -122,7 +127,7 @@ def test_rows_sharing_a_label_get_kernel_names_of_their_own():
     assert row_kernel_names(sdfg, rows) == ["extcall_doall0", "extcall_doall0_0"]
 
 
-def test_a_no_op_default_scopes_keeps_every_label():
+def test_a_no_op_default_scopes_keeps_every_label() -> None:
     sdfg = dace.SDFG("no_maps")
     sdfg.add_state_after(sdfg.add_state())
     session = Session(sdfg)
@@ -131,7 +136,7 @@ def test_a_no_op_default_scopes_keeps_every_label():
     assert list(session.row_index()) == before
 
 
-def test_canonicalize_then_default_moves_reduce_top_level_maps():
+def test_canonicalize_then_default_moves_reduce_top_level_maps() -> None:
     sdfg = live_and_transient.to_sdfg(simplify=True)
     frontend_maps = top_level_map_count(sdfg)
     session = Session(sdfg, targets=Targets())
@@ -140,7 +145,7 @@ def test_canonicalize_then_default_moves_reduce_top_level_maps():
     assert top_level_map_count(session.sdfg) < frontend_maps
 
 
-def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
+def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label() -> None:
     s = make_session()
     map_label = next(label for label, (obj, _) in s.row_index().items() if isinstance(obj, dace.nodes.MapEntry))
     assert "work=" in s.metrics(map_label) and "depth=" in s.metrics(map_label)
@@ -149,12 +154,12 @@ def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label():
     assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."
 
 
-def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatch):
+def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     # spcl/NestForge#28: DaCe's work-depth pass raises on some programs; the tree, and the move, must still come back
-    def fail(*args, **kwargs):
+    def fail(*args: object, **kwargs: object) -> Never:
         raise RecursionError("maximum recursion depth exceeded")
 
-    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", fail)
+    monkeypatch.setattr(work_depth, "analyze_sdfg", fail)
     s = make_session()
     tree = s.describe(costs=True)
     assert tree.splitlines()[1] == (
@@ -167,20 +172,20 @@ def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatc
     assert s.costs == {} and s.costs_skipped is not None
 
 
-def test_describe_skips_costs_when_work_depth_outlasts_its_budget(monkeypatch):
+def test_describe_skips_costs_when_work_depth_outlasts_its_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(introspect, "WORK_DEPTH_BUDGET_S", 1)
-    monkeypatch.setattr(introspect.work_depth, "analyze_sdfg", lambda *args, **kwargs: time.sleep(5))
+    monkeypatch.setattr(work_depth, "analyze_sdfg", lambda *args, **kwargs: time.sleep(5))
     s = make_session()
     assert "work-depth analysis took over 1 s" in s.describe(costs=True).splitlines()[1]
 
 
-def test_costs_come_back_after_the_next_change_once_work_depth_works(monkeypatch):
-    def fail(*args, **kwargs):
+def test_costs_come_back_after_the_next_change_once_work_depth_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*args: object, **kwargs: object) -> Never:
         raise ValueError("The argument 'nan' is not comparable.")
 
     s = make_session()
     with monkeypatch.context() as patch:
-        patch.setattr(introspect.work_depth, "analyze_sdfg", fail)
+        patch.setattr(work_depth, "analyze_sdfg", fail)
         assert s.describe(costs=True).splitlines()[1].startswith("(no work= or depth=")
     (move,) = s.list_moves("doall-fusion")
     result = s.apply_move(move.kind, move.labels)

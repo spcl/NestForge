@@ -10,6 +10,7 @@ beside the rest, which expand from their SDFG, so the seeds link programs that m
 
 import copy
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -49,7 +50,7 @@ class Case:
 
     __slots__ = ("reference", "rng", "session", "source", "status")
 
-    def __init__(self, seed: int, tmp_path, gpu: bool) -> None:
+    def __init__(self, seed: int, tmp_path: Path, gpu: bool) -> None:
         program, self.source = load_program(tmp_path, seed + 900)
         sdfg = program.to_sdfg(simplify=True)
         sdfg.name = f"scope_fuzz_{seed}_{int(gpu)}_{os.getpid()}"  # one build folder per xdist worker
@@ -90,7 +91,7 @@ def assert_same_values(case: Case, seed: int) -> None:
 
 
 @pytest.mark.parametrize("seed", range(NCASES))
-def test_a_random_scope_built_on_the_cpu_computes_what_the_program_computes(seed, tmp_path):
+def test_a_random_scope_built_on_the_cpu_computes_what_the_program_computes(seed: int, tmp_path: Path) -> None:
     case = Case(seed, tmp_path, gpu=False)
 
     implementations = case.place_and_build()
@@ -101,7 +102,7 @@ def test_a_random_scope_built_on_the_cpu_computes_what_the_program_computes(seed
     assert_same_values(case, seed)
 
 
-def test_random_scopes_group_blocks_on_most_seeds(tmp_path):
+def test_random_scopes_group_blocks_on_most_seeds(tmp_path: Path) -> None:
     """Half the seeds at least must apply their scope, else the fuzzer only probes refusals."""
     statuses = [Case(seed, tmp_path, gpu=False).status for seed in range(NCASES)]
 
@@ -110,7 +111,7 @@ def test_random_scopes_group_blocks_on_most_seeds(tmp_path):
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("seed", range(NCASES))
-def test_a_random_scope_placed_on_random_devices_computes_what_the_program_computes(seed, tmp_path):
+def test_a_random_scope_placed_on_random_devices_computes_what_the_program_computes(seed: int, tmp_path: Path) -> None:
     case = Case(seed, tmp_path, gpu=True)
 
     case.place_and_build()

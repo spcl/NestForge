@@ -15,13 +15,13 @@ M = dace.symbol("M", dtype=dace.int64)
 
 
 @dace.program
-def rows_times_matrix(A: dace.float64[N, M], B: dace.float64[M, M], C: dace.float64[N, M]):
+def rows_times_matrix(A: dace.float64[N, M], B: dace.float64[M, M], C: dace.float64[N, M]) -> None:
     for i in dace.map[0:N]:
         C[i] = A[i] @ B
 
 
 @dace.program
-def matrix_times_matrix(A: dace.float64[N, M], B: dace.float64[M, M], C: dace.float64[N, M]):
+def matrix_times_matrix(A: dace.float64[N, M], B: dace.float64[M, M], C: dace.float64[N, M]) -> None:
     C[:] = A @ B
 
 

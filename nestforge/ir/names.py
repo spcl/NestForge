@@ -106,10 +106,10 @@ def inline_top_level_nsdfgs(sdfg: dace.SDFG) -> int:
     """Widen and inline every top-level nested SDFG; returns how many transformations applied."""
     if not top_level_nsdfgs(sdfg):
         return 0
-    applied = sdfg.apply_transformations_repeated(
+    applied: int = sdfg.apply_transformations_repeated(
         ExpandNestedSDFGInputs, options={"top_level_only": True}, validate=False
     )
-    return applied + sdfg.apply_transformations_repeated(InlineMultistateSDFG, validate=False)
+    return applied + int(sdfg.apply_transformations_repeated(InlineMultistateSDFG, validate=False))
 
 
 # canonical labels

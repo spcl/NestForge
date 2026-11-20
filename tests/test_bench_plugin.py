@@ -77,8 +77,8 @@ SLOT = DeviceSlot("cpu", 3)
 JUDGE_START_TIMEOUT_S = 300.0
 #: Seconds one tuner episode may take; the bench's own user-plugins test allows the same.
 TUNER_EPISODE_TIMEOUT_S = 900
-#: One valid call of tools that read, change or measure.
-SLOT_CALLS: dict[str, dict[str, object]] = {
+#: One valid call of tools that read, change or measure, its JSON body.
+SLOT_CALLS: dict[str, dict[str, Any]] = {
     "get_cpf": {},
     "view_tree": {},
     "list_moves": {},
@@ -99,7 +99,7 @@ class FakeJudge(JudgeHandler):
     def __init__(self) -> None:
         self.cfg = RunConfig(preset=Preset.S)
         self.code = 0
-        self.answer: dict[str, object] = {}
+        self.answer: dict[str, Any] = {}  # the JSON answer
         self.gone = threading.Event()
         self.slots = 0
         self.terminal = False
@@ -306,7 +306,7 @@ def test_a_move_that_kills_its_session_is_undone_and_the_next_call_runs_on_a_ses
 
 
 def test_a_fresh_session_repeats_every_change_the_last_one_answered_so_no_move_is_lost(stub: Stub) -> None:
-    first = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+    first: dict[str, Any] = {"kind": "fuse", "labels": ["map_0", "map_1"]}
     post("apply_move", "episode-replay", **first)
     post("view_tree", "episode-replay")
     post("set_scope", "episode-replay", labels=["map_0"])
@@ -338,13 +338,13 @@ def test_a_focus_is_journaled_so_a_fresh_session_works_on_the_same_kernel(stub: 
     assert [tool for tool, _ in stub.calls[before:]] == ["focus_kernel", "write_kernel"]
 
 
-MOVE = {"kind": "fuse", "labels": ["map_0", "map_1"]}
+MOVE: dict[str, Any] = {"kind": "fuse", "labels": ["map_0", "map_1"]}
 
 N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def factor_and_scale(a: dace.float64[N, N], b: dace.float64[N, N], c: dace.float64[N, N]):
+def factor_and_scale(a: dace.float64[N, N], b: dace.float64[N, N], c: dace.float64[N, N]) -> None:
     b[:] = np.linalg.cholesky(a)
     for i, j in dace.map[0:N, 0:N]:
         c[i, j] = 2.0 * a[i, j]
@@ -507,7 +507,12 @@ def test_the_agent_side_tool_sends_the_packets_switched_off_families_with_every_
     loaded: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sent: list[dict[str, object]] = []
-    monkeypatch.setattr(http_json, "post_judge", lambda route, body: sent.append(body) or {"result": None})
+
+    def post_judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        sent.append(body)
+        return {"result": None}
+
+    monkeypatch.setattr(http_json, "post_judge", post_judge)
     monkeypatch.setattr(http_json, "assigned_kernel", lambda payload: KERNEL)
     monkeypatch.setenv("NESTFORGE_DISABLED_FAMILIES", "fusion, tiling")
 
@@ -646,7 +651,7 @@ def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(
 
 def test_a_get_performance_that_restored_the_fastest_version_is_journaled_as_its_rollbacks(loaded: None) -> None:
     route = sys.modules[ROUTES["nestforge"].handler.__module__]
-    call = ("get_performance", {})
+    call: tuple[str, dict[str, Any]] = ("get_performance", {})
 
     restored = route.repeats_of(call, Reply(result=Restored(fastest_us=10.0, now_us=30.0, rolled_back=2)))
 
@@ -778,13 +783,14 @@ def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optim
     assert shipped.name in subagents.task_description(offered)
 
 
-def walk(episode: str) -> Callable[..., dict[str, object]]:
+def walk(episode: str) -> Callable[..., dict[str, Any]]:
     """A phase tool of ``episode``, through NestForge's route; its result."""
 
-    def step(tool: str, **body: object) -> dict[str, object]:
+    def step(tool: str, **body: Any) -> dict[str, Any]:  # noqa: ANN401 -- a tool's JSON body
         judge = post(tool, episode=episode, **body)
         assert judge.code == HTTPStatus.OK, judge.answer
-        return judge.answer["result"]
+        result: dict[str, Any] = judge.answer["result"]
+        return result
 
     return step
 
@@ -819,7 +825,7 @@ def test_the_full_packet_goes_from_structured_to_each_kernel_and_returns_to_the_
 
 def test_the_phase_tools_reach_the_session_and_are_journaled_as_changes(stub: Stub) -> None:
     for tool in ("advance_phase", "undo_phase", "return_to_phase"):
-        body = {"phase": "structured"} if tool == "return_to_phase" else {}
+        body: dict[str, Any] = {"phase": "structured"} if tool == "return_to_phase" else {}
         post(tool, "episode-phases", **body)
 
     assert [call[0] for call in stub.calls if call[0].endswith("phase")] == [
@@ -1085,7 +1091,8 @@ def column_record(
     monkeypatch.setattr(nestforge_bench, "baseline", lambda live, ctx: live.applied.append(applied("defaults-moves")))
     monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: solution)
     sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
-    return json.loads((tmp_path / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+    record: dict[str, Any] = json.loads((tmp_path / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+    return record
 
 
 FUSING = SimpleNamespace(solve=lambda live, ctx: live.applied.append(applied("doall-fusion", "doall2", "doall4")))
@@ -1123,7 +1130,12 @@ def test_the_column_without_wavefronts_starts_its_session_with_every_move_family
     sut = NoWaveOptimizer("dace_cpu_canon_nestforge_cpf_nowave", workdir=tmp_path)
 
     record = column_record(monkeypatch, tmp_path, sut, FUSING)
-    monkeypatch.setattr(nestforge_bench, "start", lambda setup: started.append(setup) or (real_start, None, None))
+
+    def start(setup: Setup) -> tuple[FinalizedSession, None, None]:
+        started.append(setup)
+        return real_start, None, None
+
+    monkeypatch.setattr(nestforge_bench, "start", start)
     sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
 
     assert started[-1].disabled_families == ("all",)
@@ -1221,14 +1233,16 @@ class ScriptedModel:
     async def stream(self, **params: Any) -> AsyncIterator[SimpleNamespace]:  # noqa: ANN401 -- the SDK's own keywords
         self.sent.append({**params, "messages": copy.deepcopy(params["messages"])})
         content = next(self.replies)
-        reply = Message(
-            id="scripted",
-            type="message",
-            role="assistant",
-            model="scripted",
-            content=content,
-            stop_reason="tool_use" if content[0]["type"] == "tool_use" else "end_turn",
-            usage={"input_tokens": 1, "output_tokens": 1},
+        reply = Message.model_validate(
+            {
+                "id": "scripted",
+                "type": "message",
+                "role": "assistant",
+                "model": "scripted",
+                "content": content,
+                "stop_reason": "tool_use" if content[0]["type"] == "tool_use" else "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
         )
 
         async def final() -> Message:

@@ -18,7 +18,7 @@ SIZE = 7
 
 
 @dace.program
-def coefficients_before_a_loop(a: dace.float64[2], b: dace.float64[2], X: dace.float64[N], C: dace.float64[N]):
+def coefficients_before_a_loop(a: dace.float64[2], b: dace.float64[2], X: dace.float64[N], C: dace.float64[N]) -> None:
     t = np.ndarray([2], dace.float64)
     t[0] = a[0] * b[0]
     t[1] = a[1] + b[1]
@@ -27,7 +27,7 @@ def coefficients_before_a_loop(a: dace.float64[2], b: dace.float64[2], X: dace.f
 
 
 @dace.program
-def coefficients_before_a_map(a: dace.float64[2], b: dace.float64[2], X: dace.float64[N], C: dace.float64[N]):
+def coefficients_before_a_map(a: dace.float64[2], b: dace.float64[2], X: dace.float64[N], C: dace.float64[N]) -> None:
     t = np.ndarray([2], dace.float64)
     t[0] = a[0] * b[0]
     t[1] = a[1] + b[1]
@@ -36,7 +36,7 @@ def coefficients_before_a_map(a: dace.float64[2], b: dace.float64[2], X: dace.fl
 
 
 @dace.program
-def loop_rewrites_a_coefficient_input(a: dace.float64[N], X: dace.float64[N], C: dace.float64[N]):
+def loop_rewrites_a_coefficient_input(a: dace.float64[N], X: dace.float64[N], C: dace.float64[N]) -> None:
     t = np.ndarray([2], dace.float64)
     t[0] = a[0] * 2.0
     t[1] = a[1] + 1.0
@@ -47,7 +47,7 @@ def loop_rewrites_a_coefficient_input(a: dace.float64[N], X: dace.float64[N], C:
 @dace.program
 def coefficients_read_again_after_the_loop(
     a: dace.float64[2], b: dace.float64[2], X: dace.float64[N], C: dace.float64[N]
-):
+) -> None:
     t = np.ndarray([2], dace.float64)
     t[0] = a[0] * b[0]
     t[1] = a[1] + b[1]
@@ -88,7 +88,7 @@ def run(sdfg: dace.SDFG, arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]
     return copies
 
 
-def test_coefficients_computed_before_a_loop_are_recomputed_at_the_start_of_every_iteration():
+def test_coefficients_computed_before_a_loop_are_recomputed_at_the_start_of_every_iteration() -> None:
     reference = coefficients_before_a_loop.to_sdfg(simplify=True)
     sut = copy.deepcopy(reference)
 
@@ -103,7 +103,7 @@ def test_coefficients_computed_before_a_loop_are_recomputed_at_the_start_of_ever
     np.testing.assert_allclose(actual["C"], expected["C"], rtol=1e-15)
 
 
-def test_coefficients_computed_before_a_map_are_recomputed_in_its_body():
+def test_coefficients_computed_before_a_map_are_recomputed_in_its_body() -> None:
     reference = coefficients_before_a_map.to_sdfg(simplify=True)
     sut = copy.deepcopy(reference)
     state, entry = map_of(sut)
@@ -121,7 +121,7 @@ def test_coefficients_computed_before_a_map_are_recomputed_in_its_body():
     np.testing.assert_allclose(actual["C"], expected["C"], rtol=1e-15)
 
 
-def test_statements_whose_input_the_loop_writes_stay_before_it():
+def test_statements_whose_input_the_loop_writes_stay_before_it() -> None:
     sut = loop_rewrites_a_coefficient_input.to_sdfg(simplify=True)
     before = sut.to_json()
 
@@ -131,7 +131,7 @@ def test_statements_whose_input_the_loop_writes_stay_before_it():
     assert sut.to_json() == before
 
 
-def test_a_temporary_read_again_after_the_loop_stays_before_it():
+def test_a_temporary_read_again_after_the_loop_stays_before_it() -> None:
     sut = coefficients_read_again_after_the_loop.to_sdfg(simplify=True)
     before = sut.to_json()
 
@@ -142,7 +142,7 @@ def test_a_temporary_read_again_after_the_loop_stays_before_it():
 
 
 @pytest.mark.parametrize("name", ["a", "nothing"])
-def test_an_argument_or_an_unknown_name_does_not_sink(name: str):
+def test_an_argument_or_an_unknown_name_does_not_sink(name: str) -> None:
     sut = coefficients_before_a_loop.to_sdfg(simplify=True)
     before = sut.to_json()
 

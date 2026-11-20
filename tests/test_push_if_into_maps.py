@@ -3,6 +3,7 @@
 """Tests for ``push_if_into_maps``: ``if c: map i: B`` becomes ``map i: if c: B`` wherever the conditional sits."""
 
 import copy
+from collections.abc import Callable
 
 import dace
 import numpy as np
@@ -19,21 +20,21 @@ SIZE = 8
 
 
 @dace.program
-def map_under_symbol_guard(a: dace.float64[N], b: dace.float64[N]):
+def map_under_symbol_guard(a: dace.float64[N], b: dace.float64[N]) -> None:
     if K > 0:
         for i in dace.map[0:N]:
             b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
-def map_under_data_guard(flag: dace.int32[1], a: dace.float64[N], b: dace.float64[N]):
+def map_under_data_guard(flag: dace.int32[1], a: dace.float64[N], b: dace.float64[N]) -> None:
     if flag[0] > 0:
         for i in dace.map[0:N]:
             b[i] = a[i] * 2.0 + 1.0
 
 
 @dace.program
-def map_under_guard_in_loop(a: dace.float64[N], b: dace.float64[N]):
+def map_under_guard_in_loop(a: dace.float64[N], b: dace.float64[N]) -> None:
     for t in range(4):
         if K > t:
             for i in dace.map[0:N]:
@@ -41,7 +42,7 @@ def map_under_guard_in_loop(a: dace.float64[N], b: dace.float64[N]):
 
 
 @dace.program
-def map_under_guard_with_else(a: dace.float64[N], b: dace.float64[N]):
+def map_under_guard_with_else(a: dace.float64[N], b: dace.float64[N]) -> None:
     if K > 0:
         for i in dace.map[0:N]:
             b[i] = a[i] * 2.0
@@ -80,7 +81,7 @@ def guard_inside_map(sdfg: dace.SDFG) -> bool:
     return all(cond.sdfg.parent_nsdfg_node is not None for cond in conditionals(sdfg))
 
 
-def run(sdfg: dace.SDFG, **arguments) -> dict[str, np.ndarray]:
+def run(sdfg: dace.SDFG, **arguments: np.ndarray | int) -> dict[str, np.ndarray]:
     arrays = {name: value.copy() for name, value in arguments.items() if isinstance(value, np.ndarray)}
     symbols = {name: value for name, value in arguments.items() if not isinstance(value, np.ndarray)}
     sdfg(**arrays, **symbols)
@@ -93,7 +94,7 @@ def push_the_one_conditional(sdfg: dace.SDFG) -> bool:
 
 
 @pytest.mark.parametrize("k", [0, 3])
-def test_a_symbol_guard_over_a_top_level_map_moves_into_its_body(k: int):
+def test_a_symbol_guard_over_a_top_level_map_moves_into_its_body(k: int) -> None:
     reference = map_under_symbol_guard.to_sdfg(simplify=True)
     sut = copy.deepcopy(reference)
     a, b = np.random.rand(SIZE), np.full(SIZE, -1.0)
@@ -109,7 +110,7 @@ def test_a_symbol_guard_over_a_top_level_map_moves_into_its_body(k: int):
 
 
 @pytest.mark.parametrize("flag", [0, 1])
-def test_a_guard_that_reads_data_takes_the_data_into_the_map(flag: int):
+def test_a_guard_that_reads_data_takes_the_data_into_the_map(flag: int) -> None:
     reference = map_under_data_guard.to_sdfg(simplify=True)
     sut = copy.deepcopy(reference)
     a, b = np.random.rand(SIZE), np.full(SIZE, -1.0)
@@ -125,7 +126,7 @@ def test_a_guard_that_reads_data_takes_the_data_into_the_map(flag: int):
     np.testing.assert_array_equal(actual["b"], expected["b"])
 
 
-def test_a_guard_in_a_loop_body_that_reads_the_loop_variable_moves_into_the_map():
+def test_a_guard_in_a_loop_body_that_reads_the_loop_variable_moves_into_the_map() -> None:
     reference = map_under_guard_in_loop.to_sdfg(simplify=True)
     sut = copy.deepcopy(reference)
     a, b = np.random.rand(SIZE), np.zeros(SIZE)
@@ -144,7 +145,7 @@ def test_a_guard_in_a_loop_body_that_reads_the_loop_variable_moves_into_the_map(
 @pytest.mark.parametrize(
     "build", [map_writes_what_its_guard_reads, lambda: map_under_guard_with_else.to_sdfg(simplify=True)]
 )
-def test_a_guard_whose_value_the_map_changes_or_that_has_an_else_stays_outside(build):
+def test_a_guard_whose_value_the_map_changes_or_that_has_an_else_stays_outside(build: Callable[[], dace.SDFG]) -> None:
     sut = build()
     before = sut.to_json()
 
@@ -155,7 +156,7 @@ def test_a_guard_whose_value_the_map_changes_or_that_has_an_else_stays_outside(b
 
 
 @pytest.mark.parametrize("flag", [0, 1])
-def test_a_map_whose_body_also_reads_the_guard_data_computes_the_same(flag: int):
+def test_a_map_whose_body_also_reads_the_guard_data_computes_the_same(flag: int) -> None:
     reference = map_under_data_guard.to_sdfg(simplify=True)
     (cond,) = conditionals(reference)
     (state,) = [s for s in cond.branches[0][1].nodes() if not s.is_empty()]

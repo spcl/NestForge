@@ -163,8 +163,8 @@ def in_state_refusal(state: SDFGState, node: nodes.CodeNode, effect: Effect, ear
     nothing waiting for it, stays behind, and every other access that conflicts with it stays on the same side."""
     ordered = state.in_edges(node) if earlier else state.out_edges(node)
     if any(e.data.is_empty() for e in ordered):
-        side = "after" if earlier else "before"
-        return Refused(f"{node.label} is ordered {side} other nodes of {state.label} by empty edges.", Refusal.EFFECTS)
+        order = "after" if earlier else "before"
+        return Refused(f"{node.label} is ordered {order} other nodes of {state.label} by empty edges.", Refusal.EFFECTS)
     inputs = [e.src for e in state.in_edges(node) if not e.data.is_empty()]
     outputs = [e.dst for e in state.out_edges(node) if not e.data.is_empty()]
     if any(state.in_degree(n) != 1 for n in outputs):
@@ -191,7 +191,7 @@ def accessed_beside(state: SDFGState, node: nodes.CodeNode, names: frozenset[str
     for other in state.data_nodes():
         edges = state.in_edges(other) if writes else state.out_edges(other)
         if other.data in names and other not in outputs and any(not e.data.is_empty() for e in edges):
-            return other.data
+            return str(other.data)
     return None
 
 
@@ -216,7 +216,7 @@ def interstate_refusal(edge_data: dace.InterstateEdge, effect: Effect, where: st
     read = edge_data.read_symbols()
     if read & effect.writes:
         return Refused(
-            f"a transition in {where} reads {sorted(read & effect.writes)[0]}, which the call writes.", Refusal.EFFECTS
+            f"a transition in {where} reads {min(read & effect.writes)}, which the call writes.", Refusal.EFFECTS
         )
     assigned = sorted(set(edge_data.assignments) & effect.symbols)
     if assigned:
@@ -241,16 +241,12 @@ def crossed_refusal(block: ControlFlowBlock, effect: Effect) -> str | None:
         )
     reads, writes = block.read_and_write_sets()
     if writes & effect.touched:
-        return Refused(
-            f"{block.label} writes {sorted(writes & effect.touched)[0]}, which the call touches.", Refusal.EFFECTS
-        )
+        return Refused(f"{block.label} writes {min(writes & effect.touched)}, which the call touches.", Refusal.EFFECTS)
     if reads & effect.writes:
-        return Refused(
-            f"{block.label} reads {sorted(reads & effect.writes)[0]}, which the call writes.", Refusal.EFFECTS
-        )
+        return Refused(f"{block.label} reads {min(reads & effect.writes)}, which the call writes.", Refusal.EFFECTS)
     if assigned_symbols(block) & effect.symbols:
         return Refused(
-            f"{block.label} assigns {sorted(assigned_symbols(block) & effect.symbols)[0]}, which the call reads.",
+            f"{block.label} assigns {min(assigned_symbols(block) & effect.symbols)}, which the call reads.",
             Refusal.EFFECTS,
         )
     return None
@@ -284,12 +280,12 @@ def loop_refusal(loop: LoopRegion, child: ControlFlowBlock, effect: Effect, earl
         reads, writes = block.read_and_write_sets()
         if writes & effect.touched:
             return Refused(
-                f"{block.label} in {loop.label} writes {sorted(writes & effect.touched)[0]}, which the call touches.",
+                f"{block.label} in {loop.label} writes {min(writes & effect.touched)}, which the call touches.",
                 Refusal.EFFECTS,
             )
         if reads & effect.writes and not (earlier and block in after):
             return Refused(
-                f"{block.label} in {loop.label} reads {sorted(reads & effect.writes)[0]}, which the call writes.",
+                f"{block.label} in {loop.label} reads {min(reads & effect.writes)}, which the call writes.",
                 Refusal.EFFECTS,
             )
     for edge in loop.edges():

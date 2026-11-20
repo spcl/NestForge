@@ -4,6 +4,7 @@
 hints, most important first, and the report a session builds from real builds."""
 
 from pathlib import Path
+from typing import Any
 
 import dace
 import numpy as np
@@ -36,24 +37,24 @@ def verdict(time_us: float = 10.0, md_rel: float = 0.0, error: str = "") -> Kern
     return KernelVerdict("strict-ieee", md_rel, md_rel, 2.3e-16, time_us, error)
 
 
-def evidence(kernel: str = "extcall_0", remarks: str = "", **kw) -> Evidence:
+def evidence(kernel: str = "extcall_0", remarks: str = "", **kw: Any) -> Evidence:
     return Evidence(kernel, verdict(**kw), remarks)
 
 
-def test_gcc_reasons_are_distinct_and_the_bare_missed_line_is_no_reason():
+def test_gcc_reasons_are_distinct_and_the_bare_missed_line_is_no_reason() -> None:
     assert vectorizer_reasons(GCC_REMARKS) == ["control flow in loop", "complicated access pattern"]
 
 
-def test_clang_reasons_stop_before_the_remark_flag():
+def test_clang_reasons_stop_before_the_remark_flag() -> None:
     assert vectorizer_reasons(CLANG_REMARKS) == ["cannot identify array bounds"]
 
 
-def test_ptxas_spills_add_up_over_functions_and_report_the_most_registers():
+def test_ptxas_spills_add_up_over_functions_and_report_the_most_registers() -> None:
     assert spills(PTXAS_REMARKS) == (40, 80)
     assert spills("") == (0, 0)
 
 
-def test_a_wrong_result_comes_first_and_a_failed_build_before_it():
+def test_a_wrong_result_comes_first_and_a_failed_build_before_it() -> None:
     lines = report(
         [
             evidence("extcall_0", remarks=GCC_REMARKS),
@@ -68,7 +69,7 @@ def test_a_wrong_result_comes_first_and_a_failed_build_before_it():
     assert lines[2].startswith("extcall_1: wrong result, max rel err 0.25 at strict-ieee ->")
 
 
-def test_a_kernel_with_most_of_the_time_is_named_hot_and_the_head_lists_every_time():
+def test_a_kernel_with_most_of_the_time_is_named_hot_and_the_head_lists_every_time() -> None:
     text = report([evidence("extcall_0", time_us=80.0), evidence("extcall_1", time_us=20.0)])
 
     assert text.splitlines()[0] == "kernel times: extcall_0 80.0 us, extcall_1 20.0 us"
@@ -76,21 +77,21 @@ def test_a_kernel_with_most_of_the_time_is_named_hot_and_the_head_lists_every_ti
     assert "extcall_1 is" not in text
 
 
-def test_the_cost_model_verdict_is_no_vectorizer_hint():
+def test_the_cost_model_verdict_is_no_vectorizer_hint() -> None:
     """ "Not profitable" is the cost model's call, which stage 6 sweeps; only a real blocker becomes a hint."""
     remarks = "k.cpp:3:5: missed: not vectorized: vectorization is not profitable.\n" + GCC_REMARKS
 
     assert vectorizer_reasons(remarks) == ["control flow in loop", "complicated access pattern"]
 
 
-def test_register_spills_suggest_fission_and_vectorizer_reasons_carry_their_advice():
+def test_register_spills_suggest_fission_and_vectorizer_reasons_carry_their_advice() -> None:
     text = report([evidence(remarks=PTXAS_REMARKS + GCC_REMARKS)])
 
     assert "extcall_0: 80 bytes spilled at 40 registers -> loop body too big, try fission." in text
     assert "loop not vectorized: control flow in loop -> move the condition out of the loop" in text
 
 
-def test_a_report_keeps_at_most_eight_hints_ranked_by_importance():
+def test_a_report_keeps_at_most_eight_hints_ranked_by_importance() -> None:
     many = [evidence(f"extcall_{i}", md_rel=0.5, remarks=GCC_REMARKS) for i in range(5)]
 
     lines = report(many).splitlines()
@@ -99,7 +100,7 @@ def test_a_report_keeps_at_most_eight_hints_ranked_by_importance():
     assert all("wrong result" in line for line in lines[1:6])
 
 
-def test_a_kernel_needing_a_value_the_program_computes_is_unchecked_not_wrong():
+def test_a_kernel_needing_a_value_the_program_computes_is_unchecked_not_wrong() -> None:
     """CloudSC's ``jmelt`` is read from an array the program fills, so no standalone run of its kernel exists."""
     ev = Evidence("extcall_7", unchecked_verdict("strict-ieee", computed_symbols_reason(["jmelt"])), "")
 
@@ -109,7 +110,7 @@ def test_a_kernel_needing_a_value_the_program_computes_is_unchecked_not_wrong():
     assert "not checked alone" in report([ev]) and "wrong" not in report([ev]) and "failed" not in report([ev])
 
 
-def test_a_kernel_report_carries_the_difference_and_the_bound_it_was_judged_at():
+def test_a_kernel_report_carries_the_difference_and_the_bound_it_was_judged_at() -> None:
     close, far = evidence("extcall_0", md_rel=3e-14), evidence("extcall_1", md_rel=0.25)
     broken = evidence("extcall_2", error="did not build")
 
@@ -123,18 +124,18 @@ def test_a_kernel_report_carries_the_difference_and_the_bound_it_was_judged_at()
     assert (unchecked.correct, unchecked.max_rel_error, unchecked.tolerance) == (None, None, None)
 
 
-def test_a_healthy_kernel_gets_no_hint():
+def test_a_healthy_kernel_gets_no_hint() -> None:
     assert report([evidence()]).splitlines()[1] == "no hints: every kernel is correct and nothing stands out."
 
 
 @dace.program
-def square(a: dace.float64[N], b: dace.float64[N]):
+def square(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         b[i] = a[i] * a[i]
 
 
 @pytest.mark.e2e
-def test_a_session_reports_the_times_of_its_built_kernels(tmp_path):
+def test_a_session_reports_the_times_of_its_built_kernels(tmp_path: Path) -> None:
     session = Session(square.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 4096})
     (kernel,) = session.default_scopes()
 

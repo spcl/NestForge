@@ -8,7 +8,7 @@ import sys
 from nestforge.paths import REPO_ROOT
 
 
-def test_importing_nestforge_never_loads_hpcagent_bench():
+def test_importing_nestforge_never_loads_hpcagent_bench() -> None:
     """HPCAgent-Bench drives NestForge, so a top-level import the other way would close an import cycle."""
     script = (
         "import importlib, pkgutil, sys\n"

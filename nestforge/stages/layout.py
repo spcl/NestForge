@@ -209,4 +209,5 @@ def layout_refusal(operations: Sequence[Operation]) -> str | None:
 
 def requests_of(operations: Sequence[Operation]) -> dict[str, object]:
     """The submission's ``requests`` for ``operations`` (``{}``: none)."""
-    return requests_json(Requests(operations=tuple(operations)))
+    requests: dict[str, object] = requests_json(Requests(operations=tuple(operations)))
+    return requests

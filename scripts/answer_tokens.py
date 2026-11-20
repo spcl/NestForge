@@ -80,7 +80,7 @@ def rendered_v1(tool: str, reply: Reply) -> str:
 BARE_KEYS = frozenset({"kind", "status", "tool", "labels"})
 
 #: Fields a v2 answer leaves out when they hold their default: nothing the agent acts on.
-QUIET = (None, "", [], {}, False)
+QUIET: tuple[object, ...] = (None, "", [], {}, False)
 
 
 def compact(value: Any, depth: int = 0) -> list[str]:
@@ -432,13 +432,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     def run(tool: str, arguments: dict[str, Any]) -> Reply:
         return answer(session, tool, arguments, data, timed=args.measure)
 
+    shown: dict[str, str] = {}
     counted = count(
         calls,
         run,
         {name: RENDERERS[name] for name in formats},
         tokens_of,
         args.measure,
-        shown := {},
+        shown,
         args.show,
     )
     for name, text in shown.items():

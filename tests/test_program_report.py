@@ -9,16 +9,16 @@ from nestforge.stages.performance import NO_REFERENCE, NUMPY_REFERENCE, ProgramT
 REFERENCE = Reference({"out": np.zeros(1)}, 1e-8, 1e-8, NUMPY_REFERENCE)
 
 
-def test_a_program_that_ran_with_no_reference_is_marked_unchecked():
+def test_a_program_that_ran_with_no_reference_is_marked_unchecked() -> None:
     report = timed_report(ProgramTime(time_us=12.5, mismatched=None), None)
     assert report.correct is None and report.unchecked == NO_REFERENCE and report.time_us == 12.5
 
 
-def test_a_program_that_matched_its_reference_is_correct_and_not_marked():
+def test_a_program_that_matched_its_reference_is_correct_and_not_marked() -> None:
     report = timed_report(ProgramTime(time_us=12.5, mismatched=[]), REFERENCE)
     assert report.correct is True and report.unchecked == "" and report.reference == NUMPY_REFERENCE
 
 
-def test_a_program_that_differs_from_its_reference_names_the_outputs():
+def test_a_program_that_differs_from_its_reference_names_the_outputs() -> None:
     report = timed_report(ProgramTime(time_us=12.5, mismatched=["out"]), REFERENCE)
     assert report.correct is False and report.mismatched == ["out"] and report.unchecked == ""

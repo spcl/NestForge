@@ -9,6 +9,7 @@ import ctypes
 import dace
 import numpy as np
 import pytest
+from dace.frontend.python.parser import DaceProgram
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from test_failed_calls import program
@@ -31,7 +32,7 @@ GPU_TILE = 48
 
 
 @dace.program
-def wavefront_2d(aa: dace.float64[N, N]):
+def wavefront_2d(aa: dace.float64[N, N]) -> None:
     """TSVC s2111: each element reads its left and its upper neighbor."""
     for i in range(1, N):
         for j in range(1, N):
@@ -39,7 +40,7 @@ def wavefront_2d(aa: dace.float64[N, N]):
 
 
 @dace.program
-def outer_carried(aa: dace.float64[N, N], bb: dace.float64[N, N]):
+def outer_carried(aa: dace.float64[N, N], bb: dace.float64[N, N]) -> None:
     """TSVC s1119: only the outer axis carries, so the inner one is parallel already."""
     for i in range(1, N):
         for j in range(N):
@@ -47,7 +48,7 @@ def outer_carried(aa: dace.float64[N, N], bb: dace.float64[N, N]):
 
 
 @dace.program
-def time_steps(aa: dace.float64[N]):
+def time_steps(aa: dace.float64[N]) -> None:
     """A time loop whose iterator indexes nothing: every step re-applies the same update."""
     for t in range(T):
         for i in range(1, N):
@@ -79,7 +80,7 @@ def reference(aa: np.ndarray) -> np.ndarray:
     return out
 
 
-def test_a_session_starts_without_wavefronts_and_the_move_skews_the_nest_it_lists():
+def test_a_session_starts_without_wavefronts_and_the_move_skews_the_nest_it_lists() -> None:
     sut = canonical(wavefront_2d)
     assert loops_and_maps(sut) == (2, 0), "the canonical form of a session leaves the wavefront to the moves"
     (labels,) = skew_labels(sut)
@@ -94,7 +95,7 @@ def test_a_session_starts_without_wavefronts_and_the_move_skews_the_nest_it_list
 
 
 @pytest.mark.e2e
-def test_the_skewed_program_computes_the_reference():
+def test_the_skewed_program_computes_the_reference() -> None:
     sut = canonical(wavefront_2d)
     (labels,) = skew_labels(sut)
     sut.apply_move(SKEW_WAVEFRONT, list(labels))
@@ -107,7 +108,7 @@ def test_the_skewed_program_computes_the_reference():
 
 
 @pytest.mark.e2e
-def test_a_diagonal_of_many_tiles_run_by_several_threads_computes_the_reference():
+def test_a_diagonal_of_many_tiles_run_by_several_threads_computes_the_reference() -> None:
     sut = canonical(wavefront_2d)
     (labels,) = skew_labels(sut)
     # tiles of 8 at an extent of 40 put up to five tiles on a diagonal, where the default tile holds the whole array
@@ -124,7 +125,7 @@ def test_a_diagonal_of_many_tiles_run_by_several_threads_computes_the_reference(
     assert np.allclose(got, reference(aa))
 
 
-def test_on_the_gpu_target_tile_sizes_set_the_extents_of_the_gpu_tiles():
+def test_on_the_gpu_target_tile_sizes_set_the_extents_of_the_gpu_tiles() -> None:
     sut = canonical(wavefront_2d, gpu=True)
     (labels,) = skew_labels(sut)
 
@@ -137,7 +138,7 @@ def test_on_the_gpu_target_tile_sizes_set_the_extents_of_the_gpu_tiles():
     assert any(str(GPU_TILE) in step for step in steps), steps
 
 
-def test_tile_sizes_set_the_extents_of_the_tiles():
+def test_tile_sizes_set_the_extents_of_the_tiles() -> None:
     sut = canonical(wavefront_2d)
     (labels,) = skew_labels(sut)
 
@@ -149,7 +150,7 @@ def test_tile_sizes_set_the_extents_of_the_tiles():
     assert any("32" in step for step in steps), steps
 
 
-def test_tile_sizes_other_than_two_positive_extents_are_refused():
+def test_tile_sizes_other_than_two_positive_extents_are_refused() -> None:
     sut = canonical(wavefront_2d)
     (labels,) = skew_labels(sut)
 
@@ -166,7 +167,9 @@ def test_tile_sizes_other_than_two_positive_extents_are_refused():
         (time_steps, "a time-step loop"),
     ],
 )
-def test_a_loop_that_is_no_wavefront_is_refused_with_daces_sentence_and_the_program_stays(prog, sentence):
+def test_a_loop_that_is_no_wavefront_is_refused_with_daces_sentence_and_the_program_stays(
+    prog: DaceProgram, sentence: str
+) -> None:
     sut = canonical(prog)
     loops = [row for row, (obj, _) in sut.row_index().items() if isinstance(obj, LoopRegion)]
     assert loops, "the fixture keeps a loop"
@@ -179,7 +182,7 @@ def test_a_loop_that_is_no_wavefront_is_refused_with_daces_sentence_and_the_prog
     assert program(sut) == before
 
 
-def test_rollback_after_the_skew_restores_the_program_and_its_labels():
+def test_rollback_after_the_skew_restores_the_program_and_its_labels() -> None:
     sut = canonical(wavefront_2d)
     (labels,) = skew_labels(sut)
     before, rows = program(sut), set(sut.row_index())
@@ -190,7 +193,7 @@ def test_rollback_after_the_skew_restores_the_program_and_its_labels():
     assert program(sut) == before and set(sut.row_index()) == rows
 
 
-def test_the_default_moves_skew_as_canonicalization_with_wavefronts_does():
+def test_the_default_moves_skew_as_canonicalization_with_wavefronts_does() -> None:
     today = canonical(wavefront_2d, wavefront=True)
     sut = canonical(wavefront_2d)
 
@@ -201,7 +204,7 @@ def test_the_default_moves_skew_as_canonicalization_with_wavefronts_does():
     assert program(sut) == program(today), "the defaults reach the program canonicalization with wavefronts reaches"
 
 
-def test_with_the_wavefront_family_off_the_defaults_leave_the_nest_sequential():
+def test_with_the_wavefront_family_off_the_defaults_leave_the_nest_sequential() -> None:
     sut = Session(wavefront_2d.to_sdfg(simplify=True), disabled_families=["wavefront"])
     sut.canonicalize()
 

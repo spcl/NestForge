@@ -6,24 +6,27 @@ The translator sorts arrays, then scalars; the manifest lists inputs, outputs, s
 mismatch writes through the wrong pointer without any error.
 """
 
+from pathlib import Path
+
 import dace
 import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall, params_and_args
-from helpers import bench_kernel, emit_sources, extract_nest_to_sdfg, signature_order
+from helpers import BenchKernel, bench_kernel, emit_sources, extract_nest_to_sdfg, signature_order
 
+from nestforge.ir.extract import Boundary
 from nestforge.stages.scopes import parallel_top_level_maps
 
 N = dace.symbol("N")
 
 
 @dace.program
-def writes_a_reads_b(a: dace.float64[N], b: dace.float64[N]):
+def writes_a_reads_b(a: dace.float64[N], b: dace.float64[N]) -> None:
     """The output sorts before the input, so role order ``[b, a, N]`` and sorted order ``[a, b, N]`` differ."""
     for i in dace.map[0:N]:
         a[i] = b[i] + 1.0
 
 
-def prepared_nest(tmp_path):
+def prepared_nest(tmp_path: Path) -> tuple[BenchKernel, Boundary]:
     sdfg = writes_a_reads_b.to_sdfg(simplify=True)
     parent, node = parallel_top_level_maps(sdfg)[0]
     boundary = extract_nest_to_sdfg(parent, node, name="wab")
@@ -32,7 +35,7 @@ def prepared_nest(tmp_path):
 
 
 @pytest.mark.integration  # runs the numpyto emitter
-def test_emitted_signature_disagrees_with_manifest_role_order(tmp_path):
+def test_emitted_signature_disagrees_with_manifest_role_order(tmp_path: Path) -> None:
     """The hazard itself: if the two orders ever coincide for this kernel, the fixture stops testing anything."""
     prep, boundary = prepared_nest(tmp_path)
     csrc = next(s for s in emit_sources(prep, tmp_path, target="c") if s.suffix == ".c" and "pluto" not in s.name)
@@ -44,7 +47,7 @@ def test_emitted_signature_disagrees_with_manifest_role_order(tmp_path):
     )
 
 
-def test_a_prototype_above_the_definition_does_not_widen_the_capture():
+def test_a_prototype_above_the_definition_does_not_widen_the_capture() -> None:
     """A non-greedy match backtracks across a preceding prototype and captures a garbage parameter list."""
     from nestforge.build.toolchain import raw_signature
 
@@ -63,7 +66,7 @@ def test_a_prototype_above_the_definition_does_not_widen_the_capture():
     assert raw_signature(commented, "s000_fp64") == "double *a, int64_t n"
 
 
-def extern_call(abi_order, inputs):
+def extern_call(abi_order: list[str], inputs: list[str]) -> tuple[ExternalCall, dace.SDFGState]:
     node = ExternalCall("k", inputs=dict.fromkeys(inputs), outputs={})
     node.symbol, node.abi_order = "k_fp64", list(abi_order)
     sdfg = dace.SDFG("host")
@@ -76,7 +79,7 @@ def extern_call(abi_order, inputs):
     return node, state
 
 
-def test_abi_arg_without_a_connector_is_refused():
+def test_abi_arg_without_a_connector_is_refused() -> None:
     """A scratch buffer in the compiled signature never crosses the node's boundary; the call would name nothing."""
     with pytest.raises(ValueError, match="'scratch' is neither a connected container nor a symbol"):
         params_and_args(*extern_call(["A", "scratch"], inputs=["_in_A"]))

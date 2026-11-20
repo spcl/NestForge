@@ -52,11 +52,11 @@ the verdict without recording a grade.
 its answer gains one entry per rank count:
 
 ```python
-class DistributedRun(pydantic.BaseModel):    # frozen
+class DistributedRun(pydantic.BaseModel):  # frozen
     ranks: int
-    time_us: float | None        # the timed bracket, slowest rank (mpi-wtime-max)
-    mpi_time_us: float | None    # time inside MPI calls on the slowest rank
-    correct: bool | None         # the gathered output against the single-node reference
+    time_us: float | None  # the timed bracket, slowest rank (mpi-wtime-max)
+    mpi_time_us: float | None  # time inside MPI calls on the slowest rank
+    correct: bool | None  # the gathered output against the single-node reference
     mismatched: list[str]
     error: str
 ```

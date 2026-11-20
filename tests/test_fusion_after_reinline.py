@@ -9,32 +9,34 @@ the fixture fissions it back apart first to get two nests worth externalizing.
 
 import dace
 import numpy as np
+from dace import SDFG
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import fission_to_fixpoint
 
+from nestforge.ir.extract import Boundary
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
-f64 = dace.float64
 
 
 @dace.program
-def two_maps(a: f64[N], b: f64[N], c: f64[N]):
+def two_maps(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     """Two elementwise maps over the same range: a horizontal pair once both are visible."""
     b[:] = a[:] * 2.0
     c[:] = a[:] + 1.0
 
 
-def maps_in(sdfg):
+def maps_in(sdfg: SDFG) -> list[dace.nodes.MapEntry]:
     """Top-level MapEntry nodes only -- exactly what MapFusion can see."""
     return [n for state in sdfg.states() for n in state.nodes() if isinstance(n, dace.nodes.MapEntry)]
 
 
-def nested_in(sdfg):
+def nested_in(sdfg: SDFG) -> list[dace.nodes.NestedSDFG]:
     return [n for state in sdfg.states() for n in state.nodes() if isinstance(n, dace.nodes.NestedSDFG)]
 
 
-def externalized():
+def externalized() -> tuple[SDFG, list[tuple[ExternalCall, Boundary]]]:
     """Two map nests, each lowered to its own ``ExternalCall`` -- the state the agent measures in."""
     sdfg = two_maps.to_sdfg(simplify=False)
     targets = Targets()
@@ -46,14 +48,14 @@ def externalized():
     return sdfg, calls
 
 
-def test_externalized_nest_keeps_its_own_sdfg_for_reinlining():
+def test_externalized_nest_keeps_its_own_sdfg_for_reinlining() -> None:
     """(a) The material to re-inline with. Without it feedback cannot start."""
     _, calls = externalized()
     for ext, _boundary in calls:
         assert ext.standalone_sdfg is not None, f"{ext.name} cannot be re-inlined: no standalone SDFG"
 
 
-def test_reinlined_nests_are_inlined_so_map_fusion_can_see_them():
+def test_reinlined_nests_are_inlined_so_map_fusion_can_see_them() -> None:
     """(b) The round trip. After expanding back to NestedSDFGs, ``fuse_and_finish`` must reach one map."""
     sdfg, _ = externalized()
     sdfg.expand_library_nodes()  # DaceReference: each nest returns as a NestedSDFG
@@ -64,7 +66,7 @@ def test_reinlined_nests_are_inlined_so_map_fusion_can_see_them():
     assert len(maps_in(sdfg)) == 1, f"expected the two maps to fuse into one, got {len(maps_in(sdfg))}"
 
 
-def test_reinlined_and_fused_program_still_computes_the_same_values():
+def test_reinlined_and_fused_program_still_computes_the_same_values() -> None:
     """Fusing after a re-inline must be value-preserving -- the whole point of measuring the fused rung."""
     n = 64
     rng = np.random.default_rng(0)

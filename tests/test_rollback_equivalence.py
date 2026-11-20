@@ -8,6 +8,8 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import dace
 import pytest
@@ -28,8 +30,9 @@ import test_vectorize_doall_and_c_view as vectorize_fixtures
 from dace.frontend.python.parser import DaceProgram
 
 from nestforge.records import MoveStatus
-from nestforge.session import UNDONE_BY, Move, Session
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, VECTORIZE_DOALL, config_names
+from nestforge.session import UNDONE_BY, Move, MoveResult, Session
+from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, config_names
+from nestforge.stages.vectorize import VECTORIZE_DOALL
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
 #: below, so every kind is applied and rolled back somewhere in this file.
@@ -165,14 +168,14 @@ def outcomes(tmp_path_factory: pytest.TempPathFactory) -> list[Outcome]:
     return found
 
 
-def test_rollback_after_any_move_gives_back_the_same_program_labels_and_tree(outcomes):
+def test_rollback_after_any_move_gives_back_the_same_program_labels_and_tree(outcomes: list[Outcome]) -> None:
     broken = [(program, kind, labels, differs) for program, kind, labels, differs in outcomes if differs]
 
     assert outcomes, "no move applied"
     assert not broken, broken
 
 
-def test_every_move_kind_is_applied_and_rolled_back_by_some_fixture(outcomes):
+def test_every_move_kind_is_applied_and_rolled_back_by_some_fixture(outcomes: list[Outcome]) -> None:
     covered = {kind for _, kind, _, _ in outcomes}
 
     missing = set(MOVE_SHAPES) - covered - OWN_CASES.keys()
@@ -181,7 +184,7 @@ def test_every_move_kind_is_applied_and_rolled_back_by_some_fixture(outcomes):
     assert set(OWN_CASES.values()) <= set(globals()), "a kind's own case is missing"
 
 
-def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str:
+def differs_after_rollback(session: Session, apply: Callable[[], MoveResult]) -> str:
     """What differs once ``apply``'s change is rolled back (empty: nothing); it must have applied."""
     before = state_of(session)
     result = apply()
@@ -191,7 +194,7 @@ def differs_after_rollback(session: Session, apply: Callable[[], object]) -> str
     return ", ".join(part for part, a, b in zip(parts, before, state_of(session), strict=True) if a != b)
 
 
-def test_rollback_after_a_persistent_kernel(tmp_path):
+def test_rollback_after_a_persistent_kernel(tmp_path: Path) -> None:
     session, kernel = test_persistent_kernel.scoped(tmp_path)
     ((loop,),) = test_persistent_kernel.offered(session, kernel)
 
@@ -199,13 +202,13 @@ def test_rollback_after_a_persistent_kernel(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["run-on-cpu", "run-on-gpu", "run-on-cpu-persistent", "run-on-gpu-persistent"])
-def test_rollback_after_a_placement_move(tmp_path, kind: str):
+def test_rollback_after_a_placement_move(tmp_path: Path, kind: str) -> None:
     session, kernels = test_run_on.scoped(test_run_on.two_time_loops, tmp_path, gpu=True)
 
     assert differs_after_rollback(session, lambda: session.apply_move(kind, kernels)) == ""
 
 
-def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path):
+def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothing(tmp_path: Path) -> None:
     session = Session(test_session_moves.guarded_map.to_sdfg(simplify=True), work_dir=str(tmp_path))
     start = state_of(session)
     nothing = session.apply_move(ROLLBACK, [])
@@ -221,7 +224,7 @@ def test_rollback_twice_takes_back_two_moves_and_with_nothing_kept_changes_nothi
     assert state_of(session) == start
 
 
-def test_rollback_after_propagate_config(tmp_path):
+def test_rollback_after_propagate_config(tmp_path: Path) -> None:
     session = Session(test_unroll_config_moves.repeat.to_sdfg(simplify=True), work_dir=str(tmp_path))
     values = {name: 3 for name in config_names(session.sdfg) if name == "K"}
 
@@ -238,7 +241,7 @@ def test_rollback_after_propagate_config(tmp_path):
         ("stage-loads-shared", "gpu", {"block": [64]}),
     ],
 )
-def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments: dict):
+def test_rollback_after_a_scope_move(tmp_path: Path, kind: str, device: str, arguments: dict[str, Any]) -> None:
     session, first, second = scope_fixtures.two_kernels(tmp_path, gpu=device == "gpu")
     session.place({first: device, second: device})
     if device == "gpu":
@@ -250,7 +253,7 @@ def test_rollback_after_a_scope_move(tmp_path, kind: str, device: str, arguments
     assert not differs, differs
 
 
-def test_rollback_after_set_fp_mode(tmp_path):
+def test_rollback_after_set_fp_mode(tmp_path: Path) -> None:
     session, first, _ = scope_fixtures.two_kernels(tmp_path, gpu=False)
 
     differs = differs_after_rollback(
@@ -260,7 +263,7 @@ def test_rollback_after_set_fp_mode(tmp_path):
     assert not differs, differs
 
 
-def test_rollback_after_vectorizing_a_doall(tmp_path):
+def test_rollback_after_vectorizing_a_doall(tmp_path: Path) -> None:
     session = vectorize_fixtures.session(tmp_path)
     move = session.list_moves(VECTORIZE_DOALL)[0]
 
@@ -275,14 +278,14 @@ def listed_move(session: Session, kind: str) -> Move:
     return session.list_moves(kind)[0]
 
 
-def apply_listed(session: Session, kind: str):
+def apply_listed(session: Session, kind: str) -> MoveResult:
     move = listed_move(session, kind)
     return session.apply_move(
         kind, move.labels, **{k: v for k, v in move.model_dump().items() if k not in NOT_ARGUMENTS}
     )
 
 
-def test_the_inverse_of_the_last_move_on_the_rows_it_made_is_answered_by_rollback(tmp_path):
+def test_the_inverse_of_the_last_move_on_the_rows_it_made_is_answered_by_rollback(tmp_path: Path) -> None:
     session = Session(scope_fixtures.chain.to_sdfg(simplify=True), work_dir=str(tmp_path))
     before = state_of(session)
     assert apply_listed(session, "tile-doall").status is MoveStatus.APPLIED
@@ -300,7 +303,9 @@ def test_the_inverse_of_the_last_move_on_the_rows_it_made_is_answered_by_rollbac
         (test_session_moves.calls_then_loops, "tile-for", "untile-for"),
     ],
 )
-def test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back(tmp_path, program, tile, untile):
+def test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back(
+    tmp_path: Path, program: DaceProgram, tile: str, untile: str
+) -> None:
     session = Session(program.to_sdfg(simplify=True), work_dir=str(tmp_path))
     first, second = (move.labels for move in session.list_moves(tile)[:2])
     session.apply_move(tile, first, tile_sizes=[8])
@@ -314,7 +319,7 @@ def test_the_inverse_of_an_earlier_move_is_applied_as_a_move_and_rolled_back(tmp
     assert not differs, differs
 
 
-def test_rollback_after_copy_to_tma(tmp_path):
+def test_rollback_after_copy_to_tma(tmp_path: Path) -> None:
     session, first, second = scope_fixtures.two_kernels(tmp_path, gpu=True)
     session.place({first: "gpu", second: "gpu"})
     session.insert_copies()
@@ -328,7 +333,7 @@ def test_rollback_after_copy_to_tma(tmp_path):
     assert not differs, differs
 
 
-def test_rollback_after_set_pipeline_depth(tmp_path):
+def test_rollback_after_set_pipeline_depth(tmp_path: Path) -> None:
     session, kernel = test_pipeline_depth.kernel_on(tmp_path, gpu=True)
     (move,) = session.list_moves("set-pipeline-depth", scope=kernel)
 

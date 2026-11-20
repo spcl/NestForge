@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 from multiprocessing.connection import Connection
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -143,7 +144,7 @@ if __name__ == "__main__":
 """
 
 
-def test_a_caller_that_leaves_a_session_running_exits_and_ends_it(tmp_path):
+def test_a_caller_that_leaves_a_session_running_exits_and_ends_it(tmp_path: Path) -> None:
     caller = tmp_path / "caller.py"
     caller.write_text(CALLER_LEAVING_A_SESSION)
     tests = str(pathlib.Path(__file__).parent)
@@ -159,7 +160,7 @@ def test_a_caller_that_leaves_a_session_running_exits_and_ends_it(tmp_path):
     assert done.returncode == 0, done.stderr
 
 
-def test_a_session_that_never_reports_ready_is_ended_within_the_budget(monkeypatch):
+def test_a_session_that_never_reports_ready_is_ended_within_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "TOOL_TIMEOUT_S", 0.5)
     monkeypatch.setattr(server, "CLOSE_TIMEOUT_S", 0.1)
     started = time.monotonic()
@@ -170,8 +171,9 @@ def test_a_session_that_never_reports_ready_is_ended_within_the_budget(monkeypat
     assert time.monotonic() - started < PROMPT_S
 
 
-def test_a_session_killed_between_calls_answers_that_it_died_and_does_not_raise():
+def test_a_session_killed_between_calls_answers_that_it_died_and_does_not_raise() -> None:
     session = SessionProcess(SETUP, target=ready_then_hang)
+    assert session.process.pid is not None, "the session process started"
     os.kill(session.process.pid, signal.SIGKILL)
     session.process.join(PROMPT_S)
 
@@ -181,7 +183,7 @@ def test_a_session_killed_between_calls_answers_that_it_died_and_does_not_raise(
     assert not session.alive
 
 
-def test_a_session_killed_in_a_call_is_noticed_while_its_forked_child_holds_the_pipe(tmp_path):
+def test_a_session_killed_in_a_call_is_noticed_while_its_forked_child_holds_the_pipe(tmp_path: Path) -> None:
     marker = tmp_path / "child"
     started = time.monotonic()
     session = SessionProcess(
@@ -196,7 +198,7 @@ def test_a_session_killed_in_a_call_is_noticed_while_its_forked_child_holds_the_
     assert gone_within(int(marker.read_text()), PROMPT_S)
 
 
-def test_a_busy_session_ends_with_its_killed_judge(tmp_path):
+def test_a_busy_session_ends_with_its_killed_judge(tmp_path: Path) -> None:
     marker = tmp_path / "session"
     spawn = multiprocessing.get_context("spawn")
     judge = spawn.Process(target=busy_session_in_a_judge, args=(marker,))
@@ -212,11 +214,12 @@ def test_a_busy_session_ends_with_its_killed_judge(tmp_path):
     assert gone_within(session, PROMPT_S)
 
 
-def test_the_session_keeps_its_files_in_a_folder_the_judge_removes_even_after_a_sigkill():
+def test_the_session_keeps_its_files_in_a_folder_the_judge_removes_even_after_a_sigkill() -> None:
     session = SessionProcess(SETUP, target=ready_then_leave_a_file)
     scratch = pathlib.Path(session.call("view_tree", {}).result)
     assert scratch.is_dir() and any(scratch.iterdir())
 
+    assert session.process.pid is not None, "the session process started"
     os.kill(session.process.pid, signal.SIGKILL)
     session.process.join(PROMPT_S)
     session.close()
@@ -252,7 +255,9 @@ def placement() -> dict[str, Any]:
     return {"cpus": sorted(os.sched_getaffinity(0)), **{key: os.environ.get(key) for key in keys}}
 
 
-def test_a_slot_pins_what_the_call_starts_and_the_next_call_starts_from_the_whole_mask(monkeypatch):
+def test_a_slot_pins_what_the_call_starts_and_the_next_call_starts_from_the_whole_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("OMP_NUM_THREADS", "96")
     monkeypatch.setenv("HPCAGENT_BENCH_JUDGE_GPUS_PER_NODE", "0")
     monkeypatch.setenv("HPCAGENT_BENCH_JUDGE_CPU_SLOTS_PER_NODE", "2")
@@ -272,7 +277,7 @@ def test_a_slot_pins_what_the_call_starts_and_the_next_call_starts_from_the_whol
     assert not set(first[0]["cpus"]) & set(second[0]["cpus"]), "two slots share no core"
 
 
-def test_a_call_that_does_not_answer_in_time_ends_the_session(monkeypatch):
+def test_a_call_that_does_not_answer_in_time_ends_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "STOP_GRACE_S", 1.0)
     session = SessionProcess(SETUP, target=ready_then_hang)
     started = time.monotonic()
@@ -284,7 +289,7 @@ def test_a_call_that_does_not_answer_in_time_ends_the_session(monkeypatch):
     assert not session.alive
 
 
-def test_a_measuring_call_whose_client_left_stops_and_the_session_answers_the_next_call():
+def test_a_measuring_call_whose_client_left_stops_and_the_session_answers_the_next_call() -> None:
     session = SessionProcess(SETUP, target=ready_then_stop_when_asked)
     gone = threading.Event()
     gone.set()
@@ -298,7 +303,7 @@ def test_a_measuring_call_whose_client_left_stops_and_the_session_answers_the_ne
     session.close()
 
 
-def test_a_call_out_of_budget_is_stopped_with_what_to_do_and_keeps_the_session():
+def test_a_call_out_of_budget_is_stopped_with_what_to_do_and_keeps_the_session() -> None:
     session = SessionProcess(SETUP, target=ready_then_stop_when_asked)
 
     reply = session.call("get_performance", {}, timeout_s=0.5)
@@ -308,7 +313,7 @@ def test_a_call_out_of_budget_is_stopped_with_what_to_do_and_keeps_the_session()
     session.close()
 
 
-def test_a_call_that_holds_no_slot_finishes_after_its_client_left():
+def test_a_call_that_holds_no_slot_finishes_after_its_client_left() -> None:
     session = SessionProcess(SETUP, target=ready_then_report_library_path)
     gone = threading.Event()
     gone.set()
@@ -319,7 +324,7 @@ def test_a_call_that_holds_no_slot_finishes_after_its_client_left():
     session.close()
 
 
-def test_a_session_that_died_reports_its_exit_and_is_not_alive():
+def test_a_session_that_died_reports_its_exit_and_is_not_alive() -> None:
     session = SessionProcess(SETUP, target=ready_then_die)
 
     reply = session.call("view_tree", {})
@@ -329,7 +334,9 @@ def test_a_session_that_died_reports_its_exit_and_is_not_alive():
     assert not session.alive
 
 
-def test_the_session_starts_in_the_llvm_openmp_context_and_the_caller_keeps_its_own(tmp_path, monkeypatch):
+def test_the_session_starts_in_the_llvm_openmp_context_and_the_caller_keeps_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     lib = tmp_path / "llvm" / "lib"
     lib.mkdir(parents=True)
     monkeypatch.setenv("HPCAGENT_BENCH_RUNTIME_OMP_CONTEXT_ROOT", str(tmp_path))

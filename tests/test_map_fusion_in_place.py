@@ -17,7 +17,7 @@ SIZE = 24
 
 
 @dace.program
-def two_row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]):
+def two_row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]) -> None:
     p = np.empty((N, N), dtype=np.float64)
     for i in range(N):
         p[i, 0] = p0[i]
@@ -56,7 +56,7 @@ def top_level_maps(sdfg: dace.SDFG) -> int:
     return sum(len(top_level_map_entries(state)) for state in sdfg.states())
 
 
-def test_row_recurrences_fuse_in_place_after_the_interchanges():
+def test_row_recurrences_fuse_in_place_after_the_interchanges() -> None:
     s = Session(two_row_recurrences.to_sdfg(simplify=True), targets=Targets(gpu=False), sizes={"N": SIZE})
     s.canonicalize()
     interchange_sweep(s, "p")

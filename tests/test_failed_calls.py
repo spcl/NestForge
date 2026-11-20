@@ -3,6 +3,8 @@
 """A call that fails leaves the session as it was: the program, the row labels and the record of applied moves."""
 
 import json
+from pathlib import Path
+from typing import Any
 
 import dace
 import numpy as np
@@ -13,7 +15,7 @@ from nestforge import server
 from nestforge import session as session_module
 from nestforge.records import MoveStatus
 from nestforge.server import answer
-from nestforge.session import Session
+from nestforge.session import Session, Stage
 from nestforge.stages import scopes
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -22,23 +24,23 @@ NO_DATA: tuple[dict[str, np.ndarray], None] = ({}, None)
 
 
 @dace.program
-def nest_in_loop(a: dace.float64[N, N], b: dace.float64[N, N]):
+def nest_in_loop(a: dace.float64[N, N], b: dace.float64[N, N]) -> None:
     for j in range(1, N):
         for i in dace.map[0:N]:
             a[j, i] = a[j - 1, i] + b[j, i]
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(nest_in_loop.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
 
 
-def fail(*args: object, **kwargs: object) -> None:
+def fail(*args: Any, **kwargs: Any) -> None:
     raise KeyError("injected")
 
 
-def half_then_fail(sdfg: dace.SDFG, *args: object) -> None:
+def half_then_fail(sdfg: dace.SDFG, *args: Any) -> None:
     sdfg.add_state("half_a_change")
     fail()
 
@@ -60,7 +62,9 @@ def first_move(sut: Session, kind: str) -> tuple[str, ...]:
 
 
 @pytest.mark.parametrize("kind, sizes", [("tile-for", (8,)), ("tile-doall", (8,))])
-def test_a_move_that_fails_after_its_rewrite_is_undone(tmp_path, monkeypatch, kind, sizes):
+def test_a_move_that_fails_after_its_rewrite_is_undone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, sizes: tuple[int, ...]
+) -> None:
     sut = session(tmp_path)
     labels, before, tree = first_move(sut, kind), program(sut), sut.describe()
 
@@ -75,7 +79,9 @@ def test_a_move_that_fails_after_its_rewrite_is_undone(tmp_path, monkeypatch, ki
     assert sut.apply_move(kind, labels, tile_sizes=sizes).status is MoveStatus.APPLIED
 
 
-def test_default_scopes_that_fail_partway_leave_no_half_outlined_nest(tmp_path, monkeypatch):
+def test_default_scopes_that_fail_partway_leave_no_half_outlined_nest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     before, tree = program(sut), sut.describe()
 
@@ -86,11 +92,13 @@ def test_default_scopes_that_fail_partway_leave_no_half_outlined_nest(tmp_path, 
 
     assert program(sut) == before
     assert sut.describe() == tree
-    assert [scope.name for scope in sut.run_defaults("scopes")]
+    kernels = sut.run_defaults("scopes")
+    assert isinstance(kernels, list)
+    assert [kernel.name for kernel in kernels]
 
 
 @pytest.mark.parametrize("stage", ["moves", "finish"])
-def test_a_default_stage_that_fails_is_undone(tmp_path, monkeypatch, stage):
+def test_a_default_stage_that_fails_is_undone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: Stage) -> None:
     sut = session(tmp_path)
     before = program(sut)
     monkeypatch.setattr(session_module, "fuse_and_finish", half_then_fail)
@@ -102,7 +110,9 @@ def test_a_default_stage_that_fails_is_undone(tmp_path, monkeypatch, stage):
     assert program(sut) == before
 
 
-def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_path, monkeypatch):
+def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     for _ in range(3):  # to the kernels phase: leaving the scopes gives every doall its default scope
         sut.next_phase()
@@ -120,7 +130,9 @@ def test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(tmp_pat
     assert sut.builds == before
 
 
-def test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(tmp_path, monkeypatch):
+def test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     labels, before = first_move(sut, "tile-for"), program(sut)
     move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}
@@ -137,14 +149,14 @@ def test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(tmp_
     assert answer(sut, "apply_move", move, None).result.status is MoveStatus.APPLIED
 
 
-def test_a_failed_read_claims_nothing_about_the_program(tmp_path, monkeypatch):
+def test_a_failed_read_claims_nothing_about_the_program(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sut = session(tmp_path)
     monkeypatch.setitem(server.CALLS, "get_cpf", fail)
 
     assert answer(sut, "get_cpf", {}, None).error == "KeyError: 'injected'"
 
 
-def test_a_call_that_succeeds_keeps_its_change(tmp_path):
+def test_a_call_that_succeeds_keeps_its_change(tmp_path: Path) -> None:
     sut = session(tmp_path)
     labels = first_move(sut, "tile-for")
 
@@ -155,11 +167,11 @@ def test_a_call_that_succeeds_keeps_its_change(tmp_path):
     assert [move.kind for move in sut.applied] == ["tile-for"]
 
 
-def test_every_timed_change_is_guarded():
+def test_every_timed_change_is_guarded() -> None:
     assert server.TIMED - {"get_performance"} <= server.CHANGING <= set(server.CALLS)
 
 
-def test_a_refused_scope_leaves_the_program_a_new_round_returns_to():
+def test_a_refused_scope_leaves_the_program_a_new_round_returns_to() -> None:
     """A refused call is not journaled, so a session that repeats the others must reach the same program."""
     refused, repeated = fresh(), fresh()
     for sut in (refused, repeated):

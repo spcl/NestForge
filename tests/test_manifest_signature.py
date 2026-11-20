@@ -20,7 +20,7 @@ N = dace.symbol("N")
 
 
 @dace.program
-def two_nest(a: dace.float64[N], out: dace.float64[N]):
+def two_nest(a: dace.float64[N], out: dace.float64[N]) -> None:
     """Two maps chained through a non-scalar transient -- ``tmp`` stays internal (it is neither an input
     nor an output of the program), so it reaches the emitter as a scratch buffer."""
     tmp = np.empty(N, dace.float64)
@@ -48,24 +48,24 @@ def whole_program_boundary(sdfg: dace.SDFG) -> Boundary:
     )
 
 
-def signature_of(source: str) -> list:
+def signature_of(source: str) -> list[str]:
     """Positional parameter names of the kernel ``def`` in emitted Python source."""
     fn = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "two_nest")
     return [a.arg for a in fn.args.args]
 
 
-def scratch_boundary():
+def scratch_boundary() -> Boundary:
     return whole_program_boundary(two_nest.to_sdfg(simplify=True))
 
 
-def test_scratch_transient_reaches_the_emitter():
+def test_scratch_transient_reaches_the_emitter() -> None:
     """Guards the fixture itself: if simplify ever folds ``tmp`` away, the tests below stop testing."""
     boundary = scratch_boundary()
     assert scratch_arrays(boundary.standalone_sdfg) == ["tmp"]
     assert "tmp" not in boundary.inputs and "tmp" not in boundary.outputs
 
 
-def test_input_args_equals_the_python_signature_with_scratch():
+def test_input_args_equals_the_python_signature_with_scratch() -> None:
     boundary = scratch_boundary()
     source, manifest = prepare(boundary, "two_nest").numpy_source, bench_manifest(boundary, "two_nest")
     emitted = signature_of(source)
@@ -73,7 +73,7 @@ def test_input_args_equals_the_python_signature_with_scratch():
     assert list(manifest["input_args"]) == emitted
 
 
-def test_scratch_is_declared_as_an_allocatable_array():
+def test_scratch_is_declared_as_an_allocatable_array() -> None:
     """A scratch buffer in ``input_args`` must also be typed as an array, or the translator reads it as a
     scalar parameter; its shape must be resolvable from the kernel's own size symbols."""
     manifest = bench_manifest(scratch_boundary(), "two_nest")

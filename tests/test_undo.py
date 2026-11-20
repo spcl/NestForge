@@ -3,6 +3,9 @@
 """A move can be taken back, a move that builds an invalid program is refused, and a move whose check raises is not
 listed while every other move is."""
 
+from pathlib import Path
+from typing import Any
+
 import dace
 import pytest
 from dace.sdfg import InvalidSDFGError
@@ -11,14 +14,15 @@ from test_failed_calls import first_move, program, session
 from nestforge import session as session_module
 from nestforge.records import MoveStatus
 from nestforge.server import answer
+from nestforge.session import Session
 from nestforge.stages import moves
 
 
-def fresh_rows(sut, before: set[str]) -> set[str]:
+def fresh_rows(sut: Session, before: set[str]) -> set[str]:
     return set(sut.row_index()) - before
 
 
-def test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(tmp_path):
+def test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(tmp_path: Path) -> None:
     sut = session(tmp_path)
     labels, before, tree, rows = first_move(sut, "tile-for"), program(sut), sut.describe(), set(sut.row_index())
     sut.apply_move("tile-for", labels, tile_sizes=(8,))
@@ -40,7 +44,7 @@ def test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(t
     assert made and not made & fresh_rows(sut, rows)
 
 
-def test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(tmp_path):
+def test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(tmp_path: Path) -> None:
     sut = session(tmp_path)
     start = program(sut)
     sut.apply_move("tile-for", first_move(sut, "tile-for"), tile_sizes=(8,))
@@ -58,7 +62,7 @@ def test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(tmp
     assert program(sut) == start
 
 
-def test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(tmp_path):
+def test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(tmp_path: Path) -> None:
     sut = session(tmp_path)
     before = program(sut)
     assert ("rollback", ()) in {(move.kind, move.labels) for move in sut.list_moves()}
@@ -72,12 +76,14 @@ def test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(tmp_pat
     assert program(sut) == before
 
 
-def dangling_read(sdfg: dace.SDFG, *args: object) -> None:
+def dangling_read(sdfg: dace.SDFG, *args: Any) -> None:
     """Leave an access node of an array the program does not have: a program DaCe's validation refuses."""
     next(iter(sdfg.states())).add_access("no_such_array")
 
 
-def test_a_move_that_builds_an_invalid_program_is_refused_and_undone(tmp_path, monkeypatch):
+def test_a_move_that_builds_an_invalid_program_is_refused_and_undone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     labels, before = first_move(sut, "tile-for"), program(sut)
     monkeypatch.setattr(session_module, "structural_cleanup", dangling_read)
@@ -94,7 +100,9 @@ def raising(*rows: object, **options: object) -> None:
     raise KeyError("injected")
 
 
-def test_a_move_whose_check_raises_is_not_listed_and_every_other_move_is(tmp_path, monkeypatch, capsys):
+def test_a_move_whose_check_raises_is_not_listed_and_every_other_move_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     sut = session(tmp_path)
     listed = {(move.kind, move.labels) for move in sut.list_moves()}
     monkeypatch.setitem(moves.PLANNERS, "tile-for", raising)
@@ -106,11 +114,13 @@ def test_a_move_whose_check_raises_is_not_listed_and_every_other_move_is(tmp_pat
     assert "tile-for" in capsys.readouterr().err
 
 
-def exiting(sdfg: dace.SDFG, *args: object) -> None:
+def exiting(sdfg: dace.SDFG, *args: Any) -> None:
     raise SystemExit("a library gave up")
 
 
-def test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_next_move(tmp_path, monkeypatch):
+def test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_next_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut = session(tmp_path)
     labels, before = first_move(sut, "tile-for"), program(sut)
     move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}

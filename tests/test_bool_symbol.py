@@ -4,6 +4,7 @@
 or a float one, and the built program receives its value (spcl/NestForge#79)."""
 
 import ctypes
+from pathlib import Path
 
 import dace
 import numpy as np
@@ -34,20 +35,20 @@ def add_flag() -> dace.SDFG:
     return sdfg
 
 
-def test_a_bool_scalar_input_that_is_a_symbol_binds_it():
+def test_a_bool_scalar_input_that_is_a_symbol_binds_it() -> None:
     inputs = {"flag": np.asarray(True), "a": np.zeros(N), "N": np.asarray(N)}
 
     assert symbol_inputs(add_flag(), inputs) == {"flag": True, "N": N}
 
 
-def test_a_bool_symbol_is_passed_as_a_c_bool():
+def test_a_bool_symbol_is_passed_as_a_c_bool() -> None:
     true, false = symbol_argument(ctypes.c_bool, True), symbol_argument(ctypes.c_bool, False)
 
     assert isinstance(true, ctypes.c_bool) and true.value is True
     assert isinstance(false, ctypes.c_bool) and false.value is False
 
 
-def test_the_built_program_receives_the_bool_symbol(tmp_path):
+def test_the_built_program_receives_the_bool_symbol(tmp_path: Path) -> None:
     built = build_sdfg(add_flag(), tmp_path)
     a = np.arange(N, dtype=np.float64)
     b = np.zeros(N)

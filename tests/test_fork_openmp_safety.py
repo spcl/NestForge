@@ -13,6 +13,8 @@ import select
 import shutil
 import subprocess
 import warnings
+from pathlib import Path
+from typing import Never
 
 import numpy as np
 import pytest
@@ -46,19 +48,19 @@ class Total(Result):
     total: float
 
 
-def thread_count():
+def thread_count() -> int:
     """Live threads of this process; a live OpenMP pool adds one per worker."""
     return len(os.listdir("/proc/self/task"))
 
 
-def build(tmp_path, runtime):
+def build(tmp_path: Path, runtime: str) -> Path:
     """A kernel with an OpenMP region, linked against ``runtime`` (``gomp`` or ``omp``) with the flags the builds
     use; gcc alone does not find libomp under /usr/lib/llvm-N/lib. A missing runtime fails, never skips."""
     assert shutil.which("gcc"), "gcc is required to build the OpenMP kernel this file's regression needs"
     src = tmp_path / "k.c"
     src.write_text(OMP_SRC)
     so = tmp_path / f"k_{runtime}.so"
-    extra = []
+    extra: list[str] = []
     if runtime != "gomp":  # gcc links libgomp by default
         assert lib_linkable(runtime, "gcc"), f"lib{runtime}.so is not linkable by gcc; install it (libomp-dev)"
         extra = library_flags(runtime, "gcc")
@@ -76,7 +78,7 @@ def build(tmp_path, runtime):
 POOL_THREADS = min(4, os.cpu_count() or 1)
 
 
-def call_kernel(so, n=N, threads=POOL_THREADS):
+def call_kernel(so: Path, n: int = N, threads: int = POOL_THREADS) -> np.ndarray:
     """Enter an OpenMP parallel region, in the parent or in the child alike."""
     lib = ctypes.CDLL(str(so))
     lib.omp_set_num_threads.argtypes = [ctypes.c_int]
@@ -84,13 +86,13 @@ def call_kernel(so, n=N, threads=POOL_THREADS):
     lib.omp_set_num_threads(threads)
     lib.kern.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
     lib.kern.restype = None
-    a = np.zeros(n)
+    a: np.ndarray = np.zeros(n)
     lib.kern(a.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n)
     return a
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
-def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path, runtime):
+def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path: Path, runtime: str) -> None:
     """Without pausing the pool, the libgomp child hangs until the 60 s timeout with nothing to read."""
     so = build(tmp_path, runtime)
     call_kernel(so)  # the parent's pool is now live
@@ -100,7 +102,7 @@ def test_forked_child_runs_openmp_after_the_parent_already_did(tmp_path, runtime
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
-def test_the_parent_can_still_use_openmp_after_pausing(tmp_path, runtime):
+def test_the_parent_can_still_use_openmp_after_pausing(tmp_path: Path, runtime: str) -> None:
     """A paused runtime restarts its pool on the next parallel region, so pausing costs the parent nothing."""
     so = build(tmp_path, runtime)
     call_kernel(so)
@@ -109,7 +111,7 @@ def test_the_parent_can_still_use_openmp_after_pausing(tmp_path, runtime):
 
 
 @pytest.mark.parametrize("runtime", ["gomp", "omp"])
-def test_the_soft_pause_makes_the_fork_safe(tmp_path, runtime):
+def test_the_soft_pause_makes_the_fork_safe(tmp_path: Path, runtime: str) -> None:
     """The soft pause is the weaker teardown, so it has to be shown to make the fork safe."""
     so = build(tmp_path, runtime)
     call_kernel(so)
@@ -138,7 +140,7 @@ def test_the_soft_pause_makes_the_fork_safe(tmp_path, runtime):
     assert got == b"ok", f"lib{runtime} + soft pause: child {why}"
 
 
-def test_pausing_is_safe_when_no_openmp_runtime_is_loaded():
+def test_pausing_is_safe_when_no_openmp_runtime_is_loaded() -> None:
     """Pausing must not load a runtime the process does not hold (hence RTLD_NOLOAD)."""
     before = mapped_omp()
     pause_openmp_pools()
@@ -146,13 +148,13 @@ def test_pausing_is_safe_when_no_openmp_runtime_is_loaded():
     assert mapped_omp() == before, "pausing loaded an OpenMP runtime that was not already mapped"
 
 
-def mapped_omp():
+def mapped_omp() -> list[str]:
     with open("/proc/self/maps") as fh:
         maps = fh.read()
     return sorted({n for n in ("libgomp", "libomp", "libiomp5") if n + ".so" in maps})
 
 
-def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
+def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path: Path) -> None:
     """The thread count, not a child that happened not to hang, shows the default (gomp, soft) pause tears the
     pool down; the libomp outlier cannot be isolated with both runtimes loaded, so it is only documented."""
     so = build(tmp_path, "gomp")
@@ -164,10 +166,10 @@ def test_the_pause_drops_the_thread_count_for_the_default_runtime(tmp_path):
     assert thread_count() < busy, f"(gomp, soft): pool not torn down, thread count stayed at {busy}"
 
 
-def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypatch):
+def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pre-OpenMP-5.0 runtime cannot be paused; staying silent would hide the condition a child deadlocks on."""
 
-    def fake_cdll(name, mode=0):
+    def fake_cdll(name: str, mode: int = 0) -> object:
         if name == OMP_RUNTIME_SONAMES[0]:
             return object()  # loaded, without omp_pause_resource_all
         raise OSError("not loaded in this process")
@@ -177,12 +179,12 @@ def test_a_mapped_runtime_without_the_pause_symbol_is_warned_not_silent(monkeypa
         pause_openmp_pools()
 
 
-def test_a_child_exception_survives_the_pipe_intact():
+def test_a_child_exception_survives_the_pipe_intact() -> None:
     """The translator embeds 2000 characters of stderr in its error, and the diagnosis is at the end."""
     tail = "LAST-FRAME-MARKER"
     long_message = "x" * 2500 + tail
 
-    def boom():
+    def boom() -> Never:
         raise RuntimeError(long_message)
 
     res = run_isolated(boom, Total, timeout=60.0)

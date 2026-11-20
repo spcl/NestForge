@@ -66,6 +66,9 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - run: pre-commit run --all-files --show-diff-on-failure
+      # strict typing ([tool.mypy]); the tests hold a second conftest module, so they are checked on their own
+      - name: mypy --strict
+        run: mypy && mypy tests
       - name: pytest (a skip fails the run)
         env:
           NESTFORGE_CI_NO_SKIP: '1'

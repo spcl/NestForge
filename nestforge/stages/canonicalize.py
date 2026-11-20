@@ -158,7 +158,7 @@ def narrow_nested_memlets(sdfg: dace.SDFG) -> None:
 
 def after_fusion(targets: Targets) -> list[str]:
     labels = stage_labels(targets.canon_target)
-    return labels[labels.index(FUSE_STAGE) + 1 :]
+    return list(labels[labels.index(FUSE_STAGE) + 1 :])
 
 
 def fuse_and_finish(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:

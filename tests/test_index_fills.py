@@ -4,6 +4,8 @@
 a kernel that indexes wrongly then matches its oracle. ``make_inputs`` fills an integer array as the bench does,
 with subscripts its manifests keep in bounds, and a bool array with both truth values."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 import pytest
@@ -12,8 +14,9 @@ from helpers import corpus_kernel, extract_nest_to_sdfg
 from test_kernel_stage import lowered_kernel
 
 from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.corpus.bench import preset_sizes
+from nestforge.corpus.bench import CorpusKernel, preset_sizes
 from nestforge.corpus.translate import prepare
+from nestforge.ir.extract import Boundary
 from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
 from nestforge.stages.scopes import parallel_top_level_maps
 
@@ -28,7 +31,7 @@ N = dace.symbol("N")
 # index array is the whole point of the test. A missing kernel or a nest-less kernel is therefore a broken
 # corpus or a broken splitter -- a failure to surface, never a skip to hide behind. (A skip here would also
 # fail CI, which runs the unit set under NESTFORGE_CI_NO_SKIP=1.)
-def first_nest(kernel):
+def first_nest(kernel: CorpusKernel) -> Boundary:
     sdfg = kernel.to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")
     refs = parallel_top_level_maps(sdfg)
@@ -37,7 +40,7 @@ def first_nest(kernel):
 
 
 @pytest.mark.parametrize("key", GATHER_KERNELS)
-def test_an_index_array_takes_many_values_and_stays_in_bounds(key):
+def test_an_index_array_takes_many_values_and_stays_in_bounds(key: str) -> None:
     """Every subscript lies inside every vector the nest reads (a length-1 array is a scalar, never subscripted),
     and the oracle runs on them: NumPy raises on an index past the end."""
     kernel = corpus_kernel(key)
@@ -52,31 +55,31 @@ def test_an_index_array_takes_many_values_and_stays_in_bounds(key):
 
 
 @dace.program
-def masked_copy(m: dace.bool[N], x: dace.float64[N], y: dace.float64[N]):
+def masked_copy(m: dace.bool[N], x: dace.float64[N], y: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         y[i] = x[i] if m[i] else 0.0
 
 
-def test_a_bool_input_takes_both_truth_values():
+def test_a_bool_input_takes_both_truth_values() -> None:
     _, _, boundary = lowered_kernel(masked_copy)
     mask = make_inputs(boundary, {"N": 64}, seed=0)["m"]
     assert mask.dtype == np.bool_ and mask.any() and not mask.all()
 
 
 @dace.program
-def gather(x: dace.float64[N], idx: dace.int64[N], out: dace.float64[N]):
+def gather(x: dace.float64[N], idx: dace.int64[N], out: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         out[i] = x[idx[i]]
 
 
 @dace.program
-def hoisted_gather(x: dace.float64[N], idx: dace.int64[N], out: dace.float64[N]):
+def hoisted_gather(x: dace.float64[N], idx: dace.int64[N], out: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         out[i] = x[idx[0]]
 
 
 @pytest.mark.e2e
-def test_a_gather_that_hoists_its_index_load_fails_validation(tmp_path):
+def test_a_gather_that_hoists_its_index_load_fails_validation(tmp_path: Path) -> None:
     """A gather miscompiled to read ``x[idx[0]]`` agrees with ``x[idx[i]]`` on all-zero indices; it must not
     match the gather's oracle, while the right gather still does."""
     _, ext, boundary = lowered_kernel(gather)

@@ -157,12 +157,13 @@ devices. It passes host memory, so a GPU kernel copies its arguments at its own 
 the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
 bodies are lowered over device memory; it returns the copies. Both start from the program before the first placement.
 The default runs `place()` when nothing is placed, then `insert_copies()` when a GPU kernel still copies inside its
-call; stage 5 builds GPU kernels over device pointers, so the copies are in before it.
+call; stage 5 builds GPU kernels over device pointers, so the copies are in before it. The agent reaches both through
+the scopes phase: a run-on move places the kernels it names (`Session.run_on`), and `finalize_scope` runs the default.
 
 | | |
 |---|---|
 | default | `place()`, then `insert_copies()` |
-| agent | `place(devices)`, `insert_copies()` |
+| agent | `run-on-cpu`, `run-on-gpu` (and the `-persistent` forms) through `apply_scope_move`, then `finalize_scope` |
 | code | `nestforge/stages/placement.py` |
 
 ## Stage 5: Kernels

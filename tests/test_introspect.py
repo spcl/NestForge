@@ -9,24 +9,26 @@ import copy
 
 import dace
 import numpy as np
-from dace.sdfg.state import LoopRegion
+from dace import SDFG
+from dace.sdfg.nodes import MapEntry
+from dace.sdfg.state import LoopRegion, SDFGState
 from helpers import fusion_moves
 
-from nestforge.ir.introspect import describe_graph, nest_reads_writes
+from nestforge.ir.introspect import Row, describe_graph, nest_reads_writes
+from nestforge.ir.names import top_level_map_entries
 from nestforge.stages.moves import Rewrite, plan_move
-from nestforge.stages.scopes import top_level_map_entries
 
 N = dace.symbol("N")
 
 
-def can_fuse(first, second) -> str:
+def can_fuse(first: Row, second: Row) -> str:
     """``"yes"`` when ``doall-fusion`` plans a move for the two ``(node, state)`` rows, else its reason."""
     plan = plan_move("doall-fusion", [first, second])
     return "yes" if isinstance(plan, Rewrite) else plan
 
 
 @dace.program
-def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)  # transient intermediate -> vertical fusion is legal
     for i in dace.map[0:N]:
         T[i] = A[i] + B[i]
@@ -35,7 +37,7 @@ def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def live_output_pair(A: dace.float64[N], B: dace.float64[N], T: dace.float64[N], C: dace.float64[N]):
+def live_output_pair(A: dace.float64[N], B: dace.float64[N], T: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:  # T is a parameter -> a live (non-transient) output
         T[i] = A[i] + B[i]
     for i in dace.map[0:N]:
@@ -43,18 +45,18 @@ def live_output_pair(A: dace.float64[N], B: dace.float64[N], T: dace.float64[N],
 
 
 @dace.program
-def independent_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]):
+def independent_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N], D: dace.float64[N]) -> None:
     for i in dace.map[0:N]:  # no shared data -> horizontal fusion
         C[i] = A[i] * 2.0
     for i in dace.map[0:N]:
         D[i] = B[i] * 3.0
 
 
-def map_entries(sdfg):
+def map_entries(sdfg: SDFG) -> list[tuple[SDFGState, MapEntry]]:
     return [(st, me) for st in sdfg.states() for me in top_level_map_entries(st)]
 
 
-def test_describe_graph_lists_nests_with_read_write_sets():
+def test_describe_graph_lists_nests_with_read_write_sets() -> None:
     sdfg = vertical_pair.to_sdfg(simplify=True)
     text = describe_graph(sdfg)
     # This SDFG is not normalized, so the blocks keep their frontend labels -- describe_graph renders
@@ -65,7 +67,7 @@ def test_describe_graph_lists_nests_with_read_write_sets():
     assert "reads=['T'] writes=['C']" in text  # consumer nest
 
 
-def test_nest_reads_writes_matches_the_tree():
+def test_nest_reads_writes_matches_the_tree() -> None:
     sdfg = vertical_pair.to_sdfg(simplify=True)
     reads_writes = [nest_reads_writes(st, me) for st, me in map_entries(sdfg)]
 
@@ -74,7 +76,7 @@ def test_nest_reads_writes_matches_the_tree():
     assert all(f"reads={r} writes={w}" in text for r, w in reads_writes), text
 
 
-def test_can_fuse_yes_for_vertical_transient():
+def test_can_fuse_yes_for_vertical_transient() -> None:
     sdfg = vertical_pair.to_sdfg(simplify=True)
     (s1, m1), (s2, m2) = map_entries(sdfg)
     assert can_fuse((m1, s1), (m2, s2)) == "yes"
@@ -82,7 +84,7 @@ def test_can_fuse_yes_for_vertical_transient():
     assert fusion_moves(sdfg), "a legal move must be listed when the pair plans one"
 
 
-def test_can_fuse_yes_for_independent_horizontal():
+def test_can_fuse_yes_for_independent_horizontal() -> None:
     sdfg = independent_pair.to_sdfg(simplify=True)
     entries = map_entries(sdfg)
     (s1, m1), (s2, m2) = entries[0], entries[1]
@@ -91,7 +93,7 @@ def test_can_fuse_yes_for_independent_horizontal():
     assert fusion_moves(sdfg)
 
 
-def test_a_live_output_between_two_maps_fuses_and_keeps_its_values():
+def test_a_live_output_between_two_maps_fuses_and_keeps_its_values() -> None:
     """NestForge refused a non-transient intermediate before asking DaCe, which fuses it and still writes it (#27)."""
     sdfg = live_output_pair.to_sdfg(simplify=True)
     reference = copy.deepcopy(sdfg)
@@ -112,7 +114,7 @@ def test_a_live_output_between_two_maps_fuses_and_keeps_its_values():
         np.testing.assert_array_equal(got[name], want[name])
 
 
-def test_can_fuse_reports_state_barrier_across_states():
+def test_can_fuse_reports_state_barrier_across_states() -> None:
     sdfg = independent_pair.to_sdfg(simplify=False)  # each map keeps its own state
     entries = map_entries(sdfg)
     (s1, m1), (s2, m2) = entries[0], entries[1]
@@ -122,7 +124,7 @@ def test_can_fuse_reports_state_barrier_across_states():
     assert "control-flow dependency" in reason
 
 
-def test_a_map_and_a_loop_are_no_map_fusion_pair():
+def test_a_map_and_a_loop_are_no_map_fusion_pair() -> None:
     sdfg = vertical_pair.to_sdfg(simplify=True)
     (s1, m1), _ = map_entries(sdfg)
     reason = can_fuse((m1, s1), (LoopRegion("for9"), None))
@@ -130,7 +132,7 @@ def test_a_map_and_a_loop_are_no_map_fusion_pair():
 
 
 @dace.program
-def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]):
+def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]) -> None:
     p = np.empty((N, N), dtype=np.float64)
     for i in dace.map[0:N]:
         p[i, 0] = p0[i]
@@ -141,7 +143,7 @@ def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]):
             q[i, j] = q[i, j - 1] + p[i, j - 1]
 
 
-def test_two_row_recurrences_fuse_and_keep_their_values():
+def test_two_row_recurrences_fuse_and_keep_their_values() -> None:
     """#27: iteration ``i`` of both maps touches only row ``i`` of ``p``, so the recurrences fuse into one map."""
     sdfg = row_recurrences.to_sdfg(simplify=True)
     reference = copy.deepcopy(sdfg)

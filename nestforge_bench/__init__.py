@@ -16,7 +16,7 @@ import sys
 import tempfile
 import weakref
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from hpcagent_agent.tools import http_json
 from hpcagent_bench import config
@@ -141,10 +141,10 @@ class NoWaveOptimizer(DefaultOptimizer):
 STUB_MOVES = 3
 
 
-def tool(name: str, kernel: str, /, **args: object) -> dict[str, object]:
+def tool(name: str, kernel: str, /, **args: object) -> dict[str, Any]:
     """One NestForge tool call as the agent's tool makes it (``POST /nestforge/<name>`` under the episode's identity);
     raises with the judge's error."""
-    answer = http_json.post_judge(f"/nestforge/{name}", {**args, "kernel": kernel})
+    answer: dict[str, Any] = http_json.post_judge(f"/nestforge/{name}", {**args, "kernel": kernel})
     if "error" in answer:
         raise RuntimeError(f"{name}: {answer['error']}")
     return answer
@@ -206,7 +206,7 @@ def write_back(kernel: str, info: dict[str, str]) -> bool:
     done = tool("write_kernel", kernel, name=name, source=source, language=kernel_language(info["device"]))["result"]
     if done["status"] not in (spelled(KernelStatus.OK), spelled(KernelStatus.UNCHECKED)):
         raise RuntimeError(f"write_kernel {name}: {done}")
-    return done["status"] == spelled(KernelStatus.OK)
+    return bool(done["status"] == spelled(KernelStatus.OK))
 
 
 class StubAgent(FlavorOptimizer):

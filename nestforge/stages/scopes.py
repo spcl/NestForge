@@ -46,7 +46,7 @@ def is_parallel_nest(node: object) -> bool:
     """Whether ``node`` is a doall: a map not scheduled sequentially, or a library call (a black-box doall; a kernel
     NestForge built is not one)."""
     if isinstance(node, nodes.MapEntry):
-        return node.map.schedule != dace.ScheduleType.Sequential
+        return bool(node.map.schedule != dace.ScheduleType.Sequential)
     return isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall)
 
 
@@ -396,7 +396,7 @@ def lower_default_scopes(sdfg: dace.SDFG, targets: Targets) -> list[tuple[Extern
 
 
 def tree_name(obj: nodes.Node | ControlFlowBlock) -> str:
-    return obj.map.label if isinstance(obj, nodes.MapEntry) else obj.label
+    return str(obj.map.label if isinstance(obj, nodes.MapEntry) else obj.label)
 
 
 def doall_nodes(state: SDFGState, doall: nodes.MapEntry | nodes.LibraryNode) -> list[nodes.Node]:

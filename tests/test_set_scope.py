@@ -6,10 +6,12 @@ them instead."""
 import copy
 import os
 import warnings
+from pathlib import Path
 
 import dace
 import numpy as np
 import pytest
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
@@ -25,7 +27,7 @@ SIZE = 9
 
 
 @dace.program
-def live_intermediate(A: dace.float64[N], T: dace.float64[N], C: dace.float64[N]):
+def live_intermediate(A: dace.float64[N], T: dace.float64[N], C: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         T[i] = A[i] + 1.0
     for i in dace.map[0:N]:
@@ -33,7 +35,7 @@ def live_intermediate(A: dace.float64[N], T: dace.float64[N], C: dace.float64[N]
 
 
 @dace.program
-def three_stages(A: dace.float64[N], C: dace.float64[N]):
+def three_stages(A: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     U = np.empty_like(A)
     for i in dace.map[0:N]:
@@ -45,7 +47,7 @@ def three_stages(A: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def dot_scale(A: dace.float64[N], C: dace.float64[N]):
+def dot_scale(A: dace.float64[N], C: dace.float64[N]) -> None:
     s = np.zeros([1])
     for i in dace.map[0:N]:
         s[0] += A[i] * A[i]
@@ -54,20 +56,20 @@ def dot_scale(A: dace.float64[N], C: dace.float64[N]):
 
 
 @dace.program
-def column_prefix(A: dace.float64[N, N], B: dace.float64[N, N]):
+def column_prefix(A: dace.float64[N, N], B: dace.float64[N, N]) -> None:
     for i in range(1, N):
         for j in range(N):
             A[i, j] = A[i - 1, j] + B[i, j]
 
 
 @dace.program
-def running_sum(x: dace.float64[N], out: dace.float64[N]):
+def running_sum(x: dace.float64[N], out: dace.float64[N]) -> None:
     for i in range(1, N):
         out[i] = out[i - 1] + x[i]
 
 
 @dace.program
-def smooth_steps(A: dace.float64[N], B: dace.float64[N]):
+def smooth_steps(A: dace.float64[N], B: dace.float64[N]) -> None:
     for t in range(3):
         for i in range(1, N - 1):
             B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
@@ -75,7 +77,7 @@ def smooth_steps(A: dace.float64[N], B: dace.float64[N]):
 
 
 @dace.program
-def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]):
+def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]) -> None:
     for _ in range(3):
         for i in dace.map[1 : N - 1]:
             B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
@@ -84,14 +86,14 @@ def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]):
 
 
 @dace.program
-def map_then_matmul(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]):
+def map_then_matmul(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]) -> None:
     T = np.empty_like(A)
     for i, j in dace.map[0:N, 0:N]:
         T[i, j] = A[i, j] * 2.0
     C[:] = T @ B
 
 
-def session_and_reference(program, simplify: bool = True) -> tuple[Session, dace.SDFG]:
+def session_and_reference(program: DaceProgram, simplify: bool = True) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=simplify)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
     reference = copy.deepcopy(sdfg)
@@ -124,7 +126,7 @@ def assert_same_values(reference: dace.SDFG, grouped: dace.SDFG, names: tuple[st
         np.testing.assert_allclose(actual[name], expected[name], rtol=rtol, atol=0, err_msg=name)
 
 
-def test_two_maps_no_fusion_accepts_become_one_kernel():
+def test_two_maps_no_fusion_accepts_become_one_kernel() -> None:
     """``T`` is a program output, so vertical fusion refuses the pair; one kernel may still compute both."""
     session, reference = session_and_reference(live_intermediate)
     assert session.list_moves("doall-fusion") == [], "the fixture must offer no fusion, else it tests nothing"
@@ -139,7 +141,7 @@ def test_two_maps_no_fusion_accepts_become_one_kernel():
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-def test_maps_in_different_states_are_grouped_by_their_blocks():
+def test_maps_in_different_states_are_grouped_by_their_blocks() -> None:
     session, reference = session_and_reference(live_intermediate, simplify=False)
     states = map_state_labels(session)
     assert len(states) == 2, states
@@ -151,7 +153,7 @@ def test_maps_in_different_states_are_grouped_by_their_blocks():
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-def test_a_map_running_between_the_named_maps_is_refused():
+def test_a_map_running_between_the_named_maps_is_refused() -> None:
     """The middle map reads the first and feeds the last, so it would have to run inside the kernel."""
     session, _ = session_and_reference(three_stages)
     first, _, last = map_labels(session)
@@ -163,7 +165,7 @@ def test_a_map_running_between_the_named_maps_is_refused():
     assert session.sdfg.to_json() == before and external_calls(session.sdfg) == []
 
 
-def test_blocks_that_do_not_follow_each_other_are_refused():
+def test_blocks_that_do_not_follow_each_other_are_refused() -> None:
     session, _ = session_and_reference(three_stages, simplify=False)
     first, _, last = map_state_labels(session)
 
@@ -173,7 +175,7 @@ def test_blocks_that_do_not_follow_each_other_are_refused():
     assert external_calls(session.sdfg) == []
 
 
-def test_default_scopes_lowers_the_maps_left_after_a_group():
+def test_default_scopes_lowers_the_maps_left_after_a_group() -> None:
     session, reference = session_and_reference(three_stages)
     first, second, _ = map_labels(session)
     grouped = session.set_scope([first, second])
@@ -188,7 +190,7 @@ def test_default_scopes_lowers_the_maps_left_after_a_group():
     assert_same_values(reference, session.sdfg, ("A", "C"))
 
 
-def test_a_kernels_problem_sized_scope_array_is_a_heap_allocation_not_a_stack_array():
+def test_a_kernels_problem_sized_scope_array_is_a_heap_allocation_not_a_stack_array() -> None:
     """``T`` lives inside the grouped kernel and has the problem's size ``N``: on the stack it would be a
     variable-length array that grows with the input until the stack overflows."""
     session, reference = session_and_reference(three_stages)
@@ -207,7 +209,7 @@ def test_a_kernels_problem_sized_scope_array_is_a_heap_allocation_not_a_stack_ar
 
 
 @pytest.mark.parametrize("simplify", [True, False])
-def test_a_single_state_becomes_one_top_level_kernel(simplify):
+def test_a_single_state_becomes_one_top_level_kernel(simplify: bool) -> None:
     """DaCe nests a lone state as itself, so the state's contents must become the kernel, not a map body."""
     session, reference = session_and_reference(live_intermediate, simplify=simplify)
     state_label = map_state_labels(session)[-1]
@@ -221,7 +223,7 @@ def test_a_single_state_becomes_one_top_level_kernel(simplify):
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-def test_a_length1_transient_the_group_writes_first_is_not_an_input():
+def test_a_length1_transient_the_group_writes_first_is_not_an_input() -> None:
     """``s`` is written by the first map before the second reads it, so it never crosses the kernel boundary."""
     session, reference = session_and_reference(dot_scale, simplify=False)
     session.describe()
@@ -236,7 +238,7 @@ def test_a_length1_transient_the_group_writes_first_is_not_an_input():
     assert_same_values(reference, session.sdfg, ("A", "C"), rtol=1e-14)
 
 
-def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_the_loop_body():
+def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_the_loop_body() -> None:
     """A scope is any straight run of one region, not only of the top level: the kernel replaces the inner loop and
     the copy state and is called once per time step."""
     session, reference = session_and_reference(smooth_steps)
@@ -255,7 +257,7 @@ def test_a_loop_and_the_state_after_it_inside_a_time_loop_become_one_kernel_in_t
     assert_same_values(reference, session.sdfg, ("A", "B"))
 
 
-def test_blocks_at_different_levels_are_refused():
+def test_blocks_at_different_levels_are_refused() -> None:
     session, _ = session_and_reference(smooth_steps)
     session.describe()
     before = session.sdfg.to_json()
@@ -267,7 +269,7 @@ def test_blocks_at_different_levels_are_refused():
     assert session.sdfg.to_json() == before and external_calls(session.sdfg) == []
 
 
-def test_no_labels_is_refused():
+def test_no_labels_is_refused() -> None:
     session, _ = session_and_reference(live_intermediate)
     before = session.sdfg.to_json()
 
@@ -277,7 +279,7 @@ def test_no_labels_is_refused():
     assert session.sdfg.to_json() == before and external_calls(session.sdfg) == []
 
 
-def test_labels_a_scope_consumed_are_refused():
+def test_labels_a_scope_consumed_are_refused() -> None:
     session, _ = session_and_reference(live_intermediate)
     labels = map_labels(session)
     session.set_scope(labels)
@@ -286,7 +288,7 @@ def test_labels_a_scope_consumed_are_refused():
 
 
 @pytest.mark.e2e
-def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_path):
+def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_path: Path) -> None:
     """Stage 5 takes a grouped kernel like any other: its CPF unit holds both maps, and the linked library
     reproduces the program."""
     sdfg = live_intermediate.to_sdfg(simplify=True)
@@ -303,7 +305,7 @@ def test_a_grouped_kernel_builds_its_library_and_the_program_still_computes(tmp_
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-def test_unsetting_a_scope_inlines_the_kernel_back_and_the_program_still_computes():
+def test_unsetting_a_scope_inlines_the_kernel_back_and_the_program_still_computes() -> None:
     sdfg = live_intermediate.to_sdfg(simplify=True)
     reference = copy.deepcopy(sdfg)
     reference.name = f"{sdfg.name}_reference"
@@ -318,7 +320,7 @@ def test_unsetting_a_scope_inlines_the_kernel_back_and_the_program_still_compute
     assert_same_values(reference, session.sdfg, ("A", "T", "C"))
 
 
-def test_unsetting_a_scope_brings_back_the_containers_the_kernel_kept_to_itself():
+def test_unsetting_a_scope_brings_back_the_containers_the_kernel_kept_to_itself() -> None:
     session, reference = session_and_reference(three_stages)
     name = session.set_scope(map_labels(session)).reason
 
@@ -329,7 +331,7 @@ def test_unsetting_a_scope_brings_back_the_containers_the_kernel_kept_to_itself(
     assert_same_values(reference, session.sdfg, ("A", "C"))
 
 
-def test_unsetting_no_kernel_changes_nothing():
+def test_unsetting_no_kernel_changes_nothing() -> None:
     session = Session(live_intermediate.to_sdfg(simplify=True))
     name = session.set_scope(map_labels(session)).reason
 
@@ -346,7 +348,7 @@ def top_level_kernels(session: Session) -> list[ExternalCall]:
     return [n for state in session.sdfg.states() for n in state.nodes() if isinstance(n, ExternalCall)]
 
 
-def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_the_column_prefix_sum():
+def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_the_column_prefix_sum() -> None:
     session, _ = session_and_reference(column_prefix)
     rng = np.random.default_rng(0)
     A, B = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
@@ -363,7 +365,7 @@ def test_a_loop_nest_no_interchange_applies_to_becomes_one_kernel_that_computes_
     np.testing.assert_allclose(A, expected, rtol=1e-12)
 
 
-def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
+def test_a_single_sequential_loop_nest_can_be_scoped_explicitly() -> None:
     session, _ = session_and_reference(running_sum)
     x, out = np.arange(SIZE, dtype=np.float64), np.zeros(SIZE)
     assert parallel_top_level_maps(session.sdfg) == [], "no map: the loop is the only region to name"
@@ -381,7 +383,7 @@ def test_a_single_sequential_loop_nest_can_be_scoped_explicitly():
 # a loop that holds parallel maps, and a map next to a library call
 
 
-def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once():
+def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once() -> None:
     """The default makes a kernel of each map inside the loop, so the loop calls two kernels per step; naming the loop
     makes the whole loop one kernel, called once."""
     default, _ = session_and_reference(time_loop_of_maps)
@@ -403,7 +405,7 @@ def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once():
     assert_same_values(reference, scoped, ("A", "B"))
 
 
-def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the_product():
+def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the_product() -> None:
     session, reference = session_and_reference(map_then_matmul)
     session.describe()
     rows = session.row_index()
@@ -426,7 +428,7 @@ def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the
     np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
 
 
-def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path):
+def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path: Path) -> None:
     """Issue #97 (the fusion fuzz program of seed 1702): one doall scoped and unset again. The kernel's body is not
     inlined; the nested SDFG that stays keeps its arguments, named as the connectors (``_out_...``), non-transient."""
     program, _ = load_program(tmp_path, 1702)

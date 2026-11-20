@@ -8,6 +8,8 @@ reference) is the invariant on every case.
 import dace
 import numpy as np
 import pytest
+from dace import SDFG
+from dace.frontend.python.parser import DaceProgram
 from dace.sdfg.state import LoopRegion
 from dace.transformation.helpers import nest_state_subgraph
 from helpers import apply_move, fission_to_fixpoint, fusion_moves, random_vectors, run
@@ -19,19 +21,21 @@ N = dace.symbol("N")
 f64 = dace.float64
 
 
-def nloops(sdfg):
+def nloops(sdfg: SDFG) -> int:
     return sum(1 for c in sdfg.all_control_flow_regions(recursive=True) if isinstance(c, LoopRegion))
 
 
 @dace.program
-def two_independent_recurrences(a: f64[N], b: f64[N], c: f64[N]):
+def two_independent_recurrences(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in range(1, N):
         b[i] = b[i - 1] + a[i]
         c[i] = c[i - 1] + a[i]
 
 
 @dace.program
-def three_independent_statements(a: f64[N], b: f64[N], c: f64[N], d: f64[N]):
+def three_independent_statements(
+    a: dace.float64[N], b: dace.float64[N], c: dace.float64[N], d: dace.float64[N]
+) -> None:
     for i in range(1, N):
         b[i] = b[i - 1] + a[i]
         c[i] = c[i - 1] * a[i]
@@ -39,7 +43,7 @@ def three_independent_statements(a: f64[N], b: f64[N], c: f64[N], d: f64[N]):
 
 
 @dace.program
-def conditional_body(a: f64[N], b: f64[N], c: f64[N]):
+def conditional_body(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in range(1, N):
         if a[i] > 0.5:
             b[i] = b[i - 1] + a[i]
@@ -50,7 +54,7 @@ def conditional_body(a: f64[N], b: f64[N], c: f64[N]):
 
 
 @dace.program
-def guard_reads_recurrence(a: f64[N], b: f64[N], c: f64[N]):
+def guard_reads_recurrence(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in range(1, N):
         if b[i - 1] > 0.5:
             b[i] = b[i - 1] + a[i]
@@ -60,7 +64,7 @@ def guard_reads_recurrence(a: f64[N], b: f64[N], c: f64[N]):
             c[i] = c[i - 1]
 
 
-def test_fission_splits_independent_recurrences_value_preserving():
+def test_fission_splits_independent_recurrences_value_preserving() -> None:
     inputs = random_vectors(names=("a", "b", "c"))
     ref = run(two_independent_recurrences.to_sdfg(simplify=True), inputs, 48)
     sdfg = two_independent_recurrences.to_sdfg(simplify=True)
@@ -83,7 +87,7 @@ def test_fission_splits_independent_recurrences_value_preserving():
         (guard_reads_recurrence, ("a", "b", "c"), False),
     ],
 )
-def test_fission_is_value_preserving(prog, names, splits):
+def test_fission_is_value_preserving(prog: DaceProgram, names: tuple[str, ...], splits: bool) -> None:
     inputs = random_vectors(names=names)
     ref = run(prog.to_sdfg(simplify=True), inputs, 48)
     sdfg = prog.to_sdfg(simplify=True)
@@ -93,7 +97,7 @@ def test_fission_is_value_preserving(prog, names, splits):
         np.testing.assert_array_equal(got[k], ref[k], err_msg=f"{prog.name}: fission changed the value")
 
 
-def test_fission_then_fuse_roundtrip_value_preserving():
+def test_fission_then_fuse_roundtrip_value_preserving() -> None:
     # the agent's stage 2 flow: split what splits, then fuse back up -- must land on the same
     # value as the original program whatever granularity it settles on.
     inputs = random_vectors(names=("a", "b", "c", "d"))
@@ -107,7 +111,7 @@ def test_fission_then_fuse_roundtrip_value_preserving():
         np.testing.assert_array_equal(got[k], ref[k], err_msg=k)
 
 
-def map_with_nested_body():
+def map_with_nested_body() -> tuple[SDFG, dace.nodes.MapEntry]:
     """A map whose sole body child is a NestedSDFG holding two independent output groups -- MapFission's
     map-with-nested-SDFG pattern, the shape the ``doall-fission`` move takes."""
     sdfg = dace.SDFG("map_with_nested_body")
@@ -131,7 +135,7 @@ def map_with_nested_body():
     return sdfg, me
 
 
-def test_map_fission_is_listed_for_a_nested_sdfg_body_and_applies():
+def test_map_fission_is_listed_for_a_nested_sdfg_body_and_applies() -> None:
     # The move must match MapFission's map-with-nested-SDFG pattern (expr_index=1). Matched against the default
     # map-with-subgraph pattern instead, the lone NestedSDFG body reads as a single component and no move is listed.
     sdfg, me = map_with_nested_body()
@@ -143,7 +147,7 @@ def test_map_fission_is_listed_for_a_nested_sdfg_body_and_applies():
     sdfg.validate()
 
 
-def test_map_fission_preserves_values():
+def test_map_fission_preserves_values() -> None:
     inputs = random_vectors(names=("a", "b", "c"))
     sdfg, _ = map_with_nested_body()
     ref = run(map_with_nested_body()[0], inputs, 48)
@@ -154,20 +158,20 @@ def test_map_fission_preserves_values():
         np.testing.assert_array_equal(got[k], ref[k], err_msg="map fission changed the value")
 
 
-def test_map_fission_no_moves_without_independent_groups():
+def test_map_fission_no_moves_without_independent_groups() -> None:
     # The listing must stay honest in the other direction: a single-statement body has nothing to split.
     @dace.program
-    def one_statement_map(a: f64[N], b: f64[N]):
+    def one_statement_map(a: dace.float64[N], b: dace.float64[N]) -> None:
         for i in dace.map[0:N]:
             b[i] = a[i] + 1.0
 
     assert legal_moves(one_statement_map.to_sdfg(simplify=True), "doall-fission") == []
 
 
-def test_fission_no_op_on_single_statement():
+def test_fission_no_op_on_single_statement() -> None:
 
     @dace.program
-    def one_statement(a: f64[N], b: f64[N]):
+    def one_statement(a: dace.float64[N], b: dace.float64[N]) -> None:
         for i in range(1, N):
             b[i] = b[i - 1] + a[i]
 
