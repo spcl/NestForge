@@ -3,6 +3,8 @@
 """A sequential kernel the agent runs on the GPU stays a valid program and renders its CUDA source (#93), without a
 GPU: a scalar the kernel reads on the host and the device writes, and a library fill placement already offloaded."""
 
+from pathlib import Path
+
 import pytest
 from helpers import dace_gpu_backend
 
@@ -15,7 +17,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.parametrize("name", ["poisson_cg_3d", "cloudsc_cover_carry"])
-def test_a_sequential_kernel_on_the_gpu_validates_and_renders(tmp_path, name):
+def test_a_sequential_kernel_on_the_gpu_validates_and_renders(tmp_path: Path, name: str) -> None:
     kernel = corpus_kernel(name)
     assert kernel is not None, f"{name} is in the corpus"
     session = Session(kernel.to_sdfg(), Targets(gpu=True), sizes=preset_sizes(kernel, "S"), work_dir=str(tmp_path))

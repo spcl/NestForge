@@ -9,14 +9,14 @@ classifier reports no offset for -- there is no iterator in either subset to car
 
 import dace
 import numpy as np
+from dace import SDFG
 from helpers import apply_move, fusion_moves
 
 N = dace.symbol("N")
-f64 = dace.float64
 
 
 @dace.program
-def invariant_scalar(a: f64[N], d: f64[N]):
+def invariant_scalar(a: dace.float64[N], d: dace.float64[N]) -> None:
     s = np.float64(0.0)
     for i in range(1, N):
         s = a[i]  # writes a loop-invariant location; last value wins
@@ -24,13 +24,13 @@ def invariant_scalar(a: f64[N], d: f64[N]):
         d[i] = d[i - 1] + s  # a recurrence reading it -> neither loop is DOALL
 
 
-def run(sdfg, a, d):
+def run(sdfg: SDFG, a: np.ndarray, d: np.ndarray) -> np.ndarray:
     ab, db = a.copy(), d.copy()
     sdfg(a=ab, d=db, N=len(a))
     return db
 
 
-def test_fusion_across_an_invariant_scalar_is_value_preserving():
+def test_fusion_across_an_invariant_scalar_is_value_preserving() -> None:
     a, d = np.arange(1.0, 7.0), np.zeros(6)
     ref = run(invariant_scalar.to_sdfg(simplify=True), a, d)
 

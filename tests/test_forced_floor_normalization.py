@@ -7,16 +7,19 @@ prints without the floor -- the index truncates term by term. Kernel source is s
 into int_floor); transformation code is not, so canonicalization normalizes it.
 """
 
+from typing import Any
+
 import dace
 import sympy
+from dace import SDFG
 from dace.subsets import Range
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel
 
 
-def floors_in(sdfg):
+def floors_in(sdfg: SDFG) -> list[tuple[str, Any]]:
     """Every residual ``sympy.floor`` codegen could reach: array shapes and memlet subsets."""
-    found = []
+    found: list[tuple[str, Any]] = []
     for sub in sdfg.all_sdfgs_recursive():
         for name, desc in sub.arrays.items():
             found += [(name, dim) for dim in desc.shape if sympy.sympify(dim).atoms(sympy.floor)]
@@ -30,7 +33,7 @@ def floors_in(sdfg):
     return found
 
 
-def test_the_detector_can_actually_fail():
+def test_the_detector_can_actually_fail() -> None:
     """Guard against a vacuous suite: floors_in must see a floor when one is present."""
     sdfg = dace.SDFG("injected")
     # Built explicitly: dace symbols now floor-divide to int_floor, which is not the residue under test.
@@ -38,7 +41,7 @@ def test_the_detector_can_actually_fail():
     assert floors_in(sdfg), "floors_in reports nothing on an SDFG that provably holds a floor"
 
 
-def test_canonicalize_leaves_no_residual_floor():
+def test_canonicalize_leaves_no_residual_floor() -> None:
     """tsvc_2_s111's stride-2 loop needs a floor-division trip count; canonicalization must normalize it."""
     sdfg = corpus_kernel("tsvc_2_s111").to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")

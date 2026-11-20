@@ -15,7 +15,7 @@ N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def three_stages(A: dace.float64[N], C: dace.float64[N]):
+def three_stages(A: dace.float64[N], C: dace.float64[N]) -> None:
     T = np.empty_like(A)
     for i in dace.map[0:N]:
         T[i] = A[i] + 1.0
@@ -35,7 +35,7 @@ def doalls(sut: Session) -> list[str]:
     return [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, nodes.MapEntry)]
 
 
-def test_prev_phase_takes_back_the_scopes_and_the_placement_the_way_in_ran():
+def test_prev_phase_takes_back_the_scopes_and_the_placement_the_way_in_ran() -> None:
     sut = fresh()
     structured_tree = sut.describe()
     sut.next_phase()
@@ -56,7 +56,7 @@ def test_prev_phase_takes_back_the_scopes_and_the_placement_the_way_in_ran():
     assert not external_calls(sut.sdfg) and sut.describe() == structured_tree
 
 
-def test_goto_phase_returns_to_an_earlier_phase_and_refuses_a_later_one():
+def test_goto_phase_returns_to_an_earlier_phase_and_refuses_a_later_one() -> None:
     sut = fresh()
     tree = sut.describe()
     for _ in range(3):
@@ -72,7 +72,7 @@ def test_goto_phase_returns_to_an_earlier_phase_and_refuses_a_later_one():
     assert sut.describe() == tree
 
 
-def test_a_packet_without_the_structured_phase_starts_in_scopes_after_the_default_moves():
+def test_a_packet_without_the_structured_phase_starts_in_scopes_after_the_default_moves() -> None:
     sut = fresh(("scopes", "kernels"))
 
     first = sut.prev_phase()
@@ -85,7 +85,7 @@ def test_a_packet_without_the_structured_phase_starts_in_scopes_after_the_defaul
     )
 
 
-def test_a_tool_of_another_phase_is_refused_and_moves_inside_a_kernel_wait_for_the_scoped_phase():
+def test_a_tool_of_another_phase_is_refused_and_moves_inside_a_kernel_wait_for_the_scoped_phase() -> None:
     sut = fresh()
 
     early_scope = answer(sut, "set_scope", {"labels": [doalls(sut)[0]]}, None)
@@ -98,7 +98,7 @@ def test_a_tool_of_another_phase_is_refused_and_moves_inside_a_kernel_wait_for_t
     assert "phase scoped, structured" in late_move.error and "in the phase scopes" in late_move.error
 
 
-def test_leaving_a_phase_summarizes_its_moves_and_the_kernels():
+def test_leaving_a_phase_summarizes_its_moves_and_the_kernels() -> None:
     sut = fresh()
     (move, *_) = sut.list_moves("doall-fusion")
     sut.apply_move(move.kind, move.labels)

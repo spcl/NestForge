@@ -6,12 +6,15 @@ what a hand-written NumPy reference computes. Every buffer is allocated by the c
 import copy
 import json
 import math
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import dace
 import numpy as np
 import pytest
 import sympy
 from dace import subsets
+from dace.frontend.python.parser import DaceProgram
 from dace.libraries.blas.nodes.dot import Dot
 from dace.libraries.standard.nodes import Scan
 from dace.sdfg import nodes
@@ -38,7 +41,9 @@ N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)
 
 
-def emit_and_run(sdfg: dace.SDFG, inputs: dict, sizes: dict[str, int]) -> tuple[dict, str]:
+def emit_and_run(
+    sdfg: dace.SDFG, inputs: Mapping[str, np.ndarray | float], sizes: dict[str, int]
+) -> tuple[dict[str, Any], str]:
     source, lowered = sdfg_to_python(sdfg, "k")
     return run_emitted(source, "k", lowered, inputs, sizes), source
 
@@ -48,12 +53,12 @@ def body_of(source: str) -> str:
 
 
 @dace.program
-def scale_2d(A: dace.float64[N, M], B: dace.float64[N, M]):
+def scale_2d(A: dace.float64[N, M], B: dace.float64[N, M]) -> None:
     for i, j in dace.map[0:N, 0:M]:
         B[i, j] = A[i, j] * 2.0 + j
 
 
-def test_a_two_dimensional_map_is_two_nested_parallel_for_loops_over_caller_buffers():
+def test_a_two_dimensional_map_is_two_nested_parallel_for_loops_over_caller_buffers() -> None:
     A = np.random.default_rng(0).random((5, 3))
 
     call, source = emit_and_run(scale_2d.to_sdfg(simplify=True), {"A": A}, {"N": 5, "M": 3})
@@ -64,15 +69,15 @@ def test_a_two_dimensional_map_is_two_nested_parallel_for_loops_over_caller_buff
 
 
 @dace.program
-def conjugate(a: dace.complex128[N], b: dace.complex128[N]):
+def conjugate(a: dace.complex128[N], b: dace.complex128[N]) -> None:
     for i in dace.map[0:N]:
         with dace.tasklet:
-            value << a[i]
-            conjugated = conj(value)  # noqa: F821 -- tasklet code, the intrinsic an expanded Cholesky calls
+            value << a[i]  # type: ignore[name-defined]  # tasklet code: DaCe's connector syntax
+            conjugated = conj(value)  # type: ignore[name-defined]  # noqa: F821 -- tasklet code, the intrinsic an expanded Cholesky calls
             conjugated >> b[i]
 
 
-def test_a_tasklet_conjugate_is_numpys():
+def test_a_tasklet_conjugate_is_numpys() -> None:
     a = np.array([1 + 2j, 3 - 4j, -5j])
 
     call, _ = emit_and_run(conjugate.to_sdfg(simplify=True), {"a": a}, {"N": 3})
@@ -81,13 +86,13 @@ def test_a_tasklet_conjugate_is_numpys():
 
 
 @dace.program
-def reduce_sum(a: dace.float64[N], out: dace.float64[1]):
+def reduce_sum(a: dace.float64[N], out: dace.float64[1]) -> None:
     out[0] = 0.0
     for i in dace.map[0:N]:
         out[0] += a[i]
 
 
-def test_a_sum_reduction_accumulates_every_iteration():
+def test_a_sum_reduction_accumulates_every_iteration() -> None:
     a = np.random.default_rng(1).random(17)
 
     call, source = emit_and_run(reduce_sum.to_sdfg(simplify=True), {"a": a}, {"N": 17})
@@ -110,7 +115,7 @@ def running_max() -> dace.SDFG:
     return sdfg
 
 
-def test_a_max_reduction_combines_with_np_maximum():
+def test_a_max_reduction_combines_with_np_maximum() -> None:
     a = np.random.default_rng(2).random(11) - 0.5
 
     call, source = emit_and_run(running_max(), {"a": a, "out": np.array([-1e9])}, {"N": 11})
@@ -120,12 +125,12 @@ def test_a_max_reduction_combines_with_np_maximum():
 
 
 @dace.program
-def hist_scatter(idx: dace.int64[N], w: dace.float64[N], hist: dace.float64[M]):
+def hist_scatter(idx: dace.int64[N], w: dace.float64[N], hist: dace.float64[M]) -> None:
     for i in dace.map[0:N]:
         hist[idx[i]] += w[i]
 
 
-def test_a_data_dependent_scatter_accumulates_duplicate_indices():
+def test_a_data_dependent_scatter_accumulates_duplicate_indices() -> None:
     idx = np.array([0, 2, 2, 1, 2, 0], np.int64)
     w = np.arange(1.0, 7.0)
     expected = np.zeros(3)
@@ -137,7 +142,7 @@ def test_a_data_dependent_scatter_accumulates_duplicate_indices():
 
 
 @dace.program
-def three_way(a: dace.float64[N], b: dace.float64[N], sel: dace.int64):
+def three_way(a: dace.float64[N], b: dace.float64[N], sel: dace.int64) -> None:
     if sel > 0:
         b[:] = a + 1.0
     elif sel < 0:
@@ -147,7 +152,7 @@ def three_way(a: dace.float64[N], b: dace.float64[N], sel: dace.int64):
 
 
 @pytest.mark.parametrize("sel, shift", [(3, 1.0), (-3, -1.0), (0, 0.0)])
-def test_a_conditional_runs_exactly_the_branch_its_selector_picks(sel, shift):
+def test_a_conditional_runs_exactly_the_branch_its_selector_picks(sel: int, shift: float) -> None:
     sdfg = three_way.to_sdfg(simplify=True)
     a = np.arange(4.0)
 
@@ -158,12 +163,12 @@ def test_a_conditional_runs_exactly_the_branch_its_selector_picks(sel, shift):
 
 
 @dace.program
-def prefix_sum(a: dace.float64[N]):
+def prefix_sum(a: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i] + a[i - 1]
 
 
-def test_a_sequential_loop_is_an_unmarked_while_loop_carrying_its_dependence():
+def test_a_sequential_loop_is_an_unmarked_while_loop_carrying_its_dependence() -> None:
     a = np.random.default_rng(3).random(9)
 
     call, source = emit_and_run(prefix_sum.to_sdfg(simplify=True), {"a": a}, {"N": 9})
@@ -173,14 +178,14 @@ def test_a_sequential_loop_is_an_unmarked_while_loop_carrying_its_dependence():
 
 
 @dace.program
-def add_until_negative(a: dace.float64[N], d: dace.float64[N]):
+def add_until_negative(a: dace.float64[N], d: dace.float64[N]) -> None:
     for i in range(N):
         if d[i] < 0.0:
             break
         a[i] = a[i] + 1.0
 
 
-def test_a_break_leaves_the_loop_at_the_first_negative():
+def test_a_break_leaves_the_loop_at_the_first_negative() -> None:
     d = np.ones(10)
     d[6] = -1.0
 
@@ -214,7 +219,7 @@ def early_return_sdfg() -> dace.SDFG:
 
 
 @pytest.mark.parametrize("sel, shift", [(1, 0.0), (0, 1.0)])
-def test_a_whole_program_return_skips_what_follows_it(sel, shift):
+def test_a_whole_program_return_skips_what_follows_it(sel: int, shift: float) -> None:
     a = np.arange(5.0)
 
     call, source = emit_and_run(early_return_sdfg(), {"a": a}, {"N": 5, "sel": sel})
@@ -223,7 +228,7 @@ def test_a_whole_program_return_skips_what_follows_it(sel, shift):
     np.testing.assert_array_equal(call["out"], a + shift)
 
 
-def test_an_early_return_cannot_leave_an_extracted_nest():
+def test_an_early_return_cannot_leave_an_extracted_nest() -> None:
     """In a nest, ``return`` would end only the kernel, not the program the nest came from."""
     sdfg = early_return_sdfg()
     nest = Boundary(["a"], ["out"], ["N", "sel"], nsdfg_node=None, state=None, standalone_sdfg=sdfg)
@@ -232,7 +237,7 @@ def test_an_early_return_cannot_leave_an_extracted_nest():
         nest_to_python(nest, "k")
 
 
-def test_an_unstructured_conditional_edge_is_refused():
+def test_an_unstructured_conditional_edge_is_refused() -> None:
     sdfg = dace.SDFG("goto")
     sdfg.add_array("a", [1], dace.float64)
     sdfg.add_symbol("sel", dace.int64)
@@ -245,11 +250,11 @@ def test_an_unstructured_conditional_edge_is_refused():
 
 
 @dace.program
-def matmul(A: dace.float64[N, M], B: dace.float64[M, N], C: dace.float64[N, N]):
+def matmul(A: dace.float64[N, M], B: dace.float64[M, N], C: dace.float64[N, N]) -> None:
     C[:] = A @ B
 
 
-def test_a_library_node_stays_the_library_call_numpy_has_for_it():
+def test_a_library_node_stays_the_library_call_numpy_has_for_it() -> None:
     sdfg = matmul.to_sdfg(simplify=True)
     assert any(isinstance(n, nodes.LibraryNode) for n, _ in sdfg.all_nodes_recursive())
     rng = np.random.default_rng(4)
@@ -261,7 +266,7 @@ def test_a_library_node_stays_the_library_call_numpy_has_for_it():
     np.testing.assert_allclose(call["C"], A @ B, rtol=1e-14)
 
 
-def test_a_library_node_numpy_cannot_spell_expands_to_its_loops():
+def test_a_library_node_numpy_cannot_spell_expands_to_its_loops() -> None:
     sdfg = running_total.to_sdfg(simplify=True)
     assert any(isinstance(n, Scan) for n, _ in sdfg.all_nodes_recursive())
     a = np.random.default_rng(5).random(6)
@@ -273,17 +278,17 @@ def test_a_library_node_numpy_cannot_spell_expands_to_its_loops():
 
 
 @dace.program
-def spectrum(a: dace.complex128[N, M], b: dace.complex128[N, M]):
+def spectrum(a: dace.complex128[N, M], b: dace.complex128[N, M]) -> None:
     b[:] = np.fft.fftn(a)
 
 
 @dace.program
-def one_axis_back(a: dace.complex128[N, M], b: dace.complex128[N, M]):
+def one_axis_back(a: dace.complex128[N, M], b: dace.complex128[N, M]) -> None:
     b[:] = np.fft.ifft(a, axis=1)
 
 
 @dace.program
-def half_and_back(a: dace.float64[N, M], b: dace.float64[N, M]):
+def half_and_back(a: dace.float64[N, M], b: dace.float64[N, M]) -> None:
     half = np.fft.rfftn(a)
     b[:] = np.fft.irfftn(half, s=(N, M))
 
@@ -296,9 +301,11 @@ def half_and_back(a: dace.float64[N, M], b: dace.float64[N, M]):
         (half_and_back, float, lambda a: a),
     ],
 )
-def test_a_fourier_transform_stays_numpys_and_scales_as_the_node_says(program, dtype, expected):
+def test_a_fourier_transform_stays_numpys_and_scales_as_the_node_says(
+    program: DaceProgram, dtype: type, expected: Callable[[np.ndarray], np.ndarray]
+) -> None:
     sdfg = program.to_sdfg(simplify=True)
-    a = np.random.default_rng(6).random((4, 6)).astype(dtype)
+    a: np.ndarray = np.random.default_rng(6).random((4, 6)).astype(dtype)
 
     call, source = emit_and_run(sdfg, {"a": a}, {"N": 4, "M": 6})
 
@@ -307,12 +314,12 @@ def test_a_fourier_transform_stays_numpys_and_scales_as_the_node_says(program, d
 
 
 @dace.program
-def running_total(a: dace.float64[N], b: dace.float64[N]):
+def running_total(a: dace.float64[N], b: dace.float64[N]) -> None:
     b[:] = np.cumsum(a)
 
 
 @dace.program
-def masked_abs(a: dace.float64[N], b: dace.float64[N]):
+def masked_abs(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         if a[i] > 0.0:
             b[i] = a[i]
@@ -320,7 +327,7 @@ def masked_abs(a: dace.float64[N], b: dace.float64[N]):
             b[i] = -a[i]
 
 
-def test_a_nested_sdfg_inside_a_map_writes_the_outer_buffer_in_place():
+def test_a_nested_sdfg_inside_a_map_writes_the_outer_buffer_in_place() -> None:
     sdfg = masked_abs.to_sdfg(simplify=True)
     assert any(isinstance(n, nodes.NestedSDFG) for n, _ in sdfg.all_nodes_recursive())
     a = np.random.default_rng(5).random(8) - 0.5
@@ -330,7 +337,7 @@ def test_a_nested_sdfg_inside_a_map_writes_the_outer_buffer_in_place():
     np.testing.assert_array_equal(call["b"], np.abs(a))
 
 
-def test_emission_leaves_the_program_unchanged():
+def test_emission_leaves_the_program_unchanged() -> None:
     sdfg = masked_abs.to_sdfg(simplify=True)
     before = json.dumps(sdfg.to_json(), sort_keys=True, default=str)
 
@@ -356,7 +363,7 @@ def vector_connector_sdfg() -> dace.SDFG:
     return sdfg
 
 
-def test_a_connector_named_like_an_array_is_renamed_not_assigned_over_it():
+def test_a_connector_named_like_an_array_is_renamed_not_assigned_over_it() -> None:
     a, b = np.array([1.0, 2.0]), np.array([7.0, 8.0])
 
     call, source = emit_and_run(vector_connector_sdfg(), {"a": a, "b": b}, {})
@@ -385,7 +392,7 @@ def nested_connector_clash_sdfg() -> dace.SDFG:
     return outer
 
 
-def test_a_nested_connector_named_like_the_outer_array_it_writes_stays_a_connector():
+def test_a_nested_connector_named_like_the_outer_array_it_writes_stays_a_connector() -> None:
     call, _ = emit_and_run(nested_connector_clash_sdfg(), {"a": np.zeros(3)}, {})
 
     np.testing.assert_array_equal(call["a"], [0.0, 7.0, 0.0])
@@ -415,7 +422,7 @@ def nested_symbol_clash_sdfg() -> dace.SDFG:
     return outer
 
 
-def test_a_symbol_a_nested_sdfg_binds_itself_leaves_the_outer_value_alone():
+def test_a_symbol_a_nested_sdfg_binds_itself_leaves_the_outer_value_alone() -> None:
     call, _ = emit_and_run(nested_symbol_clash_sdfg(), {}, {})
 
     assert (call["mid"][0], call["out"][0]) == (7.0, 2.0)
@@ -434,7 +441,7 @@ def assign_state(
     return state
 
 
-def per_element(inner: dace.SDFG, symbol_mapping: dict) -> dace.SDFG:
+def per_element(inner: dace.SDFG, symbol_mapping: dict[str, str]) -> dace.SDFG:
     """``b[i]`` from ``a[i]`` for every ``i`` of a map, by the nest ``inner`` (connectors ``x`` and ``y``)."""
     outer = dace.SDFG("per_element")
     outer.add_array("a", [N], dace.float64)
@@ -458,7 +465,7 @@ def two_state_body(name: str) -> dace.SDFG:
     return inner
 
 
-def test_a_nested_map_reusing_the_outer_map_parameter_keeps_both_iterators():
+def test_a_nested_map_reusing_the_outer_map_parameter_keeps_both_iterators() -> None:
     """A nest inside a map over ``__i0`` maps over ``__i0`` again (legal: map parameters are scoped). Emitted inline,
     the inner loop would overwrite the outer iterator, so the inner one is renamed."""
     inner = dace.SDFG("row")
@@ -498,7 +505,7 @@ def test_a_nested_map_reusing_the_outer_map_parameter_keeps_both_iterators():
     np.testing.assert_array_equal(call["b"], 2 * a + 1)
 
 
-def test_a_nest_handed_an_outer_size_as_a_code_string_reads_the_outer_value():
+def test_a_nest_handed_an_outer_size_as_a_code_string_reads_the_outer_value() -> None:
     """DaCe may store a symbol mapping entry ``N -> N`` as the string ``'N'``; it is no rebinding."""
     sdfg = per_element(two_state_body("adds_n"), {"N": N})
     node = next(n for n, _ in sdfg.all_nodes_recursive() if isinstance(n, nodes.NestedSDFG))
@@ -533,7 +540,7 @@ def nest_in_nest_with_scratch() -> dace.SDFG:
     return per_element(middle, {})
 
 
-def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not_a_rebinding():
+def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not_a_rebinding() -> None:
     lowered = copy.deepcopy(nest_in_nest_with_scratch())
     lower(lowered)
     hoist_nested_scratch(lowered)
@@ -546,7 +553,7 @@ def test_scratch_hoisted_out_of_a_nest_two_levels_down_is_the_kernels_buffer_not
     np.testing.assert_allclose(call["b"], 3 * a + 1)
 
 
-def test_a_nested_scratch_named_like_another_array_of_the_kernel_is_hoisted_under_a_new_name():
+def test_a_nested_scratch_named_like_another_array_of_the_kernel_is_hoisted_under_a_new_name() -> None:
     """DaCe numbers each SDFG's temporaries on its own: the nest's ``t[2]`` and the program's own ``t`` are two arrays."""
     sdfg = nest_in_nest_with_scratch()
     sdfg.add_array("t", [3, 3], dace.int32, transient=True)
@@ -606,7 +613,7 @@ def two_state_window(x_stride: int, y_stride: int) -> dace.SDFG:
     return inner
 
 
-def test_a_strided_nested_window_scales_its_indices_by_the_stride():
+def test_a_strided_nested_window_scales_its_indices_by_the_stride() -> None:
     """The windows ``a[2::3]`` and ``b[1::2]`` read and write every third and every second element."""
     a = np.arange(16.0)
 
@@ -638,7 +645,9 @@ def scatter_check_sdfg() -> dace.SDFG:
     ("idx", "expected"),
     [([3, 1, 2, 0], 0), ([3, 1, 3, 0], 1), ([-1, -1, 2, 0], 0), ([5, 5], 1), ([7], 0)],
 )
-def test_a_scatter_conflict_check_is_one_numpy_call_not_a_scratch_sized_by_the_data(idx, expected):
+def test_a_scatter_conflict_check_is_one_numpy_call_not_a_scratch_sized_by_the_data(
+    idx: list[int], expected: int
+) -> None:
     """The check's own expansion sizes a tag array from ``max(idx)``, which the caller cannot allocate; the oracle
     flags a repeated non-negative value directly and skips a negative one, as the expansion does."""
     values = np.array(idx, dtype=np.int64)
@@ -649,13 +658,13 @@ def test_a_scatter_conflict_check_is_one_numpy_call_not_a_scratch_sized_by_the_d
     assert call["flag"][0] == expected
 
 
-def test_a_subset_step_that_is_a_size_symbol_is_a_positive_slice_step():
+def test_a_subset_step_that_is_a_size_symbol_is_a_positive_slice_step() -> None:
     """A pooling window's stride is a size parameter: positive by meaning, though sympy gives its symbol no sign."""
     assert index(subsets.Range([(0, N - 1, M)])) == "0:N:M"
 
 
 @pytest.mark.parametrize("step", [-1, 0, N - M])
-def test_a_subset_step_not_provably_positive_has_no_sound_slice(step):
+def test_a_subset_step_not_provably_positive_has_no_sound_slice(step: dace.symbolic.SymbolicType) -> None:
     """A negative or zero step, or a difference of sizes, can be zero or negative: no NumPy slice is sound."""
     with pytest.raises(UnsupportedNest, match="not provably positive"):
         index(subsets.Range([(0, N - 1, step)]))
@@ -675,7 +684,7 @@ def indexed_read_window(x_stride: int) -> dace.SDFG:
 
 
 @pytest.mark.parametrize("x_stride, read", [(2, "a[1:8:2]"), (1, "a[2:6]")])
-def test_a_shifted_window_read_by_index_outside_dataflow_reads_the_outer_element(x_stride, read):
+def test_a_shifted_window_read_by_index_outside_dataflow_reads_the_outer_element(x_stride: int, read: str) -> None:
     a = np.arange(16.0)
 
     call, source = emit_and_run(strided_window_sdfg(indexed_read_window(x_stride), read, "b[0:4]"), {"a": a}, {})
@@ -699,7 +708,7 @@ def tag_write_sdfg() -> dace.SDFG:
     return sdfg
 
 
-def test_a_tasklet_writing_into_a_range_writes_through_to_the_array():
+def test_a_tasklet_writing_into_a_range_writes_through_to_the_array() -> None:
     call, source = emit_and_run(tag_write_sdfg(), {"idx": np.array([2, 0, 3])}, {"N": 3, "M": 5})
 
     assert "tags[0:M] = " not in source  # written through its view, not copied back
@@ -721,7 +730,7 @@ def guarded_sdfg(language: dace.Language, code: str) -> dace.SDFG:
     return sdfg
 
 
-def test_a_python_guard_raises_when_its_precondition_fails_and_passes_otherwise():
+def test_a_python_guard_raises_when_its_precondition_fails_and_passes_otherwise() -> None:
     sdfg = guarded_sdfg(dace.Language.Python, "if v < 0.0:\n    abort()")
 
     call, source = emit_and_run(sdfg, {"x": 2.5}, {})
@@ -732,14 +741,14 @@ def test_a_python_guard_raises_when_its_precondition_fails_and_passes_otherwise(
         emit_and_run(sdfg, {"x": -1.0}, {})
 
 
-def test_a_tasklet_in_another_language_is_refused():
+def test_a_tasklet_in_another_language_is_refused() -> None:
     sdfg = guarded_sdfg(dace.Language.CPP, "if (v < 0.0) { std::abort(); }")
 
     with pytest.raises(UnsupportedNest, match="guard is CPP, not Python"):
         sdfg_to_python(sdfg, "k")
 
 
-def test_two_kernels_of_equal_length_load_as_two_modules():
+def test_two_kernels_of_equal_length_load_as_two_modules() -> None:
     """The module file is named by a hash of the source, not a counter that bytecode caching could alias."""
     first = load_emitted("import numpy as np\n\n\ndef k(a):\n    a[0] = 1.0\n", "k")
     second = load_emitted("import numpy as np\n\n\ndef k(a):\n    a[0] = 2.0\n", "k")
@@ -752,7 +761,7 @@ def test_two_kernels_of_equal_length_load_as_two_modules():
 
 
 @pytest.mark.parametrize("a, b", [(7, 2), (-7, 2), (7, -2), (-7, -2), (8, 4), (0, 3)])
-def test_dace_integer_division_heads_become_python_operators_with_their_meaning(a, b):
+def test_dace_integer_division_heads_become_python_operators_with_their_meaning(a: int, b: int) -> None:
     names = Names(frozenset(), frozenset())
     floor_text, ceil_text = expr("int_floor(a, b)", names), expr("int_ceil(a, b)", names)
 
@@ -784,20 +793,20 @@ def test_sympys_ceiling_of_an_unsigned_or_float_quotient_is_the_integer_ceiling(
     assert type(bound) is int and bound == math.ceil(float(a) / b)
 
 
-def test_a_widened_extent_names_only_sizes_not_max():
+def test_a_widened_extent_names_only_sizes_not_max() -> None:
     """A loop end widened against its start folds ``Max(N - 1, 0)`` to ``N - 1``: the manifest declares no ``Max``."""
     n = sympy.Symbol("N")
     assert simplify_as_sizes(sympy.Max(n - 1, -n + n)) == n - 1
 
 
-def test_a_rank_changing_copy_reshapes_to_a_literal_shape():
+def test_a_rank_changing_copy_reshapes_to_a_literal_shape() -> None:
     """The reshape target is a tuple of extents, never ``np.shape`` of a slice the C translator cannot size."""
     column = subsets.Range([(0, M - 1, 1), (3, 3, 1)])
     assert indexed_shape(column) == "(M, )"
     assert indexed_shape(subsets.Range([(0, N - 1, 2)])) == "((int_ceil(N, 2)), )"
 
 
-def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have():
+def test_a_single_element_axis_is_an_index_whatever_type_its_bounds_have() -> None:
     """A Python ``int`` begin prints as ``(0)`` and a SymPy ``Zero`` end as ``0``; the axis is still one element."""
     subset = subsets.Range([(0, dace.symbol("N") - 1, 1), (0, sympy.Integer(0), 1)])
 
@@ -819,7 +828,7 @@ def copysign_map() -> dace.SDFG:
     return sdfg
 
 
-def test_a_c_math_intrinsic_in_tasklet_code_runs_as_its_numpy_function():
+def test_a_c_math_intrinsic_in_tasklet_code_runs_as_its_numpy_function() -> None:
     """CloudSC's ``copysign(1.0, x)`` reached the oracle unbound and raised ``NameError``."""
     A = np.array([-2.0, 0.5, -0.0, 3.0])
 
@@ -828,7 +837,7 @@ def test_a_c_math_intrinsic_in_tasklet_code_runs_as_its_numpy_function():
     np.testing.assert_array_equal(call["B"], np.copysign(1.0, A))
 
 
-def test_a_bare_inf_in_tasklet_code_runs_as_numpy_inf():
+def test_a_bare_inf_in_tasklet_code_runs_as_numpy_inf() -> None:
     """velocity_tendencies' fused max starts at ``-inf``; the oracle raised ``NameError: name 'inf'``."""
     sdfg = dace.SDFG("clip_or_floor")
     sdfg.add_array("A", [N], dace.float64)
@@ -872,7 +881,9 @@ def accumulating_nest(inner: dace.SDFG, target: str, wcr: str) -> dace.SDFG:
     ("wcr", "fold"),
     [(SUM, lambda before, values: before + values.sum()), (PRODUCT, lambda b, values: b * values.prod())],
 )
-def test_a_nest_that_writes_its_output_plainly_is_folded_into_the_target_the_outer_edge_combines(wcr, fold):
+def test_a_nest_that_writes_its_output_plainly_is_folded_into_the_target_the_outer_edge_combines(
+    wcr: str, fold: Callable[[float, np.ndarray], float]
+) -> None:
     """The nest sets ``y = x``, then ``y = y + N``; the edge leaving it adds (or multiplies) that into ``acc[0]``. Run
     inline as it stands, the first write would overwrite what ``acc[0]`` held, so only the last iteration counted."""
     a = np.random.default_rng(7).random(6) + 0.5
@@ -901,7 +912,7 @@ def range_body() -> dace.SDFG:
     return inner
 
 
-def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held():
+def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held() -> None:
     """A saved row must be a copy, since the body writes the row in place."""
     a = np.random.default_rng(9).random(5)
     acc = np.random.default_rng(10).random(5)
@@ -913,7 +924,7 @@ def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held():
     assert "np.copy(acc[0:N])" in source
 
 
-def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held():
+def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held() -> None:
     """#80: gramschmidt's ``inline-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
     with the same WCR the outer edge has; the emitter refused it as ``writes through a write-conflict resolution``."""
     sdfg = dace.SDFG("dot_rows")
@@ -937,7 +948,7 @@ def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held
     np.testing.assert_allclose(call["r"], r + (x * y).sum(axis=1), rtol=1e-14)
 
 
-def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identity():
+def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identity() -> None:
     sdfg = accumulating_nest(two_state_body("plain"), "0", MINIMUM)
 
     with pytest.raises(UnsupportedNest, match="only a sum or product folds"):
@@ -945,7 +956,7 @@ def test_a_nest_folded_by_a_minimum_is_refused_since_that_has_no_literal_identit
 
 
 @dace.program
-def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N, N]):
+def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N, N]) -> None:
     for k in range(N):
         nrm = np.dot(A[:, k], A[:, k])
         R[k, k] = np.sqrt(nrm)
@@ -954,7 +965,7 @@ def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N,
         A[:, k + 1 :] = A[:, k + 1 :] - Q[:, k][:, None] * R[k, k + 1 :][None, :]
 
 
-def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration():
+def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration() -> None:
     """#80, gramschmidt after ``inline-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
     WCR, and nothing else writes ``nrm``. Reading it first raised ``UnboundLocalError`` in the oracle, and would carry the
     last column's norm into the next."""

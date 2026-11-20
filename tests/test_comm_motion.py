@@ -78,7 +78,7 @@ def halo() -> tuple[dace.SDFG, dict[str, tuple[nodes.Node, dace.SDFGState]], dic
     return sdfg, rows, states
 
 
-def test_every_row_of_the_halo_has_its_class():
+def test_every_row_of_the_halo_has_its_class() -> None:
     _, rows, _ = halo()
 
     classes = {label: comm_class(node) for label, (node, _) in rows.items()}
@@ -91,7 +91,7 @@ def test_every_row_of_the_halo_has_its_class():
     }
 
 
-def test_a_barrier_stays():
+def test_a_barrier_stays() -> None:
     _, rows, states = halo()
 
     refused = plan_lib_motion(rows["barrier"], (states["use"], None), "before")
@@ -99,7 +99,7 @@ def test_a_barrier_stays():
     assert isinstance(refused, str) and "it stays" in refused
 
 
-def test_a_receive_does_not_overtake_the_send_that_starts_before_it():
+def test_a_receive_does_not_overtake_the_send_that_starts_before_it() -> None:
     _, rows, states = halo()
 
     refused = plan_lib_motion(rows["recv"], (states["send"], None), "before")
@@ -107,7 +107,7 @@ def test_a_receive_does_not_overtake_the_send_that_starts_before_it():
     assert isinstance(refused, str) and "would overtake send_A" in refused
 
 
-def test_a_wait_moves_earlier_past_compute_that_touches_nothing_in_flight():
+def test_a_wait_moves_earlier_past_compute_that_touches_nothing_in_flight() -> None:
     _, rows, states = halo()
 
     move = plan_lib_motion(rows["wait"], (states["compute"], None), "before")
@@ -115,7 +115,7 @@ def test_a_wait_moves_earlier_past_compute_that_touches_nothing_in_flight():
     assert callable(move), move
 
 
-def test_a_wait_does_not_move_past_a_reader_of_what_it_receives():
+def test_a_wait_does_not_move_past_a_reader_of_what_it_receives() -> None:
     _, rows, states = halo()
 
     refused = plan_lib_motion(rows["wait"], (states["use"], None), "after")
@@ -123,7 +123,7 @@ def test_a_wait_does_not_move_past_a_reader_of_what_it_receives():
     assert isinstance(refused, str) and "ghost" in refused
 
 
-def test_a_communication_row_keeps_a_state_of_its_own():
+def test_a_communication_row_keeps_a_state_of_its_own() -> None:
     _, rows, states = halo()
 
     refused = plan_lib_motion(rows["wait"], (states["compute"], None), "into")
@@ -131,7 +131,7 @@ def test_a_communication_row_keeps_a_state_of_its_own():
     assert isinstance(refused, str) and "a state of its own" in refused
 
 
-def test_a_communication_row_in_a_loop_stays_in_the_loop():
+def test_a_communication_row_in_a_loop_stays_in_the_loop() -> None:
     sdfg = dace.SDFG("halo_in_a_loop")
     sdfg.add_array("A", [N], dace.float64)
     for name in ("peer", "tag"):

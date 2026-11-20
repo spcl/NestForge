@@ -42,6 +42,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pre-commit",
+    "mypy",
+    "types-PyYAML",
     "pyright",
     "pytest",
     "pytest-cov",
@@ -85,6 +87,31 @@ exclude = ["*.ipynb"]
 include = ["nestforge", "nestforge_bench", "scripts", "examples", "conftest.py"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# tests run on their own (`mypy tests`): they hold a second conftest module
+files = ["nestforge", "nestforge_bench", "scripts", "examples", "conftest.py"]
+# tests import their shared helpers as top-level modules, as pytest's rootdir insertion does; typings holds the
+# one DaCe stub (typings/dace)
+mypy_path = ["tests", "typings"]
+
+[[tool.mypy.overrides]]
+# untyped dependencies: their names are Any, so code that uses them is checked only at its own annotations
+module = ["dace.*", "hpcagent_bench.*", "hpcagent_agent.*", "relayout.*", "fp_arena.*", "sympy.*", "cupy.*", "hpcagent_bench_plugins.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# these subclass a class of an untyped dependency (DaCe's OffloadToAccelerator, the bench's FlavorOptimizer,
+# JudgeAnswer and JudgeHandler); the subclass's own members stay checked
+module = ["nestforge.stages.placement", "nestforge_bench", "answer_tokens", "test_bench_plugin"]
+disallow_subclassing_any = false
+
+[[tool.mypy.overrides]]
+# DaCe's MPI frontend spells a call as the C API does (buffer, peer, tag, request); mpi4py's stubs type another form
+module = ["comm_programs"]
+disable_error_code = ["call-arg"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"

@@ -12,12 +12,12 @@ N = dace.symbol("N")
 
 
 @dace.program
-def stencil(A: dace.float64[N], B: dace.float64[N]):
+def stencil(A: dace.float64[N], B: dace.float64[N]) -> None:
     for i in dace.map[1 : N - 1]:
         B[i] = A[i - 1] + A[i + 1]
 
 
-def test_external_call_gets_full_array_subsets():
+def test_external_call_gets_full_array_subsets() -> None:
     sdfg = stencil.to_sdfg(simplify=True)
     ext, boundary = lower_nests_to_external_call(sdfg)[0]
 
@@ -32,7 +32,7 @@ def test_external_call_gets_full_array_subsets():
         assert str(e.data.subset) == "0:N", f"{e.data.data} passed as {e.data.subset}, want full 0:N"
 
 
-def test_full_array_stencil_runs_bit_exact():
+def test_full_array_stencil_runs_bit_exact() -> None:
     sdfg = stencil.to_sdfg(simplify=True)
     lower_nests_to_external_call(sdfg)
     sdfg.expand_library_nodes()

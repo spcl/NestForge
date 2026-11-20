@@ -4,18 +4,20 @@
 that must validate what it made, untile-for that must not report a change it did not make, the whole-program timer
 that must start every timed call from the same inputs, and a remark compile that times out."""
 
+import ctypes
 import functools
 import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Never
 
 import dace
 import numpy as np
 import pytest
 from dace.memlet import Memlet
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.state import LoopRegion, SDFGState
 
 from nestforge.records import MoveStatus
 from nestforge.session import Session
@@ -57,7 +59,7 @@ def offset_reader() -> tuple[dace.SDFG, dace.SDFGState, nodes.MapEntry]:
     return sdfg, state, entry
 
 
-def test_a_snapshot_of_a_slice_starting_past_zero_stays_in_bounds_and_copies_the_read_values():
+def test_a_snapshot_of_a_slice_starting_past_zero_stays_in_bounds_and_copies_the_read_values() -> None:
     sdfg, state, entry = offset_reader()
     rng = np.random.default_rng(0)
     a = rng.random((SIZE, 4))
@@ -75,11 +77,11 @@ def test_a_snapshot_of_a_slice_starting_past_zero_stays_in_bounds_and_copies_the
     np.testing.assert_array_equal(got, expected)
 
 
-def test_the_snapshot_probe_refuses_a_result_that_does_not_validate(monkeypatch):
+def test_the_snapshot_probe_refuses_a_result_that_does_not_validate(monkeypatch: pytest.MonkeyPatch) -> None:
     _, state, entry = offset_reader()
     made = snapshot.snapshot
 
-    def invalid(twin_state, twin_entry, written=None):
+    def invalid(twin_state: SDFGState, twin_entry: nodes.MapEntry, written: set[str] | None = None) -> bool:
         applied = made(twin_state, twin_entry, written)
         twin_state.add_node(nodes.AccessNode("undeclared"))
         return applied
@@ -90,12 +92,12 @@ def test_the_snapshot_probe_refuses_a_result_that_does_not_validate(monkeypatch)
 
 
 @dace.program
-def running_sum(a: dace.float64[N], b: dace.float64[N]):
+def running_sum(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in range(1, N):
         a[i] = a[i - 1] + b[i]
 
 
-def test_untile_for_raises_rather_than_report_a_change_it_did_not_make(tmp_path):
+def test_untile_for_raises_rather_than_report_a_change_it_did_not_make(tmp_path: Path) -> None:
     sut = Session(running_sum.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     (tile,) = sut.list_moves("tile-for")
     assert sut.apply_move("tile-for", tile.labels, tile_sizes=[8]).status is MoveStatus.APPLIED
@@ -117,7 +119,7 @@ class DoublingProgram:
 
     seen: list[np.ndarray] = []
 
-    def __init__(self, *args: object) -> None:
+    def __init__(self, *args: Any) -> None:
         pass
 
     def init(self, sizes: object) -> None:
@@ -134,9 +136,11 @@ class DoublingProgram:
         pass
 
 
-def test_every_timed_call_of_the_program_starts_from_the_inputs_the_checked_call_saw(monkeypatch):
+def test_every_timed_call_of_the_program_starts_from_the_inputs_the_checked_call_saw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(performance, "BuiltSDFG", DoublingProgram)
-    monkeypatch.setattr(performance.ctypes, "CDLL", lambda path: None)
+    monkeypatch.setattr(ctypes, "CDLL", lambda path: None)
     monkeypatch.setattr(performance, "signature", lambda source, name: "")
     monkeypatch.setattr(performance, "parse_params", lambda sig: [])
     DoublingProgram.seen = []
@@ -149,11 +153,11 @@ def test_every_timed_call_of_the_program_starts_from_the_inputs_the_checked_call
         np.testing.assert_array_equal(start, inputs)
 
 
-def test_a_remark_compile_that_times_out_is_its_remark(monkeypatch):
-    def hang(cmd, **kw):
+def test_a_remark_compile_that_times_out_is_its_remark(monkeypatch: pytest.MonkeyPatch) -> None:
+    def hang(cmd: list[str], **kw: Any) -> Never:
         raise subprocess.TimeoutExpired(cmd, kw["timeout"])
 
-    monkeypatch.setattr(feedback.subprocess, "run", hang)
+    monkeypatch.setattr(subprocess, "run", hang)
     with tempfile.TemporaryDirectory() as scratch:
         unit = Path(scratch) / "k.cpp"
         src = KernelSource("k", unit, [], None, "cpu")  # type: ignore[arg-type]

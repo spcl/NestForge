@@ -15,17 +15,22 @@ import dace
 import numpy as np
 import pytest
 from dace.codegen.common import get_gpu_backend
+from dace.frontend.python.parser import DaceProgram
+from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import extern_declaration_and_call
 
 import nestforge.build.sdfg as build_sdfg
+from nestforge.build import toolchain
 from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
-from nestforge.build.toolchain import needed_libraries, raw_signature, split_params
+from nestforge.build.toolchain import COMPILE_TIMEOUT_S, needed_libraries, raw_signature, split_params
 from nestforge.corpus.translate import prepare
+from nestforge.ir.extract import Boundary
 from nestforge.paths import REPO_ROOT
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     GPU_FORMS,
+    KernelSource,
     KernelVerdict,
     build_kernel_library,
     gpu_schedule,
@@ -45,13 +50,13 @@ M = dace.symbol("M")
 
 
 @dace.program
-def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]):
+def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         a[i] = b[i] + c[i]
 
 
 @dace.program
-def stencil_row_sum(a: dace.float64[M, N], r: dace.float64[M]):
+def stencil_row_sum(a: dace.float64[M, N], r: dace.float64[M]) -> None:
     for i in dace.map[0:M]:
         acc = 0.0
         for j in range(1, N - 1):
@@ -60,19 +65,19 @@ def stencil_row_sum(a: dace.float64[M, N], r: dace.float64[M]):
 
 
 @dace.program
-def axpy_in_place(a: dace.float64[N], b: dace.float64[N]):
+def axpy_in_place(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         a[i] = a[i] * 2.0 + b[i]
 
 
 @dace.program
-def scaled(alpha: dace.float64, x: dace.float64[N], y: dace.float64[N]):
+def scaled(alpha: dace.float64, x: dace.float64[N], y: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         y[i] = alpha * x[i]
 
 
 @dace.program
-def scaled_by_cell(alpha: dace.float64[1], x: dace.float64[N], y: dace.float64[N]):
+def scaled_by_cell(alpha: dace.float64[1], x: dace.float64[N], y: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         y[i] = alpha[0] * x[i]
 
@@ -92,7 +97,7 @@ class MaxDiff(Result):
     maxdiff: float
 
 
-def lowered_kernel(program):
+def lowered_kernel(program: DaceProgram) -> tuple[dace.SDFG, ExternalCall, Boundary]:
     """``program`` through stages 1-3: ``(parent SDFG, its one ExternalCall, that kernel's Boundary)``."""
     sdfg = program.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets())
@@ -103,7 +108,9 @@ def lowered_kernel(program):
     return sdfg, ext, boundary
 
 
-def gpu_lowered_kernel(program, on_device=()):
+def gpu_lowered_kernel(
+    program: DaceProgram, on_device: tuple[str, ...] = ()
+) -> tuple[dace.SDFG, ExternalCall, Boundary]:
     """``program`` through stages 1-4 for a GPU target; ``on_device`` names inputs the program keeps in GPU memory."""
     sdfg = program.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets(gpu=True))
@@ -122,16 +129,23 @@ def split_decl(decl: str) -> tuple[str, str]:
     return text[: text.rfind(name)].strip(), name
 
 
-def openmp_runtime_stems(shared):
+def parenthesized(prototype: str) -> str:
+    """What the first parentheses of ``prototype`` hold: its parameter list."""
+    found = re.search(r"\((.*)\)", prototype)
+    assert found is not None, f"no parameter list in {prototype!r}"
+    return found.group(1)
+
+
+def openmp_runtime_stems(shared: Path) -> list[str]:
     return [name.split(".so")[0] for name in needed_libraries(shared) if name.split(".so")[0] in OPENMP_RUNTIME_STEMS]
 
 
-def entry_params(src):
+def entry_params(src: KernelSource) -> list[tuple[str, str]]:
     return [split_decl(p) for p in split_params(raw_signature(src.unit.read_text(), src.symbol))]
 
 
 @pytest.mark.parametrize("program", KERNELS, ids=KERNEL_IDS)
-def test_the_default_kernel_is_a_standalone_cpf_unit(tmp_path, program):
+def test_the_default_kernel_is_a_standalone_cpf_unit(tmp_path: Path, program: DaceProgram) -> None:
     """The unit builds with a bare compiler: no DaCe header, no DaCe runtime entry, and the boundary SDFG the
     extraction produced stays untouched, since stages 4 and 5 may schedule it again."""
     _, ext, boundary = lowered_kernel(program)
@@ -146,7 +160,7 @@ def test_the_default_kernel_is_a_standalone_cpf_unit(tmp_path, program):
     assert boundary.standalone_sdfg.to_json() == before
 
 
-def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_nothing():
+def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_nothing() -> None:
     """The kernel takes device pointers, so the whole kernel moves to the device and places no copy of its own."""
     _, _, boundary = lowered_kernel(vadd)
 
@@ -161,7 +175,9 @@ def test_the_gpu_schedule_puts_every_argument_array_on_the_device_and_copies_not
 
 
 @pytest.mark.parametrize("program", [vadd, scaled], ids=["vadd", "scaled"])
-def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_external_call_prototype(tmp_path, program):
+def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_external_call_prototype(
+    tmp_path: Path, program: DaceProgram
+) -> None:
     """After stage 4 places the kernel on the GPU, stage 5 renders the GPU language with the same entry the parent
     calls: the host unit holds the entry, the device unit the kernels and the launchers the entry calls."""
     api = get_gpu_backend()
@@ -182,11 +198,11 @@ def test_a_gpu_kernel_is_a_host_and_a_device_unit_whose_entry_matches_the_extern
     launchers = set(re.findall(r"\b(__cpf_runkernel_\w+)\(", text))
     assert launchers and all(re.search(rf"\bvoid {name}\(", device_text) for name in launchers)
     assert src.units == [src.unit, src.device_unit]
-    declared = [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))]
+    declared = [split_decl(p) for p in split_params(parenthesized(proto))]
     assert declared == entry_params(src)
 
 
-def test_a_length_one_device_array_input_is_a_device_pointer_in_the_prototype(tmp_path):
+def test_a_length_one_device_array_input_is_a_device_pointer_in_the_prototype(tmp_path: Path) -> None:
     sdfg, ext, boundary = gpu_lowered_kernel(scaled_by_cell, on_device=("alpha",))
     src = schedule_kernel(ext, boundary, tmp_path)
     use_kernel_library(ext, tmp_path / "unused.a", src, [])
@@ -197,10 +213,10 @@ def test_a_length_one_device_array_input_is_a_device_pointer_in_the_prototype(tm
         'extern "C" void extcall_0(const double * __restrict__ alpha, const double * __restrict__ x, '
         "double * __restrict__ y, int64_t N);"
     )
-    assert [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))] == entry_params(src)
+    assert [split_decl(p) for p in split_params(parenthesized(proto))] == entry_params(src)
 
 
-def test_the_unit_defines_one_entry_in_cpf_order_not_manifest_order(tmp_path):
+def test_the_unit_defines_one_entry_in_cpf_order_not_manifest_order(tmp_path: Path) -> None:
     """The entry takes CPF's order (arrays by name, then scalars by name). For ``vadd`` the output ``a``
     sorts before the inputs, so the manifest's role order differs -- binding by it would swap same-typed
     pointers silently."""
@@ -215,7 +231,9 @@ def test_the_unit_defines_one_entry_in_cpf_order_not_manifest_order(tmp_path):
 
 
 @pytest.mark.parametrize("program", [vadd, scaled], ids=["vadd", "scaled"])
-def test_the_entry_declares_each_parameter_as_the_external_call_prototype_does(tmp_path, program):
+def test_the_entry_declares_each_parameter_as_the_external_call_prototype_does(
+    tmp_path: Path, program: DaceProgram
+) -> None:
     """C linkage matches on the name alone, so a prototype/definition type mismatch links cleanly and
     corrupts the call: an ``int`` symbol must arrive as the ``int64_t`` the parent declares, an array as a
     pointer, and the read-only scalar ``alpha`` by value."""
@@ -225,11 +243,11 @@ def test_the_entry_declares_each_parameter_as_the_external_call_prototype_does(t
 
     proto, _ = extern_declaration_and_call(ext, next(s for s in sdfg.states() if ext in s.nodes()))
 
-    declared = [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))]
+    declared = [split_decl(p) for p in split_params(parenthesized(proto))]
     assert declared == entry_params(src)
 
 
-def test_a_read_only_scalar_input_crosses_the_boundary_by_value(tmp_path):
+def test_a_read_only_scalar_input_crosses_the_boundary_by_value(tmp_path: Path) -> None:
     """``alpha`` is a Scalar in the program, so the prototype takes its value and the call passes it."""
     sdfg, ext, boundary = lowered_kernel(scaled)
     src = schedule_kernel(ext, boundary, tmp_path)
@@ -245,7 +263,7 @@ def test_a_read_only_scalar_input_crosses_the_boundary_by_value(tmp_path):
 
 
 @pytest.mark.e2e
-def test_the_program_hands_a_length_one_host_array_to_the_kernel_as_a_pointer_to_its_element(tmp_path):
+def test_the_program_hands_a_length_one_host_array_to_the_kernel_as_a_pointer_to_its_element(tmp_path: Path) -> None:
     """``alpha`` is a length-1 array in host memory: the prototype takes it by pointer, as the entry does, the call
     passes the address of the parent's copy of its element, and the program's output matches NumPy."""
     sdfg, ext, boundary = lowered_kernel(scaled_by_cell)
@@ -260,7 +278,7 @@ def test_the_program_hands_a_length_one_host_array_to_the_kernel_as_a_pointer_to
         "double * __restrict__ y, int64_t N);"
     )
     assert call == "extcall_0(&_in_alpha, _in_x, _out_y, N);"
-    assert [split_decl(p) for p in split_params(re.search(r"\((.*)\)", proto).group(1))] == entry_params(src)
+    assert [split_decl(p) for p in split_params(parenthesized(proto))] == entry_params(src)
     sdfg.expand_library_nodes()
     compiled = compile_linked_program(sdfg, tmp_path / "parent")
     x = np.random.default_rng(0).random(1037)
@@ -274,7 +292,7 @@ def test_the_program_hands_a_length_one_host_array_to_the_kernel_as_a_pointer_to
 
 
 @pytest.mark.e2e
-def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path):
+def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path: Path) -> None:
     _, ext, boundary = lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
 
@@ -288,7 +306,7 @@ def test_the_archive_defines_the_entry_once_and_no_dace_runtime(tmp_path):
     assert "__dace_" not in defined and "__program_" not in defined
 
 
-def strict_verdict(tmp_path, program, sizes) -> KernelVerdict:
+def strict_verdict(tmp_path: Path, program: DaceProgram, sizes: dict[str, int]) -> KernelVerdict:
     """The shipped entry on seeded inputs, forked, against the kernel's NumPy reference at the strict rung."""
     _, ext, boundary = lowered_kernel(program)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
@@ -302,7 +320,9 @@ ORDERED = [(p, s, k) for p, s, k in zip(KERNELS, KERNEL_SIZES, KERNEL_IDS, stric
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("program, sizes", [(p, s) for p, s, _ in ORDERED], ids=[k for _, _, k in ORDERED])
-def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program, sizes):
+def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(
+    tmp_path: Path, program: DaceProgram, sizes: dict[str, int]
+) -> None:
     """At the strict rung a kernel without a reduction matches its oracle exactly; the in-place kernel is restored
     before every timed rep."""
     verdict = strict_verdict(tmp_path, program, sizes)
@@ -313,7 +333,7 @@ def test_the_built_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program
 
 
 @pytest.mark.e2e
-def test_a_reduction_kernel_matches_its_oracle_within_the_dtype_floor(tmp_path):
+def test_a_reduction_kernel_matches_its_oracle_within_the_dtype_floor(tmp_path: Path) -> None:
     """A row sum is an OpenMP simd reduction, which may reassociate the sum even at the strict rung (floating-point
     reordering is allowed on reductions): it matches the sequential oracle within one ULP of its dtype, not bit for
     bit."""
@@ -332,7 +352,9 @@ DEVICE_RUNTIME = {"cuda": ("libcudart", "-lcudart"), "hip": ("libamdhip64", "-la
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("program, on_device", GPU_KERNELS, ids=["vadd", "scaled_by_value", "alpha_on_device"])
-def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, program, on_device):
+def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(
+    tmp_path: Path, program: DaceProgram, on_device: tuple[str, ...]
+) -> None:
     """Device buffers for the arrays, a by-value scalar, and a length-1 device array all reach the GPU kernel,
     built by nvcc or hipcc at the strict rung."""
     _, ext, boundary = gpu_lowered_kernel(program, on_device)
@@ -350,7 +372,7 @@ def test_a_built_gpu_kernel_matches_its_numpy_oracle_bit_for_bit(tmp_path, progr
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("compiler", ["g++", "clang++"])
-def test_a_cpu_kernel_library_links_libomp_as_its_only_openmp_runtime(tmp_path, compiler):
+def test_a_cpu_kernel_library_links_libomp_as_its_only_openmp_runtime(tmp_path: Path, compiler: str) -> None:
     """Whichever compiler builds the kernel, its library names libomp, the process's one OpenMP runtime."""
     _, ext, boundary = lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
@@ -361,7 +383,7 @@ def test_a_cpu_kernel_library_links_libomp_as_its_only_openmp_runtime(tmp_path, 
 
 
 @pytest.mark.gpu
-def test_a_gpu_kernel_library_links_its_device_runtime_and_no_foreign_openmp_runtime(tmp_path):
+def test_a_gpu_kernel_library_links_its_device_runtime_and_no_foreign_openmp_runtime(tmp_path: Path) -> None:
     _, ext, boundary = gpu_lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
@@ -375,7 +397,7 @@ def test_a_gpu_kernel_library_links_its_device_runtime_and_no_foreign_openmp_run
 
 
 @pytest.mark.gpu
-def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_device_pointer(tmp_path):
+def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_device_pointer(tmp_path: Path) -> None:
     """The program calls the linked GPU kernel with ``alpha`` still in device memory. A host address in that
     slot reads garbage or faults, so the program's output is compared with NumPy, in a forked child."""
     import cupy  # the optional GPU array library, needed only where a GPU runs this test
@@ -403,27 +425,27 @@ def test_the_program_hands_a_length_one_device_array_to_the_gpu_kernel_as_a_devi
     assert [stem for stem in openmp_runtime_stems(program) if stem != "libomp"] == []
 
 
-def recorded_links(monkeypatch):
+def recorded_links(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """Every command the build runs from now on, still run for real: a spy at the subprocess edge."""
-    commands = []
-    real_run = build_sdfg.run
+    commands: list[list[str]] = []
+    real_run = toolchain.run
 
-    def record(cmd, *args, **kwargs):
+    def record(cmd: list[str], timeout: float | None = COMPILE_TIMEOUT_S) -> None:
         commands.append(list(cmd))
-        return real_run(cmd, *args, **kwargs)
+        real_run(cmd, timeout)
 
     monkeypatch.setattr(build_sdfg, "run", record)
     return commands
 
 
-def shared_link(commands, shared):
+def shared_link(commands: list[list[str]], shared: Path) -> list[str]:
     """The command that linked ``shared``."""
     (link,) = [cmd for cmd in commands if "-shared" in cmd and cmd[-1] == str(shared)]
     return link
 
 
 @pytest.mark.e2e
-def test_the_kernel_link_passes_as_needed_before_its_libraries(tmp_path, monkeypatch):
+def test_the_kernel_link_passes_as_needed_before_its_libraries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, ext, boundary = lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     commands = recorded_links(monkeypatch)
@@ -437,7 +459,9 @@ def test_the_kernel_link_passes_as_needed_before_its_libraries(tmp_path, monkeyp
 
 
 @pytest.mark.gpu
-def test_the_gpu_kernel_link_passes_as_needed_before_its_device_runtime(tmp_path, monkeypatch):
+def test_the_gpu_kernel_link_passes_as_needed_before_its_device_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _, ext, boundary = gpu_lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
     strict = next(v for v in device_variants("gpu") if v.fp_mode == "strict-ieee")
@@ -503,7 +527,7 @@ if __name__ == "__main__":
 
 
 @pytest.mark.gpu
-def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_device_context(tmp_path):
+def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_device_context(tmp_path: Path) -> None:
     """A device context does not survive fork, so the measurement must not run in a child forked from a process
     that already used the GPU. A fresh interpreter keeps this test's context out of the rest of the suite."""
     script = tmp_path / "device_initialized_parent.py"
@@ -519,7 +543,7 @@ def test_a_gpu_kernel_measures_correctly_after_its_process_created_a_device_cont
     assert report == {"init_status": 0, "error": "", "ok": True, "maxdiff": 0.0}
 
 
-def test_a_cpu_kernel_is_one_unit(tmp_path):
+def test_a_cpu_kernel_is_one_unit(tmp_path: Path) -> None:
     _, ext, boundary = lowered_kernel(vadd)
 
     src = schedule_kernel(ext, boundary, tmp_path)
@@ -528,7 +552,7 @@ def test_a_cpu_kernel_is_one_unit(tmp_path):
     assert kernel_text(src) == src.unit.read_text()
 
 
-def test_a_gpu_kernel_text_round_trips_through_its_two_units(tmp_path):
+def test_a_gpu_kernel_text_round_trips_through_its_two_units(tmp_path: Path) -> None:
     """An agent reads a GPU kernel as one text and writes it back; the marker line is the only seam."""
     _, ext, boundary = gpu_lowered_kernel(vadd)
     src = schedule_kernel(ext, boundary, tmp_path)
@@ -540,7 +564,7 @@ def test_a_gpu_kernel_text_round_trips_through_its_two_units(tmp_path):
     assert split_kernel_text(src.unit.read_text()) == (src.unit.read_text(), None)
 
 
-def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path, monkeypatch):
+def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A device unit left out of the build leaves the launcher the host unit calls undefined in the library."""
     commands: list[list[str]] = []
     linked: list[list[Path]] = []

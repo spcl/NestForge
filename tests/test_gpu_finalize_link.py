@@ -8,11 +8,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from dace.libraries.standard.nodes.external_call import external_calls
 from helpers import dace_gpu_backend
 from hpcagent_bench import languages
 
 from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.session import Session, external_calls
+from nestforge.session import Session
 from nestforge.stages import kernel as kernel_stage
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.finalize import BenchTarget, Final, assemble
@@ -78,7 +79,9 @@ def library_link(final: Final, commands: list[list[str]]) -> list[str]:
     return link
 
 
-def test_a_cuda_finalize_spells_every_kernel_link_flag_for_nvcc(tmp_path, monkeypatch):
+def test_a_cuda_finalize_spells_every_kernel_link_flag_for_nvcc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """nvcc rejects ``-Wl,``: every CUDA finalize failed to link while the kernels' flags reached it so spelled."""
     final, commands, _ = assembled("cuda", tmp_path, monkeypatch)
 
@@ -89,7 +92,9 @@ def test_a_cuda_finalize_spells_every_kernel_link_flag_for_nvcc(tmp_path, monkey
     assert link.index(f"-L{RUNTIME_DIR}") < link.index(f"-Xlinker=-rpath,{RUNTIME_DIR}")
 
 
-def test_a_hip_finalize_hands_hipcc_the_kernel_link_flags_as_wl(tmp_path, monkeypatch):
+def test_a_hip_finalize_hands_hipcc_the_kernel_link_flags_as_wl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """hipcc is clang: it takes ``-Wl,`` and has no ``-Xlinker=`` form."""
     final, commands, _ = assembled("hip", tmp_path, monkeypatch)
 
@@ -101,8 +106,8 @@ def test_a_hip_finalize_hands_hipcc_the_kernel_link_flags_as_wl(tmp_path, monkey
 
 @pytest.mark.parametrize("api", sorted(BACKENDS))
 def test_a_gpu_finalize_is_a_host_unit_and_a_device_unit_in_the_backends_dialect_linking_every_kernel(
-    tmp_path, monkeypatch, api
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api: str
+) -> None:
     final, commands, kernels = assembled(api, tmp_path, monkeypatch)
 
     _, suffix, header = BACKENDS[api]
@@ -117,8 +122,8 @@ def test_a_gpu_finalize_is_a_host_unit_and_a_device_unit_in_the_backends_dialect
 
 @pytest.mark.parametrize("api", sorted(BACKENDS))
 def test_a_gpu_finalize_renders_and_builds_its_device_unit_in_dace_s_backend_not_the_bench_s(
-    tmp_path, monkeypatch, api
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api: str
+) -> None:
     """DaCe's backend set in its config while the bench reads the other from the environment: hipcc got a .hip of CUDA."""
     other = next(name for name in BACKENDS if name != api)
     final, commands, _ = assembled(api, tmp_path, monkeypatch, bench_api=other)

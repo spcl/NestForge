@@ -3,6 +3,8 @@
 """``vectorize-doall`` vectorizes the one doall it names; ``view_tree`` prints bodies as Python or as C, which
 shows a vectorized body's tile functions. Printing never changes the program."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 
@@ -17,7 +19,7 @@ SIZE = 37  # not a multiple of the lanes: the masked remainder tile runs too
 
 
 @dace.program
-def axpy_then_reverse(x: dace.float64[N], y: dace.float64[N], z: dace.float64[N]):
+def axpy_then_reverse(x: dace.float64[N], y: dace.float64[N], z: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         y[i] = 2.0 * x[i] + y[i]
     for i in dace.map[0:N]:
@@ -28,7 +30,7 @@ T = dace.symbol("T", dace.int64, positive=True)
 
 
 @dace.program
-def accumulate_steps(x: dace.float64[N], y: dace.float64[N]):
+def accumulate_steps(x: dace.float64[N], y: dace.float64[N]) -> None:
     for _ in range(T):
         for i in dace.map[0:N]:
             y[i] = 2.0 * x[i] + y[i]
@@ -38,7 +40,7 @@ M = dace.symbol("M", dace.int64, positive=True)
 
 
 @dace.program
-def scale_rows(x: dace.float64[N], A: dace.float64[N, M]):
+def scale_rows(x: dace.float64[N], A: dace.float64[N, M]) -> None:
     for i in dace.map[0:N]:
         s = x[i] * 2.0
         for j in dace.map[0:M]:
@@ -46,7 +48,7 @@ def scale_rows(x: dace.float64[N], A: dace.float64[N, M]):
 
 
 @dace.program
-def absolute(x: dace.float64[N], y: dace.float64[N]):
+def absolute(x: dace.float64[N], y: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         if x[i] > 0:
             y[i] = x[i]
@@ -54,7 +56,7 @@ def absolute(x: dace.float64[N], y: dace.float64[N]):
             y[i] = -x[i]
 
 
-def session(tmp_path) -> Session:
+def session(tmp_path: Path) -> Session:
     sut = Session(axpy_then_reverse.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     return sut
@@ -64,7 +66,7 @@ def state_of(sut: Session, label: str) -> str:
     """The label of the state that holds the doall ``label``."""
     state = sut.row_index()[label][1]
     assert state is not None
-    return state.label
+    return str(state.label)
 
 
 def param(sut: Session, label: str) -> str:
@@ -107,7 +109,7 @@ def correct(sut: Session) -> bool:
     return report.structured.correct is True
 
 
-def test_vectorizing_one_doall_tiles_it_and_leaves_the_other_scalar(tmp_path):
+def test_vectorizing_one_doall_tiles_it_and_leaves_the_other_scalar(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy, reverse = doall_writing(sut, "y"), doall_writing(sut, "z")
     listed = {m.labels[0]: m.lanes for m in sut.list_moves(VECTORIZE_DOALL)}
@@ -118,12 +120,13 @@ def test_vectorizing_one_doall_tiles_it_and_leaves_the_other_scalar(tmp_path):
     assert (result.status, result.reason) == (MoveStatus.APPLIED, "VectorizeMap"), result
     assert tile_calls(sut.sdfg) > 0
     obj, state = sut.row_index()[reverse]
+    assert state is not None
     assert isinstance(obj, dace.nodes.MapEntry) and obj.map.range.ranges[0][2] == 1, "the other doall was tiled"
     assert not any(tile_call(n) for n in state.scope_subgraph(obj).nodes())
     assert correct(sut)
 
 
-def test_an_unknown_isa_or_lane_count_is_refused_and_changes_nothing(tmp_path):
+def test_an_unknown_isa_or_lane_count_is_refused_and_changes_nothing(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
 
@@ -135,7 +138,7 @@ def test_an_unknown_isa_or_lane_count_is_refused_and_changes_nothing(tmp_path):
     assert tile_calls(sut.sdfg) == 0
 
 
-def test_lanes_passed_as_tile_sizes_are_refused_naming_the_argument_the_move_takes(tmp_path):
+def test_lanes_passed_as_tile_sizes_are_refused_naming_the_argument_the_move_takes(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
 
@@ -146,13 +149,13 @@ def test_lanes_passed_as_tile_sizes_are_refused_naming_the_argument_the_move_tak
     assert tile_calls(sut.sdfg) == 0
 
 
-def test_a_scalable_isa_takes_its_own_lanes_and_a_fixed_one_the_given_ones():
+def test_a_scalable_isa_takes_its_own_lanes_and_a_fixed_one_the_given_ones() -> None:
     assert tile_lanes("sve", [3]) == (DEFAULT_LANES,)
     assert tile_lanes("sve", [3, 5]) == (DEFAULT_LANES, DEFAULT_LANES)
     assert tile_lanes("avx512", [8, 2]) == (8, 2)
 
 
-def test_the_c_view_prints_a_scalar_body_with_its_accesses(tmp_path):
+def test_the_c_view_prints_a_scalar_body_with_its_accesses(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
     i = param(sut, axpy)
@@ -166,7 +169,7 @@ def test_the_c_view_prints_a_scalar_body_with_its_accesses(tmp_path):
     assert f"y[{i}] = (tmp0[0] + y[{i}]);" not in sut.view(python=[state_of(sut, axpy)])
 
 
-def test_the_c_view_shows_a_vectorized_body_as_tile_functions(tmp_path):
+def test_the_c_view_shows_a_vectorized_body_as_tile_functions(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
     sut.apply_move(VECTORIZE_DOALL, [axpy], lanes=[4], isa="scalar")
@@ -178,7 +181,7 @@ def test_the_c_view_shows_a_vectorized_body_as_tile_functions(tmp_path):
     assert "<not emitted" in python_tree, "the Python view spells no C++ tasklet"
 
 
-def test_a_row_inside_a_c_row_keeps_its_own_language(tmp_path):
+def test_a_row_inside_a_c_row_keeps_its_own_language(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy, reverse = doall_writing(sut, "y"), doall_writing(sut, "z")
     i, j = param(sut, axpy), param(sut, reverse)
@@ -192,7 +195,7 @@ def test_a_row_inside_a_c_row_keeps_its_own_language(tmp_path):
     assert refused.startswith("illegal") and "nowhere" in refused
 
 
-def test_a_doall_nested_in_another_prints_its_state_once_and_its_accumulation_in_c(tmp_path):
+def test_a_doall_nested_in_another_prints_its_state_once_and_its_accumulation_in_c(tmp_path: Path) -> None:
     sut = Session(accumulate_steps.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": 3})
     sut.canonicalize()
     states = [label for label, (obj, _) in sut.row_index().items() if isinstance(obj, dace.SDFGState)]
@@ -204,7 +207,7 @@ def test_a_doall_nested_in_another_prints_its_state_once_and_its_accumulation_in
     assert any("+= tmp" in line for line in tree.splitlines()), tree
 
 
-def test_rollback_restores_the_body_language_the_program_had(tmp_path):
+def test_rollback_restores_the_body_language_the_program_had(tmp_path: Path) -> None:
     sut = session(tmp_path)
     axpy = doall_writing(sut, "y")
     state = state_of(sut, axpy)
@@ -236,7 +239,7 @@ def doall_with_a_branching_body() -> tuple[dace.SDFGState, dace.nodes.MapEntry]:
     return state, entry
 
 
-def test_the_c_view_assigns_on_a_conditional_edge_only_under_its_condition():
+def test_the_c_view_assigns_on_a_conditional_edge_only_under_its_condition() -> None:
     state, entry = doall_with_a_branching_body()
 
     lines = [line.strip() for line in body_c(state, entry)]
@@ -246,7 +249,7 @@ def test_the_c_view_assigns_on_a_conditional_edge_only_under_its_condition():
     assert lines[lines.index("k = 2;") - 1] == "if ((i <= 2)) {", lines
 
 
-def test_a_doall_inside_another_is_refused_and_the_program_is_unchanged(tmp_path):
+def test_a_doall_inside_another_is_refused_and_the_program_is_unchanged(tmp_path: Path) -> None:
     sut = Session(scale_rows.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 7, "M": 5})
     sut.canonicalize()
     (inner,) = [
@@ -263,7 +266,7 @@ def test_a_doall_inside_another_is_refused_and_the_program_is_unchanged(tmp_path
     assert sut.sdfg.hash_sdfg() == before and tile_calls(sut.sdfg) == 0
 
 
-def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path):
+def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path: Path) -> None:
     sut = Session(absolute.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})
     sut.canonicalize()
     doall = doall_writing(sut, "y")
@@ -278,12 +281,12 @@ def test_a_doall_whose_body_branches_vectorizes_and_stays_correct(tmp_path):
 
 
 @dace.program
-def five_species(out: dace.float64[5], x: dace.float64[5]):
+def five_species(out: dace.float64[5], x: dace.float64[5]) -> None:
     for i in dace.map[0:5]:
         out[i] = x[i] * 2.0
 
 
-def test_a_doall_shorter_than_a_vector_is_not_offered_and_is_refused(tmp_path):
+def test_a_doall_shorter_than_a_vector_is_not_offered_and_is_refused(tmp_path: Path) -> None:
     """cloudsc's loop over its 5 species, kept by canonicalization: 5 iterations fill no vector of 8 lanes, so the
     listing offers no vectorize-doall there and a vectorize-doall asked for anyway is refused, not attempted."""
     sut = Session(five_species.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE})

@@ -9,10 +9,13 @@ fixture would test the pass against a shape it never meets.
 """
 
 import re
+from typing import Any
 
 import dace as dc
+from dace import SDFG
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
+from dace.sdfg.nodes import MapEntry
+from dace.sdfg.state import ControlFlowBlock, LoopRegion
 
 from nestforge.ir.names import Namer, block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
@@ -21,7 +24,7 @@ KERNEL = re.compile(r"^doall(\d+)$")
 
 
 @dc.program
-def branchy(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
+def branchy(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]) -> None:
     """A loop around a conditional -- exercises for/if/state and free scalar tasklets in a branch."""
     for i in range(1, 20):
         if A[i] > 0.0:
@@ -32,7 +35,7 @@ def branchy(A: dc.float64[20], B: dc.float64[20], out: dc.float64[20]):
 
 
 @dc.program
-def two_maps(A: dc.float64[20], B: dc.float64[20]):
+def two_maps(A: dc.float64[20], B: dc.float64[20]) -> None:
     """Two sibling map nests plus a scalar statement between them."""
     for i in dc.map[0:20]:
         B[i] = A[i] + 1.0
@@ -42,29 +45,35 @@ def two_maps(A: dc.float64[20], B: dc.float64[20]):
 
 
 @dc.program
-def inner_body(A: dc.float64[20], B: dc.float64[20]):
+def inner_body(A: dc.float64[20], B: dc.float64[20]) -> None:
     for i in dc.map[0:20]:
         for j in dc.map[0:4]:
             B[i] += A[i] * j
 
 
 @dc.program
-def nested_call(A: dc.float64[20], B: dc.float64[20]):
+def nested_call(A: dc.float64[20], B: dc.float64[20]) -> None:
     """A call, so the frontend leaves a NestedSDFG at the top level."""
     inner_body(A, B)
 
 
-def reaches(graph, source, target) -> bool:
+def reaches(graph: Any, source: Any, target: Any) -> bool:  # noqa: ANN401 -- a CFG or a state, and its nodes
     """Whether ``target`` is downstream of ``source`` -- dace's own ``bfs_nodes``, which a CFG and a
     state both provide."""
     return target in graph.bfs_nodes(source)
 
 
-def all_blocks(sdfg):
+def matched(pattern: re.Pattern[str], label: str) -> re.Match[str]:
+    found = pattern.match(label)
+    assert found is not None, f"{label!r} does not match {pattern.pattern}"
+    return found
+
+
+def all_blocks(sdfg: SDFG) -> list[ControlFlowBlock]:
     return [b for sd in sdfg.all_sdfgs_recursive() for b in sd.all_control_flow_blocks()]
 
 
-def all_maps(sdfg):
+def all_maps(sdfg: SDFG) -> list[MapEntry]:
     return [
         n
         for sd in sdfg.all_sdfgs_recursive()
@@ -77,7 +86,7 @@ def all_maps(sdfg):
 # labels
 
 
-def test_every_block_and_map_gets_a_canonical_name():
+def test_every_block_and_map_gets_a_canonical_name() -> None:
     sdfg = branchy.to_sdfg(simplify=True)
     normalize_labels(sdfg)
     for block in all_blocks(sdfg):
@@ -86,7 +95,7 @@ def test_every_block_and_map_gets_a_canonical_name():
         assert KERNEL.match(entry.map.label), f"map kept a non-canonical label {entry.map.label!r}"
 
 
-def test_labels_are_globally_unique():
+def test_labels_are_globally_unique() -> None:
     sdfg = branchy.to_sdfg(simplify=True)
     normalize_labels(sdfg)
     labels = [b.label for b in all_blocks(sdfg)]
@@ -95,21 +104,23 @@ def test_labels_are_globally_unique():
     assert len(kernels) == len(set(kernels)), f"duplicate kernel label in {sorted(kernels)}"
 
 
-def test_each_kind_is_numbered_from_zero_across_the_program():
+def test_each_kind_is_numbered_from_zero_across_the_program() -> None:
     """One counter per kind: the doalls are doall0, doall1, ..., whatever depth they sit at and whatever blocks of
     another kind sit beside them."""
     sdfg = two_maps.to_sdfg(simplify=True)
     normalize_labels(sdfg)
-    by_kind = {}
+    by_kind: dict[str, list[int]] = {}
     for block in all_blocks(sdfg):
-        kind, index = LABEL.match(block.label).groups()
+        found = LABEL.match(block.label)
+        assert found is not None, block.label
+        kind, index = found.groups()
         by_kind.setdefault(kind, []).append(int(index))
-    by_kind["doall"] = [int(KERNEL.match(entry.map.label).group(1)) for entry in all_maps(sdfg)]
+    by_kind["doall"] = [int(matched(KERNEL, entry.map.label).group(1)) for entry in all_maps(sdfg)]
     for kind, indices in by_kind.items():
         assert sorted(indices) == list(range(len(indices))), f"{kind} is numbered {sorted(indices)}"
 
 
-def test_a_retired_name_is_never_handed_out_again():
+def test_a_retired_name_is_never_handed_out_again() -> None:
     sdfg = two_maps.to_sdfg(simplify=True)
     namer = Namer()
     normalize_labels(sdfg, namer)
@@ -123,7 +134,7 @@ def test_a_retired_name_is_never_handed_out_again():
     assert retired not in [entry.map.label for entry in all_maps(sdfg)]
 
 
-def test_a_name_survives_a_second_pass_of_its_namer_after_a_new_row_appears():
+def test_a_name_survives_a_second_pass_of_its_namer_after_a_new_row_appears() -> None:
     sdfg = two_maps.to_sdfg(simplify=True)
     namer = Namer()
     normalize_labels(sdfg, namer)
@@ -137,7 +148,7 @@ def test_a_name_survives_a_second_pass_of_its_namer_after_a_new_row_appears():
     assert set(before) < set(after), (before, after)
 
 
-def test_a_frontend_source_line_label_does_not_survive():
+def test_a_frontend_source_line_label_does_not_survive() -> None:
     """Frontend labels embed the source line (``inner_9_4``), so an edit above a nest renames a nest
     that did not change. That is the whole reason the tree cannot use them as ids."""
     sdfg = nested_call.to_sdfg(simplify=False)
@@ -147,7 +158,7 @@ def test_a_frontend_source_line_label_does_not_survive():
     assert all(KERNEL.match(e.map.label) for e in all_maps(sdfg))
 
 
-def test_a_counted_and_a_conditional_loop_are_both_a_loop():
+def test_a_counted_and_a_conditional_loop_are_both_a_loop() -> None:
     """The tree names every sequential loop ``loop``; only a kernel is a do-all loop."""
     sdfg = branchy.to_sdfg(simplify=True)
     loops = [b for b in all_blocks(sdfg) if isinstance(b, LoopRegion)]
@@ -158,7 +169,7 @@ def test_a_counted_and_a_conditional_loop_are_both_a_loop():
         assert block_kind(loop) == "for"
 
 
-def test_two_builds_of_one_program_get_the_same_names():
+def test_two_builds_of_one_program_get_the_same_names() -> None:
     """Determinism is the point of the tie-break: a topological order alone is not unique, and two
     orders give two label assignments for one program -- so an agent's saved id would not survive a
     rebuild."""
@@ -169,7 +180,7 @@ def test_two_builds_of_one_program_get_the_same_names():
     assert [e.map.label for e in all_maps(first)] == [e.map.label for e in all_maps(second)]
 
 
-def test_normalizing_twice_is_normalizing_once():
+def test_normalizing_twice_is_normalizing_once() -> None:
     """The session relabels after every fusion move, so a second pass must not renumber anything."""
     sdfg = branchy.to_sdfg(simplify=True)
     normalize_labels(sdfg)
@@ -178,7 +189,7 @@ def test_normalizing_twice_is_normalizing_once():
     assert ([b.label for b in all_blocks(sdfg)], [e.map.label for e in all_maps(sdfg)]) == once
 
 
-def test_in_order_breaks_ties_by_insertion_order():
+def test_in_order_breaks_ties_by_insertion_order() -> None:
     sdfg = two_maps.to_sdfg(simplify=True)
     blocks = sdfg.nodes()
     order = in_order(sdfg)
@@ -196,7 +207,7 @@ def test_in_order_breaks_ties_by_insertion_order():
 # no top-level nested SDFG
 
 
-def test_a_top_level_nested_sdfg_is_inlined():
+def test_a_top_level_nested_sdfg_is_inlined() -> None:
     """Its states are real control flow; left nested they are an opaque box the agent cannot fuse
     across."""
     sdfg = nested_call.to_sdfg(simplify=False)
@@ -205,7 +216,7 @@ def test_a_top_level_nested_sdfg_is_inlined():
     assert not top_level_nsdfgs(sdfg)
 
 
-def test_a_nested_sdfg_inside_a_map_is_left_alone():
+def test_a_nested_sdfg_inside_a_map_is_left_alone() -> None:
     """That one is a kernel body, not structure."""
     sdfg = nested_call.to_sdfg(simplify=False)
     inline_top_level_nsdfgs(sdfg)
@@ -218,7 +229,7 @@ def test_a_nested_sdfg_inside_a_map_is_left_alone():
     assert inside, "fixture no longer has a nested SDFG inside a map"
 
 
-def test_inlining_bails_out_without_touching_an_already_inlined_sdfg():
+def test_inlining_bails_out_without_touching_an_already_inlined_sdfg() -> None:
     sdfg = nested_call.to_sdfg(simplify=False)
     inline_top_level_nsdfgs(sdfg)
     before = sdfg.to_json()

@@ -8,9 +8,12 @@ stencil reads and producer-consumer chains, in both loops and maps.
 """
 
 import importlib.util
+from pathlib import Path
 
 import numpy as np
 import pytest
+from dace import SDFG
+from dace.frontend.python.parser import DaceProgram
 from dace.transformation.interstate.state_fusion import StateFusion
 from helpers import apply_move, fission_to_fixpoint, fusion_moves, run
 
@@ -87,23 +90,25 @@ def gen_source(seed: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_program(tmp_path, seed: int):
+def load_program(tmp_path: Path, seed: int) -> tuple[DaceProgram, str]:
     """Write the generated source to a temp module and import it -- the DaCe frontend needs real source."""
     src = gen_source(seed)
     path = tmp_path / f"gen_{seed}.py"
     path.write_text(src)
     spec = importlib.util.spec_from_file_location(f"fuzz_gen_{seed}", path)
+    assert spec is not None and spec.loader is not None, f"{path} does not import"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.k, src
+    program: DaceProgram = vars(mod)["k"]
+    return program, src
 
 
-def inputs_for(n=16, seed=0):
+def inputs_for(n: int = 16, seed: int = 0) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed + 9999)
     return {x: rng.random(n) for x in ARRAYS}
 
 
-def random_fuse_to_fixpoint(sdfg, seed: int) -> int:
+def random_fuse_to_fixpoint(sdfg: SDFG, seed: int) -> int:
     """Apply a random legal fusion each round until none remain -- the agent's actual move pattern (and the
     composition hazard: a fusion can invalidate or enable another)."""
     rng = np.random.default_rng(seed)
@@ -118,7 +123,7 @@ def random_fuse_to_fixpoint(sdfg, seed: int) -> int:
 
 
 @pytest.mark.parametrize("seed", range(NCASES_FUSE))
-def test_fuzz_random_fuse_sequence_is_value_preserving(seed, tmp_path):
+def test_fuzz_random_fuse_sequence_is_value_preserving(seed: int, tmp_path: Path) -> None:
     prog, src = load_program(tmp_path, seed)
     n = 16
     inputs = inputs_for(n, seed)
@@ -136,7 +141,7 @@ def test_fuzz_random_fuse_sequence_is_value_preserving(seed, tmp_path):
 
 
 @pytest.mark.parametrize("seed", range(NCASES_FISSION))
-def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
+def test_fuzz_fission_then_random_fuse_is_value_preserving(seed: int, tmp_path: Path) -> None:
     # the full stage 2 round trip on a random program: split every nest that splits, then fuse back up randomly.
     prog, src = load_program(tmp_path, seed + 500)
     n = 16
@@ -156,7 +161,7 @@ def test_fuzz_fission_then_random_fuse_is_value_preserving(seed, tmp_path):
         )
 
 
-def test_fuzz_corpus_exercises_fusion_and_fission(tmp_path):
+def test_fuzz_corpus_exercises_fusion_and_fission(tmp_path: Path) -> None:
     # the value tests pass vacuously if no seed fuses or fissions: count the moves over the same seeds
     fused = 0
     for seed in range(NCASES_FUSE):
@@ -174,6 +179,6 @@ def test_fuzz_corpus_exercises_fusion_and_fission(tmp_path):
     assert fused_back > 0, "no fissioned fuzz seed offered a fusion back"
 
 
-def test_generator_is_deterministic():
+def test_generator_is_deterministic() -> None:
     assert gen_source(3) == gen_source(3)
     assert gen_source(3) != gen_source(4)

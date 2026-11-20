@@ -20,7 +20,7 @@ N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]):
+def vertical_pair(A: dace.float64[N], B: dace.float64[N], C: dace.float64[N]) -> None:
     tmp = np.empty_like(A)
     for i in dace.map[0:N]:
         tmp[i] = A[i] + B[i]

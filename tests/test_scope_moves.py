@@ -4,6 +4,8 @@
 labels, and a GPU kernel's body can stage its reads through shared memory. Neither touches the program around the
 kernel or another kernel."""
 
+from pathlib import Path
+
 import dace
 import numpy as np
 import pytest
@@ -19,7 +21,7 @@ N = dace.symbol("N", dtype=dace.int64)
 
 
 @dace.program
-def chain(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def chain(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     t = np.empty_like(a)
     for i in dace.map[1 : N - 1]:
         t[i] = a[i - 1] + a[i] + a[i + 1] + b[i]
@@ -29,16 +31,17 @@ def chain(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
 
 def chain_reference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     t = a[:-2] + a[1:-1] + a[2:] + b[1:-1]
-    return (t[:-2] + t[2:]) * 2.0
+    doubled: np.ndarray = (t[:-2] + t[2:]) * 2.0
+    return doubled
 
 
-def two_kernels(tmp_path, gpu: bool) -> tuple[Session, str, str]:
+def two_kernels(tmp_path: Path, gpu: bool) -> tuple[Session, str, str]:
     session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=gpu), work_dir=str(tmp_path))
     first, second = (kernel.name for kernel in session.default_scopes())
     return session, first, second
 
 
-def placed_on_gpu(tmp_path) -> tuple[Session, str, str]:
+def placed_on_gpu(tmp_path: Path) -> tuple[Session, str, str]:
     session, first, second = two_kernels(tmp_path, gpu=True)
     session.place({first: "gpu", second: "gpu"})
     session.insert_copies()
@@ -56,7 +59,7 @@ def only_move(session: Session, kind: str, scope: str) -> tuple[str, ...]:
     return move.labels
 
 
-def test_a_tile_inside_a_scope_rewrites_that_kernels_body_and_nothing_around_it(tmp_path):
+def test_a_tile_inside_a_scope_rewrites_that_kernels_body_and_nothing_around_it(tmp_path: Path) -> None:
     session, first, second = two_kernels(tmp_path, gpu=False)
     program, other = session.sdfg.to_json(), session.kernel(second).standalone_sdfg.hash_sdfg()
 
@@ -68,7 +71,7 @@ def test_a_tile_inside_a_scope_rewrites_that_kernels_body_and_nothing_around_it(
     assert session.sdfg.to_json() == program
 
 
-def test_scoping_one_doall_keeps_the_other_doalls_program_moves_and_labels(tmp_path):
+def test_scoping_one_doall_keeps_the_other_doalls_program_moves_and_labels(tmp_path: Path) -> None:
     session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path))
     session.describe()
     first, second = (label for label, (obj, _) in session.row_index().items() if isinstance(obj, MapEntry))
@@ -80,7 +83,7 @@ def test_scoping_one_doall_keeps_the_other_doalls_program_moves_and_labels(tmp_p
     assert "tile-doall" in {move.kind for move in session.list_moves(scope=name)}
 
 
-def test_a_move_inside_a_placed_gpu_scope_is_placed_again_with_the_change(tmp_path):
+def test_a_move_inside_a_placed_gpu_scope_is_placed_again_with_the_change(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
 
     session.apply_move("tile-doall", only_move(session, "tile-doall", first), tile_sizes=[32], scope=first)
@@ -90,7 +93,7 @@ def test_a_move_inside_a_placed_gpu_scope_is_placed_again_with_the_change(tmp_pa
     assert has_device_memory(session.sdfg)  # the copies stay inserted
 
 
-def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path):
+def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path: Path) -> None:
     session, first, second = placed_on_gpu(tmp_path)
     program, other = session.sdfg.to_json(), session.kernel(second).standalone_sdfg.hash_sdfg()
 
@@ -113,7 +116,7 @@ def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path)
     session.sdfg.validate()
 
 
-def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_path):
+def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     before = session.kernel(first).standalone_sdfg.hash_sdfg()
 
@@ -123,7 +126,7 @@ def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_pat
     assert session.kernel(first).standalone_sdfg.hash_sdfg() == before
 
 
-def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_path):
+def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_path: Path) -> None:
     session, first, second = two_kernels(tmp_path, gpu=True)
     assert session.unset_scope(first).status is MoveStatus.APPLIED
     session.place({second: "gpu"})
@@ -140,7 +143,7 @@ def test_inserting_copies_leaves_a_doall_outside_every_scope_on_the_host(tmp_pat
     session.sdfg.validate()
 
 
-def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
+def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path: Path) -> None:
     session, first, second = two_kernels(tmp_path, gpu=True)
     session.place({first: "cpu", second: "gpu"})
     session.insert_copies()
@@ -150,7 +153,7 @@ def test_a_cpu_scope_offers_no_shared_memory_staging(tmp_path):
 
 
 @pytest.mark.gpu
-def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy_computes(tmp_path):
+def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy_computes(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
     rng = np.random.default_rng(0)
@@ -161,7 +164,7 @@ def test_a_stencil_staging_its_reused_loads_in_shared_memory_computes_what_numpy
     np.testing.assert_allclose(c[2:-2], chain_reference(a, b), rtol=1e-15, atol=0)
 
 
-def placed_on_cpu(tmp_path) -> tuple[Session, str, str]:
+def placed_on_cpu(tmp_path: Path) -> tuple[Session, str, str]:
     session, first, second = two_kernels(tmp_path, gpu=False)
     session.place({first: "cpu", second: "cpu"})
     return session, first, second
@@ -172,7 +175,7 @@ def generated_cpu_code(session: Session, name: str) -> str:
     return "\n".join(code.clean_code for code in body.generate_code() if code.language == "cpp")
 
 
-def test_a_cpu_schedule_reaches_the_pragma_of_that_doall_and_of_no_other(tmp_path):
+def test_a_cpu_schedule_reaches_the_pragma_of_that_doall_and_of_no_other(tmp_path: Path) -> None:
     session, first, second = placed_on_cpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-cpu", scope=first)
     assert listed.current == "default"
@@ -187,7 +190,7 @@ def test_a_cpu_schedule_reaches_the_pragma_of_that_doall_and_of_no_other(tmp_pat
     assert "schedule(" not in generated_cpu_code(session, second)
 
 
-def test_a_cpu_schedule_needs_a_scope_and_a_cpu_kernel(tmp_path):
+def test_a_cpu_schedule_needs_a_scope_and_a_cpu_kernel(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     (label,) = only_move(session, "tile-doall", first)
 
@@ -201,7 +204,7 @@ def test_a_cpu_schedule_needs_a_scope_and_a_cpu_kernel(tmp_path):
     assert session.list_moves("set-schedule-cpu") == []
 
 
-def test_a_cpu_schedule_on_a_doall_inside_another_is_refused(tmp_path):
+def test_a_cpu_schedule_on_a_doall_inside_another_is_refused(tmp_path: Path) -> None:
     session, first, _ = placed_on_cpu(tmp_path)
     session.apply_move("tile-doall", only_move(session, "tile-doall", first), tile_sizes=[32], scope=first)
     body, _ = session.move_programs(first)
@@ -216,7 +219,7 @@ def test_a_cpu_schedule_on_a_doall_inside_another_is_refused(tmp_path):
     assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND), result
 
 
-def test_a_chunk_without_a_schedule_that_takes_one_is_refused(tmp_path):
+def test_a_chunk_without_a_schedule_that_takes_one_is_refused(tmp_path: Path) -> None:
     session, first, _ = placed_on_cpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-cpu", scope=first)
 
@@ -230,7 +233,7 @@ def placed_maps(session: Session, name: str) -> dict[str, dace.nodes.Map]:
     return {node.map.label: node.map for node, _ in body.all_nodes_recursive() if isinstance(node, MapEntry)}
 
 
-def tiled_on_gpu(tmp_path) -> tuple[Session, str, str, str, str]:
+def tiled_on_gpu(tmp_path: Path) -> tuple[Session, str, str, str, str]:
     """``first`` tiled by 32 on the GPU: its kernel doall over tiles, and the doall over one tile inside it."""
     session, first, second = placed_on_gpu(tmp_path)
     session.apply_move("tile-doall", only_move(session, "tile-doall", first), tile_sizes=[32], scope=first)
@@ -242,7 +245,7 @@ def tiled_on_gpu(tmp_path) -> tuple[Session, str, str, str, str]:
     return session, first, second, kernel, inner
 
 
-def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_again(tmp_path):
+def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_again(tmp_path: Path) -> None:
     session, first, second = placed_on_gpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
     assert listed.current == "sequential"
@@ -256,7 +259,7 @@ def test_a_kernel_block_holds_on_the_placed_body_and_after_the_kernel_is_placed_
     assert again.current == "block=[128]"
 
 
-def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_path):
+def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_path: Path) -> None:
     session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
 
     done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="dynamic")
@@ -270,7 +273,7 @@ def test_a_dynamic_doall_inside_a_kernel_becomes_a_dynamic_thread_block_map(tmp_
     assert (blocked.status, blocked.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), "the block comes from one place"
 
 
-def test_a_static_doall_over_one_tile_shares_it_among_the_blocks_threads(tmp_path):
+def test_a_static_doall_over_one_tile_shares_it_among_the_blocks_threads(tmp_path: Path) -> None:
     """The doall over a tile of 32 has extent min(N, (t + 1) * 32) - t * 32, which DaCe bounds by 32."""
     session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
 
@@ -285,7 +288,7 @@ def test_a_static_doall_over_one_tile_shares_it_among_the_blocks_threads(tmp_pat
     assert (guided.status, guided.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), guided
 
 
-def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path):
+def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     (listed,) = session.list_moves("set-schedule-gpu", scope=first)
 
@@ -295,7 +298,7 @@ def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path):
     assert placed_maps(session, first)[listed.labels[0]].gpu_block_size != [1, 1, 128]
 
 
-def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
+def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path: Path) -> None:
     session, first, _ = placed_on_cpu(tmp_path)
     (label,) = only_move(session, "set-schedule-cpu", first)
 
@@ -305,7 +308,7 @@ def test_a_gpu_schedule_needs_a_kernel_on_the_gpu(tmp_path):
     assert session.list_moves("set-schedule-gpu", scope=first) == []
 
 
-def test_a_staged_tile_moves_with_the_tma_unit_on_a_hopper_gpu(tmp_path):
+def test_a_staged_tile_moves_with_the_tma_unit_on_a_hopper_gpu(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
 
@@ -318,7 +321,7 @@ def test_a_staged_tile_moves_with_the_tma_unit_on_a_hopper_gpu(tmp_path):
     assert copies == ["MemoryEngineBulk"]  # the tile of a; b is not staged
 
 
-def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path):
+def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     session.apply_move("stage-loads-shared", only_move(session, "stage-loads-shared", first), block=(64,), scope=first)
 

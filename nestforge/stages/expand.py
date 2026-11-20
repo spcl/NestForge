@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import copy
 import functools
-from typing import cast
+from typing import Any, cast
 
 import dace
 from dace import cpf_lowering
@@ -72,7 +72,7 @@ def implementations(node: nodes.LibraryNode, gpu: bool, inside_doall: bool = Fal
 
 
 @functools.lru_cache(maxsize=None, typed=True)
-def installed(expansion: type) -> bool:
+def installed(expansion: type[Any]) -> bool:
     """Whether every environment ``expansion`` builds against, dependencies included, passes its own DaCe
     ``is_installed`` probe; one without a probe counts as present."""
     names = {env.full_class_path() for env in expansion.environments}

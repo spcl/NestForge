@@ -4,6 +4,7 @@
 built and linked again, nothing is checked or timed, so a check near its tolerance cannot end the episode."""
 
 from pathlib import Path
+from typing import Any
 
 import dace
 import numpy as np
@@ -23,7 +24,7 @@ pytestmark = pytest.mark.e2e
 
 
 @dace.program
-def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]):
+def scaled_sum(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         c[i] = 2.0 * a[i] + b[i]
 
@@ -35,11 +36,13 @@ def one_kernel_session(tmp_path: Path) -> tuple[Session, str]:
     return sut, kernel.name
 
 
-def never(*args: object, **kwargs: object) -> None:
+def never(*args: Any, **kwargs: Any) -> None:
     raise AssertionError("a repeat checks or times nothing")
 
 
-def test_a_journaled_kernel_source_is_linked_again_even_where_its_check_would_now_fail(tmp_path, monkeypatch):
+def test_a_journaled_kernel_source_is_linked_again_even_where_its_check_would_now_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     sut, name = one_kernel_session(tmp_path)
     source = "// edited by hand\n" + sut.kernel_source(name)
     monkeypatch.setattr(session_module, "measure_kernel", lambda *args: failed_verdict("strict", "flaky"))
@@ -53,7 +56,9 @@ def test_a_journaled_kernel_source_is_linked_again_even_where_its_check_would_no
     assert [move.kind for move in sut.applied] == ["write-kernel"]
 
 
-def test_a_journaled_sweep_links_its_winner_again_without_timing_a_variant(tmp_path, monkeypatch):
+def test_a_journaled_sweep_links_its_winner_again_without_timing_a_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     live, name = one_kernel_session(tmp_path / "live")
     winner = live.sweep(name).winner
     assert winner is not None
@@ -66,4 +71,5 @@ def test_a_journaled_sweep_links_its_winner_again_without_timing_a_variant(tmp_p
     assert applied(reply), reply
     assert reply.result.winner == winner
     assert sut.builds[name].variant.label == winner
-    assert sut.builds[name].verdict.unchecked == REPEATED
+    verdict = sut.builds[name].verdict
+    assert verdict is not None and verdict.unchecked == REPEATED

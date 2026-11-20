@@ -8,10 +8,11 @@ import os
 
 import dace
 import numpy as np
-from dace.libraries.standard.nodes.external_call import ExternalCall
+from dace.frontend.python.parser import DaceProgram
+from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
-from nestforge.session import Session, external_calls
+from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -19,7 +20,7 @@ SIZE = 8
 
 
 @dace.program
-def time_steps(A: dace.float64[N], B: dace.float64[N]):
+def time_steps(A: dace.float64[N], B: dace.float64[N]) -> None:
     for t in range(3):
         for i in dace.map[1 : N - 1]:
             B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
@@ -28,13 +29,13 @@ def time_steps(A: dace.float64[N], B: dace.float64[N]):
 
 
 @dace.program
-def running_sum(x: dace.float64[N], out: dace.float64[N]):
+def running_sum(x: dace.float64[N], out: dace.float64[N]) -> None:
     for i in range(1, N):
         out[i] = out[i - 1] + x[i]
 
 
 @dace.program
-def halve_and_count(A: dace.float64[N], s: dace.float64[1]):
+def halve_and_count(A: dace.float64[N], s: dace.float64[1]) -> None:
     for t in range(3):
         for i in dace.map[0:N]:
             A[i] = A[i] * 0.5
@@ -42,7 +43,7 @@ def halve_and_count(A: dace.float64[N], s: dace.float64[1]):
 
 
 @dace.program
-def two_loops_of_maps(A: dace.float64[N, N]):
+def two_loops_of_maps(A: dace.float64[N, N]) -> None:
     for t in range(2):
         for k in range(2):
             for i in dace.map[0:N]:
@@ -50,7 +51,7 @@ def two_loops_of_maps(A: dace.float64[N, N]):
 
 
 @dace.program
-def three_loops_of_maps(A: dace.float64[N, N]):
+def three_loops_of_maps(A: dace.float64[N, N]) -> None:
     for t in range(2):
         for k in range(2):
             for j in range(2):
@@ -59,7 +60,7 @@ def three_loops_of_maps(A: dace.float64[N, N]):
 
 
 @dace.program
-def branches(A: dace.float64[N], flag: dace.int64):
+def branches(A: dace.float64[N], flag: dace.int64) -> None:
     if flag > 0:
         for i in dace.map[0:N]:
             A[i] = A[i] + 1.0
@@ -69,7 +70,7 @@ def branches(A: dace.float64[N], flag: dace.int64):
 
 
 @dace.program
-def long_body(A: dace.float64[N, 4], C: dace.float64[N, 4]):
+def long_body(A: dace.float64[N, 4], C: dace.float64[N, 4]) -> None:
     for i in dace.map[0:N]:
         for k in range(4):
             A[i, k] = A[i, k] + 1.0
@@ -77,7 +78,7 @@ def long_body(A: dace.float64[N, 4], C: dace.float64[N, 4]):
             C[i, k] = A[i, k] * 2.0
 
 
-def session_and_reference(program, targets: Targets | None = None) -> tuple[Session, dace.SDFG]:
+def session_and_reference(program: DaceProgram, targets: Targets | None = None) -> tuple[Session, dace.SDFG]:
     sdfg = program.to_sdfg(simplify=True)
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
     reference = copy.deepcopy(sdfg)
@@ -98,7 +99,7 @@ def same_result(session: Session, reference: dace.SDFG, **arrays: np.ndarray | i
             np.testing.assert_allclose(value, expected[name], rtol=1e-14)
 
 
-def test_a_loop_of_parallel_maps_keeps_the_loop_and_makes_each_map_a_parallel_kernel():
+def test_a_loop_of_parallel_maps_keeps_the_loop_and_makes_each_map_a_parallel_kernel() -> None:
     session, reference = session_and_reference(time_steps)
 
     kernels = session.default_scopes()
@@ -109,7 +110,7 @@ def test_a_loop_of_parallel_maps_keeps_the_loop_and_makes_each_map_a_parallel_ke
     same_result(session, reference, A=rng.random(SIZE), B=np.zeros(SIZE))
 
 
-def test_a_loop_holding_no_parallel_map_is_one_sequential_kernel():
+def test_a_loop_holding_no_parallel_map_is_one_sequential_kernel() -> None:
     session, reference = session_and_reference(running_sum)
 
     (kernel,) = session.default_scopes()
@@ -119,7 +120,7 @@ def test_a_loop_holding_no_parallel_map_is_one_sequential_kernel():
     same_result(session, reference, x=np.arange(SIZE, dtype=np.float64), out=np.zeros(SIZE))
 
 
-def test_a_loop_mixing_a_map_with_sequential_work_is_one_kernel():
+def test_a_loop_mixing_a_map_with_sequential_work_is_one_kernel() -> None:
     session, reference = session_and_reference(halve_and_count)
 
     (kernel,) = session.default_scopes()
@@ -129,7 +130,7 @@ def test_a_loop_mixing_a_map_with_sequential_work_is_one_kernel():
     same_result(session, reference, A=np.linspace(1.0, 2.0, SIZE), s=np.zeros(1))
 
 
-def test_a_loop_of_maps_inside_a_loop_is_opened_one_level_deeper():
+def test_a_loop_of_maps_inside_a_loop_is_opened_one_level_deeper() -> None:
     session, reference = session_and_reference(two_loops_of_maps)
 
     (kernel,) = session.default_scopes()
@@ -139,7 +140,7 @@ def test_a_loop_of_maps_inside_a_loop_is_opened_one_level_deeper():
     same_result(session, reference, A=np.random.default_rng(1).random((SIZE, SIZE)))
 
 
-def test_a_loop_two_levels_down_is_one_kernel_with_its_loops():
+def test_a_loop_two_levels_down_is_one_kernel_with_its_loops() -> None:
     session, reference = session_and_reference(three_loops_of_maps)
 
     (kernel,) = session.default_scopes()
@@ -149,7 +150,7 @@ def test_a_loop_two_levels_down_is_one_kernel_with_its_loops():
     same_result(session, reference, A=np.random.default_rng(2).random((SIZE, SIZE)))
 
 
-def test_each_branch_of_a_conditional_is_opened_like_a_loop_body():
+def test_each_branch_of_a_conditional_is_opened_like_a_loop_body() -> None:
     session, reference = session_and_reference(branches)
 
     kernels = session.default_scopes()
@@ -160,7 +161,7 @@ def test_each_branch_of_a_conditional_is_opened_like_a_loop_body():
         same_result(session, reference, A=np.arange(SIZE, dtype=np.float64), flag=flag)
 
 
-def test_a_map_above_the_statement_limit_is_split_into_kernels_at_a_body_block():
+def test_a_map_above_the_statement_limit_is_split_into_kernels_at_a_body_block() -> None:
     session, reference = session_and_reference(long_body, Targets(max_statements=1))
 
     kernels = session.default_scopes()
@@ -172,7 +173,7 @@ def test_a_map_above_the_statement_limit_is_split_into_kernels_at_a_body_block()
     same_result(session, reference, A=rng.random((SIZE, 4)), C=np.zeros((SIZE, 4)))
 
 
-def test_a_map_within_the_statement_limit_stays_one_kernel():
+def test_a_map_within_the_statement_limit_stays_one_kernel() -> None:
     session, _ = session_and_reference(long_body)
 
     kernels = session.default_scopes()
@@ -180,7 +181,7 @@ def test_a_map_within_the_statement_limit_stays_one_kernel():
     assert len(kernels) == 1
 
 
-def test_a_second_default_scopes_makes_no_kernel_around_a_built_kernel():
+def test_a_second_default_scopes_makes_no_kernel_around_a_built_kernel() -> None:
     """A kernel bound to its library expands to a CPP tasklet, which no enclosing kernel can render."""
     session, _ = session_and_reference(time_steps)
     first = session.default_scopes()
@@ -192,7 +193,7 @@ def test_a_second_default_scopes_makes_no_kernel_around_a_built_kernel():
     assert blocks_of(session.sdfg, LoopRegion) == 1
 
 
-def test_default_scopes_keeps_a_chosen_kernel_inside_a_loop_and_scopes_the_rest():
+def test_default_scopes_keeps_a_chosen_kernel_inside_a_loop_and_scopes_the_rest() -> None:
     session, _ = session_and_reference(time_steps)
     first = next(label for label, row in session.row_index().items() if isinstance(row[0], dace.nodes.MapEntry))
     chosen = session.set_scope([first]).reason

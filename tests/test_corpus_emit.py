@@ -9,15 +9,18 @@ in-place buffers. ``alloc_run`` does exactly that, driven by the emitted functio
 
 import copy
 import os
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from dace import symbolic
+from dace import SDFG, symbolic
 from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
 from nestforge.build.isolation import Result, run_isolated
 from nestforge.build.sdfg import compile_linked_program
-from nestforge.corpus.bench import iter_dace_kernels, module_path
+from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels, module_path
 from nestforge.session import Session
 from nestforge.stages.canonicalize import Targets
 from nestforge.stages.scopes import node_boundary
@@ -27,7 +30,13 @@ class Built(Result):
     ok: bool
 
 
-def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
+def alloc_run(
+    short: str,
+    fn_name: str,
+    sizes: dict[str, int],
+    inputs: Mapping[str, np.ndarray | float],
+    sdfg: SDFG | None = None,
+) -> tuple[dict[str, Any], str]:
     """Emit ``short``, allocate every buffer parameter, run it, and return the buffers and the source."""
     if sdfg is None:
         sdfg = corpus_kernel(short).to_sdfg(simplify=True)
@@ -35,7 +44,7 @@ def alloc_run(short, fn_name, sizes, inputs, sdfg=None):
     return run_emitted(src, fn_name, lowered, inputs, sizes), src
 
 
-def test_corpus_exposes_dace_kernels():
+def test_corpus_exposes_dace_kernels() -> None:
     """HPCAgent-Bench regenerates each gitignored ``_dace.py`` on demand; the set it can lower grows with the
     translator, so this asserts a floor plus the kernels this suite exercises, not an exact count."""
     science = {k.short_name for k in iter_dace_kernels("scientific_computing")}
@@ -49,7 +58,7 @@ def test_corpus_exposes_dace_kernels():
     assert len(learning) >= 5, learning
 
 
-def test_a_symbol_the_manifest_declares_small_is_small_for_the_defaults():
+def test_a_symbol_the_manifest_declares_small_is_small_for_the_defaults() -> None:
     """Unless declared small, a symbol is assumed big; warpx_boris_push's manifest declares ``nsteps`` small."""
     sdfg = corpus_kernel("warpx_boris_push").to_sdfg()
 
@@ -59,7 +68,7 @@ def test_a_symbol_the_manifest_declares_small_is_small_for_the_defaults():
     assert small == {"nsteps"}
 
 
-def test_the_loop_level_track_builds_to_sdfgs():
+def test_the_loop_level_track_builds_to_sdfgs() -> None:
     """Every track in ``DACE_TRACKS`` must yield kernels; sample the first two non-TSVC loop-level kernels and check
     each still builds. ``to_sdfg`` runs isolated, since a freshly generated ``_dace.py`` can crash codegen."""
     loop_level = sorted(
@@ -68,11 +77,15 @@ def test_the_loop_level_track_builds_to_sdfgs():
     )
     assert loop_level, "loop_level_reasoning yielded no kernels"
     for kernel in loop_level[:2]:
-        result = run_isolated(lambda k=kernel: Built(ok=k.program().to_sdfg(simplify=True) is not None), Built)
+
+        def built(k: CorpusKernel = kernel) -> Built:  # the child loads the program, as the parent must not
+            return Built(ok=k.program().to_sdfg(simplify=True) is not None)
+
+        result = run_isolated(built, Built)
         assert result == Built(ok=True), f"{kernel.short_name}: {result}"
 
 
-def test_gemm_matmul_emits_and_computes():
+def test_gemm_matmul_emits_and_computes() -> None:
     rng = np.random.default_rng(0)
     NI, NJ, NK = 8, 6, 5
     A, B, C = rng.random((NI, NK)), rng.random((NK, NJ)), rng.random((NI, NJ))
@@ -89,7 +102,7 @@ def test_gemm_matmul_emits_and_computes():
     np.testing.assert_allclose(call["C"], ref)
 
 
-def test_atax_return_value_is_inplace_buffer():
+def test_atax_return_value_is_inplace_buffer() -> None:
     rng = np.random.default_rng(1)
     M, N = 7, 9
     A, x = rng.random((M, N)), rng.random(N)
@@ -100,7 +113,7 @@ def test_atax_return_value_is_inplace_buffer():
     np.testing.assert_allclose(call["out"], (A @ x) @ A)
 
 
-def test_nussinov_conditionalblock_emits_and_computes():
+def test_nussinov_conditionalblock_emits_and_computes() -> None:
     """nussinov exercises the full control-flow path at once: ``ConditionalBlock`` (if/elif/else),
     access-node scalar copies, an inter-state indirect index, and ``dace.<cast>`` normalization."""
     N = 20
@@ -117,7 +130,7 @@ def test_nussinov_conditionalblock_emits_and_computes():
     )
     assert "if " in src and "else:" in src  # the guards lower through ConditionalBlock
 
-    def match(b1, b2):
+    def match(b1: int, b2: int) -> int:
         return 1 if b1 + b2 == 3 else 0
 
     t = np.zeros((N, N), np.int32)
@@ -139,12 +152,15 @@ def test_nussinov_conditionalblock_emits_and_computes():
     )  # functional->in-place: DP table is a named buffer; int DP -> bit-exact
 
 
-def test_contour_integral_two_returns_solve_and_indirect_negate():
+def test_contour_integral_two_returns_solve_and_indirect_negate() -> None:
     """contour_integral returns two buffers and mixes ``np.linalg.solve``, a conditional negate, and
     a ``dace.complex128`` power cast -- a good end-to-end check of the complex + multi-output path."""
     NR, NM, slab = 5, 3, 2
     rng = np.random.default_rng(1)
-    crand = lambda shape: (rng.random(shape) + 1j * rng.random(shape)).astype(np.complex128)
+
+    def crand(shape: tuple[int, ...]) -> np.ndarray:
+        return (rng.random(shape) + 1j * rng.random(shape)).astype(np.complex128)
+
     Ham, int_pts, Y = crand((slab + 1, NR, NR)), crand((32,)), crand((NR, NM))
     # contour_radius is a read-only config scalar (the reference's 1.0 default = the unit circle); dace lowers
     # it to a required by-value param -- the python kwarg default is lost -- so supply it, else it reads 0 and
@@ -173,12 +189,13 @@ def test_contour_integral_two_returns_solve_and_indirect_negate():
     np.testing.assert_allclose(call["P1"], P1)
 
 
-def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
+def test_mandelbrot_nested_sdfg_in_map_emits_and_computes() -> None:
     """mandelbrot's per-pixel escape is a ``np.where`` -> a nested SDFG with inner control flow inside
     a 2-D map. It emits only after ``ExpandNestedSDFGInputs`` widens the nest to full arrays, so the
     masked ``if I[j,k]: Z[j,k] = Z[j,k]**2 + C[j,k]`` writes the outer buffer in place."""
     XN, YN = 20, 16
-    scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=25, horizon=2.0)
+    maxiter = 25
+    scal = dict(xmin=-2.0, xmax=0.5, ymin=-1.25, ymax=1.25, maxiter=maxiter, horizon=2.0)
     call, _ = alloc_run(
         "scientific_computing/map_reduce/mandelbrot_escape_count/mandelbrot_escape_count",
         "mandelbrot",
@@ -191,7 +208,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     C = X[None, :] + Y[:, None] * 1j
     Nc = np.zeros(C.shape, np.int64)
     Z = np.zeros(C.shape, np.complex128)
-    for n in range(scal["maxiter"]):
+    for n in range(maxiter):
         I = np.less(np.absolute(Z), scal["horizon"])
         Nc[I] = n
         for j in range(YN):
@@ -203,7 +220,7 @@ def test_mandelbrot_nested_sdfg_in_map_emits_and_computes():
     np.testing.assert_array_equal(call["Z_out"], Z)  # bit-exact
 
 
-def test_emission_does_not_mutate_caller_sdfg():
+def test_emission_does_not_mutate_caller_sdfg() -> None:
     """``sdfg_to_python`` must be read-only: widening nested SDFGs runs on a copy, so a caller that
     inspects or compiles the same SDFG afterwards (e.g. the DaCe-reference competitor) is unaffected."""
     from dace.sdfg import nodes
@@ -211,7 +228,7 @@ def test_emission_does_not_mutate_caller_sdfg():
     kernel = corpus_kernel("scientific_computing/map_reduce/mandelbrot_escape_count/mandelbrot_escape_count")
     sdfg = kernel.to_sdfg(simplify=True)
 
-    def nsdfg_in_subsets(g):
+    def nsdfg_in_subsets(g: SDFG) -> dict[str, str]:
         return {
             e.dst_conn: str(e.data.subset)
             for st in g.states()
@@ -225,7 +242,7 @@ def test_emission_does_not_mutate_caller_sdfg():
     assert nsdfg_in_subsets(sdfg) == before  # connectors/subsets unchanged -> no in-place widening
 
 
-def test_nbody_nested_where_emits_and_computes():
+def test_nbody_nested_where_emits_and_computes() -> None:
     """nbody's ``np.power(inv_r3, -1.5, out=inv_r3, where=I)`` is a masked nested SDFG in a 2-D map, and its
     ``np.reshape(mass, (N, 1))`` binds a whole ``(N, 1)`` array as an ``(N,)`` library connector."""
     N, Nt = 6, 4
@@ -236,18 +253,18 @@ def test_nbody_nested_where_emits_and_computes():
     inputs = dict(mass=mass, pos=pos, vel=vel, dt=np.array([dt]), G=np.array([G]), softening=np.array([soft]))
     call, _ = alloc_run("scientific_computing/n_body_methods/nbody/nbody", "nbody", dict(N=N, Nt=Nt), inputs, sdfg=sdfg)
 
-    def getAcc(pos, mass, G, softening):
+    def getAcc(pos: np.ndarray, mass: np.ndarray, G: float, softening: float) -> np.ndarray:
         x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
         dx = np.add.outer(-x, x).reshape(N, N)
         dy = np.add.outer(-y, y).reshape(N, N)
         dz = np.add.outer(-z, z).reshape(N, N)
         inv_r3 = dx**2 + dy**2 + dz**2 + softening**2
         np.power(inv_r3, -1.5, out=inv_r3, where=inv_r3 > 0)
-        a = np.zeros((N, 3))
+        a: np.ndarray = np.zeros((N, 3))
         a[:, 0], a[:, 1], a[:, 2] = G * (dx * inv_r3) @ mass, G * (dy * inv_r3) @ mass, G * (dz * inv_r3) @ mass
         return a
 
-    def getEnergy(pos, vel, mass, G):
+    def getEnergy(pos: np.ndarray, vel: np.ndarray, mass: np.ndarray, G: float) -> tuple[float, float]:
         KE = 0.5 * np.sum(np.reshape(mass, (N, 1)) * vel**2)
         x, y, z = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
         dx = np.add.outer(-x, x).reshape(N, N)
@@ -257,7 +274,7 @@ def test_nbody_nested_where_emits_and_computes():
         np.divide(1.0, inv_r, out=inv_r, where=inv_r > 0)
         tmp = -np.multiply.outer(mass, mass) * inv_r
         PE = sum(tmp[j, k] for j in range(N) for k in range(j + 1, N)) * G
-        return KE, PE
+        return float(KE), float(PE)
 
     vel = vel - np.mean(np.reshape(mass, (N, 1)) * vel, axis=0) / np.mean(mass)
     acc = getAcc(pos, mass, G, soft)
@@ -281,7 +298,7 @@ SDPA = "machine_learning/scaled_dot_product_attention/scaled_dot_product_attenti
 SDPA_SIZES = {"batch_size": 2, "embedding_dimension": 4, "num_heads": 2, "sequence_length": 4}
 
 
-def sdpa_scoped_session(tmp_path) -> Session:
+def sdpa_scoped_session(tmp_path: Path) -> Session:
     sdfg = corpus_kernel(SDPA).to_sdfg()
     sdfg.name = f"{sdfg.name}_{os.getpid()}"  # one build folder per xdist worker
     session = Session(sdfg, Targets(gpu=False), work_dir=str(tmp_path), sizes=dict(SDPA_SIZES))
@@ -291,7 +308,7 @@ def sdpa_scoped_session(tmp_path) -> Session:
     return session
 
 
-def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_loop_bodies(tmp_path):
+def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_loop_bodies(tmp_path: Path) -> None:
     """sdpa's batched matmul kernel binds 4-D slices of ``V``, the weights and ``out`` through Views to the batched
     matmul expansion, an init state then an update state inside the batch map that does not inline. The nest binds
     the slices directly, so no View is an argument the caller allocates."""
@@ -306,7 +323,7 @@ def test_sdpa_kernels_take_only_their_arrays_and_symbols_not_the_views_of_their_
 
 
 @pytest.mark.e2e
-def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
+def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path: Path) -> None:
     session = sdpa_scoped_session(tmp_path)
     session.place()
     for info in session.list_kernels():
@@ -327,7 +344,7 @@ def test_sdpa_program_with_every_default_kernel_matches_numpy(tmp_path):
     np.testing.assert_allclose(out, expected, rtol=1e-12)
 
 
-def test_azimint_hist_bins_radii_into_a_weighted_mean_per_bin():
+def test_azimint_hist_bins_radii_into_a_weighted_mean_per_bin() -> None:
     """azimint_hist guards ``e[b + 1]`` with ``b < npt - 1 and ...``; the SDFG keeps the short circuit, so the
     emitted Python never reads past the last bin edge and matches NumPy's histogram ratio."""
     N, npt = 200, 8
@@ -343,7 +360,7 @@ def test_azimint_hist_bins_radii_into_a_weighted_mean_per_bin():
     np.testing.assert_allclose(call["out"], ref, equal_nan=True)
 
 
-def test_azimint_naive_wcr_reduction_emits_and_computes():
+def test_azimint_naive_wcr_reduction_emits_and_computes() -> None:
     """azimint_naive is a masked mean per radial bin: ``if r1<=radius<r2: tmp += data[j]`` -- a WCR
     accumulation inside a nested SDFG. Exercises WCR augmented-assignment plus the inner/outer size-1
     descriptor reconciliation (a nested scalar accumulator read back as a size-1 array)."""
@@ -373,7 +390,7 @@ def test_azimint_naive_wcr_reduction_emits_and_computes():
     np.testing.assert_allclose(got, res, equal_nan=True)
 
 
-def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
+def test_trisolv_loop_shaped_scratch_maxsized_and_computes() -> None:
     """trisolv (lower-triangular solve) stages a growing slice into a scratch buffer shaped ``[i]``.
     The emitter widens that buffer to its loop bound ``N`` and addresses it with ``0:i`` slices, so it
     can be pre-allocated C-style. Validates the max-size loop-scratch path."""
@@ -389,7 +406,7 @@ def test_trisolv_loop_shaped_scratch_maxsized_and_computes():
     np.testing.assert_allclose(x, np.linalg.solve(L, b))
 
 
-def test_lu_loop_shaped_scratch_maxsized_and_computes():
+def test_lu_loop_shaped_scratch_maxsized_and_computes() -> None:
     """lu decomposition stages ``A[i,:j]`` / ``A[:i,j]`` dot-product operands into ``[j]``/``[i]``
     scratch buffers; the emitter max-sizes them to ``N``. Validates against an in-place Doolittle LU."""
     N = 10
@@ -407,7 +424,7 @@ def test_lu_loop_shaped_scratch_maxsized_and_computes():
     np.testing.assert_allclose(A, ref)
 
 
-def test_covariance_decreasing_loop_scratch_and_computes():
+def test_covariance_decreasing_loop_scratch_and_computes() -> None:
     """covariance stages a *shrinking* slice into a ``[M-i]`` scratch; the emitter max-sizes that
     decreasing extent at its i=0 value (``M``) -- the compound (non-bare-var) monotonicity path."""
     M, Nrows = 8, 20
@@ -428,7 +445,7 @@ def test_covariance_decreasing_loop_scratch_and_computes():
     np.testing.assert_allclose(cov, ref)
 
 
-def test_syrk_increasing_loop_scratch_and_computes():
+def test_syrk_increasing_loop_scratch_and_computes() -> None:
     """syrk stages a *growing* ``[i+1]`` slice; the emitter max-sizes that increasing extent at its
     loop bound. C = alpha*A@A.T + beta*C on the lower triangle."""
     N, Mk = 9, 6
@@ -450,7 +467,7 @@ def test_syrk_increasing_loop_scratch_and_computes():
     np.testing.assert_allclose(np.tril(Cout), np.tril(ref))
 
 
-def test_jacobi_1d_loopregion_emits_and_computes():
+def test_jacobi_1d_loopregion_emits_and_computes() -> None:
     rng = np.random.default_rng(2)
     N, T = 32, 20
     A, B = rng.random(N), rng.random(N)
@@ -469,13 +486,13 @@ def test_jacobi_1d_loopregion_emits_and_computes():
     np.testing.assert_array_equal(call["B"], Br)
 
 
-def test_corpus_program_is_the_entry_not_a_helper():
+def test_corpus_program_is_the_entry_not_a_helper() -> None:
     # mlp_dace defines relu, softmax, then mlp; every kernel's entry is named for the kernel (bench afcccb7).
     assert corpus_kernel("machine_learning/mlp/mlp").program().name.endswith("mlp")
     assert corpus_kernel("machine_learning/resnet/resnet").program().name.endswith("resnet")
 
 
-def test_corpus_module_path_independent_of_namespace_path():
+def test_corpus_module_path_independent_of_namespace_path() -> None:
     # Derived from the registry key, not hpcagent_bench.benchmarks.__path__ (which can be stale/multi-root).
     assert (
         module_path("scientific_computing/dense_linear_algebra/gemm/gemm")

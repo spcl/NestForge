@@ -76,13 +76,15 @@ def index_fill(shape: tuple[int, ...], dt: np.dtype, seed: int, stream: int) -> 
     from hpcagent_bench.initialize import fill_index_array  # the bench imports NestForge: no top-level import
     from hpcagent_bench.support.counter_generator import CounterGenerator
 
-    return fill_index_array(shape, dt.name, CounterGenerator(seed, stream=stream))
+    filled: np.ndarray = fill_index_array(shape, dt.name, CounterGenerator(seed, stream=stream))
+    return filled
 
 
 def positive_definite(array: np.ndarray) -> np.ndarray:
     """``array`` made a positive definite matrix: a factorization of random numbers fails, and both sides of the
     comparison would stop at a pivot of their own."""
-    return (array @ array.T + array.shape[0] * np.eye(array.shape[0])).astype(array.dtype)
+    dominant: np.ndarray = (array @ array.T + array.shape[0] * np.eye(array.shape[0])).astype(array.dtype)
+    return dominant
 
 
 def run_oracle(
@@ -286,7 +288,7 @@ def device_memory(runtime: DeviceRuntime, buffers: dict[str, np.ndarray], names:
 
 def time_device_reps(
     fn: Any,
-    args: list,
+    args: list[object],
     memory: DeviceMemory,
     output_names: Sequence[str],
     restore: Sequence[str],
@@ -345,7 +347,7 @@ def call_device(call: DeviceCall) -> DeviceResult:
     on_device = [arg for arg, ctype in zip(call.order, argtypes) if arg in host and isinstance(ctype, POINTER_TYPE)]
     memory = device_memory(loaded_device_runtime(Path(call.shared)), host, on_device)
     args = [
-        ctypes.cast(memory.pointers[arg], cast(type[ctypes._Pointer], ctype))
+        ctypes.cast(memory.pointers[arg], cast("type[ctypes._Pointer[Any]]", ctype))
         if arg in memory.pointers
         else bind_argument(arg, ctype, host, call.sizes)
         for arg, ctype in zip(call.order, argtypes)

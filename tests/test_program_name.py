@@ -9,23 +9,23 @@ KERNEL = "conv2d_group_norm_tanh_hardswish_residual_add_logsumexp"
 BENCH_NAME = f"hpcagent_bench_benchmarks_machine_learning_{KERNEL}_{KERNEL}_dace_{KERNEL}"
 
 
-def test_the_program_name_of_the_issue_is_over_the_limit_before_and_under_it_after():
+def test_the_program_name_of_the_issue_is_over_the_limit_before_and_under_it_after() -> None:
     assert len((CMAKE_FILE_PREFIX + BENCH_NAME).encode()) == 258
     assert len((CMAKE_FILE_PREFIX + short_program_name(BENCH_NAME)).encode()) <= 255
 
 
-def test_a_name_that_fits_is_left_alone():
+def test_a_name_that_fits_is_left_alone() -> None:
     name = "x" * MAX_PROGRAM_NAME
     assert short_program_name(name) == name
 
 
-def test_the_shortened_name_is_deterministic_and_a_valid_identifier():
+def test_the_shortened_name_is_deterministic_and_a_valid_identifier() -> None:
     short = short_program_name(BENCH_NAME)
     assert short == short_program_name(BENCH_NAME)
     assert short.isidentifier()
     assert len(short) == MAX_PROGRAM_NAME
 
 
-def test_two_long_names_sharing_a_head_stay_apart():
+def test_two_long_names_sharing_a_head_stay_apart() -> None:
     head = "h" * (MAX_PROGRAM_NAME + 10)
     assert short_program_name(head + "_a") != short_program_name(head + "_b")

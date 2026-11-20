@@ -22,6 +22,8 @@ The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagen
 - `pre-commit run --all-files` runs ruff check and ruff format (120 columns) and the header check, as CI does.
 - Python is written as if statically typed: annotate everything, one name keeps one type, absolute imports, no
   leading-underscore names.
+- `mypy && mypy tests` (strict, `[tool.mypy]` in pyproject.toml) passes with no errors, as CI checks. DaCe is
+  untyped except `dace.program` (`typings/dace`).
 - No `getattr`/`hasattr`: declare every attribute with its type, `X | None` when it may be absent.
 - Answers are frozen pydantic records (`nestforge/records.py`), outcomes are enums compared with `is`; every other
   class is slotted. DaCe library nodes, whose properties need an instance `__dict__`, are the exception.

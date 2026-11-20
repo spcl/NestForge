@@ -10,11 +10,13 @@ import dace
 import numpy as np
 import pytest
 from dace.codegen import cpf
+from dace.libraries.standard.nodes.external_call import ExternalCall
 
 from nestforge.build import flags
 from nestforge.build.sdfg import compile_linked_program
 from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
 from nestforge.corpus.translate import prepare
+from nestforge.ir.extract import Boundary
 from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 from nestforge.stages.kernel import (
     KernelVerdict,
@@ -25,13 +27,19 @@ from nestforge.stages.kernel import (
 )
 from nestforge.stages.placement import default_devices, insert_copies
 from nestforge.stages.scopes import lower_nests_to_external_call
-from nestforge.stages.variants import device_variants, enumerate_cuda_variants, enumerate_variants, select_variant
+from nestforge.stages.variants import (
+    Variant,
+    device_variants,
+    enumerate_cuda_variants,
+    enumerate_variants,
+    select_variant,
+)
 
 N = dace.symbol("N")
 
 
 @dace.program
-def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]):
+def vadd(b: dace.float64[N], c: dace.float64[N], a: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
         a[i] = b[i] + c[i]
 
@@ -42,7 +50,7 @@ NVCC_OLDER = CudaToolchain(nvcc="nvcc-a", release="13.1", cudart_dir="lib-a")
 NVCC_NEWER = CudaToolchain(nvcc="nvcc-b", release="13.3", cudart_dir="lib-b")
 
 
-def lowered_vadd():
+def lowered_vadd() -> tuple[dace.SDFG, ExternalCall, Boundary]:
     sdfg = vadd.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets())
     fuse_and_finish(sdfg, Targets())
@@ -50,16 +58,16 @@ def lowered_vadd():
     return sdfg, ext, boundary
 
 
-def gcc_variants(**axes):
+def gcc_variants(**axes: str) -> list[Variant]:
     """The g++ cells whose axes equal ``axes``, in sweep order."""
     return [v for v in enumerate_variants([GCC]) if all(vars_of(v)[k] == value for k, value in axes.items())]
 
 
-def vars_of(variant):
+def vars_of(variant: Variant) -> dict[str, str]:
     return {"fp_mode": variant.fp_mode, "cost_model": variant.cost_model}
 
 
-def test_gcc_variants_cross_every_fp_rung_with_every_cost_model():
+def test_gcc_variants_cross_every_fp_rung_with_every_cost_model() -> None:
     variants = enumerate_variants([GCC])
 
     assert {(v.fp_mode, v.cost_model) for v in variants} == {(f, c) for f in flags.FP_LEVELS for c in flags.COST_MODELS}
@@ -72,7 +80,7 @@ def test_gcc_variants_cross_every_fp_rung_with_every_cost_model():
         assert ("-ffp-contract=off" in v.flags) == (v.fp_mode == "strict-ieee"), v.label
 
 
-def test_a_cost_model_the_family_has_no_knob_for_is_not_a_second_build():
+def test_a_cost_model_the_family_has_no_knob_for_is_not_a_second_build() -> None:
     """clang has no ``cheap`` cost model, so ``cheap`` composes ``default``'s flags and must not be built twice."""
     variants = enumerate_variants([CLANG])
 
@@ -80,7 +88,7 @@ def test_a_cost_model_the_family_has_no_knob_for_is_not_a_second_build():
     assert len(variants) == len(flags.FP_LEVELS) * 2
 
 
-def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model():
+def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model() -> None:
     variants = enumerate_cuda_variants([NVCC_OLDER, NVCC_NEWER])
 
     assert [(v.toolchain, v.fp_mode) for v in variants] == [
@@ -96,7 +104,7 @@ def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model():
         assert ("--fmad=false" in v.flags) == (v.fp_mode == "strict-ieee"), v.label
 
 
-def test_a_shared_measurement_is_gated_at_each_cells_own_rung():
+def test_a_shared_measurement_is_gated_at_each_cells_own_rung() -> None:
     """A build shared by a strict and a looser cell is timed once, but ``ok`` must be read at each cell's
     rung: inheriting the strict verdict would fail a looser cell whose build is correct at its tolerance."""
     strict = KernelVerdict("strict-ieee", maxdiff=5e-14, md_rel=5e-14, dtype_floor=2.3e-16, time_us=5.0)
@@ -109,7 +117,7 @@ def test_a_shared_measurement_is_gated_at_each_cells_own_rung():
 
 
 @pytest.mark.e2e
-def test_the_sweep_measures_every_build_and_the_fastest_correct_build_wins(tmp_path):
+def test_the_sweep_measures_every_build_and_the_fastest_correct_build_wins(tmp_path: Path) -> None:
     """Every cell is built and timed against the oracle; the winner is the fastest correct one."""
     _, ext, boundary = lowered_vadd()
     src = schedule_kernel(ext, boundary, tmp_path / "gen")
@@ -125,17 +133,18 @@ def test_the_sweep_measures_every_build_and_the_fastest_correct_build_wins(tmp_p
     assert strict.verdict.ok and strict.verdict.maxdiff == 0.0
     correct = [cell for cell in result.cells if cell.verdict.ok]
     assert result.winner is not None and result.winner.verdict.time_us == min(c.verdict.time_us for c in correct)
-    assert result.library == result.winner.archive and result.library.name == f"lib{ext.name}.a"
+    assert result.library is not None and result.library == result.winner.archive
+    assert result.library.name == f"lib{ext.name}.a"
     assert (result.symbol, result.abi_order) == (src.symbol, src.abi_order)
 
 
-def openmp_runtime_stems(so_path):
+def openmp_runtime_stems(so_path: str | Path) -> list[str]:
     """The OpenMP runtimes in a built library's DT_NEEDED, as soname stems."""
     names = [name.split(".so")[0] for name in needed_libraries(Path(so_path))]
     return [stem for stem in names if stem in ("libgomp", "libomp", "libiomp5")]
 
 
-def program_link_commands(build_folder):
+def program_link_commands(build_folder: Path) -> list[str]:
     """The shared-library link commands DaCe's CMake wrote for a program, under either generator: the ``LINK_FLAGS``
     lines of ``build.ninja`` (Ninja) or each target's ``link.txt`` (Unix Makefiles)."""
     ninja = [line for f in build_folder.rglob("build.ninja") for line in f.read_text().splitlines()]
@@ -144,7 +153,7 @@ def program_link_commands(build_folder):
 
 
 @pytest.mark.e2e
-def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(tmp_path):
+def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(tmp_path: Path) -> None:
     """The whole flow: the stage 6 winner linked into the parent through ``ExternalCall``'s extern-call
     expansion, with the runtimes it needs linked after the objects. The program's one OpenMP runtime is libomp."""
     sdfg, ext, boundary = lowered_vadd()
@@ -152,7 +161,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
     prep = prepare(boundary, ext.name)
     variants = gcc_variants(fp_mode="strict-ieee", cost_model="default")
     result = select_variant(src, full_probe(prep, boundary, {"N": 257}), 1, variants, tmp_path / "variants")
-    assert result.library is not None, [c.verdict.error for c in result.cells]
+    assert result.library is not None and result.winner is not None, [c.verdict.error for c in result.cells]
 
     runtime = kernel_runtime_libraries(src, result.winner.variant.compiler)
     use_kernel_library(ext, result.library, src, runtime)
@@ -179,7 +188,7 @@ def test_the_winning_archive_links_statically_into_the_parent_and_matches_numpy(
 
 
 @pytest.mark.gpu
-def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wins(tmp_path):
+def test_the_gpu_sweep_measures_every_device_compiler_cell_and_a_correct_cell_wins(tmp_path: Path) -> None:
     sdfg = vadd.to_sdfg(simplify=True)
     canonicalize(sdfg, Targets(gpu=True))
     fuse_and_finish(sdfg, Targets(gpu=True))

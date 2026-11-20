@@ -212,7 +212,8 @@ class Normalize(ast.NodeTransformer):
         for each in ast.walk(value.left):
             if isinstance(each, (ast.Name, ast.Subscript)):
                 each.ctx = ast.Load()
-        return self.visit(ast.copy_location(ast.Assign(targets=[node.target], value=value), node))
+        assigned: ast.AST = self.visit(ast.copy_location(ast.Assign(targets=[node.target], value=value), node))
+        return assigned
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
         self.generic_visit(node)
@@ -759,7 +760,7 @@ def combines_inside(sdfg: dace.SDFG, name: str, wcr: str | ast.AST) -> bool:
 def passes_through(name: str, value: object) -> bool:
     """Whether a symbol mapping entry hands the nest the outer ``name`` unchanged. DaCe stores the value as an
     expression or as a code string, and ``symstr`` of a string parenthesizes it."""
-    return name == symbolic.symstr(symbolic.pystr_to_symbolic(value))
+    return bool(name == symbolic.symstr(symbolic.pystr_to_symbolic(value)))
 
 
 def kernel_scratch(name: str, desc: dt.Data, sdfg: dace.SDFG) -> bool:
