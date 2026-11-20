@@ -430,10 +430,10 @@ TOOLS: dict[str, ToolDef] = {
     "get_performance": ToolDef(
         phases(Phase.ANY),
         NoArgs,
-        "Measure the program as it stands: whole-program time, offloading (devices, transfers, copies) and per-kernel "
-        "times, with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's "
-        "compiler sweep makes the graded library faster than this. It waits for a device slot and takes minutes on the "
-        "first call; kernels a move left unchanged are not measured again, and an unchanged program answers at once. A "
+        "Measure the program as it stands: whole-program time, offloading (devices, transfers) and per-kernel times, "
+        "with hints. Kernels are built with one fixed configuration, so two measurements compare; finalize's compiler "
+        "sweep makes the graded library faster than this. It waits for a device slot and takes minutes on the first "
+        "call; kernels a move left unchanged are not measured again, and an unchanged program answers at once. A "
         "correct program more than 3% slower than the fastest one measured is rolled back to that one (the answer "
         "says how many changes), so no measured program is lost to a slower one; measure only when you want to keep "
         "the result.",

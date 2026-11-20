@@ -110,20 +110,6 @@ def test_a_kernel_needing_a_value_the_program_computes_is_unchecked_not_wrong() 
     assert "not checked alone" in report([ev]) and "wrong" not in report([ev]) and "failed" not in report([ev])
 
 
-def test_a_kernel_report_carries_the_difference_and_the_bound_it_was_judged_at() -> None:
-    close, far = evidence("extcall_0", md_rel=3e-14), evidence("extcall_1", md_rel=0.25)
-    broken = evidence("extcall_2", error="did not build")
-
-    near, wrong, failed = kernel_reports([close, far, broken], {})
-
-    # both are over the strict bound; only the size of the difference tells rounding from a wrong kernel
-    assert (near.correct, near.max_rel_error, near.tolerance) == (False, 3e-14, 1e-14)
-    assert (wrong.correct, wrong.max_rel_error, wrong.tolerance) == (False, 0.25, 1e-14)
-    assert (failed.correct, failed.max_rel_error, failed.tolerance) == (False, None, None)
-    (unchecked,) = kernel_reports([Evidence("extcall_7", unchecked_verdict("strict-ieee", "takes jmelt"), "")], {})
-    assert (unchecked.correct, unchecked.max_rel_error, unchecked.tolerance) == (None, None, None)
-
-
 def test_a_healthy_kernel_gets_no_hint() -> None:
     assert report([evidence()]).splitlines()[1] == "no hints: every kernel is correct and nothing stands out."
 

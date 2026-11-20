@@ -17,15 +17,14 @@ import dace
 import numpy as np
 from relayout.layout import IndexMap
 
-from nestforge.build.arena import US_PER_S, reps_within_budget, rewind, rung_rtol
+from nestforge.build.arena import US_PER_S, reps_within_budget, rewind
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import BuiltSDFG, build_linked_program
 from nestforge.build.toolchain import SymbolValue, parse_params, signature
 from nestforge.records import Record
 from nestforge.stages.feedback import Evidence
-from nestforge.stages.kernel import KernelVerdict
 from nestforge.stages.layout import logical_outputs
-from nestforge.stages.placement import Transfer, device_copy_edges
+from nestforge.stages.placement import Transfer
 
 
 class ProgramReport(Record):
@@ -60,34 +59,16 @@ class TransferReport(Record):
     bytes: int | None
 
 
-class CopyReport(Record):
-    """One host/device copy in the program, outside the kernels' calls."""
-
-    source: str
-    destination: str
-    #: Moved by one execution of the copy; ``None`` when its size depends on a symbol the session does not fix.
-    bytes: int | None
-
-
 class OffloadReport(Record):
     #: Kernel -> ``cpu`` or ``gpu``.
     devices: dict[str, str]
     #: ``None`` when the dependency analysis refuses the program.
     transfers: list[TransferReport] | None
     transfer_bytes: int
-    #: The copies of the timed program, in state order, and their bytes per execution.
-    copies: list[CopyReport] = []
-    copy_bytes: int = 0
-    #: GPU kernels that copy inside their own call in the session's program (placed, ``finalize_scope`` not run); the
-    #: timed program had the default placement insert their copies.
-    copies_in_call: list[str] = []
 
 
 class KernelReport(Record):
-    """One kernel against its oracle; ``correct`` is ``None`` when it cannot run alone (``error`` says why).
-    ``max_rel_error`` is the largest relative difference to the oracle and ``tolerance`` the bound ``correct`` was
-    decided at, both ``None`` when the kernel was not compared: a kernel a few rounding errors over the bound and one
-    that computes something else are both ``correct=False``, and only the size of the difference tells them apart."""
+    """One kernel against its oracle; ``correct`` is ``None`` when it cannot run alone (``error`` says why)."""
 
     name: str
     device: str
@@ -95,8 +76,6 @@ class KernelReport(Record):
     time_us: float | None
     share: float | None
     error: str = ""
-    max_rel_error: float | None = None
-    tolerance: float | None = None
 
 
 class Performance(Record):
@@ -239,14 +218,9 @@ def timed_report(timed: ProgramTime, reference: Reference | None) -> ProgramRepo
 
 
 def offload_report(
-    sdfg: dace.SDFG,
-    devices: dict[str, str],
-    moves: tuple[Transfer, ...] | None,
-    sizes: Mapping[str, SymbolValue],
-    in_call: list[str],
+    sdfg: dace.SDFG, devices: dict[str, str], moves: tuple[Transfer, ...] | None, sizes: Mapping[str, SymbolValue]
 ) -> OffloadReport:
-    """Where each kernel runs, what crosses memory spaces and the copies that move it, with bytes at ``sizes``;
-    ``in_call`` the GPU kernels that copy inside their call in the session's own program."""
+    """Where each kernel runs and what crosses memory spaces, with bytes at ``sizes``."""
     transfers = None
     if moves is not None:
         transfers = [
@@ -260,32 +234,7 @@ def offload_report(
             for move in moves
         ]
     total = sum(move.bytes or 0 for move in transfers or ())
-    copies = copy_reports(sdfg, sizes)
-    return OffloadReport(
-        devices=devices,
-        transfers=transfers,
-        transfer_bytes=total,
-        copies=copies,
-        copy_bytes=sum(copy.bytes or 0 for copy in copies),
-        copies_in_call=in_call,
-    )
-
-
-def copy_reports(sdfg: dace.SDFG, sizes: Mapping[str, SymbolValue]) -> list[CopyReport]:
-    """Every host/device copy of ``sdfg``, with the bytes its memlet moves at ``sizes``."""
-    return [
-        CopyReport(source=edge.src.data, destination=edge.dst.data, bytes=memlet_bytes(state.sdfg, edge.data, sizes))
-        for state, edge in device_copy_edges(sdfg)
-    ]
-
-
-def memlet_bytes(sdfg: dace.SDFG, memlet: dace.Memlet, sizes: Mapping[str, SymbolValue]) -> int | None:
-    """The bytes ``memlet`` moves at ``sizes``; ``None`` when its volume has a symbol ``sizes`` does not bind."""
-    volume = dace.symbolic.pystr_to_symbolic(memlet.volume)
-    if any(str(sym) not in sizes for sym in volume.free_symbols):
-        return None
-    bindings: dict[dace.symbol | str, int | float] = {str(sym): sizes[str(sym)] for sym in volume.free_symbols}
-    return int(dace.symbolic.evaluate(volume, bindings)) * sdfg.arrays[memlet.data].dtype.bytes
+    return OffloadReport(devices=devices, transfers=transfers, transfer_bytes=total)
 
 
 def array_bytes(sdfg: dace.SDFG, name: str, sizes: Mapping[str, SymbolValue]) -> int | None:
@@ -311,13 +260,6 @@ def kernel_reports(evidence: list[Evidence], devices: dict[str, str]) -> list[Ke
             time_us=ev.verdict.time_us if ev.verdict.ok else None,
             share=ev.verdict.time_us / total if ev.verdict.ok and total > 0 else None,
             error=ev.verdict.error or ev.verdict.unchecked,
-            max_rel_error=ev.verdict.md_rel if compared(ev.verdict) else None,
-            tolerance=rung_rtol(ev.verdict.fp_mode, ev.verdict.dtype_floor) if compared(ev.verdict) else None,
         )
         for ev in evidence
     ]
-
-
-def compared(verdict: KernelVerdict) -> bool:
-    """Whether the kernel ran alone and its outputs were compared with its oracle's."""
-    return not verdict.error and not verdict.unchecked

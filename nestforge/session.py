@@ -182,7 +182,6 @@ from nestforge.stages.placement import (
     Placement,
     Transfer,
     check_devices,
-    copies_in_call,
     default_devices,
     has_device_memory,
     insert_copies,
@@ -2846,7 +2845,6 @@ class Session:
         """The feedback of :meth:`performance` on this session, a self."""
         if not external_calls(self.sdfg):
             self.default_scopes()
-        in_call = copies_in_call(self.sdfg)  # before the default placement inserts their copies
         # as finalize: placing a CPU program changes nothing but drops its kernels' builds
         if self.targets.gpu:
             self.default_placement()
@@ -2866,7 +2864,7 @@ class Session:
         )
         return Performance(
             structured=program,
-            offloading=offload_report(self.sdfg, devices, moves, self.sizes, in_call),
+            offloading=offload_report(self.sdfg, devices, moves, self.sizes),
             kernels=kernel_reports(evidence, devices),
             hints=feedback.report(evidence),
         )

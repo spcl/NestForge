@@ -1413,9 +1413,6 @@ def test_a_gpu_target_reports_its_offloading(loaded: None, monkeypatch: pytest.M
     offloading = judge.answer["performance"]["offloading"]
     assert "gpu" in offloading["devices"].values()
     assert offloading["transfer_bytes"] > 0
-    # the default placement inserted the copies: they sit in the program with their bytes, none inside a call
-    assert offloading["copies"] and offloading["copy_bytes"] > 0 and offloading["copies_in_call"] == []
-    assert all(set(copy) == {"source", "destination", "bytes"} for copy in offloading["copies"])
     assert "error" not in judge.answer["performance"]["structured"]
 
 
