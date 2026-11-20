@@ -6,19 +6,22 @@ only, so the agent image (no DaCe, no NestForge) runs it."""
 
 import contextlib
 import json
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any
 
 __all__ = [
     "RENDERED",
+    "batch_answer",
     "kinds_answer",
     "move_line",
     "moves_answer",
     "performance_answer",
+    "phase_answer",
     "profile_answer",
     "result_line",
     "results_answer",
     "score_answer",
+    "tune_answer",
 ]
 
 #: What a list with nothing in it reads as.
@@ -49,11 +52,27 @@ PRINTED_UNITS = (("s", 1.0), ("ms", 1e-3), ("us", 1e-6), ("ns", 1e-9))
 GIVEN = ("kernel",)
 #: ``score``'s counts of hidden inputs, which say nothing when there were none.
 HIDDEN = ("hidden_correct", "hidden_passed", "hidden_total")
+#: Measured fields the bench sends as a JSON object inside a string (a cell's shape); only these are unpacked.
+JSON_FIELDS = ("shape",)
+
+#: The ``apply_moves`` fields its first line prints after the status, in this order.
+BATCH_HEAD = ("failed_at", "substep")
+#: What the sizes ``tune_move`` tried read as for the program as it stands, which it tried at no size.
+AS_IT_STANDS = "now"
+#: The ``tune_move`` value fields its table leads with.
+TUNE_LEAD = ("sizes", "status")
+#: The phase tools' fields printed in their own places; the others are ``name=value`` after the status.
+PHASE_OWN = ("status", "phase", "reason", "summary")
 
 
-def empty(value: object) -> bool:
-    """Whether ``value`` says nothing: unset, false, or an empty string or collection."""
-    return value is None or value is False or value in ("", [], {}, ())
+def unset_measurement(value: object) -> bool:
+    """Whether a measured field says nothing: unset, or an empty string or collection. False and 0 are measurements."""
+    return value is None or value in ("", [], {}, ())
+
+
+def unset_argument(value: object) -> bool:
+    """Whether a move argument says nothing: as :func:`unset_measurement`, and also ``False``, a flag left off."""
+    return value is False or unset_measurement(value)
 
 
 def value_text(value: object) -> str:
@@ -68,7 +87,7 @@ def extras(record: Mapping[str, Any], skip: Collection[str], defaults: Mapping[s
     return [
         f"{name}={value_text(value)}"
         for name, value in sorted(record.items())
-        if name not in skip and not empty(value) and not (name in defaults and defaults[name] == value)
+        if name not in skip and not unset_argument(value) and not (name in defaults and defaults[name] == value)
     ]
 
 
@@ -124,11 +143,6 @@ def kinds_answer(answer: dict[str, Any]) -> dict[str, Any]:
     return lines(answer, kind_line)
 
 
-def unset(value: object) -> bool:
-    """Whether a measured field says nothing: unset, or an empty string or collection. False and 0 are measurements."""
-    return value is None or value in ("", [], {}, ())
-
-
 def number(value: float) -> str:
     """``value`` at :data:`DIGITS` significant digits, without an exponent where one is not needed."""
     text = f"{value:.{DIGITS}g}"
@@ -146,11 +160,7 @@ def duration(seconds: float) -> str:
 
 
 def plain(value: object) -> str:
-    """A measured value without quotes: numbers rounded, a map as ``key:value,...``, a list as ``[a,b]``, a JSON
-    object sent as a string (a cell's shape) unpacked."""
-    if isinstance(value, str) and value.startswith("{"):
-        with contextlib.suppress(json.JSONDecodeError):
-            value = json.loads(value)
+    """A measured value without quotes: numbers rounded, a map as ``key:value,...``, a list as ``[a,b]``."""
     if isinstance(value, bool):
         return str(value).lower()
     if isinstance(value, float):
@@ -163,7 +173,11 @@ def plain(value: object) -> str:
 
 
 def measured(name: str, value: object) -> tuple[str, str]:
-    """A measured field as the agent reads it: a time renamed without its unit and printed with one."""
+    """A measured field as the agent reads it: a time renamed without its unit and printed with one, a
+    :data:`JSON_FIELDS` string unpacked."""
+    if name in JSON_FIELDS and isinstance(value, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            value = json.loads(value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         for suffix, size in TIME_UNITS.items():
             if name.endswith(suffix):
@@ -178,7 +192,11 @@ def measured(name: str, value: object) -> tuple[str, str]:
 def fields(record: Mapping[str, Any], skip: Collection[str] = ()) -> list[str]:
     """``record``'s measured fields as ``name=value``, by name, those that say nothing left out. A value with a space
     in it goes on a line of its own, as ``name: value``, after the others."""
-    pairs = [measured(name, value) for name, value in sorted(record.items()) if name not in skip and not unset(value)]
+    pairs = [
+        measured(name, value)
+        for name, value in sorted(record.items())
+        if name not in skip and not unset_measurement(value)
+    ]
     inline = [f"{name}={text}" for name, text in pairs if not any(char.isspace() for char in text)]
     own = [f"{name}: {text}" for name, text in pairs if any(char.isspace() for char in text)]
     return [" ".join(inline), *own] if inline else own
@@ -189,11 +207,15 @@ def cell_text(text: str) -> str:
     return text.replace("|", "/")
 
 
-def table(title: str, records: list[Mapping[str, Any]], lead: tuple[str, ...], skip: Collection[str] = ()) -> list[str]:
+def table(
+    title: str, records: Sequence[Mapping[str, Any]], lead: tuple[str, ...], skip: Collection[str] = ()
+) -> list[str]:
     """``records`` as a markdown table under ``title:``. With more than one record, a value every record shares is
     said once on the title line instead of in a column; a column no record fills goes; a missing value reads ``-``."""
     rows = [
-        dict(measured(name, value) for name, value in record.items() if name not in skip and not unset(value))
+        dict(
+            measured(name, value) for name, value in record.items() if name not in skip and not unset_measurement(value)
+        )
         for record in records
     ]
     names = {name for row in rows for name in row}
@@ -283,11 +305,68 @@ def profile_answer(answer: dict[str, Any]) -> dict[str, Any]:
     return {"text": "\n".join([*fields(scalars), answer["text"]])}
 
 
+def record_of(answer: Mapping[str, Any], own: str) -> dict[str, Any] | None:
+    """``answer``'s result when it is a record holding the field ``own``; ``None`` for an error or any other shape."""
+    result = answer.get("result")
+    if failed(answer) or not isinstance(result, dict) or own not in result:
+        return None
+    return result
+
+
+def status_line(record: Mapping[str, Any], head: Collection[str]) -> str:
+    """A record's status, then its ``head`` fields that say something as ``name=value``, then ``: reason``."""
+    said = [f"{name}={plain(record[name])}" for name in head if not unset_measurement(record.get(name))]
+    line = " ".join([str(record["status"]), *said])
+    return f"{line}: {record['reason']}" if record.get("reason") else line
+
+
+def batch_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """``apply_moves``' answer: its status (with the move that failed, from 0, the substep and why), why no check ran
+    if none did, then one result line per move it applied."""
+    batch = record_of(answer, "results")
+    if batch is None:
+        return answer
+    text = [status_line(batch, BATCH_HEAD)]
+    if batch.get("unchecked"):
+        text.append(f"unchecked: {batch['unchecked']}")
+    text += map(result_line, batch["results"])
+    return {**wrapper(answer, ("result",)), "text": "\n".join(text)}
+
+
+def tune_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """``tune_move``'s answer: the move's kind and labels, then the values it tried as a table (the program as it
+    stands at the sizes ``now``)."""
+    tuned = record_of(answer, "values")
+    if tuned is None:
+        return answer
+    values = [{**value, "sizes": value.get("sizes") or AS_IT_STANDS} for value in tuned["values"]]
+    head = " ".join([str(tuned["kind"]), *map(str, tuned.get("labels", ()))])
+    return {**wrapper(answer, ("result",)), "text": "\n".join([head, *table("values", values, TUNE_LEAD)])}
+
+
+def phase_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """A phase tool's answer: its status and phase (``: reason`` when refused), the defaults it ran and the phases it
+    took back, the summary of the phase it left, then the guide of the phase it reached."""
+    step = record_of(answer, "phase")
+    if step is None:
+        return answer
+    line = f"{step['status']} {step['phase']}"
+    text = [f"{line}: {step['reason']}" if step.get("reason") else line, *fields(step, PHASE_OWN)]
+    if step.get("summary"):
+        text.append(str(step["summary"]))
+    if answer.get("guide"):
+        text.append(str(answer["guide"]))
+    return {**wrapper(answer, ("result", "guide")), "text": "\n".join(text)}
+
+
 #: Tool -> how its answer reaches the agent, given the move arguments' defaults; tools not here answer as they came.
+#: The phase tools render with :func:`phase_answer` after their guide is added (``tools/nestforge.py``).
 RENDERED: dict[str, Callable[[dict[str, Any], Mapping[str, object]], dict[str, Any]]] = {
     "list_moves": moves_answer,
     "list_scope_moves": moves_answer,
     "applied_moves": lambda answer, defaults: results_answer(answer),
+    "apply_moves": lambda answer, defaults: batch_answer(answer),
+    "tune_move": lambda answer, defaults: tune_answer(answer),
     "list_move_kinds": lambda answer, defaults: kinds_answer(answer),
     "get_performance": lambda answer, defaults: performance_answer(answer),
 }

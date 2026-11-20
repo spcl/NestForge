@@ -10,7 +10,7 @@ from typing import Any
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.answers import RENDERED, profile_answer, score_answer
+from hpcagent_bench_plugins.nestforge.answers import RENDERED, phase_answer, profile_answer, score_answer
 from hpcagent_bench_plugins.nestforge.wire import AGENT_PHASES_ENV, MOVE_DEFAULTS, ROUTE, TOOLS, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
@@ -71,11 +71,23 @@ def guided(run: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[st
     return answer
 
 
+def rendered(
+    run: Callable[[dict[str, Any]], dict[str, Any]], render: Callable[[dict[str, Any]], dict[str, Any]]
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """``run``, its answer as the agent reads it (:mod:`answers`)."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        return render(run(payload))
+
+    return answer
+
+
 for name, entry in TOOLS.items():
     spec = Spec(
         f"[{entry.label}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
     )
-    run = guided(poster(name)) if name in PHASE_TOOLS else poster(name)
+    # a phase tool's guide is added from its record, so the answer renders after it
+    run = rendered(guided(poster(name)), phase_answer) if name in PHASE_TOOLS else poster(name)
     # in blind mode no tool answers how the program does
     tool(spec=spec, core=False, name=name, preview=name == "get_performance")(run)
 
@@ -96,17 +108,6 @@ def delivering(
         return deliver({**payload, "library": final["library"], "workspace_bytes": final["workspace_bytes"], **laid})
 
     return run
-
-
-def rendered(
-    run: Callable[[dict[str, Any]], dict[str, Any]], render: Callable[[dict[str, Any]], dict[str, Any]]
-) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """``run``, its answer as the agent reads it (:mod:`answers`)."""
-
-    def answer(payload: dict[str, Any]) -> dict[str, Any]:
-        return render(run(payload))
-
-    return answer
 
 
 SUBMIT = "Finalize the program as your moves left it and submit that library for the recorded grade. Takes no code."

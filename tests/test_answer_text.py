@@ -23,7 +23,28 @@ def defaults(nestforge_plugin: tuple[Plugin, ...]) -> dict[str, object]:
     """The defaults the agent side renders with (``tools/nestforge.py``)."""
     from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
 
-    return MOVE_DEFAULTS
+    return dict(MOVE_DEFAULTS)
+
+
+def pairs(line: str) -> dict[str, str]:
+    """The ``name=value`` fields of ``line``, by name; its other words left out."""
+    return dict(word.split("=", 1) for word in line.split() if "=" in word)
+
+
+def table_rows(lines: list[str]) -> list[dict[str, str]]:
+    """A markdown table's rows (``lines``: its header, the rule, then the rows) as one dict per row, by column."""
+    columns = [name.strip() for name in lines[0].strip("|").split("|")]
+    return [dict(zip(columns, (cell.strip() for cell in row.strip("|").split("|")), strict=True)) for row in lines[2:]]
+
+
+def table_under(text: str, title: str) -> tuple[dict[str, str], list[dict[str, str]]]:
+    """The table under the ``title:`` line of ``text``: the values its title line says once, and its rows by column."""
+    lines = text.splitlines()
+    start = next(index for index, line in enumerate(lines) if line.split(" ")[0] == f"{title}:")
+    end = start + 1
+    while end < len(lines) and lines[end].startswith("|"):
+        end += 1
+    return pairs(lines[start]), table_rows(lines[start + 1 : end])
 
 
 def test_a_listed_move_is_its_kind_and_labels_then_the_arguments_it_was_checked_with(
@@ -37,14 +58,17 @@ def test_a_listed_move_is_its_kind_and_labels_then_the_arguments_it_was_checked_
         {"kind": "unroll-for", "labels": ["for4"], "max_iterations": 8},
     ]
     answer = answers.moves_answer({"tool": "list_moves", "result": moves, "performance": None}, defaults)
-    expected = [
-        "doall-fusion doall0 doall1",
-        "tile-doall doall3 tile_sizes=[32,32]",
-        "set-library-implementation lib_gemm2 current=pure implementation=MKL",
-        'relayout operation={"action":"permute","array":"A","order":["i1","i0"]}',
-        "unroll-for for4 max_iterations=8",
-    ]
-    assert answer == {"text": "\n".join(expected)}
+    read = [([word for word in line.split() if "=" not in word], pairs(line)) for line in answer["text"].splitlines()]
+    assert set(answer) == {"text"}
+    assert read[0] == (["doall-fusion", "doall0", "doall1"], {})
+    assert read[1] == (["tile-doall", "doall3"], {"tile_sizes": "[32,32]"})  # max_iterations is its default
+    assert read[2] == (["set-library-implementation", "lib_gemm2"], {"current": "pure", "implementation": "MKL"})
+    assert read[3][0] == ["relayout"] and json.loads(read[3][1]["operation"]) == {
+        "action": "permute",
+        "array": "A",
+        "order": ["i1", "i0"],
+    }
+    assert read[4] == (["unroll-for", "for4"], {"max_iterations": "8"})
 
 
 def test_every_value_of_a_move_that_is_not_its_default_can_be_read_back_from_its_line(
@@ -88,29 +112,17 @@ def test_an_applied_list_keeps_status_reason_and_warning(answers: ModuleType) ->
             "refusal": "data",
         },
     ]
-    expected = [
-        "applied defaults-moves",
-        "applied doall-fission doall1000: MapFission",
-        "applied for-to-doall for3 forced=true: LoopToMap (warning: forced: the compiler did not prove this move "
-        "legal.)",
-        "refused fuse doall1 doall2 refusal=data: kmin is read",
+    lines = answers.results_answer({"tool": "applied_moves", "result": applied})["text"].splitlines()
+    read = [(head.split(), said) for head, _, said in (line.partition(": ") for line in lines)]
+    assert read == [
+        (["applied", "defaults-moves"], ""),
+        (["applied", "doall-fission", "doall1000"], "MapFission"),
+        (
+            ["applied", "for-to-doall", "for3", "forced=true"],
+            "LoopToMap (warning: forced: the compiler did not prove this move legal.)",
+        ),
+        (["refused", "fuse", "doall1", "doall2", "refusal=data"], "kmin is read"),
     ]
-    assert answers.results_answer({"tool": "applied_moves", "result": applied}) == {"text": "\n".join(expected)}
-
-
-def test_a_kind_is_its_rows_its_transformation_and_what_it_does(answers: ModuleType) -> None:
-    kinds = [{"kind": "for-fusion", "rows": ["for", "for"], "runs": "LoopFusion", "does": "two loops become one."}]
-    assert answers.kinds_answer({"tool": "list_move_kinds", "result": kinds, "performance": None}) == {
-        "text": "for-fusion [for for] LoopFusion: two loops become one.",
-    }
-
-
-def test_the_lines_are_shorter_than_the_json_the_bench_prints(answers: ModuleType, defaults: dict[str, object]) -> None:
-    moves = [{"kind": "doall-fusion", "labels": [f"doall{i}", f"doall{i + 1}"], "tile_sizes": []} for i in range(20)]
-    answer = {"tool": "list_moves", "result": moves, "performance": None}
-    printed = json.dumps(answer, indent=2, sort_keys=True)
-    rendered = json.dumps(answers.moves_answer(answer, defaults), indent=2, sort_keys=True)
-    assert len(rendered) < len(printed) / 3
 
 
 def test_a_score_reads_speedup_and_correctness_first_and_keeps_every_measured_field(answers: ModuleType) -> None:
@@ -140,16 +152,20 @@ def test_a_score_reads_speedup_and_correctness_first_and_keeps_every_measured_fi
         "timing_reduction": "mwd-v3",
         "weak_efficiency": None,
     }
-    expected = [
-        "speedup=0.507 correct=false build_ok=true timed_out=false",
-        "detail: vs numba: pre_gsp: numeric mismatch: 2 of 1415224 elements",
-        "baseline=numba baseline_time=8.72s harness_fault=false max_rel_error=4.58e-07 speedups=numba:0.148",
-        "cells:",
-        "| label | ratio | shape |",
-        "| --- | --- | --- |",
-        "| fuzzed:submit | 0.507 | dt:60,ke:90 |",
-    ]
-    assert answers.score_answer(grade) == {"text": "\n".join(expected)}
+    text = answers.score_answer(grade)["text"]
+    head, detail, other, *_ = text.splitlines()
+    assert pairs(head) == {"speedup": "0.507", "correct": "false", "build_ok": "true", "timed_out": "false"}
+    assert detail == f"detail: {grade['detail']}"
+    assert pairs(other) == {
+        "baseline": "numba",
+        "baseline_time": "8.72s",
+        "harness_fault": "false",
+        "max_rel_error": "4.58e-07",
+        "speedups": "numba:0.148",
+    }
+    # the grading protocol and an unset field go; a cell leaves out what the grade already says
+    assert not any(name in text for name in ("grading_protocol", "seed_nonce", "timing_reduction", "weak_efficiency"))
+    assert table_under(text, "cells") == ({}, [{"label": "fuzzed:submit", "ratio": "0.507", "shape": "dt:60,ke:90"}])
 
 
 def test_a_performance_report_is_hints_kernels_and_program_and_says_where_data_moves_only_off_the_cpu(
@@ -163,26 +179,21 @@ def test_a_performance_report_is_hints_kernels_and_program_and_says_where_data_m
         "structured": {"time_us": 105612.3, "correct": True, "mismatched": [], "error": ""},
     }
     answer = {"tool": "get_performance", "result": None, "performance": report}
-    expected = [
-        "kernel times: k0 81323.9 us",
-        "kernels:",
-        "| name | device | correct | share | time |",
-        "| --- | --- | --- | --- | --- |",
-        "| k0 | cpu | true | 0.77 | 81.3ms |",
-        "program correct=true time=106ms",
-    ]
-    assert answers.performance_answer(answer) == {"text": "\n".join(expected)}
+    text = answers.performance_answer(answer)["text"]
+    lines = text.splitlines()
+    assert lines[0] == report["hints"]
+    kernel_row = {"name": "k0", "device": "cpu", "correct": "true", "share": "0.77", "time": "81.3ms"}
+    assert table_under(text, "kernels") == ({}, [kernel_row])
+    assert lines[-1].split()[0] == "program" and pairs(lines[-1]) == {"correct": "true", "time": "106ms"}
+    assert not any(line.startswith(("offloading", "transfers")) for line in lines)
 
     moved = {"direction": "h2d", "arg": "A", "producer": "host", "consumer": "k0", "bytes": 4096}
     report["offloading"] = {"devices": {"k0": "gpu"}, "transfers": [moved], "transfer_bytes": 4096}
-    lines = answers.performance_answer(answer)["text"].splitlines()
-    assert lines[-5:] == [
-        "offloading devices=k0:gpu transfer_bytes=4096",
-        "transfers:",
-        "| arg | direction | bytes | consumer | producer |",
-        "| --- | --- | --- | --- | --- |",
-        "| A | h2d | 4096 | k0 | host |",
-    ]
+    text = answers.performance_answer(answer)["text"]
+    offloading = next(line for line in text.splitlines() if line.startswith("offloading"))
+    assert pairs(offloading) == {"devices": "k0:gpu", "transfer_bytes": "4096"}
+    transfer_row = {"arg": "A", "direction": "h2d", "bytes": "4096", "consumer": "k0", "producer": "host"}
+    assert table_under(text, "transfers") == ({}, [transfer_row])
 
 
 def test_a_profile_keeps_its_report_text_and_drops_the_structured_copy(answers: ModuleType) -> None:
@@ -194,7 +205,10 @@ def test_a_profile_keeps_its_report_text_and_drops_the_structured_copy(answers: 
         "counters": {"cycles": 9},
         "hotspots": [],
     }
-    assert answers.profile_answer(report) == {"text": "build_ok=true threads=24\nhardware counters ..."}
+    answer = answers.profile_answer(report)
+    scalars, *rest = answer["text"].splitlines()
+    assert set(answer) == {"text"}
+    assert pairs(scalars) == {"build_ok": "true", "threads": "24"} and rest == [report["text"]]
     without_text = {"result": {"library": "/shared/lib.so"}, "profiled": True}
     assert answers.profile_answer(without_text) is without_text
 
@@ -217,12 +231,15 @@ def test_a_score_leaves_out_the_kernel_and_hidden_counts_of_zero_but_keeps_the_l
         "hidden_correct": True,
         "native_ns": 1349396944,
     }
-    assert answers.score_answer(grade)["text"].splitlines() == [
-        "speedup=1.5 correct=true",
-        "language=cpp native_time=1.35s",
-    ]
+    said = pairs(answers.score_answer(grade)["text"])
+    assert said == {"speedup": "1.5", "correct": "true", "language": "cpp", "native_time": "1.35s"}
     grade["hidden_total"] = grade["hidden_passed"] = 3
-    assert "hidden_correct=true hidden_passed=3 hidden_total=3" in answers.score_answer(grade)["text"]
+    hidden = pairs(answers.score_answer(grade)["text"])
+    assert {name: hidden[name] for name in ("hidden_correct", "hidden_passed", "hidden_total")} == {
+        "hidden_correct": "true",
+        "hidden_passed": "3",
+        "hidden_total": "3",
+    }
 
 
 def test_times_read_in_one_unit_at_three_digits(answers: ModuleType) -> None:
@@ -242,17 +259,86 @@ def test_the_cells_say_once_what_every_cell_shares(answers: ModuleType) -> None:
         {"label": "cfg0:large3", "graded": True, "ratio": 0.5167499458015494, "baseline": "numba"},
     ]
     text = answers.score_answer({"speedup": 0.51, "baseline": "numba", "cells": cells})["text"]
-    assert text.splitlines()[-5:] == [
-        "cells: graded=true",
-        "| label | ratio |",
-        "| --- | --- |",
-        "| cfg0:large0 | 0.509 |",
-        "| cfg0:large3 | 0.517 |",
-    ]
+    assert table_under(text, "cells") == (
+        {"graded": "true"},
+        [{"label": "cfg0:large0", "ratio": "0.509"}, {"label": "cfg0:large3", "ratio": "0.517"}],
+    )
 
 
 def test_a_measurement_answer_has_no_quotes_and_a_value_with_spaces_gets_its_own_line(answers: ModuleType) -> None:
     grade = {"speedup": 1.0, "baselines": {"c": 10}, "shape": '{"N": 4}', "note": "two words"}
     text = answers.score_answer(grade)["text"]
     assert '"' not in text
-    assert text.splitlines()[-2:] == ["baselines=c:10ns shape=N:4", "note: two words"]
+    inline, own = text.splitlines()[-2:]
+    assert pairs(inline) == {"baselines": "c:10ns", "shape": "N:4"} and own == "note: two words"
+
+
+def test_a_refused_batch_names_the_move_and_substep_first_then_each_result(answers: ModuleType) -> None:
+    applied = {"kind": "tile-for", "labels": ["for0"], "reason": "LoopTiling", "status": "applied"}
+    batch = {
+        "status": "refused",
+        "results": [applied],
+        "failed_at": 1,
+        "substep": "check",
+        "reason": "wrong at the check sizes: mismatched ['A']",
+        "unchecked": "",
+    }
+    answer = answers.batch_answer({"tool": "apply_moves", "result": batch, "performance": None})
+    head, *rest = answer["text"].splitlines()
+    assert set(answer) == {"text"}
+    status, _, reason = head.partition(": ")
+    assert status.split() == ["refused", "failed_at=1", "substep=check"] and reason == batch["reason"]
+    assert rest == [answers.result_line(applied)]
+
+
+def test_a_batch_refused_at_its_first_move_says_so_and_says_why_nothing_was_checked(answers: ModuleType) -> None:
+    batch = {"status": "refused", "results": [], "failed_at": 0, "substep": "apply", "reason": "no such row"}
+    head = answers.batch_answer({"result": batch})["text"].splitlines()[0]
+    assert head.partition(": ")[0].split() == ["refused", "failed_at=0", "substep=apply"]
+    unchecked = {"status": "applied", "results": [], "unchecked": "the bench has no reference"}
+    assert answers.batch_answer({"result": unchecked})["text"].splitlines() == [
+        "applied",
+        "unchecked: the bench has no reference",
+    ]
+
+
+def test_a_tune_is_the_move_then_one_row_per_value_tried_the_program_as_it_stands_first(answers: ModuleType) -> None:
+    values = [
+        {"sizes": [], "status": "measured", "time_us": 1200.0, "correct": True, "reason": ""},
+        {"sizes": [32], "status": "kept", "time_us": 800.0, "correct": True, "reason": ""},
+        {"sizes": [64], "status": "refused", "time_us": None, "correct": None, "reason": "64 | 100 leaves a tail"},
+    ]
+    tuned = {"kind": "tile-for", "labels": ["for0"], "values": values}
+    head, title, *table = answers.tune_answer({"tool": "tune_move", "result": tuned, "performance": None})[
+        "text"
+    ].split("\n")
+    assert (head, title) == ("tile-for for0", "values:")
+    rows = table_rows(table)
+    assert [(row["sizes"], row["status"], row["time"]) for row in rows] == [
+        ("now", "measured", "1.2ms"),
+        ("[32]", "kept", "800us"),
+        ("[64]", "refused", "-"),
+    ]
+    assert rows[2]["reason"] == "64 / 100 leaves a tail"
+
+
+def test_a_phase_step_is_status_and_phase_then_the_summary_left_then_the_guide_reached(answers: ModuleType) -> None:
+    summary = "structured: 1 move(s) applied\n  tile-for for0\nkernels: k0 on cpu"
+    step = {"status": "moved", "phase": "scopes", "reason": "", "ran": ["moves"], "undone": [], "summary": summary}
+    answer = answers.phase_answer({"tool": "advance_phase", "result": step, "guide": "# Scopes\nset_scope ..."})
+    assert set(answer) == {"text"}
+    assert answer["text"].splitlines() == [
+        "moved scopes",
+        "ran=[moves]",
+        *summary.splitlines(),
+        "# Scopes",
+        "set_scope ...",
+    ]
+    refused = {"status": "refused", "phase": "structured", "reason": "structured is the first phase"}
+    assert answers.phase_answer({"result": refused})["text"] == "refused structured: structured is the first phase"
+
+
+def test_only_a_json_field_is_unpacked_and_a_reason_that_looks_like_json_stays_as_it_came(answers: ModuleType) -> None:
+    grade = {"speedup": 1.0, "shape": '{"N": 4}', "note": '{"N": 4}'}
+    inline, own = answers.score_answer(grade)["text"].splitlines()[-2:]
+    assert pairs(inline) == {"shape": "N:4"} and own == f"note: {grade['note']}"

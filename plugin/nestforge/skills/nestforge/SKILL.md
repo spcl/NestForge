@@ -67,7 +67,9 @@ grades, is faster). Every move keeps the program's results: it changes how loops
 `score`, `get_performance` and `profile` answer as lines: the verdict first (`speedup=… correct=…`), the other fields
 as `name=value`, times with their unit (`1.35s`, `893ms`). A list of records (the graded cells, the kernels, the
 transfers) is a table under a `cells:`, `kernels:` or `transfers:` line, which states once the values every row shares.
-An error comes as it came.
+`apply_moves` answers its status first (`refused failed_at=1 substep=check: why`), then one line per move; `tune_move`
+the move, then a `values:` table of the sizes it tried (`now`: the program as it stands); a phase tool its status and
+phase, the summary of the phase it left, then the guide of the phase it reached. An error comes as it came.
 
 ## How to work
 
