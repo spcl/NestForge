@@ -64,7 +64,8 @@ class OffloadReport(Record):
     devices: dict[str, str]
     #: ``None`` when the dependency analysis refuses the program.
     transfers: list[TransferReport] | None
-    transfer_bytes: int
+    #: ``None`` when a transfer has no byte count: a total that counted it as 0 would under-report the traffic.
+    transfer_bytes: int | None
 
 
 class KernelReport(Record):
@@ -233,7 +234,8 @@ def offload_report(
             )
             for move in moves
         ]
-    total = sum(move.bytes or 0 for move in transfers or ())
+    counts = [move.bytes for move in transfers or ()]
+    total = None if None in counts else sum(count for count in counts if count is not None)
     return OffloadReport(devices=devices, transfers=transfers, transfer_bytes=total)
 
 

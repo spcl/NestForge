@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import dace
 from dace import dtypes
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
+from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.external_call import ExternalCall, call_site, external_calls
 from dace.ordered import OrderedSet
 from dace.sdfg import nodes
@@ -118,15 +119,51 @@ def on_device(state: dace.SDFGState, node: nodes.AccessNode) -> bool:
     return node.desc(state.sdfg).storage in GPU_RESIDENT_STORAGES
 
 
-def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
-    """Access-to-access edges whose two ends live in different memory spaces, in state order."""
+def edge_copies(state: dace.SDFGState) -> list[tuple[str, str]]:
+    """Access-to-access edges of ``state`` whose two ends live in different memory spaces. An empty memlet only
+    orders the two accesses and copies nothing, so it is no copy."""
     return [
         (edge.src.data, edge.dst.data)
-        for state in sdfg.states()
         for edge in state.edges()
         if isinstance(edge.src, nodes.AccessNode)
         and isinstance(edge.dst, nodes.AccessNode)
+        and not edge.data.is_empty()
         and on_device(state, edge.src) != on_device(state, edge.dst)
+    ]
+
+
+def copy_node_ends(state: dace.SDFGState, node: CopyLibraryNode) -> tuple[nodes.AccessNode, nodes.AccessNode] | None:
+    """The access nodes ``node`` copies from and to, as DaCe's ``src_storage``/``dst_storage`` find them; ``None``
+    when either side is unwired or no access node."""
+    ins = [e for e in state.in_edges(node) if e.dst_conn == CopyLibraryNode.INPUT_CONNECTOR_NAME]
+    outs = [e for e in state.out_edges(node) if e.src_conn == CopyLibraryNode.OUTPUT_CONNECTOR_NAME]
+    if not ins or not outs:
+        return None
+    src, dst = state.memlet_path(ins[0])[0].src, state.memlet_path(outs[0])[-1].dst
+    if not isinstance(src, nodes.AccessNode) or not isinstance(dst, nodes.AccessNode):
+        return None
+    return src, dst
+
+
+def library_copies(state: dace.SDFGState) -> list[tuple[str, str]]:
+    """The ``CopyLibraryNode`` copies of ``state`` between the two memory spaces."""
+    ends = [copy_node_ends(state, n) for n in state.nodes() if isinstance(n, CopyLibraryNode)]
+    return [
+        (src.data, dst.data)
+        for src, dst in (pair for pair in ends if pair is not None)
+        if on_device(state, src) != on_device(state, dst)
+    ]
+
+
+def device_copies(sdfg: dace.SDFG) -> list[tuple[str, str]]:
+    """``(source, destination)`` containers of every host/device copy of the program, in state order, nested SDFGs
+    included: an access-to-access edge (:func:`edge_copies`) or a ``CopyLibraryNode`` (:func:`library_copies`). A
+    kernel's body is no nested SDFG of the program, so a copy inside a call is not listed."""
+    return [
+        pair
+        for nested in sdfg.all_sdfgs_recursive()
+        for state in nested.states()
+        for pair in edge_copies(state) + library_copies(state)
     ]
 
 
