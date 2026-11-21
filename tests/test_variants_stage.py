@@ -104,16 +104,18 @@ def test_gpu_variants_cross_every_nvcc_with_two_fp_rungs_and_no_cost_model() -> 
         assert ("--fmad=false" in v.flags) == (v.fp_mode == "strict-ieee"), v.label
 
 
-def test_a_shared_measurement_is_gated_at_each_cells_own_rung() -> None:
-    """A build shared by a strict and a looser cell is timed once, but ``ok`` must be read at each cell's
-    rung: inheriting the strict verdict would fail a looser cell whose build is correct at its tolerance."""
-    strict = KernelVerdict("strict-ieee", maxdiff=5e-14, md_rel=5e-14, dtype_floor=2.3e-16, time_us=5.0)
+def test_a_shared_measurement_has_one_verdict_at_every_rung() -> None:
+    """A build shared by a strict and a looser cell is timed and graded once: the bench grades every FP mode by the
+    same band, so the looser cell inherits the strict cell's verdict, a pass and a failure alike."""
+    strict = KernelVerdict("strict-ieee", maxdiff=5e-14, md_rel=5e-14, within=True, time_us=5.0)
 
     loose = dataclasses.replace(strict, fp_mode="contract-fma")
 
-    assert not strict.ok and loose.ok
+    assert strict.ok and loose.ok
     assert (loose.maxdiff, loose.time_us) == (strict.maxdiff, strict.time_us)
-    assert not KernelVerdict("fast-math", 0.0, 0.0, 0.0, 1.0, error="crashed").ok
+    wrong = KernelVerdict("strict-ieee", maxdiff=1.0, md_rel=0.5, within=False, time_us=5.0)
+    assert not wrong.ok and not dataclasses.replace(wrong, fp_mode="fast-math").ok
+    assert not KernelVerdict("fast-math", 0.0, 0.0, True, 1.0, error="crashed").ok
 
 
 @pytest.mark.e2e
