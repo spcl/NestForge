@@ -110,7 +110,7 @@ disallow_subclassing_any = false
 
 [[tool.mypy.overrides]]
 # DaCe's MPI frontend spells a call as the C API does (buffer, peer, tag, request); mpi4py's stubs type another form
-module = ["comm_programs"]
+module = ["comm_programs", "comm_rank_programs"]
 disable_error_code = ["call-arg"]
 
 [tool.pytest.ini_options]
@@ -124,6 +124,7 @@ markers = [
     "e2e: end-to-end with g++/clang++, so it runs on CI",
     "gpu: needs a CUDA device, never on CI",
     "vendor: needs a vendor compiler or library not installed on CI",
+    "mpi: launches MPI ranks (mpirun, Open MPI)",
     "cloudsc: every phase and random moves on canonicalized cloudsc_monolith against the bench reference; its own CI job",
 ]
 

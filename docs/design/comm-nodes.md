@@ -383,37 +383,21 @@ Two moves on compute rows. Both are general moves, in the families `fission` and
 With these two moves the agent, or a reference solution, writes the overlap as a sequence: split the stencil into
 boundary and interior, move the interior between the starts and the wait, and leave the boundary after the wait.
 
-#### 12.3 `overlap-communication`
+#### 12.3 Overlap is motion, not a move (user 2026-11-21)
 
-One move that does the row motion of an exchange in one call. Labels: a `for` or the program's top region. It moves
-rows only and never splits a statement.
+An overlap is a `START` row moved earlier and its `WAIT` moved later. `lib-before` and `lib-after` already do this
+under R1 to R5, so NestForge gets no `overlap-communication` move. Two moves make the motion reachable:
 
-1. In every chain of sibling blocks inside the labeled region, take the `START` rows in order. Move each one as far
-   toward the start of the chain as `lib-before` allows, together with the `lib_copy` rows that write its send
-   buffer when that buffer is a transient no other block reads.
-2. Take the `WAIT` rows in reverse order. Move each one as far toward the end of the chain as `lib-after` allows,
-   together with the `lib_copy` rows that read only what it receives.
-3. Stop at the region's boundary (R2), at a `FIXED` row (R4), and, for a start, at another `START` or `BLOCKING` row
-   (R1).
+- **`split-blocking`** turns a `BLOCKING` row into a `START` row and a `WAIT` row in place: `Send` into `Isend` and
+  `Wait`, `Recv` into `Irecv` and `Wait`, and a collective into its `NonblockingCommNode` form (`nonblocking=True`) and
+  `Wait`, with a fresh request transient. Labels: the blocking row. Always legal: the two rows sit next to each other,
+  so the program is the same until motion separates them. The two rows get fresh labels.
+- **`split-doall`** (12.2) cuts a doall that touches both a buffer in flight and other data, so that the independent
+  part can move between the start and the wait.
 
-The move is the fixed point of single `lib-before` and `lib-after` steps, so it adds no legality code. Every step is
-checked by the rules of section 3 with the effects of 12.1, and the invariants of section 4 hold after the last
-step. The whole sequence is one atomic change and one journal entry, and one `rollback` undoes it.
-
-The answer lists what moved and what stopped each row:
-
-```
-applied: overlap-communication on for0
-  lib_comm0 (Isend)   before state5     was after state5
-  lib_comm2 (Waitall) after state5      was before state5; stopped by state7: reads Ap[0, 1:N-1], received by lib_comm1
-```
-
-The stopping reason tells the agent which statement to split (12.2) before it calls the move again.
-
-DaCe has a pass with the same goal on the schedule tree (`dace.libraries.comm.schedule.overlap_communication`).
-NestForge does not call it: the conversion from a schedule tree back to an SDFG would rename and regroup rows, and the
-tree's labels must survive a move. The pass is the reference for the rules, and its tests in DaCe are a source of
-further fixtures.
+The refusal of a `lib-after` on a wait names the statement that stops it (12.1), which tells the agent what to split.
+DaCe's `dace.libraries.comm.schedule.overlap_communication` stays the reference for the rules and the source of
+further fixtures; NestForge does not call it (a schedule tree round trip renames rows).
 
 #### 12.4 Time per communication row
 
@@ -425,7 +409,7 @@ reduced with the maximum by the bench's driver. Collecting a report per rank is 
 
 #### 12.5 Who calls the overlap
 
-The default pipeline never calls `overlap-communication` (owner's decision, 2026-11-16). `run_defaults` leaves
+The default pipeline never splits or moves communication rows (owner's decision, 2026-11-16). `run_defaults` leaves
 communication rows where the program had them, so `nestforge_default` shows no overlap. A reference solution or an
 agent calls the move and the splits.
 
@@ -438,9 +422,9 @@ agent calls the move and the splits.
    is bit-identical. A split of a doall with `reduce=` stays within the oracle's tolerance.
 4. `split-doall` with `at` outside the range yields one empty part and the same output.
 5. `block-before` is refused across a block that writes what the state reads, with the container and subset named.
-6. `overlap-communication` on the halo fixture moves the waits behind the interior after the splits, and moves
-   nothing before them, with the stopping reason asserted.
-7. After `overlap-communication`, the four invariants of section 4 hold, and a second call moves nothing.
+6. `split-blocking` on every blocking row of the rank fixtures leaves the output bit-identical; on the halo
+   fixture, `lib-after` on the wait is refused before the splits (reason names the subset) and legal after them.
+7. After the overlap sequence, the four invariants of section 4 hold.
 8. At 1, 2, and 4 ranks the overlapped program is correct, and one `rollback` restores the program's hash.
 9. The `WAIT` row's reported time drops after the overlap on the halo fixture at 2 ranks (marker `mpi`).
 
@@ -451,11 +435,22 @@ agent calls the move and the splits.
 | 11 | Effects by subset, for crossings with a communication row and for I2 | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_subsets.py` | 5 |
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
 | 13 | `block-before`, `block-after` | a new `stages/block_motion.py`, `tests/test_block_motion.py` | 11 |
-| 14 | `overlap-communication` | `stages/moves.py`, `tests/test_comm_overlap.py` | 11 |
+| 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
 | 15 | Time per communication row | `stages/performance.py`, `tests/test_comm_row_times.py` | 8, bench B2 |
 | 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 12, 13, 14 |
+| 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
+| 18 | Rows wired to a view move with their view chain (R5 today pins every `Isend`/`Irecv` and `Allreduce` on a slice) | `stages/lib_motion.py`, `tests/test_comm_motion.py` | 5 |
 
 Package 12 has no dependency on communication and can be built at any time.
+
+#### 12.8 Layouts around an exchange (OMEN, SC19)
+
+OMEN computes in one layout, transposes locally, exchanges in another layout, and transposes back. NestForge adds no
+move for it: the `relayout` and `relayout_local` moves reuse relayout's passes. `relayout.passes.sdfg.pack_mpi_buffers`
+routes an MPI buffer of a laid-out array through a packed transient (pack before a send, unpack after a receive) and
+keeps it in place where both ends share a layout; `library_rules` leaves `CommNode` to that pass. The pack and unpack
+then appear as ordinary rows that motion and fusion treat like any other. The `redistribute` fixture of
+`tests/comm_rank_programs.py` is the test; a refusal there is a bug to fix in the existing moves.
 
 ## Work packages of the first version
 
@@ -519,7 +514,7 @@ Taken by the owner on 2026-11-16:
 2. The overlap is done by moving communication rows and statements (section 12). It is designed here and built after
    the first version.
 3. R1 is strict for every class (section 3).
-4. The default pipeline never calls `overlap-communication` (section 12.5).
+4. The default pipeline never splits or moves communication rows (section 12.5).
 5. The application targets are the ICON dynamical core and OMEN, each optimized by independent agents.
 
 Open:

@@ -29,7 +29,15 @@ from dace.sdfg.state import (
 from dace.transformation.passes.analysis import loop_analysis
 from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is_gpu_relevant_node
 
-from nestforge.ir.comm import CommClass, comm_class, crossing_refusal, in_flight, motion_refusal
+from nestforge.ir.comm import (
+    CommClass,
+    comm_class,
+    container,
+    crossing_refusal,
+    in_flight,
+    motion_refusal,
+    with_viewed,
+)
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import is_call
 from nestforge.records import Refusal, Refused
@@ -133,8 +141,10 @@ def effect_of(state: SDFGState, node: nodes.CodeNode) -> Effect:
     if isinstance(node, Sync):  # it reads and writes, in effect, what the device work it waits for touches
         touched = device_containers(state.sdfg)
         return Effect(touched, touched, frozenset(), device=True)
-    reads = frozenset(str(e.data.data) for e in state.in_edges(node) if not e.data.is_empty())
-    writes = frozenset(str(e.data.data) for e in state.out_edges(node) if not e.data.is_empty())
+    reads = frozenset(container(state, e.src, str(e.data.data)) for e in state.in_edges(node) if not e.data.is_empty())
+    writes = frozenset(
+        container(state, e.dst, str(e.data.data)) for e in state.out_edges(node) if not e.data.is_empty()
+    )
     if comm_class(node) is CommClass.WAIT:  # R3: it reads what its starts send and writes what they receive
         sent, received = in_flight(state.sdfg, state, node)
         reads, writes = reads | sent, writes | received
@@ -237,13 +247,19 @@ def assigned_symbols(block: ControlFlowBlock) -> set[str]:
     return names | {b.loop_variable for b in loops if isinstance(b, LoopRegion) and b.loop_variable}
 
 
+def accessed(block: ControlFlowBlock) -> tuple[set[str], set[str]]:
+    """The containers ``block`` reads and writes, through views too."""
+    reads, writes = block.read_and_write_sets()
+    return with_viewed(block, set(reads)), with_viewed(block, set(writes))
+
+
 def crossed_refusal(block: ControlFlowBlock, effect: Effect) -> str | None:
     if effect.device and block_device_work(block):
         return Refused(
             f"{block.label} issues device work, which the barrier would no longer wait for (or wait for too early).",
             Refusal.EFFECTS,
         )
-    reads, writes = block.read_and_write_sets()
+    reads, writes = accessed(block)
     if writes & effect.touched:
         return Refused(f"{block.label} writes {min(writes & effect.touched)}, which the call touches.", Refusal.EFFECTS)
     if reads & effect.writes:
@@ -287,7 +303,7 @@ def body_refusal(loop: LoopRegion, child: ControlFlowBlock, effect: Effect, earl
     for block in loop.nodes():
         if block is child:
             continue
-        reads, writes = block.read_and_write_sets()
+        reads, writes = accessed(block)
         if writes & effect.touched:
             return Refused(
                 f"{block.label} in {loop.label} writes {min(writes & effect.touched)}, which the call touches.",

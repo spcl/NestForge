@@ -7,6 +7,7 @@ Every rule reads the class, never the node type. A ``QUERY`` moves like any libr
 R1 to R4 (R5, views, is the rule of every library call)."""
 
 import enum
+from typing import cast
 
 import dace
 from dace.libraries.comm.nodes import (
@@ -25,8 +26,10 @@ from dace.libraries.comm.nodes import (
 )
 from dace.libraries.comm.nodes.node import CommNode, NonblockingCommNode
 from dace.sdfg import nodes
-from dace.sdfg.state import ControlFlowBlock, SDFGState
+from dace.sdfg import utils as sdutil
+from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, SDFGState
 
+from nestforge.ir.names import is_copy
 from nestforge.records import Refusal, Refused
 
 #: The connector through which an operation writes, and a wait reads, its request.
@@ -68,32 +71,78 @@ def comm_class(node: nodes.Node) -> CommClass | None:
 STARTING = frozenset({CommClass.START, CommClass.BLOCKING})
 
 
+def container(state: SDFGState, node: nodes.Node, name: str) -> str:
+    """The container ``name`` stands for at ``node``: what a view there views, else ``name`` itself."""
+    if isinstance(node, nodes.AccessNode) and isinstance(node.desc(state.sdfg), dace.data.View):
+        root = sdutil.get_last_view_node(state, node)
+        if root is not None:
+            return str(root.data)
+    return name
+
+
+def with_viewed(block: ControlFlowBlock, names: set[str]) -> set[str]:
+    """``names`` and the containers that the views among them view in ``block``."""
+    states = [block] if isinstance(block, SDFGState) else list(cast(ControlFlowRegion, block).states())
+    viewed = {
+        container(state, node, node.data) for state in states for node in state.data_nodes() if node.data in names
+    }
+    return names | viewed
+
+
 def buffers(state: SDFGState, node: nodes.Node) -> tuple[frozenset[str], frozenset[str]]:
     """What ``node`` sends and receives: the containers it reads and writes, its request left out."""
-    sent = frozenset(str(e.data.data) for e in state.in_edges(node) if not e.data.is_empty() and e.dst_conn != REQUEST)
+    sent = frozenset(
+        container(state, e.src, str(e.data.data))
+        for e in state.in_edges(node)
+        if not e.data.is_empty() and e.dst_conn != REQUEST
+    )
     received = frozenset(
-        str(e.data.data) for e in state.out_edges(node) if not e.data.is_empty() and e.src_conn != REQUEST
+        container(state, e.dst, str(e.data.data))
+        for e in state.out_edges(node)
+        if not e.data.is_empty() and e.src_conn != REQUEST
     )
     return sent, received
 
 
 def requests_of(state: SDFGState, node: nodes.Node, written: bool) -> frozenset[str]:
     """The request containers ``node`` writes (a start) or reads (a wait)."""
-    edges = state.out_edges(node) if written else state.in_edges(node)
-    return frozenset(
-        str(e.data.data) for e in edges if (e.src_conn if written else e.dst_conn) == REQUEST and not e.data.is_empty()
-    )
+    if written:
+        edges = [(e.dst, e) for e in state.out_edges(node) if e.src_conn == REQUEST]
+    else:
+        edges = [(e.src, e) for e in state.in_edges(node) if e.dst_conn == REQUEST]
+    return frozenset(container(state, end, str(e.data.data)) for end, e in edges if not e.data.is_empty())
+
+
+def forwarded(sdfg: dace.SDFG, names: frozenset[str]) -> frozenset[str]:
+    """``names`` and every container a copy forwards one of them into, transitively: the frontend writes a request
+    into a scalar that a copy then stores into the request array the wait reads."""
+    copies = [(state, node) for state in sdfg.states() for node in state.nodes() if is_copy(node)]
+    found = set(names)
+    grew = True
+    while grew:
+        grew = False
+        for state, node in copies:
+            sources = {container(state, e.src, str(e.data.data)) for e in state.in_edges(node) if not e.data.is_empty()}
+            if not sources & found:
+                continue
+            targets = {
+                container(state, e.dst, str(e.data.data)) for e in state.out_edges(node) if not e.data.is_empty()
+            }
+            grew = grew or not targets <= found
+            found |= targets
+    return frozenset(found)
 
 
 def starts_of(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> list[tuple[SDFGState, nodes.Node]]:
-    """The ``START`` rows whose requests ``wait`` reads: every start of the program writing one of them. Without the
-    control flow between them this may hold too many rows, which keeps more buffers in flight and is safe."""
+    """The ``START`` rows whose requests ``wait`` reads, directly or through copies: every start of the program
+    writing one of them. Without the control flow between them this may hold too many rows, which keeps more buffers
+    in flight and is safe."""
     requests = requests_of(state, wait, written=False)
     return [
         (other, node)
         for other in sdfg.states()
         for node in other.nodes()
-        if comm_class(node) is CommClass.START and requests_of(other, node, written=True) & requests
+        if comm_class(node) is CommClass.START and forwarded(sdfg, requests_of(other, node, written=True)) & requests
     ]
 
 
