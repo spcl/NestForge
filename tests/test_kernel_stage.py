@@ -340,7 +340,7 @@ def test_a_reduction_kernel_matches_its_oracle_within_the_dtype_floor(tmp_path: 
     verdict = strict_verdict(tmp_path, stencil_row_sum, {"M": 13, "N": 67})
 
     assert verdict.error == "", verdict.error
-    assert verdict.ok and verdict.md_rel <= verdict.dtype_floor * REDUCTION_ULPS, verdict
+    assert verdict.ok and verdict.md_rel <= np.finfo(np.float64).eps * REDUCTION_ULPS, verdict
     assert verdict.time_us > 0.0
 
 

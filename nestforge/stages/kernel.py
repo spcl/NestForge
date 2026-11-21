@@ -33,12 +33,11 @@ from nestforge.build.arena import (
     call_device,
     call_native,
     diff_stats,
-    dtype_floor,
     make_inputs,
     run_oracle,
-    rung_rtol,
 )
 from nestforge.build.flags import cuda_base_flags, hip_base_flags
+from nestforge.build.grading import Expected, grade_kernel
 from nestforge.build.isolation import Failure, Result, run_isolated, run_spawned
 from nestforge.build.sdfg import (
     BuildOptions,
@@ -60,6 +59,7 @@ from nestforge.build.toolchain import (
     raw_signature,
 )
 from nestforge.corpus.translate import Prepared
+from nestforge.ir.accumulation import accumulation_lengths
 from nestforge.ir.extract import INT64, Boundary
 from nestforge.stages.expand import pin_pure_without_library
 from nestforge.stages.placement import kernel_device
@@ -100,28 +100,30 @@ class KernelSource:
 
 @dataclass(slots=True)
 class KernelVerdict:
-    """A build compared to the NumPy oracle and timed; ``ok`` gates at ``fp_mode``. ``unchecked`` says why the
-    kernel cannot run standalone (a symbol only the program computes), so it was neither compared nor timed."""
+    """A build built at ``fp_mode``, compared to the NumPy oracle and timed. ``within`` says whether its outputs pass
+    the bench's grade (:func:`~nestforge.build.grading.grade_kernel`), the same band at every FP mode; ``md_rel`` is
+    the bench's max relative error and ``maxdiff`` the largest absolute difference. ``unchecked`` says why the kernel
+    cannot run standalone (a symbol only the program computes), so it was neither compared nor timed."""
 
     fp_mode: str
     maxdiff: float
     md_rel: float
-    dtype_floor: float
+    within: bool
     time_us: float
     error: str = ""
     unchecked: str = ""
 
     @property
     def ok(self) -> bool:
-        return not self.error and not self.unchecked and self.md_rel <= rung_rtol(self.fp_mode, self.dtype_floor)
+        return not self.error and not self.unchecked and self.within
 
 
 def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
-    return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
+    return KernelVerdict(fp_mode, float("inf"), float("inf"), False, float("inf"), error)
 
 
 def unchecked_verdict(fp_mode: str, reason: str) -> KernelVerdict:
-    return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), unchecked=reason)
+    return KernelVerdict(fp_mode, float("inf"), float("inf"), False, float("inf"), unchecked=reason)
 
 
 def computed_symbols_reason(symbols: list[str]) -> str:
@@ -199,27 +201,32 @@ def hip_runtime_libraries(compiler: str) -> list[str]:
 
 
 class KernelNumbers(Result):
-    """One measured kernel: its distance to the oracle, the dtype's floor on it, and its time per call."""
+    """One measured kernel: its largest absolute difference to the oracle, the bench's grade of its outputs, and its
+    time per call. ``ungradeable`` says why the bench refuses the band at an output's accumulation length."""
 
     maxdiff: float
     md_rel: float
-    dtype_floor: float
+    within: bool
     time_us: float
+    ungradeable: str = ""
 
 
-def kernel_numbers(
-    oracle: dict[str, np.ndarray] | None, outputs: dict[str, np.ndarray], time_us: float
-) -> KernelNumbers:
-    """``oracle`` is ``None`` for a kernel timed at sizes it was not checked at: there is nothing to compare."""
-    md, md_rel = (0.0, 0.0) if oracle is None else diff_stats(oracle, outputs)
-    return KernelNumbers(maxdiff=md, md_rel=md_rel, dtype_floor=dtype_floor(outputs), time_us=time_us)
+def kernel_numbers(expected: Expected | None, outputs: dict[str, np.ndarray], time_us: float) -> KernelNumbers:
+    """``expected`` is ``None`` for a kernel timed at sizes it was not checked at: there is nothing to compare."""
+    if expected is None:
+        return KernelNumbers(maxdiff=0.0, md_rel=0.0, within=True, time_us=time_us)
+    grade = grade_kernel(expected, outputs)
+    maxdiff, _ = diff_stats(expected.outputs, outputs)
+    return KernelNumbers(
+        maxdiff=maxdiff, md_rel=grade.error, within=grade.ok, time_us=time_us, ungradeable=grade.ungradeable
+    )
 
 
 def measure_on_cpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray] | None,
+    expected: Expected | None,
     sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -229,7 +236,7 @@ def measure_on_cpu(
     def work() -> KernelNumbers:
         outs, us = call_native(shared, src.symbol, src.abi_order, argtypes, src.boundary, inputs, sizes, reps)
         assert outs is not None, "call_native snapshots outputs unless told not to"
-        return kernel_numbers(oracle, outs, us)
+        return kernel_numbers(expected, outs, us)
 
     return run_isolated(work, KernelNumbers)
 
@@ -238,7 +245,7 @@ def measure_on_gpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray] | None,
+    expected: Expected | None,
     sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -258,7 +265,7 @@ def measure_on_gpu(
     res = run_spawned(call_device, call)
     if isinstance(res, Failure):
         return res
-    return kernel_numbers(oracle, res.outputs, res.time_us)
+    return kernel_numbers(expected, res.outputs, res.time_us)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,7 +277,7 @@ class KernelForm:
     schedule: Callable[[Boundary], dace.SDFG]
     build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str]], None]
     measure: Callable[
-        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, Mapping[str, SymbolValue], int],
+        [Path, KernelSource, dict[str, np.ndarray], Expected | None, Mapping[str, SymbolValue], int],
         KernelNumbers | Failure,
     ]
     runtime: Callable[[str], list[str]]
@@ -392,18 +399,31 @@ class Probe:
     """What a build of a kernel is measured on: timed on ``timed``, compared on ``checked`` to the ``oracle`` outputs
     of those inputs. ``checked`` is ``timed`` unless the oracle cannot finish at the timed sizes; a kernel checked at
     a smaller size is timed without a comparison. ``unchecked`` says why the oracle finished at no size: such a kernel
-    goes unchecked, and the whole program checks it."""
+    goes unchecked, and the whole program checks it. ``lengths`` is each output's accumulation length at the checked
+    sizes (:func:`~nestforge.ir.accumulation.accumulation_lengths`); an output without one takes the bench's default."""
 
     timed: Workload
     checked: Workload
     oracle: dict[str, np.ndarray]
     unchecked: str = ""
+    lengths: Mapping[str, int] = dataclasses.field(default_factory=dict)
+
+    @property
+    def expected(self) -> Expected:
+        return Expected(self.oracle, self.lengths)
+
+
+def checked_probe(boundary: Boundary, timed: Workload, checked: Workload, oracle: dict[str, np.ndarray]) -> Probe:
+    """A probe compared on ``checked``, with the accumulation length of each output at its sizes."""
+    arrays = {**checked.inputs, **oracle}
+    lengths = accumulation_lengths(boundary.standalone_sdfg, checked.sizes, arrays, boundary.outputs)
+    return Probe(timed, checked, oracle, lengths=lengths)
 
 
 def full_probe(prep: Prepared, boundary: Boundary, sizes: Mapping[str, SymbolValue]) -> Probe:
     """A probe at ``sizes``, however long the oracle takes."""
     timed = Workload(make_inputs(boundary, sizes), sizes)
-    return Probe(timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
+    return checked_probe(boundary, timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
 
 
 def bounded_probe(
@@ -429,8 +449,8 @@ def bounded_probe(
     if full and (not interpreted or seconds * scale <= ORACLE_TIMEOUT_S):
         at_size = bounded_oracle(prep, boundary, timed.inputs, sizes, ORACLE_TIMEOUT_S)
         if not isinstance(at_size, Failure):
-            return Probe(timed, timed, at_size[0])
-    return Probe(timed, checked, outputs)
+            return checked_probe(boundary, timed, timed, at_size[0])
+    return checked_probe(boundary, timed, checked, outputs)
 
 
 def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp_mode: str) -> KernelVerdict:
@@ -439,10 +459,14 @@ def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp
     if probe.unchecked:
         return unchecked_verdict(fp_mode, probe.unchecked)
     measure, shared = kernel_form(src.device).measure, archive.with_suffix(".so")
-    checked = measure(shared, src, probe.checked.inputs, probe.oracle, probe.checked.sizes, reps)
+    checked = measure(shared, src, probe.checked.inputs, probe.expected, probe.checked.sizes, reps)
     if isinstance(checked, Failure):
         return failed_verdict(fp_mode, checked.error)
-    verdict = KernelVerdict(fp_mode, checked.maxdiff, checked.md_rel, checked.dtype_floor, checked.time_us)
+    if checked.ungradeable:
+        return unchecked_verdict(
+            fp_mode, f"the bench cannot grade it ({checked.ungradeable}); the whole program checks it"
+        )
+    verdict = KernelVerdict(fp_mode, checked.maxdiff, checked.md_rel, checked.within, checked.time_us)
     if probe.checked is probe.timed or not verdict.ok:
         return verdict
     timed = measure(shared, src, probe.timed.inputs, None, probe.timed.sizes, reps)

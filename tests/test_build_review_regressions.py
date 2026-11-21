@@ -13,12 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import dace
-import numpy as np
 import pytest
 from dace.codegen import compiler as dace_compiler
 
-from nestforge.build import flags, toolchain
-from nestforge.build.arena import dtype_floor
+from nestforge.build import toolchain
 from nestforge.build.sdfg import BuiltSDFG, generate_program_folder, make_persistent
 
 N = dace.symbol("N")
@@ -148,11 +146,6 @@ def test_program_entry_is_bound_once(status_library: Path) -> None:
     program.bind({}, {})()
     assert lib.lookups - before == 1
     assert lib.program_calls() == 4
-
-
-@pytest.mark.parametrize(("complex_dtype", "component"), [(np.complex64, "float32"), (np.complex128, "float64")])
-def test_complex_outputs_take_their_component_floor(complex_dtype: type, component: str) -> None:
-    assert dtype_floor({"z": np.zeros(2, dtype=complex_dtype)}) == flags.DTYPE_RTOL[component]
 
 
 def test_compile_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:

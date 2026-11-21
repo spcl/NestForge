@@ -44,9 +44,6 @@ def test_cost_flags_no_vec_and_cheap_collapse() -> None:
 
 
 def test_flag_matrix_atol_covers_every_level() -> None:
-    # every emitted level has a validation tolerance, and strict is the tightest.
-    assert set(flags.FP_RTOL) == set(flags.FP_LEVELS)
-    assert flags.FP_RTOL["strict-ieee"] < flags.FP_RTOL["fast-math"]
     gnu = {(level, model): cflags for level, model, cflags in flags.flag_matrix("gnu")}
     assert len(gnu) == len(flags.FP_LEVELS) * len(flags.COST_MODELS)
     assert gnu["fast-math", "no-vec"] == [*flags.BASE_FLAGS, *flags.fp_flags("gnu", "fast-math"), "-fno-tree-vectorize"]
