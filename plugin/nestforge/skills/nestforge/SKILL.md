@@ -48,8 +48,9 @@ every later call.
 |---|---|---|
 | `view_tree` | the tree, with `expand`, `collapse`, `c`, `python` | no |
 | `get_work_depth labels=[..]` | each row's work (operations) and depth (longest dependent chain) at this run's sizes; `formula=true` in the sizes | no |
-| `list_move_kinds` | every kind, the rows it takes in order, the transformation it runs | no |
-| `list_moves [kind=..]` | the moves legal now, as `kind` + `labels` and the arguments they were checked with | no |
+| `list_move_kinds` | every kind, one per line: the rows it takes in order (`[doall doall]`), the transformation it runs | no |
+| `list_moves [kind=..]` | the moves legal now, one per line: the kind, its labels, then each argument it was checked with as `name=value` (`tile_sizes=[32,32]`) | no |
+| `applied_moves` | the moves the program holds, one per line | no |
 | `get_performance` | each kernel's time and share, and ranked hints | no |
 | `apply_move kind labels [arguments]` | one move; answers `applied` or `illegal: <reason>` at once, without the tree | yes |
 | `apply_move rollback []` | takes the last move back, labels included; again for the one before, up to 8 | yes |
@@ -62,6 +63,13 @@ Arguments, each meaning one thing: `tile_sizes` (tile extents), `lanes` (vector 
 
 `get_performance` times each kernel in one fixed build, so two measurements compare (`finalize`'s sweep, what `score`
 grades, is faster). Every move keeps the program's results: it changes how loops run, never what they compute.
+
+`score`, `get_performance` and `profile` answer as lines: the verdict first (`speedup=… correct=…`), the other fields
+as `name=value`, times with their unit (`1.35s`, `893ms`). A list of records (the graded cells, the kernels, the
+transfers) is a table under a `cells:`, `kernels:` or `transfers:` line, which states once the values every row shares.
+`apply_moves` answers its status first (`refused failed_at=1 substep=check: why`), then one line per move; `tune_move`
+the move, then a `values:` table of the sizes it tried (`now`: the program as it stands); a phase tool its status and
+phase, the summary of the phase it left, then the guide of the phase it reached. An error comes as it came.
 
 ## How to work
 

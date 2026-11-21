@@ -10,7 +10,8 @@ from typing import Any
 import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
-from hpcagent_bench_plugins.nestforge.wire import AGENT_PHASES_ENV, ROUTE, TOOLS, Effect, NoArgs
+from hpcagent_bench_plugins.nestforge.answers import RENDERED, phase_answer, profile_answer, score_answer
+from hpcagent_bench_plugins.nestforge.wire import AGENT_PHASES_ENV, MOVE_DEFAULTS, ROUTE, TOOLS, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own NestForge session.
 HINTS = {
@@ -35,12 +36,16 @@ def agent_phases() -> list[str]:
 
 
 def poster(name: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """The tool ``name``: its call posted to the judge, and the answer as the agent reads it (:mod:`answers`)."""
+    render = RENDERED.get(name)
+
     def run(payload: dict[str, Any]) -> dict[str, Any]:
         kernel = http_json.assigned_kernel(payload)
-        return http_json.post_judge(
+        answer = http_json.post_judge(
             f"/{ROUTE}/{name}",
             {**payload, "kernel": kernel, "disabled_families": disabled_families(), "agent_phases": agent_phases()},
         )
+        return answer if render is None else render(answer, MOVE_DEFAULTS)
 
     return run
 
@@ -66,11 +71,23 @@ def guided(run: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[st
     return answer
 
 
+def rendered(
+    run: Callable[[dict[str, Any]], dict[str, Any]], render: Callable[[dict[str, Any]], dict[str, Any]]
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """``run``, its answer as the agent reads it (:mod:`answers`)."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        return render(run(payload))
+
+    return answer
+
+
 for name, entry in TOOLS.items():
     spec = Spec(
         f"[{entry.label}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
     )
-    run = guided(poster(name)) if name in PHASE_TOOLS else poster(name)
+    # a phase tool's guide is added from its record, so the answer renders after it
+    run = rendered(guided(poster(name)), phase_answer) if name in PHASE_TOOLS else poster(name)
     # in blind mode no tool answers how the program does
     tool(spec=spec, core=False, name=name, preview=name == "get_performance")(run)
 
@@ -99,7 +116,7 @@ tool(spec=Spec(SUBMIT, NoArgs, submit.PROMPT, HINTS[Effect.ADD]), name="submit",
     delivering(submit.run, "finalize?terminal=1")  # the build queues as the /submit it delivers to does
 )
 tool(spec=Spec(SCORE, NoArgs, f"- `score` -- {SCORE}", HINTS[Effect.READ]), name="score", preview=True, overrides=True)(
-    delivering(score.run)
+    rendered(delivering(score.run), score_answer)
 )
 
 PROFILE = (
@@ -116,4 +133,6 @@ def profile_spec(setup: Setup) -> Spec:
     return Spec(PROFILE, args, f"- `profile` -- {PROFILE}", HINTS[Effect.READ])
 
 
-tool(spec=profile_spec, name="profile", preview=True, overrides=True)(delivering(profile_tool.run))
+tool(spec=profile_spec, name="profile", preview=True, overrides=True)(
+    rendered(delivering(profile_tool.run), profile_answer)
+)
