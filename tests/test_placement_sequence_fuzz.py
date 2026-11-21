@@ -345,12 +345,6 @@ SEED_11_CALLS: list[Call] = [
 ]
 
 
-@pytest.mark.xfail(
-    raises=AttributeError,
-    strict=True,
-    reason="DaCe OffloadToAccelerator.isolate_host_library_nodes queues a LoopRegion predecessor of an isolated map "
-    "and calls scope_dict on it (offload_to_accelerator.py:1208, extended d77bb4b5960c and 6dc12c27b6)",
-)
 def test_finalize_scope_after_a_rolled_back_placement_on_seed_11(tmp_path: Path) -> None:
     session = fresh(11, tmp_path, True)
     for name, arguments in SEED_11_CALLS:
