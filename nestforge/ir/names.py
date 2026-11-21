@@ -205,6 +205,24 @@ def shorten_temporaries(sdfg: dace.SDFG, namer: Namer) -> None:
     index array (``<program>_A_index``) ``A_index`` while no other container holds that name. A name is renamed in every program it is declared in, a nested
     program's connector of that name with it; an argument of the program keeps its name, and no name is handed out
     twice."""
+    renames = temporary_renames(sdfg, namer)
+    for node, state in list(sdfg.all_nodes_recursive()):
+        if isinstance(node, nodes.NestedSDFG):
+            rename_connectors(state, node, renames)
+    for sd in list(sdfg.all_sdfgs_recursive()):
+        own = {name: new for name, new in renames.items() if name in sd.arrays}
+        if own:
+            sd.replace_dict(own)
+    unshadow_connectors(sdfg)
+
+
+def index_array_of(name: str, arguments: set[str]) -> str | None:
+    """The argument whose index array the frontend read into ``name`` (``<program>_A_index``), or ``None``."""
+    return next((a for a in sorted(arguments) if name.endswith(f"_{a}_index") and name != f"{a}_index"), None)
+
+
+def temporary_renames(sdfg: dace.SDFG, namer: Namer) -> dict[str, str]:
+    """The short name :func:`shorten_temporaries` gives each generated temporary of ``sdfg``, by its name now."""
     declared: set[str] = set()
     shapes: dict[str, bool] = {}
     arguments = {name for name, desc in sdfg.arrays.items() if not desc.transient}
@@ -216,7 +234,7 @@ def shorten_temporaries(sdfg: dace.SDFG, namer: Namer) -> None:
     for name in sorted(declared - arguments - sdfg.symbols.keys()):
         if name not in shapes:
             continue
-        index_of = next((a for a in sorted(arguments) if name.endswith(f"_{a}_index") and name != f"{a}_index"), None)
+        index_of = index_array_of(name, arguments)
         if index_of is not None and f"{index_of}_index" not in declared:
             renames[name] = f"{index_of}_index"
             declared.add(renames[name])
@@ -228,14 +246,7 @@ def shorten_temporaries(sdfg: dace.SDFG, namer: Namer) -> None:
         while fresh in declared:
             fresh = namer.name(kind, "", set())
         renames[name] = fresh
-    for node, state in list(sdfg.all_nodes_recursive()):
-        if isinstance(node, nodes.NestedSDFG):
-            rename_connectors(state, node, renames)
-    for sd in list(sdfg.all_sdfgs_recursive()):
-        own = {name: new for name, new in renames.items() if name in sd.arrays}
-        if own:
-            sd.replace_dict(own)
-    unshadow_connectors(sdfg)
+    return renames
 
 
 def unshadow_connectors(sdfg: dace.SDFG) -> None:

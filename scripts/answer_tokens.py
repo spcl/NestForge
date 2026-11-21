@@ -83,6 +83,22 @@ BARE_KEYS = frozenset({"kind", "status", "tool", "labels"})
 QUIET: tuple[object, ...] = (None, "", [], {}, False)
 
 
+def flat(item: Any) -> bool:
+    """Whether ``item`` fits on its record's line: a one-line string, a scalar, or a list of scalars."""
+    if isinstance(item, str):
+        return "\n" not in item
+    if isinstance(item, dict):
+        return False
+    return not isinstance(item, list) or all(not isinstance(x, (dict, list)) for x in item)
+
+
+def word(item: Any) -> str:
+    """A flat ``item`` as one word: a list's items joined by commas."""
+    if isinstance(item, list):
+        return ",".join(compact(x)[0].strip() for x in item)
+    return compact(item)[0].strip()
+
+
 def compact(value: Any, depth: int = 0) -> list[str]:
     """``value`` as plain lines: one record per line, ``key value`` pairs, defaults left out, floats to 3 digits."""
     pad = "  " * depth
@@ -96,19 +112,6 @@ def compact(value: Any, depth: int = 0) -> list[str]:
             return [pad + " ".join(compact(item)[0].strip() for item in value)]
         return [line for item in value for line in compact(item, depth)]
     if isinstance(value, dict):
-
-        def flat(item: Any) -> bool:
-            if isinstance(item, str):
-                return "\n" not in item
-            if isinstance(item, dict):
-                return False
-            return not isinstance(item, list) or all(not isinstance(x, (dict, list)) for x in item)
-
-        def word(item: Any) -> str:
-            if isinstance(item, list):
-                return ",".join(compact(x)[0].strip() for x in item)
-            return compact(item)[0].strip()
-
         simple = {k: v for k, v in value.items() if v not in QUIET and flat(v)}
         nested = {k: v for k, v in value.items() if v not in QUIET and not flat(v)}
         words = [word(v) if k in BARE_KEYS else f"{k}={word(v)}" for k, v in simple.items()]

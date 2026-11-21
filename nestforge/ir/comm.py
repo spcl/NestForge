@@ -20,8 +20,6 @@ from dace.libraries.comm.nodes import (
     Dummy,
     Irecv,
     Isend,
-    Recv,
-    Send,
     Wait,
     Waitall,
 )
@@ -49,7 +47,6 @@ QUERIES = (CommRank, CommSize, CommF2c)
 WAITS = (Wait, Waitall)
 FIXED_NODES = (Barrier, Abort, CommSplit, CommFree, Dummy)
 POINT_TO_POINT_STARTS = (Isend, Irecv)
-POINT_TO_POINT_BLOCKING = (Send, Recv)
 
 
 def comm_class(node: nodes.Node) -> CommClass | None:

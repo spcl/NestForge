@@ -118,6 +118,10 @@ class AppliedMove(Record):
     container: str | None = None
 
 
+#: The fields of a listed move a script passes on to ``apply_move``: every :class:`AppliedMove` argument.
+REPLAYED: set[str] = set(AppliedMove.model_fields) - {"reason"}
+
+
 def row_containers(row: Row) -> tuple[set[str], set[str]]:
     """The containers a tree row reads and writes."""
     obj, state = row
@@ -187,39 +191,11 @@ class Script:
         """Apply ``move``; raises :class:`ReplayError` unless it applied."""
         if self.finished:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
-        result = self.session.apply_move(
-            move.kind,
-            move.labels,
-            tile_sizes=move.tile_sizes,
-            implementation=move.implementation,
-            max_iterations=move.max_iterations,
-            config_values=move.config_values,
-            operation=move.operation,
-            isa=move.isa,
-            force=move.force,
-            schedule=move.schedule,
-            chunk=move.chunk,
-            threads=move.threads,
-            container=move.container,
-        )
+        arguments = move.model_dump(include=REPLAYED)
+        result = self.session.apply_move(**arguments)
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
-        done = AppliedMove(
-            kind=move.kind,
-            labels=result.labels,
-            reason=result.reason,
-            tile_sizes=move.tile_sizes,
-            implementation=move.implementation,
-            max_iterations=move.max_iterations,
-            config_values=dict(move.config_values),
-            operation=dict(move.operation),
-            isa=move.isa,
-            force=move.force,
-            schedule=move.schedule,
-            chunk=move.chunk,
-            threads=move.threads,
-            container=move.container,
-        )
+        done = AppliedMove(**{**arguments, "labels": result.labels, "reason": result.reason})
         self.applied.append(done)
         return done
 

@@ -176,6 +176,19 @@ def runs_between(state: SDFGState, members: dict[nodes.Node, None]) -> nodes.Nod
     return None
 
 
+def group_members(state: SDFGState, entries: Sequence[nodes.Node]) -> dict[nodes.Node, None]:
+    """The nodes of ``state`` a kernel of the maps (or calls) ``entries`` takes, in order: each one's own nodes, and
+    the access nodes one writes and another reads."""
+    members: dict[nodes.Node, None] = {}
+    for entry in entries:
+        members.update(dict.fromkeys(doall_nodes(state, entry)))
+    exits = [state.exit_node(entry) if isinstance(entry, nodes.MapEntry) else entry for entry in entries]
+    for node in state.data_nodes():
+        if any(e.src in exits for e in state.in_edges(node)) and any(e.dst in entries for e in state.out_edges(node)):
+            members[node] = None
+    return members
+
+
 def map_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     """Top-level maps of one state of ``sdfg``, with the access nodes one writes and another reads."""
     state = rows[0][1]
@@ -187,13 +200,7 @@ def map_group(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     nested = [tree_name(entry) for entry in entries if state.entry_node(entry) is not None]
     if nested:
         return f"{', '.join(nested)} sits inside another map; name top-level maps."
-    members: dict[nodes.Node, None] = {}
-    for entry in entries:
-        members.update(dict.fromkeys(doall_nodes(state, entry)))
-    exits = [state.exit_node(entry) if isinstance(entry, nodes.MapEntry) else entry for entry in entries]
-    for node in state.data_nodes():
-        if any(e.src in exits for e in state.in_edges(node)) and any(e.dst in entries for e in state.out_edges(node)):
-            members[node] = None
+    members = group_members(state, entries)
     between = runs_between(state, members)
     if between is not None:
         return f"{between} runs between the named maps; name it too, or name maps nothing runs between."

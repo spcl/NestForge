@@ -233,7 +233,6 @@ UNDONE_BY = {
 }
 
 
-#: The kernel source language each device's kernels are written in.
 def kernel_language(device: str) -> str:
     """The ``write_kernel`` language of a kernel on ``device``: ``cpp`` on the CPU, the GPU form's dialect on the GPU
     (``cuda`` or ``hip``)."""
@@ -280,7 +279,6 @@ def computed_symbols(src: KernelSource, sizes: Mapping[str, SymbolValue]) -> lis
     return [s for s in src.boundary.symbols if s not in sizes]
 
 
-#: What a forced move tells the agent.
 def holds_doall(block: ControlFlowBlock) -> bool:
     return any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
 
@@ -317,21 +315,28 @@ def megakernel_refusal(ext: ExternalCall, device: str, blocks: Sequence[str]) ->
     )
 
 
+def run_block(row: Row) -> ControlFlowBlock | Refused:
+    """The block a ``persistent-kernel`` row stands for: a for loop or a state itself, a doall its state."""
+    obj, state = row
+    if isinstance(obj, nodes.MapEntry) and state is not None:
+        return state
+    if isinstance(obj, SDFGState) or (isinstance(obj, LoopRegion) and obj.loop_variable):
+        return obj
+    return Refused(
+        f"persistent-kernel takes for loops, states and doalls; {tree_label(obj)!r} is a {type(obj).__name__}.",
+        Refusal.WRONG_ROW_KIND,
+    )
+
+
 def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
     """The labels of the blocks ``rows`` name, in program order without repeats: a for loop or a state itself, a doall
     its state; or why they are no persistent run: a row of another kind, blocks of two regions, or a block between
     them that holds doalls."""
     found: list[ControlFlowBlock] = []
-    for obj, state in rows:
-        if isinstance(obj, nodes.MapEntry) and state is not None:
-            block = state
-        elif isinstance(obj, SDFGState) or (isinstance(obj, LoopRegion) and obj.loop_variable):
-            block = obj
-        else:
-            return Refused(
-                f"persistent-kernel takes for loops, states and doalls; {tree_label(obj)!r} is a {type(obj).__name__}.",
-                Refusal.WRONG_ROW_KIND,
-            )
+    for row in rows:
+        block = run_block(row)
+        if isinstance(block, Refused):
+            return block
         if block not in found:
             found.append(block)
     region = found[0].parent_graph
@@ -348,6 +353,23 @@ def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
             Refusal.WRONG_ROW_KIND,
         )
     return [b.label for b in sorted(found, key=order.index)]
+
+
+def consecutive_refusal(names: Sequence[str], homes: Sequence[SDFGState]) -> Refused | None:
+    """Why the kernels ``names``, in the states ``homes``, are no consecutive kernels: they sit in different regions,
+    a block between them holds a doall or another kernel, or their states hold work besides them."""
+    region = homes[0].parent_graph
+    order = linear_chain(region) if all(home.parent_graph is region for home in homes) else None
+    if order is None or not all(home in order for home in homes):
+        return Refused(f"{', '.join(names)} are not kernels of one straight run of blocks.", Refusal.WRONG_ROW_KIND)
+    span = order[min(map(order.index, homes)) : max(map(order.index, homes)) + 1]
+    busy = [block.label for block in span if holds_doall(block) or len(external_calls_in(block)) != (block in homes)]
+    if not busy:
+        return None
+    return Refused(
+        f"{', '.join(busy)} hold work besides the kernels {', '.join(names)}: they are no consecutive kernels.",
+        Refusal.WRONG_ROW_KIND,
+    )
 
 
 def marked_persistent(tree: str, loops: frozenset[tuple[str, str]]) -> str:
@@ -378,6 +400,14 @@ PIPELINE_FP_MODE = "strict-ieee"
 #: How the reason of a relayout of internal arrays ends, which :meth:`Session.relayout_refusal` reads.
 LOCAL_MARK = "(internal)"
 
+#: The kinds that change the whole program, never a kernel's body, and what each changes.
+PROGRAM_ONLY = {
+    CHANGE_PRECISION: "changes the whole program, not a kernel's body",
+    RELAYOUT: "lays out the program's arguments, not a kernel's body",
+    PROPAGATE_CONFIG: "specializes the whole program, not a kernel's body",
+}
+
+#: What a forced move tells the agent.
 FORCED_WARNING = (
     "forced: the compiler did not prove this move legal. If the iterations depend on each other, the program is "
     "wrong, and only a run on data shows it; rollback takes the move back."
@@ -386,10 +416,10 @@ FORCED_WARNING = (
 DEFAULTS_PREFIX = "defaults-"
 
 
-#: The move kinds :meth:`Session.tune_move` tries several values of, and the most values one call tries.
 #: The moves :meth:`Session.tune_move` tries at several sizes, each in the sizes argument it takes
 #: (:func:`~nestforge.stages.moves.size_argument`): tile sizes, vector lanes, a GPU thread block.
 TUNABLE = frozenset({"tile-doall", "tile-for", VECTORIZE_DOALL, SET_SCHEDULE_GPU})
+#: The most values one :meth:`Session.tune_move` call tries.
 MAX_TUNED_VALUES = 4
 
 
@@ -456,6 +486,11 @@ class MoveResult(Record):
         if refusal is Refusal.OTHER:
             warnings.warn(UnclassedRefusal(f"{data.get('kind')}: {data.get('reason')}"), stacklevel=2)
         return {**data, "refusal": refusal}
+
+
+def illegal(kind: str, labels: tuple[str, ...], reason: str, status: MoveStatus = MoveStatus.ILLEGAL) -> MoveResult:
+    """The answer of a call that changed nothing, for ``reason``: ``illegal`` unless another ``status`` is given."""
+    return MoveResult(status=status, kind=kind, labels=labels, reason=reason)
 
 
 class Move(Record):
@@ -950,6 +985,12 @@ class Session:
         self.history.append(self.checkpoint)
         del self.history[:-UNDO_DEPTH]
 
+    def recorded(self, done: MoveResult) -> MoveResult:
+        """``done`` on :attr:`applied`, and the program before it kept for :meth:`undo`."""
+        self.applied.append(done)
+        self.remember()
+        return done
+
     @undone_on_failure
     def undo(self) -> MoveResult:
         """Back to the program before the last move or default stage :meth:`remember` kept, its row labels and
@@ -1042,12 +1083,8 @@ class Session:
         if missing:
             gone = [name for name in missing if name in self.namer.retired]
             why = f" ({', '.join(gone)} changed; read the tree again)" if gone else ""
-            return MoveResult(
-                status=MoveStatus.NOT_FOUND,
-                kind=kind,
-                labels=names,
-                reason=Refused(f"no tree row is labeled {', '.join(missing)}{why}.", Refusal.UNKNOWN_LABEL),
-            )
+            reason = Refused(f"no tree row is labeled {', '.join(missing)}{why}.", Refusal.UNKNOWN_LABEL)
+            return illegal(kind, names, reason, MoveStatus.NOT_FOUND)
         return [rows[name] for name in names]
 
     def move_programs(self, scope: str | None) -> tuple[dace.SDFG, dace.SDFG]:
@@ -1236,12 +1273,14 @@ class Session:
             return "placement: every kernel placed"
         return None
 
+    def pass_phase(self, phase: PhaseName) -> list[str]:
+        """Run ``phase``, which the agent passes, by its default and leave it; what each step did."""
+        ran = [self.phase_default(phase)]
+        return [*ran, closed] if (closed := self.close_phase(phase)) else ran
+
     def enter_first_phase(self) -> tuple[str, ...]:
         """Run the defaults of the phases before the agent's first; what they did. Called once, after canonicalization."""
-        ran: list[str] = []
-        for phase in PHASE_ORDER[: PHASE_ORDER.index(self.phase)]:
-            ran.append(self.phase_default(phase))
-            ran += [closed] if (closed := self.close_phase(phase)) else []
+        ran = [line for phase in PHASE_ORDER[: PHASE_ORDER.index(self.phase)] for line in self.pass_phase(phase)]
         self.history.clear()
         self.phase_starts[self.phase] = len(self.applied)
         return tuple(ran)
@@ -1256,12 +1295,10 @@ class Session:
         target = self.agent_phases[position + 1]
         moves = self.applied[self.phase_starts.get(self.phase, 0) :]
         exit_point = self.saved()
-        ran: list[str] = []
         with self.atomic():
-            ran += [closed] if (closed := self.close_phase(self.phase)) else []
+            ran = [closed] if (closed := self.close_phase(self.phase)) else []
             for phase in PHASE_ORDER[PHASE_ORDER.index(self.phase) + 1 : PHASE_ORDER.index(target)]:
-                ran.append(self.phase_default(phase))
-                ran += [closed] if (closed := self.close_phase(phase)) else []
+                ran += self.pass_phase(phase)
         summary = self.phase_summary(moves)
         self.phase_exits[self.phase] = exit_point
         self.phase, self.focus = target, None
@@ -1365,52 +1402,87 @@ class Session:
     def list_moves(self, kind: str | None = None, scope: str | None = None) -> list[Move]:
         """Every legal move right now, of ``kind`` or of every kind, in the program or inside the kernel ``scope``."""
         structured, device = self.move_programs(scope)
-        target = self.targets.canon_target
-        built_in = kind is None or kind not in self.authored  # an authored kind is no kind legal_moves knows
-        found = [m for m in legal_moves(structured, kind, target) if m[0] not in DEVICE_KINDS] if built_in else []
-        found += [m for k in sorted(DEVICE_KINDS) if kind in (None, k) for m in legal_moves(device, k, target)]
+        found = self.legal_matches(kind, structured, device)
         rows = self.row_index() if scope is None else tree_rows(structured)
         # a device move names rows of the body as placed, which staging gives rows of its own
         device_rows = rows if scope is None else tree_rows(device)
-        # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
-        scoped: dict[str, str] = {} if scope is None else {"scope": scope}
-        moves: list[Move] = []
-        for k, labels in found:
-            if k == SET_IMPLEMENTATION:
-                node, state = rows[labels[0]]
-                node = cast(nodes.LibraryNode, node)
-                inside = state is not None and in_doall(node, state)
-                moves += [
-                    Move.model_validate(
-                        {"kind": k, "labels": labels, "implementation": name, "current": node.implementation, **scoped}
-                    )
-                    for name in implementations(node, self.targets.gpu, inside)
-                ]
-            elif k == SINK_INVARIANT_CODE:
-                moves += [
-                    Move.model_validate({"kind": k, "labels": labels, "container": name, **scoped})
-                    for name in sinkable_containers(rows[labels[0]])
-                ]
-            elif k in SCOPE_KINDS:
-                if self.scope_refusal(k, scope) is None:
-                    assert scope is not None, "scope_refusal requires one"
-                    entry = cast(nodes.MapEntry, rows[labels[0]][0])
-                    held = self.gpu_choices.get(scope, {}).get(labels[0], GpuChoice())
-                    current = schedule_text(entry) if k == SET_SCHEDULE_CPU else held.text()
-                    moves.append(Move.model_validate({"kind": k, "labels": labels, "current": current, **scoped}))
-            else:
-                named = device_rows if k in DEVICE_KINDS else rows
-                sizes = probe_sizes(k, [named[label] for label in labels]) if k in SIZED or k == VECTORIZE_DOALL else ()
-                moves.append(Move.model_validate({"kind": k, "labels": labels, size_argument(k): sizes, **scoped}))
-        if AUTHORED_FAMILY not in self.disabled_families:
-            moves += [
-                Move.model_validate({"kind": move.kind, "labels": tuple(tree_label(obj) for obj in found), **scoped})
-                for move in self.authored.values()
-                if kind in (None, move.kind)
-                for found in matches(structured, move)
-            ]
+        moves = [
+            move
+            for k, labels in found
+            for move in self.row_moves(k, labels, device_rows if k in DEVICE_KINDS else rows, scope)
+        ]
+        moves += self.authored_moves(kind, structured, scope)
         if kind in (None, PERSISTENT_KERNEL) and scope is not None and all(k != scope for k, _ in self.persistent):
             moves += [Move(kind=PERSISTENT_KERNEL, labels=run, scope=scope) for run in persistent_runs(structured)]
+        moves += self.program_moves(kind, scope)
+        if scope is not None:  # what staging_refusal would refuse is not offered
+            moves = [
+                move
+                for move in moves
+                if move.kind not in DEVICE_KINDS or self.staging_refusal(move.kind, scope) is None
+            ]
+        return [move for move in moves if switched_off(move.kind, self.disabled_families) is None]
+
+    def legal_matches(
+        self, kind: str | None, structured: dace.SDFG, device: dace.SDFG
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        """Every match of ``kind`` (every kind when ``None``) that :func:`legal_moves` finds: the structured moves on
+        ``structured``, the device moves on ``device``."""
+        target = self.targets.canon_target
+        built_in = kind is None or kind not in self.authored  # an authored kind is no kind legal_moves knows
+        found = [m for m in legal_moves(structured, kind, target) if m[0] not in DEVICE_KINDS] if built_in else []
+        return found + [m for k in sorted(DEVICE_KINDS) if kind in (None, k) for m in legal_moves(device, k, target)]
+
+    def authored_moves(self, kind: str | None, structured: dace.SDFG, scope: str | None) -> list[Move]:
+        """The authored moves of ``kind`` (every kind when ``None``) that match rows of ``structured``; none while
+        their family is off."""
+        if AUTHORED_FAMILY in self.disabled_families:
+            return []
+        # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
+        scoped: dict[str, str] = {} if scope is None else {"scope": scope}
+        return [
+            Move.model_validate({"kind": move.kind, "labels": tuple(tree_label(obj) for obj in found), **scoped})
+            for move in self.authored.values()
+            if kind in (None, move.kind)
+            for found in matches(structured, move)
+        ]
+
+    def row_moves(self, kind: str, labels: tuple[str, ...], rows: Mapping[str, Row], scope: str | None) -> list[Move]:
+        """The moves :meth:`list_moves` offers for one legal match of ``kind`` on ``labels`` (rows of ``rows``): one per
+        implementation or sinkable container, the schedule now, or the sizes a probe checked."""
+        # set only inside a kernel: an answer carries the fields set, and apply_move takes no scope
+        scoped: dict[str, str] = {} if scope is None else {"scope": scope}
+        if kind == SET_IMPLEMENTATION:
+            node, state = rows[labels[0]]
+            node = cast(nodes.LibraryNode, node)
+            inside = state is not None and in_doall(node, state)
+            return [
+                Move.model_validate(
+                    {"kind": kind, "labels": labels, "implementation": name, "current": node.implementation, **scoped}
+                )
+                for name in implementations(node, self.targets.gpu, inside)
+            ]
+        if kind == SINK_INVARIANT_CODE:
+            return [
+                Move.model_validate({"kind": kind, "labels": labels, "container": name, **scoped})
+                for name in sinkable_containers(rows[labels[0]])
+            ]
+        if kind in SCOPE_KINDS:
+            if self.scope_refusal(kind, scope) is not None:
+                return []
+            assert scope is not None, "scope_refusal requires one"
+            entry = cast(nodes.MapEntry, rows[labels[0]][0])
+            held = self.gpu_choices.get(scope, {}).get(labels[0], GpuChoice())
+            current = schedule_text(entry) if kind == SET_SCHEDULE_CPU else held.text()
+            return [Move.model_validate({"kind": kind, "labels": labels, "current": current, **scoped})]
+        sized = kind in SIZED or kind == VECTORIZE_DOALL
+        sizes = probe_sizes(kind, [rows[label] for label in labels]) if sized else ()
+        return [Move.model_validate({"kind": kind, "labels": labels, size_argument(kind): sizes, **scoped})]
+
+    def program_moves(self, kind: str | None, scope: str | None) -> list[Move]:
+        """The moves on no row that :meth:`list_moves` offers: a kernel's FP mode, an array's precision, a relayout,
+        and rollback."""
+        moves: list[Move] = []
         # moves on the whole program close with its first kernel, as the program's own rows do
         program_wide = scope is None and not external_calls(self.sdfg)
         if kind in (None, SET_FP_MODE) and scope is not None:
@@ -1430,13 +1502,7 @@ class Session:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
             moves.append(Move(kind=ROLLBACK, labels=()))
-        if scope is not None:  # what staging_refusal would refuse is not offered
-            moves = [
-                move
-                for move in moves
-                if move.kind not in DEVICE_KINDS or self.staging_refusal(move.kind, scope) is None
-            ]
-        return [move for move in moves if switched_off(move.kind, self.disabled_families) is None]
+        return moves
 
     def scope_refusal(self, kind: str, scope: str | None) -> str | None:
         """Why ``kind`` takes no row of ``scope`` (the program when ``None``), or ``None``: a schedule belongs to the
@@ -1511,17 +1577,15 @@ class Session:
         held = self.gpu_choices.get(scope, {})
         choice = plan_set_schedule_gpu(rows[0], block, schedule, held)
         if not isinstance(choice, GpuChoice):
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=choice)
+            return illegal(kind, names, choice)
         with self.atomic():
             self.gpu_choices = {**self.gpu_choices, scope: {**held, names[0]: choice}}
             self.lower_again()
             self.bump()
-            done = MoveResult(
-                status=MoveStatus.APPLIED, kind=kind, labels=names, reason=f"GPU schedule {choice.text()}", scope=scope
+            reason = f"GPU schedule {choice.text()}"
+            return self.recorded(
+                MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=reason, scope=scope)
             )
-            self.applied.append(done)
-            self.remember()
-        return done
 
     def program_change(
         self, kind: str, reason: str, change: Callable[[], None], warning: str | None = None
@@ -1531,10 +1595,9 @@ class Session:
         with self.atomic():
             change()
             self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
-            done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=warning)
-            self.applied.append(done)
-            self.remember()
-        return done
+            return self.recorded(
+                MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=(), reason=reason, warning=warning)
+            )
 
     def apply_authored_move(self, move: AuthoredMove, names: tuple[str, ...], scope: str | None) -> MoveResult:
         """Apply the authored ``move`` on the rows ``names`` (of kernel ``scope``'s body, or the program); refused,
@@ -1544,59 +1607,47 @@ class Session:
                 f"{move.kind} belongs to the family {AUTHORED_FAMILY}, which this run has switched off.",
                 Refusal.FAMILY_OFF,
             )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
+            return illegal(move.kind, names, reason)
         if len(names) != len(move.rows):
             raise ValueError(f"{move.kind} takes {len(move.rows)} label(s); got {len(names)}")
         program = self.move_programs(scope)[0]
         rows = self.named_rows(move.kind, names, None if scope is None else tree_rows(program))
         if isinstance(rows, MoveResult):
             return rows
-        refused: list[str] = []
-
-        def change() -> None:
+        with self.atomic():
             why = apply_authored(program, move, [obj for obj, _ in rows])
             if why is not None:
-                refused.append(why)
-                return
+                return illegal(move.kind, names, Refused(why, Refusal.WRONG_ROW_KIND))
             self.bump()
             program.validate()
-
-        with self.atomic():
-            change()
-            if refused:
-                reason = Refused(refused[0], Refusal.WRONG_ROW_KIND)
-                return MoveResult(status=MoveStatus.ILLEGAL, kind=move.kind, labels=names, reason=reason)
             self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
-            done = MoveResult(status=MoveStatus.APPLIED, kind=move.kind, labels=names, reason=move.text)
-            self.applied.append(done)
-            self.remember()
-        return done
+            return self.recorded(MoveResult(status=MoveStatus.APPLIED, kind=move.kind, labels=names, reason=move.text))
 
     def make_persistent(self, names: tuple[str, ...], scope: str | None) -> MoveResult:
         """Run the rows ``names`` of kernel ``scope`` (for loops, states, doalls for their states; consecutive in one
         region) as one persistent kernel from now on; refused, before anything changes, when MegakernelLoops fuses
         nothing of them in the scheduled body, or the kernel holds a persistent run already."""
-        kernels = {ext.name: ext for ext in external_calls(self.sdfg)}
+        kernels = self.kernels()
         if scope is None or scope not in kernels:
             reason = Refused(f"persistent-kernel takes scope, one of the kernels {sorted(kernels)}.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+            return illegal(PERSISTENT_KERNEL, names, reason)
         held = sorted(block for kernel, block in self.persistent if kernel == scope)
         if held:
             reason = Refused(
                 f"{scope} runs {held} as one persistent kernel already; roll it back and apply a longer list.",
                 Refusal.ARGUMENT,
             )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=reason)
+            return illegal(PERSISTENT_KERNEL, names, reason)
         rows = self.named_rows(PERSISTENT_KERNEL, names, tree_rows(self.move_programs(scope)[0]))
         if isinstance(rows, MoveResult):
             return rows
         blocks = run_blocks(rows)
         if isinstance(blocks, Refused):
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocks)
+            return illegal(PERSISTENT_KERNEL, names, blocks)
         ext = kernels[scope]
         blocked = megakernel_refusal(ext, kernel_device(ext), blocks)
         if blocked is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=PERSISTENT_KERNEL, labels=names, reason=blocked)
+            return illegal(PERSISTENT_KERNEL, names, blocked)
 
         def change() -> None:
             self.persistent = self.persistent | {(scope, block) for block in blocks}
@@ -1623,13 +1674,16 @@ class Session:
             Move(kind=k, labels=group, current=",".join(devices[name] for name in group))
             for group in groups
             for k in targets
-            if kind in (None, k)
-            and (len(group) == 1 or k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT))
-            and not (
-                k in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT) and len(group) == 1 and not self.runs_of(group[0])
-            )
+            if kind in (None, k) and self.runs_on(k, group)
         ]
         return inside + offered
+
+    def runs_on(self, kind: str, group: tuple[str, ...]) -> bool:
+        """Whether the run-on ``kind`` is offered for the kernels ``group``: only a ``-persistent`` kind merges
+        several, and on one kernel it needs a run of blocks to make persistent."""
+        if kind not in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT):
+            return len(group) == 1
+        return len(group) > 1 or bool(self.runs_of(group[0]))
 
     def runs_of(self, name: str) -> list[tuple[str, ...]]:
         """What kernel ``name`` could run as one persistent kernel: none once it does."""
@@ -1659,22 +1713,22 @@ class Session:
         doalls as one persistent kernel. One change for ``rollback``; refused, with nothing changed, when a name is no
         kernel, the GPU is no target, or the kernels cannot run as one."""
         device = "gpu" if kind in (RUN_ON_GPU, RUN_ON_GPU_PERSISTENT) else "cpu"
-        kernels = {ext.name for ext in external_calls(self.sdfg)}
-        unknown = sorted(set(names) - kernels)
+        kernels = self.kernels()
+        unknown = sorted(set(names) - kernels.keys())
         if unknown:
             reason = Refused(
                 f"{', '.join(unknown)} are no kernels; kernels are {sorted(kernels)}.", Refusal.UNKNOWN_LABEL
             )
-            return MoveResult(status=MoveStatus.NOT_FOUND, kind=kind, labels=names, reason=reason)
+            return illegal(kind, names, reason, MoveStatus.NOT_FOUND)
         if device == "gpu" and not self.targets.gpu:
             reason = Refused(f"{kind}: this run has no GPU target.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+            return illegal(kind, names, reason)
         saved = self.saved()
         with self.atomic():
             outcome = self.placed_on(kind, device, names)
             if isinstance(outcome, Refused):
                 self.restore(saved)
-                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=outcome)
+                return illegal(kind, names, outcome)
             done = MoveResult(status=MoveStatus.APPLIED, kind=kind, labels=names, reason=outcome)
             self.applied = [*saved.applied, done]
             self.remember()
@@ -1684,25 +1738,11 @@ class Session:
         """:meth:`run_on`'s change, without its bookkeeping: what it did, or why it refuses."""
         placed = self.devices() if self.unplaced is not None else {}
         if kind in (RUN_ON_CPU_PERSISTENT, RUN_ON_GPU_PERSISTENT):
-            if self.unplaced is not None:
-                self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
-            merged = self.merge_kernels(names) if len(names) > 1 else names[0]
+            merged = self.merged_persistent(device, names)
             if isinstance(merged, Refused):
                 return merged
-            if any(k == merged for k, _ in self.persistent):
-                return Refused(f"{merged} runs as a persistent kernel already.", Refusal.ARGUMENT)
-            runs = persistent_runs(self.move_programs(merged)[0])
-            if not runs:
-                return Refused(
-                    f"{merged} holds no for loop or run of blocks with doalls to run as one.", Refusal.ARGUMENT
-                )
-            run = max(runs, key=len)
-            blocked = megakernel_refusal(self.kernel(merged), device, run)
-            if blocked is not None:
-                return blocked
-            self.persistent = self.persistent | {(merged, block) for block in run}
             names = (merged,)
-        kernels = {ext.name for ext in external_calls(self.sdfg)}
+        kernels = self.kernels()
         devices = {k: d for k, d in placed.items() if k in kernels} | dict.fromkeys(names, device)
         result = self.place(devices)
         if result.status is not MoveStatus.APPLIED:
@@ -1712,23 +1752,34 @@ class Session:
             f", {', '.join(persistent)} persistent" if persistent else ""
         )
 
+    def merged_persistent(self, device: str, names: tuple[str, ...]) -> str | Refused:
+        """The kernels ``names`` merged into one (when several) whose longest run of blocks with doalls runs as one
+        persistent kernel on ``device``: its name, or why not."""
+        if self.unplaced is not None:
+            self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
+        merged = self.merge_kernels(names) if len(names) > 1 else names[0]
+        if isinstance(merged, Refused):
+            return merged
+        if any(k == merged for k, _ in self.persistent):
+            return Refused(f"{merged} runs as a persistent kernel already.", Refusal.ARGUMENT)
+        runs = persistent_runs(self.move_programs(merged)[0])
+        if not runs:
+            return Refused(f"{merged} holds no for loop or run of blocks with doalls to run as one.", Refusal.ARGUMENT)
+        run = max(runs, key=len)
+        blocked = megakernel_refusal(self.kernel(merged), device, run)
+        if blocked is not None:
+            return blocked
+        self.persistent = self.persistent | {(merged, block) for block in run}
+        return merged
+
     def merge_kernels(self, names: tuple[str, ...]) -> str | Refused:
         """The kernels ``names`` inlined and scoped again as one kernel, its name; or why not: they sit in different
         regions, a block between them holds a doall or another kernel, or their states hold work besides them."""
         homes = [find_state_of_node(self.sdfg, self.kernel(name)) for name in names]
+        refused = consecutive_refusal(names, homes)
+        if refused is not None:
+            return refused
         region = homes[0].parent_graph
-        order = linear_chain(region) if all(home.parent_graph is region for home in homes) else None
-        if order is None or not all(home in order for home in homes):
-            return Refused(f"{', '.join(names)} are not kernels of one straight run of blocks.", Refusal.WRONG_ROW_KIND)
-        span = order[min(map(order.index, homes)) : max(map(order.index, homes)) + 1]
-        busy = [
-            block.label for block in span if holds_doall(block) or len(external_calls_in(block)) != (block in homes)
-        ]
-        if busy:
-            return Refused(
-                f"{', '.join(busy)} hold work besides the kernels {', '.join(names)}: they are no consecutive kernels.",
-                Refusal.WRONG_ROW_KIND,
-            )
         before = set(region.nodes())
         for name in names:
             unset = self.unset_scope(name)
@@ -1746,16 +1797,16 @@ class Session:
     def set_fp_mode(self, scope: str | None, fp_mode: str | None) -> MoveResult:
         """Build kernel ``scope`` in ``fp_mode`` only, from now on; refused for an unknown kernel or a mode the target
         has no build of."""
-        kernels = sorted(ext.name for ext in external_calls(self.sdfg))
+        kernels = sorted(self.kernels())
         offered = fp_modes(self.targets.gpu)
         if scope is None or scope not in kernels:
             reason = Refused(f"set-fp-mode takes scope, one of the kernels {kernels}.", Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
+            return illegal(SET_FP_MODE, (), reason)
         if fp_mode is None or fp_mode not in offered:
             reason = Refused(
                 f"set-fp-mode takes one of {list(offered)} on this target; not {fp_mode!r}.", Refusal.ARGUMENT
             )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=SET_FP_MODE, labels=(), reason=reason)
+            return illegal(SET_FP_MODE, (), reason)
 
         def change() -> None:
             self.kernel_modes = frozenset((k, m) for k, m in self.kernel_modes if k != scope) | {(scope, fp_mode)}
@@ -1767,7 +1818,7 @@ class Session:
         :func:`~nestforge.stages.precision.precision_refusal` gives."""
         refused = precision_refusal(self.sdfg, container, dtype)
         if refused is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=CHANGE_PRECISION, labels=(), reason=refused)
+            return illegal(CHANGE_PRECISION, (), refused)
         assert container is not None and dtype is not None, "precision_refusal requires both"
 
         def change() -> None:
@@ -1799,19 +1850,14 @@ class Session:
             op = local_operation(operation, self.sdfg)
             laid = locally_laid_out(self.sdfg, op)
         except ValueError as err:  # relayout's refusal, naming what it cannot lay out
-            reason = Refused(str(err), Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=reason)
-        with self.atomic():
+            return illegal(RELAYOUT, (), Refused(str(err), Refusal.ARGUMENT))
+
+        def change() -> None:
             self.sdfg = laid
-            self.unplaced = None
             self.bump()
             self.sdfg.validate()
-            done = MoveResult(
-                status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=f"relayout {op.action.value} {LOCAL_MARK}"
-            )
-            self.applied.append(done)
-            self.remember()
-        return done
+
+        return self.program_change(RELAYOUT, f"relayout {op.action.value} {LOCAL_MARK}", change)
 
     def relayout(self, operation: Mapping[str, object]) -> MoveResult:
         """Lay one argument out by ``operation`` (one relayout operation, as the bench's ``requests`` take it): the
@@ -1822,23 +1868,20 @@ class Session:
             return self.relayout_local(operation)
         refused = self.relayout_refusal()
         if refused is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=refused)
+            return illegal(RELAYOUT, (), refused)
         unlaid = self.unlaid if self.unlaid is not None else self.sdfg
         try:
             op = layout_operation(operation, unlaid)
             laid = laid_out(unlaid, (*self.layout, op))
         except ValueError as err:  # relayout's refusal, naming what it cannot lay out
-            reason = Refused(str(err), Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=RELAYOUT, labels=(), reason=reason)
-        with self.atomic():
+            return illegal(RELAYOUT, (), Refused(str(err), Refusal.ARGUMENT))
+
+        def change() -> None:
             self.unlaid, self.layout, self.sdfg = unlaid, (*self.layout, op), laid
-            self.unplaced = None
             self.bump()
             self.sdfg.validate()
-            done = MoveResult(status=MoveStatus.APPLIED, kind=RELAYOUT, labels=(), reason=f"relayout {op.action.value}")
-            self.applied.append(done)
-            self.remember()
-        return done
+
+        return self.program_change(RELAYOUT, f"relayout {op.action.value}", change)
 
     def apply_move(
         self,
@@ -1892,24 +1935,16 @@ class Session:
         names = tuple(labels)
         if kind in self.authored:
             return self.apply_authored_move(self.authored[kind], names, scope)
-        shape = MOVE_SHAPES[check_kind(kind)]
-        if kind in VARIADIC and not names:
-            raise ValueError(f"{kind} takes one label or more; got none")
-        if kind not in VARIADIC and len(names) != len(shape):
-            raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
-        family = switched_off(kind, self.disabled_families)
-        if family is not None:
-            reason = Refused(
-                f"{kind} belongs to the family {family}, which this run has switched off.", Refusal.FAMILY_OFF
-            )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
+        family_off = self.call_refusal(kind, names)
+        if family_off is not None:
+            return illegal(kind, names, family_off)
         if kind == ROLLBACK:
             return self.undo()
         if kind in RUN_ON_KINDS:
             return self.run_on(kind, names)
         sizes = chosen_sizes(kind, tile_sizes, lanes, block)
         if isinstance(sizes, Refused):
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=sizes)
+            return illegal(kind, names, sizes)
         tile_sizes = sizes
         undone = self.inverse_of_last(kind, names, scope, force)
         if undone is not None:
@@ -1918,32 +1953,13 @@ class Session:
             return self.make_persistent(names, scope)
         if kind == SET_FP_MODE:
             return self.set_fp_mode(scope, fp_mode)
+        refusal = self.where_refusal(kind, scope)
+        if refusal is not None:
+            return illegal(kind, names, refusal)
         if kind == CHANGE_PRECISION:
-            if scope is not None:
-                reason = Refused(
-                    f"{kind} changes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
-                )
-                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
             return self.change_precision(container, dtype)
         if kind == RELAYOUT:
-            if scope is not None:
-                reason = Refused(
-                    "relayout lays out the program's arguments, not a kernel's body: name no scope.", Refusal.ARGUMENT
-                )
-                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
             return self.relayout(operation or {})
-        if scope is not None and kind == PROPAGATE_CONFIG:
-            reason = Refused(
-                "propagate-config specializes the whole program, not a kernel's body: name no scope.", Refusal.ARGUMENT
-            )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=reason)
-        refusal = self.scope_refusal(kind, scope)
-        if refusal is not None:
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=refusal)
-        if scope is not None and (kind == SET_SCHEDULE_GPU or kind in DEVICE_KINDS):
-            staging = self.staging_refusal(kind, scope)
-            if staging is not None:
-                return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=staging)
         if kind == SET_SCHEDULE_GPU:
             assert scope is not None, "scope_refusal requires one"
             return self.set_gpu_schedule(tuple(names), scope, tile_sizes, schedule)
@@ -1977,7 +1993,14 @@ class Session:
                     f"{names[0]} takes one of {list(offered)} on this target; not {implementation!r}.", Refusal.ARGUMENT
                 )
         if not isinstance(plan, Rewrite):
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=names, reason=plan)
+            return illegal(kind, names, plan)
+        return self.committed(kind, names, plan, scope, target)
+
+    def committed(
+        self, kind: str, names: tuple[str, ...], plan: Rewrite, scope: str | None, target: dace.SDFG
+    ) -> MoveResult:
+        """:meth:`apply_move`'s change: commit ``plan`` on ``target`` (the program, or kernel ``scope``'s body), bring
+        it back to canonical form, name its rows and record it."""
         labels_now = self.labels_in(scope, target)
         with self.atomic():
             made = plan.commit()
@@ -2022,10 +2045,33 @@ class Session:
                 forced=forced,
                 warning=FORCED_WARNING if forced else None,
             )
-            self.applied.append(done)
-            self.remember()
+            self.recorded(done)
         self.made_by_last = (len(self.applied) - 1, frozenset(self.labels_in(scope, target) - labels_now))
         return done
+
+    def call_refusal(self, kind: str, names: tuple[str, ...]) -> str | None:
+        """Why a call of the built-in ``kind`` changes nothing: its family is off; ``None`` when it may go on.
+
+        :raises ValueError: ``kind`` is unknown or ``names`` has the wrong count."""
+        shape = MOVE_SHAPES[check_kind(kind)]
+        if kind in VARIADIC and not names:
+            raise ValueError(f"{kind} takes one label or more; got none")
+        if kind not in VARIADIC and len(names) != len(shape):
+            raise ValueError(f"{kind} takes {len(shape)} label(s); got {len(names)}")
+        family = switched_off(kind, self.disabled_families)
+        if family is None:
+            return None
+        return Refused(f"{kind} belongs to the family {family}, which this run has switched off.", Refusal.FAMILY_OFF)
+
+    def where_refusal(self, kind: str, scope: str | None) -> str | None:
+        """Why ``kind`` does not apply where the call names (kernel ``scope``'s body, or the program): a move of the
+        whole program inside a kernel, a schedule on the wrong device, or one that clashes with staging."""
+        if scope is not None and kind in PROGRAM_ONLY:
+            return Refused(f"{kind} {PROGRAM_ONLY[kind]}: name no scope.", Refusal.ARGUMENT)
+        refusal = self.scope_refusal(kind, scope)
+        if refusal is not None or scope is None or (kind != SET_SCHEDULE_GPU and kind not in DEVICE_KINDS):
+            return refusal
+        return self.staging_refusal(kind, scope)
 
     def tune_move(
         self,
@@ -2190,14 +2236,14 @@ class Session:
             reason = Refused(
                 "the sizes are not set, so no temporary's size is known; set Session.sizes first.", Refusal.ARGUMENT
             )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+            return illegal("persist-temporaries", (), reason)
         names = make_persistent(self.sdfg, self.sizes, min_bytes)
         if not names:
             reason = Refused(
                 f"no temporary of the program is a heap array of {min_bytes} bytes or more at these sizes.",
                 Refusal.WRONG_ROW_KIND,
             )
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="persist-temporaries", labels=(), reason=reason)
+            return illegal("persist-temporaries", (), reason)
         if self.unplaced is not None:
             make_persistent(self.unplaced, self.sizes, min_bytes)
         self.bump()
@@ -2224,7 +2270,7 @@ class Session:
         if isinstance(lowered, str):
             self.unscoped = unscoped  # a refused scope is not journaled: it keeps nothing
             reason = lowered if isinstance(lowered, Refused) else Refused(lowered, Refusal.WRONG_ROW_KIND)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="define-scope", labels=names, reason=reason)
+            return illegal("define-scope", names, reason)
         self.unplaced = None
         self.bump(names)
         done = MoveResult(status=MoveStatus.APPLIED, kind="define-scope", labels=names, reason=lowered[0].name)
@@ -2238,15 +2284,15 @@ class Session:
 
         :returns: ``applied`` with ``name`` as ``reason``, or why nothing changed.
         """
-        calls = {ext.name: ext for ext in external_calls(self.sdfg)}
+        calls = self.kernels()
         if name not in calls:
             reason = Refused(
                 f"no kernel is named {name}; kernels are {', '.join(sorted(calls))}.", Refusal.UNKNOWN_LABEL
             )
-            return MoveResult(status=MoveStatus.NOT_FOUND, kind="unset-scope", labels=(name,), reason=reason)
+            return illegal("unset-scope", (name,), reason, MoveStatus.NOT_FOUND)
         if calls[name].standalone_sdfg is None:
             reason = Refused(f"{name} keeps no SDFG of its nest to inline.", Refusal.WRONG_ROW_KIND)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind="unset-scope", labels=(name,), reason=reason)
+            return illegal("unset-scope", (name,), reason)
         if self.unplaced is not None:
             self.sdfg, self.unplaced = copy.deepcopy(self.unplaced), None
         ext = self.kernel(name)
@@ -2273,9 +2319,13 @@ class Session:
             self.kernel_deps = kernel_dependencies(self.sdfg)
         return self.kernel_deps
 
+    def kernels(self) -> dict[str, ExternalCall]:
+        """Every kernel node of the program, by name, in program order."""
+        return {ext.name: ext for ext in external_calls(self.sdfg)}
+
     def kernel(self, name: str) -> ExternalCall:
         """The kernel node named ``name``."""
-        calls = {ext.name: ext for ext in external_calls(self.sdfg)}
+        calls = self.kernels()
         if name not in calls:
             raise KeyError(f"no kernel is named {name!r}; kernels are {sorted(calls)}")
         return calls[name]
@@ -2440,18 +2490,11 @@ class Session:
         src = self.default_kernel(name)
         if self.pipeline is not None and src.device == "cpu":
             variant, archive = self.pipeline_build(name, src)
-            self.bind(name, KernelBuild(src, variant, archive))
-            return KernelLibrary(
-                kernel=name,
-                symbol=src.symbol,
-                abi_order=tuple(src.abi_order),
-                unit=src.unit,
-                library=archive,
-                variant=variant.label,
-            )
-        variant = self.first_variant(src.device, name)
-        with self.stopper.armed():
-            archive = build_kernel_library(src, variant.compiler, list(variant.flags), self.work_dir / name / "library")
+        else:
+            variant = self.first_variant(src.device, name)
+            with self.stopper.armed():
+                folder = self.work_dir / name / "library"
+                archive = build_kernel_library(src, variant.compiler, list(variant.flags), folder)
         self.bind(name, KernelBuild(src, variant, archive))
         return KernelLibrary(
             kernel=name,
@@ -2570,7 +2613,7 @@ class Session:
         )
         if reason:
             refused = Refused(reason, Refusal.ARGUMENT)
-            return MoveResult(status=MoveStatus.ILLEGAL, kind=kind, labels=(), reason=refused)
+            return illegal(kind, (), refused)
 
         def change() -> None:
             self.pipeline = (ir, pipeline)

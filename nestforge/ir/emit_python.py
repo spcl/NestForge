@@ -350,6 +350,17 @@ def bind_nests_through_views(sdfg: dace.SDFG) -> None:
             state.sdfg.remove_data(view.data, validate=False)
 
 
+def check_binding(inner: dace.SDFG, outer: dace.SDFG, conn: str, data: str, bound: Mapping[str, str]) -> None:
+    """Refuse binding the nest ``inner``'s connector ``conn`` to ``outer``'s ``data`` (``bound``: every binding of the
+    nest): the shapes differ, or the nest has a private ``data`` of its own."""
+    inner_desc, outer_desc = inner.arrays[conn], outer.arrays[data]
+    same = [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]
+    if not same and not (inner_desc.total_size == 1 and outer_desc.total_size == 1):
+        raise UnsupportedNest(f"nested connector {conn!r} is {inner_desc.shape}, but {data!r} is {outer_desc.shape}")
+    if data in inner.arrays and data not in bound:
+        raise UnsupportedNest(f"nested SDFG {inner.name} has a private {data!r} that shadows the outer array")
+
+
 def bind_nested_data(sdfg: dace.SDFG) -> None:
     """Rename each nested SDFG's connector arrays to the outer arrays they bind, with the outer descriptors; the
     connectors cover whole arrays after ``ExpandNestedSDFGInputs``."""
@@ -358,14 +369,7 @@ def bind_nested_data(sdfg: dace.SDFG) -> None:
         bound = {e.dst_conn: memlet_parts(e.data)[0] for e in state.in_edges(node) if e.dst_conn and e.data.data}
         bound |= {e.src_conn: memlet_parts(e.data)[0] for e in state.out_edges(node) if e.src_conn and e.data.data}
         for conn, data in bound.items():
-            inner_desc, outer_desc = inner.arrays[conn], outer.arrays[data]
-            same = [str(d) for d in inner_desc.shape] == [str(d) for d in outer_desc.shape]
-            if not same and not (inner_desc.total_size == 1 and outer_desc.total_size == 1):
-                raise UnsupportedNest(
-                    f"nested connector {conn!r} is {inner_desc.shape}, but {data!r} is {outer_desc.shape}"
-                )
-            if data in inner.arrays and data not in bound:
-                raise UnsupportedNest(f"nested SDFG {inner.name} has a private {data!r} that shadows the outer array")
+            check_binding(inner, outer, conn, data, bound)
         inner.replace_dict({conn: data for conn, data in bound.items() if conn != data})
         for data in bound.values():
             inner.arrays[data] = copy.deepcopy(outer.arrays[data])
@@ -657,23 +661,32 @@ def tasklet_lines(scope: Scope, state: SDFGState, node: nodes.Tasklet) -> list[s
     for edge in state.out_edges(node):
         if edge.src_conn not in used or edge.data.is_empty() or isinstance(edge.dst, nodes.Tasklet):
             continue
-        data, subset, other = memlet_parts(edge.data)
-        target = access(scope, data, subset)
-        single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
-        # the body writes some elements of a range, or may skip a dynamic write: start from what is there, or from the
-        # identity of a write-conflict resolution, which combines with what is there after
-        if edge.data.dynamic or not single:
-            seed = target if edge.data.wcr is None else wcr_identity(scope.sdfg.arrays[data], edge.data.wcr)
-            seed = seed if single or edge.data.wcr is None else f"np.full_like({target}, {seed})"
-            before.append(f"{edge.src_conn} = {seed}")
-        if single or edge.data.wcr is not None:  # a range is written through its view
-            value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
-            after.append(f"{target} = {value}")
+        seed, store = output_lines(scope, edge)
+        before += seed
+        after += store
     return (
         [line for text in before for line in python(text, scope.names)]
         + body
         + [line for text in after for line in python(text, scope.names)]
     )
+
+
+def output_lines(scope: Scope, edge: MultiConnectorEdge[dace.Memlet]) -> tuple[list[str], list[str]]:
+    """What a tasklet's output ``edge`` adds before its body (the connector's start value) and after it (the store)."""
+    data, subset, other = memlet_parts(edge.data)
+    target = access(scope, data, subset)
+    single = not isinstance(subset, subsets.Range) or subset.num_elements() == 1
+    seed: list[str] = []
+    # the body writes some elements of a range, or may skip a dynamic write: start from what is there, or from the
+    # identity of a write-conflict resolution, which combines with what is there after
+    if edge.data.dynamic or not single:
+        start = target if edge.data.wcr is None else wcr_identity(scope.sdfg.arrays[data], edge.data.wcr)
+        start = start if single or edge.data.wcr is None else f"np.full_like({target}, {start})"
+        seed.append(f"{edge.src_conn} = {start}")
+    if not single and edge.data.wcr is None:  # a range is written through its view
+        return seed, []
+    value = edge.src_conn if edge.data.wcr is None else combine(edge.data.wcr, target, edge.src_conn)
+    return seed, [f"{target} = {value}"]
 
 
 def copy_line(scope: Scope, src: nodes.AccessNode, dst: nodes.AccessNode, memlet: dace.Memlet) -> str:

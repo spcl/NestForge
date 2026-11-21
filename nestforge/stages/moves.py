@@ -1610,36 +1610,60 @@ def plan_set_schedule_gpu(
             Refusal.WRONG_ROW_KIND,
         )
     if role == "kernel":
-        inner = [
-            other.map.label
-            for other in state.scope_children()[entry]
-            if isinstance(other, nodes.MapEntry) and chosen.get(other.map.label, GpuChoice()).schedule != "sequential"
-        ]
-        if schedule is not None:
-            return Refused(
-                f"{label} is the kernel doall: it takes block, the threads of one block; schedule goes "
-                "on a doall inside it.",
-                Refusal.ARGUMENT,
-            )
-        last = int(dace.Config.get("compiler", "cuda", "block_size_lastdim_limit"))
-        if (
-            not 1 <= len(block) <= 3
-            or any(size < 1 for size in block)
-            or prod(block) > MAX_BLOCK_THREADS
-            or (len(block) == 3 and block[2] > last)
-        ):
-            return Refused(
-                f"block takes one to three positive sizes of at most {MAX_BLOCK_THREADS} threads in all, the third of "
-                f"at most {last}; not {list(block)}.",
-                Refusal.ARGUMENT,
-            )
-        if inner:
-            return Refused(
-                f"{', '.join(inner)} in {label} share the block's threads, so their schedule fixes the block; set them "
-                "to sequential first.",
-                Refusal.ARGUMENT,
-            )
-        return GpuChoice(block=tuple(block))
+        return kernel_doall_choice(entry, state, block, schedule, chosen)
+    return inner_doall_choice(entry, state, block, schedule, chosen)
+
+
+def kernel_doall_choice(
+    entry: nodes.MapEntry,
+    state: SDFGState,
+    block: Sequence[int],
+    schedule: str | None,
+    chosen: Mapping[str, GpuChoice],
+) -> GpuChoice | str:
+    """:func:`plan_set_schedule_gpu` on a kernel doall: a thread block, unless a doall inside it shares the threads."""
+    label = entry.map.label
+    inner = [
+        other.map.label
+        for other in state.scope_children()[entry]
+        if isinstance(other, nodes.MapEntry) and chosen.get(other.map.label, GpuChoice()).schedule != "sequential"
+    ]
+    if schedule is not None:
+        return Refused(
+            f"{label} is the kernel doall: it takes block, the threads of one block; schedule goes "
+            "on a doall inside it.",
+            Refusal.ARGUMENT,
+        )
+    last = int(dace.Config.get("compiler", "cuda", "block_size_lastdim_limit"))
+    if (
+        not 1 <= len(block) <= 3
+        or any(size < 1 for size in block)
+        or prod(block) > MAX_BLOCK_THREADS
+        or (len(block) == 3 and block[2] > last)
+    ):
+        return Refused(
+            f"block takes one to three positive sizes of at most {MAX_BLOCK_THREADS} threads in all, the third of "
+            f"at most {last}; not {list(block)}.",
+            Refusal.ARGUMENT,
+        )
+    if inner:
+        return Refused(
+            f"{', '.join(inner)} in {label} share the block's threads, so their schedule fixes the block; set them "
+            "to sequential first.",
+            Refusal.ARGUMENT,
+        )
+    return GpuChoice(block=tuple(block))
+
+
+def inner_doall_choice(
+    entry: nodes.MapEntry,
+    state: SDFGState,
+    block: Sequence[int],
+    schedule: str | None,
+    chosen: Mapping[str, GpuChoice],
+) -> GpuChoice | str:
+    """:func:`plan_set_schedule_gpu` on a doall directly inside the kernel doall: how its threads share it."""
+    label = entry.map.label
     kernel = cast(nodes.MapEntry, state.entry_node(entry))
     if block:
         return Refused(f"{label} is inside the kernel doall {kernel.map.label}; block goes on that.", Refusal.ARGUMENT)

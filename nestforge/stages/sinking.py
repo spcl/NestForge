@@ -195,6 +195,18 @@ def statements_writing(state: SDFGState, name: str) -> set[nodes.Node] | str:
     return found
 
 
+def container_refusal(sdfg: sd.SDFG, name: str) -> str | None:
+    """Why ``name`` is no plain temporary of ``sdfg``, the only kind of container whose statements sink."""
+    desc = sdfg.arrays.get(name)
+    if desc is None:
+        return f"{name} is no container of {sdfg.label}."
+    if not desc.transient:
+        return f"{name} is an argument; only a temporary sinks."
+    if isinstance(desc, (data.Stream, data.View)):
+        return f"{name} is a stream or a view; only plain temporaries sink."
+    return None
+
+
 def plan(
     source: SDFGState,
     name: str,
@@ -205,13 +217,9 @@ def plan(
     """The statements of ``source`` that compute ``name``, for a loop or map whose states ``readers`` read it, which
     writes the containers ``written``, and whose nodes in ``source`` are ``consumers``."""
     sdfg = source.sdfg
-    desc = sdfg.arrays.get(name)
-    if desc is None:
-        return f"{name} is no container of {sdfg.label}."
-    if not desc.transient:
-        return f"{name} is an argument; only a temporary sinks."
-    if isinstance(desc, (data.Stream, data.View)):
-        return f"{name} is a stream or a view; only plain temporaries sink."
+    why = container_refusal(sdfg, name)
+    if why is not None:
+        return why
     statements = statements_writing(source, name)
     if isinstance(statements, str):
         return statements
@@ -272,8 +280,9 @@ def sink_into_loop(loop: LoopRegion, name: str) -> str | None:
     return None
 
 
-def plan_map(state: SDFGState, entry: nodes.MapEntry, name: str) -> SinkPlan | str:
-    """What :func:`sink_into_map` would move, or why it cannot."""
+def map_read_refusal(state: SDFGState, entry: nodes.MapEntry, name: str) -> str | None:
+    """Why the map ``entry`` takes no statements computing ``name``: it is nested, or it does not read all of
+    ``name``."""
     if state.entry_node(entry) is not None:
         return f"{entry.map.label} is inside another map; only a top-level map takes statements."
     reads = [e for e in state.in_edges(entry) if e.data.data == name]
@@ -285,6 +294,15 @@ def plan_map(state: SDFGState, entry: nodes.MapEntry, name: str) -> SinkPlan | s
     whole = Memlet.from_array(name, desc).subset
     if any(e.data.subset != whole or e.data.wcr is not None for e in reads):
         return f"{entry.map.label} reads only a part of {name}; only a container it reads whole sinks."
+    return None
+
+
+def plan_map(state: SDFGState, entry: nodes.MapEntry, name: str) -> SinkPlan | str:
+    """What :func:`sink_into_map` would move, or why it cannot."""
+    why = map_read_refusal(state, entry, name)
+    if why is not None:
+        return why
+    reads = [e for e in state.in_edges(entry) if e.data.data == name]
     written = {e.data.data for e in state.out_edges(state.exit_node(entry)) if e.data.data is not None}
     computed_here = any(state.in_degree(e.src) > 0 for e in reads)
     if computed_here:

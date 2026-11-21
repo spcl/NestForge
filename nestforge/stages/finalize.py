@@ -14,6 +14,7 @@ from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
+from dace.sdfg.state import SDFGState
 
 from nestforge.records import Record
 
@@ -62,6 +63,24 @@ def host_touched(sdfg: dace.SDFG, name: str) -> bool:
     return False
 
 
+def host_twin(sdfg: dace.SDFG, name: str, first: SDFGState, lasts: list[SDFGState]) -> None:
+    """Make argument ``name`` device memory read through a transient host twin: copied in at ``first``, and back at
+    each of ``lasts`` when the program writes it."""
+    desc = sdfg.arrays[name]
+    twin = sdfg.find_new_symbol(f"{name}_host")
+    sdfg.replace(name, twin)
+    sdfg.arrays[twin].transient = True
+    written = any(
+        state.in_degree(node) > 0 for state in sdfg.states() for node in state.data_nodes() if node.data == twin
+    )
+    device = desc.clone()
+    device.transient, device.storage = False, dtypes.StorageType.GPU_Global
+    sdfg.add_datadesc(name, device)
+    first.add_nedge(first.add_read(name), first.add_write(twin), dace.Memlet.from_array(name, device))
+    for last in lasts if written else ():
+        last.add_nedge(last.add_read(twin), last.add_write(name), dace.Memlet.from_array(twin, sdfg.arrays[twin]))
+
+
 def device_arguments(sdfg: dace.SDFG) -> None:
     """The judge grades a GPU task with every argument in device memory (#98): each array argument of ``sdfg`` becomes
     device memory, and one the host touches is read through a host copy, copied in first and back last when written."""
@@ -83,19 +102,7 @@ def device_arguments(sdfg: dace.SDFG) -> None:
     first = sdfg.add_state_before(sdfg.start_block, "device_arguments_in", is_start_block=True)
     lasts = [sdfg.add_state_after(sink, f"device_arguments_out_{i}") for i, sink in enumerate(sdfg.sink_nodes())]
     for name in host:
-        desc = sdfg.arrays[name]
-        twin = sdfg.find_new_symbol(f"{name}_host")
-        sdfg.replace(name, twin)
-        sdfg.arrays[twin].transient = True
-        written = any(
-            state.in_degree(node) > 0 for state in sdfg.states() for node in state.data_nodes() if node.data == twin
-        )
-        device = desc.clone()
-        device.transient, device.storage = False, dtypes.StorageType.GPU_Global
-        sdfg.add_datadesc(name, device)
-        first.add_nedge(first.add_read(name), first.add_write(twin), dace.Memlet.from_array(name, device))
-        for last in lasts if written else ():
-            last.add_nedge(last.add_read(twin), last.add_write(name), dace.Memlet.from_array(twin, sdfg.arrays[twin]))
+        host_twin(sdfg, name, first, lasts)
     sdfg.arg_names = order
     for call, names in zip(calls, abi, strict=True):
         call.abi_order = names

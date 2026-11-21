@@ -90,26 +90,32 @@ def implicit_copies(sdfg: dace.SDFG) -> int:
     count = 0
     for state in sdfg.states():
         for node in [n for n in state.nodes() if is_copy(n) and state.entry_node(n) is None]:
-            ins = [e for e in state.in_edges(node) if not e.data.is_empty()]
-            outs = [e for e in state.out_edges(node) if not e.data.is_empty()]
-            if len(ins) != 1 or len(outs) != 1:
-                continue
-            src, dst = ins[0].src, outs[0].dst
-            if not isinstance(src, nodes.AccessNode) or not isinstance(dst, nodes.AccessNode) or src.data == dst.data:
-                continue
-            if src.desc(sdfg).dtype != dst.desc(sdfg).dtype:  # a casting copy is no copy edge
-                continue
-            for edge in state.in_edges(node):
-                if edge.data.is_empty():
-                    state.add_nedge(edge.src, dst, dace.Memlet())
-            for edge in state.out_edges(node):
-                if edge.data.is_empty():
-                    state.add_nedge(src, edge.dst, dace.Memlet())
-            memlet = dace.Memlet(data=src.data, subset=ins[0].data.subset, other_subset=outs[0].data.subset)
-            state.remove_node(node)
-            state.add_edge(src, None, dst, None, memlet)
-            count += 1
+            count += int(copy_edge_again(state, node))
     return count
+
+
+def copy_edge_again(state: SDFGState, node: nodes.Node) -> bool:
+    """Turn the copy ``node`` between access nodes of two arrays of one element type into a copy edge, its ordering
+    edges kept on the access nodes; whether it did."""
+    ins = [e for e in state.in_edges(node) if not e.data.is_empty()]
+    outs = [e for e in state.out_edges(node) if not e.data.is_empty()]
+    if len(ins) != 1 or len(outs) != 1:
+        return False
+    src, dst = ins[0].src, outs[0].dst
+    if not isinstance(src, nodes.AccessNode) or not isinstance(dst, nodes.AccessNode) or src.data == dst.data:
+        return False
+    if src.desc(state.sdfg).dtype != dst.desc(state.sdfg).dtype:  # a casting copy is no copy edge
+        return False
+    for edge in state.in_edges(node):
+        if edge.data.is_empty():
+            state.add_nedge(edge.src, dst, dace.Memlet())
+    for edge in state.out_edges(node):
+        if edge.data.is_empty():
+            state.add_nedge(src, edge.dst, dace.Memlet())
+    memlet = dace.Memlet(data=src.data, subset=ins[0].data.subset, other_subset=outs[0].data.subset)
+    state.remove_node(node)
+    state.add_edge(src, None, dst, None, memlet)
+    return True
 
 
 def innermost_bodies(state: SDFGState) -> list[list[nodes.Node]]:

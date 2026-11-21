@@ -586,14 +586,20 @@ def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> 
                 "; return_to_phase returns to an earlier phase" if stage == "round" else ""
             )
     if tool in ("list_moves", "apply_move", "tune_move"):
-        if phase is PhaseName.STRUCTURED and scoped:
-            return "moves inside a kernel (scope) belong to the phase scoped, after scopes"
-        if phase is PhaseName.SCOPED and not scoped and kind != ROLLBACK:
-            return "in the phase scoped every move names its kernel (scope); the whole program's are the phase structured's"
-        if phase is PhaseName.SCOPED and kind in SCOPES_PHASE_KINDS:
-            return f"{kind} belongs to the phase scopes"
+        return move_phase_refusal(phase, kind, scoped)
     if tool == "apply_scope_move" and kind not in SCOPES_PHASE_KINDS and kind != ROLLBACK:
         return f"the phase scopes applies {sorted(SCOPES_PHASE_KINDS)}; {kind} belongs to the phase scoped"
+    return None
+
+
+def move_phase_refusal(phase: PhaseName, kind: str, scoped: bool) -> str | None:
+    """Why a move of ``kind``, inside a kernel (``scoped``) or on the whole program, is not one of ``phase``."""
+    if phase is PhaseName.STRUCTURED and scoped:
+        return "moves inside a kernel (scope) belong to the phase scoped, after scopes"
+    if phase is PhaseName.SCOPED and not scoped and kind != ROLLBACK:
+        return "in the phase scoped every move names its kernel (scope); the whole program's are the phase structured's"
+    if phase is PhaseName.SCOPED and kind in SCOPES_PHASE_KINDS:
+        return f"{kind} belongs to the phase scopes"
     return None
 
 

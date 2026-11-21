@@ -173,14 +173,18 @@ def in_state_refusal(state: SDFGState, node: nodes.CodeNode, effect: Effect, ear
         return Refused(f"what {node.label} reads is computed (or ordered) in {state.label} first.", Refusal.EFFECTS)
     if not earlier and any(state.out_degree(n) for n in outputs):
         return Refused(f"what {node.label} writes is read (or ordered) in {state.label} after it.", Refusal.EFFECTS)
-    side = reaching(state, node, forward=earlier)
-    own = {node, *inputs, *outputs}
+    return out_of_order(state, node, effect, {node, *inputs, *outputs} | reaching(state, node, forward=earlier))
+
+
+def out_of_order(state: SDFGState, node: nodes.CodeNode, effect: Effect, kept: set[nodes.Node]) -> str | None:
+    """Why an access of ``state`` outside ``kept`` (the call, its own access nodes, and the side it leaves toward)
+    conflicts with the call: it writes what the call touches or reads what the call writes."""
     for other in state.data_nodes():
-        if other in own or other in side:
+        if other in kept:
             continue
-        writes = any(not e.data.is_empty() for e in state.in_edges(other))
-        reads = any(not e.data.is_empty() for e in state.out_edges(other))
-        if (writes and other.data in effect.touched) or (reads and other.data in effect.writes):
+        if (written(state, other) and other.data in effect.touched) or (
+            read(state, other) and other.data in effect.writes
+        ):
             return Refused(f"{state.label} accesses {other.data} out of order with {node.label}.", Refusal.EFFECTS)
     return None
 
@@ -273,6 +277,12 @@ def loop_refusal(loop: LoopRegion, child: ControlFlowBlock, effect: Effect, earl
     meta = set().union(*(c.get_free_symbols() for c in loop.get_meta_codeblocks()))
     if meta & effect.writes:
         return Refused(f"{loop.label}'s bounds read what the call writes.", Refusal.EFFECTS)
+    return body_refusal(loop, child, effect, earlier)
+
+
+def body_refusal(loop: LoopRegion, child: ControlFlowBlock, effect: Effect, earlier: bool) -> str | None:
+    """Whether a block or transition of ``loop`` besides ``child`` (the call's) writes what the call touches, or
+    reads what it writes ahead of it."""
     after = reaching(loop, child, forward=True)
     for block in loop.nodes():
         if block is child:
@@ -340,22 +350,42 @@ def plan_lib_motion(row: Row, target_row: Row, place: str) -> Callable[[], objec
     if not earlier and target is not anchor and target not in reaching(region, anchor, forward=True):
         return Refused(f"{target.label} is neither before nor after the call on any path.", Refusal.WRONG_ROW_KIND)
     effect = effect_of(state, node)
-    why = path_refusal(state, node, effect, loops, earlier)
-    first, last = (target, anchor) if earlier else (anchor, target)
-    span = (reaching(region, first, forward=True) & reaching(region, last, forward=False)) | {first, last}
-    # the target is crossed when the call lands on its far side
-    crossed = span - {anchor} - ({target} if place == "into" or earlier == (place == "after") else set())
-    for block in crossed:
-        why = why or crossing_refusal(node, block) or crossed_refusal(block, effect)
-    for edge in region.edges():
-        if edge.src in span and edge.dst in span:
-            why = why or interstate_refusal(edge.data, effect, region.label)
+    why = path_refusal(state, node, effect, loops, earlier) or span_refusal(
+        node, effect, region, anchor, target, earlier, place
+    )
     if place != "into":
         return why or (lambda: move_call(state, node, target, place == "after"))
     joint = why or joint_of(cast(SDFGState, target), node, effect, earlier)
     if isinstance(joint, str):
         return joint
     return lambda: join_call(state, node, joint)
+
+
+def span_refusal(
+    node: nodes.CodeNode,
+    effect: Effect,
+    region: ControlFlowRegion,
+    anchor: ControlFlowBlock,
+    target: ControlFlowBlock,
+    earlier: bool,
+    place: str,
+) -> str | None:
+    """Whether the call may cross every block and interstate edge of ``region`` between ``anchor`` (the block it
+    leaves) and ``target``."""
+    first, last = (target, anchor) if earlier else (anchor, target)
+    span = (reaching(region, first, forward=True) & reaching(region, last, forward=False)) | {first, last}
+    # the target is crossed when the call lands on its far side
+    crossed = span - {anchor} - ({target} if place == "into" or earlier == (place == "after") else set())
+    for block in crossed:
+        why = crossing_refusal(node, block) or crossed_refusal(block, effect)
+        if why is not None:
+            return why
+    for edge in region.edges():
+        if edge.src in span and edge.dst in span:
+            why = interstate_refusal(edge.data, effect, region.label)
+            if why is not None:
+                return why
+    return None
 
 
 def path_refusal(
@@ -420,6 +450,15 @@ def joint_of(target: SDFGState, node: nodes.CodeNode, effect: Effect, earlier: b
         for a in target.data_nodes()
         if (written(target, a) and a.data in effect.touched) or (read(target, a) and a.data in effect.writes)
     ]
+    why = join_refusal(target, clashing, effect, earlier)
+    if why is not None:
+        return why
+    return earlier_joint(target, clashing, effect) if earlier else later_joint(target, clashing, effect)
+
+
+def join_refusal(target: SDFGState, clashing: list[nodes.AccessNode], effect: Effect, earlier: bool) -> str | None:
+    """Why the call cannot join ``target``, whose ``clashing`` accesses conflict with it: one accumulates, two of
+    them write unordered, or a barrier would come before device work."""
     for access in clashing:
         if any(e.data.wcr is not None for e in target.in_edges(access)):
             return Refused(
@@ -435,15 +474,25 @@ def joint_of(target: SDFGState, node: nodes.CodeNode, effect: Effect, earlier: b
             f"{target.label} issues device work the barrier would come before; it joins only after such work.",
             Refusal.EFFECTS,
         )
-    if earlier:
-        sources = {}
-        for name in () if effect.device else effect.reads:  # a barrier has no input to wire
-            last = last_writer(target, name)
-            if isinstance(last, nodes.AccessNode):
-                sources[name] = last
-        work = [target.exit_node(n) if isinstance(n, nodes.EntryNode) else n for n in device_work(target)]
-        before = [a for a in clashing if a not in sources.values()] + (work if effect.device else [])
-        return Joint(target, sources, {}, before, [])
+    return None
+
+
+def earlier_joint(target: SDFGState, clashing: list[nodes.AccessNode], effect: Effect) -> Joint:
+    """The call, from a later point, joins ``target`` after every ``clashing`` access, reading each input from its
+    last writer there."""
+    sources = {}
+    for name in () if effect.device else effect.reads:  # a barrier has no input to wire
+        last = last_writer(target, name)
+        if isinstance(last, nodes.AccessNode):
+            sources[name] = last
+    work = [target.exit_node(n) if isinstance(n, nodes.EntryNode) else n for n in device_work(target)]
+    before = [a for a in clashing if a not in sources.values()] + (work if effect.device else [])
+    return Joint(target, sources, {}, before, [])
+
+
+def later_joint(target: SDFGState, clashing: list[nodes.AccessNode], effect: Effect) -> Joint:
+    """The call, from an earlier point, joins ``target`` before every ``clashing`` access, writing into the access
+    nodes there that nothing writes yet."""
     sinks = {}
     for name in effect.writes:
         fresh = [a for a in target.data_nodes() if a.data == name and target.in_degree(a) == 0]
