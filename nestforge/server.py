@@ -147,6 +147,19 @@ def focused(call: Callable[..., object]) -> Callable[..., object]:
     return run
 
 
+def with_tree(call: Callable[..., MoveResult | BatchResult]) -> Callable[..., MoveResult | BatchResult]:
+    """``call``, whose applied answer carries the subtree it rewrote, so the agent need not read the whole tree again;
+    it keeps ``call``'s signature, which the tool's arguments are checked against."""
+
+    @functools.wraps(call)
+    def answered(session: Session, **arguments: object) -> MoveResult | BatchResult:
+        result = call(session, **arguments)
+        applied = result.status is MoveStatus.APPLIED if isinstance(result, MoveResult) else result.status == "applied"
+        return result.model_copy(update={"tree": session.changed_tree()}) if applied else result
+
+    return answered
+
+
 def run_defaults(session: Session, stage: Stage) -> object:
     if stage in ("moves", "finish") and has_kernels(session):
         raise ValueError(MOVES_CLOSED)
@@ -155,7 +168,7 @@ def run_defaults(session: Session, stage: Stage) -> object:
 
 #: Tool -> the session call it makes, the tool's validated arguments passed as keywords.
 CALLS: dict[str, Callable[..., object]] = {
-    "get_cpf": Session.describe,
+    "get_cpf": Session.cpf,
     "view_tree": Session.view,
     "get_work_depth": Session.work_depth,
     "list_move_kinds": lambda session: (
@@ -163,8 +176,8 @@ CALLS: dict[str, Callable[..., object]] = {
         + authored_kinds(session)
     ),
     "list_moves": Session.list_moves,
-    "apply_move": Session.apply_move,
-    "apply_moves": Session.apply_moves,
+    "apply_move": with_tree(Session.apply_move),
+    "apply_moves": with_tree(Session.apply_moves),
     "applied_moves": lambda session: session.applied,
     "run_defaults": run_defaults,
     "set_scope": until(is_placed, SCOPES_FIXED, Session.set_scope),

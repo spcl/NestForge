@@ -91,7 +91,7 @@ later rule relies on this form.
 A communication node keeps its `lib_comm<n>` label, so `Namer` and the move tables need no new kind. The row prints
 `COMM` in place of `LIBNODE`, and adds the fields an agent needs to reason about an exchange.
 
-```
+```text
 |- for0  t=0:TSTEPS
 |  |- state3
 |  |  `- lib_comm0  COMM Isend [MPI]  reads=['A'] request=req  to=down tag=0
@@ -439,7 +439,7 @@ agent calls the move and the splits.
 | 15 | Time per communication row | `stages/performance.py`, `tests/test_comm_row_times.py` | 8, bench B2 |
 | 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 12, 13, 14 |
 | 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
-| 18 | Rows wired to a view move with their view chain (R5 today pins every `Isend`/`Irecv` and `Allreduce` on a slice) | `stages/lib_motion.py`, `tests/test_comm_motion.py` | 5 |
+| 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |
 
 Package 12 has no dependency on communication and can be built at any time.
 

@@ -84,7 +84,7 @@ def blur_steps(A: dace.float64[N], B: dace.float64[N], W: dace.float64[N, N], y:
 
 `get_cpf` prints, every state closed:
 
-```
+```text
 SDFG 'blur_steps'
 |- for0  _loop_it_0=0:T  num_states=4
 |  `- state3  doalls=4  reads=['A', 'B'] writes=['A', 'B']
@@ -93,7 +93,7 @@ SDFG 'blur_steps'
 
 and `view_tree expand=[state3, doall3, doall4]` opens the time step's state and two of its doalls; `doall5` stays closed:
 
-```
+```text
 SDFG 'blur_steps'
 |- for0  _loop_it_0=0:T  num_states=4
 |  `- state3  reads=['A', 'B'] writes=['A', 'B']
@@ -144,7 +144,7 @@ kernels have one) only to HPTT, and without it the build stops with `SilentPureL
 
 ## Layout
 
-```
+```text
 nestforge/
   session.py   the one API over all stages
   replay.py    replay a benchmark's reference-solution script next to the default, timed and oracle-checked

@@ -113,7 +113,7 @@ its own legality check, and `set-schedule-gpu` stays the default model. A kernel
 
 Every doall row of a scope shows its schedule (owner), after its range:
 
-```
+```text
 kernel_0 (cpu)
 |- doall3 [i=0:N]            omp dynamic,16
 |  `- doall4 [j=0:i]         sequential (inside doall3)

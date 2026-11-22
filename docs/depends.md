@@ -6,7 +6,7 @@
 can reach it. It is the kernel-only view the agent reads, and stage 4 uses it to list the transfers a placement
 implies. It reads the program and never changes it.
 
-```
+```text
 extcall_doall6: A <- extcall_doall10.A | program [carried: for0], N <- program
 extcall_doall10: B <- extcall_doall6.B, N <- program
 exit: A <- extcall_doall10.A | program, B <- extcall_doall6.B | program

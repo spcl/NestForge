@@ -51,6 +51,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `for-fission` | loop | `LoopFission` |
 | `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal`; when the intermediate is left a transient no one reads, `DeadDataflowElimination` drops its stores |
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
+| `split-doall` | top-level map alone in its state, step 1 | cuts one parameter's range at `at` (clamped): `[lo, at)` stays, `[at, hi]` follows in a new state; always legal, iterations are independent |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; also a loop whose body is several doalls over one shared axis, in several states or behind ifs (the row names one of them): the loop goes inside one doall over that axis, `cfg_body` + `lane_axis` (DaCe's lane analysis). `doall-fusion` the ones that fuse first |
@@ -82,7 +83,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | | |
 |---|---|
 | default | `default_moves()`: the wavefront skew on every nest it applies to (so the program has the canonical form's wavefronts), then canonicalization's `fuse` stage and the stages after it; a switched-off family ([move-families.md](move-families.md)) skips its part |
-| agent | moves, then `finish_moves()` runs the stages after `fuse` but `fuse_final`, keeping the chosen maps |
+| agent | moves, then `finish_moves()` runs the stages after `fuse` (no fusion), keeping the chosen maps |
 | code | `nestforge/stages/moves.py` |
 
 ## Stage 3: Scopes
@@ -151,7 +152,7 @@ A GPU kernel is lowered inside its call: DaCe's `OffloadToAccelerator` runs on t
 argument in the memory the call passes it in, so the body's maps become `GPU_Device` kernels and its temporaries
 device memory, while CPU kernels and the program around the calls are unchanged.
 `place(devices)` takes `{kernel: "cpu" | "gpu"}` and returns each kernel's device and the
-transfers the [kernel DAG](../depends.md) implies: every argument whose producer and consumer sit on different
+transfers the [kernel DAG](depends.md) implies: every argument whose producer and consumer sit on different
 devices. It passes host memory, so a GPU kernel copies its arguments at its own boundary, inside the call.
 `insert_copies()` runs `OffloadToAccelerator` on the program first: the GPU kernels' operands move to device memory,
 the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
@@ -177,7 +178,7 @@ scalars by value. A GPU kernel is two units, as CPF renders it: `<kernel>.cu` ho
 compiler vectorizes; stage 6 sweeps its flags.
 
 An agent reads `kernel_source(name)` (a GPU kernel's two units, split by the line `// ---- device unit ----`) and replaces it with `set_kernel_source(name, source, language)`. NestForge
-builds the new source, checks it against the kernel's [Python oracle](../oracle.md) and links it only when it
+builds the new source, checks it against the kernel's [Python oracle](oracle.md) and links it only when it
 matches; the status is `ok`, `refused`, `build-failed` or `wrong`. A kernel with no oracle to match (a symbol only the
 running program computes, or an oracle that does not finish) is linked with status `unchecked`, and the whole program
 checks it.
@@ -199,7 +200,7 @@ correct one. It is deterministic, never agent-driven.
 
 Every variant is timed. A CPU variant runs in a forked child and a GPU variant in a spawned interpreter, so a crash
 or hang is a recorded result, never a dead harness.
-[FP modes](../fp-and-vectorization.md) lists the flags.
+[FP modes](fp-and-vectorization.md) lists the flags.
 
 | | |
 |---|---|

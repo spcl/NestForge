@@ -56,6 +56,7 @@ from nestforge.ir.introspect import (
 )
 from nestforge.ir.loops import loop_symbol_values
 from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
+from nestforge.ir.subtree import changed_view, subtree
 from nestforge.records import (
     CRASHES,
     KernelOutcomeStatus,
@@ -475,6 +476,8 @@ class MoveResult(Record):
     forced: bool = False
     #: What the agent should know about an applied move; ``None`` without anything to say.
     warning: str | None = None
+    #: After an applied move, the subtree it rewrote (or the whole tree when the change reaches the top level).
+    tree: str = ""
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -703,6 +706,8 @@ class BatchResult(Record):
     substep: Literal["apply", "check"] | None = None
     reason: str = ""
     unchecked: str = ""
+    #: After an applied batch, the subtree it rewrote (or the whole tree), as :attr:`MoveResult.tree`.
+    tree: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,6 +763,7 @@ class Session:
     """Owner of one program SDFG, driven stage by stage."""
 
     __slots__ = (
+        "shown",
         "applied",
         "shared_root",
         "sdfg",
@@ -860,6 +866,8 @@ class Session:
         self.shared_root: str | None = None
         # labels whose content describe() shows, kept while their rows live, and the work and depth it prints
         self.expanded: dict[str, bool] = {}
+        # the tree the agent last read whole, which a move's answer brings up to date with the subtree it rewrote
+        self.shown: str | None = None
         # labels whose leaf bodies describe() prints in another language than the row around them, kept while they live
         self.languages: dict[str, Language] = {}
         self.costs: WorkDepth | None = None
@@ -1185,15 +1193,34 @@ class Session:
         collapse: Sequence[str] = (),
         c: Sequence[str] = (),
         python: Sequence[str] = (),
+        root: str | None = None,
     ) -> str:
         """:meth:`expand`, :meth:`collapse`, then :meth:`set_language` for ``c`` and ``python``, so one call opens a
-        row, closes some inside it and picks how bodies print; the tree after them, each note first. Only what is
-        shown changes, never the program."""
+        row, closes some inside it and picks how bodies print; the tree after them, each note first, or only the
+        subtree of the row ``root``. Only what is shown changes, never the program."""
         notes = [self.expand(expand)] if expand else []
         if collapse:
             notes.append(self.collapse(collapse))
         notes += [self.set_language(labels, lang) for labels, lang in ((c, C), (python, PYTHON)) if labels]
-        return "\n".join([*notes, self.describe()])
+        tree = self.describe()
+        if root is None:
+            self.shown = tree
+            return "\n".join([*notes, tree])
+        part = subtree(tree, root)
+        return "\n".join([*notes, part if part is not None else f"not-found: no row is labeled {root}."])
+
+    def cpf(self, bodies: bool = False, deps: bool = False, costs: bool = False) -> str:
+        """:meth:`describe`, as the agent reads it whole: a later move answers with what it rewrote of this tree."""
+        self.shown = self.describe(bodies=bodies, deps=deps, costs=costs)
+        return self.shown
+
+    def changed_tree(self) -> str:
+        """What changed in the tree since the agent last read it: the rewritten subtree under the rows around it, or
+        the whole tree; the agent holds the new tree after it."""
+        tree = self.describe()
+        text = changed_view(self.shown, tree)
+        self.shown = tree
+        return text
 
     def set_language(self, labels: Sequence[str], language: Language) -> str:
         """Print the leaf bodies below the rows ``labels`` name in ``language`` (Python by default; C shows C++
@@ -1904,6 +1931,7 @@ class Session:
         fp_mode: str | None = None,
         dtype: str | None = None,
         depth: int = PROBE_PIPELINE_DEPTH,
+        at: Mapping[str, str] | None = None,
     ) -> MoveResult:
         """Apply one fusion, fission or interchange to the tree rows ``labels`` name; their labels retire, and the rows
         the move makes are named afresh. Inside a kernel (``scope``), a structured move rewrites its body before
@@ -1929,6 +1957,7 @@ class Session:
         :param schedule: For ``set-schedule-cpu``, the OpenMP schedule; ``chunk`` and ``threads`` go with it.
         :param container: For ``sink-invariant-code``, the temporary whose statements sink into the row.
         :param depth: For ``set-pipeline-depth``, the stages of the loop's pipeline (2 or more).
+        :param at: For ``split-doall``, the parameter to cut and the expression it is cut at, e.g. ``{"i": "2"}``.
         :returns: The outcome; nothing but ``applied`` touches the program, and a move that raises leaves it as it was.
         :raises ValueError: ``kind`` is unknown or ``labels`` has the wrong count.
         """
@@ -1984,6 +2013,7 @@ class Session:
             threads=threads,
             container=container,
             depth=depth,
+            at=at,
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node, state = cast(nodes.LibraryNode, rows[0][0]), rows[0][1]

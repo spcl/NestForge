@@ -18,6 +18,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
 | [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
 | [phases.md](phases.md) | NestForge's own phases: `advance_phase`, `undo_phase`, `return_to_phase`, the gate per phase | none | built |
+| [subtree-answers.md](subtree-answers.md) | a move answers with the subtree it rewrote; `view_tree(root=...)` | none | built |
 | [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | request, clustering and the authored catalogue built; authoring script and gate next |
 
 ## Where to start

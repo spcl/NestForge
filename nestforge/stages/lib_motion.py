@@ -8,12 +8,15 @@ crosses touches what it reads and writes."""
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
 import dace
 from dace import data, dtypes
+from dace.libraries.comm import utils as comm_utils
+from dace.libraries.comm.nodes import Allreduce, Irecv, Isend, Recv, ReduceScatter, Send, Wait
+from dace.libraries.comm.nodes.node import NonblockingCommNode, disjoint, in_place
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.libraries.standard.nodes.sync import Sync, SyncScope
 from dace.sdfg import nodes
@@ -31,11 +34,16 @@ from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is
 
 from nestforge.ir.comm import (
     CommClass,
+    Extent,
     comm_class,
     container,
     crossing_refusal,
+    end_extent,
     in_flight,
+    in_flight_extents,
+    merged,
     motion_refusal,
+    row_extents,
     with_viewed,
 )
 from nestforge.ir.introspect import Row
@@ -45,6 +53,8 @@ from nestforge.records import Refusal, Refused
 LIB_BEFORE = "lib-before"
 LIB_AFTER = "lib-after"
 LIB_INTO = "lib-into"
+#: Turns a blocking communication row into a start and a wait in the state after it.
+SPLIT_BLOCKING = "split-blocking"
 #: The barriers that wait on the host, outside any kernel, for the device work issued before them.
 HOST_SYNCS = frozenset({SyncScope.DEVICE, SyncScope.STREAM})
 
@@ -58,6 +68,10 @@ class Effect:
     symbols: frozenset[str]
     #: A host barrier: it may not cross, nor join ahead of, a block that issues device work.
     device: bool = False
+    #: For a communication row, the parts of each container it reads and writes (12.1); a crossing then conflicts
+    #: only where both sides touch a common element. ``None``: every container whole, compared by name.
+    read_extents: Mapping[str, Extent] | None = None
+    write_extents: Mapping[str, Extent] | None = None
 
     @property
     def touched(self) -> frozenset[str]:
@@ -145,13 +159,22 @@ def effect_of(state: SDFGState, node: nodes.CodeNode) -> Effect:
     writes = frozenset(
         container(state, e.dst, str(e.data.data)) for e in state.out_edges(node) if not e.data.is_empty()
     )
-    if comm_class(node) is CommClass.WAIT:  # R3: it reads what its starts send and writes what they receive
+    kind = comm_class(node)
+    if kind is CommClass.WAIT:  # R3: it reads what its starts send and writes what they receive
         sent, received = in_flight(state.sdfg, state, node)
         reads, writes = reads | sent, writes | received
     symbols = set(node.free_symbols)
     for edge in state.all_edges(node):
         symbols |= {str(s) for s in edge.data.free_symbols}
-    return Effect(reads, writes, frozenset(symbols - state.sdfg.arrays.keys()))
+    symbols -= state.sdfg.arrays.keys()
+    if kind is None:
+        return Effect(reads, writes, frozenset(symbols))
+    extents = [row_extents(state, node, writes=w) for w in (False, True)]
+    if kind is CommClass.WAIT:
+        for w, found in ((False, extents[0]), (True, extents[1])):
+            for name, extent in in_flight_extents(state.sdfg, state, node, writes=w).items():
+                merged(found, name, extent)
+    return Effect(reads, writes, frozenset(symbols), read_extents=extents[0], write_extents=extents[1])
 
 
 def reaching(graph: Any, start: Any, forward: bool) -> set[Any]:
@@ -253,6 +276,50 @@ def accessed(block: ControlFlowBlock) -> tuple[set[str], set[str]]:
     return with_viewed(block, set(reads)), with_viewed(block, set(writes))
 
 
+def block_extents(block: ControlFlowBlock, names: set[str], writes: bool) -> dict[str, Extent]:
+    """The elements of each container of ``names`` that ``block`` writes (``writes``) or reads, from the memlets at
+    its access nodes. A container touched elsewhere (a transition), or through a subset naming a symbol a region
+    assigns, counts whole."""
+    states = [block] if isinstance(block, SDFGState) else list(cast(ControlFlowRegion, block).states())
+    changing = set() if isinstance(block, SDFGState) else assigned_symbols(block)
+    extents: dict[str, Extent] = {}
+    for state in states:
+        for node in state.data_nodes():
+            name = container(state, node, node.data)
+            if name not in names:
+                continue
+            for edge in state.in_edges(node) if writes else state.out_edges(node):
+                if edge.data.is_empty():
+                    continue
+                extent = end_extent(state, edge, node)
+                if extent is not None and any({str(s) for s in part.free_symbols} & changing for part in extent):
+                    extent = None
+                merged(extents, name, extent)
+    return {name: extents.get(name) for name in names}
+
+
+def overlapping(
+    block: ControlFlowBlock, names: set[str], theirs_written: bool, ours: list[Mapping[str, Extent] | None]
+) -> list[str]:
+    """The containers of ``names`` where what ``block`` writes (``theirs_written``) or reads shares an element with the
+    call's accesses ``ours`` (its read and write extents, or ``None`` to compare by name: 12.1 holds for communication
+    rows only); each named with both subsets once they are known."""
+    if any(extents is None for extents in ours):
+        return sorted(names)
+    facts = block.sdfg.facts()
+    found = []
+    for name, theirs in block_extents(block, names, theirs_written).items():
+        mine = [extents.get(name, []) for extents in ours if extents is not None]
+        if theirs is None or any(part is None for part in mine):
+            found.append(name)
+            continue
+        parts = [subset for part in mine if part is not None for subset in part]
+        clash = [(a, b) for a in theirs for b in parts if not disjoint(a, b, facts)]
+        if clash:
+            found.append(f"{name}[{clash[0][0]}] (the call: {name}[{clash[0][1]}])")
+    return sorted(found)
+
+
 def crossed_refusal(block: ControlFlowBlock, effect: Effect) -> str | None:
     if effect.device and block_device_work(block):
         return Refused(
@@ -260,10 +327,12 @@ def crossed_refusal(block: ControlFlowBlock, effect: Effect) -> str | None:
             Refusal.EFFECTS,
         )
     reads, writes = accessed(block)
-    if writes & effect.touched:
-        return Refused(f"{block.label} writes {min(writes & effect.touched)}, which the call touches.", Refusal.EFFECTS)
-    if reads & effect.writes:
-        return Refused(f"{block.label} reads {min(reads & effect.writes)}, which the call writes.", Refusal.EFFECTS)
+    written = overlapping(block, writes & effect.touched, True, [effect.read_extents, effect.write_extents])
+    if written:
+        return Refused(f"{block.label} writes {written[0]}, which the call touches.", Refusal.EFFECTS)
+    read = overlapping(block, reads & effect.writes, False, [effect.write_extents])
+    if read:
+        return Refused(f"{block.label} reads {read[0]}, which the call writes.", Refusal.EFFECTS)
     if assigned_symbols(block) & effect.symbols:
         return Refused(
             f"{block.label} assigns {min(assigned_symbols(block) & effect.symbols)}, which the call reads.",
@@ -587,3 +656,74 @@ def movable_rows(sdfg: dace.SDFG, states_only: bool = False) -> Iterator[tuple[R
                 if states_only:
                     blocks = [b for b in blocks if isinstance(b, SDFGState)]
                 yield from (((call, state), (b, None)) for b in blocks)
+
+
+def split_blocking_refusal(state: SDFGState, node: nodes.Node) -> str | None:
+    """Why the blocking row ``node`` has no start-and-wait form here; ``None`` when ``split-blocking`` applies."""
+    label = node.label
+    if comm_class(node) is not CommClass.BLOCKING:
+        return Refused(f"{label} is no blocking communication row; split-blocking takes one.", Refusal.WRONG_ROW_KIND)
+    if state.entry_node(node) is not None:
+        return Refused(f"{label} is inside a doall; a communication row stays out of doalls.", Refusal.COMMUNICATION)
+    if isinstance(node, (Send, Recv)):
+        return None
+    if not isinstance(node, NonblockingCommNode):
+        return Refused(f"{label} ({type(node).__name__}) has no nonblocking form to split into.", Refusal.COMMUNICATION)
+    if isinstance(node, (Allreduce, ReduceScatter)) and comm_utils.is_average(node.op):
+        return Refused(
+            f"{label} averages, which MPI cannot start without blocking: reduce the sum and divide after.",
+            Refusal.COMMUNICATION,
+        )
+    buffers = [e for e in state.all_edges(node) if (e.dst_conn if e.dst is node else e.src_conn) in BUFFERS]
+    if any(not in_place(state.sdfg, state, e, node) for e in buffers):
+        return Refused(
+            f"{label} has a strided buffer; a started collective needs contiguous ones.", Refusal.COMMUNICATION
+        )
+    return None
+
+
+#: The buffer connectors of a collective.
+BUFFERS = ("_inbuffer", "_outbuffer")
+
+
+def plan_split_blocking(row: Row) -> Callable[[], object] | str:
+    """``Send`` -> ``Isend``, ``Recv`` -> ``Irecv``, a collective -> its ``nonblocking`` form, each writing a fresh
+    request that a ``Wait`` in a new state right after reads. Nothing runs between the two, so the program is the same
+    until motion separates them."""
+    node, state = row
+    assert isinstance(state, SDFGState), "a communication row"
+    why = split_blocking_refusal(state, node)
+    if why is not None:
+        return why
+
+    def commit() -> None:
+        sdfg = state.sdfg
+        request, _ = sdfg.add_array(
+            "split_request", [1], dtypes.opaque("MPI_Request"), transient=True, find_new_name=True
+        )
+        start = started(state, node)
+        state.add_edge(start, "_request", state.add_write(request), None, dace.Memlet(f"{request}[0]"))
+        waits = state.parent_graph.add_state_after(state, f"{start.label}_wait")
+        wait = Wait(f"{start.label}_wait")
+        waits.add_edge(waits.add_read(request), None, wait, "_request", dace.Memlet(f"{request}[0]"))
+
+    return commit
+
+
+def started(state: SDFGState, node: nodes.Node) -> nodes.LibraryNode:
+    """The row that starts what ``node`` does: ``node`` itself made nonblocking, or an ``Isend`` (``Irecv``) wired as
+    the ``Send`` (``Recv``) was, in its place."""
+    if isinstance(node, NonblockingCommNode):
+        node.nonblocking = True
+        node.add_out_connector("_request")
+        return node
+    assert isinstance(node, (Send, Recv)), "split_blocking_refusal let only these through"
+    start: nodes.LibraryNode = (Isend if isinstance(node, Send) else Irecv)(node.label)
+    start.implementation = node.implementation
+    state.add_node(start)
+    for edge in state.in_edges(node):
+        state.add_edge(edge.src, edge.src_conn, start, edge.dst_conn, copy.deepcopy(edge.data))
+    for edge in state.out_edges(node):
+        state.add_edge(start, edge.src_conn, edge.dst, edge.dst_conn, copy.deepcopy(edge.data))
+    state.remove_node(node)
+    return start

@@ -57,6 +57,22 @@ def halo_overlap(
 
 
 @dace.program
+def halo_in_place(ap: dace.float64[N + 2], b: dace.float64[N + 2], left: dace.int32, right: dace.int32) -> None:
+    """A halo exchange into the ghost cells of the array it sends from (``ap[0]``, ``ap[N + 1]``): the interior update
+    reads ``ap[1:N+1]``, which nothing received touches, so only a comparison by subset lets the wait cross it."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(ap[1:2], left, 0, req[0])
+    MPI.COMM_WORLD.Isend(ap[N : N + 1], right, 1, req[1])
+    MPI.COMM_WORLD.Irecv(ap[0:1], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ap[N + 1 : N + 2], right, 0, req[3])
+    for i in dace.map[2:N]:
+        b[i] = ap[i - 1] + ap[i] + ap[i + 1]
+    MPI.Request.Waitall(req)
+    b[1] = ap[0] + ap[1] + ap[2]
+    b[N] = ap[N - 1] + ap[N] + ap[N + 1]
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
     reduction reads a whole buffer, not a slice of ``r``: a call wired to a view stays (R5)."""
@@ -145,6 +161,10 @@ def halo_inputs(rank: int, size: int) -> dict[str, object]:
     )
 
 
+def halo_in_place_inputs(rank: int, size: int) -> dict[str, object]:
+    return {"ap": seeded(rank, LENGTH + 2), "b": np.zeros(LENGTH + 2), "N": LENGTH} | neighbors(rank, size)
+
+
 def residual_inputs(rank: int, size: int) -> dict[str, object]:
     return {"a": seeded(rank, LENGTH), "r": np.zeros(STEPS), "s": np.zeros(LENGTH), "N": LENGTH, "T": STEPS}
 
@@ -174,6 +194,7 @@ def redistribute_inputs(rank: int, size: int) -> dict[str, object]:
 #: Every fixture, by name.
 FIXTURES = {
     "halo_overlap": Fixture(halo_overlap, halo_inputs, ("b", "c", "ghost")),
+    "halo_in_place": Fixture(halo_in_place, halo_in_place_inputs, ("ap", "b")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),

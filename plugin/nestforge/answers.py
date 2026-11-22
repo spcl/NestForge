@@ -30,7 +30,7 @@ NONE = "none"
 #: The fields a move line prints first, in this order, instead of as ``name=value``.
 MOVE_HEAD = ("kind", "labels")
 #: The fields a result line prints in its own places.
-RESULT_HEAD = ("status", "kind", "labels", "reason", "warning")
+RESULT_HEAD = ("status", "kind", "labels", "reason", "warning", "tree")
 
 #: Significant digits a measured number keeps: timings repeat to about 1%, so more digits are noise.
 DIGITS = 3
@@ -330,6 +330,17 @@ def batch_answer(answer: dict[str, Any]) -> dict[str, Any]:
     if batch.get("unchecked"):
         text.append(f"unchecked: {batch['unchecked']}")
     text += map(result_line, batch["results"])
+    if batch.get("tree"):
+        text.append(str(batch["tree"]))
+    return {**wrapper(answer, ("result",)), "text": "\n".join(text)}
+
+
+def move_answer(answer: dict[str, Any]) -> dict[str, Any]:
+    """``apply_move``'s answer: its result line, then the subtree the move rewrote (or the whole tree)."""
+    result = record_of(answer, "kind")
+    if result is None:
+        return answer
+    text = [result_line(result), *([str(result["tree"])] if result.get("tree") else [])]
     return {**wrapper(answer, ("result",)), "text": "\n".join(text)}
 
 
@@ -366,6 +377,7 @@ RENDERED: dict[str, Callable[[dict[str, Any], Mapping[str, object]], dict[str, A
     "list_scope_moves": moves_answer,
     "applied_moves": lambda answer, defaults: results_answer(answer),
     "apply_moves": lambda answer, defaults: batch_answer(answer),
+    "apply_move": lambda answer, defaults: move_answer(answer),
     "tune_move": lambda answer, defaults: tune_answer(answer),
     "list_move_kinds": lambda answer, defaults: kinds_answer(answer),
     "get_performance": lambda answer, defaults: performance_answer(answer),

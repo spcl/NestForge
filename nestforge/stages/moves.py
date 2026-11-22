@@ -24,7 +24,7 @@ from dace.libraries.standard.nodes.external_call import ExternalCall, external_c
 from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.sdfg.performance_evaluation import work_depth
-from dace.sdfg.propagation import propagate_memlets_sdfg
+from dace.sdfg.propagation import propagate_memlets_sdfg, propagate_memlets_state
 from dace.sdfg.scope import is_devicelevel_gpu
 from dace.sdfg.state import (
     BreakBlock,
@@ -92,11 +92,20 @@ from dace.transformation.transformation import PatternTransformation
 
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
-from nestforge.ir.names import in_order, top_level_map_entries
+from nestforge.ir.names import in_order, is_call, top_level_map_entries
 from nestforge.records import CRASHES, Record, Refusal, Refused
 from nestforge.stages.expand import expand_library, expansion, set_implementation
 from nestforge.stages.layout import RELAYOUT
-from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, movable_rows, plan_lib_motion
+from nestforge.stages.lib_motion import (
+    LIB_AFTER,
+    LIB_BEFORE,
+    LIB_INTO,
+    SPLIT_BLOCKING,
+    movable_rows,
+    plan_lib_motion,
+    plan_split_blocking,
+    split_blocking_refusal,
+)
 from nestforge.stages.sinking import (
     SinkPlan,
     match_if_over_maps,
@@ -196,6 +205,9 @@ SINK_INVARIANT_GUARD = "sink-invariant-guard"
 #: inverse of :data:`HOIST_INVARIANT_CODE`; it takes ``container``.
 SINK_INVARIANT_CODE = "sink-invariant-code"
 #: A row a move takes as either a for loop or a doall.
+#: Cuts a doall's range in two at ``at``, the parts in two states in order.
+SPLIT_DOALL = "split-doall"
+
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
 #: A row of a persistent run: a for loop, a state, or a doall standing for its state.
 RUN_ROW = (LoopRegion, SDFGState, nodes.MapEntry)
@@ -206,6 +218,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     "for-fission": (LoopRegion,),
     "doall-fusion": (nodes.MapEntry, nodes.MapEntry),
     "doall-fission": (nodes.MapEntry,),
+    SPLIT_DOALL: (nodes.MapEntry,),
     "subgraph-fission": (nodes.MapEntry, ControlFlowBlock),
     "interchange-for-doall": (LoopRegion, nodes.MapEntry),
     "interchange-doall-for": (nodes.MapEntry, LoopRegion),
@@ -230,6 +243,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
     LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
     LIB_INTO: (nodes.CodeNode, SDFGState),
+    SPLIT_BLOCKING: (nodes.CodeNode,),
     PROPAGATE_CONFIG: (),
     SET_FP_MODE: (),
     CHANGE_PRECISION: (),
@@ -678,6 +692,75 @@ def plan_map_fission(row: Row) -> Rewrite | str:
     outputs = dict.fromkeys(e.data.data for e in state.in_edges(state.exit_node(entry)) if e.data.data)
     move = pattern(MapFission, state.sdfg, {"map_entry": entry}, expr_index=0) if len(outputs) > 1 else None
     return move or MAP_FISSION_REFUSED
+
+
+def split_point(entry: nodes.MapEntry, state: SDFGState, at: Mapping[str, str] | None) -> tuple[int, Any] | str:
+    """The dimension of ``entry`` that ``at`` names and the expression it splits at, or why ``at`` is no split."""
+    label = entry.map.label
+    if not at or len(at) != 1:
+        return Refused(f'pass at, one parameter of {label} and where to split it, e.g. {{"i": "2"}}.', Refusal.ARGUMENT)
+    ((param, text),) = at.items()
+    if param not in entry.map.params:
+        return Refused(f"{param} is not a parameter of {label}; it has {entry.map.params}.", Refusal.ARGUMENT)
+    try:
+        point = dace.symbolic.pystr_to_symbolic(str(text))
+    except (TypeError, SyntaxError, ValueError, sympy.SympifyError) as err:
+        return Refused(f"at[{param!r}] = {text!r} is no expression: {err}.", Refusal.ARGUMENT)
+    defined = set(state.symbols_defined_at(entry)) | set(state.sdfg.symbols)
+    unknown = sorted(str(s) for s in point.free_symbols if str(s) not in defined)
+    if unknown:
+        return Refused(f"at[{param!r}] = {text!r} names {unknown}, which are not defined at {label}.", Refusal.ARGUMENT)
+    dim = entry.map.params.index(param)
+    if dace.symbolic.equal(entry.map.range[dim][2], 1) is not True:
+        return Refused(
+            f"{label} steps {param} by {entry.map.range[dim][2]}; split-doall takes step 1.", Refusal.ARGUMENT
+        )
+    return dim, point
+
+
+def plan_split_doall(row: Row, at: Mapping[str, str] | None = None) -> Rewrite | str:
+    """``doall i in [lo, hi]`` -> ``doall i in [lo, at)`` then, in a new state after it, ``doall i in [at, hi]``. The
+    iterations are independent, so any cut of the range is the same computation; ``at`` is clamped to the range, so
+    one part may be empty."""
+    state, entry = node_state(row), cast(nodes.MapEntry, row[0])
+    if state.entry_node(entry) is not None:
+        return Refused(
+            f"{entry.map.label} is nested in a doall; split-doall takes a top-level doall.", Refusal.WRONG_ROW_KIND
+        )
+    found = split_point(entry, state, at)
+    if isinstance(found, str):
+        return found
+    dim, point = found
+    exit_node = state.exit_node(entry)
+    kept = set(state.scope_subgraph(entry).nodes()) | {e.src for e in state.in_edges(entry)}
+    kept |= {e.dst for e in state.out_edges(exit_node)}
+    others = [n for n in state.nodes() if n not in kept]
+    if others:
+        return Refused(
+            f"{entry.map.label} shares {state.label} with {len(others)} other nodes; split-doall needs it alone in its "
+            "state (split the state first).",
+            Refusal.WRONG_ROW_KIND,
+        )
+
+    def commit() -> None:
+        lo, hi, step = entry.map.range[dim]
+        cut = dace.symbolic.Max(lo, dace.symbolic.Min(point, hi + 1))
+        region = state.parent_graph
+        second = copy.deepcopy(state, {id(region): region, id(state.sdfg): state.sdfg})
+        second.label = f"{state.label}_split"
+        region.add_node(second)
+        for edge in list(region.out_edges(state)):
+            region.add_edge(second, edge.dst, edge.data)
+            region.remove_edge(edge)
+        region.add_edge(state, second, dace.InterstateEdge())
+        (copied,) = [n for n in second.nodes() if isinstance(n, nodes.MapEntry) and second.entry_node(n) is None]
+        entry.map.range[dim] = (lo, cut - 1, step)
+        copied.map.range[dim] = (cut, hi, step)
+        set_nested_sdfg_parent_references(state.sdfg)
+        propagate_memlets_state(state.sdfg, state)
+        propagate_memlets_state(state.sdfg, second)
+
+    return Rewrite(SPLIT_DOALL, commit)
 
 
 def plan_loop_fission(row: Row) -> Rewrite | str:
@@ -1421,6 +1504,21 @@ def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
     return region_rewrite(f"lib-{place}", node_state(row).sdfg, plan)
 
 
+def plan_split_blocking_move(row: Row) -> Rewrite | str:
+    plan = plan_split_blocking(row)
+    if isinstance(plan, str):
+        return plan
+    return region_rewrite(SPLIT_BLOCKING, node_state(row).sdfg, plan)
+
+
+def blocking_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row]]:
+    """Every top-level blocking communication row that has a start-and-wait form."""
+    for state in sdfg.states():
+        for node in state.nodes():
+            if is_call(state, node) and split_blocking_refusal(state, node) is None:
+                yield ((node, state),)
+
+
 def plan_skew_wavefront(row: Row, tile_sizes: Sequence[int] = (), target: str = "cpu") -> Rewrite | str:
     """Skew the nest of loop ``row`` so each diagonal runs as a doall (DaCe's :class:`WavefrontSkew`, which derives
     the skew from the dependences), tiled along the diagonal where it can; ``tile_sizes``, two extents, replace the
@@ -1798,6 +1896,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "for-fission": plan_loop_fission,
     "doall-fusion": plan_map_fusion,
     "doall-fission": plan_map_fission,
+    SPLIT_DOALL: plan_split_doall,
     "subgraph-fission": plan_subgraph_fission,
     "interchange-for-doall": plan_loop_map,
     "interchange-doall-for": plan_map_loop,
@@ -1820,6 +1919,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
     LIB_INTO: lambda row, target: plan_lib_move(row, target, "into"),
+    SPLIT_BLOCKING: lambda row: plan_split_blocking_move(row),
     PROPAGATE_CONFIG: plan_propagate_config,
     "stage-loads-shared": plan_stage_loads_shared,
     COPY_TO_TMA: plan_copy_to_tma,
@@ -1870,6 +1970,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         (
             "split per computation: one map per independent output group. The pieces often want doall-fusion afterwards: "
             "fuse back the ones that share data."
+        ),
+    ),
+    SPLIT_DOALL: (
+        "split-doall",
+        (
+            'cut the range of one parameter at at (e.g. {"i": "2"}): the doall over [lo, at) stays, and the doall '
+            "over [at, hi] follows in a new state; at is clamped to the range. Use it to separate the iterations "
+            "that touch a buffer in flight from the rest, then move the rest between the start and the wait."
         ),
     ),
     "subgraph-fission": (
@@ -2055,6 +2163,15 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
             "when nothing in the loop reads what it writes."
         ),
     ),
+    SPLIT_BLOCKING: (
+        "Isend / Irecv / nonblocking collective, and Wait",
+        (
+            "a blocking communication row (Send, Recv, Allreduce, Bcast, ...) becomes the operation that starts it, "
+            "writing a fresh request, and a Wait in a new state right after. Nothing changes until motion separates "
+            "the two: then lib-before on the start and lib-after on the wait overlap the exchange with the work between. "
+            "Refused for an average, a strided buffer of a collective, and an operation with no nonblocking form."
+        ),
+    ),
     LIB_INTO: (
         "the named state, ordered there by its access nodes and empty edges",
         (
@@ -2212,13 +2329,15 @@ def plan_move(
     threads: int | None = None,
     container: str | None = None,
     depth: int = PROBE_PIPELINE_DEPTH,
+    at: Mapping[str, str] | None = None,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
     is the device the wavefront's tiles are for, ``force`` goes to :data:`FOR_TO_DOALL`, and ``schedule``, ``chunk``
-    and ``threads`` go to :data:`SET_SCHEDULE_CPU`, ``depth`` to :data:`SET_PIPELINE_DEPTH`."""
+    and ``threads`` go to :data:`SET_SCHEDULE_CPU`, ``depth`` to :data:`SET_PIPELINE_DEPTH`, ``at`` to
+    :data:`SPLIT_DOALL`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
         return plan_propagate_config(program, config_values or {}, output_dir)
@@ -2238,6 +2357,8 @@ def plan_move(
         return plan_sink_invariant_code(rows[0], container=container)
     if kind == SET_PIPELINE_DEPTH:
         return plan_set_pipeline_depth(rows[0], depth=depth)
+    if kind == SPLIT_DOALL:
+        return plan_split_doall(rows[0], at=at)
     if kind == SET_SCHEDULE_CPU:
         return plan_set_schedule_cpu(rows[0], schedule=schedule, chunk=chunk, threads=threads)
     if kind in SIZED:
@@ -2431,6 +2552,7 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
     LIB_BEFORE: movable_rows,
     LIB_AFTER: movable_rows,
     LIB_INTO: lambda sdfg: movable_rows(sdfg, states_only=True),
+    SPLIT_BLOCKING: lambda sdfg: blocking_rows(sdfg),
     PROPAGATE_CONFIG: lambda sdfg: iter([()] if configurable(sdfg) else []),
     "stage-loads-shared": lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e)),
     COPY_TO_TMA: lambda sdfg: (((e, st),) for st, e in map_rows(sdfg) if is_kernel(st, e) and kernel_copies(st, e)),

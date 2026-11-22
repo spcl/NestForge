@@ -9,13 +9,13 @@ speedup is attributed to its moves and their families by replaying its journal. 
 | Family | Move kinds |
 |---|---|
 | `fusion` | `for-fusion`, `doall-fusion`, `snapshot-reads` |
-| `fission` | `for-fission`, `doall-fission`, `subgraph-fission` |
+| `fission` | `for-fission`, `doall-fission`, `subgraph-fission`, `split-doall` |
 | `interchange` | `interchange-doall-doall`, `interchange-doall-for`, `interchange-for-doall` |
 | `shape` | `flatten-doalls`, `unflatten-doall`, `doall-to-for`, `for-to-doall` |
 | `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for` |
 | `hoisting` | `hoist-invariant-code`, `sink-invariant-code`, `hoist-invariant-guard`, `sink-invariant-guard` |
 | `specialize` | `propagate-config`, `unroll-for`, `unroll-doall` |
-| `library` | `lib-before`, `lib-after`, `lib-into`, `inline-library`, `set-library-implementation` |
+| `library` | `lib-before`, `lib-after`, `lib-into`, `split-blocking`, `inline-library`, `set-library-implementation` |
 | `layout` | `relayout` |
 | `precision` | `set-fp-mode`, `change-precision` |
 | `vectorize` | `vectorize-doall` |
@@ -53,7 +53,7 @@ families into the plugin record. The agent has no shell under the packet, and th
 
 ## Attribution by replay
 
-```
+```text
 python scripts/attribute_moves.py --journal journal.jsonl --kernel K --preset S --out attribution.json
 python scripts/attribute_moves.py --db results.db --setup S --episode E --kernel K --preset S --out attribution.json
 ```

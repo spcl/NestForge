@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import comm_rank_programs
 import dace
 import pytest
 import test_doall_tiling
@@ -25,6 +26,7 @@ import test_scope_moves as scope_fixtures
 import test_session_moves
 import test_sink_invariant_code
 import test_skew_wavefront
+import test_split_doall
 import test_unroll_config_moves
 import test_vectorize_doall_and_c_view as vectorize_fixtures
 from dace.frontend.python.parser import DaceProgram
@@ -47,6 +49,8 @@ OWN_CASES = {
     "set-fp-mode": "test_rollback_after_set_fp_mode",
     "copy-to-tma": "test_rollback_after_copy_to_tma",
     "set-pipeline-depth": "test_rollback_after_set_pipeline_depth",
+    "split-doall": "test_rollback_after_split_doall",
+    "split-blocking": "test_rollback_after_split_blocking",
     "run-on-cpu": "test_rollback_after_a_placement_move",
     "run-on-gpu": "test_rollback_after_a_placement_move",
     "run-on-cpu-persistent": "test_rollback_after_a_placement_move",
@@ -340,5 +344,25 @@ def test_rollback_after_set_pipeline_depth(tmp_path: Path) -> None:
     differs = differs_after_rollback(
         session, lambda: session.apply_move("set-pipeline-depth", move.labels, scope=kernel, depth=3)
     )
+
+    assert not differs, differs
+
+
+def test_rollback_after_split_doall(tmp_path: Path) -> None:
+    session = test_split_doall.session(test_split_doall.stencil, tmp_path)
+    label, i = test_split_doall.only_doall(session)
+
+    differs = differs_after_rollback(session, lambda: session.apply_move("split-doall", [label], at={i: "2"}))
+
+    assert not differs, differs
+
+
+def test_rollback_after_split_blocking(tmp_path: Path) -> None:
+    session = Session(comm_rank_programs.ring.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    session.canonicalize()
+    split = session.list_moves("split-blocking")
+
+    assert len(split) == 2, split  # the ring's Send and Recv
+    differs = differs_after_rollback(session, lambda: session.apply_move("split-blocking", split[0].labels))
 
     assert not differs, differs

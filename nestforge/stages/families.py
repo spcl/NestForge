@@ -8,7 +8,7 @@ from collections.abc import Iterable
 #: Every family and its move kinds. ``rollback`` belongs to none and is never switched off.
 FAMILIES: dict[str, frozenset[str]] = {
     "fusion": frozenset({"for-fusion", "doall-fusion", "snapshot-reads"}),
-    "fission": frozenset({"for-fission", "doall-fission", "subgraph-fission"}),
+    "fission": frozenset({"for-fission", "doall-fission", "subgraph-fission", "split-doall"}),
     "interchange": frozenset({"interchange-doall-doall", "interchange-doall-for", "interchange-for-doall"}),
     "shape": frozenset({"flatten-doalls", "unflatten-doall", "doall-to-for", "for-to-doall"}),
     "tiling": frozenset({"tile-doall", "tile-for", "untile-doall", "untile-for"}),
@@ -16,7 +16,9 @@ FAMILIES: dict[str, frozenset[str]] = {
         {"hoist-invariant-code", "sink-invariant-code", "hoist-invariant-guard", "sink-invariant-guard"}
     ),
     "specialize": frozenset({"propagate-config", "unroll-for", "unroll-doall"}),
-    "library": frozenset({"lib-before", "lib-after", "lib-into", "inline-library", "set-library-implementation"}),
+    "library": frozenset(
+        {"lib-before", "lib-after", "lib-into", "split-blocking", "inline-library", "set-library-implementation"}
+    ),
     "layout": frozenset({"relayout"}),
     "precision": frozenset({"set-fp-mode", "change-precision"}),
     "vectorize": frozenset({"vectorize-doall"}),

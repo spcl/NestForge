@@ -63,6 +63,11 @@ class ViewTree(Args):
     python: list[str] = pydantic.Field(
         default_factory=list, description="Row labels whose leaf bodies print as Python again (the default)."
     )
+    root: str | None = pydantic.Field(
+        None,
+        description="Show only this row and everything under it; none: the whole tree. A move's answer already "
+        "carries the subtree it rewrote, so read the whole tree only when you lost track of it.",
+    )
 
 
 class ListMoves(Args):
@@ -188,6 +193,11 @@ class ApplyMove(Labeled):
     dtype: str | None = pydantic.Field(
         None,
         description="change-precision (labels [], container): the element type the array takes, float32 or float64.",
+    )
+    at: dict[str, str] = pydantic.Field(
+        default_factory=dict,
+        description='split-doall: the parameter to cut and where, e.g. {"i": "2"} or {"i": "N - 1"}; the doall over '
+        "[lo, at) stays, the doall over [at, hi] follows in a new state.",
     )
     operation: dict[str, Any] = pydantic.Field(
         default_factory=dict,
@@ -319,7 +329,7 @@ TOOLS: dict[str, ToolDef] = {
         phases(Phase.ANY),
         ViewTree,
         "Open states and doalls with everything below them, close some again, print bodies as C or Python, then show "
-        "the tree. Changes only what is shown, never the program.",
+        "the tree, or one row's subtree (root). Changes only what is shown, never the program.",
         Effect.READ,
     ),
     "get_work_depth": ToolDef(
@@ -355,7 +365,8 @@ TOOLS: dict[str, ToolDef] = {
         ApplyMove,
         "Apply one move as list_moves listed it (or with your own tile_sizes, lanes, block, max_iterations, config_values); answers "
         "at once with the outcome, not with a time: call get_performance after the moves you want to compare. It "
-        "retires the labels of the rows it took: read the tree again before the next move. kind rollback, labels [], "
+        "retires the labels of the rows it took; its tree field is the subtree it rewrote under the rows around it (the "
+        "rest of the tree you read is unchanged), or the whole tree when the change reaches the top. kind rollback, labels [], "
         "takes the last change back (the last 8 can be).",
     ),
     "tune_move": ToolDef(

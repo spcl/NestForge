@@ -291,4 +291,3 @@ right under strict mode is graded on the strict build.
 
 **Open.** Whether NestForge's own configurations may also name a build in place of the sweep, so that both kinds of
 agent hold the same two choices.
-

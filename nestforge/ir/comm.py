@@ -10,6 +10,7 @@ import enum
 from typing import cast
 
 import dace
+from dace import subsets
 from dace.libraries.comm.nodes import (
     Abort,
     Barrier,
@@ -27,6 +28,7 @@ from dace.libraries.comm.nodes import (
 from dace.libraries.comm.nodes.node import CommNode, NonblockingCommNode
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
+from dace.sdfg.graph import MultiConnectorEdge
 from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, SDFGState
 
 from nestforge.ir.names import is_copy
@@ -155,6 +157,46 @@ def in_flight(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> tuple[froz
         sent |= out
         received |= into
     return frozenset(sent), frozenset(received)
+
+
+#: The parts of a container an access touches; ``None``: all of it (a view, or no subset to tell).
+Extent = list[subsets.Subset] | None
+
+
+def merged(extents: dict[str, Extent], name: str, extent: Extent) -> None:
+    """Add ``extent`` of ``name`` to ``extents``; ``None`` once either is the whole container."""
+    known = extents.get(name, [])
+    extents[name] = None if known is None or extent is None else [*known, *extent]
+
+
+def end_extent(state: SDFGState, edge: MultiConnectorEdge, end: nodes.Node) -> Extent:
+    """The part of the container at ``end`` (an access node) that ``edge`` reads or writes there."""
+    if isinstance(end, nodes.AccessNode) and isinstance(end.desc(state.sdfg), dace.data.View):
+        return None
+    subset = edge.data.get_src_subset(edge, state) if end is edge.src else edge.data.get_dst_subset(edge, state)
+    return None if subset is None else [subset]
+
+
+def row_extents(state: SDFGState, node: nodes.Node, writes: bool) -> dict[str, Extent]:
+    """What the row ``node`` writes (``writes``) or reads, per container, as its memlets' subsets."""
+    extents: dict[str, Extent] = {}
+    for edge in state.out_edges(node) if writes else state.in_edges(node):
+        if edge.data.is_empty():
+            continue
+        end = edge.dst if writes else edge.src
+        merged(extents, container(state, end, str(edge.data.data)), end_extent(state, edge, end))
+    return extents
+
+
+def in_flight_extents(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node, writes: bool) -> dict[str, Extent]:
+    """What the starts ``wait`` completes receive (``writes``) or send, per container, their requests left out."""
+    extents: dict[str, Extent] = {}
+    for other, start in starts_of(sdfg, state, wait):
+        requests = requests_of(other, start, written=True)
+        for name, extent in row_extents(other, start, writes).items():
+            if name not in requests:
+                merged(extents, name, extent)
+    return extents
 
 
 def starting_rows(block: ControlFlowBlock) -> list[str]:
