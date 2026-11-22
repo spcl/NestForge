@@ -6,6 +6,7 @@ communication row is applied to a copy, and each copy runs under ``mpirun`` at 1
 without the move, output by output and bit for bit."""
 
 import copy
+import os
 import shutil
 import subprocess
 import sys
@@ -77,7 +78,9 @@ def run_on_ranks(sdfg: dace.SDFG, name: str, ranks: int, folder: Path) -> list[d
         name,
         str(prefix),
     ]
-    subprocess.run(command, check=True, timeout=RUN_TIMEOUT_S, cwd=RUNNER.parent)
+    # one thread per rank: the fixtures' reductions are atomic adds, whose order varies across threads
+    env = os.environ | {"OMP_NUM_THREADS": "1"}
+    subprocess.run(command, check=True, timeout=RUN_TIMEOUT_S, cwd=RUNNER.parent, env=env)
     return [dict(np.load(f"{prefix}.{rank}.npz")) for rank in range(ranks)]
 
 
