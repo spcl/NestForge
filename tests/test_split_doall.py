@@ -105,7 +105,7 @@ def test_a_two_dimensional_doall_is_cut_along_the_named_parameter_only(tmp_path:
     assert sut.apply_move(SPLIT_DOALL, [label], at={entry.map.params[1]: "3"}).status is MoveStatus.APPLIED
 
     assert ranges(sut) == [((0, 11), (0, 2)), ((0, 11), (3, 4))]
-    a, b = np.arange(SIZE * 5, dtype=np.float64).reshape(SIZE, 5), np.zeros((SIZE, 5))
+    a, b = np.arange(SIZE * 5, dtype=np.float64).reshape(SIZE, 5).copy(), np.zeros((SIZE, 5))
     sut.sdfg(a=a, b=b, N=SIZE, M=5)
     np.testing.assert_array_equal(b, a + 1.0)
 

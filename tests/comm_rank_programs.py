@@ -73,18 +73,30 @@ def halo_in_place(ap: dace.float64[N + 2], b: dace.float64[N + 2], left: dace.in
 
 
 @dace.program
+def halo_stencil(ap: dace.float64[N + 2], b: dace.float64[N + 2], left: dace.int32, right: dace.int32) -> None:
+    """A halo exchange, then one stencil over ``ap[1:N+1]`` that reads the ghost cells at its ends: the overlap of
+    package 16 splits the stencil (``split-doall``) and moves the wait after its interior part (``lib-after``)."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(ap[1:2], left, 0, req[0])
+    MPI.COMM_WORLD.Isend(ap[N : N + 1], right, 1, req[1])
+    MPI.COMM_WORLD.Irecv(ap[0:1], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ap[N + 1 : N + 2], right, 0, req[3])
+    MPI.Request.Waitall(req)
+    for i in dace.map[1 : N + 1]:
+        b[i] = ap[i - 1] + ap[i] + ap[i + 1]
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
-    reduction reads a whole buffer, not a slice of ``r``: a call wired to a view stays (R5)."""
-    total = dace.define_local([1], dace.float64)
+    reduction reads the step's slice ``r[t : t + 1]`` in place: canonicalization leaves no view in front of it."""
     for t in range(T):
         for i in dace.map[0:N]:
             a[i] = a[i] * 0.5
-        total[0] = 0.0
+        r[t] = 0.0
         for i in dace.map[0:N]:
-            total[0] += a[i]
-        MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, total, op=MPI.SUM)
-        r[t] = total[0]
+            r[t] += a[i]
+        MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, r[t : t + 1], op=MPI.SUM)
         for i in dace.map[0:N]:
             s[i] = s[i] + a[i]
 
@@ -94,16 +106,12 @@ def ring(
     a: dace.float64[K, 4], b: dace.float64[K, 4], d: dace.float64[K, 4], left: dace.int32, right: dace.int32
 ) -> None:
     """Each row goes right while the left neighbor's arrives, with a row-wise update the receive may cross, then an
-    update of what arrived. The rows travel through whole buffers: a call wired to a view stays (R5)."""
-    row = dace.define_local([4], dace.float64)
-    got = dace.define_local([4], dace.float64)
+    update of what arrived. The calls read and write the rows ``a[i]`` and ``b[i]`` in place, with no view."""
     for i in range(K):
-        row[:] = a[i]
-        MPI.COMM_WORLD.Send(row, right, 0)
-        MPI.COMM_WORLD.Recv(got, left, 0)
+        MPI.COMM_WORLD.Send(a[i], right, 0)
+        MPI.COMM_WORLD.Recv(b[i], left, 0)
         for j in dace.map[0:4]:
             d[i, j] = a[i, j] * 2.0
-        b[i] = got
     for i, j in dace.map[0:K, 0:4]:
         d[i, j] = b[i, j] + d[i, j]
 
@@ -195,6 +203,7 @@ def redistribute_inputs(rank: int, size: int) -> dict[str, object]:
 FIXTURES = {
     "halo_overlap": Fixture(halo_overlap, halo_inputs, ("b", "c", "ghost")),
     "halo_in_place": Fixture(halo_in_place, halo_in_place_inputs, ("ap", "b")),
+    "halo_stencil": Fixture(halo_stencil, halo_in_place_inputs, ("ap", "b")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),

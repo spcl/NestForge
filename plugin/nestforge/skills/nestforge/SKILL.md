@@ -127,9 +127,10 @@ DaCe transformation behind each.
   the pieces with different neighbors.
 - `subgraph-fission` `[doall, state]`: a doall whose body is several states (open the doall) is cut after the named
   state; values passed between the parts become arrays.
-- `split-doall` `[doall]` with `at` (e.g. `{"i": "2"}`): the doall's range is cut there, `[lo, at)` first and
-  `[at, hi]` in a new state after it; always legal. Split off the iterations that read a halo, so the rest can move
-  between a send and its wait.
+- `split-doall` `[doall]` with `at` (e.g. `{"i": "2"}`): the doall's range is cut there, `[lo, at)` and `[at, hi]`
+  side by side in its state; always legal. `list_moves` offers it on a doall that reads what an exchange receives,
+  at the first and the last row that read it. Split off the iterations that read a halo, then `lib-after` the wait
+  past the rest.
 
 **Interchange**
 - `interchange-doall-doall` `[outer, inner]`: `doall i: doall j` becomes `doall j: doall i`; put the contiguous
@@ -170,7 +171,8 @@ DaCe transformation behind each.
 
 **Library calls**
 - `lib-before`, `lib-after` `[lib, block]`: the call moves to a new state just before or after the block, in its
-  region or a loop around it. `lib-into` `[lib, state]`: it joins that state instead. Hoist a call out of a loop that
+  region or a loop around it. A communication row may name a doall that shares its state (`[lib, doall]`): the
+  state splits at that doall and the row lands between the parts. `lib-into` `[lib, state]`: it joins that state instead. Hoist a call out of a loop that
   never changes its inputs; take it from between two loops so they fuse. A `lib_sync` moves past host work on other
   data. Refused when a crossed block touches what it touches, or a loop it leaves may run zero times.
 - `split-blocking` `[lib]`: a blocking `Send`, `Recv` or collective becomes its start and a `Wait` right after;

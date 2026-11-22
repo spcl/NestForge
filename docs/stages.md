@@ -51,7 +51,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `for-fission` | loop | `LoopFission` |
 | `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal`; when the intermediate is left a transient no one reads, `DeadDataflowElimination` drops its stores |
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
-| `split-doall` | top-level map alone in its state, step 1 | cuts one parameter's range at `at` (clamped): `[lo, at)` stays, `[at, hi]` follows in a new state; always legal, iterations are independent |
+| `split-doall` | top-level map, step 1 | cuts one parameter's range at `at` (clamped): `[lo, at)` stays, `[at, hi]` is a copy beside it in the same state; always legal, iterations are independent; listed on a doall that reads what an exchange receives, at the first and the last row that read it |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; also a loop whose body is several doalls over one shared axis, in several states or behind ifs (the row names one of them): the loop goes inside one doall over that axis, `cfg_body` + `lane_axis` (DaCe's lane analysis). `doall-fusion` the ones that fuse first |

@@ -15,12 +15,15 @@ from pathlib import Path
 import dace
 import numpy as np
 import pytest
-from comm_rank_programs import FIXTURES
+from comm_rank_programs import FIXTURES, LENGTH
 from dace.libraries.comm.nodes.node import CommNode
+from dace.sdfg import nodes
 
+from nestforge.ir.comm import CommClass, comm_class
 from nestforge.records import MoveStatus
 from nestforge.session import Move, Session
 from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, SPLIT_BLOCKING
+from nestforge.stages.moves import SPLIT_DOALL
 
 pytestmark = [pytest.mark.mpi, pytest.mark.integration]
 
@@ -118,6 +121,55 @@ def test_split_blocking_rows_and_every_move_of_their_starts_and_waits_keep_every
 ) -> None:
     base, moved = moved_programs(name, split=True)
     outputs_match_on_every_rank(name, base, moved, tmp_path)
+
+
+def overlapped_program() -> tuple[dace.SDFG, list[tuple[str, dace.SDFG]]]:
+    """``halo_stencil`` canonical, and overlapped: the stencil split at its first and its last row, then the wait moved
+    after the interior part, which reads no ghost cell."""
+    session = Session(FIXTURES["halo_stencil"].program.to_sdfg(simplify=True))
+    session.canonicalize()
+    base = copy.deepcopy(session.sdfg)
+    (stencil,) = [label for label, (node, _) in session.row_index().items() if isinstance(node, nodes.MapEntry)]
+    param = session.row_index()[stencil][0].map.params[0]
+    assert session.apply_move(SPLIT_DOALL, [stencil], at={param: "2"}).status is MoveStatus.APPLIED
+    rest = doall_starting_at(session, 2)
+    param = session.row_index()[rest][0].map.params[0]
+    assert session.apply_move(SPLIT_DOALL, [rest], at={param: "N"}).status is MoveStatus.APPLIED
+    interior = doall_starting_at(session, 2)
+    (wait,) = [label for label, (node, _) in session.row_index().items() if comm_class(node) is CommClass.WAIT]
+    result = session.apply_move(LIB_AFTER, [wait, interior])
+    assert result.status is MoveStatus.APPLIED, result.reason
+    return base, [("overlap", copy.deepcopy(session.sdfg))]
+
+
+def doall_starting_at(session: Session, first: int) -> str:
+    """The label of the top-level doall whose range starts at ``first`` (at the fixture's size)."""
+    return next(
+        label
+        for label, (node, state) in session.row_index().items()
+        if isinstance(node, nodes.MapEntry)
+        and state is not None
+        and state.entry_node(node) is None
+        and dace.symbolic.evaluate(node.map.range[0][0], {"N": LENGTH}) == first
+    )
+
+
+def test_the_halo_stencil_overlapped_by_splits_and_motion_runs_its_interior_before_the_wait() -> None:
+    _, [(_, sdfg)] = overlapped_program()
+    order = [s for s in sdfg.bfs_nodes(sdfg.start_block) if isinstance(s, dace.SDFGState)]
+    wait = next(i for i, s in enumerate(order) if any(comm_class(n) is CommClass.WAIT for n in s.nodes()))
+    ranges = [
+        int(dace.symbolic.evaluate(n.map.range[0][0], {"N": LENGTH}))
+        for s in order[:wait]
+        for n in s.nodes()
+        if isinstance(n, nodes.MapEntry) and s.entry_node(n) is None
+    ]
+    assert ranges == [2], ranges
+
+
+def test_the_overlapped_halo_stencil_keeps_every_ranks_outputs(tmp_path: Path) -> None:
+    base, moved = overlapped_program()
+    outputs_match_on_every_rank("halo_stencil", base, moved, tmp_path)
 
 
 def exchanged_locals(session: Session) -> list[str]:

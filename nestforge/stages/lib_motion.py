@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import dace
-from dace import data, dtypes
+import sympy
+from dace import data, dtypes, subsets, symbolic_facts
 from dace.libraries.comm import utils as comm_utils
 from dace.libraries.comm.nodes import Allreduce, Irecv, Isend, Recv, ReduceScatter, Send, Wait
 from dace.libraries.comm.nodes.node import NonblockingCommNode, disjoint, in_place
@@ -276,13 +277,32 @@ def accessed(block: ControlFlowBlock) -> tuple[set[str], set[str]]:
     return with_viewed(block, set(reads)), with_viewed(block, set(writes))
 
 
-def block_extents(block: ControlFlowBlock, names: set[str], writes: bool) -> dict[str, Extent]:
+#: A part of a container a block touches, and the relations that hold whenever it is touched: the ranges of the doall
+#: whose memlet it is are nonempty (an empty doall touches nothing, so a proof may assume it runs).
+Guarded = tuple[subsets.Subset, tuple[symbolic_facts.Relation, ...]]
+
+
+def runs(state: SDFGState, end: nodes.Node) -> tuple[symbolic_facts.Relation, ...]:
+    """What holds whenever the doall at ``end`` (its entry or exit) runs: every range is nonempty. A ``Min`` last
+    iteration or a ``Max`` first one (``split-doall``'s clamps) holds for each of its arguments, so the relations stay
+    linear."""
+    if not isinstance(end, (nodes.MapEntry, nodes.MapExit)):
+        return ()
+    return tuple(
+        dace.symbolic.predicate_relation(dace.symbolic.Predicate.NONNEGATIVE, last - first)
+        for lo, hi, _ in end.map.range
+        for last in (hi.args if isinstance(hi, sympy.Min) else (hi,))
+        for first in (lo.args if isinstance(lo, sympy.Max) else (lo,))
+    )
+
+
+def block_extents(block: ControlFlowBlock, names: set[str], writes: bool) -> dict[str, list[Guarded] | None]:
     """The elements of each container of ``names`` that ``block`` writes (``writes``) or reads, from the memlets at
-    its access nodes. A container touched elsewhere (a transition), or through a subset naming a symbol a region
-    assigns, counts whole."""
+    its access nodes, each with what holds whenever it is touched (:func:`runs`). A container touched elsewhere (a
+    transition), or through a subset naming a symbol a region assigns, counts whole."""
     states = [block] if isinstance(block, SDFGState) else list(cast(ControlFlowRegion, block).states())
     changing = set() if isinstance(block, SDFGState) else assigned_symbols(block)
-    extents: dict[str, Extent] = {}
+    extents: dict[str, list[Guarded] | None] = {}
     for state in states:
         for node in state.data_nodes():
             name = container(state, node, node.data)
@@ -294,7 +314,12 @@ def block_extents(block: ControlFlowBlock, names: set[str], writes: bool) -> dic
                 extent = end_extent(state, edge, node)
                 if extent is not None and any({str(s) for s in part.free_symbols} & changing for part in extent):
                     extent = None
-                merged(extents, name, extent)
+                other = edge.src if writes else edge.dst
+                guard = runs(state, other) if state.entry_node(other) is None else ()
+                known = extents.get(name, [])
+                extents[name] = (
+                    None if known is None or extent is None else [*known, *((part, guard) for part in extent)]
+                )
     return {name: extents.get(name) for name in names}
 
 
@@ -314,7 +339,12 @@ def overlapping(
             found.append(name)
             continue
         parts = [subset for part in mine if part is not None for subset in part]
-        clash = [(a, b) for a in theirs for b in parts if not disjoint(a, b, facts)]
+        clash = [
+            (a, b)
+            for a, guard in theirs
+            for b in parts
+            if not disjoint(a, b, facts.with_relations(guard) if guard else facts)
+        ]
         if clash:
             found.append(f"{name}[{clash[0][0]}] (the call: {name}[{clash[0][1]}])")
     return sorted(found)
@@ -656,6 +686,67 @@ def movable_rows(sdfg: dace.SDFG, states_only: bool = False) -> Iterator[tuple[R
                 if states_only:
                     blocks = [b for b in blocks if isinstance(b, SDFGState)]
                 yield from (((call, state), (b, None)) for b in blocks)
+                if comm_class(call) is not None:  # a doall that shares its state: the call lands next to it
+                    yield from (((call, state), (entry, b)) for b in blocks for entry in shared_doalls(b))
+
+
+def shared_doalls(block: ControlFlowBlock) -> list[nodes.MapEntry]:
+    """The top-level doalls of ``block``, a state, that share it with another top-level doall."""
+    if not isinstance(block, SDFGState):
+        return []
+    doalls = [n for n in block.nodes() if isinstance(n, nodes.MapEntry) and block.entry_node(n) is None]
+    return doalls if len(doalls) > 1 else []
+
+
+def split_part(state: SDFGState, entry: nodes.MapEntry, after: bool) -> set[nodes.Node]:
+    """The nodes of ``state`` that go first when it splits at the top-level doall ``entry``: the doall and what it
+    needs (``after``, so a call can follow it), or what neither is nor needs the doall (so a call can precede it)."""
+    scope = set(state.scope_subgraph(entry, include_entry=True, include_exit=True).nodes())
+    if after:
+        return scope | reaching(state, entry, forward=False)
+    return set(state.nodes()) - scope - reaching(state, state.exit_node(entry), forward=True)
+
+
+def split_refusal(state: SDFGState, entry: nodes.MapEntry, after: bool) -> str | None:
+    """Why ``state`` cannot split at ``entry``: an edge out of the first part that no access node carries."""
+    first = split_part(state, entry, after)
+    for edge in state.edges():
+        if edge.src in first and edge.dst not in first:
+            if not isinstance(edge.src, nodes.AccessNode) and not isinstance(edge.dst, nodes.AccessNode):
+                return Refused(
+                    f"{state.label} cannot split at {entry.map.label}: {edge.src} and {edge.dst} are ordered with "
+                    "no container between them.",
+                    Refusal.WRONG_ROW_KIND,
+                )
+    return None
+
+
+def split_at(state: SDFGState, entry: nodes.MapEntry, after: bool) -> SDFGState:
+    """Split ``state`` in two at the top-level doall ``entry`` (:func:`split_part` goes first, into a new state
+    before it); returns the state that holds the doall. An access node on the cut is in both states, so each state
+    keeps its own reads and writes of the container. Legal whenever :func:`split_refusal` is ``None``: the first part
+    needs nothing of the second."""
+    first = split_part(state, entry, after)
+    head = state.parent_graph.add_state_before(state, label=f"{state.label}_head")
+    inside = [e for e in state.edges() if e.src in first and e.dst in first]
+    cut = [e for e in state.edges() if e.src in first and e.dst not in first]
+    twins: dict[nodes.Node, nodes.AccessNode] = {}
+    for node in first:
+        state.remove_node(node)
+        head.add_node(node)
+    for edge in inside:
+        head.add_edge(edge.src, edge.src_conn, edge.dst, edge.dst_conn, edge.data)
+    for edge in cut:
+        if isinstance(edge.src, nodes.AccessNode):  # the second state reads the container again
+            twin = twins.setdefault(edge.src, state.add_access(edge.src.data))
+            state.add_edge(twin, edge.src_conn, edge.dst, edge.dst_conn, edge.data)
+        else:  # the first state writes the container into an access node of its own
+            twin = twins.setdefault(edge.dst, head.add_access(edge.dst.data))
+            head.add_edge(edge.src, edge.src_conn, twin, edge.dst_conn, edge.data)
+    for part in (head, state):  # an access node whose edges all went to the other part
+        for node in [n for n in part.nodes() if isinstance(n, nodes.AccessNode) and part.degree(n) == 0]:
+            part.remove_node(node)
+    return head if after else state
 
 
 def split_blocking_refusal(state: SDFGState, node: nodes.Node) -> str | None:
@@ -705,6 +796,8 @@ def plan_split_blocking(row: Row) -> Callable[[], object] | str:
         state.add_edge(start, "_request", state.add_write(request), None, dace.Memlet(f"{request}[0]"))
         waits = state.parent_graph.add_state_after(state, f"{start.label}_wait")
         wait = Wait(f"{start.label}_wait")
+        for status in ("_stat_tag", "_stat_source"):  # the receive's status: optional, and nothing reads it
+            wait.remove_out_connector(status)
         waits.add_edge(waits.add_read(request), None, wait, "_request", dace.Memlet(f"{request}[0]"))
 
     return commit

@@ -152,6 +152,7 @@ from nestforge.stages.moves import (
     SET_SCHEDULE_GPU,
     SINK_INVARIANT_CODE,
     SIZED,
+    SPLIT_DOALL,
     VARIADIC,
     GpuChoice,
     Rewrite,
@@ -168,6 +169,7 @@ from nestforge.stages.moves import (
     sinkable_containers,
     size_argument,
     size_arguments,
+    split_points,
     tree_label,
 )
 from nestforge.stages.performance import (
@@ -519,6 +521,8 @@ class Move(Record):
     config_values: dict[str, int | float] = {}
     #: For ``relayout``, the operation it applies; listed with :func:`~nestforge.stages.layout.listed_operation`.
     operation: dict[str, object] = {}
+    #: For ``split-doall``, the parameter it cuts and where (``{"i": "N - 1"}``); listed without one, the agent passes it.
+    at: dict[str, str] = {}
     #: For ``vectorize-doall``, the ISA its tiles are for.
     isa: str = DEFAULT_ISA
     #: For ``for-to-doall``, whether it applies past a refused dependence check; a listed move never does.
@@ -1493,6 +1497,13 @@ class Session:
             return [
                 Move.model_validate({"kind": kind, "labels": labels, "container": name, **scoped})
                 for name in sinkable_containers(rows[labels[0]])
+            ]
+        if kind == SPLIT_DOALL:
+            entry, state = rows[labels[0]]
+            assert state is not None, "split-doall is listed on a doall"
+            return [
+                Move.model_validate({"kind": kind, "labels": labels, "at": at, **scoped})
+                for at in split_points(state, cast(nodes.MapEntry, entry))
             ]
         if kind in SCOPE_KINDS:
             if self.scope_refusal(kind, scope) is not None:

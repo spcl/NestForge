@@ -5,13 +5,15 @@ common element, so a wait crosses the interior update of the array whose ghost c
 boundary update that reads them."""
 
 import dace
-from comm_rank_programs import halo_in_place
+from comm_rank_programs import halo_in_place, halo_stencil
 from dace.libraries.comm.nodes import Waitall
 from dace.sdfg import nodes
 
 from nestforge.ir.comm import CommClass, comm_class
+from nestforge.records import MoveStatus
 from nestforge.session import Session
 from nestforge.stages.lib_motion import accessed, plan_lib_motion
+from nestforge.stages.moves import SPLIT_DOALL
 
 
 def canonical_halo() -> tuple[dace.SDFG, tuple[nodes.Node, dace.SDFGState]]:
@@ -60,3 +62,34 @@ def test_the_wait_does_not_cross_the_boundary_update_and_the_reason_names_both_s
     refused = plan_lib_motion(wait, (boundary[-1], None), "after")
 
     assert isinstance(refused, str) and "reads ap[" in refused and "(the call: ap[" in refused, refused
+
+
+def canonical_stencil() -> Session:
+    session = Session(halo_stencil.to_sdfg(simplify=True))
+    session.canonicalize()
+    return session
+
+
+def test_split_doall_is_listed_at_the_first_and_the_last_row_of_a_stencil_that_reads_received_cells() -> None:
+    session = canonical_stencil()
+
+    listed = session.list_moves(SPLIT_DOALL)
+
+    assert sorted(tuple(move.at.values()) for move in listed) == [("2",), ("N",)], listed
+
+
+def test_the_interior_of_two_listed_cuts_has_plain_bounds() -> None:
+    session = canonical_stencil()
+    first = session.list_moves(SPLIT_DOALL)[0]
+    assert session.apply_move(SPLIT_DOALL, first.labels, at=first.at).status is MoveStatus.APPLIED
+    (second,) = [move for move in session.list_moves(SPLIT_DOALL) if move.at != first.at]
+    assert session.apply_move(SPLIT_DOALL, second.labels, at=second.at).status is MoveStatus.APPLIED
+
+    bounds = [
+        str(bound)
+        for node, _ in session.row_index().values()
+        if isinstance(node, nodes.MapEntry)
+        for bound in node.map.range[0][:2]
+    ]
+
+    assert "2" in bounds and "N - 1" in bounds, bounds

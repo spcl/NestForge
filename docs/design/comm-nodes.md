@@ -352,13 +352,15 @@ The change is confined to crossings where one side is a communication row, and t
 
 #### 12.2 Moving and splitting statements
 
-Two moves on compute rows. Both are general moves, in the families `fission` and `motion`
-([move-families.md](../move-families.md)).
+One move on compute rows, a general move in the family `fission` ([move-families.md](../move-families.md)).
 
 **`split-doall`** cuts a doall's range in two. Labels: one doall. Argument: `at = {"<param>": "<expr>"}`.
 
-- The result is two doalls of the same body over `[lo, at)` and `[at, hi)`, in two states in that order. `at` is
-  clamped as `Max(lo, Min(at, hi))`, so an empty part is legal.
+- The result is two doalls of the same body over `[lo, at)` and `[at, hi)`, side by side in the doall's state (user
+  2026-11-22: no state split as a move; a communication row moved next to a doall splits the state, and a state
+  holding a communication row is never fused, since its node has side effects). The parts
+  are `[lo, Min(at - 1, hi)]` and `[Max(at, lo), hi]`; a `Min` or `Max` that the SDFG's facts prove redundant is
+  left out, so a cut inside the range gives plain bounds, and an empty part is legal.
 - It is always legal on a doall: the iterations are independent, so any partition of the range is the same
   computation. A doall with a `reduce=` field is split into two accumulations into the same target, which is legal for
   the same reason a doall may run in any order.
@@ -370,18 +372,11 @@ Two moves on compute rows. Both are general moves, in the families `fission` and
   touch: the bounds of the received subsets along each parameter, computed from 12.1. The agent can pass any other
   expression.
 
-**`block-before` and `block-after`** move a state across its sibling blocks. Labels: the state and the anchor block.
-
-- It is `lib-before` and `lib-after` for a whole state: the state's effect (12.1 when it crosses a communication row,
-  by name otherwise) must not conflict with any block it crosses, the symbols it reads must not be assigned on an
-  edge it crosses, and it stays in its region.
-- A state that holds a communication row moves under that row's rules R1 to R5.
-- A state never crosses a `FIXED` row.
-- The move rewires the region's edges and keeps every condition and assignment on the edges it does not cross. A
-  region whose blocks are not a chain (a branch in the edges) is refused.
-
-With these two moves the agent, or a reference solution, writes the overlap as a sequence: split the stencil into
-boundary and interior, move the interior between the starts and the wait, and leave the boundary after the wait.
+**`block-before` and `block-after`: dropped (user 2026-11-22).** With effects by subset (12.1), `lib-after` moves a
+`WAIT` row past a state that touches no buffer in flight, which is the same overlap. The agent, or a reference
+solution, writes it as a sequence: `split-blocking` on the exchange, `split-doall` on the stencil into boundary and
+interior, and `lib-after` on each wait past the interior doall (its state splits there), which leaves the boundary after
+the wait.
 
 #### 12.3 Overlap is motion, not a move (user 2026-11-21)
 
@@ -421,7 +416,7 @@ agent calls the move and the splits.
 3. `split-doall` at 2 and at `rows` yields three doalls whose ranges partition the original, and the program's output
    is bit-identical. A split of a doall with `reduce=` stays within the oracle's tolerance.
 4. `split-doall` with `at` outside the range yields one empty part and the same output.
-5. `block-before` is refused across a block that writes what the state reads, with the container and subset named.
+5. `lib-after` on a wait is refused across a state that reads what the wait completes, with the container and subset named.
 6. `split-blocking` on every blocking row of the rank fixtures leaves the output bit-identical; on the halo
    fixture, `lib-after` on the wait is refused before the splits (reason names the subset) and legal after them.
 7. After the overlap sequence, the four invariants of section 4 hold.
@@ -434,10 +429,10 @@ agent calls the move and the splits.
 |---|---|---|---|
 | 11 | Effects by subset, for crossings with a communication row and for I2 | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_subsets.py` | 5 |
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
-| 13 | `block-before`, `block-after` | a new `stages/block_motion.py`, `tests/test_block_motion.py` | 11 |
+| 13 | dropped (user 2026-11-22): `lib-after` on the wait does it, after 11 | | |
 | 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
 | 15 | Time per communication row | `stages/performance.py`, `tests/test_comm_row_times.py` | 8, bench B2 |
-| 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 12, 13, 14 |
+| 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 11, 12, 14 |
 | 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
 | 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |
 

@@ -16,7 +16,7 @@ from typing import Any, TypedDict, cast
 
 import dace
 import sympy
-from dace import dtypes
+from dace import dtypes, subsets, symbolic_facts
 from dace.data import Scalar
 from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.copy.common import memory_engine_bulk_reason
@@ -90,6 +90,7 @@ from dace.transformation.passes.parallelization.wavefront.statements import occu
 from dace.transformation.passes.vectorization.vectorize_map import VectorizeMap
 from dace.transformation.transformation import PatternTransformation
 
+from nestforge.ir.comm import comm_class
 from nestforge.ir.extract import detach, detached_twin, extract_cfg_nest, extract_map_nest, find_state_of_node
 from nestforge.ir.introspect import Row
 from nestforge.ir.names import in_order, is_call, top_level_map_entries
@@ -101,10 +102,13 @@ from nestforge.stages.lib_motion import (
     LIB_BEFORE,
     LIB_INTO,
     SPLIT_BLOCKING,
+    effect_of,
     movable_rows,
     plan_lib_motion,
     plan_split_blocking,
+    split_at,
     split_blocking_refusal,
+    split_refusal,
 )
 from nestforge.stages.sinking import (
     SinkPlan,
@@ -211,6 +215,8 @@ SPLIT_DOALL = "split-doall"
 LOOP_ROW = (LoopRegion, nodes.MapEntry)
 #: A row of a persistent run: a for loop, a state, or a doall standing for its state.
 RUN_ROW = (LoopRegion, SDFGState, nodes.MapEntry)
+#: Where a call moves to: a block, or a doall whose state splits next to it.
+ANCHOR_ROW = (ControlFlowBlock, nodes.MapEntry)
 
 #: Every move kind, with the tree rows it takes in order.
 MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
@@ -240,8 +246,8 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     HOIST_INVARIANT_GUARD: (LOOP_ROW,),
     SINK_INVARIANT_GUARD: (ConditionalBlock,),
     VECTORIZE_DOALL: (nodes.MapEntry,),
-    LIB_BEFORE: (nodes.CodeNode, ControlFlowBlock),
-    LIB_AFTER: (nodes.CodeNode, ControlFlowBlock),
+    LIB_BEFORE: (nodes.CodeNode, ANCHOR_ROW),
+    LIB_AFTER: (nodes.CodeNode, ANCHOR_ROW),
     LIB_INTO: (nodes.CodeNode, SDFGState),
     SPLIT_BLOCKING: (nodes.CodeNode,),
     PROPAGATE_CONFIG: (),
@@ -719,9 +725,10 @@ def split_point(entry: nodes.MapEntry, state: SDFGState, at: Mapping[str, str] |
 
 
 def plan_split_doall(row: Row, at: Mapping[str, str] | None = None) -> Rewrite | str:
-    """``doall i in [lo, hi]`` -> ``doall i in [lo, at)`` then, in a new state after it, ``doall i in [at, hi]``. The
-    iterations are independent, so any cut of the range is the same computation; ``at`` is clamped to the range, so
-    one part may be empty."""
+    """``doall i in [lo, hi]`` -> ``doall i in [lo, at)`` and, beside it in the same state, ``doall i in [at, hi]``.
+    The iterations are independent, so any cut of the range is the same computation; ``at`` is clamped to the range,
+    so one part may be empty. A communication row moved next to one part (``lib-after``, ``lib-before``) splits the
+    state between them."""
     state, entry = node_state(row), cast(nodes.MapEntry, row[0])
     if state.entry_node(entry) is not None:
         return Refused(
@@ -731,36 +738,53 @@ def plan_split_doall(row: Row, at: Mapping[str, str] | None = None) -> Rewrite |
     if isinstance(found, str):
         return found
     dim, point = found
-    exit_node = state.exit_node(entry)
-    kept = set(state.scope_subgraph(entry).nodes()) | {e.src for e in state.in_edges(entry)}
-    kept |= {e.dst for e in state.out_edges(exit_node)}
-    others = [n for n in state.nodes() if n not in kept]
-    if others:
-        return Refused(
-            f"{entry.map.label} shares {state.label} with {len(others)} other nodes; split-doall needs it alone in its "
-            "state (split the state first).",
-            Refusal.WRONG_ROW_KIND,
-        )
 
     def commit() -> None:
         lo, hi, step = entry.map.range[dim]
-        cut = dace.symbolic.Max(lo, dace.symbolic.Min(point, hi + 1))
-        region = state.parent_graph
-        second = copy.deepcopy(state, {id(region): region, id(state.sdfg): state.sdfg})
-        second.label = f"{state.label}_split"
-        region.add_node(second)
-        for edge in list(region.out_edges(state)):
-            region.add_edge(second, edge.dst, edge.data)
-            region.remove_edge(edge)
-        region.add_edge(state, second, dace.InterstateEdge())
-        (copied,) = [n for n in second.nodes() if isinstance(n, nodes.MapEntry) and second.entry_node(n) is None]
-        entry.map.range[dim] = (lo, cut - 1, step)
-        copied.map.range[dim] = (cut, hi, step)
+        first_hi, second_lo = cut_bounds(lo, hi, point, state.sdfg.facts())
+        copied = copy_scope(state, entry)
+        entry.map.range[dim] = (lo, first_hi, step)
+        copied.map.range[dim] = (second_lo, hi, step)
         set_nested_sdfg_parent_references(state.sdfg)
         propagate_memlets_state(state.sdfg, state)
-        propagate_memlets_state(state.sdfg, second)
 
     return Rewrite(SPLIT_DOALL, commit)
+
+
+def cut_bounds(lo: Any, hi: Any, point: Any, facts: symbolic_facts.Facts) -> tuple[Any, Any]:
+    """The last iteration of ``[lo, point)`` and the first of ``[point, hi]``, clamped to ``[lo, hi]`` (``Min``,
+    ``Max``) only where ``facts`` do not prove the clamp changes nothing. Either way an empty range splits into two
+    empty parts, and any other into a partition of it."""
+
+    def proven(expr: Any) -> bool:
+        relation = dace.symbolic.predicate_relation(dace.symbolic.Predicate.NONNEGATIVE, expr)
+        return symbolic_facts.prove(relation, facts) is dace.symbolic.Truth.TRUE
+
+    if proven(point - (hi + 1)):  # at or past the end: all of it stays
+        return hi, hi + 1
+    if proven(lo - point):  # at or before the start: all of it follows
+        return lo - 1, lo
+    first_hi = point - 1 if proven(hi - (point - 1)) else sympy.Min(point - 1, hi)
+    second_lo = point if proven(point - lo) else sympy.Max(point, lo)
+    return first_hi, second_lo
+
+
+def copy_scope(state: SDFGState, entry: nodes.MapEntry) -> nodes.MapEntry:
+    """A copy of the doall at ``entry`` in ``state``, reading and writing the same access nodes; returns its entry."""
+    exit_node = state.exit_node(entry)
+    scope = state.scope_subgraph(entry, include_entry=True, include_exit=True)
+    inner = list(scope.nodes())
+    # one deepcopy of all of them, so the entry and exit copies share one map
+    clones = dict(zip(inner, copy.deepcopy(inner, {id(state.sdfg): state.sdfg, id(state): state}), strict=True))
+    for clone in clones.values():
+        state.add_node(clone)
+    for edge in scope.edges():
+        state.add_edge(clones[edge.src], edge.src_conn, clones[edge.dst], edge.dst_conn, copy.deepcopy(edge.data))
+    for edge in state.in_edges(entry):
+        state.add_edge(edge.src, edge.src_conn, clones[entry], edge.dst_conn, copy.deepcopy(edge.data))
+    for edge in state.out_edges(exit_node):
+        state.add_edge(clones[exit_node], edge.src_conn, edge.dst, edge.dst_conn, copy.deepcopy(edge.data))
+    return cast(nodes.MapEntry, clones[entry])
 
 
 def plan_loop_fission(row: Row) -> Rewrite | str:
@@ -1498,10 +1522,44 @@ def plan_map_if(row: Row) -> Rewrite | str:
 
 
 def plan_lib_move(row: Row, target: Row, place: str) -> Rewrite | str:
+    if isinstance(target[0], nodes.MapEntry):
+        return plan_lib_move_at_doall(row, target, place)
     plan = plan_lib_motion(row, target, place)
     if isinstance(plan, str):
         return plan
     return region_rewrite(f"lib-{place}", node_state(row).sdfg, plan)
+
+
+def plan_lib_move_at_doall(row: Row, target: Row, place: str) -> Rewrite | str:
+    """The call ``row`` into a state of its own just before or after (``place``) the doall ``target``: the doall's
+    state splits there first (``lib_motion.split_at``), then the call moves as to a block. Tried on a copy, so a
+    refused move leaves the state whole."""
+    entry, home = cast(nodes.MapEntry, target[0]), node_state(target)
+    if home.entry_node(entry) is not None:
+        return Refused(f"{entry.map.label} is nested in a doall; name a top-level doall.", Refusal.WRONG_ROW_KIND)
+    after = place == "after"
+    why = split_refusal(home, entry, after)
+    if why is not None:
+        return why
+    call = row[0]
+    trial = copy.deepcopy(home.sdfg.root_sdfg)
+    trial_home = state_of_map(trial, entry.map.label)
+    (trial_entry,) = [n for n in trial_home.nodes() if isinstance(n, nodes.MapEntry) and n.map.label == entry.map.label]
+    trial_block = split_at(trial_home, trial_entry, after)
+    set_nested_sdfg_parent_references(trial)
+    trial.reset_cfg_list()
+    trial_row = next((n, s) for n, s in trial.all_nodes_recursive() if n.label == call.label and type(n) is type(call))
+    plan = plan_lib_motion(cast(Row, trial_row), (trial_block, None), place)
+    if isinstance(plan, str):
+        return plan
+
+    def commit() -> None:
+        block = split_at(home, entry, after)
+        moved = plan_lib_motion(row, (block, None), place)
+        assert not isinstance(moved, str), f"the move was legal on the copy: {moved}"
+        moved()
+
+    return region_rewrite(f"lib-{place}", home.sdfg, commit)
 
 
 def plan_split_blocking_move(row: Row) -> Rewrite | str:
@@ -1949,6 +2007,7 @@ ROW_KEYWORDS: dict[type | tuple[type, ...], str] = {
     nodes.CodeNode: "lib_<family>",
     LOOP_ROW: "for|doall",
     RUN_ROW: "for|state|doall",
+    ANCHOR_ROW: "state|doall",
 }
 #: The kinds that take one row or more, each of their shape's one row kind.
 VARIADIC = frozenset({PERSISTENT_KERNEL, *RUN_ON_KINDS})
@@ -1976,8 +2035,9 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "split-doall",
         (
             'cut the range of one parameter at at (e.g. {"i": "2"}): the doall over [lo, at) stays, and the doall '
-            "over [at, hi] follows in a new state; at is clamped to the range. Use it to separate the iterations "
-            "that touch a buffer in flight from the rest, then move the rest between the start and the wait."
+            "over [at, hi] sits beside it in the same state; at is clamped to the range. Use it to separate the "
+            "iterations that touch a buffer in flight from the rest, then lib-after the wait past the rest's doall "
+            "(the state splits there, so the wait runs in a state of its own between the parts)."
         ),
     ),
     "subgraph-fission": (
@@ -2160,7 +2220,8 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "a state of its own, checked against the read and write sets of every block it crosses",
         (
             "the same, into a new state just after the named block: sink a call to its consumer, or out of a loop "
-            "when nothing in the loop reads what it writes."
+            "when nothing in the loop reads what it writes. A communication row may also name a doall that shares "
+            "its state: the state splits at the doall (what it needs first), and the row lands between the parts."
         ),
     ),
     SPLIT_BLOCKING: (
@@ -2384,6 +2445,52 @@ def map_rows(sdfg: dace.SDFG) -> Iterator[tuple[SDFGState, nodes.MapEntry]]:
             yield from ((state, n) for n in state.nodes() if isinstance(n, nodes.MapEntry))
 
 
+def split_points(state: SDFGState, entry: nodes.MapEntry) -> list[dict[str, str]]:
+    """The cuts ``split-doall`` is listed with on the top-level doall ``entry``: for each element a communication row
+    of its region writes and the doall reads, the first and the one past the last iteration that reads it (from the
+    offsets of the doall's read range to its own range, design 12.2), where that cut lies strictly inside the range."""
+    region = state.parent_graph
+    received: dict[str, list[subsets.Subset]] = {}
+    for block in region.nodes():
+        if not isinstance(block, SDFGState):
+            continue
+        for node in block.nodes():
+            if comm_class(node) is None or block.entry_node(node) is not None:
+                continue
+            for name, extent in (effect_of(block, node).write_extents or {}).items():
+                received.setdefault(name, []).extend(extent or [])
+    cuts: dict[tuple[str, str], None] = {}
+    for edge in state.in_edges(entry):
+        if edge.data.is_empty() or edge.data.data not in received or edge.data.subset is None:
+            continue
+        read = edge.data.subset
+        for param, (lo, hi, step) in zip(entry.map.params, entry.map.range, strict=True):
+            if step != 1:
+                continue
+            for dim, (first, last, _) in enumerate(read):
+                below, above = sympy.simplify(first - lo), sympy.simplify(last - hi)
+                if not (below.is_number and above.is_number):
+                    continue
+                for part in received[edge.data.data]:
+                    if dim >= part.dims():
+                        continue
+                    start, stop, _ = part[dim]
+                    for cut in (sympy.simplify(start - above), sympy.simplify(stop - below + 1)):
+                        # a cut at either end splits off nothing; one not proven outside the range is offered
+                        if sympy.simplify(cut - lo).is_positive is not False and (
+                            sympy.simplify(hi + 1 - cut).is_positive is not False
+                        ):
+                            cuts[(param, str(cut))] = None
+    return [{param: cut} for param, cut in cuts]
+
+
+def doalls_beside_an_exchange(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
+    """The top-level doalls ``split-doall`` is listed on: those with a cut from :func:`split_points`."""
+    for state, entry in map_rows(sdfg):
+        if state.entry_node(entry) is None and state.sdfg is sdfg and split_points(state, entry):
+            yield ((entry, state),)
+
+
 def doall_rows(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
     return (((entry, state),) for state, entry in map_rows(sdfg))
 
@@ -2516,6 +2623,7 @@ def guarded_loops(sdfg: dace.SDFG) -> Iterator[tuple[Row, ...]]:
 
 
 CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
+    SPLIT_DOALL: doalls_beside_an_exchange,
     "for-fusion": loop_pairs,
     "for-fission": for_rows,
     "doall-fusion": map_pairs,
@@ -2584,6 +2692,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
                 SET_SCHEDULE_CPU,
                 SET_SCHEDULE_GPU,
                 SINK_INVARIANT_CODE,
+                SPLIT_DOALL,
             ):  # no values to probe with, or too costly, or probed by its candidates: judged when applied
                 found[(name, labels)] = None
                 continue
