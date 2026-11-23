@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Validation and timing of a built kernel: seeded inputs, the NumPy oracle, the FP-mode gate, and the ctypes call
-that binds its arguments once and times repeated calls."""
+"""Validation and timing of a built kernel: seeded inputs, the NumPy oracle, the difference to it, and the ctypes call
+that binds its arguments once and times repeated calls (the grade itself is :mod:`tactics.build.grading`)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from typing import Any, cast
 import numpy as np
 from dace import symbolic
 
-from tactics.build import flags
 from tactics.build.isolation import Failure, Result, run_isolated
 from tactics.build.toolchain import (
     POINTER_TYPE,
@@ -357,18 +356,6 @@ def call_device(call: DeviceCall) -> DeviceResult:
     finally:
         memory.free()
     return DeviceResult(outputs=outputs, time_us=time_us)
-
-
-def dtype_floor(arrays: dict[str, np.ndarray]) -> float:
-    """The loosest :data:`flags.DTYPE_RTOL` floor among ``arrays`` (one ULP of the narrowest format present); a
-    complex array takes its component float's."""
-    floats = (np.finfo(v.dtype).dtype.name for v in arrays.values() if np.issubdtype(v.dtype, np.inexact))
-    return max((flags.DTYPE_RTOL[name] for name in floats if name in flags.DTYPE_RTOL), default=0.0)
-
-
-def rung_rtol(mode: str, floor: float) -> float:
-    """The relative gate at FP rung ``mode``, never tighter than the dtype ``floor`` the outputs allow."""
-    return max(flags.FP_RTOL[mode], floor)
 
 
 def diff_stats(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> tuple[float, float]:

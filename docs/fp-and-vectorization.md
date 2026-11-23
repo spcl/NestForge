@@ -11,19 +11,31 @@ C++ body has no NumPy oracle.
 
 ## FP modes
 
-`FP_LEVELS` lists three modes, strictest first. Each mode has a relative tolerance against the NumPy
-float64 oracle (`FP_RTOL`). `strict-ieee` evaluates in the oracle's order, so only the dtype floor
-below applies to it. A reduction is the one exception: CPF emits it as an OpenMP `simd reduction`, which may
-reassociate the sum, so a reduction kernel matches its sequential oracle within the dtype floor, not bit for bit.
+`FP_LEVELS` lists three modes, strictest first. Every mode is graded against the NumPy oracle by the same rule,
+HPCAgent-Bench's: its comparator at the band of each output's precision (fp64 rtol 1e-9, atol 1e-11), with the
+reassociation floor `eps_acc * sqrt(l)` at the output's accumulation length `l` ([Grading](#grading)). A mode is
+kept when the bench would accept its result, so a faster mode wins only if the final grade still passes.
 
-| Mode | tolerance | GNU | LLVM | oneAPI |
-|---|---|---|---|---|
-| `strict-ieee` | 0 | `-ffp-contract=off -fexcess-precision=standard` | `-ffp-contract=off` | `-fp-model=strict` |
-| `contract-fma` | 1e-13 | `-ffp-contract=fast -fexcess-precision=standard` | `-ffp-contract=fast` | `-fp-model=precise` |
-| `fast-math` | 1e-5 | `-ffast-math -mrecip` | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
+| Mode | GNU | LLVM | oneAPI |
+|---|---|---|---|
+| `strict-ieee` | `-ffp-contract=off -fexcess-precision=standard` | `-ffp-contract=off` | `-fp-model=strict` |
+| `contract-fma` | `-ffp-contract=fast -fexcess-precision=standard` | `-ffp-contract=fast` | `-fp-model=precise` |
+| `fast-math` | `-ffast-math -mrecip` | `-ffast-math -mrecip` | `-fp-model=fast=2 -ftz` |
 
-oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model. `DTYPE_RTOL` adds a per-dtype floor of about one
-ULP, combined as `max(mode, dtype)`. GPU variants use only `strict-ieee` and `contract-fma`.
+oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit model. GPU variants use only
+`strict-ieee` and `contract-fma`.
+
+## Grading
+
+`tactics/build/grading.py` grades a kernel's outputs with the bench's `compare_arrays`, band
+(`precision.tolerance_band`) and grading knobs (`grading.fp_checks`: `strict_small_l2`, `strict_small_sign`, `relative_atol`), as `grade_outputs`
+grades a program. The bench derives `l` per program output from the BenchSpec; a kernel's outputs are often
+transients no spec names, so `tactics/ir/accumulation.py` derives it from the kernel's SDFG at the checked sizes:
+the writes that read their own target (directly, through scratch, or as a WCR) over the chains they extend, one per
+element and one per initialization. A matmul gets `K`, a sum over `N` gets `N`, an elementwise kernel 1; an output
+computed from scratch takes the scratch's `l`. A writer that cannot be counted (a library node, a while loop) gives
+the size of the largest input, the bench's own fallback. When `eps_acc * sqrt(l)` reaches the band, the bench
+refuses to grade and the kernel is left to the whole program's check.
 
 ## Cost models
 

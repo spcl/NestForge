@@ -194,12 +194,10 @@ checks it.
 Stage 6 compiles each kernel's current source into variants, checks each against the oracle and keeps the fastest
 correct one. It is deterministic, never agent-driven.
 
-A kernel matches its oracle when its scaled difference is at most the FP rung's tolerance (`FP_RTOL`, at least
-one ULP of the narrowest output) plus the drift a reordered accumulation may carry, as the bench grades it
-(#106): `eps * sqrt(l)` from fp32 up, `eps / 2 * (ceil(log2 l) + 1)` below, with `l` the longest accumulation
-in the kernel (the ranges a reduction's written subset leaves out, or a library call's input dimensions no
-output keeps; `tactics/stages/kernel.py`, `reassociation_growth`). The same gate serves the sweep,
-`write-kernel` and the hints.
+A kernel matches its oracle when its outputs pass the bench's grade (`compare_arrays`, the band of each output's
+precision, with the reassociation floor `eps_acc * sqrt(l)`; `l` is each output's accumulation length at the checked
+sizes, #106). `docs/fp-and-vectorization.md` describes the check; `tactics/build/grading.py` and
+`tactics/ir/accumulation.py` implement it. The same gate serves the sweep, `write-kernel` and the hints.
 
 - **CPU.** Compiler on PATH (GNU, LLVM, oneAPI) × FP mode (strict-ieee, contract-fma, fast-math) × vectorizer cost
   model.

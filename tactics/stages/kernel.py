@@ -33,12 +33,11 @@ from tactics.build.arena import (
     call_device,
     call_native,
     diff_stats,
-    dtype_floor,
     make_inputs,
     run_oracle,
-    rung_rtol,
 )
 from tactics.build.flags import cuda_base_flags, hip_base_flags
+from tactics.build.grading import Expected, grade_kernel
 from tactics.build.isolation import Failure, Result, run_isolated, run_spawned
 from tactics.build.sdfg import (
     BuildOptions,
@@ -60,6 +59,7 @@ from tactics.build.toolchain import (
     raw_signature,
 )
 from tactics.corpus.translate import Prepared
+from tactics.ir.accumulation import accumulation_lengths
 from tactics.ir.extract import INT64, Boundary
 from tactics.stages.expand import pin_pure_without_library
 from tactics.stages.placement import kernel_device
@@ -102,96 +102,30 @@ class KernelSource:
 
 @dataclass(slots=True)
 class KernelVerdict:
-    """A build compared to the NumPy oracle and timed; ``ok`` gates at ``fp_mode``. ``unchecked`` says why the
-    kernel cannot run standalone (a symbol only the program computes), so it was neither compared nor timed."""
+    """A build built at ``fp_mode``, compared to the NumPy oracle and timed. ``within`` says whether its outputs pass
+    the bench's grade (:func:`~tactics.build.grading.grade_kernel`), the same band at every FP mode; ``md_rel`` is
+    the bench's max relative error and ``maxdiff`` the largest absolute difference. ``unchecked`` says why the kernel
+    cannot run standalone (a symbol only the program computes), so it was neither compared nor timed."""
 
     fp_mode: str
     maxdiff: float
     md_rel: float
-    dtype_floor: float
+    within: bool
     time_us: float
     error: str = ""
     unchecked: str = ""
-    #: The drift a reordered accumulation may carry (:func:`reassociation_growth`), added to the gate as the bench
-    #: grades (#106): a parallel or library reduction sums in another order than NumPy.
-    growth: float = 0.0
 
     @property
     def ok(self) -> bool:
-        gate = rung_rtol(self.fp_mode, self.dtype_floor) + self.growth
-        return not self.error and not self.unchecked and self.md_rel <= gate
-
-
-def extent(expr: object, sizes: Mapping[str, object]) -> int:
-    """``expr`` at ``sizes`` as a count; 1 when it does not resolve, which adds no drift (the stricter side)."""
-    try:
-        value = dace.symbolic.evaluate(expr, dict(sizes))
-    except (TypeError, ValueError, KeyError, AttributeError):
-        return 1
-    try:
-        return max(int(value), 1)
-    except (TypeError, ValueError):
-        return 1
-
-
-def accumulation_length(sdfg: dace.SDFG, sizes: Mapping[str, object]) -> int:
-    """The longest accumulation in ``sdfg`` at ``sizes``, the bench's contracted extent ``l``: for a reduction (a
-    write-conflict edge out of a map) the product of the map's ranges its written subset does not mention, for a
-    library call the product of its inputs' dimensions no output keeps; 1 when there is none."""
-    longest = 1
-    for node, parent in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.MapExit) and isinstance(parent, dace.SDFGState):
-            entry = parent.entry_node(node)
-            for edge in parent.in_edges(node):
-                if edge.data.wcr is None:
-                    continue
-                written = {str(symbol) for symbol in edge.data.subset.free_symbols}
-                lengths = [
-                    extent(size, sizes)
-                    for param, size in zip(entry.map.params, entry.map.range.size(), strict=True)
-                    if param not in written
-                ]
-                longest = max(longest, math.prod(lengths))
-        elif isinstance(node, nodes.LibraryNode) and isinstance(parent, dace.SDFGState):
-            graph = parent.sdfg
-            kept = {
-                str(dim)
-                for edge in parent.out_edges(node)
-                if edge.data.data
-                for dim in graph.arrays[edge.data.data].shape
-            }
-            for edge in parent.in_edges(node):
-                if not edge.data.data:
-                    continue
-                dropped = [extent(dim, sizes) for dim in graph.arrays[edge.data.data].shape if str(dim) not in kept]
-                longest = max(longest, math.prod(dropped))
-    return longest
-
-
-def reassociation_growth(sdfg: dace.SDFG, outputs: Sequence[str], sizes: Mapping[str, object]) -> float:
-    """The relative drift an accumulation of :func:`accumulation_length` may carry in the narrowest float the
-    outputs hold, as the bench's ``precision.accumulation_growth`` gives it: ``eps * sqrt(l)`` from fp32 up (two
-    summation orders), ``eps / 2 * (ceil(log2 l) + 1)`` for a narrower format (a tree)."""
-    floats = [
-        np.finfo(sdfg.arrays[name].dtype.type)
-        for name in outputs
-        if name in sdfg.arrays and np.issubdtype(sdfg.arrays[name].dtype.type, np.inexact)
-    ]
-    length = accumulation_length(sdfg, sizes)
-    if not floats or length <= 1:
-        return 0.0
-    eps = float(max(info.eps for info in floats))
-    if eps <= float(np.finfo(np.float32).eps):
-        return eps * math.sqrt(length)
-    return eps / 2 * (math.ceil(math.log2(length)) + 1)
+        return not self.error and not self.unchecked and self.within
 
 
 def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
-    return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), error)
+    return KernelVerdict(fp_mode, float("inf"), float("inf"), False, float("inf"), error)
 
 
 def unchecked_verdict(fp_mode: str, reason: str) -> KernelVerdict:
-    return KernelVerdict(fp_mode, float("inf"), float("inf"), 0.0, float("inf"), unchecked=reason)
+    return KernelVerdict(fp_mode, float("inf"), float("inf"), False, float("inf"), unchecked=reason)
 
 
 def computed_symbols_reason(symbols: list[str]) -> str:
@@ -284,27 +218,32 @@ def hip_runtime_libraries(compiler: str) -> list[str]:
 
 
 class KernelNumbers(Result):
-    """One measured kernel: its distance to the oracle, the dtype's floor on it, and its time per call."""
+    """One measured kernel: its largest absolute difference to the oracle, the bench's grade of its outputs, and its
+    time per call. ``ungradeable`` says why the bench refuses the band at an output's accumulation length."""
 
     maxdiff: float
     md_rel: float
-    dtype_floor: float
+    within: bool
     time_us: float
+    ungradeable: str = ""
 
 
-def kernel_numbers(
-    oracle: dict[str, np.ndarray] | None, outputs: dict[str, np.ndarray], time_us: float
-) -> KernelNumbers:
-    """``oracle`` is ``None`` for a kernel timed at sizes it was not checked at: there is nothing to compare."""
-    md, md_rel = (0.0, 0.0) if oracle is None else diff_stats(oracle, outputs)
-    return KernelNumbers(maxdiff=md, md_rel=md_rel, dtype_floor=dtype_floor(outputs), time_us=time_us)
+def kernel_numbers(expected: Expected | None, outputs: dict[str, np.ndarray], time_us: float) -> KernelNumbers:
+    """``expected`` is ``None`` for a kernel timed at sizes it was not checked at: there is nothing to compare."""
+    if expected is None:
+        return KernelNumbers(maxdiff=0.0, md_rel=0.0, within=True, time_us=time_us)
+    grade = grade_kernel(expected, outputs)
+    maxdiff, _ = diff_stats(expected.outputs, outputs)
+    return KernelNumbers(
+        maxdiff=maxdiff, md_rel=grade.error, within=grade.ok, time_us=time_us, ungradeable=grade.ungradeable
+    )
 
 
 def measure_on_cpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray] | None,
+    expected: Expected | None,
     sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -314,7 +253,7 @@ def measure_on_cpu(
     def work() -> KernelNumbers:
         outs, us = call_native(shared, src.symbol, src.abi_order, argtypes, src.boundary, inputs, sizes, reps)
         assert outs is not None, "call_native snapshots outputs unless told not to"
-        return kernel_numbers(oracle, outs, us)
+        return kernel_numbers(expected, outs, us)
 
     return run_isolated(work, KernelNumbers)
 
@@ -323,7 +262,7 @@ def measure_on_gpu(
     shared: Path,
     src: KernelSource,
     inputs: dict[str, np.ndarray],
-    oracle: dict[str, np.ndarray] | None,
+    expected: Expected | None,
     sizes: Mapping[str, SymbolValue],
     reps: int,
 ) -> KernelNumbers | Failure:
@@ -343,7 +282,7 @@ def measure_on_gpu(
     res = run_spawned(call_device, call)
     if isinstance(res, Failure):
         return res
-    return kernel_numbers(oracle, res.outputs, res.time_us)
+    return kernel_numbers(expected, res.outputs, res.time_us)
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +294,7 @@ class KernelForm:
     schedule: Callable[[Boundary], dace.SDFG]
     build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str], Sequence[str]], None]
     measure: Callable[
-        [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, Mapping[str, SymbolValue], int],
+        [Path, KernelSource, dict[str, np.ndarray], Expected | None, Mapping[str, SymbolValue], int],
         KernelNumbers | Failure,
     ]
     runtime: Callable[[str], list[str]]
@@ -486,18 +425,31 @@ class Probe:
     """What a build of a kernel is measured on: timed on ``timed``, compared on ``checked`` to the ``oracle`` outputs
     of those inputs. ``checked`` is ``timed`` unless the oracle cannot finish at the timed sizes; a kernel checked at
     a smaller size is timed without a comparison. ``unchecked`` says why the oracle finished at no size: such a kernel
-    goes unchecked, and the whole program checks it."""
+    goes unchecked, and the whole program checks it. ``lengths`` is each output's accumulation length at the checked
+    sizes (:func:`~tactics.ir.accumulation.accumulation_lengths`); an output without one takes the bench's default."""
 
     timed: Workload
     checked: Workload
     oracle: dict[str, np.ndarray]
     unchecked: str = ""
+    lengths: Mapping[str, int] = dataclasses.field(default_factory=dict)
+
+    @property
+    def expected(self) -> Expected:
+        return Expected(self.oracle, self.lengths)
+
+
+def checked_probe(boundary: Boundary, timed: Workload, checked: Workload, oracle: dict[str, np.ndarray]) -> Probe:
+    """A probe compared on ``checked``, with the accumulation length of each output at its sizes."""
+    arrays = {**checked.inputs, **oracle}
+    lengths = accumulation_lengths(boundary.standalone_sdfg, checked.sizes, arrays, boundary.outputs)
+    return Probe(timed, checked, oracle, lengths=lengths)
 
 
 def full_probe(prep: Prepared, boundary: Boundary, sizes: Mapping[str, SymbolValue]) -> Probe:
     """A probe at ``sizes``, however long the oracle takes."""
     timed = Workload(make_inputs(boundary, sizes), sizes)
-    return Probe(timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
+    return checked_probe(boundary, timed, timed, run_oracle(prep, boundary, timed.inputs, sizes))
 
 
 def bounded_probe(
@@ -523,8 +475,8 @@ def bounded_probe(
     if full and (not interpreted or seconds * scale <= ORACLE_TIMEOUT_S):
         at_size = bounded_oracle(prep, boundary, timed.inputs, sizes, ORACLE_TIMEOUT_S)
         if not isinstance(at_size, Failure):
-            return Probe(timed, timed, at_size[0])
-    return Probe(timed, checked, outputs)
+            return checked_probe(boundary, timed, timed, at_size[0])
+    return checked_probe(boundary, timed, checked, outputs)
 
 
 def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp_mode: str) -> KernelVerdict:
@@ -533,13 +485,14 @@ def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp
     if probe.unchecked:
         return unchecked_verdict(fp_mode, probe.unchecked)
     measure, shared = kernel_form(src.device).measure, archive.with_suffix(".so")
-    checked = measure(shared, src, probe.checked.inputs, probe.oracle, probe.checked.sizes, reps)
+    checked = measure(shared, src, probe.checked.inputs, probe.expected, probe.checked.sizes, reps)
     if isinstance(checked, Failure):
         return failed_verdict(fp_mode, checked.error)
-    growth = reassociation_growth(src.boundary.standalone_sdfg, src.boundary.outputs, probe.checked.sizes)
-    verdict = KernelVerdict(
-        fp_mode, checked.maxdiff, checked.md_rel, checked.dtype_floor, checked.time_us, growth=growth
-    )
+    if checked.ungradeable:
+        return unchecked_verdict(
+            fp_mode, f"the bench cannot grade it ({checked.ungradeable}); the whole program checks it"
+        )
+    verdict = KernelVerdict(fp_mode, checked.maxdiff, checked.md_rel, checked.within, checked.time_us)
     if probe.checked is probe.timed or not verdict.ok:
         return verdict
     timed = measure(shared, src, probe.timed.inputs, None, probe.timed.sizes, reps)

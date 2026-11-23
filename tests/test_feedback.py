@@ -34,7 +34,7 @@ ptxas info    : Used 40 registers, 368 bytes cmem[0]
 
 
 def verdict(time_us: float = 10.0, md_rel: float = 0.0, error: str = "") -> KernelVerdict:
-    return KernelVerdict("strict-ieee", md_rel, md_rel, 2.3e-16, time_us, error)
+    return KernelVerdict("strict-ieee", md_rel, md_rel, md_rel == 0.0, time_us, error)
 
 
 def evidence(kernel: str = "extcall_0", remarks: str = "", **kw: Any) -> Evidence:
