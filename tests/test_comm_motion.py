@@ -182,3 +182,14 @@ def test_a_wait_does_not_move_past_a_reader_of_a_ghost_cell_received_through_a_v
     refused = plan_lib_motion(wait, (readers[0], None), "after")
 
     assert isinstance(refused, str) and "ghost" in refused
+
+
+def test_a_wait_completes_starts_whose_requests_an_assignment_forwards() -> None:
+    """Before canonicalization the frontend stores each request through a tasklet ``__out = __inp`` into the array
+    the wait reads; a wait that found no start there would let R3 move it past a reader of a ghost cell."""
+    sdfg = halo_overlap.to_sdfg(simplify=True)
+    (wait, state) = next((n, s) for n, s in sdfg.all_nodes_recursive() if isinstance(n, Waitall))
+
+    sent, received = in_flight(sdfg, state, wait)
+
+    assert "a" in sent and received == frozenset({"ghost"})

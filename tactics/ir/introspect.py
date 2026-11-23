@@ -30,6 +30,7 @@ from dace.sdfg.performance_evaluation.helpers import get_uuid
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.analysis import loop_analysis
 
+from tactics.ir.comm import comm_class, comm_line
 from tactics.ir.dace_types import strings
 from tactics.ir.emit_c import body_c
 from tactics.ir.emit_python import UnsupportedNest, lower, map_python, module
@@ -592,10 +593,17 @@ def innermost(loop: LoopRegion) -> bool:
 
 
 def doall_count(state: SDFGState) -> int:
-    """The top-level doalls of ``state``: maps, and library calls, each a black-box doall."""
+    """The top-level doalls of ``state``: maps, and library calls other than communication, each a black-box
+    doall."""
     return sum(
-        (isinstance(n, nodes.MapEntry) or is_call(state, n)) and state.entry_node(n) is None for n in state.nodes()
+        (isinstance(n, nodes.MapEntry) or (is_call(state, n) and comm_class(n) is None)) and state.entry_node(n) is None
+        for n in state.nodes()
     )
+
+
+def comm_count(state: SDFGState) -> int:
+    """The communication rows of ``state``, counted apart from its doalls."""
+    return sum(comm_class(n) is not None and state.entry_node(n) is None for n in state.nodes())
 
 
 def block_row(tree: Tree, block: ControlFlowBlock, shown: bool) -> str:
@@ -610,7 +618,9 @@ def block_row(tree: Tree, block: ControlFlowBlock, shown: bool) -> str:
         )
         if not (reads or writes):
             return text
+        comms = comm_count(block)
         size = f"  doalls={count}" if count and not shown else ""
+        size += f"  comm={comms}" if comms and not shown else ""
         return f"{text}{size}  reads={reads} writes={writes}" + tree.cost(get_uuid(block))
     if isinstance(block, LoopRegion):
         if innermost(block):
@@ -648,6 +658,8 @@ def kernel_line(state: SDFGState, node: nodes.MapEntry | nodes.CodeNode) -> str:
     reads, writes = nest_reads_writes(state, node)
     if is_copy_tasklet(node):  # a one-element copy: the Copy node as its automatic expansion makes it
         return f"{node.label}  LIBNODE Copy [tasklet]  reads={reads} writes={writes}"
+    if isinstance(node, nodes.LibraryNode) and comm_class(node) is not None:
+        return comm_line(state, node)
     if isinstance(node, nodes.LibraryNode):
         kind = type(node).__name__.removesuffix("LibraryNode")  # CopyLibraryNode reads as Copy, like its label
         chosen = "" if isinstance(node, ExternalCall) else f" [{node.implementation or 'auto'}]"

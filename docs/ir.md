@@ -70,6 +70,7 @@ Every row is one SDFG object. Children print below their parent in execution ord
 | `state<n>` | `SDFGState` | one dataflow step; collapsed it adds `doalls=<k>` (top-level maps and library calls) |
 | `doall<n>  [<p>=<lo>:<hi>[:<step>], ...]` | `MapEntry` | a map: iterations proven independent, run in any order or at once |
 | `lib_<family><n>  LIBNODE <Kind> [<impl>]` | `LibraryNode`, or a one-element copy's tasklet | a library call, a black-box doall, with its implementation (fields below), none on an `ExternalCall`. DaCe makes a one-element copy outside every map the tasklet `_cpy_out = _cpy_in`, what a `Copy` node's automatic expansion becomes, so it prints `lib_copy<n>  LIBNODE Copy [tasklet]` and the `lib-*` moves take it like any copy |
+| `lib_comm<n>  COMM <Kind> [<impl>]` | a communication node (`dace.libraries.comm`) | a row of an exchange between MPI ranks (`tactics/ir/comm.py`): `reads=` the buffers it sends, `writes=` those it receives, then `request=<container>` on a start (`Isend`, `Irecv`, a nonblocking collective), `completes=[labels]` on a `Waitall` or `Wait` (the starts whose buffers stay in flight until it), `to=`, `from=` and `tag=` on a point-to-point row, and `op=` on a reduction. A query (`CommRank`, `CommSize`) prints no fields. A collapsed state counts these rows as `comm=<k>`, apart from `doalls=<k>` |
 | `: <statement>` | the body of a leaf doall | what one iteration computes, in the row's body language |
 
 A doall whose body is a nested SDFG (canonical form puts most bodies there) shows that SDFG's blocks as rows below

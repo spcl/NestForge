@@ -13,6 +13,7 @@ import dace
 from dace import subsets
 from dace.libraries.comm.nodes import (
     Abort,
+    Allreduce,
     Barrier,
     CommF2c,
     CommFree,
@@ -22,6 +23,8 @@ from dace.libraries.comm.nodes import (
     Dummy,
     Irecv,
     Isend,
+    Reduce,
+    ReduceScatter,
     Wait,
     Waitall,
 )
@@ -31,7 +34,6 @@ from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
 from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, SDFGState
 
-from tactics.ir.names import is_copy
 from tactics.records import Refusal, Refused
 
 #: The connector through which an operation writes, and a wait reads, its request.
@@ -116,9 +118,16 @@ def requests_of(state: SDFGState, node: nodes.Node, written: bool) -> frozenset[
 
 
 def forwarded(sdfg: dace.SDFG, names: frozenset[str]) -> frozenset[str]:
-    """``names`` and every container a copy forwards one of them into, transitively: the frontend writes a request
-    into a scalar that a copy then stores into the request array the wait reads."""
-    copies = [(state, node) for state in sdfg.states() for node in state.nodes() if is_copy(node)]
+    """``names`` and every container a code node forwards one of them into, transitively: the frontend writes a
+    request into a scalar that a copy, or an assignment tasklet (``__out = __inp``), then stores into the request
+    array the wait reads. Any code node that reads one counts, which may add containers and is safe: more buffers
+    stay in flight."""
+    copies = [
+        (state, node)
+        for state in sdfg.states()
+        for node in state.nodes()
+        if isinstance(node, nodes.CodeNode) and comm_class(node) is None
+    ]
     found = set(names)
     grew = True
     while grew:
@@ -157,6 +166,99 @@ def in_flight(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> tuple[froz
         sent |= out
         received |= into
     return frozenset(sent), frozenset(received)
+
+
+#: The connectors that name a point-to-point row's peer and tag, and the field each prints as (design, section 2).
+PEER_FIELDS = {"_dest": "to", "_src": "from", "_tag": "tag"}
+
+#: The collectives that reduce, and so print their operator.
+REDUCTIONS = (Allreduce, Reduce, ReduceScatter)
+
+
+def literal(sdfg: dace.SDFG, name: str) -> str | None:
+    """The constant that the one write of transient ``name`` stores, when that write is a tasklet without inputs
+    (the frontend's ``__out = 0`` for a literal tag, in any state once canonicalization has split them), else
+    ``None``."""
+    desc = sdfg.arrays.get(name)
+    if desc is None or not desc.transient:
+        return None
+    writes = [
+        edge
+        for state in sdfg.states()
+        for node in state.data_nodes()
+        if node.data == name
+        for edge in state.in_edges(node)
+    ]
+    if len(writes) != 1 or not isinstance(writes[0].src, nodes.Tasklet) or writes[0].src.in_connectors:
+        return None
+    _, assigned, value = writes[0].src.code.as_string.partition("=")
+    return value.strip() if assigned else None
+
+
+def operand(state: SDFGState, edge: MultiConnectorEdge) -> str:
+    """What a peer or tag connector is passed: a literal, else its container, with the element when the container
+    holds more than one."""
+    value = literal(state.sdfg, str(edge.data.data))
+    if value is not None:
+        return value
+    name = container(state, edge.src, str(edge.data.data))
+    if state.sdfg.arrays[str(edge.data.data)].total_size == 1:
+        return name
+    return f"{name}[{edge.data.subset}]"
+
+
+def shown_requests(sdfg: dace.SDFG, state: SDFGState, node: nodes.Node) -> list[str]:
+    """The requests a ``START`` row prints: the containers a copy forwards its request into (the frontend writes it
+    into a scalar first), else the one it writes."""
+    direct = requests_of(state, node, written=True)
+    return sorted((forwarded(sdfg, direct) - direct) or direct)
+
+
+def comm_fields(state: SDFGState, node: nodes.Node) -> list[str]:
+    """The fields a communication row adds after its reads and writes (design, section 2): ``request=`` on a start,
+    ``completes=`` on a wait, the peer and tag of a point-to-point row, the operator of a reduction. A ``QUERY``
+    row has none."""
+    kind = comm_class(node)
+    if kind in (None, CommClass.QUERY):
+        return []
+    fields = []
+    if kind is CommClass.START:
+        fields.append(f"request={','.join(shown_requests(state.sdfg, state, node))}")
+    if kind is CommClass.WAIT:
+        completed = sorted(str(start.label) for _, start in starts_of(state.sdfg, state, node))
+        fields.append(f"completes=[{', '.join(completed)}]")
+    peers = {e.dst_conn: e for e in state.in_edges(node) if e.dst_conn in PEER_FIELDS and not e.data.is_empty()}
+    fields += [f"{field}={operand(state, peers[conn])}" for conn, field in PEER_FIELDS.items() if conn in peers]
+    if isinstance(node, REDUCTIONS):
+        fields.append(f"op={node.op}")
+    return fields
+
+
+def comm_line(state: SDFGState, node: nodes.LibraryNode) -> str:
+    """A communication row: ``COMM`` in place of ``LIBNODE``, the buffers it sends (``reads``) and receives
+    (``writes``) without its request, peer and tag, then :func:`comm_fields`; empty lists are left out."""
+    kind = type(node).__name__
+    if comm_class(node) is CommClass.QUERY:
+        return f"{node.label}  COMM {kind} [{node.implementation or 'auto'}]"
+    skipped = {REQUEST, *PEER_FIELDS}
+    sent = sorted(
+        {
+            container(state, e.src, str(e.data.data))
+            for e in state.in_edges(node)
+            if not e.data.is_empty() and e.dst_conn not in skipped
+        }
+    )
+    received = sorted(
+        {
+            container(state, e.dst, str(e.data.data))
+            for e in state.out_edges(node)
+            if not e.data.is_empty() and e.src_conn not in skipped
+        }
+    )
+    parts = [f"{node.label}  COMM {kind} [{node.implementation or 'auto'}]"]
+    parts += [f"reads={sent}"] if sent else []
+    parts += [f"writes={received}"] if received else []
+    return "  ".join(parts + comm_fields(state, node))
 
 
 #: The parts of a container an access touches; ``None``: all of it (a view, or no subset to tell).
