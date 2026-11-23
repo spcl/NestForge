@@ -74,7 +74,7 @@ double kern3(double *a, const double *b, int n, int m) {
 #: The OpenMP runtimes a linked object can name, by DT_NEEDED soname stem.
 OMP_SONAMES = ("libgomp", "libomp", "libiomp5")
 
-#: The C compilers of the families nest-forge sweeps.
+#: The C compilers of the families Tactics sweeps.
 COMPILERS = ("gcc", "clang", "icx")
 
 

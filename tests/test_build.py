@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""nest-forge owns the DaCe build (docs/build.md): generate DaCe's C++, compile+link it ourselves, call it via
+"""Tactics owns the DaCe build (docs/build.md): generate DaCe's C++, compile+link it ourselves, call it via
 ctypes with manual init/program/exit -- not ``dace.compile``.
 
 Tests build real corpus nests through :mod:`tactics.build.sdfg` and check the owned-built kernel matches the

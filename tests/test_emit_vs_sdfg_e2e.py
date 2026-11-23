@@ -170,7 +170,7 @@ def base_inputs(sdfg: SDFG, sizes: dict[str, int], center: float, seed: int = 0)
 
 
 def run_oracle_nest(make_sdfg: Callable[[], SDFG], sizes: dict[str, int], base: Buffers, tmp: Path) -> Buffers:
-    """Build the SDFG through nest-forge (no dace.compile) and run it; returns the mutated buffers."""
+    """Build the SDFG through Tactics (no dace.compile) and run it; returns the mutated buffers."""
     built = build_sdfg(make_sdfg(), tmp / "oracle", BuildOptions(compiler="g++"))
     out = {k: v.copy() for k, v in base.items()}
     built.run(out, sizes)
