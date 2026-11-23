@@ -19,6 +19,7 @@ import numpy as np
 
 import nestforge
 from nestforge.build.toolchain import (
+    AS_NEEDED,
     LIBOMP,
     lib_linkable,
     openmp_compile_flags,
@@ -107,7 +108,8 @@ def build_cell(tmp_path: Path, compiler: str, src: str = OMP_SRC, tag: str = "k"
     csrc = tmp_path / f"{tag}.c"
     csrc.write_text(src)
     so = tmp_path / f"{tag}_{compiler}.so"
-    cmd = [compiler, "-O2", "-fPIC", "-shared", *openmp_compile_flags(compiler), str(csrc)]
+    # AS_NEEDED as link_shared passes it: a gcc without that default (conda's) also records the libgomp -fopenmp adds
+    cmd = [compiler, "-O2", "-fPIC", "-shared", AS_NEEDED, *openmp_compile_flags(compiler), str(csrc)]
     proc = subprocess.run([*cmd, *openmp_link_flags(compiler), "-o", str(so)], capture_output=True, text=True)
     assert proc.returncode == 0, f"{compiler} failed to link libomp:\n{proc.stderr[-1500:]}"
     # The pragma is in the source, so a cell that links a runtime but opens no region was silently serialized.

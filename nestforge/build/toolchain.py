@@ -143,14 +143,15 @@ NEW_DTAGS = "-Wl,--enable-new-dtags"
 
 
 def library_flags(soname: str, compiler: str) -> list[str]:
-    """Link ``lib<soname>`` and find it again at load time: ``-L`` and ``-rpath`` only when ``compiler`` does not
-    find it unaided, and ``-l:<file>`` when only a versioned shared object provides it."""
+    """Link ``lib<soname>`` and find it again at load time: always ``-L``, since the flags travel to links another
+    driver runs (a kernel's runtime into the program nvcc's host compiler links); ``-rpath`` only when ``compiler``
+    does not find it unaided; ``-l:<file>`` when only a versioned shared object provides it."""
     found = runtime_library(soname, compiler)
     if found is None:
         return [f"-l{soname}"]
     library = f"-l{soname}" if found.name == f"lib{soname}.so" else f"-l:{found.name}"
     if driver_lib_path(soname, compiler) is not None:
-        return [library]
+        return [f"-L{found.parent}", library]
     return [f"-L{found.parent}", f"-Wl,-rpath,{found.parent}", NEW_DTAGS, library]
 
 

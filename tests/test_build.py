@@ -154,14 +154,17 @@ def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(
     assert lib_linkable("fakeomp", "g++")
 
 
-def test_link_flags_add_no_search_path_when_the_linker_already_finds_the_runtime(
+def test_link_flags_name_the_directory_but_no_rpath_when_the_linker_already_finds_the_runtime(
     tmp_path: Path, cold_lookup_caches: None
 ) -> None:
+    """The flags travel to a link another driver runs: a GPU program's kernels, spelled for a conda g++ that finds
+    libomp, linked by nvcc's host gcc that does not (``cannot find -lomp``, #98 on ault25). The directory goes with
+    the flag; the loader keeps finding the runtime as before, so no rpath."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (tmp_path / "libfakeomp.so").write_bytes(b"")
     write_tool(bin_dir, "fake-g++", f"{tmp_path}/libfakeomp.so")  # answers the way g++ does when it finds it
-    assert library_flags("fakeomp", str(bin_dir / "fake-g++")) == ["-lfakeomp"]
+    assert library_flags("fakeomp", str(bin_dir / "fake-g++")) == [f"-L{tmp_path}", "-lfakeomp"]
 
 
 def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp_path: Path) -> None:
