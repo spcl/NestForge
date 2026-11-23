@@ -1,6 +1,6 @@
 # Phases owned by NestForge
 
-[Designs](README.md) · [Stages](../stages.md)
+[Docs](README.md) · [Stages](stages.md)
 
 Status: built (2026-11-18), owner's spec of 2026-11-18 (items P1 and P2 of `notes/phases-plan.md` in the workspace).
 

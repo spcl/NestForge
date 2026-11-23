@@ -806,6 +806,7 @@ class Session:
         "unscoped",
         "unlaid",
         "layout",
+        "distributed",
         "sources",
         "builds",
         "prepared",
@@ -913,6 +914,8 @@ class Session:
         self.unlaid: dace.SDFG | None = None
         #: The relayout operations the program works on its arguments by, in order; the bench's ``requests``.
         self.layout: tuple[Operation, ...] = ()
+        #: The arguments the bench splits over the ranks (its spec's ``mpi.arrays``): their layout is the bench's.
+        self.distributed: frozenset[str] = frozenset()
         self.sources: dict[str, KernelSource] = {}
         self.builds: dict[str, KernelBuild] = {}
         self.prepared: dict[str, Prepared] = {}
@@ -1608,7 +1611,7 @@ class Session:
                 for name in precision_candidates(self.sdfg)
             ]
         if kind in (None, RELAYOUT) and program_wide and self.relayout_refusal() is None:
-            listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg)
+            listed = listed_operation(self.unlaid if self.unlaid is not None else self.sdfg, self.distributed)
             if listed is not None:
                 moves.append(Move(kind=RELAYOUT, labels=(), operation=listed))
         if kind in (None, ROLLBACK) and not external_calls(self.sdfg):  # moves close at the first kernel
@@ -1982,7 +1985,7 @@ class Session:
             return illegal(RELAYOUT, (), refused)
         unlaid = self.unlaid if self.unlaid is not None else self.sdfg
         try:
-            op = layout_operation(operation, unlaid)
+            op = layout_operation(operation, unlaid, self.distributed)
             laid = laid_out(unlaid, (*self.layout, op))
         except ValueError as err:  # relayout's refusal, naming what it cannot lay out
             return illegal(RELAYOUT, (), Refused(str(err), Refusal.ARGUMENT))

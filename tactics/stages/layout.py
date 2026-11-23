@@ -120,8 +120,12 @@ def arguments(program: dace.SDFG) -> dict[str, data.Array]:
     }
 
 
-def layout_operation(raw: Mapping[str, object], program: dace.SDFG) -> Operation:
-    """``raw`` as an operation on an argument of ``program`` (the program before its first layout).
+def layout_operation(
+    raw: Mapping[str, object], program: dace.SDFG, distributed: frozenset[str] = frozenset()
+) -> Operation:
+    """``raw`` as an operation on an argument of ``program`` (the program before its first layout), none of
+    ``distributed``: the bench splits those over the ranks along their own axes, and a permutation would have to
+    permute its split too (``docs/design/comm-nodes.md``, section 6).
 
     :raises ValueError: ``raw`` is no such operation, with the reason."""
     op = parse_operation(dict(raw), "operation")
@@ -133,16 +137,19 @@ def layout_operation(raw: Mapping[str, object], program: dace.SDFG) -> Operation
         raise ValueError(
             f"relayout lays out the program's array arguments {sorted(names)}; not {sorted(named - names)}."
         )
+    split = sorted(named & distributed)
+    if split:
+        raise ValueError(f"the bench splits {split[0]} over the ranks; its layout stays the one the bench splits.")
     return op
 
 
-def listed_operation(program: dace.SDFG) -> dict[str, object] | None:
+def listed_operation(program: dace.SDFG, distributed: frozenset[str] = frozenset()) -> dict[str, object] | None:
     """The operation ``relayout`` is listed with, on ``program`` before its first layout: the first array argument of
     two or more dimensions with its two innermost digits swapped (a transpose, what a strided read wants), or None
     when no argument has two. Any other operation is the agent's to pass."""
     for name, desc in arguments(program).items():
         rank = len(desc.shape)
-        if rank >= 2:
+        if rank >= 2 and name not in distributed:
             order = [f"i{digit}" for digit in range(rank)]
             order[-2], order[-1] = order[-1], order[-2]
             return {"action": Action.PERMUTE.value, "array": name, "order": order}

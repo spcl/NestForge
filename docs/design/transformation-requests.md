@@ -2,7 +2,11 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: steps 1 and 2 built (the tool, its checks, the record; clustering); authoring and the gate are not built.
+Status: steps 1 and 2 built (the tool, its checks, the record; clustering), and the gate (2026-11-23,
+`scripts/gate_authored_move.py`, `tactics/stages/gate.py`, `tests/test_gate.py`): a candidate passes on its cluster's
+examples, is a fixed point of the cleanup after every application, matches the bench's reference at every site of the
+corpus kernels, and passes the unit suite with the move loaded; the report then waits for the owner's review. Writing
+the candidate (the authoring agent) is not built.
 
 Clustering (`scripts/cluster_requests.py <run folders> --out clusters.json`, `tactics.stages.requests.cluster_requests`):
 two requests are one candidate when one of their example pairs is the same after canonicalization, up to the names of

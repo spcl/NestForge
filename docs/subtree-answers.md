@@ -49,7 +49,7 @@ A subtree answer only saves tokens when the agent's copy of the rest stays valid
    are never recomputed for an answer (up to a minute a tree): after a read with costs, the next answer is whole.
 4. **Old journals.** A session rebuilt from its own journal repeats the rollbacks, so it names the same labels. A
    journal of plugin-record version 1, written before labels only grew, replays with
-   `Session.reissue_dropped_labels` ([plugin-record.md](../plugin-record.md)).
+   `Session.reissue_dropped_labels` ([plugin-record.md](plugin-record.md)).
 
 **A move that may invalidate a region returns that region whole.** The answer is never a patch: it is the full
 text of the smallest row whose subtree holds every printed line the move changed, in the old and the new tree.

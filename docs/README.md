@@ -1,7 +1,9 @@
 # How NestForge is built and how to extend it
 
 [Overview](../README.md). What each stage decides is in [stages.md](stages.md); the tree the agent reads is in
-[ir.md](ir.md), and what an episode's record holds in [plugin-record.md](plugin-record.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
+[ir.md](ir.md), and what an episode's record holds in [plugin-record.md](plugin-record.md). NestForge's own phases
+are in [phases.md](phases.md), and how a move answers with the subtree it rewrote in
+[subtree-answers.md](subtree-answers.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
 move, a tool, a phase or a packet. Features that are designed and not yet built have one page each in
 [design/](design/README.md).
 

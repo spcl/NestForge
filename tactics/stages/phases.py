@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""NestForge's phases, owned by NestForge (``docs/design/phases.md``). Phase 1, the canonical parallel form, runs once
+"""NestForge's phases, owned by NestForge (``docs/phases.md``). Phase 1, the canonical parallel form, runs once
 when the session starts and has no way back. The agent then works through four phases in order:
 
 1. ``structured``: moves on the whole program (fusion, tiling, layouts, precision of arrays, ...);

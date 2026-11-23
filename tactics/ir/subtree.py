@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Parts of the printed tree: one row's subtree, and what a change rewrote. A move answers with the subtree it
 rewrote instead of the whole program, since the agent holds the rest from the tree it last read
-(``docs/design/subtree-answers.md``)."""
+(``docs/subtree-answers.md``)."""
 
 import difflib
 from dataclasses import dataclass

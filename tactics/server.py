@@ -414,10 +414,20 @@ def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
         agent_phases=setup.agent_phases,
     )
     session.bench = BenchTarget(kernel.short_name, setup.datatype, setup.gpu)
+    session.distributed = distributed_arguments(kernel.short_name)
     session.shared_root = setup.shared_root
     session.canonicalize()
     session.enter_first_phase()
     return session
+
+
+def distributed_arguments(short_name: str) -> frozenset[str]:
+    """The arguments the bench splits over the ranks: its spec's ``mpi.arrays``; none for a kernel without them."""
+    from hpcagent_bench.spec import load_spec
+
+    arrays = load_spec(short_name).mpi.get("arrays") or {}
+    assert isinstance(arrays, dict), "the spec keeps mpi.arrays by argument name"
+    return frozenset(str(name) for name in arrays)
 
 
 def session_data(setup: Setup, session: Session) -> tuple[dict[str, np.ndarray], Reference | None]:
