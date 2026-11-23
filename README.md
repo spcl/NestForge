@@ -133,7 +133,7 @@ From PyPI (DaCe extended comes as `dace-extended`, imported as `dace`):
 pip install tactics
 ```
 
-From a checkout of https://github.com/spcl/tactics (every pin exact, DaCe included):
+From a checkout of https://github.com/spcl/tactics:
 
 ```bash
 sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
@@ -145,9 +145,9 @@ pytest -m integration                                                   # compil
 pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) to a commit, and DaCe and
-dace-relayout to the commits that bench commit pins (the bench owns them); `python scripts/bump_deps.py [bench-branch]`
-moves them. Tactics is a user plugin of the bench (`plugin/tactics`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the
+In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) and FP-Arena to commits;
+`python scripts/bump_deps.py [bench-branch]` moves the bench pin. DaCe extended (`dace-extended`) and dace-relayout come
+from PyPI, as in a pip install. Tactics is a user plugin of the bench (`plugin/tactics`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the
 bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
 assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch

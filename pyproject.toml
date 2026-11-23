@@ -32,13 +32,13 @@ dependencies = [
     "hpcagent-bench>=1.0.0",
     # The bench plugin (plugin/tactics) runs on the agent side too.
     "hpcagent-agent>=1.0.0",
-    "dace-relayout>=0.1.0",
+    "dace-relayout>=0.1.1",
 ]
 
 [project.optional-dependencies]
 # The relayout move's SDFG cast: relayout's `fparena` extra. FP-Arena is not on PyPI, so this extra installs from a
 # checkout only (its commit is in [tool.uv.sources]).
-fparena = ["dace-relayout[fparena]>=0.1.0"]
+fparena = ["dace-relayout[fparena]>=0.1.1", "fp-arena"]
 dev = [
     "tactics[fparena]",
     "pre-commit",
@@ -62,25 +62,15 @@ Repository = "https://github.com/spcl/tactics"
 Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 
 [tool.uv.sources]
-# The tip of HPCAgent-Bench main, and the DaCe and relayout commits that bench commit pins (the bench owns them):
-# `python scripts/bump_deps.py` moves all of them. A PyPI install reads none of this.
-# shortcut: dace-extended 1.0.0 is not on PyPI yet; the fork's release commit extended-v1.0.0 (spcl/dace 69626c5 plus
-# the release commit) stands in until it is, then delete this source.
-dace-extended = { git = "https://github.com/ThrudPrimrose/dace.git", rev = "8f94311c0b23a92db44d01d3710aebab02173831" }
-hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa" }
-hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa", subdirectory = "agent" }
-dace-relayout = { git = "https://github.com/ThrudPrimrose/dace-relayout.git", rev = "bec607d55076fbab455b498649030c1f4cc8caa2" }
+# The tip of HPCAgent-Bench main (`python scripts/bump_deps.py` moves it) until hpcagent-bench is on PyPI, and FP-Arena,
+# which is not on PyPI. DaCe extended and dace-relayout come from PyPI, so pip and uv install the same files.
+hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "69ffde3df0a15b5badf520ee197d44239b6164b2" }
+hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "69ffde3df0a15b5badf520ee197d44239b6164b2", subdirectory = "agent" }
 fp-arena = { git = "https://github.com/spcl/FP-Arena.git", rev = "08465359af8666927ab6b53bcfdce1865a6c34e1" }
 
 [tool.uv]
-# shortcut: the pinned bench still requires `relayout` (PyPI's is another project), while dace-relayout installs the
-# same module; drop the bench's requirement until the bench pins dace-relayout, then delete this override.
-# shortcut: the pinned bench still requires plain `dace`, which installs the same `dace` package as dace-extended;
-# drop it until the bench requires dace-extended, then delete that entry.
-override-dependencies = [
-    "relayout ; sys_platform == 'never'",
-    "dace ; sys_platform == 'never'",
-]
+# spcl's PyPI `dace` installs the same `dace` package as dace-extended: never install it.
+override-dependencies = ["dace ; sys_platform == 'never'"]
 
 [tool.setuptools.packages.find]
 include = ["tactics*", "reference_solutions"]

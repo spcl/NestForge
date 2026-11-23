@@ -1,7 +1,7 @@
 name: CI
 
-# uv installs from pyproject.toml; [tool.uv.sources] pins dace, hpcagent-bench and dace-relayout to commits (a plain
-# pip install reads none of them); scripts/bump_deps.py moves the pins. Must stay credential-free so CI runs on fork PRs.
+# uv installs from pyproject.toml; [tool.uv.sources] pins hpcagent-bench and FP-Arena to commits, DaCe extended and
+# dace-relayout come from PyPI; scripts/bump_deps.py moves the bench pin. Must stay credential-free so CI runs on fork PRs.
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
   pull_request:
   workflow_dispatch:
   # nightly too: the bench-tip job checks NestForge's bench-facing tests against the tip of the bench branch it tracks
-  # (scripts/bump_deps.py) and the DaCe it pins, not only the pins
+  # (scripts/bump_deps.py), not only the pin
   schedule:
     - cron: '0 3 * * *'
 
