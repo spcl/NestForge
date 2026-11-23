@@ -29,7 +29,9 @@ NestForge run's calls compare on one tokenizer:
 
 import argparse
 import csv
+import importlib
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -40,10 +42,13 @@ from pathlib import Path
 from typing import Any
 
 import tiktoken
+from hpcagent_agent import plugins as agent_plugins
+from hpcagent_bench import plugins
 from hpcagent_bench.harness.judge_wire import JudgeAnswer
 from pydantic import BaseModel
 from tokenizers import Tokenizer
 
+from nestforge.paths import REPO_ROOT
 from nestforge.server import CALLS, TIMED, Reply, Setup, answer, session_data, started_session
 from nestforge.stages.performance import Performance
 
@@ -138,8 +143,34 @@ def rendered_v2(tool: str, reply: Reply) -> str:
     return json.dumps({"ok": not reply.error, "text": text}, indent=2, sort_keys=True)
 
 
-#: Every format the script can render; a new answer format adds its renderer here, and both are counted side by side.
-RENDERERS: dict[str, Renderer] = {"v1": rendered_v1, "v2": rendered_v2}
+#: The NestForge plugin folder, the bench's user plugin that renders the answers the agent reads.
+PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+
+
+def plugin_module(name: str) -> Any:
+    """The plugin's module ``name`` (``answers``, ``wire``), importable once the bench loaded NestForge's plugin."""
+    os.environ["HPCAGENT_BENCH_USER_PLUGIN_DIRS"] = str(PLUGIN)
+    plugins.load()
+    agent_plugins.import_tools()
+    return importlib.import_module(f"hpcagent_bench_plugins.nestforge.{name}")
+
+
+def rendered_current(tool: str, reply: Reply) -> str:
+    """The answer as agents read it since #102: the route's JSON through the plugin's renderer for ``tool``
+    (``answers.RENDERED``, with the move defaults the agent side passes), indented and key-sorted by the MCP server.
+    A phase tool's guide is not added: it is the same text in every format."""
+    if reply.error:
+        return rendered_v1(tool, reply)
+    response = ToolAnswer(tool=tool, result=reply.result, performance=reply.performance).to_json()
+    render = plugin_module("answers").RENDERED.get(tool)
+    if render is not None:
+        response = render(response, plugin_module("wire").MOVE_DEFAULTS)
+    return json.dumps(response, indent=2, sort_keys=True)
+
+
+#: Every format the script can render; a new answer format adds its renderer here, and all are counted side by side.
+#: ``v1`` is the JSON agents read up to #102, ``current`` what they read now, ``v2`` a prototype never built.
+RENDERERS: dict[str, Renderer] = {"v1": rendered_v1, "current": rendered_current, "v2": rendered_v2}
 
 #: Tokenizer names tiktoken knows: OpenAI's, a common reference when the run's own model is not the point.
 TIKTOKEN_NAMES = frozenset({"o200k_base", "cl100k_base"})

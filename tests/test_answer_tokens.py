@@ -5,6 +5,7 @@
 import importlib.util
 import json
 import sys
+from collections.abc import Iterator
 from types import ModuleType
 from typing import Any
 
@@ -23,6 +24,13 @@ def script() -> ModuleType:
     sys.modules["answer_tokens"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(scope="module")
+def answers(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[ModuleType]:
+    from hpcagent_bench_plugins.nestforge import answers  # importable once the bench loaded the plugin
+
+    yield answers
 
 
 def assistant(*blocks: dict[str, Any]) -> str:
@@ -66,6 +74,26 @@ def test_the_v1_answer_is_the_bench_mcp_text_of_the_route_answer() -> None:
     }
     assert ok.startswith('{\n  "performance": null,')  # indented and key-sorted, as the MCP server sends it
     assert json.loads(failed) == {"ok": False, "error": "apply_move: no row for9"}
+
+
+def test_the_current_answer_is_the_plugins_rendering_and_shorter_than_v1(
+    nestforge_plugin: tuple[Plugin, ...], answers: ModuleType
+) -> None:
+    """``current`` is what the agent reads since #102: the plugin's own rendering of the route answer, so the
+    measurement follows the plugin, not a copy of it."""
+    sut = script()
+    moves = [{"kind": "tile-for", "labels": ["for3"]}, {"kind": "interchange-for", "labels": ["for3", "for4"]}]
+    reply = Reply(result=moves)
+    route = sut.ToolAnswer(tool="list_moves", result=moves, performance=None).to_json()
+    from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
+
+    current = sut.rendered_current("list_moves", reply)
+
+    assert json.loads(current) == json.loads(json.dumps(answers.RENDERED["list_moves"](route, MOVE_DEFAULTS)))
+    assert len(current) < len(sut.rendered_v1("list_moves", reply))
+    assert sut.rendered_current("apply_move", Reply(error="no row for9")) == sut.rendered_v1(
+        "apply_move", Reply(error="no row for9")
+    )
 
 
 def test_counting_skips_timed_tools_unless_measured_and_counts_each_format() -> None:
