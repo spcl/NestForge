@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pin HPCAgent-Bench (and its agent package) in pyproject.toml's ``[tool.uv.sources]`` to the tip of a bench branch
+"""Pin HPCAgent-Bench in pyproject.toml's ``[tool.uv.sources]`` to the tip of a bench branch
 (:data:`BENCH_BRANCH` unless one is named). DaCe extended and dace-relayout follow their PyPI releases
 (``dace-extended>=X.Y.Z``, ``dace-relayout>=X.Y.Z``), so this script leaves them alone.
 
@@ -29,7 +29,7 @@ def tip(repo: str, branch: str) -> str:
 
 def main(bench_branch: str) -> None:
     bench = tip(BENCH, bench_branch)
-    pins = {"hpcagent-bench": bench, "hpcagent-agent": bench}
+    pins = {"hpcagent-bench": bench}
     text = PYPROJECT.read_text()
     for package, sha in pins.items():
         pattern = rf'^({re.escape(package)} = {{ git = "[^"]+", rev = ")[0-9a-f]{{40}}(")'

@@ -29,9 +29,9 @@ dependencies = [
     "opt-einsum>=3.0",
     # DaCe extended (import dace), released from the ThrudPrimrose/dace fork; never also install spcl's PyPI `dace`.
     "dace-extended>=1.0.0",
+    # The bench plugin (plugin/tactics) runs on the agent side too: hpcagent-bench brings its agent runtime
+    # (hpcagent-agent, built from the same repository).
     "hpcagent-bench>=1.0.0",
-    # The bench plugin (plugin/tactics) runs on the agent side too.
-    "hpcagent-agent>=1.0.0",
     "dace-relayout>=0.1.1",
 ]
 
@@ -66,7 +66,6 @@ Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 # The tip of HPCAgent-Bench main (`python scripts/bump_deps.py` moves it) until hpcagent-bench is on PyPI, and FP-Arena,
 # which is not on PyPI. DaCe extended and dace-relayout come from PyPI, so pip and uv install the same files.
 hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "69ffde3df0a15b5badf520ee197d44239b6164b2" }
-hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "69ffde3df0a15b5badf520ee197d44239b6164b2", subdirectory = "agent" }
 fp-arena = { git = "https://github.com/spcl/FP-Arena.git", rev = "08465359af8666927ab6b53bcfdce1865a6c34e1" }
 
 [tool.uv]
