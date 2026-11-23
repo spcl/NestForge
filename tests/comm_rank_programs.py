@@ -87,6 +87,20 @@ def halo_stencil(ap: dace.float64[N + 2], b: dace.float64[N + 2], left: dace.int
 
 
 @dace.program
+def halo_rows(ap: dace.float64[K + 2, N], b: dace.float64[K + 2, N], left: dace.int32, right: dace.int32) -> None:
+    """The row exchange of the bench's ``jacobi_2d``: each rank sends its first and its last row and receives its ghost
+    rows as ``(1, N)`` slices, then one stencil over rows ``1..K`` reads a ghost row at each end."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(ap[1:2, :], left, 0, req[0])
+    MPI.COMM_WORLD.Irecv(ap[K + 1 : K + 2, :], right, 0, req[1])
+    MPI.COMM_WORLD.Isend(ap[K : K + 1, :], right, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ap[0:1, :], left, 1, req[3])
+    MPI.Request.Waitall(req)
+    for i, j in dace.map[1 : K + 1, 1 : N - 1]:
+        b[i, j] = ap[i - 1, j] + ap[i + 1, j] + ap[i, j - 1] + ap[i, j + 1]
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
     reduction reads the step's slice ``r[t : t + 1]`` in place: canonicalization leaves no view in front of it."""
@@ -173,6 +187,12 @@ def halo_in_place_inputs(rank: int, size: int) -> dict[str, object]:
     return {"ap": seeded(rank, LENGTH + 2), "b": np.zeros(LENGTH + 2), "N": LENGTH} | neighbors(rank, size)
 
 
+def halo_rows_inputs(rank: int, size: int) -> dict[str, object]:
+    return {"ap": seeded(rank, ROWS + 2, LENGTH), "b": np.zeros((ROWS + 2, LENGTH)), "K": ROWS, "N": LENGTH} | (
+        neighbors(rank, size)
+    )
+
+
 def residual_inputs(rank: int, size: int) -> dict[str, object]:
     return {"a": seeded(rank, LENGTH), "r": np.zeros(STEPS), "s": np.zeros(LENGTH), "N": LENGTH, "T": STEPS}
 
@@ -204,6 +224,7 @@ FIXTURES = {
     "halo_overlap": Fixture(halo_overlap, halo_inputs, ("b", "c", "ghost")),
     "halo_in_place": Fixture(halo_in_place, halo_in_place_inputs, ("ap", "b")),
     "halo_stencil": Fixture(halo_stencil, halo_in_place_inputs, ("ap", "b")),
+    "halo_rows": Fixture(halo_rows, halo_rows_inputs, ("ap", "b")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),
