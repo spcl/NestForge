@@ -127,12 +127,10 @@ The [skill page](plugin/tactics/skills/nestforge/SKILL.md) has the full vocabula
 
 ## Install and test
 
-From PyPI, then DaCe extended at the commit the bench pins (DaCe extended has no PyPI release; HPCAgent-Bench's setup
-command installs it):
+From PyPI (DaCe extended comes as `dace-extended`, imported as `dace`):
 
 ```bash
 pip install tactics
-hpcagent-bench setup                                                    # DaCe extended at the bench's pinned commit
 ```
 
 From a checkout of https://github.com/spcl/tactics (every pin exact, DaCe included):

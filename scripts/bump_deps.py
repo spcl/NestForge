@@ -2,8 +2,8 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pin HPCAgent-Bench (and its agent package) in pyproject.toml's ``[tool.uv.sources]`` to the tip of a bench branch
-(:data:`BENCH_BRANCH` unless one is named), and DaCe and dace-relayout to the commits that bench commit pins: the
-bench owns both pins.
+(:data:`BENCH_BRANCH` unless one is named), and dace-relayout to the commit that bench commit pins. DaCe extended
+follows its PyPI releases (``dace-extended>=X.Y.Z``), so this script leaves it alone.
 
 ``[project].dependencies`` name plain PyPI packages (PyPI refuses a direct URL), so the exact commits live only in
 ``[tool.uv.sources]``, which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. Then reinstall and test:
@@ -44,7 +44,7 @@ def bench_sources(bench: str) -> dict[str, str]:
 def main(bench_branch: str) -> None:
     bench = tip(BENCH, bench_branch)
     sources = bench_sources(bench)
-    pins = {"hpcagent-bench": bench, "hpcagent-agent": bench, "dace": sources["dace"]}
+    pins = {"hpcagent-bench": bench, "hpcagent-agent": bench}
     if RELAYOUT_KEY in sources:
         pins[RELAYOUT_KEY] = sources[RELAYOUT_KEY]
     else:

@@ -27,9 +27,8 @@ dependencies = [
     "sympy",
     # DaCe's einsum of three or more operands imports it, but DaCe lists it only under its testing extras.
     "opt-einsum>=3.0",
-    # DaCe extended has no PyPI release: `hpcagent-bench setup` installs spcl/dace@extended at the bench's pinned commit
-    # over this plain requirement, and a checkout (`uv sync`, `uv pip install -e .`) takes the pin in [tool.uv.sources].
-    "dace",
+    # DaCe extended (import dace), released from the ThrudPrimrose/dace fork; never also install spcl's PyPI `dace`.
+    "dace-extended>=1.0.0",
     "hpcagent-bench>=1.0.0",
     # The bench plugin (plugin/tactics) runs on the agent side too.
     "hpcagent-agent>=1.0.0",
@@ -65,7 +64,9 @@ Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 [tool.uv.sources]
 # The tip of HPCAgent-Bench main, and the DaCe and relayout commits that bench commit pins (the bench owns them):
 # `python scripts/bump_deps.py` moves all of them. A PyPI install reads none of this.
-dace = { git = "https://github.com/spcl/dace.git", rev = "69626c5b0ae9bc9ae0a5c3c8a5c2d7bd85b3682a" }
+# shortcut: dace-extended 1.0.0 is not on PyPI yet; the fork's release commit extended-v1.0.0 (spcl/dace 69626c5 plus
+# the release commit) stands in until it is, then delete this source.
+dace-extended = { git = "https://github.com/ThrudPrimrose/dace.git", rev = "af3976e11329532423967976afcb14d93e384658" }
 hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa" }
 hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa", subdirectory = "agent" }
 dace-relayout = { git = "https://github.com/ThrudPrimrose/dace-relayout.git", rev = "bec607d55076fbab455b498649030c1f4cc8caa2" }
@@ -74,7 +75,12 @@ fp-arena = { git = "https://github.com/spcl/FP-Arena.git", rev = "08465359af8666
 [tool.uv]
 # shortcut: the pinned bench still requires `relayout` (PyPI's is another project), while dace-relayout installs the
 # same module; drop the bench's requirement until the bench pins dace-relayout, then delete this override.
-override-dependencies = ["relayout ; sys_platform == 'never'"]
+# shortcut: the pinned bench still requires plain `dace`, which installs the same `dace` package as dace-extended;
+# drop it until the bench requires dace-extended, then delete that entry.
+override-dependencies = [
+    "relayout ; sys_platform == 'never'",
+    "dace ; sys_platform == 'never'",
+]
 
 [tool.setuptools.packages.find]
 include = ["tactics*", "reference_solutions"]

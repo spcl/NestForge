@@ -30,8 +30,7 @@ rows of the program, and the ordered moves of an episode are its recipe, which r
 ### Install
 
 ```bash
-pip install tactics
-hpcagent-bench setup        # DaCe extended at the commit the bench pins (DaCe extended has no PyPI release)
+pip install tactics          # DaCe extended comes as dace-extended (import dace)
 ```
 
 From a checkout of https://github.com/spcl/tactics, every dependency comes at its pinned commit:
