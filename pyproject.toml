@@ -87,6 +87,11 @@ ignore = ["UP031", "F821", "F841", "F823", "C408", "PYI041", "PYI042", "PYI016",
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403", "F405", "I"]
 
+[tool.ruff.lint.isort]
+# tests import tests/helpers.py as top-level `helpers`; the repository's helpers/ folder holds only release scripts
+# and would otherwise make ruff file it as first party
+known-third-party = ["helpers"]
+
 [tool.ruff.format]
 exclude = ["*.ipynb"]
 
