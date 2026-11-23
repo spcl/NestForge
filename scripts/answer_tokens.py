@@ -45,7 +45,7 @@ import tiktoken
 from hpcagent_agent import plugins as agent_plugins
 from hpcagent_bench import plugins
 from hpcagent_bench.harness.judge_wire import JudgeAnswer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from tokenizers import Tokenizer
 
 from tactics.paths import REPO_ROOT
@@ -153,6 +153,19 @@ def plugin_module(name: str) -> Any:
     plugins.load()
     agent_plugins.import_tools()
     return importlib.import_module(f"hpcagent_bench_plugins.nestforge.{name}")
+
+
+def invalid_arguments(tool: str, arguments: dict[str, Any]) -> Reply | None:
+    """The route's answer to a call whose arguments fail its tool's schema (``apply_move`` with no ``kind``), which
+    never reaches the session; None for a valid call or a tool the route does not define."""
+    tool_def = plugin_module("wire").TOOLS.get(tool)
+    if tool_def is None:
+        return None
+    try:
+        tool_def.args.model_validate(arguments)
+    except ValidationError as err:
+        return Reply(error=f"{tool}: {err}")
+    return None
 
 
 def rendered_current(tool: str, reply: Reply) -> str:
@@ -464,6 +477,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     data = session_data(Setup(args.kernel, args.preset, args.datatype, False), session) if args.measure else None
 
     def run(tool: str, arguments: dict[str, Any]) -> Reply:
+        invalid = invalid_arguments(tool, arguments)
+        if invalid is not None:
+            return invalid
         return answer(session, tool, arguments, data, timed=args.measure)
 
     shown: dict[str, str] = {}

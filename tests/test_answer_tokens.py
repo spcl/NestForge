@@ -186,3 +186,16 @@ def test_a_wrapped_command_counts_as_the_command_it_wraps() -> None:
 
     assert sut.shell_kind("nice -n 5 timeout 600 make -j4") == "build"
     assert sut.shell_kind("OMP_NUM_THREADS=8 ./kernel") == "run"
+
+
+def test_a_call_with_invalid_arguments_gets_the_routes_error_and_never_reaches_the_session(
+    nestforge_plugin: tuple[Plugin, ...],
+) -> None:
+    """An agent's ``apply_move`` with no arguments (bfs, 11-03) was refused by the route's schema; replayed straight
+    into the session it crashed the replay with ``KeyError: 'kind'``."""
+    module = script()
+    refused = module.invalid_arguments("apply_move", {})
+    assert refused is not None and refused.error is not None
+    assert refused.error.startswith("apply_move: ") and "kind" in refused.error and "labels" in refused.error
+    assert module.invalid_arguments("apply_move", {"kind": "doall-fusion", "labels": ["doall6", "doall7"]}) is None
+    assert module.invalid_arguments("Bash", {}) is None
