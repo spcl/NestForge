@@ -8,7 +8,7 @@ edge in DaCe to stop it."""
 
 import dace
 import pytest
-from comm_programs import PROGRAMS, residual_in_time_loop
+from comm_programs import PROGRAMS, residual_in_time_loop, ring
 from comm_rank_programs import halo_overlap
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.comm.nodes import Irecv, Isend, Waitall
@@ -18,7 +18,7 @@ from tactics.ir.comm import isolation_refusal, skeleton, skeleton_difference
 from tactics.ir.introspect import describe_graph
 from tactics.records import MoveStatus
 from tactics.session import Session
-from tactics.stages.lib_motion import in_flight_refusal
+from tactics.stages.lib_motion import SPLIT_BLOCKING, in_flight_refusal
 
 N = 16
 
@@ -151,3 +151,18 @@ def test_a_wait_counts_its_own_starts_out_of_what_runs_between() -> None:
     second.add_edge(recv, "_request", second.add_write("req"), None, dace.Memlet("req[1]"))
 
     assert in_flight_refusal(sdfg) is None
+
+
+@pytest.mark.parametrize("program", [ring, residual_in_time_loop])
+def test_splitting_every_blocking_row_keeps_the_skeleton(program: DaceProgram) -> None:
+    """A start and its wait, next to each other where the blocking row was, communicate as that row did (I1):
+    ``split-blocking`` is always legal, and a skeleton that saw a new row in the start refused it."""
+    session = canonical(program)
+    before = skeleton(session.sdfg)
+
+    while splits := session.list_moves(SPLIT_BLOCKING):
+        result = session.apply_move(SPLIT_BLOCKING, list(splits[0].labels))
+        assert result.status is MoveStatus.APPLIED, result
+
+    assert session.history, "a blocking row was split"
+    assert skeleton_difference(before, skeleton(session.sdfg)) is None

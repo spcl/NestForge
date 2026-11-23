@@ -101,6 +101,80 @@ def halo_rows(ap: dace.float64[K + 2, N], b: dace.float64[K + 2, N], left: dace.
 
 
 @dace.program
+def halo_waits(
+    a: dace.float64[N],
+    b: dace.float64[N],
+    c: dace.float64[N],
+    ghost: dace.float64[2],
+    left: dace.int32,
+    right: dace.int32,
+) -> None:
+    """A halo exchange with one ``Wait`` per request: each ghost cell is used as soon as its receive completes, and
+    the sends complete last, after compute that only reads what they send."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:1], left, 0, req[0])
+    MPI.COMM_WORLD.Isend(a[N - 1 : N], right, 1, req[1])
+    MPI.COMM_WORLD.Irecv(ghost[0:1], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ghost[1:2], right, 0, req[3])
+    for i in dace.map[0:N]:
+        b[i] = a[i] * 2.0
+    dace.comm.Wait(req[2])
+    c[0] = ghost[0] + b[0]
+    dace.comm.Wait(req[3])
+    c[N - 1] = ghost[1] + b[N - 1]
+    for i in dace.map[1 : N - 1]:
+        c[i] = b[i] + a[i]
+    dace.comm.Wait(req[0])
+    dace.comm.Wait(req[1])
+
+
+@dace.program
+def two_exchanges(
+    a: dace.float64[N],
+    x: dace.float64[N],
+    ghost_a: dace.float64[2],
+    ghost_x: dace.float64[2],
+    b: dace.float64[4],
+    left: dace.int32,
+    right: dace.int32,
+) -> None:
+    """Two exchanges in flight at once whose waits complete in the opposite order to their starts: ``x`` goes left
+    and is used first, ``a`` goes right and is used second."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:2], right, 0, req[0])
+    MPI.COMM_WORLD.Irecv(ghost_a, left, 0, req[1])
+    MPI.COMM_WORLD.Isend(x[0:2], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ghost_x, right, 1, req[3])
+    MPI.Request.Waitall(req[2:4])
+    for i in dace.map[0:2]:
+        b[i] = ghost_x[i] * 2.0
+    MPI.Request.Waitall(req[0:2])
+    for i in dace.map[0:2]:
+        b[i + 2] = ghost_a[i] + a[i]
+
+
+@dace.program
+def halo_steps(
+    ap: dace.float64[N + 2], b: dace.float64[N + 2], c: dace.float64[N], left: dace.int32, right: dace.int32
+) -> None:
+    """A halo exchange every time step: the ghost cells of ``ap`` arrive, a smoothing stencil reads them, and the
+    result is copied back; ``c`` is scaled each step with nothing exchanged, so the starts have room to move."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    for t in range(T):
+        for i in dace.map[0:N]:
+            c[i] = c[i] * 0.5
+        MPI.COMM_WORLD.Isend(ap[1:2], left, 0, req[0])
+        MPI.COMM_WORLD.Isend(ap[N : N + 1], right, 1, req[1])
+        MPI.COMM_WORLD.Irecv(ap[0:1], left, 1, req[2])
+        MPI.COMM_WORLD.Irecv(ap[N + 1 : N + 2], right, 0, req[3])
+        MPI.Request.Waitall(req)
+        for i in dace.map[1 : N + 1]:
+            b[i] = (ap[i - 1] + ap[i] + ap[i + 1]) * 0.25
+        for i in dace.map[1 : N + 1]:
+            ap[i] = b[i]
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
     reduction reads the step's slice ``r[t : t + 1]`` in place: canonicalization leaves no view in front of it."""
@@ -193,6 +267,21 @@ def halo_rows_inputs(rank: int, size: int) -> dict[str, object]:
     )
 
 
+def two_exchanges_inputs(rank: int, size: int) -> dict[str, object]:
+    return {
+        "a": seeded(rank, LENGTH),
+        "x": seeded(500 + rank, LENGTH),
+        "ghost_a": np.zeros(2),
+        "ghost_x": np.zeros(2),
+        "b": np.zeros(4),
+        "N": LENGTH,
+    } | neighbors(rank, size)
+
+
+def halo_steps_inputs(rank: int, size: int) -> dict[str, object]:
+    return {"c": seeded(700 + rank, LENGTH), "T": STEPS} | halo_in_place_inputs(rank, size)
+
+
 def residual_inputs(rank: int, size: int) -> dict[str, object]:
     return {"a": seeded(rank, LENGTH), "r": np.zeros(STEPS), "s": np.zeros(LENGTH), "N": LENGTH, "T": STEPS}
 
@@ -225,6 +314,9 @@ FIXTURES = {
     "halo_in_place": Fixture(halo_in_place, halo_in_place_inputs, ("ap", "b")),
     "halo_stencil": Fixture(halo_stencil, halo_in_place_inputs, ("ap", "b")),
     "halo_rows": Fixture(halo_rows, halo_rows_inputs, ("ap", "b")),
+    "halo_waits": Fixture(halo_waits, halo_inputs, ("b", "c", "ghost")),
+    "two_exchanges": Fixture(two_exchanges, two_exchanges_inputs, ("ghost_a", "ghost_x", "b")),
+    "halo_steps": Fixture(halo_steps, halo_steps_inputs, ("ap", "b", "c")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),

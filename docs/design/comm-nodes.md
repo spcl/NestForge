@@ -169,9 +169,12 @@ communicates. A change that breaks one is undone, and the call answers `illegal`
 
 **The skeleton** (`comm.skeleton`) is the control-flow tree of the program with everything removed that holds no
 communication row other than `QUERY`. What remains is, per region, its kind (`for`, a branch of an `if`, the top),
-its iteration range or branch condition, and two ordered lists: its rows other than `WAIT`, and its `WAIT` rows.
-Sub-regions keep their place in the first list. Two skeletons are equal when the trees match, the rows match by
-label, and the ranges and conditions match symbolically. The name of a loop variable is not compared, since a fusion
+its iteration range or branch condition, and two lists: its rows other than `WAIT` in order, and the operations its
+rows complete (a `BLOCKING` row completes itself, a `WAIT` the `START` rows it waits for), compared without order. Sub-regions keep their
+place in the first list. A row is compared by what it does (operation, buffers, peer, tag, operator), not by its label,
+and a `START` compares equal to the blocking row it splits from (`Isend` as `Send`, a collective with or without
+`nonblocking`), so `split-blocking` keeps the skeleton. Two skeletons are equal when the trees match, the rows match,
+and the ranges and conditions match symbolically. The name of a loop variable is not compared, since a fusion
 renames it.
 
 A `WAIT` may cross other rows (section 3), which is why it has a list of its own: where a `WAIT` sits among the other

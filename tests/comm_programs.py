@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Programs that communicate between MPI ranks, the fixtures of docs/design/comm-nodes.md: a halo exchange with
 nonblocking calls, a residual reduced across ranks every time step, a ring of blocking calls in a loop, and a loop of
-collectives, one per row. Parsed and canonicalized only; no test here launches ranks."""
+collectives, one per row; and two programs that break the rules of a request in flight, which the invariants must
+name. Parsed and canonicalized only; no test here launches ranks."""
 
 import dace
 from mpi4py import MPI
@@ -48,6 +49,30 @@ def per_row_allreduce(x: dace.float64[K, 4]) -> None:
     """One collective per row, in row order."""
     for i in range(K):
         MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, x[i], op=MPI.SUM)
+
+
+@dace.program
+def overwrite_in_flight(a: dace.float64[N], ghost: dace.float64[1], left: dace.int32, right: dace.int32) -> None:
+    """Wrong on purpose: the send's buffer is written before the wait completes the send."""
+    req = dace.define_local([2], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:1], right, 0, req[0])
+    MPI.COMM_WORLD.Irecv(ghost, left, 0, req[1])
+    for i in dace.map[0:N]:
+        a[i] = a[i] + 1.0
+    MPI.Request.Waitall(req)
+
+
+@dace.program
+def read_before_wait(
+    a: dace.float64[N], ghost: dace.float64[1], b: dace.float64[N], left: dace.int32, right: dace.int32
+) -> None:
+    """Wrong on purpose: the received ghost cell is read before the wait completes the receive."""
+    req = dace.define_local([2], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:1], right, 0, req[0])
+    MPI.COMM_WORLD.Irecv(ghost, left, 0, req[1])
+    for i in dace.map[0:N]:
+        b[i] = a[i] + ghost[0]
+    MPI.Request.Waitall(req)
 
 
 #: Every fixture, by name.

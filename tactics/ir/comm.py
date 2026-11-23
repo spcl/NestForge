@@ -97,11 +97,12 @@ def with_viewed(block: ControlFlowBlock, names: set[str]) -> set[str]:
 
 
 def buffers(state: SDFGState, node: nodes.Node) -> tuple[frozenset[str], frozenset[str]]:
-    """What ``node`` sends and receives: the containers it reads and writes, its request left out."""
+    """What ``node`` sends and receives: the containers it reads and writes, its request, peer and tag left out. MPI
+    reads a peer and a tag when the call is made, so only the buffers stay in flight until the wait."""
     sent = frozenset(
         container(state, e.src, str(e.data.data))
         for e in state.in_edges(node)
-        if not e.data.is_empty() and e.dst_conn != REQUEST
+        if not e.data.is_empty() and e.dst_conn != REQUEST and e.dst_conn not in PEER_FIELDS
     )
     received = frozenset(
         container(state, e.dst, str(e.data.data))
@@ -147,16 +148,67 @@ def forwarded(sdfg: dace.SDFG, names: frozenset[str]) -> frozenset[str]:
     return frozenset(found)
 
 
+#: An element range of a request container, or ``None`` where it cannot be told (through a view).
+RequestRange = tuple[str, subsets.Subset | None]
+
+
+def request_range(state: SDFGState, end: nodes.Node, edge: MultiConnectorEdge) -> RequestRange:
+    """The container ``edge`` moves a request through at ``end``, and the elements, unless a view hides them."""
+    name = str(edge.data.data)
+    viewed = isinstance(end, nodes.AccessNode) and isinstance(end.desc(state.sdfg), dace.data.View)
+    return container(state, end, name), None if viewed else edge.data.subset
+
+
+def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> list[RequestRange]:
+    """Where ``start``'s request ends up: what it writes through ``_request``, and every element a code node or a
+    copy then stores it into, transitively, as :func:`forwarded` follows it by container."""
+    reached = forwarded(sdfg, requests_of(state, start, written=True))
+    ranges = [request_range(state, e.dst, e) for e in state.out_edges(start) if e.src_conn == REQUEST]
+    for other in sdfg.states():
+        for edge in other.edges():
+            if edge.data.is_empty() or not isinstance(edge.dst, nodes.AccessNode) or comm_class(edge.src) is not None:
+                continue
+            source = edge.src.data if isinstance(edge.src, nodes.AccessNode) else None
+            sources = (
+                {container(other, edge.src, source)}
+                if source is not None
+                else {
+                    container(other, e.src, str(e.data.data)) for e in other.in_edges(edge.src) if not e.data.is_empty()
+                }
+            )
+            if sources & reached and container(other, edge.dst, str(edge.dst.data)) in reached:
+                name, elements = request_range(other, edge.dst, edge)
+                if source is not None and edge.data.data == source:
+                    elements = edge.data.dst_subset  # a copy names the source; the destination's elements differ
+                ranges.append((name, elements))
+    return ranges
+
+
+def same_request(sdfg: dace.SDFG, written: RequestRange, read: RequestRange) -> bool:
+    """Whether a start that writes ``written`` may be the one a wait reading ``read`` completes: same container, and
+    elements that overlap or cannot be told apart."""
+    if written[0] != read[0]:
+        return False
+    if written[1] is None or read[1] is None:
+        return True
+    return subsets.intersects(written[1], read[1], sdfg.facts()) is not dace.symbolic.Truth.FALSE
+
+
 def starts_of(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> list[tuple[SDFGState, nodes.Node]]:
     """The ``START`` rows whose requests ``wait`` reads, directly or through copies: every start of the program
-    writing one of them. Without the control flow between them this may hold too many rows, which keeps more buffers
-    in flight and is safe."""
-    requests = requests_of(state, wait, written=False)
+    that writes an element of a request array the wait reads (``Wait(req[2])`` completes only the start stored in
+    ``req[2]``). Where an element cannot be told, through a view or an unknown index, every start that writes the
+    array counts, and without the control flow between them the answer may hold too many rows: both keep more
+    buffers in flight, which is safe."""
+    reads = [
+        request_range(state, e.src, e) for e in state.in_edges(wait) if e.dst_conn == REQUEST and not e.data.is_empty()
+    ]
     return [
         (other, node)
         for other in sdfg.states()
         for node in other.nodes()
-        if comm_class(node) is CommClass.START and forwarded(sdfg, requests_of(other, node, written=True)) & requests
+        if comm_class(node) is CommClass.START
+        and any(same_request(sdfg, w, r) for w in written_requests(sdfg, other, node) for r in reads)
     ]
 
 
@@ -351,7 +403,8 @@ def crossing_refusal(node: nodes.Node, block: ControlFlowBlock) -> Refused | Non
 class Skeleton:
     """The communication skeleton of one region (design, section 4): its kind (``top``, ``for``, ``while``, ``if``,
     ``branch``, ``region``), its iteration range or condition with the loop variable renamed away, its rows other than
-    ``WAIT`` in program order (sub-regions holding rows in their place), and its ``WAIT`` rows. A row is its
+    ``WAIT`` in program order (sub-regions holding rows in their place), and the completions of its blocking rows and
+    ``WAIT`` rows (:func:`completions`), sorted, since a wait may move past another. A row is its
     :func:`row_signature`, since a move may give it a new label; ``labels`` names the signatures for a reason and is
     not compared. Two programs communicate alike when their skeletons are equal."""
 
@@ -362,11 +415,28 @@ class Skeleton:
     labels: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
 
+#: The blocking operation a point-to-point start begins: ``split-blocking`` turns one into the other in place.
+BLOCKING_FORM = {"Isend": "Send", "Irecv": "Recv"}
+
+
 def row_signature(state: SDFGState, node: nodes.Node) -> str:
-    """What a row does, without its label: its type, what it sends and receives, its peer, tag and operator."""
+    """What a row does, without its label: its operation, what it sends and receives, its peer, tag and operator. A
+    start and the blocking row it splits from sign alike (``Isend`` as ``Send``, a collective whether or not it is
+    nonblocking), so ``split-blocking`` keeps the skeleton."""
     sent, received = exchanged(state, node)
     fields = [f for f in comm_fields(state, node) if not f.startswith(("request=", "completes="))]
-    return " ".join([type(node).__name__, f"{sent}->{received}", *fields])
+    name = type(node).__name__
+    return " ".join([BLOCKING_FORM.get(name, name), f"{sent}->{received}", *fields])
+
+
+def completions(state: SDFGState, node: nodes.Node, found: CommClass) -> list[str]:
+    """The operations ``node`` completes, one skeleton wait each: a blocking row completes itself, a ``WAIT`` the
+    starts it waits for."""
+    if found is CommClass.BLOCKING:
+        return [f"complete {row_signature(state, node)}"]
+    if found is CommClass.WAIT:
+        return sorted(f"complete {row_signature(s, start)}" for s, start in starts_of(state.sdfg, state, node))
+    return []
 
 
 #: The name a loop variable takes in a skeleton: a fusion may rename it, and the name is not compared.
@@ -399,14 +469,19 @@ def region_skeleton(region: ControlFlowRegion, kind: str, extent: tuple[str, ...
                 found = comm_class(node)
                 if found in (None, CommClass.QUERY):
                     continue
-                signature = row_signature(block, node)
-                labels.append((signature, str(node.label)))
-                (waits if found is CommClass.WAIT else rows).append(signature)
+                if found is not CommClass.WAIT:
+                    signature = row_signature(block, node)
+                    labels.append((signature, str(node.label)))
+                    rows.append(signature)
+                for completion in completions(block, node, found):
+                    labels.append((completion, str(node.label)))
+                    waits.append(completion)
             continue
         inner = block_skeleton(block)
         if inner is not None:
             rows.append(inner)
-    return Skeleton(kind, extent, tuple(rows), tuple(waits), tuple(labels)) if rows or waits else None
+    # where a completion sits among the others is free (I2 guards it): the waits compare as a sorted list
+    return Skeleton(kind, extent, tuple(rows), tuple(sorted(waits)), tuple(labels)) if rows or waits else None
 
 
 def block_skeleton(block: ControlFlowBlock) -> Skeleton | None:
