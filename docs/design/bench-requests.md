@@ -10,8 +10,8 @@ to B10 are independent of it, and B13 and B14 are baselines for the study, and B
 | # | Request | Blocks | Size |
 |---|---|---|---|
 | B1 | The canonical form renders the distributed entry | distributed finalize | medium |
-| B2 | `/profile` runs a library at given rank counts | distributed `get_performance` | medium |
-| B3 | A DaCe form of each distributed reference | every distributed column | small per kernel |
+| B2 | `/profile` runs a library at given rank counts | distributed `get_performance` | done, bench `ca9226149` |
+| B3 | A DaCe form of each distributed reference | every distributed column | done, bench `ca9226149` |
 | B4 | Tuner episodes on a distributed task | every distributed column | medium |
 | B5 | Layout requests on a distributed array | `relayout` on distributed arguments | design question |
 | B6 | Precision per argument in the entry | `relayout` casts | medium |
@@ -44,6 +44,12 @@ rendering: `<base>_mpi(local tiles, local scalars, MPI_Fint comm, workspace, wor
 
 ## B2: run a library at given rank counts from a plugin
 
+**Done** (bench `ca9226149`, 2026-11-23), with one change: with `ranks` set, `/profile` answers a
+`DistributedRunsReport` (`build_ok`, `kernel`, `language`, `preset`, `datatype`, `runs`) instead of the tool's report
+with runs added, and runs no instrument. Inputs come from `/score`'s seed, `k_repeats` is 1, and `mpi_time_us` is the
+per-call mean on the slowest rank. The ML track's sharded launch is not served. Docs: the bench's
+`docs/writing_an_agent.md`.
+
 **Missing.** The judge's `/profile` route times a single-node library, and it takes no rank count. A plugin has no
 call that runs a library under the distributed driver (`support/bindings/mpi_driver.py`) and returns the time and
 the verdict without recording a grade.
@@ -70,6 +76,11 @@ class DistributedRun(pydantic.BaseModel):  # frozen
 - The call counts against the episode's profile budget, as every `/profile` call does.
 
 ## B3: a DaCe form of each distributed reference
+
+**Done** (bench `ca9226149`, 2026-11-23): `<kernel>_dace_mpi.py` for `scaled_add`, `mat_scaled_add`, `jacobi_2d`,
+`heat_3d`; the stencils take `up` and `down` (`MPI_Cart_shift(cart, 0, 1)`, `reorder = 0`) and exchange with
+Isend, Irecv and Waitall; `DaceFramework.import_distributed_kernel` loads them. Checked bit for bit against the
+mpi4py references at 1 and 3 ranks in the bench's CI.
 
 **Missing.** The eight distributed references (`scaled_add_mpi`, `mat_scaled_add_mpi`, `jacobi_2d_mpi`,
 `heat_3d_mpi`, each as `.c` and `.py`) are C and plain `mpi4py`. No DaCe program exists for a distributed kernel, so
