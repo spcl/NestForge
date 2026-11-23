@@ -66,7 +66,7 @@ Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 # `python scripts/bump_deps.py` moves all of them. A PyPI install reads none of this.
 # shortcut: dace-extended 1.0.0 is not on PyPI yet; the fork's release commit extended-v1.0.0 (spcl/dace 69626c5 plus
 # the release commit) stands in until it is, then delete this source.
-dace-extended = { git = "https://github.com/ThrudPrimrose/dace.git", rev = "af3976e11329532423967976afcb14d93e384658" }
+dace-extended = { git = "https://github.com/ThrudPrimrose/dace.git", rev = "736d231446eb0aa8423d1ad4c87c8c65b8537672" }
 hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa" }
 hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa", subdirectory = "agent" }
 dace-relayout = { git = "https://github.com/ThrudPrimrose/dace-relayout.git", rev = "bec607d55076fbab455b498649030c1f4cc8caa2" }
