@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pin HPCAgent-Bench in pyproject.toml's ``[tool.uv.sources]`` to the tip of a bench branch
-(:data:`BENCH_BRANCH` unless one is named). DaCe extended and dace-relayout follow their PyPI releases
-(``dace-extended>=X.Y.Z``, ``dace-relayout>=X.Y.Z``), so this script leaves them alone.
-
-``[project].dependencies`` name plain PyPI packages (PyPI refuses a direct URL), so the exact commits live only in
-``[tool.uv.sources]``, which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. Then reinstall and test:
+"""Point a checkout at the tip of a HPCAgent-Bench branch (:data:`BENCH_BRANCH` unless one is named) in place of the
+PyPI release: writes ``hpcagent-bench`` into pyproject.toml's ``[tool.uv.sources]`` (adding the table when absent),
+which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. CI's bench-tip job runs it; main itself installs the
+bench, DaCe extended, dace-relayout and FP-Arena from PyPI. Then reinstall and test:
 ``python scripts/bump_deps.py && uv pip install -e . --group dev && pytest``.
 """
 
@@ -28,15 +26,17 @@ def tip(repo: str, branch: str) -> str:
 
 
 def main(bench_branch: str) -> None:
-    bench = tip(BENCH, bench_branch)
-    pins = {"hpcagent-bench": bench}
+    sha = tip(BENCH, bench_branch)
+    source = f'hpcagent-bench = {{ git = "{BENCH}", rev = "{sha}" }}'
     text = PYPROJECT.read_text()
-    for package, sha in pins.items():
-        pattern = rf'^({re.escape(package)} = {{ git = "[^"]+", rev = ")[0-9a-f]{{40}}(")'
-        text, count = re.subn(pattern, rf"\g<1>{sha}\g<2>", text, flags=re.MULTILINE)
-        if count != 1:
-            raise SystemExit(f"expected one {package} source in [tool.uv.sources] of {PYPROJECT}, found {count}")
-        print(f"{package}: {sha}")
+    text, count = re.subn(r"^hpcagent-bench = \{ git = .*$", source, text, flags=re.MULTILINE)
+    if count == 0 and "[tool.uv.sources]\n" in text:
+        text = text.replace("[tool.uv.sources]\n", f"[tool.uv.sources]\n{source}\n", 1)
+    elif count == 0:
+        text = text.replace("[tool.uv]\n", f"[tool.uv.sources]\n{source}\n\n[tool.uv]\n", 1)
+    if source not in text:
+        raise SystemExit(f"could not write the hpcagent-bench source into {PYPROJECT}")
+    print(f"hpcagent-bench: {sha}")
     PYPROJECT.write_text(text)
 
 

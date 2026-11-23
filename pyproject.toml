@@ -62,11 +62,6 @@ Homepage = "https://github.com/spcl/tactics"
 Repository = "https://github.com/spcl/tactics"
 Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 
-[tool.uv.sources]
-# The tip of HPCAgent-Bench main (`python scripts/bump_deps.py` moves it) until hpcagent-bench is on PyPI. DaCe extended,
-# dace-relayout and FP-Arena come from PyPI, so pip and uv install the same files.
-hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "1451fd4f6a18945bf6d3f4d6251e5d13c25b7496" }
-
 [tool.uv]
 # spcl's PyPI `dace` installs the same `dace` package as dace-extended: never install it.
 override-dependencies = ["dace ; sys_platform == 'never'"]

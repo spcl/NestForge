@@ -145,9 +145,9 @@ pytest -m integration                                                   # compil
 pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) to a commit;
-`python scripts/bump_deps.py [bench-branch]` moves the bench pin. DaCe extended (`dace-extended`), dace-relayout and
-FP-Arena come from PyPI, as in a pip install. Tactics is a user plugin of the bench (`plugin/tactics`, through
+HPCAgent-Bench (`hpcagent-bench`), DaCe extended (`dace-extended`), dace-relayout and FP-Arena come from PyPI, in a
+checkout as in a pip install. `python scripts/bump_deps.py [bench-branch]` points a checkout at the tip of a bench
+branch instead (the nightly bench-tip CI job does this). Tactics is a user plugin of the bench (`plugin/tactics`, through
 `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
 assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch

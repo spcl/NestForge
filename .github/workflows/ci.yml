@@ -1,7 +1,8 @@
 name: CI
 
-# uv installs from pyproject.toml; [tool.uv.sources] pins hpcagent-bench to a commit, DaCe extended, dace-relayout and
-# FP-Arena come from PyPI; scripts/bump_deps.py moves the bench pin. Must stay credential-free so CI runs on fork PRs.
+# uv installs from pyproject.toml: hpcagent-bench, DaCe extended, dace-relayout and FP-Arena come from PyPI;
+# scripts/bump_deps.py points the bench-tip job at the tip of the bench branch.
+# Must stay credential-free so CI runs on fork PRs.
 
 on:
   push:
@@ -52,7 +53,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
@@ -109,7 +110,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
@@ -163,7 +164,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
@@ -215,7 +216,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
@@ -280,7 +281,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
@@ -331,7 +332,7 @@ jobs:
         run: python scripts/bump_deps.py && git diff pyproject.toml
       - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
+      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
       - uses: actions/cache/restore@v4
         id: emit-cache
         with:
