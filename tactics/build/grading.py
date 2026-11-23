@@ -3,7 +3,7 @@
 """A kernel's outputs graded against its NumPy oracle as HPCAgent-Bench grades a program's (``grade_outputs``): the
 bench's comparator (``frameworks.utilities.compare_arrays``) at the band of each output's precision, with the
 reassociation floor ``eps_acc * sqrt(l)`` at the output's accumulation length (:mod:`tactics.ir.accumulation`) and
-the bench's grading knobs (``grading.strict_small``, ``grading.relative_atol``). The bench grades only program outputs,
+the bench's grading knobs (``grading.fp_checks``: ``strict_small_l2``, ``strict_small_sign``, ``relative_atol``). The bench grades only program outputs,
 against its own reference; a kernel has neither, so NestForge supplies the oracle and ``l`` and the bench the rule.
 
 The bench is imported inside the functions: importing tactics never loads it."""
@@ -65,9 +65,9 @@ def grade_kernel(expected: Expected, outputs: Mapping[str, np.ndarray]) -> Grade
     from hpcagent_bench.precision import UngradeableTolerance, accumulation_eps, tolerance_band
     from hpcagent_bench.strict_small import StrictSmall
 
-    knobs = config.current().grading
-    factors = knobs.strict_small_factors
-    gate = StrictSmall(factors.sign_margin, factors.l2_factor) if knobs.strict_small else None
+    checks = config.current().grading.fp_checks
+    gate = StrictSmall.of(checks.enabled, checks.sign_margin, checks.l2_factor)
+    relative_atol = "relative_atol" in checks.enabled
     worst, failures = 0.0, []
     for name, want in expected.outputs.items():
         if name not in outputs:
@@ -85,7 +85,7 @@ def grade_kernel(expected: Expected, outputs: Mapping[str, np.ndarray]) -> Grade
                 accum_length=expected.lengths.get(name),
                 eps_precision=accumulation_eps(precision),
                 strict_small=gate,
-                relative_atol=knobs.relative_atol,
+                relative_atol=relative_atol,
             )
         except UngradeableTolerance as err:
             return Grade(ok=False, error=math.inf, ungradeable=f"{name}: {err}")

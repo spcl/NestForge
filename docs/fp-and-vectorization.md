@@ -28,7 +28,7 @@ oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit mod
 ## Grading
 
 `tactics/build/grading.py` grades a kernel's outputs with the bench's `compare_arrays`, band
-(`precision.tolerance_band`) and grading knobs (`grading.strict_small`, `grading.relative_atol`), as `grade_outputs`
+(`precision.tolerance_band`) and grading knobs (`grading.fp_checks`: `strict_small_l2`, `strict_small_sign`, `relative_atol`), as `grade_outputs`
 grades a program. The bench derives `l` per program output from the BenchSpec; a kernel's outputs are often
 transients no spec names, so `tactics/ir/accumulation.py` derives it from the kernel's SDFG at the checked sizes:
 the writes that read their own target (directly, through scratch, or as a WCR) over the chains they extend, one per
