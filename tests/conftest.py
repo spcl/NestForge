@@ -11,10 +11,10 @@ from hpcagent_agent.plugins import Plugin
 from hpcagent_bench import plugins
 from hpcagent_bench import study_tags as tags
 
-from nestforge.paths import REPO_ROOT
+from tactics.paths import REPO_ROOT
 
 #: The plugin folder HPCAgent-Bench loads.
-PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+PLUGIN = REPO_ROOT / "plugin" / "tactics"
 
 
 @pytest.fixture(scope="session")

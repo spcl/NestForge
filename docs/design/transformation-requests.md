@@ -4,7 +4,7 @@
 
 Status: steps 1 and 2 built (the tool, its checks, the record; clustering); authoring and the gate are not built.
 
-Clustering (`scripts/cluster_requests.py <run folders> --out clusters.json`, `nestforge.stages.requests.cluster_requests`):
+Clustering (`scripts/cluster_requests.py <run folders> --out clusters.json`, `tactics.stages.requests.cluster_requests`):
 two requests are one candidate when one of their example pairs is the same after canonicalization, up to the names of
 arrays and symbols (and the identifiers code generation derives from them, such as `a_idx`); candidates come out most
 asked first, by kernels, then episodes. Floating-point constants are ignored (x / 2 and x / 8 are one pattern); integer
@@ -16,7 +16,7 @@ An agent that finds no fitting move may name one with `request_transformation` (
 without it, so requests never count in E1's cost). A request names the rows, describes the transformation, and gives at
 least five pairs of small `@dace.program` modules, before and after. It never changes the program.
 
-Checks, all without an LLM (`nestforge/stages/requests.py`), each refusing with its reason:
+Checks, all without an LLM (`tactics/stages/requests.py`), each refusing with its reason:
 
 | Check | Refusal class |
 |---|---|

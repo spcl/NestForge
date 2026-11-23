@@ -7,9 +7,9 @@ import dace
 import pytest
 from helpers import corpus_kernel
 
-from nestforge.records import CRASHES, MoveStatus, Refusal, refusal_of
-from nestforge.session import Session
-from nestforge.stages.moves import (
+from tactics.records import CRASHES, MoveStatus, Refusal, refusal_of
+from tactics.session import Session
+from tactics.stages.moves import (
     CANDIDATES,
     PROPAGATE_CONFIG,
     Rewrite,
@@ -18,7 +18,7 @@ from nestforge.stages.moves import (
     probe_sizes,
     tree_label,
 )
-from nestforge.stages.vectorize import VECTORIZE_DOALL
+from tactics.stages.vectorize import VECTORIZE_DOALL
 
 #: Corpus programs whose canonical forms offer loops, doalls, guards, and library calls to every kind.
 KERNELS = ("jacobi_1d", "tsvc_2_s231", "loop_level_reasoning/fuse_diamond/fuse_diamond", "gramschmidt")

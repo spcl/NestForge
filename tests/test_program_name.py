@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A program name CMake turns into a file name must stay under the 255 bytes a file name holds (#83)."""
 
-from nestforge.build.sdfg import MAX_PROGRAM_NAME, short_program_name
+from tactics.build.sdfg import MAX_PROGRAM_NAME, short_program_name
 
 CMAKE_FILE_PREFIX = "cmake_object_order_depends_target_dacestub_"
 KERNEL = "conv2d_group_norm_tanh_hardswish_residual_add_logsumexp"

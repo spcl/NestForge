@@ -12,12 +12,12 @@ import test_session_moves
 from dace.frontend.python.parser import DaceProgram
 from dace.sdfg import nodes
 
-from nestforge import server
-from nestforge.ir.introspect import enclosing_rows
-from nestforge.ir.subtree import ancestors, changed_lines, changed_view, rewritten_root, spans, subtree
-from nestforge.records import MoveStatus
-from nestforge.session import Move, Session
-from nestforge.stages.moves import ROLLBACK
+from tactics import server
+from tactics.ir.introspect import enclosing_rows
+from tactics.ir.subtree import ancestors, changed_lines, changed_view, rewritten_root, spans, subtree
+from tactics.records import MoveStatus
+from tactics.session import Move, Session
+from tactics.stages.moves import ROLLBACK
 
 N = dace.symbol("N", dace.int64, positive=True)
 

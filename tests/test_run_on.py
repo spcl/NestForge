@@ -10,11 +10,11 @@ import dace
 import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.records import MoveStatus
-from nestforge.session import CheckData, Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.performance import Reference
-from nestforge.stages.placement import has_device_memory
+from tactics.records import MoveStatus
+from tactics.session import CheckData, Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.performance import Reference
+from tactics.stages.placement import has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 32

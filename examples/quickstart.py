@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Walk an HPCAgent-Bench kernel through the seven NestForge stages, one Session call each, and save what each
 stage made. Every stage runs its deterministic default; an agent drives the same stages through the HPCAgent-Bench
-plugin (``plugin/nestforge``).
+plugin (``plugin/tactics``).
 
 ``fuse_diamond`` fuses into a single kernel. ``jacobi_1d`` keeps two maps in its time loop, one reading the other's
 neighbours, so it shows two kernels and the dependency carried between them."""
@@ -14,10 +14,10 @@ from pathlib import Path
 
 import dace
 
-from nestforge.build.sdfg import generate_program
-from nestforge.corpus.bench import iter_dace_kernels, preset_sizes
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.build.sdfg import generate_program
+from tactics.corpus.bench import iter_dace_kernels, preset_sizes
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 KERNELS = {
     "fuse_diamond": "loop_level_reasoning/fuse_diamond/fuse_diamond",

@@ -5,7 +5,7 @@
 Two parts are counted per call: the call the agent writes (the tool's name and its arguments as JSON) and the answer
 it reads back. Reasoning is not counted: it is the model's, and no layout of NestForge's changes it directly.
 
-The calls run on a real session of a bench kernel through :func:`nestforge.server.answer`, as the plugin's route runs
+The calls run on a real session of a bench kernel through :func:`tactics.server.answer`, as the plugin's route runs
 them, and each answer is rendered exactly as the agent reads it: the route's ``ToolAnswer`` as JSON, which the
 bench's MCP server re-serializes with ``json.dumps(indent=2, sort_keys=True)``. A tokenizer file (the run model's
 ``tokenizer.json``) counts it. Every answer stays in the context, so the script also reports the re-send cost: each
@@ -48,13 +48,13 @@ from hpcagent_bench.harness.judge_wire import JudgeAnswer
 from pydantic import BaseModel
 from tokenizers import Tokenizer
 
-from nestforge.paths import REPO_ROOT
-from nestforge.server import CALLS, TIMED, Reply, Setup, answer, session_data, started_session
-from nestforge.stages.performance import Performance
+from tactics.paths import REPO_ROOT
+from tactics.server import CALLS, TIMED, Reply, Setup, answer, session_data, started_session
+from tactics.stages.performance import Performance
 
 
 class ToolAnswer(JudgeAnswer):
-    """The plugin route's answer to a NestForge call (``plugin/nestforge/routes/nestforge.py``), which the bench loads
+    """The plugin route's answer to a NestForge call (``plugin/tactics/routes/nestforge.py``), which the bench loads
     as a plugin and this script cannot import; a test keeps the two alike."""
 
     tool: str
@@ -144,7 +144,7 @@ def rendered_v2(tool: str, reply: Reply) -> str:
 
 
 #: The NestForge plugin folder, the bench's user plugin that renders the answers the agent reads.
-PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+PLUGIN = REPO_ROOT / "plugin" / "tactics"
 
 
 def plugin_module(name: str) -> Any:

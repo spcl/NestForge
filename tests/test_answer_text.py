@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The answers the agent reads as lines (``plugin/nestforge/answers.py``): every fact of the record stays, the JSON
+"""The answers the agent reads as lines (``plugin/tactics/answers.py``): every fact of the record stays, the JSON
 layout goes."""
 
 import json

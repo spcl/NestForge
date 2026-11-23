@@ -10,9 +10,9 @@ from comm_rank_programs import halo_overlap
 from dace.libraries.comm.nodes import Barrier, Irecv, Isend, Waitall
 from dace.sdfg import nodes
 
-from nestforge.ir.comm import CommClass, comm_class, in_flight
-from nestforge.session import Session
-from nestforge.stages.lib_motion import accessed, plan_lib_motion
+from tactics.ir.comm import CommClass, comm_class, in_flight
+from tactics.session import Session
+from tactics.stages.lib_motion import accessed, plan_lib_motion
 
 N = 16
 

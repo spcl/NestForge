@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The ASCII tree the agent reads (:func:`nestforge.ir.introspect.describe_graph`).
+"""The ASCII tree the agent reads (:func:`tactics.ir.introspect.describe_graph`).
 
 The tree is the agent's whole view of the program, so its format is an interface: a change to it
 changes what every agent prompt sees. The golden test below pins it in full, so a format change has
@@ -18,11 +18,11 @@ from dace.frontend.python.parser import DaceProgram
 from dace.sdfg.state import LoopRegion, SDFGState
 from helpers import kernel_body
 
-from nestforge.ir import introspect
-from nestforge.ir.emit_python import UnsupportedNest
-from nestforge.ir.introspect import describe_graph, interstate_definitions, resolve_scalars
-from nestforge.ir.names import normalize_labels, top_level_nsdfgs
-from nestforge.session import Session
+from tactics.ir import introspect
+from tactics.ir.emit_python import UnsupportedNest
+from tactics.ir.introspect import describe_graph, interstate_definitions, resolve_scalars
+from tactics.ir.names import normalize_labels, top_level_nsdfgs
+from tactics.session import Session
 
 
 @dc.program

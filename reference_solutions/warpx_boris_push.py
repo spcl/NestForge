@@ -9,7 +9,7 @@ and the six field arrays through memory again. With the step loop inside one par
 steps before the next and the arrays are streamed once (132.1 ms to 82.9 ms, 1.59x at preset L, 72 threads, 3
 alternated rounds 1.59-1.60x, measured on 690de2f with the single move that is now these two; to be retaken)."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "warpx_boris_push"
 CONFIGS = (Context("cpu", 72, "L"),)

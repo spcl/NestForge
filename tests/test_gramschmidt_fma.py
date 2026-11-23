@@ -23,8 +23,8 @@ from dace.libraries.blas.nodes import Dot
 from dace.sdfg.state import LoopRegion
 from helpers import BenchKernel, bench_kernel, c_argtypes, corpus_kernel, emit_sources, extract_nest_to_sdfg
 
-from nestforge.build.toolchain import bind_argument, entry
-from nestforge.ir.extract import Boundary
+from tactics.build.toolchain import bind_argument, entry
+from tactics.ir.extract import Boundary
 
 Buffers = dict[str, np.ndarray]
 

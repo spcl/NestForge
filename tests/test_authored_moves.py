@@ -8,10 +8,10 @@ from pathlib import Path
 import dace
 import pytest
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.server import CALLS
-from nestforge.session import Session
-from nestforge.stages.authored import CatalogueError, load_catalogue
+from tactics.records import MoveStatus, Refusal
+from tactics.server import CALLS
+from tactics.session import Session
+from tactics.stages.authored import CatalogueError, load_catalogue
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 16

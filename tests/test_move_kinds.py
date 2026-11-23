@@ -5,10 +5,10 @@ skill page naming every kind."""
 
 import re
 
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.moves import MOVE_SHAPES, move_kinds
+from tactics.paths import REPO_ROOT
+from tactics.stages.moves import MOVE_SHAPES, move_kinds
 
-PAGE = REPO_ROOT / "plugin" / "nestforge" / "skills" / "nestforge" / "SKILL.md"
+PAGE = REPO_ROOT / "plugin" / "tactics" / "skills" / "nestforge" / "SKILL.md"
 #: A backticked kebab-case token with one of these parts reads as a move name (``kernel-optimizer`` does not).
 MOVE_WORDS = frozenset(
     {

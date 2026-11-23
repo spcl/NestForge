@@ -9,8 +9,8 @@ import dace
 import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64

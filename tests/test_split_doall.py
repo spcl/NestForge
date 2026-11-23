@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 from dace.sdfg import nodes
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
-from nestforge.stages.moves import SPLIT_DOALL
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
+from tactics.stages.moves import SPLIT_DOALL
 
 N = dace.symbol("N", dace.int64, positive=True)
 M = dace.symbol("M", dace.int64, positive=True)

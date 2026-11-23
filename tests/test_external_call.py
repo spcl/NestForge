@@ -12,9 +12,9 @@ from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from helpers import bench_kernel, bench_manifest
 
-from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.corpus.translate import Prepared, prepare
-from nestforge.stages.scopes import lower_nests_to_external_call, node_boundary
+from tactics.build.arena import make_inputs, run_oracle
+from tactics.corpus.translate import Prepared, prepare
+from tactics.stages.scopes import lower_nests_to_external_call, node_boundary
 
 N = dace.symbol("N")
 

@@ -10,10 +10,10 @@ import dace
 import numpy as np
 import pytest
 
-from nestforge.session import Session
-from nestforge.stages.feedback import Evidence, Origin, report, spills, vectorizer_reasons
-from nestforge.stages.kernel import KernelVerdict, computed_symbols_reason, unchecked_verdict
-from nestforge.stages.performance import kernel_reports
+from tactics.session import Session
+from tactics.stages.feedback import Evidence, Origin, report, spills, vectorizer_reasons
+from tactics.stages.kernel import KernelVerdict, computed_symbols_reason, unchecked_verdict
+from tactics.stages.performance import kernel_reports
 
 N = dace.symbol("N", dtype=dace.int64)
 

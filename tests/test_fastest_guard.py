@@ -7,8 +7,8 @@ from pathlib import Path
 
 import dace
 
-from nestforge.session import GUARD_MARGIN, Restored, Session
-from nestforge.stages.performance import ProgramReport
+from tactics.session import GUARD_MARGIN, Restored, Session
+from tactics.stages.performance import ProgramReport
 
 N = dace.symbol("N", dtype=dace.int64)
 

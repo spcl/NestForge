@@ -8,8 +8,8 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 
-from nestforge.server import answer
-from nestforge.session import Session
+from tactics.server import answer
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 

@@ -13,7 +13,7 @@ are on the program.
 - a ``run-on-*`` move then ``rollback`` gives back the program before the move;
 - a fresh session repeating the applied calls is the same program.
 
-A second sequence makes the calls through :func:`nestforge.server.answer`, as the judge serves them: the tools' gates
+A second sequence makes the calls through :func:`tactics.server.answer`, as the judge serves them: the tools' gates
 (scopes are fixed once placed) and argument checks too, and ``apply_scope_move`` with a schedule ``list_scope_moves``
 offers inside a random kernel. There a call answered with an error is refused as well, and must leave the program as
 it was.
@@ -33,12 +33,12 @@ from test_fusion_fuzz import load_program
 from test_rollback_equivalence import state_of
 from test_scope_fuzz import random_block_run
 
-from nestforge.records import MoveStatus
-from nestforge.server import answer
-from nestforge.session import MoveResult, PlaceResult, Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.moves import RUN_ON_KINDS
-from nestforge.stages.placement import DEVICES, has_device_memory, kernel_device
+from tactics.records import MoveStatus
+from tactics.server import answer
+from tactics.session import MoveResult, PlaceResult, Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.moves import RUN_ON_KINDS
+from tactics.stages.placement import DEVICES, has_device_memory, kernel_device
 
 NCASES = 12
 #: Calls per seed: long enough to place, take back and place again a few times.

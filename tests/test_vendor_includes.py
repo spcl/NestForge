@@ -9,10 +9,10 @@ from typing import cast
 
 import pytest
 
-from nestforge.build.sdfg import BuildOptions
-from nestforge.ir.extract import Boundary
-from nestforge.stages import kernel as kernel_stage
-from nestforge.stages.kernel import KernelSource, build_kernel_library
+from tactics.build.sdfg import BuildOptions
+from tactics.ir.extract import Boundary
+from tactics.stages import kernel as kernel_stage
+from tactics.stages.kernel import KernelSource, build_kernel_library
 
 #: An include directory off the default search path.
 INCLUDE = "-I/opt/openblas/include"

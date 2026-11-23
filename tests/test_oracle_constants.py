@@ -8,9 +8,9 @@ from pathlib import Path
 import dace
 import numpy as np
 
-from nestforge.records import KernelStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.records import KernelStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 THRESHOLDS = np.array([0.0, 0.13, 4.0, 1.0, 0.0])
 N = dace.symbol("N", dtype=dace.int64)

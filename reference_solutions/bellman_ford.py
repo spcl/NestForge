@@ -3,7 +3,7 @@
 """Bellman-Ford on the GPU: the default's fusions, then the one ``doall-fission`` it leaves, then the stages after
 fusion. On the CPU the default leaves no move, so the reference is the default there."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "bellman_ford"
 CONFIGS = (Context("gpu", 1, "M"),)

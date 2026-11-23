@@ -17,11 +17,11 @@ import numpy as np
 import pytest
 from helpers import program_mismatch
 
-from nestforge import session as session_module
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, RUN_ON_KINDS
-from nestforge.stages.performance import Reference
+from tactics import session as session_module
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.moves import MOVE_SHAPES, ROLLBACK, RUN_ON_KINDS
+from tactics.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
 

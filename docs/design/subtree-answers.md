@@ -1,6 +1,6 @@
 # Subtree answers: a move answers with what it rewrote
 
-Decided 2026-11-22 (owner). Code: `nestforge/ir/subtree.py`, `Session.changed_tree`, `Session.view(root=...)`,
+Decided 2026-11-22 (owner). Code: `tactics/ir/subtree.py`, `Session.changed_tree`, `Session.view(root=...)`,
 `server.with_tree`, `answers.move_answer`.
 
 ## Problem

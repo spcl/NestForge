@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 from helpers import signature_order
 
-from nestforge.build import arena, flags
-from nestforge.build.toolchain import CType, Toolchain
-from nestforge.ir.extract import Boundary
+from tactics.build import arena, flags
+from tactics.build.toolchain import CType, Toolchain
+from tactics.ir.extract import Boundary
 
 
 # emitted-source signature order
@@ -78,7 +78,7 @@ class CountingArray(np.ndarray):
 
 
 class FakeBoundary:
-    """Both halves of :class:`nestforge.ir.extract.Boundary` that call_native reads. ``inputs`` is not optional
+    """Both halves of :class:`tactics.ir.extract.Boundary` that call_native reads. ``inputs`` is not optional
     padding: their intersection with ``outputs`` is what call_native restores between timed reps, so a fixture
     carrying only ``outputs`` cannot express an in-place kernel at all."""
 
@@ -227,7 +227,7 @@ def test_the_two_family_vocabularies_stay_apart() -> None:
     """toolchain.compiler_family classifies an executable for its OpenMP ABI; Toolchain.fp_family classifies a
     toolchain for the FP tables. They are not interchangeable, and this pins the exact disagreement that makes
     that true, so a future 'simplification' that collapses them fails here instead of in a sweep."""
-    from nestforge.build.toolchain import compiler_family
+    from tactics.build.toolchain import compiler_family
 
     assert compiler_family("icx") == "llvm"  # an Intel compiler classified llvm: the ABI, not the FP family
     assert toolchain_labelled("intel", "icx").fp_family == "intel"

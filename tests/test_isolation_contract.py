@@ -20,8 +20,8 @@ from typing import Any, Never, cast
 import dace
 import pytest
 
-from nestforge.build import isolation
-from nestforge.build.isolation import (
+from tactics.build import isolation
+from tactics.build.isolation import (
     ERROR_CHARS,
     HAS_AFFINITY,
     LIBOMP_SONAMES,
@@ -32,7 +32,7 @@ from nestforge.build.isolation import (
     run_isolated,
     run_spawned,
 )
-from nestforge.build.sdfg import build_linked_program
+from tactics.build.sdfg import build_linked_program
 
 #: Seconds the background thread of the warning test stays alive; it only needs to outlive one fork.
 ISOLATION_WAIT_S = 5.0

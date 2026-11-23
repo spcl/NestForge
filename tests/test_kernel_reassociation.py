@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from dace.frontend.python.parser import DaceProgram
 
-from nestforge.stages.kernel import KernelVerdict, accumulation_length, reassociation_growth
+from tactics.stages.kernel import KernelVerdict, accumulation_length, reassociation_growth
 
 N = dace.symbol("N", dace.int64)
 K = dace.symbol("K", dace.int64)

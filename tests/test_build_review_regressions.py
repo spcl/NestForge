@@ -17,9 +17,9 @@ import numpy as np
 import pytest
 from dace.codegen import compiler as dace_compiler
 
-from nestforge.build import flags, toolchain
-from nestforge.build.arena import dtype_floor
-from nestforge.build.sdfg import BuiltSDFG, generate_program_folder, make_persistent
+from tactics.build import flags, toolchain
+from tactics.build.arena import dtype_floor
+from tactics.build.sdfg import BuiltSDFG, generate_program_folder, make_persistent
 
 N = dace.symbol("N")
 SCRATCH = 1 << 18  # a 2 MB scratch row, above PERSISTENT_MIN_BYTES
@@ -178,8 +178,8 @@ def process_state(stat: Path) -> str:
 
 
 CHILD_SETUP_FAILS = """
-import nestforge.build.isolation as isolation
-from nestforge.build.isolation import Failure, Result, run_isolated
+import tactics.build.isolation as isolation
+from tactics.build.isolation import Failure, Result, run_isolated
 
 def refuse(cpus):
     raise OSError("pin refused")

@@ -8,7 +8,7 @@ and why, and how many tokens an agent spent before and after it first wrote kern
 
 ## Where it comes from
 
-The judge route (`plugin/nestforge/routes/nestforge.py`) logs every call that reaches it, the refused and the failed
+The judge route (`plugin/tactics/routes/nestforge.py`) logs every call that reaches it, the refused and the failed
 included, in `calls-<episode>@<kernel>.jsonl` beside the journal. At every `finalize` it writes the record with the
 bench's `plugin_api.keep_record` into the episode's folder, as `plugin_records/nestforge.json`. A graded submission
 always follows a `finalize`, and the bench archives the file with each `/submit` grade, so the record of a grade holds
@@ -56,13 +56,13 @@ The journal is never shortened. A record that cannot be written costs the record
 log says why.
 
 The packet the episode ran is not in the record: the bench's results database stores it with the episode. The two
-columns without an LLM (`nestforge_bench`) write the same record through `FlavorOptimizer.keep_record`, with no
+columns without an LLM (`tactics_bench`) write the same record through `FlavorOptimizer.keep_record`, with no
 calls and the default stages as `run_defaults` entries of the journal.
 
 ## Refusal classes
 
-`MoveResult.refusal` (`nestforge/session.py`) holds the class of every refused labeled call. The code that refuses
-sets it: a planner returns a `Refused` (`nestforge/records.py`), a `str` that carries its `Refusal`, so every caller
+`MoveResult.refusal` (`tactics/session.py`) holds the class of every refused labeled call. The code that refuses
+sets it: a planner returns a `Refused` (`tactics/records.py`), a `str` that carries its `Refusal`, so every caller
 that reads the text reads it as before.
 
 | Class | The call was refused because |

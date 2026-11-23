@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 from dace.sdfg.performance_evaluation import work_depth
 
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.ir.introspect import guarded_work_depth
-from nestforge.ir.names import top_level_nsdfgs
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.performance import Reference
+from tactics.corpus.bench import corpus_kernel, preset_sizes
+from tactics.ir.introspect import guarded_work_depth
+from tactics.ir.names import top_level_nsdfgs
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dace.int64, positive=True)
 SIZE = 12

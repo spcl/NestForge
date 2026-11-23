@@ -3,7 +3,7 @@
 """nest-forge owns the DaCe build (docs/build.md): generate DaCe's C++, compile+link it ourselves, call it via
 ctypes with manual init/program/exit -- not ``dace.compile``.
 
-Tests build real corpus nests through :mod:`nestforge.build.sdfg` and check the owned-built kernel matches the
+Tests build real corpus nests through :mod:`tactics.build.sdfg` and check the owned-built kernel matches the
 numpy oracle: source-tree layout, the init/program/exit call sequence, and per-parameter ctype marshaling.
 """
 
@@ -23,18 +23,18 @@ import numpy as np
 import pytest
 from helpers import extract_nest_to_sdfg
 
-import nestforge.build.sdfg as build_mod
-import nestforge.build.toolchain as toolchain_mod
-from nestforge.build.toolchain import lib_linkable, runtime_library
+import tactics.build.sdfg as build_mod
+import tactics.build.toolchain as toolchain_mod
+from tactics.build.toolchain import lib_linkable, runtime_library
 
 assert shutil.which("g++") is not None, "g++ not on PATH (setup_apt.sh installs it)"
 
 import helpers
 from helpers import build_sdfg, corpus_kernel
 
-from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.build.sdfg import BuildOptions, BuiltSDFG, dace_runtime_include, new_gpu_codegen
-from nestforge.build.toolchain import (
+from tactics.build.arena import make_inputs, run_oracle
+from tactics.build.sdfg import BuildOptions, BuiltSDFG, dace_runtime_include, new_gpu_codegen
+from tactics.build.toolchain import (
     C_PTR,
     NEW_DTAGS,
     compiler_family,
@@ -44,10 +44,10 @@ from nestforge.build.toolchain import (
     openmp_link_flags,
     parse_params,
 )
-from nestforge.corpus.translate import prepare
-from nestforge.ir.extract import Boundary
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.scopes import parallel_top_level_maps
+from tactics.corpus.translate import prepare
+from tactics.ir.extract import Boundary
+from tactics.paths import REPO_ROOT
+from tactics.stages.scopes import parallel_top_level_maps
 
 
 def first_nest(short: str) -> Boundary:
@@ -190,7 +190,7 @@ def test_driver_lib_path_normalises_the_answer_without_following_the_symlink(tmp
 def test_parallel_map_emits_omp_pragma(tmp_path: Path) -> None:
     """The sanity nest is actually parallel: DaCe lowers ``CPU_Multicore`` to an OpenMP pragma in the
     generated C++ (so the cross-compiler tests below really exercise the runtime link)."""
-    from nestforge.build.sdfg import generate_program_folder
+    from tactics.build.sdfg import generate_program_folder
 
     frame = generate_program_folder(parallel_axpy_sdfg(), tmp_path / "nf_omp_src")
     assert "#pragma omp parallel for" in frame.read_text()
@@ -316,14 +316,14 @@ def test_owned_build_reusable_handle_program(tmp_path: Path) -> None:
 def test_toolchain_is_importable_without_dace() -> None:
     """Asking which OpenMP runtime a compiler links must not load the DaCe code generator."""
     # a fresh interpreter: this one imported dace long ago
-    path = REPO_ROOT / "nestforge" / "build" / "toolchain.py"
+    path = REPO_ROOT / "tactics" / "build" / "toolchain.py"
     probe = textwrap.dedent(f"""
         import importlib.util, sys
         spec = importlib.util.spec_from_file_location("nf_toolchain_isolated", {str(path)!r})
         module = importlib.util.module_from_spec(spec)
         sys.modules["nf_toolchain_isolated"] = module
         spec.loader.exec_module(module)
-        assert "dace" not in sys.modules, "importing nestforge.build.toolchain pulled in dace"
+        assert "dace" not in sys.modules, "importing tactics.build.toolchain pulled in dace"
         assert module.compiler_family("icx") == "llvm"          # a real probe, not just an import
         assert module.C_PTR["dace::complex128"] is module.C_SCALAR["double"]
     """)

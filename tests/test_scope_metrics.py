@@ -8,9 +8,9 @@ import sympy
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.names import top_level_map_entries
-from nestforge.session import Session
-from nestforge.stages.moves import ScopeMetrics, scope_metrics
+from tactics.ir.names import top_level_map_entries
+from tactics.session import Session
+from tactics.stages.moves import ScopeMetrics, scope_metrics
 
 N = dace.symbol("N")
 TSTEPS = dace.symbol("TSTEPS")

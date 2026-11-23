@@ -12,8 +12,8 @@ from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 8

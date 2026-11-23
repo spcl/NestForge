@@ -17,8 +17,8 @@ from typing import Any
 
 import numpy as np
 
-import nestforge
-from nestforge.build.toolchain import (
+import tactics
+from tactics.build.toolchain import (
     AS_NEEDED,
     LIBOMP,
     lib_linkable,
@@ -256,7 +256,7 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path: P
 
 def test_every_link_search_path_is_paired_with_an_rpath() -> None:
     """A ``-L`` without its ``-Wl,-rpath`` links, but the library then fails to load without LD_LIBRARY_PATH."""
-    package = Path(nestforge.__file__).parent
+    package = Path(tactics.__file__).parent
     offenders = []
     for path in sorted(package.rglob("*.py")):
         lines = path.read_text().splitlines()

@@ -11,7 +11,7 @@ import pytest
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.stages.sinking import sink_into_loop, sink_into_map
+from tactics.stages.sinking import sink_into_loop, sink_into_map
 
 N = dace.symbol("N")
 SIZE = 7

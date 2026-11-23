@@ -1,12 +1,17 @@
-# NestForge
+# Tactics
 
-NestForge optimizes whole DaCe programs on CPU and GPU. It canonicalizes a program, reshapes its loop nests with
+Tactics (formerly NestForge) lets an agent optimize a DaCe program only through legal, checked moves. A tactic is a
+transformation rule (`tile-for`, `interchange-for`, `doall-fusion`, ...); a move applies one tactic to labeled rows
+with its arguments; the ordered moves of an episode are its recipe, which replays the result. Install it with
+`pip install tactics` and import it as `tactics`.
+
+Tactics optimizes whole DaCe programs on CPU and GPU. It canonicalizes a program, reshapes its loop nests with
 legal moves, cuts it into kernels, places each kernel on a device, builds and sweeps each kernel, and reports what
 to change next. Every kernel is checked against its Python oracle, the whole program against the benchmark's
 reference.
 
 Every stage has a deterministic default, so a run works with no agent, one agent or a human driving the same
-`Session` API. Each call returns a typed record (`nestforge/records.py`, frozen pydantic models).
+`Session` API. Each call returns a typed record (`tactics/records.py`, frozen pydantic models).
 
 | Stage | Decides | Default | Call |
 |---|---|---|---|
@@ -20,7 +25,7 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 
 ## Agents: the HPCAgent-Bench plugin
 
-[plugin/nestforge](plugin/nestforge) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
+[plugin/tactics](plugin/tactics) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
 run the `nestforge` packet; it sets the library input mode itself (`finalize` hands the judge a library). The
 `nestforge` packet exposes the moves phase; scopes, placement and kernel builds run their defaults in
 `get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet (alias
@@ -30,7 +35,7 @@ kernels, and the agent then writes and tunes them one at a time.
 `request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
 `nestforge-llvm` and `nestforge-mlir` are the baselines that choose compiler passes instead of moves: the same program,
 entry and library, every kernel built through the agent's `opt -passes=` or `polygeist-opt --pass-pipeline=` pipeline.
-The skill page ([skills/nestforge](plugin/nestforge/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
+The skill page ([skills/nestforge](plugin/tactics/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 
 | Phase | Tools | Packets |
@@ -67,7 +72,7 @@ python examples/quickstart.py --device gpu --kernel jacobi_1d --out quickstart_j
 It runs every default on an HPCAgent-Bench kernel at preset S and saves each stage's SDFG and tree, the kernel DAG, each
 kernel's unit and library, the program's code, the winning variant and the feedback. On `fuse_diamond`, canonicalization
 turns four sequential loops into one parallel map. A benchmark's reference solution is replayed with `python -m
-nestforge.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
+tactics.replay reference_solutions/<kernel>.py` ([reference solutions](reference_solutions/README.md)).
 
 ## The program as a tree
 
@@ -118,24 +123,35 @@ SDFG 'blur_steps'
 Rows carry what they read and write (a state leaves out its own temporaries), and `doalls=<k>` on a closed state;
 `get_work_depth` gives a row's work and depth on request. `expand` opens a state (its doalls as rows) or a doall
 (its statements and body states); `collapse` closes any open row. Labels stay on their rows until a move consumes them.
-The [skill page](plugin/nestforge/skills/nestforge/SKILL.md) has the full vocabulary and the moves.
+The [skill page](plugin/tactics/skills/nestforge/SKILL.md) has the full vocabulary and the moves.
 
 ## Install and test
+
+From PyPI, then DaCe extended at the commit the bench pins (DaCe extended has no PyPI release; HPCAgent-Bench's setup
+command installs it):
+
+```bash
+pip install tactics
+hpcagent-bench setup                                                    # DaCe extended at the bench's pinned commit
+```
+
+From a checkout of https://github.com/spcl/tactics (every pin exact, DaCe included):
 
 ```bash
 sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
 export "$(bash scripts/setup_hptt.sh "$HOME/hptt" | tail -1)"          # HPTT for tensor transposes; sets HPTT_ROOT
-pip install -e ".[dev]"                                                 # or: uv pip install -e ".[dev]"
+uv sync --extra dev                                                     # or: pip install -e ".[dev]"
 pre-commit install                                                      # ruff check, ruff format, headers
 pytest -m "not integration and not cloudsc and not gpu and not vendor"  # unit set, as CI runs it
 pytest -m integration                                                   # compiles and runs; bench OpenMP env (CI)
 pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-HPCAgent-Bench (`main`) is pinned to a commit SHA in `pyproject.toml`, and DaCe and relayout to the commits that bench
-commit pins (the bench owns them); `python scripts/bump_deps.py [bench-branch]` moves all three. NestForge is a user
-plugin of the bench (`plugin/nestforge`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it.
-NestForge assumes Linux.
+In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) to a commit, and DaCe and
+dace-relayout to the commits that bench commit pins (the bench owns them); `python scripts/bump_deps.py [bench-branch]`
+moves them. Tactics is a user plugin of the bench (`plugin/tactics`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the
+bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
+assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch
 reference and its outputs go unchecked (`correct: null`). Point `HPCAGENT_BENCH_ML_KERNELBENCH_DIR` at an
 initialized KernelBench checkout to check them.
@@ -145,7 +161,7 @@ kernels have one) only to HPTT, and without it the build stops with `SilentPureL
 ## Layout
 
 ```text
-nestforge/
+tactics/
   session.py   the one API over all stages
   replay.py    replay a benchmark's reference-solution script next to the default, timed and oracle-checked
   records.py   the typed answers and their status enums
@@ -153,8 +169,8 @@ nestforge/
   ir/          extraction, the Python oracle, the kernel DAG, structure trees
   build/       compile and link, compilers on PATH, FP flags, validate-and-time, fork isolation
   corpus/      HPCAgent-Bench kernels and the oracle bridge
-plugin/nestforge/  the HPCAgent-Bench plugin: tools, judge route, method prompt
-reference_solutions/  one reference-solution script per benchmark, replayed by nestforge/replay.py
+plugin/tactics/  the HPCAgent-Bench plugin: tools, judge route, method prompt
+reference_solutions/  one reference-solution script per benchmark, replayed by tactics/replay.py
 ```
 
 More: [the structure tree, NestForge's IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md),

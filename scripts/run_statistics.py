@@ -20,7 +20,7 @@ from hpcagent_bench.stats import plugin_records
 PLUGIN = "nestforge"
 #: The record versions this script reads; version 2 changed what labels a journal names, not the shape.
 SCHEMAS = frozenset({1, 2})
-#: Every refusal class (``nestforge.records.Refusal``), spelled as the record stores it.
+#: Every refusal class (``tactics.records.Refusal``), spelled as the record stores it.
 REFUSALS = (
     "unknown-label",
     "wrong-row-kind",

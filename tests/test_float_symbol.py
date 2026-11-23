@@ -11,8 +11,8 @@ import dace
 import numpy as np
 from helpers import build_sdfg
 
-from nestforge.build.toolchain import bind_argument, symbol_argument
-from nestforge.server import symbol_inputs
+from tactics.build.toolchain import bind_argument, symbol_argument
+from tactics.server import symbol_inputs
 
 #: A threshold below one: an integer cast would make it zero.
 THRESHOLD = 0.5

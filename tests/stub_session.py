@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 from hpcagent_bench.harness.routes import ROUTES
 
-from nestforge.server import MEASURING, Reply, Setup
-from nestforge.session import Sweep
+from tactics.server import MEASURING, Reply, Setup
+from tactics.session import Sweep
 
 #: Each tool's predefined answer, shaped as the session's own.
 REPLIES: dict[str, Reply] = {
@@ -55,7 +55,7 @@ class Stub:
 
 
 class StubSession:
-    """A :class:`~nestforge.server.SessionProcess` answering from its :class:`Stub`."""
+    """A :class:`~tactics.server.SessionProcess` answering from its :class:`Stub`."""
 
     __slots__ = ("alive", "stub")
 

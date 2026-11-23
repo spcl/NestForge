@@ -13,8 +13,8 @@ import pytest
 from dace.libraries.standard.nodes.external_call import ExternalCall, params_and_args
 from helpers import BenchKernel, bench_kernel, emit_sources, extract_nest_to_sdfg, signature_order
 
-from nestforge.ir.extract import Boundary
-from nestforge.stages.scopes import parallel_top_level_maps
+from tactics.ir.extract import Boundary
+from tactics.stages.scopes import parallel_top_level_maps
 
 N = dace.symbol("N")
 
@@ -49,7 +49,7 @@ def test_emitted_signature_disagrees_with_manifest_role_order(tmp_path: Path) ->
 
 def test_a_prototype_above_the_definition_does_not_widen_the_capture() -> None:
     """A non-greedy match backtracks across a preceding prototype and captures a garbage parameter list."""
-    from nestforge.build.toolchain import raw_signature
+    from tactics.build.toolchain import raw_signature
 
     declared_then_defined = (
         "void s000_fp64(double *restrict a, const double *restrict b, int64_t LEN_1D);\n"

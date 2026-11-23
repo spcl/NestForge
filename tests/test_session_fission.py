@@ -8,8 +8,8 @@ from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N")
 f64 = dace.float64

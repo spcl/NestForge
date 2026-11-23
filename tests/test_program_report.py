@@ -4,7 +4,7 @@
 
 import numpy as np
 
-from nestforge.stages.performance import NO_REFERENCE, NUMPY_REFERENCE, ProgramTime, Reference, timed_report
+from tactics.stages.performance import NO_REFERENCE, NUMPY_REFERENCE, ProgramTime, Reference, timed_report
 
 REFERENCE = Reference({"out": np.zeros(1)}, 1e-8, 1e-8, NUMPY_REFERENCE)
 

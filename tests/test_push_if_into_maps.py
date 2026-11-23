@@ -12,7 +12,7 @@ from dace.properties import CodeBlock
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, LoopRegion
 
-from nestforge.stages.sinking import push_if_into_maps
+from tactics.stages.sinking import push_if_into_maps
 
 N = dace.symbol("N")
 K = dace.symbol("K")

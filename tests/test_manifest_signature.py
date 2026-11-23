@@ -12,9 +12,9 @@ import dace
 import numpy as np
 from helpers import bench_manifest
 
-from nestforge.corpus.translate import prepare
-from nestforge.ir.emit_python import scratch_arrays
-from nestforge.ir.extract import Boundary, detach
+from tactics.corpus.translate import prepare
+from tactics.ir.emit_python import scratch_arrays
+from tactics.ir.extract import Boundary, detach
 
 N = dace.symbol("N")
 

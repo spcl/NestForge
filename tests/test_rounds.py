@@ -12,9 +12,9 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.records import MoveStatus
-from nestforge.server import CALLS, Setup, answer, start
-from nestforge.session import KernelOutcome, MoveResult, Session, Stage
+from tactics.records import MoveStatus
+from tactics.server import CALLS, Setup, answer, start
+from tactics.session import KernelOutcome, MoveResult, Session, Stage
 
 N = dace.symbol("N", dtype=dace.int64)
 

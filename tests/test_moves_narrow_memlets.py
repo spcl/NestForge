@@ -6,9 +6,9 @@ whole array (#24): fusions and DaCe's schedule inference read them."""
 import dace
 import numpy as np
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 N = dace.symbol("N")
 #: Rows and columns of the test arrays.

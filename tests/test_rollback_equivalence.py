@@ -31,10 +31,10 @@ import test_unroll_config_moves
 import test_vectorize_doall_and_c_view as vectorize_fixtures
 from dace.frontend.python.parser import DaceProgram
 
-from nestforge.records import MoveStatus
-from nestforge.session import UNDONE_BY, Move, MoveResult, Session
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, config_names
-from nestforge.stages.vectorize import VECTORIZE_DOALL
+from tactics.records import MoveStatus
+from tactics.session import UNDONE_BY, Move, MoveResult, Session
+from tactics.stages.moves import MOVE_SHAPES, ROLLBACK, config_names
+from tactics.stages.vectorize import VECTORIZE_DOALL
 
 #: Kinds the fixture programs cannot apply as listed (they need values, a scope or a device); each has its own case
 #: below, so every kind is applied and rolled back somewhere in this file.

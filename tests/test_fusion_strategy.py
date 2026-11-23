@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Stage 2 deterministic default (:mod:`nestforge.stages.canonicalize`): ``fuse_and_finish`` on a ``canonicalize``d SDFG
+"""Stage 2 deterministic default (:mod:`tactics.stages.canonicalize`): ``fuse_and_finish`` on a ``canonicalize``d SDFG
 reaches the same fixed point as draining the listed fusion moves -- so the deterministic default and the
 agent's move-by-move policy agree.
 """
@@ -11,7 +11,7 @@ from dace import SDFG
 from dace.sdfg import nodes
 from helpers import fission_to_fixpoint, fusion_moves
 
-from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+from tactics.stages.canonicalize import Targets, canonicalize, fuse_and_finish
 
 N = dace.symbol("N")
 

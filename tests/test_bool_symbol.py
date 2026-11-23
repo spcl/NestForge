@@ -10,8 +10,8 @@ import dace
 import numpy as np
 from helpers import build_sdfg
 
-from nestforge.build.toolchain import symbol_argument
-from nestforge.server import symbol_inputs
+from tactics.build.toolchain import symbol_argument
+from tactics.server import symbol_inputs
 
 #: Elements of the test vector.
 N = 4

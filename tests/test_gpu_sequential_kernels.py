@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from helpers import dace_gpu_backend
 
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.corpus.bench import corpus_kernel, preset_sizes
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 pytestmark = pytest.mark.integration
 

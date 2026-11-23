@@ -10,8 +10,8 @@ from collections.abc import Callable
 
 from dace.sdfg import nodes
 
-from nestforge.replay import Context, Script, row_containers
-from nestforge.session import Move, Session
+from tactics.replay import Context, Script, row_containers
+from tactics.session import Move, Session
 
 KERNEL = "harris_corner"
 CONFIGS = (Context("gpu", 1, "M"),)

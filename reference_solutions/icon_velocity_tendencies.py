@@ -18,8 +18,8 @@ from pathlib import Path
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg.state import ControlFlowBlock
 
-from nestforge.ir.names import in_order
-from nestforge.replay import Context, ReplayError, Script
+from tactics.ir.names import in_order
+from tactics.replay import Context, ReplayError, Script
 
 KERNEL = "icon_velocity_tendencies"
 CONFIGS = (Context("cpu", 72, "M"),)

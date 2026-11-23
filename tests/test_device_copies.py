@@ -8,7 +8,7 @@ import dace
 import pytest
 from dace.libraries.standard.nodes.copy import CopyLibraryNode
 
-from nestforge.stages.placement import device_copies
+from tactics.stages.placement import device_copies
 
 N = dace.symbol("N", dtype=dace.int64)
 

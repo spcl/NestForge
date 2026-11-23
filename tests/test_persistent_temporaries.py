@@ -9,9 +9,9 @@ import os
 import dace
 import numpy as np
 
-from nestforge.build.sdfg import make_persistent
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.build.sdfg import make_persistent
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 4096

@@ -16,7 +16,7 @@ from hpcagent_bench.harness.scoring import Score
 from hpcagent_bench.harness.task import Task
 from pydantic import JsonValue
 
-from nestforge.paths import REPO_ROOT
+from tactics.paths import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "scripts" / "run_statistics.py"
 KERNEL = "tsvc_2_s212"  # any real, fast-loading kernel

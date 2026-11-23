@@ -14,13 +14,13 @@ from dace.sdfg import nodes
 from dace.sdfg.graph import SubgraphView
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge import session as session_module
-from nestforge.build import flags
-from nestforge.records import KernelStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.finalize import BenchTarget
-from nestforge.stages.scopes import kernel_arguments, node_boundary
+from tactics import session as session_module
+from tactics.build import flags
+from tactics.records import KernelStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.finalize import BenchTarget
+from tactics.stages.scopes import kernel_arguments, node_boundary
 
 N = dace.symbol("N", dtype=dace.int64)
 

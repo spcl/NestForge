@@ -19,7 +19,7 @@ from typing import Never
 import numpy as np
 import pytest
 
-from nestforge.build.isolation import (
+from tactics.build.isolation import (
     ERROR_CHARS,
     OMP_RUNTIME_SONAMES,
     Failure,
@@ -28,7 +28,7 @@ from nestforge.build.isolation import (
     pause_openmp_pools,
     run_isolated,
 )
-from nestforge.build.toolchain import lib_linkable, library_flags
+from tactics.build.toolchain import lib_linkable, library_flags
 
 OMP_SRC = """#include <omp.h>
 void kern(double *a, int n) {

@@ -14,7 +14,7 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg, run_emitted, sdfg_to_python
 
-from nestforge.ir.names import top_level_map_entries
+from tactics.ir.names import top_level_map_entries
 
 
 def top_level_nest(sdfg: dace.SDFG) -> tuple[dace.SDFG, LoopRegion | dace.nodes.MapEntry]:

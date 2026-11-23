@@ -6,7 +6,7 @@ reduction) leaves no vendor call in the loop, then the default: 486-502 ms to 15
 Expanding only the product does not build (``KeyError: '_out_gemv'``). On the GPU the default does not build at all,
 so the GPU is not a configuration yet."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "pagerank"
 CONFIGS = (Context("cpu", 72, "M"),)

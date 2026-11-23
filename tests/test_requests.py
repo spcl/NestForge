@@ -7,9 +7,9 @@ from pathlib import Path
 
 import dace
 
-from nestforge.records import Refusal
-from nestforge.session import Session
-from nestforge.stages.requests import MIN_EXAMPLES, Example
+from tactics.records import Refusal
+from tactics.session import Session
+from tactics.stages.requests import MIN_EXAMPLES, Example
 
 N = dace.symbol("N", dtype=dace.int64)
 

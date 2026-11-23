@@ -13,9 +13,9 @@ from dace import SDFG
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import fission_to_fixpoint
 
-from nestforge.ir.extract import Boundary
-from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
-from nestforge.stages.scopes import lower_nests_to_external_call
+from tactics.ir.extract import Boundary
+from tactics.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+from tactics.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
 

@@ -5,15 +5,15 @@
 import subprocess
 import sys
 
-from nestforge.paths import REPO_ROOT
+from tactics.paths import REPO_ROOT
 
 
 def test_importing_nestforge_never_loads_hpcagent_bench() -> None:
     """HPCAgent-Bench drives NestForge, so a top-level import the other way would close an import cycle."""
     script = (
         "import importlib, pkgutil, sys\n"
-        "import nestforge\n"
-        "for info in pkgutil.walk_packages(nestforge.__path__, nestforge.__name__ + '.'):\n"
+        "import tactics\n"
+        "for info in pkgutil.walk_packages(tactics.__path__, tactics.__name__ + '.'):\n"
         "    importlib.import_module(info.name)\n"
         "leaked = sorted(m for m in sys.modules if m.startswith(('hpcagent_bench', 'numpyto')))\n"
         "sys.stdout.write(','.join(leaked))\n"

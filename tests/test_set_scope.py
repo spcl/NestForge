@@ -19,10 +19,10 @@ from test_fusion_fuzz import load_program
 from test_placement import chain
 from test_rollback_equivalence import content_of
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.scopes import kernel_arguments, parallel_top_level_maps
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 9

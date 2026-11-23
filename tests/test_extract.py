@@ -6,8 +6,8 @@ from dace.sdfg.state import LoopRegion
 from dace.symbolic_facts import Predicate
 from helpers import extract_nest_to_sdfg
 
-from nestforge.ir.extract import Boundary, blocks_defined_symbol_dtypes, extract_blocks, nest_defined_symbol_dtypes
-from nestforge.stages.scopes import lower_nests_to_external_call, parallel_top_level_maps
+from tactics.ir.extract import Boundary, blocks_defined_symbol_dtypes, extract_blocks, nest_defined_symbol_dtypes
+from tactics.stages.scopes import lower_nests_to_external_call, parallel_top_level_maps
 
 N = dace.symbol("N")
 

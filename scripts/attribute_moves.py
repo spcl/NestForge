@@ -19,12 +19,12 @@ import pathlib
 from collections import defaultdict
 from typing import Any
 
-from nestforge.plugin_record import REISSUING_SCHEMAS, SCHEMA
-from nestforge.server import FEEDBACK_CODEGEN, Setup, answer, applied, start
-from nestforge.session import Session
-from nestforge.stages.families import family_of
-from nestforge.stages.moves import journaled_arguments
-from nestforge.stages.performance import Reference
+from tactics.plugin_record import REISSUING_SCHEMAS, SCHEMA
+from tactics.server import FEEDBACK_CODEGEN, Setup, answer, applied, start
+from tactics.session import Session
+from tactics.stages.families import family_of
+from tactics.stages.moves import journaled_arguments
+from tactics.stages.performance import Reference
 
 #: What the calls from the first ``write_kernel`` on are summed as.
 KERNEL_CODE = "kernel code"

@@ -10,11 +10,11 @@ import dace
 import numpy as np
 import pytest
 
-from nestforge import session as session_module
-from nestforge.records import KernelStatus
-from nestforge.server import answer, applied
-from nestforge.session import REPEATED, Session
-from nestforge.stages.kernel import failed_verdict
+from tactics import session as session_module
+from tactics.records import KernelStatus
+from tactics.server import answer, applied
+from tactics.session import REPEATED, Session
+from tactics.stages.kernel import failed_verdict
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64

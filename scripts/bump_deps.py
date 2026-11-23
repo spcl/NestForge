@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pin HPCAgent-Bench (and its agent package) in pyproject.toml to the tip of a bench branch (:data:`BENCH_BRANCH`
-unless one is named), and DaCe and relayout to the commits that bench commit pins: the bench owns both pins.
+"""Pin HPCAgent-Bench (and its agent package) in pyproject.toml's ``[tool.uv.sources]`` to the tip of a bench branch
+(:data:`BENCH_BRANCH` unless one is named), and DaCe and dace-relayout to the commits that bench commit pins: the
+bench owns both pins.
 
-The bench pins DaCe and relayout only in ``[tool.uv.sources]``, which neither pip nor a uv install of another project
-reads (PyPI's ``relayout`` is an unrelated project), so each is written twice: as the dependency and as the
-``[tool.uv]`` override. Then reinstall and test:
+``[project].dependencies`` name plain PyPI packages (PyPI refuses a direct URL), so the exact commits live only in
+``[tool.uv.sources]``, which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. Then reinstall and test:
 ``python scripts/bump_deps.py && uv pip install -e ".[dev]" && pytest``.
 """
 
@@ -17,17 +17,16 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-# not nestforge.paths: importing nestforge loads DaCe, which a fresh checkout has not installed yet
+# not tactics.paths: importing tactics loads DaCe, which a fresh checkout has not installed yet
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
-DACE = "https://github.com/spcl/dace.git"
 BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
-RELAYOUT = "https://github.com/ThrudPrimrose/relayout.git"
 #: The bench's pyproject.toml at one commit.
 BENCH_PYPROJECT = "https://raw.githubusercontent.com/spcl/HPCAgent-Bench/{sha}/pyproject.toml"
 #: The bench branch NestForge tracks.
 BENCH_BRANCH = "main"
-#: Where each package's pin is written: the dependency, and for DaCe and relayout also the uv override.
-PIN_COUNT = {"hpcagent_bench": 1, "hpcagent-agent": 1, "dace": 2, "relayout": 2}
+#: The bench's ``[tool.uv.sources]`` key of relayout once it pins the PyPI-renamed package. A bench that still keys it
+#: ``relayout`` pins a commit whose project is not yet called dace-relayout, so ours stays at its release commit.
+RELAYOUT_KEY = "dace-relayout"
 
 
 def tip(repo: str, branch: str) -> str:
@@ -45,20 +44,17 @@ def bench_sources(bench: str) -> dict[str, str]:
 def main(bench_branch: str) -> None:
     bench = tip(BENCH, bench_branch)
     sources = bench_sources(bench)
-    pins = {
-        "hpcagent_bench": (BENCH, bench),
-        "hpcagent-agent": (BENCH, bench),
-        "dace": (DACE, sources["dace"]),
-        "relayout": (RELAYOUT, sources["relayout"]),
-    }
+    pins = {"hpcagent-bench": bench, "hpcagent-agent": bench, "dace": sources["dace"]}
+    if RELAYOUT_KEY in sources:
+        pins[RELAYOUT_KEY] = sources[RELAYOUT_KEY]
+    else:
+        print(f"{RELAYOUT_KEY}: kept (the bench at {bench} does not pin it yet)")
     text = PYPROJECT.read_text()
-    for package, (repo, sha) in pins.items():
-        pattern = rf'"{package} @ git\+{re.escape(repo)}@[0-9a-f]{{40}}(#[^"]*)?"'
-        text, count = re.subn(pattern, lambda m: f'"{package} @ git+{repo}@{sha}{m.group(1) or ""}"', text)
-        if count != PIN_COUNT[package]:
-            raise SystemExit(
-                f"expected {PIN_COUNT[package]} pinned {package} requirement(s) in {PYPROJECT}, found {count}"
-            )
+    for package, sha in pins.items():
+        pattern = rf'^({re.escape(package)} = {{ git = "[^"]+", rev = ")[0-9a-f]{{40}}(")'
+        text, count = re.subn(pattern, rf"\g<1>{sha}\g<2>", text, flags=re.MULTILINE)
+        if count != 1:
+            raise SystemExit(f"expected one {package} source in [tool.uv.sources] of {PYPROJECT}, found {count}")
         print(f"{package}: {sha}")
     PYPROJECT.write_text(text)
 

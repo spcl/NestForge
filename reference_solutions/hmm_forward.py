@@ -6,7 +6,7 @@ reduction, the sum into a doall reduction) leaves no vendor call in the loop, th
 183-187 ms at preset M on 72 threads. The same route as ``pagerank``, on a different program. On the GPU the default
 does not build, so the GPU is not a configuration yet."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "hmm_forward"
 CONFIGS = (Context("cpu", 72, "M"),)

@@ -12,11 +12,11 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from helpers import dace_gpu_backend
 from hpcagent_bench import languages
 
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.session import Session
-from nestforge.stages import kernel as kernel_stage
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.finalize import BenchTarget, Final, assemble
+from tactics.corpus.bench import corpus_kernel, preset_sizes
+from tactics.session import Session
+from tactics.stages import kernel as kernel_stage
+from tactics.stages.canonicalize import Targets
+from tactics.stages.finalize import BenchTarget, Final, assemble
 
 KERNEL = "jacobi_1d"
 #: Where the device runtime is said to live; nothing is linked, so no such directory is needed.

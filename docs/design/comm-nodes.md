@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
-Status: motion rules built (2026-11-19, `nestforge/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
+Status: motion rules built (2026-11-19, `tactics/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
 the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused; the rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
@@ -49,7 +49,7 @@ are wrong or incomplete for communication.
 
 ### 1. Classes of communication rows
 
-A new module `nestforge/ir/comm.py` classifies a node. Every rule below reads the class, never the node type.
+A new module `tactics/ir/comm.py` classifies a node. Every rule below reads the class, never the node type.
 
 | Class | Nodes | Meaning |
 |---|---|---|
@@ -232,7 +232,7 @@ nonblocking operation (`validate_nonblocking`).
   each array dimension, and a permutation would have to permute the bench's `distribute` request as well
   ([bench request B5](bench-requests.md)). The distributed arguments are those the kernel's manifest splits
   (`mpi.split` and `mpi.decomposition`). The plugin reads them from the bench's spec into a new field
-  `Setup.distributed_arguments` (`nestforge/server.py`).
+  `Setup.distributed_arguments` (`tactics/server.py`).
 
 ### 7. The session: ranks, timing, and the reference
 
@@ -433,7 +433,7 @@ agent calls the move and the splits.
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
 | 13 | dropped (user 2026-11-22): `lib-after` on the wait does it, after 11 | | |
 | 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
-| 15 | Time inside communication (12.4): `ranks` on NestForge's `profile` | `plugin/nestforge/tools/nestforge.py`, `plugin/nestforge/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
+| 15 | Time inside communication (12.4): `ranks` on NestForge's `profile` | `plugin/tactics/tools/nestforge.py`, `plugin/tactics/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
 | 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 11, 12, 14 |
 | 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
 | 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |
@@ -456,7 +456,7 @@ Each package is one pull request with its tests. The order is the dependency ord
 | # | Package | Files | Depends on |
 |---|---|---|---|
 | 1 | Fixtures and the canonicalization test: a `jacobi_2d` halo (`Isend`, `Irecv`, `Waitall`), a residual `Allreduce` in the time loop, a ring of `Send` and `Recv` | `tests/comm_programs.py`, `tests/test_comm_canonical.py` | none |
-| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `nestforge/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_classes.py` | 1 |
+| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `tactics/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_classes.py` | 1 |
 | 3 | Tree rows and fields | `ir/introspect.py`, `docs/ir.md`, `tests/test_comm_tree.py` | 2 |
 | 4 | The four invariants after every kept change | `session.py`, `ir/comm.py`, `tests/test_comm_invariants.py` | 2 |
 | 5 | Motion rules R1 to R5, and `lib-into` refused | `stages/lib_motion.py`, `tests/test_comm_motion.py` | 2 |
@@ -464,7 +464,7 @@ Each package is one pull request with its tests. The order is the dependency ord
 | 7 | Layout rule | `stages/layout.py`, `server.py`, `tests/test_comm_layout.py` | 2 |
 | 8 | Session: communicator check, timing at rank counts, reports | `session.py`, `stages/performance.py`, `tests/test_comm_performance.py` | bench B2 |
 | 9 | Finalize in the distributed ABI | `stages/finalize.py`, `tests/test_comm_finalize.py` | bench B1 |
-| 10 | Plugin: prompt paragraph, skill section, tool argument `ranks`, reference solutions for the two stencils | `plugin/nestforge/`, `reference_solutions/` | 8, 9, bench B3, B4 |
+| 10 | Plugin: prompt paragraph, skill section, tool argument `ranks`, reference solutions for the two stencils | `plugin/tactics/`, `reference_solutions/` | 8, 9, bench B3, B4 |
 
 Packages 1 to 7 need nothing from the bench and can start now. Package 1 comes first: if canonicalization changes the
 skeleton, the DaCe fix is on the critical path of everything else.

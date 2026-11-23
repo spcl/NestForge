@@ -19,11 +19,11 @@ from comm_rank_programs import FIXTURES, LENGTH, ROWS
 from dace.libraries.comm.nodes.node import CommNode
 from dace.sdfg import nodes
 
-from nestforge.ir.comm import CommClass, comm_class
-from nestforge.records import MoveStatus
-from nestforge.session import Move, Session
-from nestforge.stages.lib_motion import LIB_AFTER, LIB_BEFORE, SPLIT_BLOCKING
-from nestforge.stages.moves import SPLIT_DOALL
+from tactics.ir.comm import CommClass, comm_class
+from tactics.records import MoveStatus
+from tactics.session import Move, Session
+from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, SPLIT_BLOCKING
+from tactics.stages.moves import SPLIT_DOALL
 
 pytestmark = [pytest.mark.mpi, pytest.mark.integration]
 

@@ -6,10 +6,10 @@ than point-wise, so MapFusionVertical fuses in place, and the fused program stil
 import dace
 import numpy as np
 
-from nestforge.ir.names import top_level_map_entries
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.ir.names import top_level_map_entries
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 N = dace.symbol("N")
 #: Rows and columns of the test arrays.

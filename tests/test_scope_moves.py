@@ -12,10 +12,10 @@ import pytest
 from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.sdfg.nodes import MapEntry
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import has_device_memory
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.placement import has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
 

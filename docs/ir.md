@@ -9,8 +9,8 @@ move answers without the tree; the agent reprints only the rows it reads next. T
 stands for, what each field means, how bodies print in Python or C, and which calls change the program and which only
 change the view.
 
-Code: `nestforge/ir/introspect.py` renders the tree (`describe_graph`), `nestforge/ir/names.py` hands out the labels
-(`Namer`), `nestforge/ir/emit_python.py` and `nestforge/ir/emit_c.py` print the bodies, `Session.describe` and
+Code: `tactics/ir/introspect.py` renders the tree (`describe_graph`), `tactics/ir/names.py` hands out the labels
+(`Namer`), `tactics/ir/emit_python.py` and `tactics/ir/emit_c.py` print the bodies, `Session.describe` and
 `Session.view` are the entry points, and `view_tree` is the agent's tool.
 
 ## An example

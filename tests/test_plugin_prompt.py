@@ -11,10 +11,10 @@ from hpcagent_bench.categories import Language, SourceMode
 from hpcagent_bench.harness.prompts import build_prompt
 from hpcagent_bench.harness.task import Task
 
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.phases import checked_phases
+from tactics.paths import REPO_ROOT
+from tactics.stages.phases import checked_phases
 
-PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+PLUGIN = REPO_ROOT / "plugin" / "tactics"
 ABOUT = (PLUGIN / "prompt" / "about.md").read_text(encoding="utf-8")
 TASK = Task("jacobi_1d", SourceMode.ANY, Language.CPP)
 

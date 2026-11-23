@@ -10,8 +10,8 @@ import dace
 import numpy as np
 from helpers import build_sdfg
 
-from nestforge.server import closure_inputs
-from nestforge.stages.performance import program_buffers
+from tactics.server import closure_inputs
+from tactics.stages.performance import program_buffers
 
 #: Rows and columns of the result; the closure is ``np.arange(3)``.
 N = 3

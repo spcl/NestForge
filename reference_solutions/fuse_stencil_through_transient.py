@@ -3,7 +3,7 @@
 """Stencil through a transient: the default's fusions, then the one ``doall-fusion`` it leaves (the stencil into the
 map that writes its transient), then the stages after fusion."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "fuse_stencil_through_transient"
 CONFIGS = (Context("cpu", 72, "M"),)

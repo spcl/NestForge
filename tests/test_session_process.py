@@ -23,10 +23,10 @@ from hpcagent_agent import plugins as agent_plugins
 from hpcagent_bench import plugins
 from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 
-from nestforge import server
-from nestforge.paths import REPO_ROOT
-from nestforge.server import STOP_SIGNAL, Reply, SessionProcess, Setup
-from nestforge.session import Stopped, Stopper
+from tactics import server
+from tactics.paths import REPO_ROOT
+from tactics.server import STOP_SIGNAL, Reply, SessionProcess, Setup
+from tactics.session import Stopped, Stopper
 
 SETUP = Setup(kernel="none", preset="S", datatype="float64", gpu=False)
 #: Seconds a test waits for what should happen at once.
@@ -136,7 +136,7 @@ class Early:
 early = Early()
 weakref.finalize(early, print)
 
-from nestforge.server import SessionProcess
+from tactics.server import SessionProcess
 from test_session_process import SETUP, ready_then_hang
 
 if __name__ == "__main__":
@@ -340,7 +340,7 @@ def test_the_session_starts_in_the_llvm_openmp_context_and_the_caller_keeps_its_
     lib = tmp_path / "llvm" / "lib"
     lib.mkdir(parents=True)
     monkeypatch.setenv("HPCAGENT_BENCH_RUNTIME_OMP_CONTEXT_ROOT", str(tmp_path))
-    monkeypatch.setattr(plugins, "register", lambda: agent_plugins.find([REPO_ROOT / "plugin" / "nestforge"]))
+    monkeypatch.setattr(plugins, "register", lambda: agent_plugins.find([REPO_ROOT / "plugin" / "tactics"]))
     before = os.environ.get("LD_LIBRARY_PATH")
     session = SessionProcess(SETUP, target=ready_then_report_library_path)
 

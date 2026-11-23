@@ -14,11 +14,11 @@ from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 from helpers import program_mismatch
 
-from nestforge.ir.names import in_order
-from nestforge.records import KernelStatus, MoveStatus
-from nestforge.session import Move, Session
-from nestforge.stages.moves import MOVE_SHAPES, PROPAGATE_CONFIG, config_names
-from nestforge.stages.performance import Reference
+from tactics.ir.names import in_order
+from tactics.records import KernelStatus, MoveStatus
+from tactics.session import Move, Session
+from tactics.stages.moves import MOVE_SHAPES, PROPAGATE_CONFIG, config_names
+from tactics.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
 

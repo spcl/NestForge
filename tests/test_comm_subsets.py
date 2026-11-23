@@ -9,11 +9,11 @@ from comm_rank_programs import halo_in_place, halo_stencil
 from dace.libraries.comm.nodes import Waitall
 from dace.sdfg import nodes
 
-from nestforge.ir.comm import CommClass, comm_class
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.lib_motion import accessed, plan_lib_motion
-from nestforge.stages.moves import SPLIT_DOALL
+from tactics.ir.comm import CommClass, comm_class
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.lib_motion import accessed, plan_lib_motion
+from tactics.stages.moves import SPLIT_DOALL
 
 
 def canonical_halo() -> tuple[dace.SDFG, tuple[nodes.Node, dace.SDFGState]]:

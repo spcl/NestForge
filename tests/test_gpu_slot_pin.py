@@ -7,7 +7,7 @@ import pytest
 from hpcagent_bench.harness.judge_scheduler import DeviceSlot
 from test_session_process import report_pin
 
-from nestforge.server import SessionProcess, Setup
+from tactics.server import SessionProcess, Setup
 
 SETUP = Setup(kernel="none", preset="S", datatype="float64", gpu=True)
 

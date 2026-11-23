@@ -9,10 +9,10 @@ from pathlib import Path
 import dace
 from dace.sdfg.state import LoopRegion
 
-from nestforge.records import MoveStatus, Refused
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.moves import SET_PIPELINE_DEPTH, plan_move
+from tactics.records import MoveStatus, Refused
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.moves import SET_PIPELINE_DEPTH, plan_move
 
 M, N = dace.symbol("M"), dace.symbol("N")
 TILE = 4

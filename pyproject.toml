@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nest-forge"
-version = "0.0.1"
-description = "Agentic optimization harness for DaCe programs: seven stages, each with a deterministic default."
+name = "tactics"
+version = "0.1.0"
+description = "Reproducible transformation-based agents and a harness for DaCe: tactics applied as legal moves, replayed as recipes."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -27,20 +27,21 @@ dependencies = [
     "sympy",
     # DaCe's einsum of three or more operands imports it, but DaCe lists it only under its testing extras.
     "opt-einsum>=3.0",
-    # The tip of HPCAgent-Bench main, and the DaCe and relayout commits it pins (the bench owns them);
-    # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
-    # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
-    "dace @ git+https://github.com/spcl/dace.git@9f42f2d3dd0d9cf2ffca0d1176ad88809c7ff466",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@e1fdef7d70ae50a3a370d8eebc9121271f1a9126",
-    # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@e1fdef7d70ae50a3a370d8eebc9121271f1a9126#subdirectory=agent",
-    "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@bae86a7ada1ad0342bdfb5429ec99ea1cb5070aa",
-    # relayout's SDFG cast (the relayout move's cast), its `fparena` extra, at the commit relayout pins.
-    "fp-arena @ git+https://github.com/spcl/FP-Arena.git@08465359af8666927ab6b53bcfdce1865a6c34e1",
+    # DaCe extended has no PyPI release: `hpcagent-bench setup` installs spcl/dace@extended at the bench's pinned commit
+    # over this plain requirement, and a checkout (`uv sync`, `uv pip install -e .`) takes the pin in [tool.uv.sources].
+    "dace",
+    "hpcagent-bench>=1.0.0",
+    # The bench plugin (plugin/tactics) runs on the agent side too.
+    "hpcagent-agent>=1.0.0",
+    "dace-relayout>=0.1.0",
 ]
 
 [project.optional-dependencies]
+# The relayout move's SDFG cast: relayout's `fparena` extra. FP-Arena is not on PyPI, so this extra installs from a
+# checkout only (its commit is in [tool.uv.sources]).
+fparena = ["dace-relayout[fparena]>=0.1.0"]
 dev = [
+    "tactics[fparena]",
     "pre-commit",
     "mypy",
     "types-PyYAML",
@@ -57,17 +58,26 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/spcl/NestForge"
-Repository = "https://github.com/spcl/NestForge"
+Homepage = "https://github.com/spcl/tactics"
+Repository = "https://github.com/spcl/tactics"
+Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
+
+[tool.uv.sources]
+# The tip of HPCAgent-Bench main, and the DaCe and relayout commits that bench commit pins (the bench owns them):
+# `python scripts/bump_deps.py` moves all of them. A PyPI install reads none of this.
+dace = { git = "https://github.com/spcl/dace.git", rev = "69626c5b0ae9bc9ae0a5c3c8a5c2d7bd85b3682a" }
+hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa" }
+hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench.git", rev = "62e5d91e17de28371342279b78d71321adc49faa", subdirectory = "agent" }
+dace-relayout = { git = "https://github.com/ThrudPrimrose/dace-relayout.git", rev = "bec607d55076fbab455b498649030c1f4cc8caa2" }
+fp-arena = { git = "https://github.com/spcl/FP-Arena.git", rev = "08465359af8666927ab6b53bcfdce1865a6c34e1" }
 
 [tool.uv]
-override-dependencies = [
-    "dace @ git+https://github.com/spcl/dace.git@9f42f2d3dd0d9cf2ffca0d1176ad88809c7ff466",
-    "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@bae86a7ada1ad0342bdfb5429ec99ea1cb5070aa",
-]
+# shortcut: the pinned bench still requires `relayout` (PyPI's is another project), while dace-relayout installs the
+# same module; drop the bench's requirement until the bench pins dace-relayout, then delete this override.
+override-dependencies = ["relayout ; sys_platform == 'never'"]
 
 [tool.setuptools.packages.find]
-include = ["nestforge*", "reference_solutions"]
+include = ["tactics*", "reference_solutions"]
 
 [tool.ruff]
 line-length = 120
@@ -84,7 +94,7 @@ ignore = ["UP031", "F821", "F841", "F823", "C408", "PYI041", "PYI042", "PYI016",
 exclude = ["*.ipynb"]
 
 [tool.pyright]
-include = ["nestforge", "nestforge_bench", "scripts", "examples", "conftest.py"]
+include = ["tactics", "tactics_bench", "scripts", "examples", "conftest.py"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 
@@ -92,7 +102,7 @@ typeCheckingMode = "basic"
 python_version = "3.12"
 strict = true
 # tests run on their own (`mypy tests`): they hold a second conftest module
-files = ["nestforge", "nestforge_bench", "scripts", "examples", "conftest.py"]
+files = ["tactics", "tactics_bench", "scripts", "examples", "conftest.py"]
 # tests import their shared helpers as top-level modules, as pytest's rootdir insertion does; typings holds the
 # one DaCe stub (typings/dace)
 mypy_path = ["tests", "typings"]
@@ -105,7 +115,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # these subclass a class of an untyped dependency (DaCe's OffloadToAccelerator, the bench's FlavorOptimizer,
 # JudgeAnswer and JudgeHandler); the subclass's own members stay checked
-module = ["nestforge.stages.placement", "nestforge_bench", "answer_tokens", "test_bench_plugin"]
+module = ["tactics.stages.placement", "tactics_bench", "answer_tokens", "test_bench_plugin"]
 disallow_subclassing_any = false
 
 [[tool.mypy.overrides]]
@@ -117,7 +127,7 @@ disable_error_code = ["call-arg"]
 addopts = "-p no:cacheprovider"
 testpaths = ["tests"]
 # a refusal without a class fails the test that met it
-filterwarnings = ["error::nestforge.records.UnclassedRefusal"]
+filterwarnings = ["error::tactics.records.UnclassedRefusal"]
 markers = [
     "integration: compiles and runs kernels; slow, its own CI job",
     "judge: a finalized library graded by an in-process bench judge; its own CI job",

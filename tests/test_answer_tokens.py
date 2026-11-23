@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 from hpcagent_agent.plugins import Plugin
 
-from nestforge.paths import REPO_ROOT
-from nestforge.server import Reply
+from tactics.paths import REPO_ROOT
+from tactics.server import Reply
 
 
 def script() -> ModuleType:

@@ -12,10 +12,10 @@ from dace.sdfg.state import ConditionalBlock
 from helpers import dace_gpu_backend
 from test_kernel_stage import gpu_lowered_kernel, lowered_kernel, vadd
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.kernel import kernel_text, launches, schedule_kernel
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.kernel import kernel_text, launches, schedule_kernel
 
 N = dace.symbol("N", dtype=dace.int64)
 

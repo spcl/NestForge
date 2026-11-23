@@ -16,8 +16,8 @@ import pathlib
 from collections.abc import Iterator
 from urllib.parse import unquote
 
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.requests import Asked, Cluster, Request, cluster_requests
+from tactics.stages.canonicalize import Targets
+from tactics.stages.requests import Asked, Cluster, Request, cluster_requests
 
 #: The prefix of a request file's name, as the plugin route writes it.
 PREFIX = "requests-"

@@ -1,7 +1,7 @@
 name: CI
 
-# uv installs from pyproject.toml (pip works the same: pip install -e ".[dev]"). dace and hpcagent_bench are
-# pinned there; scripts/bump_deps.py moves the pins. Must stay credential-free so CI runs on fork PRs.
+# uv installs from pyproject.toml; [tool.uv.sources] pins dace, hpcagent-bench and dace-relayout to commits (a plain
+# pip install reads none of them); scripts/bump_deps.py moves the pins. Must stay credential-free so CI runs on fork PRs.
 
 on:
   push:
@@ -59,7 +59,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -77,7 +77,7 @@ jobs:
           launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
           eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
-          pytest -m "not integration and not judge and not cloudsc and not gpu and not vendor" -n auto --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+          pytest -m "not integration and not judge and not cloudsc and not gpu and not vendor" -n auto --timeout=900 --durations=15 --cov=tactics --cov-report=term
 
   integration:
     runs-on: ubuntu-latest
@@ -116,7 +116,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -129,7 +129,7 @@ jobs:
           launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
           eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
-          pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+          pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py --timeout=900 --durations=15 --cov=tactics --cov-report=term
 
   # Every reference solution replayed against the bench oracle; its own job, so the replays never share the
   # integration job's time limit.
@@ -170,7 +170,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -182,7 +182,7 @@ jobs:
           launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
           eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
-          pytest tests/test_replay.py -m integration -n auto --timeout=900 --durations=15 --cov=nestforge --cov-report=term
+          pytest tests/test_replay.py -m integration -n auto --timeout=900 --durations=15 --cov=tactics --cov-report=term
 
   # Every phase through the plugin route, then finalize's library graded by an in-process bench judge.
   judge:
@@ -222,7 +222,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -274,7 +274,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -325,7 +325,7 @@ jobs:
           path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
           key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
       - name: Emit the bench corpus
-        run: python -c "from nestforge.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
       - if: steps.emit-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:

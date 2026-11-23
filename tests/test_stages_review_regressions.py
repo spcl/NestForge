@@ -19,12 +19,12 @@ from dace.memlet import Memlet
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages import feedback, performance, snapshot
-from nestforge.stages.kernel import KernelSource
-from nestforge.stages.moves import Rewrite, plan_move
-from nestforge.stages.performance import ProgramCall, run_program
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages import feedback, performance, snapshot
+from tactics.stages.kernel import KernelSource
+from tactics.stages.moves import Rewrite, plan_move
+from tactics.stages.performance import ProgramCall, run_program
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 21

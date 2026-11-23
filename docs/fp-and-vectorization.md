@@ -4,7 +4,7 @@
 [6 Variants](stages.md#stage-6-variants)
 
 By default the compiler vectorizes: stage 5 emits the CPF loops, and stage 6 sweeps compiler, FP mode and the
-compiler's vectorizer cost model over each kernel's CPF unit (`nestforge/build/flags.py` defines both axes). The
+compiler's vectorizer cost model over each kernel's CPF unit (`tactics/build/flags.py` defines both axes). The
 `vectorize-doall` move ([stage 2](stages.md#stage-2-moves)) vectorizes one doall on request instead: DaCe
 rewrites its body into SIMD tiles for one ISA, and the kernel holding it is checked by the whole program, since its
 C++ body has no NumPy oracle.

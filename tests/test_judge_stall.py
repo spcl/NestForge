@@ -19,19 +19,19 @@ from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall, external_calls
 from dace.sdfg import nodes
 
-from nestforge import session as session_module
-from nestforge.build import arena
-from nestforge.build.arena import bounded_oracle, make_inputs, reps_within_budget, run_oracle
-from nestforge.build.isolation import Failure, Result, run_isolated
-from nestforge.build.toolchain import SymbolValue
-from nestforge.corpus.translate import Prepared, prepare
-from nestforge.ir.emit_python import oracle_sdfg
-from nestforge.ir.extract import Boundary
-from nestforge.records import KernelOutcomeStatus, KernelStatus, MoveStatus
-from nestforge.session import Session, Stopped, Stopper
-from nestforge.stages import kernel, variants
-from nestforge.stages.finalize import BenchTarget
-from nestforge.stages.kernel import (
+from tactics import session as session_module
+from tactics.build import arena
+from tactics.build.arena import bounded_oracle, make_inputs, reps_within_budget, run_oracle
+from tactics.build.isolation import Failure, Result, run_isolated
+from tactics.build.toolchain import SymbolValue
+from tactics.corpus.translate import Prepared, prepare
+from tactics.ir.emit_python import oracle_sdfg
+from tactics.ir.extract import Boundary
+from tactics.records import KernelOutcomeStatus, KernelStatus, MoveStatus
+from tactics.session import Session, Stopped, Stopper
+from tactics.stages import kernel, variants
+from tactics.stages.finalize import BenchTarget
+from tactics.stages.kernel import (
     KernelSource,
     Probe,
     Workload,
@@ -41,8 +41,8 @@ from nestforge.stages.kernel import (
     schedule_kernel,
     unchecked_verdict,
 )
-from nestforge.stages.scopes import node_boundary
-from nestforge.stages.variants import Variant, device_variants
+from tactics.stages.scopes import node_boundary
+from tactics.stages.variants import Variant, device_variants
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64
@@ -443,7 +443,7 @@ def test_feedback_builds_each_kernel_once_and_a_move_rebuilds_only_the_kernels_i
         built.append(src.name)
         return real(src, *args)
 
-    monkeypatch.setattr("nestforge.session.build_kernel_library", building)
+    monkeypatch.setattr("tactics.session.build_kernel_library", building)
 
     first = sut.performance(inputs, codegen="first")
     assert first.structured.error == "" and len(built) == 2, (first, built)

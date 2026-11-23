@@ -9,10 +9,10 @@ import dace
 import numpy as np
 from helpers import bench_kernel, c_argtypes, emit_sources, extract_nest_to_sdfg, nest_to_python, signature_order
 
-from nestforge.build.arena import call_native
-from nestforge.ir.emit_python import load_emitted
-from nestforge.ir.extract import Boundary
-from nestforge.stages.scopes import parallel_top_level_maps
+from tactics.build.arena import call_native
+from tactics.ir.emit_python import load_emitted
+from tactics.ir.extract import Boundary
+from tactics.stages.scopes import parallel_top_level_maps
 
 N = dace.symbol("N")
 
@@ -73,8 +73,8 @@ def gather_two_map(A: dace.float64[N], idx: dace.int64[N], C: dace.float64[N]) -
 def test_a_fused_maps_scalar_transient_is_spelled_the_same_inside_and_out() -> None:
     """MapFusion's size-1 intermediate is transient outside the nested SDFG and not inside, which decides its
     spelling; run, not grepped, since what matters is that the value survives."""
-    from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
-    from nestforge.stages.scopes import lower_nests_to_external_call
+    from tactics.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+    from tactics.stages.scopes import lower_nests_to_external_call
 
     sdfg = gather_two_map.to_sdfg(simplify=True)
     fuse_and_finish(canonicalize(sdfg, Targets()), Targets())

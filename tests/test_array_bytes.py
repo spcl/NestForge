@@ -5,8 +5,8 @@ then neither has the total."""
 
 import dace
 
-from nestforge.stages.performance import array_bytes, offload_report
-from nestforge.stages.placement import Transfer
+from tactics.stages.performance import array_bytes, offload_report
+from tactics.stages.placement import Transfer
 
 
 def test_a_container_sized_by_the_running_program_has_no_bytes_and_one_sized_by_the_sizes_has() -> None:

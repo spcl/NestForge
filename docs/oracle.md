@@ -3,9 +3,9 @@
 [Overview](../README.md) · related: [3 Scopes](stages.md#stage-3-scopes), [5 Kernels](stages.md#stage-5-kernels)
 
 Every kernel carries a plain Python function that computes what its SDFG computes: the correctness oracle of stages
-5 and 6 (`nestforge/corpus/translate.py`, `prepare`). Its parameter order is the kernel's ABI order.
+5 and 6 (`tactics/corpus/translate.py`, `prepare`). Its parameter order is the kernel's ABI order.
 
-DaCe tasklets and interstate edges are already Python, so `nestforge/ir/emit_python.py` stays small. It lowers a
+DaCe tasklets and interstate edges are already Python, so `tactics/ir/emit_python.py` stays small. It lowers a
 copy of the kernel first:
 
 1. A library call stays one: `Cholesky`, `MatMul`, `Gemm`, `Transpose`, `Reduce`, `FillLibraryNode`, `CopyLibraryNode`,
