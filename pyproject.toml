@@ -31,9 +31,9 @@ dependencies = [
     # `python scripts/bump_deps.py` moves all three. The bench pins DaCe and relayout only in [tool.uv.sources], which
     # pip never reads (PyPI's relayout is another project), so they are pinned here and [tool.uv] repeats them.
     "dace @ git+https://github.com/spcl/dace.git@9f42f2d3dd0d9cf2ffca0d1176ad88809c7ff466",
-    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@28a0dd3e562cb703c7a9b6174175db81a4276eee",
+    "hpcagent_bench @ git+https://github.com/spcl/HPCAgent-Bench.git@e1fdef7d70ae50a3a370d8eebc9121271f1a9126",
     # The bench plugin (plugin/nestforge) runs on the agent side too.
-    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@28a0dd3e562cb703c7a9b6174175db81a4276eee#subdirectory=agent",
+    "hpcagent-agent @ git+https://github.com/spcl/HPCAgent-Bench.git@e1fdef7d70ae50a3a370d8eebc9121271f1a9126#subdirectory=agent",
     "relayout @ git+https://github.com/ThrudPrimrose/relayout.git@bae86a7ada1ad0342bdfb5429ec99ea1cb5070aa",
     # relayout's SDFG cast (the relayout move's cast), its `fparena` extra, at the commit relayout pins.
     "fp-arena @ git+https://github.com/spcl/FP-Arena.git@08465359af8666927ab6b53bcfdce1865a6c34e1",
