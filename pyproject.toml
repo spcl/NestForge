@@ -38,8 +38,8 @@ dependencies = [
 [dependency-groups]
 # Groups stay out of the published metadata. FP-Arena is not on PyPI, so it is never named there (a squatter of the
 # name would run code in `pip install`); a checkout installs it from its [tool.uv.sources] commit.
-# The relayout move's SDFG cast: relayout's `fparena` extra, with fp-arena named directly so its source applies.
-fparena = ["dace-relayout[fparena]>=0.1.1", "fp-arena"]
+# The relayout move's SDFG cast needs FP-Arena (dace-relayout dropped its `fparena` extra for the same reason).
+fparena = ["fp-arena"]
 dev = [
     { include-group = "fparena" },
     "pre-commit",
