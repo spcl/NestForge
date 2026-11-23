@@ -99,15 +99,19 @@ def test_an_expanded_kernel_row_carries_its_work_and_depth() -> None:
     assert kernel.endswith("  work=N depth=1"), kernel
 
 
-def test_an_expansion_stays_open_while_its_row_lives_and_closes_when_a_change_retires_it() -> None:
+def test_an_expansion_stays_open_while_its_row_lives_and_passes_to_the_row_that_replaces_it() -> None:
+    """The view persists (owner 11-22): a change that retires an expanded row leaves the row made in its place open,
+    and the retired label leaves the view with it."""
     session = Session(vector_add.to_sdfg(simplify=True))
     state = session.row_index()[kernel_state(session)][1]
     assert state is not None
-    session.expand([state.label])
+    retired = state.label
+    session.expand([retired])
 
     session.bump()
     kept = kernel_rows(session.describe())
-    session.bump([state.label])
+    session.bump([retired])
 
     assert kept, "a change that left the state alone closed it"
-    assert not kernel_rows(session.describe())
+    assert retired not in session.expanded, "a retired label stayed in the view"
+    assert kernel_rows(session.describe()), "the state made in place of the expanded one closed"
