@@ -90,6 +90,19 @@ doall only.
 Symbolic text is DaCe's: `int_floor(a, b)` is floor division, `Max`/`Min` as in SymPy, and canonical form names map
 parameters `_loop_it_<k>`.
 
+## Programs that communicate
+
+A program with communication rows keeps four invariants after every move (`Session.comm_refusal`,
+`docs/design/comm-nodes.md`, section 4). A move that breaks one is undone and answers `illegal`, naming the row:
+
+1. **I1 skeleton.** The loops, branches and order around each row stay as they were (`comm.skeleton`): a tiling,
+   fission or fusion that changes how often or in which order a row runs is refused. A row is compared by what it
+   does (type, buffers, peer, tag, operator), not by its label, so a row that moves keeps its place in the skeleton.
+2. **I2 in flight.** No block between a start and the wait that completes it writes what the start sends or touches
+   what it receives (`lib_motion.in_flight_refusal`, by subset where the memlets tell).
+3. **I3 isolation.** Every row other than a query keeps a state of its own, outside every doall.
+4. **I4 kernels.** No kernel holds a communication row.
+
 ## Labels and names
 
 A label is `<kind><n>` (`for`, `while`, `if`, `state`, `doall`, `lib_<family>`): unique across the whole program, nested SDFGs

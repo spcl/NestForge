@@ -38,6 +38,7 @@ from tactics.build.pipelines import build_llvm_pipeline, build_mlir_pipeline, pi
 from tactics.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from tactics.build.toolchain import SymbolValue, parse_params, raw_signature
 from tactics.corpus.translate import Prepared, prepare
+from tactics.ir.comm import Skeleton, comm_class, isolation_refusal, skeleton, skeleton_difference
 from tactics.ir.dace_types import strings
 from tactics.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
 from tactics.ir.extract import find_state_of_node
@@ -128,6 +129,7 @@ from tactics.stages.layout import (
     physical_inputs,
     requests_of,
 )
+from tactics.stages.lib_motion import in_flight_refusal
 from tactics.stages.moves import (
     CHANGE_PRECISION,
     DEFAULT_ISA,
@@ -2109,6 +2111,10 @@ class Session:
         """:meth:`apply_move`'s change: commit ``plan`` on ``target`` (the program, or kernel ``scope``'s body), bring
         it back to canonical form, name its rows and record it."""
         labels_now = self.labels_in(scope, target)
+        before = skeleton(self.sdfg)
+        # a program that communicates keeps its own copy: an invariant the change breaks undoes it here, inside a
+        # batch too (comm-nodes, section 4)
+        checkpoint, kept = (self.saved(), len(self.history)) if before is not None else (None, 0)
         with self.atomic():
             made = plan.commit()
             if kind == INLINE_LIBRARY:
@@ -2142,6 +2148,12 @@ class Session:
             self.bump(consumed)
             # a move DaCe's own check let through may still build what its validation refuses: refused here, undone
             target.validate()
+            broken = None if checkpoint is None else self.comm_refusal(before)
+            if broken is not None:
+                assert checkpoint is not None, "only a program that communicates is checked"
+                self.restore(checkpoint)
+                del self.history[kept:]
+                return illegal(kind, names, Refused(f"{kind} would {broken}.", Refusal.EFFECTS))
             forced = plan.name == FORCED_LOOP_TO_MAP
             done = MoveResult(
                 status=MoveStatus.APPLIED,
@@ -2155,6 +2167,23 @@ class Session:
             self.recorded(done)
         self.made_by_last = (len(self.applied) - 1, frozenset(self.labels_in(scope, target) - labels_now))
         return done
+
+    def comm_refusal(self, before: Skeleton | None) -> str | None:
+        """Which invariant of a program that communicates the change just made breaks, as what it would do
+        (``docs/design/comm-nodes.md``, section 4): I1 the skeleton changes, I3 a row leaves its own state, I2 a block
+        between a start and its wait touches what is in flight, I4 a kernel holds a row. ``None``: all four hold."""
+        reason = (
+            skeleton_difference(before, skeleton(self.sdfg))
+            or isolation_refusal(self.sdfg)
+            or in_flight_refusal(self.sdfg)
+        )
+        if reason is not None:
+            return reason
+        for name, ext in self.kernels().items():
+            held = [n for n, _ in node_boundary(ext).standalone_sdfg.all_nodes_recursive() if comm_class(n) is not None]
+            if held:
+                return f"take {held[0].label} into kernel {name}"
+        return None
 
     def call_refusal(self, kind: str, names: tuple[str, ...]) -> str | None:
         """Why a call of the built-in ``kind`` changes nothing: its family is off; ``None`` when it may go on.

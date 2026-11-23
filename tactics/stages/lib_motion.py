@@ -36,6 +36,7 @@ from dace.transformation.passes.gpu_specialization.helpers.gpu_helpers import is
 from tactics.ir.comm import (
     CommClass,
     Extent,
+    buffers,
     comm_class,
     container,
     crossing_refusal,
@@ -44,7 +45,9 @@ from tactics.ir.comm import (
     in_flight_extents,
     merged,
     motion_refusal,
+    requests_of,
     row_extents,
+    starts_of,
     with_viewed,
 )
 from tactics.ir.introspect import Row
@@ -820,3 +823,67 @@ def started(state: SDFGState, node: nodes.Node) -> nodes.LibraryNode:
         state.add_edge(start, edge.src_conn, edge.dst, edge.dst_conn, copy.deepcopy(edge.data))
     state.remove_node(node)
     return start
+
+
+def blocks_between(start: SDFGState, wait: SDFGState) -> list[ControlFlowBlock]:
+    """The blocks a path from ``start`` to ``wait`` may run, the two states left out: inside the regions around each,
+    what follows ``start`` and what precedes ``wait`` (every block of a loop between them, which may run again); in
+    the innermost region holding both, the blocks after the one and before the other, or, when ``wait`` comes first
+    there (a loop carries the operation to the next iteration), the blocks after the one and those before the other.
+    More blocks than a path takes only refuse more, which is safe."""
+    found: list[ControlFlowBlock] = []
+    around_start: list[tuple[ControlFlowBlock, Any]] = []
+    block: ControlFlowBlock = start
+    while block.parent_graph is not None:
+        around_start.append((block, block.parent_graph))
+        block = block.parent_graph
+    regions_of_start = {id(region): (child, region) for child, region in around_start}
+    block = wait
+    around_wait: list[tuple[ControlFlowBlock, Any]] = []
+    while id(block.parent_graph) not in regions_of_start:
+        around_wait.append((block, block.parent_graph))
+        block = block.parent_graph
+    common = block.parent_graph
+    for steps, forward in ((around_start, True), (around_wait, False)):
+        for child, region in steps:
+            if region is common:
+                break
+            if isinstance(region, LoopRegion):
+                found += [other for other in region.nodes() if other is not child]
+            elif isinstance(region, ControlFlowRegion):
+                found += list(reaching(region, child, forward=forward))
+    first, last = regions_of_start[id(common)][0], block
+    after, before = reaching(common, first, forward=True), reaching(common, last, forward=False)
+    found += list(after & before) if last in after else list((after | before) - {first, last})
+    return found
+
+
+def start_effect(state: SDFGState, start: nodes.Node) -> Effect:
+    """What a start keeps in flight until its wait: it reads what it sends and writes what it receives, its request
+    left out; by subset where the memlets tell (12.1)."""
+    requests = requests_of(state, start, written=True)
+    sent, received = (frozenset(names - requests) for names in buffers(state, start))
+    extents = [
+        {name: extent for name, extent in row_extents(state, start, writes=w).items() if name not in requests}
+        for w in (False, True)
+    ]
+    return Effect(sent, received, frozenset(), read_extents=extents[0], write_extents=extents[1])
+
+
+def in_flight_refusal(sdfg: dace.SDFG) -> str | None:
+    """I2: no block between a ``START`` and the ``WAIT`` that completes it writes what it sends, or touches what it
+    receives."""
+    waits = [(n, s) for n, s in sdfg.all_nodes_recursive() if comm_class(n) is CommClass.WAIT]
+    for wait, state in waits:
+        starts = starts_of(sdfg, state, wait)
+        own = {id(start_state) for start_state, _ in starts}
+        for start_state, start in starts:
+            effect = start_effect(start_state, start)
+            for block in blocks_between(start_state, state):
+                if id(block) in own:
+                    continue
+                refused = crossed_refusal(block, effect)
+                if refused is not None:
+                    detail = str(refused).rstrip(".").replace("the call", start.label)
+                    return f"let {block.label} run while {start.label} is in flight (until {wait.label}): {detail}"
+    return None

@@ -7,6 +7,7 @@ Every rule reads the class, never the node type. A ``QUERY`` moves like any libr
 R1 to R4 (R5, views, is the rule of every library call)."""
 
 import enum
+from dataclasses import dataclass, field
 from typing import cast
 
 import dace
@@ -32,8 +33,10 @@ from dace.libraries.comm.nodes.node import CommNode, NonblockingCommNode
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
 from dace.sdfg.graph import MultiConnectorEdge
-from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, SDFGState
+from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
+from dace.transformation.passes.analysis import loop_analysis
 
+from tactics.ir.names import in_order
 from tactics.records import Refusal, Refused
 
 #: The connector through which an operation writes, and a wait reads, its request.
@@ -234,27 +237,29 @@ def comm_fields(state: SDFGState, node: nodes.Node) -> list[str]:
     return fields
 
 
+def exchanged(state: SDFGState, node: nodes.Node) -> tuple[list[str], list[str]]:
+    """The containers a communication row sends and receives, sorted: its request, peer and tag left out."""
+    skipped = {REQUEST, *PEER_FIELDS}
+    sent = {
+        container(state, e.src, str(e.data.data))
+        for e in state.in_edges(node)
+        if not e.data.is_empty() and e.dst_conn not in skipped
+    }
+    received = {
+        container(state, e.dst, str(e.data.data))
+        for e in state.out_edges(node)
+        if not e.data.is_empty() and e.src_conn not in skipped
+    }
+    return sorted(sent), sorted(received)
+
+
 def comm_line(state: SDFGState, node: nodes.LibraryNode) -> str:
     """A communication row: ``COMM`` in place of ``LIBNODE``, the buffers it sends (``reads``) and receives
     (``writes``) without its request, peer and tag, then :func:`comm_fields`; empty lists are left out."""
     kind = type(node).__name__
     if comm_class(node) is CommClass.QUERY:
         return f"{node.label}  COMM {kind} [{node.implementation or 'auto'}]"
-    skipped = {REQUEST, *PEER_FIELDS}
-    sent = sorted(
-        {
-            container(state, e.src, str(e.data.data))
-            for e in state.in_edges(node)
-            if not e.data.is_empty() and e.dst_conn not in skipped
-        }
-    )
-    received = sorted(
-        {
-            container(state, e.dst, str(e.data.data))
-            for e in state.out_edges(node)
-            if not e.data.is_empty() and e.src_conn not in skipped
-        }
-    )
+    sent, received = exchanged(state, node)
     parts = [f"{node.label}  COMM {kind} [{node.implementation or 'auto'}]"]
     parts += [f"reads={sent}"] if sent else []
     parts += [f"writes={received}"] if received else []
@@ -340,3 +345,137 @@ def crossing_refusal(node: nodes.Node, block: ControlFlowBlock) -> Refused | Non
         f"{node.label} would overtake {others[0]}; operations that start communication keep their order.",
         Refusal.EFFECTS,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Skeleton:
+    """The communication skeleton of one region (design, section 4): its kind (``top``, ``for``, ``while``, ``if``,
+    ``branch``, ``region``), its iteration range or condition with the loop variable renamed away, its rows other than
+    ``WAIT`` in program order (sub-regions holding rows in their place), and its ``WAIT`` rows. A row is its
+    :func:`row_signature`, since a move may give it a new label; ``labels`` names the signatures for a reason and is
+    not compared. Two programs communicate alike when their skeletons are equal."""
+
+    kind: str
+    extent: tuple[str, ...]
+    rows: tuple["str | Skeleton", ...]
+    waits: tuple[str, ...]
+    labels: tuple[tuple[str, str], ...] = field(default=(), compare=False)
+
+
+def row_signature(state: SDFGState, node: nodes.Node) -> str:
+    """What a row does, without its label: its type, what it sends and receives, its peer, tag and operator."""
+    sent, received = exchanged(state, node)
+    fields = [f for f in comm_fields(state, node) if not f.startswith(("request=", "completes="))]
+    return " ".join([type(node).__name__, f"{sent}->{received}", *fields])
+
+
+#: The name a loop variable takes in a skeleton: a fusion may rename it, and the name is not compared.
+LOOP_VARIABLE = "__loop"
+
+
+def loop_extent(loop: LoopRegion) -> tuple[str, tuple[str, ...]]:
+    """A loop's kind and its range (start, end, stride), or its condition when it is not counted, the variable
+    renamed to :data:`LOOP_VARIABLE`."""
+    rename = {loop.loop_variable: LOOP_VARIABLE} if loop.loop_variable else {}
+    bounds = [
+        loop_analysis.get_init_assignment(loop),
+        loop_analysis.get_loop_end(loop),
+        loop_analysis.get_loop_stride(loop),
+    ]
+    if loop.loop_variable and all(bound is not None for bound in bounds):
+        return "for", tuple(str(dace.symbolic.pystr_to_symbolic(str(b)).subs(rename)) for b in bounds)
+    condition = loop.loop_condition.as_string if loop.loop_condition is not None else ""
+    return "while", (str(dace.symbolic.pystr_to_symbolic(condition).subs(rename)) if condition else "",)
+
+
+def region_skeleton(region: ControlFlowRegion, kind: str, extent: tuple[str, ...]) -> Skeleton | None:
+    """The skeleton of ``region``; ``None`` when it holds no row other than ``QUERY``."""
+    rows: list[str | Skeleton] = []
+    waits: list[str] = []
+    labels: list[tuple[str, str]] = []
+    for block in in_order(region):
+        if isinstance(block, SDFGState):
+            for node in in_order(block):
+                found = comm_class(node)
+                if found in (None, CommClass.QUERY):
+                    continue
+                signature = row_signature(block, node)
+                labels.append((signature, str(node.label)))
+                (waits if found is CommClass.WAIT else rows).append(signature)
+            continue
+        inner = block_skeleton(block)
+        if inner is not None:
+            rows.append(inner)
+    return Skeleton(kind, extent, tuple(rows), tuple(waits), tuple(labels)) if rows or waits else None
+
+
+def block_skeleton(block: ControlFlowBlock) -> Skeleton | None:
+    """The skeleton of a region that is not a state: a loop, a branch, or a plain region."""
+    if isinstance(block, LoopRegion):
+        kind, extent = loop_extent(block)
+        return region_skeleton(block, kind, extent)
+    if isinstance(block, ConditionalBlock):
+        branches = [
+            region_skeleton(body, "branch", (condition.as_string if condition is not None else "else",))
+            for condition, body in block.branches
+        ]
+        if not any(branches):
+            return None
+        return Skeleton("if", (), tuple(b for b in branches if b is not None), ())
+    if isinstance(block, ControlFlowRegion):
+        return region_skeleton(block, "region", ())
+    return None
+
+
+def skeleton(sdfg: dace.SDFG) -> Skeleton | None:
+    """The communication skeleton of ``sdfg``; ``None`` when it does not communicate."""
+    return region_skeleton(sdfg, "top", ())
+
+
+def skeleton_rows(found: Skeleton | None) -> dict[str, tuple[tuple[str, ...], str]]:
+    """Each row of ``found``, by signature: the regions around it (kind and extent), outermost first, and its label."""
+    where: dict[str, tuple[tuple[str, ...], str]] = {}
+
+    def walk(part: Skeleton, around: tuple[str, ...]) -> None:
+        here = (*around, f"{part.kind} {', '.join(part.extent)}".strip())
+        named = dict(part.labels)
+        for row in (*part.rows, *part.waits):
+            if isinstance(row, Skeleton):
+                walk(row, here)
+            else:
+                where[row] = (here, named[row])
+
+    if found is not None:
+        walk(found, ())
+    return where
+
+
+def skeleton_difference(before: Skeleton | None, after: Skeleton | None) -> str | None:
+    """How ``after`` communicates differently from ``before`` (I1), as what the change would do, naming the first row
+    whose place changed; ``None`` when they are equal."""
+    if before == after:
+        return None
+    was, now = skeleton_rows(before), skeleton_rows(after)
+    for row in sorted(was.keys() | now.keys()):
+        if row not in now:
+            return f"remove {was[row][1]}"
+        if row not in was:
+            return f"add {now[row][1]}"
+        if was[row][0] != now[row][0]:
+            regions = f"inside {' > '.join(now[row][0])}, not {' > '.join(was[row][0])}"
+            return f"change how {now[row][1]} runs: {regions}"
+    return "change the order of the rows that start communication"
+
+
+def isolation_refusal(sdfg: dace.SDFG) -> str | None:
+    """I3: every row other than ``QUERY`` sits alone in a state of the program itself, outside every doall."""
+    for node, parent in sdfg.all_nodes_recursive():
+        if comm_class(node) in (None, CommClass.QUERY) or not isinstance(parent, SDFGState):
+            continue
+        if parent.sdfg is not sdfg or parent.entry_node(node) is not None:
+            return f"put {node.label} into a doall"
+        others = [n for n in parent.nodes() if isinstance(n, (nodes.LibraryNode, nodes.MapEntry)) and n is not node]
+        if others:
+            other = others[0].map.label if isinstance(others[0], nodes.MapEntry) else others[0].label
+            return f"put {node.label} into one state with {other}"
+    return None
