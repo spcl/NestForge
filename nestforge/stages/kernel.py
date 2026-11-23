@@ -87,6 +87,8 @@ class KernelSource:
     device: str
     device_unit: Path | None = None
     link: list[str] = dataclasses.field(default_factory=list)  # the vendor libraries the units call
+    #: The ``-I`` of those libraries' headers when they sit off the default search path (a module OpenBLAS).
+    includes: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def units(self) -> list[Path]:
@@ -227,24 +229,39 @@ def gpu_schedule(boundary: Boundary) -> dace.SDFG:
 
 
 def build_cpu_library(
-    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+    units: Sequence[Path],
+    compiler: str,
+    flags: list[str] | None,
+    archive: Path,
+    link: Sequence[str],
+    includes: Sequence[str] = (),
 ) -> None:
-    opts = BuildOptions(compiler=compiler, flags=flags, libraries=list(link))
+    opts = BuildOptions(compiler=compiler, flags=flags, libraries=list(link), includes=list(includes))
     build_archive(units, None, archive, archive.with_suffix(".so"), opts)
 
 
 def build_cuda_library(
-    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+    units: Sequence[Path],
+    compiler: str,
+    flags: list[str] | None,
+    archive: Path,
+    link: Sequence[str],
+    includes: Sequence[str] = (),
 ) -> None:
     chosen = flags if flags is not None else cuda_base_flags(cpf.CUDA_BUILD_FLAGS)
-    build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, chosen, link)
+    build_cuda_archive(units, archive, archive.with_suffix(".so"), compiler, [*chosen, *includes], link)
 
 
 def build_hip_library(
-    units: Sequence[Path], compiler: str, flags: list[str] | None, archive: Path, link: Sequence[str]
+    units: Sequence[Path],
+    compiler: str,
+    flags: list[str] | None,
+    archive: Path,
+    link: Sequence[str],
+    includes: Sequence[str] = (),
 ) -> None:
     chosen = flags if flags is not None else hip_base_flags()
-    build_hip_archive(units, archive, archive.with_suffix(".so"), compiler, chosen, link)
+    build_hip_archive(units, archive, archive.with_suffix(".so"), compiler, [*chosen, *includes], link)
 
 
 def process_runtime_libraries() -> list[str]:
@@ -336,7 +353,7 @@ class KernelForm:
     language: str
     suffix: str
     schedule: Callable[[Boundary], dace.SDFG]
-    build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str]], None]
+    build: Callable[[Sequence[Path], str, list[str] | None, Path, Sequence[str], Sequence[str]], None]
     measure: Callable[
         [Path, KernelSource, dict[str, np.ndarray], dict[str, np.ndarray] | None, Mapping[str, SymbolValue], int],
         KernelNumbers | Failure,
@@ -409,7 +426,16 @@ def schedule_kernel(
     device_unit = out_dir / f"{ext.name}{DEVICE_UNIT_SUFFIX}{form.suffix}" if rendering.device_code else None
     if device_unit is not None:
         device_unit.write_text(rendering.device_code)
-    return KernelSource(ext.name, unit, list(rendering.arguments), boundary, device, device_unit, list(rendering.link))
+    return KernelSource(
+        ext.name,
+        unit,
+        list(rendering.arguments),
+        boundary,
+        device,
+        device_unit,
+        list(rendering.link),
+        list(rendering.includes),
+    )
 
 
 def kernel_text(src: KernelSource) -> str:
@@ -429,7 +455,7 @@ def split_kernel_text(text: str) -> tuple[str, str | None]:
 def build_kernel_library(src: KernelSource, compiler: str, flags: list[str] | None, out_dir: Path) -> Path:
     """Build ``<out_dir>/lib<kernel>.a`` from the kernel's unit, plus its shared twin for validation."""
     archive = out_dir / f"lib{src.name}.a"
-    kernel_form(src.device).build(src.units, compiler, flags, archive, src.link)
+    kernel_form(src.device).build(src.units, compiler, flags, archive, src.link, src.includes)
     return archive
 
 

@@ -2684,7 +2684,14 @@ class Session:
             device_unit = attempt / f"{name}{DEVICE_UNIT_SUFFIX}{suffix}"
             device_unit.write_text(device_text)
         src = KernelSource(
-            name, unit, list(default.abi_order), default.boundary, default.device, device_unit, list(default.link)
+            name,
+            unit,
+            list(default.abi_order),
+            default.boundary,
+            default.device,
+            device_unit,
+            list(default.link),
+            list(default.includes),
         )
         variant = self.first_variant(src.device, name)
         with self.stopper.armed():

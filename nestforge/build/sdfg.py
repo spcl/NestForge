@@ -277,6 +277,7 @@ class BuildOptions:
     openmp: bool = True
     link_external: bool = False  # link the nest as a separate static .a (else a monolithic single TU)
     libraries: list[str] = field(default_factory=list)  # linked ahead of the runtimes, e.g. CPF's vendor libraries
+    includes: list[str] = field(default_factory=list)  # -I of those libraries' headers off the default search path
 
     def resolved_flags(self) -> list[str]:
         """``flags`` (or :data:`DEFAULT_FLAGS`), with the C++ standard and ``-Wall`` guaranteed."""
@@ -286,7 +287,7 @@ class BuildOptions:
             flags.append(f"-std={CXX_STD}")
         if "-Wall" not in flags and "-w" not in flags:
             flags.append("-Wall")
-        return flags
+        return [*flags, *self.includes]
 
 
 @dataclass(slots=True)
