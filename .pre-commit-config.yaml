@@ -1,4 +1,4 @@
-# Setup: pip install -e ".[dev]" && pre-commit install
+# Setup: uv pip install -e . --group dev && pre-commit install
 # Every file: pre-commit run --all-files (CI runs the same)
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

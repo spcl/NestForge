@@ -7,7 +7,7 @@
 
 ``[project].dependencies`` name plain PyPI packages (PyPI refuses a direct URL), so the exact commits live only in
 ``[tool.uv.sources]``, which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. Then reinstall and test:
-``python scripts/bump_deps.py && uv pip install -e ".[dev]" && pytest``.
+``python scripts/bump_deps.py && uv pip install -e . --group dev && pytest``.
 """
 
 import re

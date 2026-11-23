@@ -50,7 +50,7 @@ jobs:
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4
@@ -107,7 +107,7 @@ jobs:
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4
@@ -161,7 +161,7 @@ jobs:
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4
@@ -213,7 +213,7 @@ jobs:
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4
@@ -265,7 +265,7 @@ jobs:
         run: |
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4
@@ -316,7 +316,7 @@ jobs:
           if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
       - name: Pin the tip of the tracked bench branch and the DaCe and relayout it pins
         run: python scripts/bump_deps.py && git diff pyproject.toml
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e . --group dev
       # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
       # runner checks fingerprints instead of emitting the corpus (pyproject.toml pins the bench and DaCe).
       - uses: actions/cache/restore@v4

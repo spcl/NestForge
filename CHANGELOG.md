@@ -36,9 +36,10 @@ pip install tactics          # DaCe extended comes as dace-extended (import dace
 From a checkout of https://github.com/spcl/tactics, every dependency comes at its pinned commit:
 
 ```bash
-uv sync --extra dev
+uv sync --group dev
 ```
 
 The agent plugin (`plugin/tactics`) ships with the checkout, not the wheel: point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at
-it. The `fparena` extra (the relayout move's SDFG cast) installs from a checkout only: FP-Arena is not on PyPI.
+it. The relayout move's SDFG cast needs FP-Arena, which is not on PyPI: a checkout installs it (`uv sync --group dev`, or
+`--group fparena` alone); the published metadata never names it.
 Tactics requires Python 3.12 or newer and Linux.

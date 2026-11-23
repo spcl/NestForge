@@ -138,7 +138,7 @@ From a checkout of https://github.com/spcl/tactics:
 ```bash
 sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
 export "$(bash scripts/setup_hptt.sh "$HOME/hptt" | tail -1)"          # HPTT for tensor transposes; sets HPTT_ROOT
-uv sync --extra dev                                                     # or: pip install -e ".[dev]"
+uv sync --group dev                                                     # dev tools and FP-Arena (dependency groups)
 pre-commit install                                                      # ruff check, ruff format, headers
 pytest -m "not integration and not cloudsc and not gpu and not vendor"  # unit set, as CI runs it
 pytest -m integration                                                   # compiles and runs; bench OpenMP env (CI)
