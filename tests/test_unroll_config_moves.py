@@ -13,10 +13,10 @@ from dace.frontend.python.parser import DaceProgram
 from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, LoopRegion
 
-from nestforge.ir.names import is_copy
-from nestforge.records import MoveStatus
-from nestforge.replay import Script
-from nestforge.session import Move, Session
+from tactics.ir.names import is_copy
+from tactics.records import MoveStatus
+from tactics.replay import Script
+from tactics.session import Move, Session
 
 N = dace.symbol("N", dtype=dace.int64)
 K = dace.symbol("K", dtype=dace.int64)

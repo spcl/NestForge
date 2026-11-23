@@ -10,9 +10,9 @@ import pytest
 from helpers import corpus_kernel
 from hpcagent_bench.harness.grading import ReferenceUnavailable
 
-import nestforge.server as server_mod
-from nestforge.server import KERNELBENCH_DIR_VAR, Setup, bench_data, numpy_outputs, size_rung
-from nestforge.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE
+import tactics.server as server_mod
+from tactics.server import KERNELBENCH_DIR_VAR, Setup, bench_data, numpy_outputs, size_rung
+from tactics.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE
 
 
 def test_a_renamed_argument_reaches_the_program_by_its_new_name() -> None:

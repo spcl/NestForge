@@ -11,12 +11,12 @@ import numpy as np
 import pytest
 from test_rounds import doalls, fresh
 
-from nestforge import server
-from nestforge import session as session_module
-from nestforge.records import MoveStatus
-from nestforge.server import answer
-from nestforge.session import Session, Stage
-from nestforge.stages import scopes
+from tactics import server
+from tactics import session as session_module
+from tactics.records import MoveStatus
+from tactics.server import answer
+from tactics.session import Session, Stage
+from tactics.stages import scopes
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 16

@@ -5,7 +5,7 @@
 puts the physics in its own kernel again, then the stages after fusion. On the CPU the default stays the
 reference."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "fuse_physics_into_scan"
 CONFIGS = (Context("gpu", 1, "M"),)

@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.build.pipelines import pipeline_syntax_error
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
-from nestforge.stages.performance import Reference
+from tactics.build.pipelines import pipeline_syntax_error
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64

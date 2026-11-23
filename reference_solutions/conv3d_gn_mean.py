@@ -10,7 +10,7 @@ product to ``acc`` in memory. The interchange puts that loop outside the five ou
 output width, a contiguous ``omp simd`` loop that adds one product per element. Its decoy (no move, 0.74-0.75x)
 is on the ``decoys`` branch."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "conv3d_gn_mean"
 CONFIGS = (Context("cpu", 72, "M"),)

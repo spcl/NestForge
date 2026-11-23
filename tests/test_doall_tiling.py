@@ -10,8 +10,8 @@ import dace
 import numpy as np
 from dace.sdfg import nodes
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 40  # not a multiple of the tile, so the last tile is partial

@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.moves import journaled_arguments
+from tactics.paths import REPO_ROOT
+from tactics.stages.moves import journaled_arguments
 
 SCRIPT = REPO_ROOT / "scripts" / "attribute_moves.py"
 

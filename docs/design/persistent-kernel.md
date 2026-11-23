@@ -6,7 +6,7 @@ Status: built (2026-11-18) on DaCe extended `d008a6ac6c`, as `persistent-kernel`
 `scope` (owner's decision: a list in one move). The rows are consecutive blocks of one region of the kernel's body
 (for loops and states; a doall stands for its state; a block between them may hold no doall), and they run as one
 persistent kernel with a barrier where a launch or an implicit barrier was. The kernel's rendering runs
-`MegakernelLoops(blocks=...)` for its device (`nestforge.stages.kernel.persistent_loops`): on the GPU behind a runtime
+`MegakernelLoops(blocks=...)` for its device (`tactics.stages.kernel.persistent_loops`): on the GPU behind a runtime
 test that the largest doall fits the resident threads, with the per-launch blocks as the fallback (owner's decision);
 on the CPU in one OpenMP team. A kernel holds one persistent run; to change it, roll back and apply a longer list. The
 move is refused when the rows are not consecutive in one region, or a trial render fuses nothing. A straight run of

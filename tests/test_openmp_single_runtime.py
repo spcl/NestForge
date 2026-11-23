@@ -17,8 +17,9 @@ from typing import Any
 
 import numpy as np
 
-import nestforge
-from nestforge.build.toolchain import (
+import tactics
+from tactics.build.toolchain import (
+    AS_NEEDED,
     LIBOMP,
     lib_linkable,
     openmp_compile_flags,
@@ -73,7 +74,7 @@ double kern3(double *a, const double *b, int n, int m) {
 #: The OpenMP runtimes a linked object can name, by DT_NEEDED soname stem.
 OMP_SONAMES = ("libgomp", "libomp", "libiomp5")
 
-#: The C compilers of the families nest-forge sweeps.
+#: The C compilers of the families Tactics sweeps.
 COMPILERS = ("gcc", "clang", "icx")
 
 
@@ -107,7 +108,8 @@ def build_cell(tmp_path: Path, compiler: str, src: str = OMP_SRC, tag: str = "k"
     csrc = tmp_path / f"{tag}.c"
     csrc.write_text(src)
     so = tmp_path / f"{tag}_{compiler}.so"
-    cmd = [compiler, "-O2", "-fPIC", "-shared", *openmp_compile_flags(compiler), str(csrc)]
+    # AS_NEEDED as link_shared passes it: a gcc without that default (conda's) also records the libgomp -fopenmp adds
+    cmd = [compiler, "-O2", "-fPIC", "-shared", AS_NEEDED, *openmp_compile_flags(compiler), str(csrc)]
     proc = subprocess.run([*cmd, *openmp_link_flags(compiler), "-o", str(so)], capture_output=True, text=True)
     assert proc.returncode == 0, f"{compiler} failed to link libomp:\n{proc.stderr[-1500:]}"
     # The pragma is in the source, so a cell that links a runtime but opens no region was silently serialized.
@@ -254,7 +256,7 @@ def test_every_openmp_entry_a_gxx_object_calls_is_exported_by_libomp(tmp_path: P
 
 def test_every_link_search_path_is_paired_with_an_rpath() -> None:
     """A ``-L`` without its ``-Wl,-rpath`` links, but the library then fails to load without LD_LIBRARY_PATH."""
-    package = Path(nestforge.__file__).parent
+    package = Path(tactics.__file__).parent
     offenders = []
     for path in sorted(package.rglob("*.py")):
         lines = path.read_text().splitlines()

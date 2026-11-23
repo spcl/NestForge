@@ -8,11 +8,11 @@ from typing import Any
 import pytest
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge import session as session_module
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.session import Codegen, Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.finalize import BenchTarget
+from tactics import session as session_module
+from tactics.corpus.bench import corpus_kernel, preset_sizes
+from tactics.session import Codegen, Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.finalize import BenchTarget
 
 pytestmark = pytest.mark.e2e
 

@@ -7,21 +7,21 @@ move, a tool, a phase or a packet. Features that are designed and not yet built 
 
 ## The layers
 
-Calls go down this list. `nestforge` never imports the bench at module level; only `nestforge_bench` and the plugin's
+Calls go down this list. `nestforge` never imports the bench at module level; only `tactics_bench` and the plugin's
 judge route do.
 
 | Layer | Where | Holds |
 |---|---|---|
-| Agent tools | `plugin/nestforge/tools/nestforge.py` | One thin `POST /nestforge/<tool>` per tool. The agent image has no DaCe. |
-| Tool table | `plugin/nestforge/wire.py` | Each tool's phase, arguments, description and effect. Pure pydantic, read by both sides. |
-| Judge route | `plugin/nestforge/routes/nestforge.py` | One session process per episode and kernel, one call at a time. |
-| Session process | `nestforge/server.py` | A `Session` in its own process; `CALLS` maps each tool to a session call and closes tools by state. |
-| Session | `nestforge/session.py` | The one API over the stages, used by agents, humans and the reference driver. Owns the SDFG. |
-| Stages | `nestforge/stages/` | One module per stage: `canonicalize`, `moves`, `expand`, `scopes`, `placement`, `kernel`, `variants`, `feedback`, `performance`, `finalize`; `layout` (argument layouts) and `vectorize` (one doall's vectorization) serve two move kinds. |
-| IR helpers | `nestforge/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
-| Build | `nestforge/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
-| Corpus | `nestforge/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `nestforge_bench/` | `nestforge_reference`, `nestforge_default` and `nestforge_cpf_nowave` (no LLM: reference moves, the default moves on every kernel, or no moves on the canonical form without wavefronts), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all five in the bench's CI, the second on `nestforge-two-stage`. |
+| Agent tools | `plugin/tactics/tools/nestforge.py` | One thin `POST /nestforge/<tool>` per tool. The agent image has no DaCe. |
+| Tool table | `plugin/tactics/wire.py` | Each tool's phase, arguments, description and effect. Pure pydantic, read by both sides. |
+| Judge route | `plugin/tactics/routes/nestforge.py` | One session process per episode and kernel, one call at a time. |
+| Session process | `tactics/server.py` | A `Session` in its own process; `CALLS` maps each tool to a session call and closes tools by state. |
+| Session | `tactics/session.py` | The one API over the stages, used by agents, humans and the reference driver. Owns the SDFG. |
+| Stages | `tactics/stages/` | One module per stage: `canonicalize`, `moves`, `expand`, `scopes`, `placement`, `kernel`, `variants`, `feedback`, `performance`, `finalize`; `layout` (argument layouts) and `vectorize` (one doall's vectorization) serve two move kinds. |
+| IR helpers | `tactics/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
+| Build | `tactics/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
+| Corpus | `tactics/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
+| Bench columns | `tactics_bench/` | `nestforge_reference`, `nestforge_default` and `nestforge_cpf_nowave` (no LLM: reference moves, the default moves on every kernel, or no moves on the canonical form without wavefronts), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all five in the bench's CI, the second on `nestforge-two-stage`. |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,
@@ -42,7 +42,7 @@ walks the order; NestForge owns what each step does to the session.
 | unstructured | `codegen` | agent in `nestforge-full`, else nothing | each kernel's compiler configuration |
 | | `round` | always default | back to the program as the moves left it |
 
-Four rules follow, and `nestforge/server.py` enforces all but the last:
+Four rules follow, and `tactics/server.py` enforces all but the last:
 
 - **Moves close at the first kernel.** A move takes rows of the program before its scopes. `apply_move` and
   `run_defaults` with `moves` or `finish` answer 400 once the program has a kernel.
@@ -72,7 +72,7 @@ harness that takes the packet: `claude`, `anthropic` and `openai`.
 
 ## How to extend it
 
-**A move.** In `nestforge/stages/moves.py`: add the kind to `MOVE_SHAPES` with the row types it takes, a planner to
+**A move.** In `tactics/stages/moves.py`: add the kind to `MOVE_SHAPES` with the row types it takes, a planner to
 `PLANNERS` that returns a `Rewrite` or the reason it is illegal, candidate rows to `CANDIDATES`, and the transformation
 and its effect to the table `move_kinds` reads. A planner mutates nothing; only `Rewrite.commit` does. Use an existing
 DaCe transformation for the rewrite. Then add the entry to the Moves section of the skill page.
@@ -97,13 +97,13 @@ what depends on the old program.
 Prompt changes go in an overlay YAML listed under `overlays`; check the result with
 `python -m hpcagent_bench.prompt_build --packet <key> --show`, run from a bench checkout.
 
-**A subagent.** Add `plugin/nestforge/agents/<name>.md` with `name` and `description` frontmatter and name it in a
+**A subagent.** Add `plugin/tactics/agents/<name>.md` with `name` and `description` frontmatter and name it in a
 packet's `agents`. Its body is its whole system prompt, so it says what the tools do and where it stops.
 
-**A kernel hint.** `nestforge/stages/feedback.py`: `hints` turns one kernel's evidence into ranked lines, failures
+**A kernel hint.** `tactics/stages/feedback.py`: `hints` turns one kernel's evidence into ranked lines, failures
 first. `report` keeps the top lines, which `performance` returns.
 
-**A compiler configuration.** `nestforge/stages/variants.py`: `VARIANTS_BY_DEVICE` lists the sweep per device. The
+**A compiler configuration.** `tactics/stages/variants.py`: `VARIANTS_BY_DEVICE` lists the sweep per device. The
 sweep verifies every variant against the oracle, so a wrong one loses by itself.
 
 **A reference solution.** Add `reference_solutions/<kernel>.py` with `solve(s, ctx)`; see that folder's

@@ -19,9 +19,9 @@ from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, LoopRegion, SDFG
 from dace.sdfg.utils import set_nested_sdfg_parent_references
 from dace.transformation.helpers import nest_state_subgraph
 
-from nestforge.ir.names import normalize_labels, top_level_map_entries
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import MoveResult, Session
+from tactics.ir.names import normalize_labels, top_level_map_entries
+from tactics.records import MoveStatus, Refusal
+from tactics.session import MoveResult, Session
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)

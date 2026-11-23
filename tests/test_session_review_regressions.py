@@ -23,12 +23,12 @@ from test_bench_plugin import (  # noqa: F401 -- the route tests' fixtures
     stub,
 )
 
-import nestforge.server as server_mod
-from nestforge.corpus.bench import CorpusKernel
-from nestforge.replay import Context, run_variant
-from nestforge.server import Setup, bench_data, numpy_outputs
-from nestforge.session import Session
-from nestforge.stages.performance import Reference
+import tactics.server as server_mod
+from tactics.corpus.bench import CorpusKernel
+from tactics.replay import Context, run_variant
+from tactics.server import Setup, bench_data, numpy_outputs
+from tactics.session import Session
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64

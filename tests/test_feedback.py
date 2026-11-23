@@ -10,10 +10,10 @@ import dace
 import numpy as np
 import pytest
 
-from nestforge.session import Session
-from nestforge.stages.feedback import Evidence, report, spills, vectorizer_reasons
-from nestforge.stages.kernel import KernelVerdict, computed_symbols_reason, unchecked_verdict
-from nestforge.stages.performance import kernel_reports
+from tactics.session import Session
+from tactics.stages.feedback import Evidence, Origin, report, spills, vectorizer_reasons
+from tactics.stages.kernel import KernelVerdict, computed_symbols_reason, unchecked_verdict
+from tactics.stages.performance import kernel_reports
 
 N = dace.symbol("N", dtype=dace.int64)
 
@@ -114,6 +114,23 @@ def test_a_healthy_kernel_gets_no_hint() -> None:
     assert report([evidence()]).splitlines()[1] == "no hints: every kernel is correct and nothing stands out."
 
 
+def test_a_kernel_cut_from_a_row_is_named_by_its_label_with_the_moves_offered_on_it() -> None:
+    """Issue #88: the agent reads one line per row in its own words, the hottest first; a split piece keeps its
+    row's label and a kernel no row names gets no line."""
+    gemv = Origin("lib_blas0", "opaque library call (Gemv)", ("inline-library", "set-library-implementation"))
+    origins = {"lib_blas0": gemv, "doall1": Origin("doall1", "map", ())}
+    kernels = [evidence("extcall_doall1_0", time_us=10.0), evidence("extcall_lib_blas0", time_us=30.0)]
+
+    lines = report([*kernels, evidence("extcall_7", time_us=0.0)], origins).splitlines()
+
+    gemv_line = "lib_blas0 is 75% of kernel time, opaque library call (Gemv); moves offered on it: inline-library, "
+    assert lines[2:4] == [
+        gemv_line + "set-library-implementation.",
+        "doall1 is 25% of kernel time, map; moves offered on it: none.",
+    ], lines
+    assert len(lines) == 4, "the head, the hot kernel's line and one line per named row"
+
+
 @dace.program
 def square(a: dace.float64[N], b: dace.float64[N]) -> None:
     for i in dace.map[0:N]:
@@ -131,3 +148,30 @@ def test_a_session_reports_the_times_of_its_built_kernels(tmp_path: Path) -> Non
     assert lines[0].startswith(f"kernel times: {kernel.name} ") and lines[0].endswith(" us")
     assert Path(session.kernel(kernel.name).lib_path).exists()
     assert np.isfinite(float(lines[0].split()[-2]))
+
+
+@pytest.mark.e2e
+def test_get_performance_names_the_row_a_kernel_came_from(tmp_path: Path) -> None:
+    session = Session(square.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": 4096})
+    (label,) = (label for label in session.row_index() if label.startswith("doall"))
+    offered = sorted({move.kind for move in session.list_moves() if label in move.labels})
+    a = np.random.default_rng(0).random(4096)
+
+    hints = session.performance({"a": a, "b": np.zeros(4096)}, reps=1).hints
+
+    assert f"{label} is 100% of kernel time, map; moves offered on it: {', '.join(offered) or 'none'}." in hints
+
+
+def test_a_failed_kernel_names_its_row_and_the_change_that_came_last() -> None:
+    """Issue #88 item 2: after expanding only lib_blas0, the agent reads which move broke which row."""
+    gemv = Origin("lib_blas0", "opaque library call (Gemv)", ("inline-library",))
+    broken = evidence("extcall_lib_blas0", error="KeyError: '_out_gemv'\ntraceback ...")
+
+    text = report([broken, evidence("extcall_doall1")], {"lib_blas0": gemv}, last="inline-library on lib_blas0")
+
+    first = text.splitlines()[1]
+    assert first.startswith(
+        "extcall_lib_blas0 (cut from lib_blas0, opaque library call (Gemv)): failed after inline-library on lib_blas0: "
+        "KeyError: '_out_gemv'"
+    ), first
+    assert "failed:" in report([broken]).splitlines()[1], "without a row or a change the hint reads as before"

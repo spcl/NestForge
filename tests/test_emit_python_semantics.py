@@ -11,8 +11,8 @@ from dace.libraries.standard import Reduce
 from dace.sdfg.state import LoopRegion
 from helpers import run_emitted
 
-from nestforge.ir.emit_python import hoist_nested_scratch, lower, render, scratch_arrays
-from nestforge.ir.extract import blocks_defined_symbol_dtypes
+from tactics.ir.emit_python import hoist_nested_scratch, lower, render, scratch_arrays
+from tactics.ir.extract import blocks_defined_symbol_dtypes
 
 N = dace.symbol("N", dtype=dace.int64)
 SUM = "lambda x, y: x + y"

@@ -14,11 +14,11 @@ import pytest
 from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.analysis import loop_analysis
 
-from nestforge.build.sdfg import compile_linked_program, generate_program
-from nestforge.ir.extract import find_state_of_node
-from nestforge.ir.loops import enclosing_loops, loop_symbol_values
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.build.sdfg import compile_linked_program, generate_program
+from tactics.ir.extract import find_state_of_node
+from tactics.ir.loops import enclosing_loops, loop_symbol_values
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 T = dace.symbol("T", dtype=dace.int64)
 N = dace.symbol("N", dtype=dace.int64)

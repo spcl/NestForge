@@ -12,22 +12,22 @@ import pytest
 from dace.codegen import cpf
 from dace.libraries.standard.nodes.external_call import ExternalCall
 
-from nestforge.build import flags
-from nestforge.build.sdfg import compile_linked_program
-from nestforge.build.toolchain import CudaToolchain, Toolchain, needed_libraries
-from nestforge.corpus.translate import prepare
-from nestforge.ir.extract import Boundary
-from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
-from nestforge.stages.kernel import (
+from tactics.build import flags
+from tactics.build.sdfg import compile_linked_program
+from tactics.build.toolchain import CudaToolchain, Toolchain, needed_libraries
+from tactics.corpus.translate import prepare
+from tactics.ir.extract import Boundary
+from tactics.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+from tactics.stages.kernel import (
     KernelVerdict,
     full_probe,
     kernel_runtime_libraries,
     schedule_kernel,
     use_kernel_library,
 )
-from nestforge.stages.placement import default_devices, insert_copies
-from nestforge.stages.scopes import lower_nests_to_external_call
-from nestforge.stages.variants import (
+from tactics.stages.placement import default_devices, insert_copies
+from tactics.stages.scopes import lower_nests_to_external_call
+from tactics.stages.variants import (
     Variant,
     device_variants,
     enumerate_cuda_variants,

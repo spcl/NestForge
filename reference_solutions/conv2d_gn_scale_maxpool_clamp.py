@@ -9,8 +9,8 @@ the ``pure`` implementation of the same node, 0.15x at preset M) are on the ``de
 
 from dace.libraries.linalg.nodes.tensordot import TensorDot
 
-from nestforge.ir.introspect import Row
-from nestforge.replay import Context, Script
+from tactics.ir.introspect import Row
+from tactics.replay import Context, Script
 
 KERNEL = "conv2d_gn_scale_maxpool_clamp"
 CONFIGS = (Context("cpu", 72, "M"),)

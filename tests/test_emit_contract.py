@@ -9,8 +9,8 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.interstate import LoopToMap
 from helpers import nest_to_python, sdfg_to_python
 
-from nestforge.ir.emit_python import load_emitted, oracle_sdfg
-from nestforge.ir.extract import Boundary
+from tactics.ir.emit_python import load_emitted, oracle_sdfg
+from tactics.ir.extract import Boundary
 
 N = dace.symbol("N")
 
@@ -126,7 +126,7 @@ def test_make_inputs_sizes_scratch_the_way_the_emitter_widened_it() -> None:
     """make_inputs sized scratch from the raw descriptor while the emitted kernel is written against the
     widened one, so the caller handed the kernel a buffer smaller than it indexes -- a write past the end
     of the allocation across the ABI (heap corruption in the forked child)."""
-    from nestforge.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
+    from tactics.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
 
     boundary = loop_scratch_boundary()
     sizes = {"N": 4}
@@ -163,7 +163,7 @@ def test_the_scratch_of_a_nest_left_inside_a_map_is_the_callers_to_allocate() ->
         state=None,
         standalone_sdfg=sdfg,
     )
-    from nestforge.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
+    from tactics.build.arena import make_inputs  # the build side, which sizes buffers from oracle_sdfg
 
     buffers = make_inputs(boundary, {"N": 8}, seed=0)
     assert {"dqdt_slice_plus_sx_slice", "dqdt_slice_minus_sink_slice"} <= buffers.keys()

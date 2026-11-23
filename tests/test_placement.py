@@ -14,12 +14,12 @@ from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg.nodes import MapEntry
 
-from nestforge.ir.depends import KernelGraph, kernel_dependencies
-from nestforge.records import MoveStatus
-from nestforge.session import PlaceResult, Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.placement import OffloadKernels, Transfer, device_copies, transfers
-from nestforge.stages.scopes import lower_nests_to_external_call
+from tactics.ir.depends import KernelGraph, kernel_dependencies
+from tactics.records import MoveStatus
+from tactics.session import PlaceResult, Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.placement import OffloadKernels, Transfer, device_copies, transfers
+from tactics.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N", dtype=dace.int64)
 

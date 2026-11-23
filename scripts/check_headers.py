@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Require the copyright and SPDX header on every Python file under nestforge/, scripts/, tests/ and examples/, and
+"""Require the copyright and SPDX header on every Python file under tactics/, scripts/, tests/ and examples/, and
 on conftest.py.
 
 The header follows an optional shebang and coding line. A header with another year or project name is accepted;
@@ -14,13 +14,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from nestforge.paths import REPO_ROOT
+from tactics.paths import REPO_ROOT
 
 SPDX_LINE = "# SPDX-License-Identifier: GPL-3.0-or-later"
 HEADER = ("# Copyright 2021 ETH Zurich and the NestForge authors.", SPDX_LINE)
 COPYRIGHT_RE = re.compile(r"^# Copyright \d{4} ETH Zurich and the [\w.-]+ authors\.$")
 CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=]")
-SCOPE_PREFIXES = ("nestforge/", "scripts/", "tests/", "examples/")
+SCOPE_PREFIXES = ("tactics/", "scripts/", "tests/", "examples/")
 
 
 def in_scope(rel: str) -> bool:

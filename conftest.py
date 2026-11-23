@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING
 import dace
 import pytest
 
-from nestforge.corpus.bench import materialize_dace_corpus
+from tactics.corpus.bench import materialize_dace_corpus
 
 if TYPE_CHECKING:
     import numpy as np
 
-    from nestforge.session import Session
-    from nestforge.stages.performance import Reference
+    from tactics.session import Session
+    from tactics.stages.performance import Reference
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -53,7 +53,7 @@ def private_dace_build_folder(tmp_path_factory: pytest.TempPathFactory) -> Itera
 def cloudsc_monolith() -> tuple["Session", dict[str, "np.ndarray"], "Reference"]:
     """The bench's cloudsc_monolith canonicalized as an agent session starts it (preset S, float64, CPU), with the
     bench's inputs and reference; built once, as canonicalization takes minutes. Tests work on a ``trial()``."""
-    from nestforge.server import Setup, start
+    from tactics.server import Setup, start
 
     session, inputs, reference = start(Setup(kernel="cloudsc_monolith", preset="S", datatype="float64", gpu=False))
     assert reference is not None, "cloudsc_monolith lost its bench reference"

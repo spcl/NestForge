@@ -2,11 +2,11 @@
 
 [Overview](../README.md) · related: [3 Scopes](stages.md#stage-3-scopes), [4 Placement](stages.md#stage-4-placement)
 
-`kernel_dependencies(sdfg)` (`nestforge/ir/depends.py`) answers, for every `ExternalCall` argument, which producers
+`kernel_dependencies(sdfg)` (`tactics/ir/depends.py`) answers, for every `ExternalCall` argument, which producers
 can reach it. It is the kernel-only view the agent reads, and stage 4 uses it to list the transfers a placement
 implies. It reads the program and never changes it.
 
-```
+```text
 extcall_doall6: A <- extcall_doall10.A | program [carried: for0], N <- program
 extcall_doall10: B <- extcall_doall6.B, N <- program
 exit: A <- extcall_doall10.A | program, B <- extcall_doall6.B | program

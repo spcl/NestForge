@@ -13,8 +13,8 @@ from dace.libraries.standard.nodes.external_call import ExternalCall, in_conn, o
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
-from nestforge.stages.scopes import lower_nests_to_external_call
+from tactics.ir.depends import ArgEdge, KernelGraph, Producer, UnsupportedProgram, kernel_dependencies
+from tactics.stages.scopes import lower_nests_to_external_call
 
 N = dace.symbol("N")
 K = dace.symbol("K")

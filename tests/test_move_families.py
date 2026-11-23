@@ -10,11 +10,11 @@ import numpy as np
 import pytest
 from dace.sdfg import nodes
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.server import CALLS
-from nestforge.session import Session
-from nestforge.stages.families import ALL, FAMILIES, FAMILY_FREE, checked_families, family_of
-from nestforge.stages.moves import MOVE_SHAPES, ROLLBACK, MoveKind, move_kinds
+from tactics.records import MoveStatus, Refusal
+from tactics.server import CALLS
+from tactics.session import Session
+from tactics.stages.families import ALL, FAMILIES, FAMILY_FREE, checked_families, family_of
+from tactics.stages.moves import MOVE_SHAPES, ROLLBACK, MoveKind, move_kinds
 
 N = dace.symbol("N", dtype=dace.int64)
 

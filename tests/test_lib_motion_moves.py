@@ -17,10 +17,10 @@ from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.sync import Sync, SyncScope
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.names import is_copy, is_copy_tasklet
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.moves import plan_move
+from tactics.ir.names import is_copy, is_copy_tasklet
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.moves import plan_move
 
 N = dace.symbol("N", dtype=dace.int64)
 K = dace.symbol("K", dtype=dace.int64)

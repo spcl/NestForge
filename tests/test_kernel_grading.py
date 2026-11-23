@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""A kernel graded against its oracle by HPCAgent-Bench's rule (``nestforge.build.grading``): a correct kernel that
+"""A kernel graded against its oracle by HPCAgent-Bench's rule (``tactics.build.grading``): a correct kernel that
 reorders a long reduction passes, as the bench would pass it; a wrong one still fails. NestForge's old gate (rtol
 1e-14 per FP mode) failed the first: a reordered fp64 sum of 1e6 terms drifts past 1e-14."""
 
@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from hpcagent_bench.precision import Precision
 
-from nestforge.build.arena import diff_stats
-from nestforge.build.grading import Expected, grade_kernel, output_precision
+from tactics.build.arena import diff_stats
+from tactics.build.grading import Expected, grade_kernel, output_precision
 
 #: A long reduction, the length a reordered fp64 sum drifts past 1e-14 at.
 LONG = 1_000_000

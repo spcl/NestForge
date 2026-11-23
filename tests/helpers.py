@@ -24,8 +24,8 @@ from dace.libraries.standard.nodes.external_call import ExpandExternCall, Extern
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
 
-from nestforge.build import toolchain
-from nestforge.build.sdfg import (
+from tactics.build import toolchain
+from tactics.build.sdfg import (
     BuildOptions,
     BuiltSDFG,
     build_archive,
@@ -33,11 +33,11 @@ from nestforge.build.sdfg import (
     generate_program,
     link_shared,
 )
-from nestforge.build.toolchain import CType, parse_params, raw_signature, signature
-from nestforge.corpus import bench
-from nestforge.corpus.bench import CorpusKernel
-from nestforge.corpus.translate import prepare
-from nestforge.ir.emit_python import (
+from tactics.build.toolchain import CType, parse_params, raw_signature, signature
+from tactics.corpus import bench
+from tactics.corpus.bench import CorpusKernel
+from tactics.corpus.translate import prepare
+from tactics.ir.emit_python import (
     kernel_args,
     kernel_arrays,
     load_emitted,
@@ -47,12 +47,12 @@ from nestforge.ir.emit_python import (
     scratch_arrays,
     widen_scratch,
 )
-from nestforge.ir.extract import Boundary, CfgNest, NestNode, extract_cfg_nest, extract_map_nest
-from nestforge.ir.introspect import body_lines, lowered_twin, tree_rows
-from nestforge.ir.names import ScopeChildren, normalize_labels
-from nestforge.session import Session
-from nestforge.stages.moves import Rewrite, legal_moves, plan_move
-from nestforge.stages.performance import Reference, time_program
+from tactics.ir.extract import Boundary, CfgNest, NestNode, extract_cfg_nest, extract_map_nest
+from tactics.ir.introspect import body_lines, lowered_twin, tree_rows
+from tactics.ir.names import ScopeChildren, normalize_labels
+from tactics.session import Session
+from tactics.stages.moves import Rewrite, legal_moves, plan_move
+from tactics.stages.performance import Reference, time_program
 
 #: NumPy dtype name -> ctypes scalar; DaCe lowers a comparison transient to C bool.
 CTYPE = {

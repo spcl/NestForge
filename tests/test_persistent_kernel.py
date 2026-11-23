@@ -11,9 +11,9 @@ import dace
 import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
-from nestforge.stages.performance import Reference
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dtype=dace.int64)
 T = dace.symbol("T", dtype=dace.int64)

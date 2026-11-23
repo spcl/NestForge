@@ -19,16 +19,16 @@ from dace.frontend.python.parser import DaceProgram
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import extern_declaration_and_call
 
-import nestforge.build.sdfg as build_sdfg
-from nestforge.build import toolchain
-from nestforge.build.isolation import Result, run_isolated
-from nestforge.build.sdfg import compile_linked_program
-from nestforge.build.toolchain import COMPILE_TIMEOUT_S, needed_libraries, raw_signature, split_params
-from nestforge.corpus.translate import prepare
-from nestforge.ir.extract import Boundary
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.canonicalize import Targets, canonicalize, fuse_and_finish
-from nestforge.stages.kernel import (
+import tactics.build.sdfg as build_sdfg
+from tactics.build import toolchain
+from tactics.build.isolation import Result, run_isolated
+from tactics.build.sdfg import compile_linked_program
+from tactics.build.toolchain import COMPILE_TIMEOUT_S, needed_libraries, raw_signature, split_params
+from tactics.corpus.translate import prepare
+from tactics.ir.extract import Boundary
+from tactics.paths import REPO_ROOT
+from tactics.stages.canonicalize import Targets, canonicalize, fuse_and_finish
+from tactics.stages.kernel import (
     GPU_FORMS,
     KernelSource,
     KernelVerdict,
@@ -41,9 +41,9 @@ from nestforge.stages.kernel import (
     use_kernel_library,
     validate_kernel,
 )
-from nestforge.stages.placement import default_devices, device_copies, insert_copies
-from nestforge.stages.scopes import lower_nests_to_external_call
-from nestforge.stages.variants import device_variants
+from tactics.stages.placement import default_devices, device_copies, insert_copies
+from tactics.stages.scopes import lower_nests_to_external_call
+from tactics.stages.variants import device_variants
 
 N = dace.symbol("N")
 M = dace.symbol("M")
@@ -487,14 +487,14 @@ import dace
 from helpers import extern_declaration_and_call
 
 from dace.codegen.common import get_gpu_backend
-from nestforge.build.toolchain import discover_cuda_toolchains, discover_hip_toolchains
-from nestforge.corpus.translate import prepare
-from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
-from nestforge.stages.canonicalize import Targets, canonicalize
-from nestforge.stages.placement import default_devices, insert_copies
-from nestforge.stages.canonicalize import fuse_and_finish
-from nestforge.stages.scopes import lower_nests_to_external_call
-from nestforge.stages.variants import device_variants
+from tactics.build.toolchain import discover_cuda_toolchains, discover_hip_toolchains
+from tactics.corpus.translate import prepare
+from tactics.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
+from tactics.stages.canonicalize import Targets, canonicalize
+from tactics.stages.placement import default_devices, insert_copies
+from tactics.stages.canonicalize import fuse_and_finish
+from tactics.stages.scopes import lower_nests_to_external_call
+from tactics.stages.variants import device_variants
 
 N = dace.symbol("N")
 

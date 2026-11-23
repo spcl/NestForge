@@ -1,12 +1,12 @@
 # AGENTS.md
 
 Guide for LLM agents that drive NestForge and for coding agents that change it. Stage details live in
-[docs/stages.md](docs/stages.md); agents reach NestForge through the bench plugin in [plugin/nestforge](plugin/nestforge).
+[docs/stages.md](docs/stages.md); agents reach NestForge through the bench plugin in [plugin/tactics](plugin/tactics).
 
 ## Driving NestForge
 
 The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagent-bench-plugin); the
-[skill page](plugin/nestforge/skills/nestforge/SKILL.md) and [prompt texts](plugin/nestforge/prompt/) are what the agent reads.
+[skill page](plugin/tactics/skills/nestforge/SKILL.md) and [prompt texts](plugin/tactics/prompt/) are what the agent reads.
 
 - Never edit SDFG nodes or memlets; request moves. Each move is checked for legality before it applies.
 - Name rows by the labels the tree prints, unique across the program. A row keeps its label while it lives; a move
@@ -25,7 +25,7 @@ The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagen
 - `mypy && mypy tests` (strict, `[tool.mypy]` in pyproject.toml) passes with no errors, as CI checks. DaCe is
   untyped except `dace.program` (`typings/dace`).
 - No `getattr`/`hasattr`: declare every attribute with its type, `X | None` when it may be absent.
-- Answers are frozen pydantic records (`nestforge/records.py`), outcomes are enums compared with `is`; every other
+- Answers are frozen pydantic records (`tactics/records.py`), outcomes are enums compared with `is`; every other
   class is slotted. DaCe library nodes, whose properties need an instance `__dict__`, are the exception.
 - Small, well-named helpers; cyclomatic complexity at most 15.
 - Nothing hardcoded but the repository root, derived from the package. No magic numbers: every numeric constant is

@@ -9,7 +9,7 @@ check then handed its ``None`` subset to ``OTFMapFusion``, whose ``AttributeErro
 import dace
 from dace.sdfg import nodes
 
-from nestforge.stages.moves import intermediates, legal_moves
+from tactics.stages.moves import intermediates, legal_moves
 
 #: Elements of each array.
 SIZE = 16

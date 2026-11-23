@@ -3,7 +3,7 @@
 One file per benchmark, `<kernel>.py`. Its `solve(s, ctx)` applies the reference moves; replay times the result against `default_moves()` and checks it against the bench oracle.
 
 ```
-python -m nestforge.replay reference_solutions/<kernel>.py
+python -m tactics.replay reference_solutions/<kernel>.py
 ```
 
 **Decoys.** Main declares none: a reference solution is only `solve`, and replay times the baseline and the reference. The decoys that the rows below name (a schedule an agent could take that loses, such as `stage1`) are kept on the long-lived `decoys` branch, one file per kernel under `reference_solutions/decoys/`; their timings stay here as evidence.
@@ -71,7 +71,7 @@ Stage 2 moves timed on a GH200 GPU. The device matters: `bfs` and `harris_corner
 
 `fuse_physics_into_scan` also declares a decoy: the reference, then the physics map interchanged so the levels are outermost, which leaves only the 90 levels parallel on the GPU (300 ms, 0.05x of the default).
 
-`harris_corner` was timed with the per-kernel check against the emitted Python skipped (moves, scopes, placement and kernel builds once, then the whole program against the bench oracle): that check runs the fused kernel as a Python loop over every point, hours at preset M, so a plain `python -m nestforge.replay` of this file at M is very slow. On the CPU the same route is slower than the default (0.75x at 2048 x 4096, DaCe `0f8ac0227`), so the reference there is the default.
+`harris_corner` was timed with the per-kernel check against the emitted Python skipped (moves, scopes, placement and kernel builds once, then the whole program against the bench oracle): that check runs the fused kernel as a Python loop over every point, hours at preset M, so a plain `python -m tactics.replay` of this file at M is very slow. On the CPU the same route is slower than the default (0.75x at 2048 x 4096, DaCe `0f8ac0227`), so the reference there is the default.
 
 ## Stage 3 benchmarks (1)
 

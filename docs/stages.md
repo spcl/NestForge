@@ -25,7 +25,7 @@ one.
 |---|---|
 | default | `Session.canonicalize()` |
 | agent | none |
-| code | `nestforge/stages/canonicalize.py` |
+| code | `tactics/stages/canonicalize.py` |
 
 ## Stage 2: Moves
 
@@ -51,11 +51,12 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `for-fission` | loop | `LoopFission` |
 | `doall-fusion` | two maps | `MapFusionVertical` (in place when the first map updates the array), else `OTFMapFusion` (a window read is recomputed per element), else `MapFusionHorizontal`; when the intermediate is left a transient no one reads, `DeadDataflowElimination` drops its stores |
 | `doall-fission` | map | `MapFission`: per computation (independent statement groups, never per tasklet); `doall-fusion` back what shares data |
+| `split-doall` | top-level map, step 1 | cuts one parameter's range at `at` (clamped): `[lo, at)` stays, `[at, hi]` is a copy beside it in the same state; always legal, iterations are independent; listed on a doall that reads what an exchange receives, at the first and the last row that read it |
 | `subgraph-fission` | map, body block | `SubgraphFission`: per state, cut after the named block |
 | `interchange-doall-doall` | outer, inner map | `MapInterchange`; the inner map may be the one map in the nested body of the outer (the body is inlined and its one-iteration maps dropped first) |
 | `interchange-for-doall` | loop, its map | `MoveLoopIntoMap`; also a loop whose body is several doalls over one shared axis, in several states or behind ifs (the row names one of them): the loop goes inside one doall over that axis, `cfg_body` + `lane_axis` (DaCe's lane analysis). `doall-fusion` the ones that fuse first |
 | `interchange-doall-for` | map, its loop | `MapLoopInterchange` (splits a shared state around the map first) |
-| `sink-invariant-guard` | if whose branch ends in one for loop, or is one state of doalls | `MoveIfIntoLoop` for the loop; `push_if_into_maps` (`nestforge/stages/sinking.py`) for the doalls: each doall's body becomes a nested SDFG under a copy of the condition |
+| `sink-invariant-guard` | if whose branch ends in one for loop, or is one state of doalls | `MoveIfIntoLoop` for the loop; `push_if_into_maps` (`tactics/stages/sinking.py`) for the doalls: each doall's body becomes a nested SDFG under a copy of the condition |
 | `hoist-invariant-guard` | for loop whose only statement is an invariant if, or doall whose body holds an if | for loop: `MoveLoopInvariantIfUp`; doall: `MoveMapInvariantIfUp`, a whole-SDFG pass: tried on a copy, applied only if it lifts exactly one if, above this doall; a doall with other work around the if is unswitched into `if c: doall {A; B} else: doall A` |
 | `tile-doall` | doall (+ `tile_sizes`, one per dimension) | `MapTiling` (`divides_evenly=False`) |
 | `untile-doall` | tile doall, point doall | `UntileLoops`' map tile pairs, every tile dimension |
@@ -67,7 +68,7 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | `set-schedule-gpu` | in a scope placed on the GPU: the kernel doall (+ `block`), or a doall directly inside it (+ `schedule`: `sequential`, `static`, `dynamic`) | the session keeps the choice per kernel and sets it on the placed body after every placement (offloading resets schedules): `gpu_block_size` on the kernel doall, `GPU_ThreadBlock` (static: a constant extent of at most 1024) or `GPU_ThreadBlock_Dynamic` (dynamic: one dimension) inside; the block comes from one place, as DaCe's GPU code generator requires; `guided` is refused until DaCe has it |
 | `snapshot-reads` | doall that reads a slice (one index per dimension: a map parameter or a value the doall does not change) of an array another doall of its state writes | a doall per slice copies it into a transient and the doall reads the transient, so `doall-fusion` can merge the two doalls; the copy is a doall because a plain copy is folded back by the cleanup |
 | `hoist-invariant-code` | for loop holding a loop-invariant statement or sub-block, or doall holding a statement no parameter of its nest changes | `LoopInvariantCodeMotion` on that one row: `hoist_loop_region` for a for loop, `hoist_map_scope` for a doall, judged against the outermost doall of a perfect nest |
-| `sink-invariant-code` | for loop or doall (+ `container`, a temporary it reads) | `sink_into_loop` / `sink_into_map` (`nestforge/stages/sinking.py`): the tasklets that compute the temporary, in the state just before the row (or above the doall in its state), move to the start of the loop body or into the doall's body as its first state; refused where the temporary is used anywhere else, a statement has a side effect, or the row writes what the statements read |
+| `sink-invariant-code` | for loop or doall (+ `container`, a temporary it reads) | `sink_into_loop` / `sink_into_map` (`tactics/stages/sinking.py`): the tasklets that compute the temporary, in the state just before the row (or above the doall in its state), move to the start of the loop body or into the doall's body as its first state; refused where the temporary is used anywhere else, a statement has a side effect, or the row writes what the statements read |
 | `vectorize-doall` | top-level doall (+ `lanes`, per vectorized dimension, innermost last; + `isa`: `auto`, `avx512`, `avx2`, `sve`, `neon`, `scalar`) | `VectorizeMap`: the doall alone is nested and `VectorizeCPUMultiDim` tiles its innermost maps, a masked tile for the remainder, tile nodes expanded into the ISA's tile functions; every other doall stays scalar. `sve` takes its own vector length, so its `lanes` are ignored. Judged when applied, on a copy first. A kernel holding the result has no NumPy oracle (its body is C++), so its builds are `unchecked` and the whole program checks them |
 | `relayout` | none (+ `operation`, one operation of the bench's `requests` on an array argument; listed as a transpose of the two innermost dimensions of the first argument that has two) | relayout's `apply_requests` without conversion: the program works on the argument as `permute`, `block` / `unblock`, `split` / `unsplit`, `pad` / `unpad`, `shuffle`, `linear_shuffle` or `cast` lays it out; every operation so far is laid out again from the program before the first. Only before any other change. The operations are the submission's `requests` (`Final.requests`): the harness lays the arguments out before the call and back after it, and NestForge times the program the same way (`stages/layout.py`). `finalize` refuses a `cast` until the bench's entry takes per-argument precisions |
 | `skew-wavefront` | for loop whose nest is a wavefront (+ `tile_sizes`, optional: two extents, along the loop and along the diagonal) | `WavefrontSkew`: DaCe derives the skew from the dependences and rewrites the nest into a sequential loop over diagonals (iterator `_skew_t_<n>`) holding a doall per diagonal, or a diagonal of tiles where the dependences allow (64 by 64 by default). A loop that is no wavefront is refused with `WavefrontSkew.plan_or_reason`'s sentence, class `dependence` |
@@ -82,8 +83,8 @@ depth of one kernel. `list_move_kinds()` (`moves.move_kinds`) is this table as r
 | | |
 |---|---|
 | default | `default_moves()`: the wavefront skew on every nest it applies to (so the program has the canonical form's wavefronts), then canonicalization's `fuse` stage and the stages after it; a switched-off family ([move-families.md](move-families.md)) skips its part |
-| agent | moves, then `finish_moves()` runs the stages after `fuse` but `fuse_final`, keeping the chosen maps |
-| code | `nestforge/stages/moves.py` |
+| agent | moves, then `finish_moves()` runs the stages after `fuse` (no fusion), keeping the chosen maps |
+| code | `tactics/stages/moves.py` |
 
 ## Stage 3: Scopes
 
@@ -98,9 +99,9 @@ kernel, scopes are fixed from placement on, and a new round reopens both ([phase
 `persist_temporaries(min_bytes)` is an option, not a scope: the program's heap transients of at least `min_bytes`
 (1 MiB by default, at `sizes`) are allocated once at init instead of on every call, which saves the page faults of fresh
 memory (1.26x on `fuse_physics_into_scan` at preset M). It needs `sizes`, leaves out transients whose extent names a symbol
-`sizes` lacks, and changes no loop (`nestforge/build/sdfg.py`, `make_persistent`).
+`sizes` lacks, and changes no loop (`tactics/build/sdfg.py`, `make_persistent`).
 
-The default (`default_units` in `nestforge/stages/scopes.py`) walks the program's top-level blocks:
+The default (`default_units` in `tactics/stages/scopes.py`) walks the program's top-level blocks:
 
 | top-level block | scopes |
 |---|---|
@@ -137,7 +138,7 @@ of the loop's range unless `sizes` gives a value.
 | default | `default_scopes()` |
 | agent | `set_scope(labels)`, `unset_scope(name)` |
 | option | `persist_temporaries(min_bytes)` |
-| code | `nestforge/stages/scopes.py`, `nestforge/ir/extract.py`, `nestforge/ir/loops.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
+| code | `tactics/stages/scopes.py`, `tactics/ir/extract.py`, `tactics/ir/loops.py`, DaCe's `ExternalCall` (`dace/libraries/standard/nodes/external_call.py`) |
 
 ## Stage 4: Placement
 
@@ -151,7 +152,7 @@ A GPU kernel is lowered inside its call: DaCe's `OffloadToAccelerator` runs on t
 argument in the memory the call passes it in, so the body's maps become `GPU_Device` kernels and its temporaries
 device memory, while CPU kernels and the program around the calls are unchanged.
 `place(devices)` takes `{kernel: "cpu" | "gpu"}` and returns each kernel's device and the
-transfers the [kernel DAG](../depends.md) implies: every argument whose producer and consumer sit on different
+transfers the [kernel DAG](depends.md) implies: every argument whose producer and consumer sit on different
 devices. It passes host memory, so a GPU kernel copies its arguments at its own boundary, inside the call.
 `insert_copies()` runs `OffloadToAccelerator` on the program first: the GPU kernels' operands move to device memory,
 the copies sit at the kernels' boundaries in the program (a value two GPU kernels pass stays on the device), and the
@@ -164,7 +165,7 @@ the scopes phase: a run-on move places the kernels it names (`Session.run_on`), 
 |---|---|
 | default | `place()`, then `insert_copies()` |
 | agent | `run-on-cpu`, `run-on-gpu` (and the `-persistent` forms) through `apply_scope_move`, then `finalize_scope` |
-| code | `nestforge/stages/placement.py` |
+| code | `tactics/stages/placement.py` |
 
 ## Stage 5: Kernels
 
@@ -177,7 +178,7 @@ scalars by value. A GPU kernel is two units, as CPF renders it: `<kernel>.cu` ho
 compiler vectorizes; stage 6 sweeps its flags.
 
 An agent reads `kernel_source(name)` (a GPU kernel's two units, split by the line `// ---- device unit ----`) and replaces it with `set_kernel_source(name, source, language)`. NestForge
-builds the new source, checks it against the kernel's [Python oracle](../oracle.md) and links it only when it
+builds the new source, checks it against the kernel's [Python oracle](oracle.md) and links it only when it
 matches; the status is `ok`, `refused`, `build-failed` or `wrong`. A kernel with no oracle to match (a symbol only the
 running program computes, or an oracle that does not finish) is linked with status `unchecked`, and the whole program
 checks it.
@@ -186,12 +187,17 @@ checks it.
 |---|---|
 | default | `optimize_kernel(name)` |
 | agent | `set_kernel_source(name, source, language)` |
-| code | `nestforge/stages/kernel.py`, `nestforge/build/` |
+| code | `tactics/stages/kernel.py`, `tactics/build/` |
 
 ## Stage 6: Variants
 
 Stage 6 compiles each kernel's current source into variants, checks each against the oracle and keeps the fastest
 correct one. It is deterministic, never agent-driven.
+
+A kernel matches its oracle when its outputs pass the bench's grade (`compare_arrays`, the band of each output's
+precision, with the reassociation floor `eps_acc * sqrt(l)`; `l` is each output's accumulation length at the checked
+sizes, #106). `docs/fp-and-vectorization.md` describes the check; `tactics/build/grading.py` and
+`tactics/ir/accumulation.py` implement it. The same gate serves the sweep, `write-kernel` and the hints.
 
 - **CPU.** Compiler on PATH (GNU, LLVM, oneAPI) × FP mode (strict-ieee, contract-fma, fast-math) × vectorizer cost
   model.
@@ -199,12 +205,12 @@ correct one. It is deterministic, never agent-driven.
 
 Every variant is timed. A CPU variant runs in a forked child and a GPU variant in a spawned interpreter, so a crash
 or hang is a recorded result, never a dead harness.
-[FP modes](../fp-and-vectorization.md) lists the flags.
+[FP modes](fp-and-vectorization.md) lists the flags.
 
 | | |
 |---|---|
 | default | `sweep(name)` |
-| code | `nestforge/stages/variants.py`, `nestforge/build/arena.py`, `nestforge/build/flags.py` |
+| code | `tactics/stages/variants.py`, `tactics/build/arena.py`, `tactics/build/flags.py` |
 
 ## Stage 7: Feedback
 
@@ -217,10 +223,11 @@ compiler remarks from one extra compile of the current variant (`-fopt-info-vec-
 | build or run failed | fix the kernel |
 | wrong result | check bounds, races, reduction order |
 | kernel is half the kernel time or more | optimize it first |
+| kernel cut from a tree row (`performance` only) | `<label> is <share> of kernel time, <kind>; moves offered on it: <kinds>` (issue #88) |
 | registers spilled | loop body too big, try fission |
 | loop not vectorized | the reason, mapped to a move (fission, interchange, hoisting an `if`, `__restrict__`) |
 
-Failures rank first; the report keeps at most eight hints.
+Failures rank first, and within a rule the larger share comes first; the report keeps at most eight hints.
 
 `performance(inputs, reference)` gives every phase's feedback in one record, on a copy completed with the default
 scopes and placement; kernels keep the libraries already linked, the rest get the default build. A served session
@@ -237,4 +244,4 @@ It is cached until the program or a kernel library changes.
 | | |
 |---|---|
 | default | `feedback()`, `performance(inputs, reference)` |
-| code | `nestforge/stages/feedback.py`, `nestforge/stages/performance.py` |
+| code | `tactics/stages/feedback.py`, `tactics/stages/performance.py` |

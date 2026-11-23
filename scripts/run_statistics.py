@@ -18,8 +18,9 @@ from hpcagent_bench.stats import plugin_records
 
 #: The plugin whose records this script reads, and the record schema it understands.
 PLUGIN = "nestforge"
-SCHEMA = 1
-#: Every refusal class (``nestforge.records.Refusal``), spelled as the record stores it.
+#: The record versions this script reads; version 2 changed what labels a journal names, not the shape.
+SCHEMAS = frozenset({1, 2})
+#: Every refusal class (``tactics.records.Refusal``), spelled as the record stores it.
 REFUSALS = (
     "unknown-label",
     "wrong-row-kind",
@@ -86,8 +87,10 @@ def rows(db: pathlib.Path, setup_prefix: str) -> list[dict[str, Any]]:
     tokens = episode_tokens(db)
     out = []
     for (setup, episode, kernel), kept in newest.items():
-        if kept.record.schema_version != SCHEMA:
-            raise ValueError(f"{episode}: record schema {kept.record.schema_version}, this script reads {SCHEMA}")
+        if kept.record.schema_version not in SCHEMAS:
+            raise ValueError(
+                f"{episode}: record schema {kept.record.schema_version}, this script reads {sorted(SCHEMAS)}"
+            )
         data = kept.record.data
         assert isinstance(data, dict), "a NestForge record is a JSON object"
         spent = tokens.get((setup, episode), dict.fromkeys(TOKEN_COLUMNS, 0))

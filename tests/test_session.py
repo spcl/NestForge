@@ -13,12 +13,12 @@ import pytest
 from dace import SDFG
 from dace.sdfg.performance_evaluation import work_depth
 
-from nestforge.ir import introspect
-from nestforge.ir.names import top_level_map_entries
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import row_kernel_names
+from tactics.ir import introspect
+from tactics.ir.names import top_level_map_entries
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.scopes import row_kernel_names
 
 N = dace.symbol("N")
 

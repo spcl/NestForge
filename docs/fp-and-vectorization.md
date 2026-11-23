@@ -4,7 +4,7 @@
 [6 Variants](stages.md#stage-6-variants)
 
 By default the compiler vectorizes: stage 5 emits the CPF loops, and stage 6 sweeps compiler, FP mode and the
-compiler's vectorizer cost model over each kernel's CPF unit (`nestforge/build/flags.py` defines both axes). The
+compiler's vectorizer cost model over each kernel's CPF unit (`tactics/build/flags.py` defines both axes). The
 `vectorize-doall` move ([stage 2](stages.md#stage-2-moves)) vectorizes one doall on request instead: DaCe
 rewrites its body into SIMD tiles for one ISA, and the kernel holding it is checked by the whole program, since its
 C++ body has no NumPy oracle.
@@ -27,10 +27,10 @@ oneAPI compilers default to `-fp-model=fast`, so every mode sets an explicit mod
 
 ## Grading
 
-`nestforge/build/grading.py` grades a kernel's outputs with the bench's `compare_arrays`, band
+`tactics/build/grading.py` grades a kernel's outputs with the bench's `compare_arrays`, band
 (`precision.tolerance_band`) and grading knobs (`grading.strict_small`, `grading.relative_atol`), as `grade_outputs`
 grades a program. The bench derives `l` per program output from the BenchSpec; a kernel's outputs are often
-transients no spec names, so `nestforge/ir/accumulation.py` derives it from the kernel's SDFG at the checked sizes:
+transients no spec names, so `tactics/ir/accumulation.py` derives it from the kernel's SDFG at the checked sizes:
 the writes that read their own target (directly, through scratch, or as a WCR) over the chains they extend, one per
 element and one per initialization. A matmul gets `K`, a sum over `N` gets `N`, an elementwise kernel 1; an output
 computed from scratch takes the scratch's `l`. A writer that cannot be counted (a library node, a while loop) gives

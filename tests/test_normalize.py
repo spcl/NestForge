@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The normal form the agent's tree is projected from (:mod:`nestforge.ir.names`).
+"""The normal form the agent's tree is projected from (:mod:`tactics.ir.names`).
 
 Every fixture is built by the DaCe Python frontend rather than by hand: the properties under test --
 frontend labels carrying source line numbers, nested SDFGs at the top level, statements landing
@@ -17,7 +17,7 @@ from dace.sdfg import nodes
 from dace.sdfg.nodes import MapEntry
 from dace.sdfg.state import ControlFlowBlock, LoopRegion
 
-from nestforge.ir.names import Namer, block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
+from tactics.ir.names import Namer, block_kind, in_order, inline_top_level_nsdfgs, normalize_labels, top_level_nsdfgs
 
 LABEL = re.compile(r"^(state|for|if|block|continue|break|return)(\d+)$")
 KERNEL = re.compile(r"^doall(\d+)$")

@@ -14,9 +14,9 @@ from dace.sdfg.nodes import MapEntry
 from dace.sdfg.state import LoopRegion, SDFGState
 from helpers import fusion_moves
 
-from nestforge.ir.introspect import Row, describe_graph, nest_reads_writes
-from nestforge.ir.names import top_level_map_entries
-from nestforge.stages.moves import Rewrite, plan_move
+from tactics.ir.introspect import Row, describe_graph, nest_reads_writes
+from tactics.ir.names import top_level_map_entries
+from tactics.stages.moves import Rewrite, plan_move
 
 N = dace.symbol("N")
 

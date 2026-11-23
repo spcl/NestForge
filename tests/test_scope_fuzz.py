@@ -17,10 +17,10 @@ import pytest
 from dace.libraries.standard.nodes.external_call import external_calls
 from test_fusion_fuzz import inputs_for, load_program
 
-from nestforge.ir.names import in_order
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.ir.names import in_order
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 NCASES = 8
 SIZE = 16

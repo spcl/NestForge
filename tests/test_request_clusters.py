@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from nestforge.paths import REPO_ROOT
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.requests import Asked, Example, Request, cluster_requests
+from tactics.paths import REPO_ROOT
+from tactics.stages.canonicalize import Targets
+from tactics.stages.requests import Asked, Example, Request, cluster_requests
 
 
 def program(name: str, x: str, y: str, size: str, body: str) -> str:

@@ -12,9 +12,9 @@ from dace.libraries.linalg.nodes.ttranspose import TensorTranspose
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 
-from nestforge.records import MoveStatus
-from nestforge.session import MoveResult, Session
-from nestforge.stages.expand import installed, pin_pure_without_library
+from tactics.records import MoveStatus
+from tactics.session import MoveResult, Session
+from tactics.stages.expand import installed, pin_pure_without_library
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 24

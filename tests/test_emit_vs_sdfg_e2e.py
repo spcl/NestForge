@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """End to end: the emitted code reproduces the DaCe SDFG on the hardest corpus kernels.
 
-The reference is the SDFG built by :mod:`nestforge.build.sdfg`. L1 runs the emitted Python of every listed kernel; L2
+The reference is the SDFG built by :mod:`tactics.build.sdfg`. L1 runs the emitted Python of every listed kernel; L2
 compiles each nest's translated C with gcc and clang, and its Fortran with gfortran. Sizes are small but distinct per
 dimension, so an index or transpose bug changes the values. Each case runs in a forked child.
 """
@@ -25,9 +25,9 @@ from helpers import (
     signature_order,
 )
 
-from nestforge.build.isolation import Result, run_isolated
-from nestforge.build.sdfg import BuildOptions
-from nestforge.corpus.bench import CorpusKernel
+from tactics.build.isolation import Result, run_isolated
+from tactics.build.sdfg import BuildOptions
+from tactics.corpus.bench import CorpusKernel
 
 ATOL = 1e-8
 
@@ -170,7 +170,7 @@ def base_inputs(sdfg: SDFG, sizes: dict[str, int], center: float, seed: int = 0)
 
 
 def run_oracle_nest(make_sdfg: Callable[[], SDFG], sizes: dict[str, int], base: Buffers, tmp: Path) -> Buffers:
-    """Build the SDFG through nest-forge (no dace.compile) and run it; returns the mutated buffers."""
+    """Build the SDFG through Tactics (no dace.compile) and run it; returns the mutated buffers."""
     built = build_sdfg(make_sdfg(), tmp / "oracle", BuildOptions(compiler="g++"))
     out = {k: v.copy() for k, v in base.items()}
     built.run(out, sizes)
@@ -258,8 +258,8 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind: str, short: str, lang
 
         from helpers import emit_sources
 
-        from nestforge.build.arena import call_native, make_inputs
-        from nestforge.stages.scopes import lower_nests_to_external_call
+        from tactics.build.arena import call_native, make_inputs
+        from tactics.stages.scopes import lower_nests_to_external_call
 
         make_sdfg, sizes, _ = builder_for(kind, short)
         nests = lower_nests_to_external_call(make_sdfg())

@@ -9,22 +9,22 @@ move answers without the tree; the agent reprints only the rows it reads next. T
 stands for, what each field means, how bodies print in Python or C, and which calls change the program and which only
 change the view.
 
-Code: `nestforge/ir/introspect.py` renders the tree (`describe_graph`), `nestforge/ir/names.py` hands out the labels
-(`Namer`), `nestforge/ir/emit_python.py` and `nestforge/ir/emit_c.py` print the bodies, `Session.describe` and
+Code: `tactics/ir/introspect.py` renders the tree (`describe_graph`), `tactics/ir/names.py` hands out the labels
+(`Namer`), `tactics/ir/emit_python.py` and `tactics/ir/emit_c.py` print the bodies, `Session.describe` and
 `Session.view` are the entry points, and `view_tree` is the agent's tool.
 
 ## An example
 
 `axpy` repeated `T` times, then a reversed copy and a sum, after canonicalization. Closed, the program is one row:
 
-```
+```text
 SDFG 'axpy_then_reverse'
 `- state2  doalls=4  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
 ```
 
 `view_tree expand=[state2, doall2, doall3, doall4]` opens the state and its doalls; bodies print as Python by default:
 
-```
+```text
 `- state2  reads=['x', 'y', 'z'] writes=['s', 'y', 'z']
    |- doall2  [_loop_it_0=0:T]  accum=(y += over _loop_it_0)  reads=['x'] writes=['y']
    |  `- doall3  [_loop_it_1=0:N]  accum=(y +=)  reads=['x'] writes=['y']  num_states=1
@@ -40,7 +40,7 @@ SDFG 'axpy_then_reverse'
 
 `view_tree c=[state2]` prints the same bodies as C:
 
-```
+```text
    |     : tmp5[0] = (2.0 * x[_loop_it_1]);
    |     : y[_loop_it_1] += tmp5[0];
    ...
@@ -49,7 +49,7 @@ SDFG 'axpy_then_reverse'
 
 `get_work_depth labels=[doall2, doall3, doall4]` gives the costs the tree leaves out:
 
-```
+```text
 work and depth (at N=1000, T=10; formula=true for the formulas)
 doall2  work=1.00e+4 depth=11
 doall3  work=1.00e+3 depth=2

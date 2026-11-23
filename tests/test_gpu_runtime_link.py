@@ -10,8 +10,8 @@ from helpers import dace_gpu_backend
 from test_build_review_regressions import fake_tool
 from test_kernel_stage import gpu_lowered_kernel, vadd
 
-from nestforge.build import toolchain
-from nestforge.stages import kernel as kernel_stage
+from tactics.build import toolchain
+from tactics.stages import kernel as kernel_stage
 
 RUNTIME_DIR = "/opt/device-runtime/lib64"
 #: Per backend: the kernel compiler and the device runtime's link flag.

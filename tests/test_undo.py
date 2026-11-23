@@ -11,11 +11,11 @@ import pytest
 from dace.sdfg import InvalidSDFGError
 from test_failed_calls import first_move, program, session
 
-from nestforge import session as session_module
-from nestforge.records import MoveStatus
-from nestforge.server import answer
-from nestforge.session import Session
-from nestforge.stages import moves
+from tactics import session as session_module
+from tactics.records import MoveStatus
+from tactics.server import answer
+from tactics.session import Session
+from tactics.stages import moves
 
 
 def fresh_rows(sut: Session, before: set[str]) -> set[str]:

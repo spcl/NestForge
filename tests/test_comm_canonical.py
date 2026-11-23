@@ -11,7 +11,7 @@ from dace.libraries.comm.nodes.node import CommNode
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.session import Session
+from tactics.session import Session
 
 #: The communication nodes that only read the communicator; the skeleton leaves them out.
 QUERIES = frozenset({"CommRank", "CommSize", "CommF2c"})

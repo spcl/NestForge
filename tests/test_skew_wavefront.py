@@ -14,10 +14,10 @@ from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 from test_failed_calls import program
 
-from nestforge.records import MoveStatus, Refusal
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.moves import SKEW_WAVEFRONT
+from tactics.records import MoveStatus, Refusal
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.moves import SKEW_WAVEFRONT
 
 N = dace.symbol("N")
 T = dace.symbol("T")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# nest-forge apt setup for an Ubuntu machine (system toolchain only).
+# Tactics apt setup for an Ubuntu machine (system toolchain only).
 #
-# Installs what nest-forge's owned build + arena need from apt: compilers (gcc/clang/gfortran, +flang),
+# Installs what Tactics' owned build + arena need from apt: compilers (gcc/clang/gfortran, +flang),
 # the OpenMP runtimes (libomp/libgomp), BLAS/LAPACK, Open MPI, and the python/build tooling. Intel oneAPI is
 # behind a flag (its own apt repo + gpg key):
 #   --oneapi  Intel oneAPI  -- icx/icpx/ifx + libiomp5 + SVML + MKL

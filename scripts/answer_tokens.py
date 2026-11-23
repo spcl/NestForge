@@ -5,7 +5,7 @@
 Two parts are counted per call: the call the agent writes (the tool's name and its arguments as JSON) and the answer
 it reads back. Reasoning is not counted: it is the model's, and no layout of NestForge's changes it directly.
 
-The calls run on a real session of a bench kernel through :func:`nestforge.server.answer`, as the plugin's route runs
+The calls run on a real session of a bench kernel through :func:`tactics.server.answer`, as the plugin's route runs
 them, and each answer is rendered exactly as the agent reads it: the route's ``ToolAnswer`` as JSON, which the
 bench's MCP server re-serializes with ``json.dumps(indent=2, sort_keys=True)``. A tokenizer file (the run model's
 ``tokenizer.json``) counts it. Every answer stays in the context, so the script also reports the re-send cost: each
@@ -29,7 +29,9 @@ NestForge run's calls compare on one tokenizer:
 
 import argparse
 import csv
+import importlib
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -40,16 +42,19 @@ from pathlib import Path
 from typing import Any
 
 import tiktoken
+from hpcagent_agent import plugins as agent_plugins
+from hpcagent_bench import plugins
 from hpcagent_bench.harness.judge_wire import JudgeAnswer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from tokenizers import Tokenizer
 
-from nestforge.server import CALLS, TIMED, Reply, Setup, answer, session_data, started_session
-from nestforge.stages.performance import Performance
+from tactics.paths import REPO_ROOT
+from tactics.server import CALLS, TIMED, Reply, Setup, answer, session_data, started_session
+from tactics.stages.performance import Performance
 
 
 class ToolAnswer(JudgeAnswer):
-    """The plugin route's answer to a NestForge call (``plugin/nestforge/routes/nestforge.py``), which the bench loads
+    """The plugin route's answer to a NestForge call (``plugin/tactics/routes/nestforge.py``), which the bench loads
     as a plugin and this script cannot import; a test keeps the two alike."""
 
     tool: str
@@ -83,6 +88,22 @@ BARE_KEYS = frozenset({"kind", "status", "tool", "labels"})
 QUIET: tuple[object, ...] = (None, "", [], {}, False)
 
 
+def flat(item: Any) -> bool:
+    """Whether ``item`` fits on its record's line: a one-line string, a scalar, or a list of scalars."""
+    if isinstance(item, str):
+        return "\n" not in item
+    if isinstance(item, dict):
+        return False
+    return not isinstance(item, list) or all(not isinstance(x, (dict, list)) for x in item)
+
+
+def word(item: Any) -> str:
+    """A flat ``item`` as one word: a list's items joined by commas."""
+    if isinstance(item, list):
+        return ",".join(compact(x)[0].strip() for x in item)
+    return compact(item)[0].strip()
+
+
 def compact(value: Any, depth: int = 0) -> list[str]:
     """``value`` as plain lines: one record per line, ``key value`` pairs, defaults left out, floats to 3 digits."""
     pad = "  " * depth
@@ -96,19 +117,6 @@ def compact(value: Any, depth: int = 0) -> list[str]:
             return [pad + " ".join(compact(item)[0].strip() for item in value)]
         return [line for item in value for line in compact(item, depth)]
     if isinstance(value, dict):
-
-        def flat(item: Any) -> bool:
-            if isinstance(item, str):
-                return "\n" not in item
-            if isinstance(item, dict):
-                return False
-            return not isinstance(item, list) or all(not isinstance(x, (dict, list)) for x in item)
-
-        def word(item: Any) -> str:
-            if isinstance(item, list):
-                return ",".join(compact(x)[0].strip() for x in item)
-            return compact(item)[0].strip()
-
         simple = {k: v for k, v in value.items() if v not in QUIET and flat(v)}
         nested = {k: v for k, v in value.items() if v not in QUIET and not flat(v)}
         words = [word(v) if k in BARE_KEYS else f"{k}={word(v)}" for k, v in simple.items()]
@@ -135,8 +143,47 @@ def rendered_v2(tool: str, reply: Reply) -> str:
     return json.dumps({"ok": not reply.error, "text": text}, indent=2, sort_keys=True)
 
 
-#: Every format the script can render; a new answer format adds its renderer here, and both are counted side by side.
-RENDERERS: dict[str, Renderer] = {"v1": rendered_v1, "v2": rendered_v2}
+#: The NestForge plugin folder, the bench's user plugin that renders the answers the agent reads.
+PLUGIN = REPO_ROOT / "plugin" / "tactics"
+
+
+def plugin_module(name: str) -> Any:
+    """The plugin's module ``name`` (``answers``, ``wire``), importable once the bench loaded NestForge's plugin."""
+    os.environ["HPCAGENT_BENCH_USER_PLUGIN_DIRS"] = str(PLUGIN)
+    plugins.load()
+    agent_plugins.import_tools()
+    return importlib.import_module(f"hpcagent_bench_plugins.nestforge.{name}")
+
+
+def invalid_arguments(tool: str, arguments: dict[str, Any]) -> Reply | None:
+    """The route's answer to a call whose arguments fail its tool's schema (``apply_move`` with no ``kind``), which
+    never reaches the session; None for a valid call or a tool the route does not define."""
+    tool_def = plugin_module("wire").TOOLS.get(tool)
+    if tool_def is None:
+        return None
+    try:
+        tool_def.args.model_validate(arguments)
+    except ValidationError as err:
+        return Reply(error=f"{tool}: {err}")
+    return None
+
+
+def rendered_current(tool: str, reply: Reply) -> str:
+    """The answer as agents read it since #102: the route's JSON through the plugin's renderer for ``tool``
+    (``answers.RENDERED``, with the move defaults the agent side passes), indented and key-sorted by the MCP server.
+    A phase tool's guide is not added: it is the same text in every format."""
+    if reply.error:
+        return rendered_v1(tool, reply)
+    response = ToolAnswer(tool=tool, result=reply.result, performance=reply.performance).to_json()
+    render = plugin_module("answers").RENDERED.get(tool)
+    if render is not None:
+        response = render(response, plugin_module("wire").MOVE_DEFAULTS)
+    return json.dumps(response, indent=2, sort_keys=True)
+
+
+#: Every format the script can render; a new answer format adds its renderer here, and all are counted side by side.
+#: ``v1`` is the JSON agents read up to #102, ``current`` what they read now, ``v2`` a prototype never built.
+RENDERERS: dict[str, Renderer] = {"v1": rendered_v1, "current": rendered_current, "v2": rendered_v2}
 
 #: Tokenizer names tiktoken knows: OpenAI's, a common reference when the run's own model is not the point.
 TIKTOKEN_NAMES = frozenset({"o200k_base", "cl100k_base"})
@@ -430,6 +477,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     data = session_data(Setup(args.kernel, args.preset, args.datatype, False), session) if args.measure else None
 
     def run(tool: str, arguments: dict[str, Any]) -> Reply:
+        invalid = invalid_arguments(tool, arguments)
+        if invalid is not None:
+            return invalid
         return answer(session, tool, arguments, data, timed=args.measure)
 
     shown: dict[str, str] = {}

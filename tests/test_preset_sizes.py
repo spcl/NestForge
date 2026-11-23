@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from helpers import corpus_kernel
 
-from nestforge.corpus.bench import preset_sizes
-from nestforge.server import Setup, session_data, started_session, symbol_inputs
+from tactics.corpus.bench import preset_sizes
+from tactics.server import Setup, session_data, started_session, symbol_inputs
 
 
 def test_a_fixed_loop_bound_is_a_size() -> None:

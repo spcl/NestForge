@@ -7,7 +7,7 @@ first reads ``path`` and the second writes it, so the default cannot fuse them a
 step. Once the two slices are copied, the first doall no longer touches ``path`` and the default's own fusion removes
 ``outer``. The gain grows with N (the vectors cost more than the saved traffic at small N): see the README row."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "floyd_warshall"
 CONFIGS = (Context("cpu", 72, "M"),)

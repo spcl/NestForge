@@ -10,7 +10,7 @@ shows up anywhere but here.
 import numpy as np
 import pytest
 
-from nestforge.build import arena
+from tactics.build import arena
 
 
 def test_a_nan_anywhere_fails_even_when_it_is_not_the_first_element() -> None:

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import dace
 
-from nestforge.ir import introspect
-from nestforge.session import Session
+from tactics.ir import introspect
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 100

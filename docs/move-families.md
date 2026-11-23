@@ -4,18 +4,18 @@
 
 A family is a fixed set of move kinds. A run can switch families off for its whole length, and a finished run's
 speedup is attributed to its moves and their families by replaying its journal. Code:
-`nestforge/stages/families.py` holds the table, and a test keeps every move kind in exactly one family.
+`tactics/stages/families.py` holds the table, and a test keeps every move kind in exactly one family.
 
 | Family | Move kinds |
 |---|---|
 | `fusion` | `for-fusion`, `doall-fusion`, `snapshot-reads` |
-| `fission` | `for-fission`, `doall-fission`, `subgraph-fission` |
+| `fission` | `for-fission`, `doall-fission`, `subgraph-fission`, `split-doall` |
 | `interchange` | `interchange-doall-doall`, `interchange-doall-for`, `interchange-for-doall` |
 | `shape` | `flatten-doalls`, `unflatten-doall`, `doall-to-for`, `for-to-doall` |
 | `tiling` | `tile-doall`, `tile-for`, `untile-doall`, `untile-for` |
 | `hoisting` | `hoist-invariant-code`, `sink-invariant-code`, `hoist-invariant-guard`, `sink-invariant-guard` |
 | `specialize` | `propagate-config`, `unroll-for`, `unroll-doall` |
-| `library` | `lib-before`, `lib-after`, `lib-into`, `inline-library`, `set-library-implementation` |
+| `library` | `lib-before`, `lib-after`, `lib-into`, `split-blocking`, `inline-library`, `set-library-implementation` |
 | `layout` | `relayout` |
 | `precision` | `set-fp-mode`, `change-precision` |
 | `vectorize` | `vectorize-doall` |
@@ -47,13 +47,13 @@ env = { ..., NESTFORGE_DISABLED_FAMILIES = "all" }
 ```
 
 The session lives in the judge's process, and a packet's `env` reaches only the agent's tools. The agent-side tool
-wrapper (`plugin/nestforge/tools/nestforge.py`) therefore sends the variable as `disabled_families` with every call.
+wrapper (`plugin/tactics/tools/nestforge.py`) therefore sends the variable as `disabled_families` with every call.
 The route fixes the value at the episode's first call, refuses a later call that names other families, and writes the
 families into the plugin record. The agent has no shell under the packet, and the field is not a tool argument.
 
 ## Attribution by replay
 
-```
+```text
 python scripts/attribute_moves.py --journal journal.jsonl --kernel K --preset S --out attribution.json
 python scripts/attribute_moves.py --db results.db --setup S --episode E --kernel K --preset S --out attribution.json
 ```

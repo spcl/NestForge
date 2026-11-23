@@ -11,8 +11,8 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg.state import LoopRegion
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 21  # not a multiple of the tile, so the last tile is partial

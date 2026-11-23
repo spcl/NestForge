@@ -16,11 +16,13 @@ from dace.libraries.standard.nodes.external_call import ExternalCall, external_c
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion, SDFGState
 from test_fusion_fuzz import load_program
+from test_placement import chain
+from test_rollback_equivalence import content_of
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import kernel_arguments, parallel_top_level_maps
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.scopes import kernel_arguments, parallel_top_level_maps
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 9
@@ -74,6 +76,23 @@ def smooth_steps(A: dace.float64[N], B: dace.float64[N]) -> None:
         for i in range(1, N - 1):
             B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
         A[1 : N - 1] = B[1 : N - 1] + 1.0
+
+
+@dace.program
+def time_loop_of_maps(A: dace.float64[N], B: dace.float64[N]) -> None:
+    for _ in range(3):
+        for i in dace.map[1 : N - 1]:
+            B[i] = (A[i - 1] + A[i] + A[i + 1]) / 3.0
+        for i in dace.map[1 : N - 1]:
+            A[i] = B[i] + 1.0
+
+
+@dace.program
+def map_then_matmul(A: dace.float64[N, N], B: dace.float64[N, N], C: dace.float64[N, N]) -> None:
+    T = np.empty_like(A)
+    for i, j in dace.map[0:N, 0:N]:
+        T[i, j] = A[i, j] * 2.0
+    C[:] = T @ B
 
 
 def session_and_reference(program: DaceProgram, simplify: bool = True) -> tuple[Session, dace.SDFG]:
@@ -363,6 +382,54 @@ def test_a_single_sequential_loop_nest_can_be_scoped_explicitly() -> None:
     np.testing.assert_array_equal(out, [0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0])
 
 
+# a loop that holds parallel maps, and a map next to a library call
+
+
+def test_a_time_loop_holding_parallel_maps_becomes_one_kernel_called_once() -> None:
+    """The default makes a kernel of each map inside the loop, so the loop calls two kernels per step; naming the loop
+    makes the whole loop one kernel, called once."""
+    default, _ = session_and_reference(time_loop_of_maps)
+    assert len(default.default_scopes()) == 2, (
+        "the fixture must have a kernel per map by default, else it tests nothing"
+    )
+    session, reference = session_and_reference(time_loop_of_maps)
+    session.describe()
+
+    result = session.set_scope(["for0"])
+
+    assert result.status is MoveStatus.APPLIED, result
+    (kernel,) = top_level_kernels(session)
+    assert session.kernel(result.reason) is kernel
+    scoped = session.sdfg
+    assert scoped is not None
+    assert not any(isinstance(block, LoopRegion) for block in scoped.nodes()), "the loop left the program"
+    assert not session.list_kernels()[0].parallel, "a kernel holding a time loop is sequential"
+    assert_same_values(reference, scoped, ("A", "B"))
+
+
+def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the_product() -> None:
+    session, reference = session_and_reference(map_then_matmul)
+    session.describe()
+    rows = session.row_index()
+    labels = [label for label, (obj, _) in rows.items() if isinstance(obj, (nodes.MapEntry, nodes.LibraryNode))]
+    assert len(labels) == 2, labels
+    rng = np.random.default_rng(0)
+    A, B = rng.random((SIZE, SIZE)), rng.random((SIZE, SIZE))
+
+    result = session.set_scope(labels)
+
+    assert result.status is MoveStatus.APPLIED, result
+    (kernel,) = top_level_kernels(session)
+    assert session.kernel(result.reason) is kernel
+    expected, actual = np.zeros((SIZE, SIZE)), np.zeros((SIZE, SIZE))
+    scoped = session.sdfg
+    assert scoped is not None
+    reference(A=A.copy(), B=B.copy(), C=expected, N=SIZE)
+    scoped(A=A.copy(), B=B.copy(), C=actual, N=SIZE)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+    np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
+
+
 def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path: Path) -> None:
     """Issue #97 (the fusion fuzz program of seed 1702): one doall scoped and unset again. The kernel's body is not
     inlined; the nested SDFG that stays keeps its arguments, named as the connectors (``_out_...``), non-transient."""
@@ -375,3 +442,22 @@ def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_p
 
     assert session.unset_scope(str(kernel)).status is MoveStatus.APPLIED
     session.sdfg.validate()
+
+
+def test_naming_an_empty_state_is_refused_and_changes_nothing(tmp_path: Path) -> None:
+    """Inlining a kernel leaves its state empty, and the tree still names it; scoping it crashed in DaCe's
+    ``nest_state_subgraph`` with ``KeyError: -1`` (the placement sequence fuzz, seed 1)."""
+    session = Session(chain.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path))
+    session.canonicalize()
+    for kernel in session.default_scopes():
+        assert session.unset_scope(kernel.name).status is MoveStatus.APPLIED
+    session.describe()
+    empty = [label for label, (obj, _) in session.row_index().items() if isinstance(obj, SDFGState) and not obj.nodes()]
+    assert empty, "the fixture must leave an empty state, else it tests nothing"
+    before = content_of(session.sdfg)
+
+    result = session.set_scope(empty[:1])
+
+    assert result.status is MoveStatus.ILLEGAL, result
+    assert "empty" in str(result.reason)
+    assert content_of(session.sdfg) == before and not external_calls(session.sdfg)

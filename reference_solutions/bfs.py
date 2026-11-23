@@ -10,7 +10,7 @@ Caveat: taking no move and skipping the default's fusions (``stage1``) is within
 the GPU (410.1 against 390.5 ms; default 1415.5 ms, job 5191988), so the gain mostly measures what the default gets
 wrong, not what the move adds."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "bfs"
 CONFIGS = (Context("gpu", 1, "M"),)

@@ -51,16 +51,19 @@ from hpcagent_bench.skill_frontmatter import split_frontmatter
 from hpcagent_bench.vocabulary import PACKETS
 from stub_session import Stub, install
 
-import nestforge_bench
-from nestforge.paths import REPO_ROOT
-from nestforge.records import KernelStatus, MoveStatus, Refusal, Refused
-from nestforge.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup
-from nestforge.session import KernelOutcome, Move, MoveResult, Restored, Session, TunedValue, TuneResult
-from nestforge.stages.families import FAMILIES
-from nestforge_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
+import tactics_bench
+from tactics import plugin_record
+from tactics.paths import REPO_ROOT
+from tactics.records import KernelStatus, MoveStatus, Refusal, Refused
+from tactics.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup
+from tactics.session import KernelOutcome, Move, MoveResult, Restored, Session, TunedValue, TuneResult
+from tactics.stages.families import FAMILIES
+from tactics_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
-PLUGIN = REPO_ROOT / "plugin" / "nestforge"
+PLUGIN = REPO_ROOT / "plugin" / "tactics"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
+# the bench files a plugin's record under the plugin's name, which stays nestforge
+RECORD = f"{plugin_record.PLUGIN}.json"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
@@ -258,6 +261,32 @@ def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scr
     assert "tool" not in calls[0][1]
     assert calls[1][1]["library"] == "/shared/lib.so" and calls[1][1]["workspace_bytes"] == "16*K + 128"
     assert (calls[1][1]["tool"], calls[1][1]["threads"], calls[1][1]["size"]) == ("none", 24, "S")
+
+
+def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_judge(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bench's own ``profile`` drops ``ranks`` (bench B2), so an agent could never see ``mpi_time_us``."""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append((route, body))
+        return {"result": {"library": "/shared/lib.so", "workspace_bytes": "0"}, "runs": []}
+
+    monkeypatch.setattr(http_json, "post_judge", judge)
+    packet = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+    distributed = {**packet, http_json.REQUEST_ACTIONS_ENV: json.dumps({"operations": ["distribute"]})}
+    single = registry.served(registry.Setup.read(packet))["profile"]
+    sut = registry.served(registry.Setup.read(distributed))["profile"]
+
+    sut.run({"ranks": [1, 2]})
+    sut.run({})
+    refused = sut.run({"ranks": []})
+
+    assert "ranks" not in single.input_schema["properties"]
+    assert "ranks" in sut.input_schema["properties"] and refused["ok"] is False, refused
+    profiled = [body for route, body in calls if route == "/profile"]
+    assert len(profiled) == 2 and profiled[0]["ranks"] == [1, 2] and "ranks" not in profiled[1]
 
 
 def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
@@ -460,7 +489,7 @@ def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_an
 
     post("finalize", episode, tokens=500)
 
-    record = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "nestforge.json").read_text())
+    record = json.loads((route.agent_root(episode) / RECORDS_FOLDER / RECORD).read_text())
     data = record["data"]
     assert record["schema_version"] == route.SCHEMA and data["kernel"] == KERNEL
     seen = [(c["index"], c["tool"], c["status"], c["refusal"], c["tokens"]) for c in data["calls"]]
@@ -487,7 +516,7 @@ def test_an_episode_switches_families_off_at_its_first_call_for_its_whole_length
 
     assert first.code == HTTPStatus.OK and stub.started[-1].disabled_families == tuple(sorted(FAMILIES))
     assert changed.code == HTTPStatus.BAD_REQUEST and "at its first call" in changed.answer["error"]
-    data = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+    data = json.loads((route.agent_root(episode) / RECORDS_FOLDER / RECORD).read_text())["data"]
     assert data["disabled_families"] == sorted(FAMILIES)
     assert [(c["tool"], c["family"], c["status"]) for c in data["calls"]] == [
         ("apply_move", None, "applied"),  # MOVE's kind "fuse" is the stub's, in no family
@@ -1056,7 +1085,7 @@ def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeyp
         presets.append(setup.preset)
         raise Started
 
-    monkeypatch.setattr(nestforge_bench, "start", recording_start)
+    monkeypatch.setattr(tactics_bench, "start", recording_start)
     sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference")
 
     with config.scoped_environment({"HPCAGENT_BENCH_SERVICE_PRESET": "XL+fuzz"}), pytest.raises(Started):
@@ -1086,12 +1115,12 @@ def column_record(
 ) -> dict[str, Any]:
     """The plugin record ``sut`` leaves for one episode; a reference solution fuses, the defaults run their stage."""
     session = FinalizedSession()
-    monkeypatch.setattr(nestforge_bench, "start", lambda setup: (session, None, None))
-    monkeypatch.setattr(nestforge_bench, "Script", lambda live: live)
-    monkeypatch.setattr(nestforge_bench, "baseline", lambda live, ctx: live.applied.append(applied("defaults-moves")))
-    monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: solution)
+    monkeypatch.setattr(tactics_bench, "start", lambda setup: (session, None, None))
+    monkeypatch.setattr(tactics_bench, "Script", lambda live: live)
+    monkeypatch.setattr(tactics_bench, "baseline", lambda live, ctx: live.applied.append(applied("defaults-moves")))
+    monkeypatch.setattr(tactics_bench, "reference_solution", lambda kernel: solution)
     sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
-    record: dict[str, Any] = json.loads((tmp_path / RECORDS_FOLDER / "nestforge.json").read_text())["data"]
+    record: dict[str, Any] = json.loads((tmp_path / RECORDS_FOLDER / RECORD).read_text())["data"]
     return record
 
 
@@ -1135,7 +1164,7 @@ def test_the_column_without_wavefronts_starts_its_session_with_every_move_family
         started.append(setup)
         return real_start, None, None
 
-    monkeypatch.setattr(nestforge_bench, "start", start)
+    monkeypatch.setattr(tactics_bench, "start", start)
     sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
 
     assert started[-1].disabled_families == ("all",)
@@ -1158,8 +1187,8 @@ def test_the_plugin_declares_the_reference_and_the_default_column(
     monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
 
-    assert manifest["flavors"]["nestforge_default"]["optimizer"] == "nestforge_bench:DefaultOptimizer"
-    assert manifest["flavors"]["nestforge_cpf_nowave"]["optimizer"] == "nestforge_bench:NoWaveOptimizer"
+    assert manifest["flavors"]["nestforge_default"]["optimizer"] == "tactics_bench:DefaultOptimizer"
+    assert manifest["flavors"]["nestforge_cpf_nowave"]["optimizer"] == "tactics_bench:NoWaveOptimizer"
     assert "dace_cpu_canon_nestforge_default" in manifest["ci"]["optimizers"]
     plugins.register_flavors.cache_clear()
     plugins.register_flavors()
@@ -1170,10 +1199,10 @@ def test_the_plugin_declares_the_reference_and_the_default_column(
 def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(nestforge_bench, "start", lambda setup: (FinalizedSession(), None, None))
-    monkeypatch.setattr(nestforge_bench, "Script", lambda live: live)
-    monkeypatch.setattr(nestforge_bench, "baseline", lambda script, ctx: None)
-    monkeypatch.setattr(nestforge_bench, "reference_solution", lambda kernel: None)
+    monkeypatch.setattr(tactics_bench, "start", lambda setup: (FinalizedSession(), None, None))
+    monkeypatch.setattr(tactics_bench, "Script", lambda live: live)
+    monkeypatch.setattr(tactics_bench, "baseline", lambda script, ctx: None)
+    monkeypatch.setattr(tactics_bench, "reference_solution", lambda kernel: None)
     sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
 
     library = pathlib.Path(sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu").library)

@@ -21,7 +21,7 @@ from dace.sdfg import nodes
 from dace.sdfg.state import ConditionalBlock, ControlFlowRegion, ReturnBlock
 from helpers import nest_to_python, run_emitted, sdfg_to_python
 
-from nestforge.ir.emit_python import (
+from tactics.ir.emit_python import (
     Names,
     UnsupportedNest,
     expr,
@@ -34,8 +34,8 @@ from nestforge.ir.emit_python import (
     scratch_arrays,
     simplify_as_sizes,
 )
-from nestforge.ir.extract import Boundary
-from nestforge.session import Session
+from tactics.ir.extract import Boundary
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)

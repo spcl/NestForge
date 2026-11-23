@@ -11,8 +11,8 @@ from dace import Memlet
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 6

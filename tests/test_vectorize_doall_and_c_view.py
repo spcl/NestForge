@@ -8,11 +8,11 @@ from pathlib import Path
 import dace
 import numpy as np
 
-from nestforge.ir.emit_c import body_c
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.performance import Reference
-from nestforge.stages.vectorize import DEFAULT_LANES, VECTORIZE_DOALL, tile_lanes
+from tactics.ir.emit_c import body_c
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.performance import Reference
+from tactics.stages.vectorize import DEFAULT_LANES, VECTORIZE_DOALL, tile_lanes
 
 N = dace.symbol("N", dace.int64, positive=True)
 SIZE = 37  # not a multiple of the lanes: the masked remainder tile runs too

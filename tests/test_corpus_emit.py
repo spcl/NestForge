@@ -18,12 +18,12 @@ import pytest
 from dace import SDFG, symbolic
 from helpers import corpus_kernel, run_emitted, sdfg_to_python
 
-from nestforge.build.isolation import Result, run_isolated
-from nestforge.build.sdfg import compile_linked_program
-from nestforge.corpus.bench import CorpusKernel, iter_dace_kernels, module_path
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.scopes import node_boundary
+from tactics.build.isolation import Result, run_isolated
+from tactics.build.sdfg import compile_linked_program
+from tactics.corpus.bench import CorpusKernel, iter_dace_kernels, module_path
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.scopes import node_boundary
 
 
 class Built(Result):

@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
-Status: motion rules built (2026-11-19, `nestforge/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
+Status: motion rules built (2026-11-19, `tactics/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
 the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused; the rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
@@ -49,7 +49,7 @@ are wrong or incomplete for communication.
 
 ### 1. Classes of communication rows
 
-A new module `nestforge/ir/comm.py` classifies a node. Every rule below reads the class, never the node type.
+A new module `tactics/ir/comm.py` classifies a node. Every rule below reads the class, never the node type.
 
 | Class | Nodes | Meaning |
 |---|---|---|
@@ -91,7 +91,7 @@ later rule relies on this form.
 A communication node keeps its `lib_comm<n>` label, so `Namer` and the move tables need no new kind. The row prints
 `COMM` in place of `LIBNODE`, and adds the fields an agent needs to reason about an exchange.
 
-```
+```text
 |- for0  t=0:TSTEPS
 |  |- state3
 |  |  `- lib_comm0  COMM Isend [MPI]  reads=['A'] request=req  to=down tag=0
@@ -232,7 +232,7 @@ nonblocking operation (`validate_nonblocking`).
   each array dimension, and a permutation would have to permute the bench's `distribute` request as well
   ([bench request B5](bench-requests.md)). The distributed arguments are those the kernel's manifest splits
   (`mpi.split` and `mpi.decomposition`). The plugin reads them from the bench's spec into a new field
-  `Setup.distributed_arguments` (`nestforge/server.py`).
+  `Setup.distributed_arguments` (`tactics/server.py`).
 
 ### 7. The session: ranks, timing, and the reference
 
@@ -352,13 +352,15 @@ The change is confined to crossings where one side is a communication row, and t
 
 #### 12.2 Moving and splitting statements
 
-Two moves on compute rows. Both are general moves, in the families `fission` and `motion`
-([move-families.md](../move-families.md)).
+One move on compute rows, a general move in the family `fission` ([move-families.md](../move-families.md)).
 
 **`split-doall`** cuts a doall's range in two. Labels: one doall. Argument: `at = {"<param>": "<expr>"}`.
 
-- The result is two doalls of the same body over `[lo, at)` and `[at, hi)`, in two states in that order. `at` is
-  clamped as `Max(lo, Min(at, hi))`, so an empty part is legal.
+- The result is two doalls of the same body over `[lo, at)` and `[at, hi)`, side by side in the doall's state (user
+  2026-11-22: no state split as a move; a communication row moved next to a doall splits the state, and a state
+  holding a communication row is never fused, since its node has side effects). The parts
+  are `[lo, Min(at - 1, hi)]` and `[Max(at, lo), hi]`; a `Min` or `Max` that the SDFG's facts prove redundant is
+  left out, so a cut inside the range gives plain bounds, and an empty part is legal.
 - It is always legal on a doall: the iterations are independent, so any partition of the range is the same
   computation. A doall with a `reduce=` field is split into two accumulations into the same target, which is legal for
   the same reason a doall may run in any order.
@@ -370,62 +372,40 @@ Two moves on compute rows. Both are general moves, in the families `fission` and
   touch: the bounds of the received subsets along each parameter, computed from 12.1. The agent can pass any other
   expression.
 
-**`block-before` and `block-after`** move a state across its sibling blocks. Labels: the state and the anchor block.
+**`block-before` and `block-after`: dropped (user 2026-11-22).** With effects by subset (12.1), `lib-after` moves a
+`WAIT` row past a state that touches no buffer in flight, which is the same overlap. The agent, or a reference
+solution, writes it as a sequence: `split-blocking` on the exchange, `split-doall` on the stencil into boundary and
+interior, and `lib-after` on each wait past the interior doall (its state splits there), which leaves the boundary after
+the wait.
 
-- It is `lib-before` and `lib-after` for a whole state: the state's effect (12.1 when it crosses a communication row,
-  by name otherwise) must not conflict with any block it crosses, the symbols it reads must not be assigned on an
-  edge it crosses, and it stays in its region.
-- A state that holds a communication row moves under that row's rules R1 to R5.
-- A state never crosses a `FIXED` row.
-- The move rewires the region's edges and keeps every condition and assignment on the edges it does not cross. A
-  region whose blocks are not a chain (a branch in the edges) is refused.
+#### 12.3 Overlap is motion, not a move (user 2026-11-21)
 
-With these two moves the agent, or a reference solution, writes the overlap as a sequence: split the stencil into
-boundary and interior, move the interior between the starts and the wait, and leave the boundary after the wait.
+An overlap is a `START` row moved earlier and its `WAIT` moved later. `lib-before` and `lib-after` already do this
+under R1 to R5, so NestForge gets no `overlap-communication` move. Two moves make the motion reachable:
 
-#### 12.3 `overlap-communication`
+- **`split-blocking`** turns a `BLOCKING` row into a `START` row and a `WAIT` row in place: `Send` into `Isend` and
+  `Wait`, `Recv` into `Irecv` and `Wait`, and a collective into its `NonblockingCommNode` form (`nonblocking=True`) and
+  `Wait`, with a fresh request transient. Labels: the blocking row. Always legal: the two rows sit next to each other,
+  so the program is the same until motion separates them. The two rows get fresh labels.
+- **`split-doall`** (12.2) cuts a doall that touches both a buffer in flight and other data, so that the independent
+  part can move between the start and the wait.
 
-One move that does the row motion of an exchange in one call. Labels: a `for` or the program's top region. It moves
-rows only and never splits a statement.
+The refusal of a `lib-after` on a wait names the statement that stops it (12.1), which tells the agent what to split.
+DaCe's `dace.libraries.comm.schedule.overlap_communication` stays the reference for the rules and the source of
+further fixtures; NestForge does not call it (a schedule tree round trip renames rows).
 
-1. In every chain of sibling blocks inside the labeled region, take the `START` rows in order. Move each one as far
-   toward the start of the chain as `lib-before` allows, together with the `lib_copy` rows that write its send
-   buffer when that buffer is a transient no other block reads.
-2. Take the `WAIT` rows in reverse order. Move each one as far toward the end of the chain as `lib-after` allows,
-   together with the `lib_copy` rows that read only what it receives.
-3. Stop at the region's boundary (R2), at a `FIXED` row (R4), and, for a start, at another `START` or `BLOCKING` row
-   (R1).
+#### 12.4 Time inside communication (owner 2026-11-23: B2's total, no per-row times)
 
-The move is the fixed point of single `lib-before` and `lib-after` steps, so it adds no legality code. Every step is
-checked by the rules of section 3 with the effects of 12.1, and the invariants of section 4 hold after the last
-step. The whole sequence is one atomic change and one journal entry, and one `rollback` undoes it.
-
-The answer lists what moved and what stopped each row:
-
-```
-applied: overlap-communication on for0
-  lib_comm0 (Isend)   before state5     was after state5
-  lib_comm2 (Waitall) after state5      was before state5; stopped by state7: reads Ap[0, 1:N-1], received by lib_comm1
-```
-
-The stopping reason tells the agent which statement to split (12.2) before it calls the move again.
-
-DaCe has a pass with the same goal on the schedule tree (`dace.libraries.comm.schedule.overlap_communication`).
-NestForge does not call it: the conversion from a schedule tree back to an SDFG would rename and regroup rows, and the
-tree's labels must survive a move. The pass is the reference for the rules, and its tests in DaCe are a source of
-further fixtures.
-
-#### 12.4 Time per communication row
-
-`Performance` gains `comm_rows: list[CommRowReport]` with, per row, its label, its class, and its time on the slowest
-rank. The time of a `WAIT` row is the time the program stood waiting, which is the number an overlap reduces. The
-times come from DaCe's timer instrumentation on the communication rows of the trial copy, one report per rank,
-reduced with the maximum by the bench's driver. Collecting a report per rank is part of
-[bench request B2](bench-requests.md).
+The number an overlap reduces is the time the slowest rank spends inside MPI calls. Bench request B2 measures it:
+`/profile` with `ranks` runs the program at each rank count as a grade runs it and reports, per count, `time_us`
+(the timed bracket on the slowest rank) and `mpi_time_us` (time inside MPI calls on that rank, from a PMPI shim).
+The bench's own agent-side `profile` does not offer `ranks`, so NestForge's `profile` adds it on a distributed task
+and shows one row per rank count. `Performance` stays a single-node measurement: it runs in the judge's process
+without MPI. Times per communication row (DaCe timer instrumentation per row) wait until an agent needs them.
 
 #### 12.5 Who calls the overlap
 
-The default pipeline never calls `overlap-communication` (owner's decision, 2026-11-16). `run_defaults` leaves
+The default pipeline never splits or moves communication rows (owner's decision, 2026-11-16). `run_defaults` leaves
 communication rows where the program had them, so `nestforge_default` shows no overlap. A reference solution or an
 agent calls the move and the splits.
 
@@ -437,12 +417,13 @@ agent calls the move and the splits.
 3. `split-doall` at 2 and at `rows` yields three doalls whose ranges partition the original, and the program's output
    is bit-identical. A split of a doall with `reduce=` stays within the oracle's tolerance.
 4. `split-doall` with `at` outside the range yields one empty part and the same output.
-5. `block-before` is refused across a block that writes what the state reads, with the container and subset named.
-6. `overlap-communication` on the halo fixture moves the waits behind the interior after the splits, and moves
-   nothing before them, with the stopping reason asserted.
-7. After `overlap-communication`, the four invariants of section 4 hold, and a second call moves nothing.
+5. `lib-after` on a wait is refused across a state that reads what the wait completes, with the container and subset named.
+6. `split-blocking` on every blocking row of the rank fixtures leaves the output bit-identical; on the halo
+   fixture, `lib-after` on the wait is refused before the splits (reason names the subset) and legal after them.
+7. After the overlap sequence, the four invariants of section 4 hold.
 8. At 1, 2, and 4 ranks the overlapped program is correct, and one `rollback` restores the program's hash.
-9. The `WAIT` row's reported time drops after the overlap on the halo fixture at 2 ranks (marker `mpi`).
+9. On a distributed task, `profile` offers `ranks`, sends them to the judge, and shows one row per rank count with
+   `mpi_time_us`; a single-node task offers no `ranks`.
 
 #### 12.7 Work packages
 
@@ -450,12 +431,23 @@ agent calls the move and the splits.
 |---|---|---|---|
 | 11 | Effects by subset, for crossings with a communication row and for I2 | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_subsets.py` | 5 |
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
-| 13 | `block-before`, `block-after` | a new `stages/block_motion.py`, `tests/test_block_motion.py` | 11 |
-| 14 | `overlap-communication` | `stages/moves.py`, `tests/test_comm_overlap.py` | 11 |
-| 15 | Time per communication row | `stages/performance.py`, `tests/test_comm_row_times.py` | 8, bench B2 |
-| 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 12, 13, 14 |
+| 13 | dropped (user 2026-11-22): `lib-after` on the wait does it, after 11 | | |
+| 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
+| 15 | Time inside communication (12.4): `ranks` on NestForge's `profile` | `plugin/tactics/tools/nestforge.py`, `plugin/tactics/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
+| 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 11, 12, 14 |
+| 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
+| 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |
 
 Package 12 has no dependency on communication and can be built at any time.
+
+#### 12.8 Layouts around an exchange (OMEN, SC19)
+
+OMEN computes in one layout, transposes locally, exchanges in another layout, and transposes back. NestForge adds no
+move for it: the `relayout` and `relayout_local` moves reuse relayout's passes. `relayout.passes.sdfg.pack_mpi_buffers`
+routes an MPI buffer of a laid-out array through a packed transient (pack before a send, unpack after a receive) and
+keeps it in place where both ends share a layout; `library_rules` leaves `CommNode` to that pass. The pack and unpack
+then appear as ordinary rows that motion and fusion treat like any other. The `redistribute` fixture of
+`tests/comm_rank_programs.py` is the test; a refusal there is a bug to fix in the existing moves.
 
 ## Work packages of the first version
 
@@ -464,7 +456,7 @@ Each package is one pull request with its tests. The order is the dependency ord
 | # | Package | Files | Depends on |
 |---|---|---|---|
 | 1 | Fixtures and the canonicalization test: a `jacobi_2d` halo (`Isend`, `Irecv`, `Waitall`), a residual `Allreduce` in the time loop, a ring of `Send` and `Recv` | `tests/comm_programs.py`, `tests/test_comm_canonical.py` | none |
-| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `nestforge/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_classes.py` | 1 |
+| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `tactics/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_classes.py` | 1 |
 | 3 | Tree rows and fields | `ir/introspect.py`, `docs/ir.md`, `tests/test_comm_tree.py` | 2 |
 | 4 | The four invariants after every kept change | `session.py`, `ir/comm.py`, `tests/test_comm_invariants.py` | 2 |
 | 5 | Motion rules R1 to R5, and `lib-into` refused | `stages/lib_motion.py`, `tests/test_comm_motion.py` | 2 |
@@ -472,7 +464,7 @@ Each package is one pull request with its tests. The order is the dependency ord
 | 7 | Layout rule | `stages/layout.py`, `server.py`, `tests/test_comm_layout.py` | 2 |
 | 8 | Session: communicator check, timing at rank counts, reports | `session.py`, `stages/performance.py`, `tests/test_comm_performance.py` | bench B2 |
 | 9 | Finalize in the distributed ABI | `stages/finalize.py`, `tests/test_comm_finalize.py` | bench B1 |
-| 10 | Plugin: prompt paragraph, skill section, tool argument `ranks`, reference solutions for the two stencils | `plugin/nestforge/`, `reference_solutions/` | 8, 9, bench B3, B4 |
+| 10 | Plugin: prompt paragraph, skill section, tool argument `ranks`, reference solutions for the two stencils | `plugin/tactics/`, `reference_solutions/` | 8, 9, bench B3, B4 |
 
 Packages 1 to 7 need nothing from the bench and can start now. Package 1 comes first: if canonicalization changes the
 skeleton, the DaCe fix is on the critical path of everything else.
@@ -519,7 +511,7 @@ Taken by the owner on 2026-11-16:
 2. The overlap is done by moving communication rows and statements (section 12). It is designed here and built after
    the first version.
 3. R1 is strict for every class (section 3).
-4. The default pipeline never calls `overlap-communication` (section 12.5).
+4. The default pipeline never splits or moves communication rows (section 12.5).
 5. The application targets are the ICON dynamical core and OMEN, each optimized by independent agents.
 
 Open:

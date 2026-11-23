@@ -11,8 +11,8 @@ import dace
 import numpy as np
 from dace.sdfg import nodes
 
-from nestforge.session import CheckData, Session
-from nestforge.stages.performance import Reference
+from tactics.session import CheckData, Session
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 16

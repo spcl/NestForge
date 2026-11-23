@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The stage 2 fission moves (:mod:`nestforge.stages.moves`): ``for-fission`` and ``doall-fission`` applied until
+"""The stage 2 fission moves (:mod:`tactics.stages.moves`): ``for-fission`` and ``doall-fission`` applied until
 nothing splits, and the agent's flow of fission then fusion. Value-preservation (bit-exact vs the un-fissioned
 reference) is the invariant on every case.
 """
@@ -14,8 +14,8 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.helpers import nest_state_subgraph
 from helpers import apply_move, fission_to_fixpoint, fusion_moves, random_vectors, run
 
-from nestforge.ir.names import normalize_labels
-from nestforge.stages.moves import legal_moves
+from tactics.ir.names import normalize_labels
+from tactics.stages.moves import legal_moves
 
 N = dace.symbol("N")
 f64 = dace.float64

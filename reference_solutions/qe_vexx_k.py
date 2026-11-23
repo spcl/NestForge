@@ -5,7 +5,7 @@
 No route beats the default yet; the script keeps the kernel's whole pipeline (its bool ``gamma_only`` symbol and the
 nesting that once mapped an unused symbol into a nested graph) replayed against the bench oracle in CI."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "qe_vexx_k"
 CONFIGS = (Context("cpu", 72, "M"),)

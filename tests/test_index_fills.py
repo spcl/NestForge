@@ -13,12 +13,12 @@ from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg
 from test_kernel_stage import lowered_kernel
 
-from nestforge.build.arena import make_inputs, run_oracle
-from nestforge.corpus.bench import CorpusKernel, preset_sizes
-from nestforge.corpus.translate import prepare
-from nestforge.ir.extract import Boundary
-from nestforge.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
-from nestforge.stages.scopes import parallel_top_level_maps
+from tactics.build.arena import make_inputs, run_oracle
+from tactics.corpus.bench import CorpusKernel, preset_sizes
+from tactics.corpus.translate import prepare
+from tactics.ir.extract import Boundary
+from tactics.stages.kernel import build_kernel_library, schedule_kernel, validate_kernel
+from tactics.stages.scopes import parallel_top_level_maps
 
 #: (kernel, index array). Every one is a gather/scatter whose index array is the whole point of the test;
 #: loop_level_reasoning is a superset of TSVC-2, so these are TSVC kernels.

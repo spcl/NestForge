@@ -14,8 +14,8 @@ from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg, sdfg_to_python
 
-from nestforge.ir.emit_python import load_emitted
-from nestforge.stages.scopes import is_parallel_nest, parallel_top_level_maps
+from tactics.ir.emit_python import load_emitted
+from tactics.stages.scopes import is_parallel_nest, parallel_top_level_maps
 
 
 def nest_refs(key: str) -> tuple[dace.SDFG, list[tuple[dace.SDFG, nodes.MapEntry]]]:

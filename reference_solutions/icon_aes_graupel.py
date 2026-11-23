@@ -7,7 +7,7 @@ its own column map: the parallel space is species by columns without a move. Bef
 map holding the column maps, and this solution split it with ``doall-fission`` on ``sink`` and ``sx2x`` (1.83x at
 preset M, 72 threads, on c2daa40, job 5256868)."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "icon_aes_graupel"
 CONFIGS = (Context("cpu", 72, "M"),)

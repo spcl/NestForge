@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""nestforge.replay: label-free picks, the script guard rails, the s231 reference at preset S, the Markdown splice."""
+"""tactics.replay: label-free picks, the script guard rails, the s231 reference at preset S, the Markdown splice."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import pytest
 from dace.sdfg.state import LoopRegion
 from hpcagent_bench.flags import openmp_launch_env
 
-from nestforge import session as session_module
-from nestforge.corpus.bench import corpus_kernel, preset_sizes
-from nestforge.paths import REPO_ROOT
-from nestforge.records import MoveStatus
-from nestforge.replay import (
+from tactics import session as session_module
+from tactics.corpus.bench import corpus_kernel, preset_sizes
+from tactics.paths import REPO_ROOT
+from tactics.records import MoveStatus
+from tactics.replay import (
     DATATYPE,
     Context,
     ReplayError,
@@ -27,11 +27,11 @@ from nestforge.replay import (
     short,
     splice,
 )
-from nestforge.server import Setup, start
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
-from nestforge.stages.moves import ROLLBACK
-from nestforge_bench import solution_paths
+from tactics.server import Setup, start
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
+from tactics.stages.moves import ROLLBACK
+from tactics_bench import solution_paths
 
 SOLUTIONS = solution_paths()
 S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"

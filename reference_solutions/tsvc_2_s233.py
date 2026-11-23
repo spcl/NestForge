@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """TSVC s233: split the i loop into its aa and bb halves, then move each half's loop inside its map."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "tsvc_2_s233"
 CONFIGS = (Context("cpu", 72, "M"),)

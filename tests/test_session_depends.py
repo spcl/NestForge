@@ -9,8 +9,8 @@ import dace
 import numpy as np
 import pytest
 
-from nestforge.ir.depends import UnsupportedProgram
-from nestforge.session import Session
+from tactics.ir.depends import UnsupportedProgram
+from tactics.session import Session
 
 N = dace.symbol("N")
 

@@ -8,7 +8,7 @@ import dace
 import numpy as np
 from dace.frontend.python.parser import DaceProgram
 
-from nestforge.ir.accumulation import Interval, accumulation_lengths, corners
+from tactics.ir.accumulation import Interval, accumulation_lengths, corners
 
 M, N, K = (dace.symbol(name) for name in "MNK")
 
@@ -126,3 +126,21 @@ def test_corners_bound_a_linear_expression_over_its_symbols() -> None:
     assert corners("N - i", env) == (91, 100)
     assert corners("N", env) == (100, 100)
     assert corners("Q + 1", env) is None, "a symbol with no interval has no value"
+
+
+@dace.program
+def map_sum(a: dace.float64[N], out: dace.float64[1]) -> None:
+    for i in dace.map[0:N]:
+        out[0] += a[i]
+
+
+@dace.program
+def map_row_sums(a: dace.float64[M, K], out: dace.float64[M]) -> None:
+    for i, k in dace.map[0:M, 0:K]:
+        out[i] += a[i, k]
+
+
+def test_a_parallel_reduction_accumulates_over_the_range_its_output_does_not_keep() -> None:
+    """A WCR out of a map: a full sum takes the whole range, a row sum only the columns."""
+    assert lengths(map_sum, {"N": LONG}, ["out"]) == {"out": LONG}
+    assert lengths(map_row_sums, {"M": ROWS, "K": DEPTH}, ["out"]) == {"out": DEPTH}

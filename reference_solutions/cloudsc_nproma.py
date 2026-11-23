@@ -3,7 +3,7 @@
 """CloudSC blocked layout, written in GPU order: split the column map, then take the level loop out of its body map,
 so each level is one contiguous ``NPROMA`` map (the CPU order)."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "cloudsc_nproma"
 CONFIGS = (Context("cpu", 1, "M"), Context("cpu", 72, "L"))

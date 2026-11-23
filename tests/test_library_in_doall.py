@@ -7,8 +7,8 @@ import dace
 import pytest
 from dace.sdfg import nodes
 
-from nestforge.stages import expand
-from nestforge.stages.expand import implementations, in_doall, is_device_implementation
+from tactics.stages import expand
+from tactics.stages.expand import implementations, in_doall, is_device_implementation
 
 N = dace.symbol("N", dtype=dace.int64)
 M = dace.symbol("M", dtype=dace.int64)

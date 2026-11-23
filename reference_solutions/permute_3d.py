@@ -8,7 +8,7 @@ The default keeps the transpose as one library call (HPTT). Expanded alone it is
 missing on every element (49.6 ms to 14.6 ms, 3.40x at preset M, 72 threads, 3 alternated rounds 3.19-3.54x, on
 690de2f, job 5303150)."""
 
-from nestforge.replay import Context, Script
+from tactics.replay import Context, Script
 
 KERNEL = "permute_3d"
 CONFIGS = (Context("cpu", 72, "M"),)

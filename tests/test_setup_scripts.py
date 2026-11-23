@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from nestforge.paths import REPO_ROOT
+from tactics.paths import REPO_ROOT
 
 SCRIPTS = REPO_ROOT / "scripts"
 SH_SCRIPTS = ["setup_apt.sh"]

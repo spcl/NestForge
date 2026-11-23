@@ -9,8 +9,8 @@ import dace
 import numpy as np
 from dace.frontend.python.parser import DaceProgram
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
+from tactics.records import MoveStatus
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 16

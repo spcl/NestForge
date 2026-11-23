@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from dace.libraries.standard.helper import GPU_RESIDENT_STORAGES
 
-from nestforge.session import Session
-from nestforge.stages.canonicalize import Targets
+from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 
 N = dace.symbol("N", dtype=dace.int64)
 

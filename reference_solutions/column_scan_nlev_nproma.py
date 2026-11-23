@@ -14,8 +14,8 @@ from collections.abc import Sequence
 
 from dace.sdfg.state import LoopRegion
 
-from nestforge.ir.introspect import Row
-from nestforge.replay import Context, Script
+from tactics.ir.introspect import Row
+from tactics.replay import Context, Script
 
 KERNEL = "column_scan_nlev_nproma"
 CONFIGS = (Context("cpu", 72, "M"),)

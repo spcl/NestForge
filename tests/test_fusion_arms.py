@@ -1,6 +1,6 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The stage 2 fusion moves (:mod:`nestforge.stages.moves`): list legal fusion moves and apply them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
+"""The stage 2 fusion moves (:mod:`tactics.stages.moves`): list legal fusion moves and apply them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
 against the un-fused reference. Exercises all three arms -- loop, vertical map, horizontal map -- and the
 agent's real pattern of applying a random legal sequence.
 """
@@ -15,9 +15,9 @@ from dace.frontend.python.parser import DaceProgram
 from dace.transformation.interstate.state_fusion import StateFusion
 from helpers import apply_move, fusion_moves, random_vectors, run
 
-from nestforge.ir.introspect import tree_rows
-from nestforge.ir.names import top_level_map_entries
-from nestforge.stages.moves import Rewrite, plan_move, tree_label
+from tactics.ir.introspect import tree_rows
+from tactics.ir.names import top_level_map_entries
+from tactics.stages.moves import Rewrite, plan_move, tree_label
 
 N = dace.symbol("N")
 

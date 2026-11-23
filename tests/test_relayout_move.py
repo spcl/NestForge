@@ -8,10 +8,10 @@ from pathlib import Path
 import dace
 import numpy as np
 
-from nestforge.records import MoveStatus
-from nestforge.session import Session
-from nestforge.stages.layout import RELAYOUT, layout_refusal, requests_of
-from nestforge.stages.performance import Reference
+from tactics.records import MoveStatus
+from tactics.session import Session
+from tactics.stages.layout import RELAYOUT, layout_refusal, requests_of
+from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dace.int64, positive=True)
 M = dace.symbol("M", dace.int64, positive=True)

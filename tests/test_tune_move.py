@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 from dace.sdfg import nodes
 
-from nestforge.session import MAX_TUNED_VALUES, Session, TunedValue, fastest_beating
-from nestforge.stages.performance import Performance, Reference
+from tactics.session import MAX_TUNED_VALUES, Session, TunedValue, fastest_beating
+from tactics.stages.performance import Performance, Reference
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 64
