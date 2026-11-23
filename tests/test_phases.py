@@ -98,6 +98,17 @@ def test_a_tool_of_another_phase_is_refused_and_moves_inside_a_kernel_wait_for_t
     assert "phase scoped, structured" in late_move.error and "in the phase scopes" in late_move.error
 
 
+def test_a_default_stage_of_a_later_phase_names_its_phase_and_the_way_there() -> None:
+    """``run_defaults placement`` in the structured phase: the refusal says where the stage belongs and how to get
+    there, as every other phase refusal does."""
+    sut = fresh()
+
+    refused = answer(sut, "run_defaults", {"stage": "placement"}, None)
+
+    assert "a stage of the phase scopes" in refused.error and "in the phase structured" in refused.error
+    assert "advance_phase" in refused.error
+
+
 def test_leaving_a_phase_summarizes_its_moves_and_the_kernels() -> None:
     sut = fresh()
     (move, *_) = sut.list_moves("doall-fusion")

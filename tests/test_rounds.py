@@ -111,7 +111,7 @@ def test_moves_on_the_program_and_their_defaults_are_refused_in_the_scopes_phase
     defaults = answer(session, "run_defaults", {"stage": "moves"}, None)
 
     assert "phase scoped, structured" in applied.error
-    assert "not a stage of the phase scopes" in defaults.error
+    assert "a stage of the phase structured" in defaults.error and "in the phase scopes" in defaults.error
 
 
 def test_a_move_inside_a_kernel_stays_open_after_the_moves_close() -> None:

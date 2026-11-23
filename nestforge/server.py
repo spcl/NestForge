@@ -594,9 +594,15 @@ def phase_refusal(session: Session, tool: str, arguments: Mapping[str, Any]) -> 
     kind, scoped = str(arguments.get("kind") or ""), arguments.get("scope") is not None
     if tool == "run_defaults":
         stage = str(arguments.get("stage"))
-        if STAGE_PHASES.get(stage) is not phase:
+        home = STAGE_PHASES.get(stage)
+        if home is None:
             return f"run_defaults {stage} is not a stage of the phase {phase}" + (
                 "; return_to_phase returns to an earlier phase" if stage == "round" else ""
+            )
+        if home is not phase:
+            return (
+                f"run_defaults {stage} is a stage of the phase {home.value}; this kernel is in the phase {phase}: "
+                "call advance_phase or undo_phase"
             )
     if tool in ("list_moves", "apply_move", "tune_move"):
         return move_phase_refusal(phase, kind, scoped)
