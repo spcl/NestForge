@@ -1,0 +1,7 @@
+# gitleaks: default rules; BibTeX entries (keys, DOIs, URLs) are references, not secrets.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "bibliography files"
+paths = ['''\.bib$''']

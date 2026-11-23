@@ -10,7 +10,7 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-authors = [{ name = "Yakup Budanaz", email = "budanaz.yakup@gmail.com" }]
+authors = [{ name = "Yakup Budanaz", email = "ybudanaz@ethz.ch" }]
 keywords = ["dace", "sdfg", "loop-nest", "code-generation", "compilers", "autotuning", "hpc", "llm-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
