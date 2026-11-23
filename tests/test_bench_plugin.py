@@ -52,6 +52,7 @@ from hpcagent_bench.vocabulary import PACKETS
 from stub_session import Stub, install
 
 import tactics_bench
+from tactics import plugin_record
 from tactics.paths import REPO_ROOT
 from tactics.records import KernelStatus, MoveStatus, Refusal, Refused
 from tactics.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup
@@ -61,6 +62,8 @@ from tactics_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "tactics"
 PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
+# the bench files a plugin's record under the plugin's name, which stays nestforge
+RECORD = f"{plugin_record.PLUGIN}.json"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
@@ -486,7 +489,7 @@ def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_an
 
     post("finalize", episode, tokens=500)
 
-    record = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "tactics.json").read_text())
+    record = json.loads((route.agent_root(episode) / RECORDS_FOLDER / RECORD).read_text())
     data = record["data"]
     assert record["schema_version"] == route.SCHEMA and data["kernel"] == KERNEL
     seen = [(c["index"], c["tool"], c["status"], c["refusal"], c["tokens"]) for c in data["calls"]]
@@ -513,7 +516,7 @@ def test_an_episode_switches_families_off_at_its_first_call_for_its_whole_length
 
     assert first.code == HTTPStatus.OK and stub.started[-1].disabled_families == tuple(sorted(FAMILIES))
     assert changed.code == HTTPStatus.BAD_REQUEST and "at its first call" in changed.answer["error"]
-    data = json.loads((route.agent_root(episode) / RECORDS_FOLDER / "tactics.json").read_text())["data"]
+    data = json.loads((route.agent_root(episode) / RECORDS_FOLDER / RECORD).read_text())["data"]
     assert data["disabled_families"] == sorted(FAMILIES)
     assert [(c["tool"], c["family"], c["status"]) for c in data["calls"]] == [
         ("apply_move", None, "applied"),  # MOVE's kind "fuse" is the stub's, in no family
@@ -1117,7 +1120,7 @@ def column_record(
     monkeypatch.setattr(tactics_bench, "baseline", lambda live, ctx: live.applied.append(applied("defaults-moves")))
     monkeypatch.setattr(tactics_bench, "reference_solution", lambda kernel: solution)
     sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
-    record: dict[str, Any] = json.loads((tmp_path / RECORDS_FOLDER / "tactics.json").read_text())["data"]
+    record: dict[str, Any] = json.loads((tmp_path / RECORDS_FOLDER / RECORD).read_text())["data"]
     return record
 
 
